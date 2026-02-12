@@ -1,0 +1,17 @@
+services:
+  qdrant-memory:
+    image: qdrant/qdrant:latest
+    container_name: claude-memory
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_MEMORY_API_KEY:-claude-memory-local-key}
+      - QDRANT__LOG_LEVEL=WARN
+
+volumes:
+  qdrant-storage:
+    name: claude-memory-data

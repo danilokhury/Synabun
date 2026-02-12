@@ -1,0 +1,1342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Setup - SynaBun</title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --t-faint: rgba(255,255,255,0.2);
+    --t-muted: rgba(255,255,255,0.3);
+    --t-secondary: rgba(255,255,255,0.5);
+    --t-primary: rgba(255,255,255,0.7);
+    --t-bright: rgba(255,255,255,0.9);
+    --s-subtle: rgba(255,255,255,0.04);
+    --s-light: rgba(255,255,255,0.06);
+    --s-medium: rgba(255,255,255,0.10);
+    --s-hover: rgba(255,255,255,0.08);
+    --s-active: rgba(255,255,255,0.14);
+    --b-subtle: rgba(255,255,255,0.06);
+    --b-light: rgba(255,255,255,0.10);
+    --b-hover: rgba(255,255,255,0.16);
+    --b-visible: rgba(255,255,255,0.22);
+    --accent: #4FC3F7;
+    --accent-bg: rgba(79,195,247,0.10);
+    --accent-border: rgba(79,195,247,0.25);
+    --accent-dim: rgba(79,195,247,0.5);
+    --green: #66BB6A;
+    --green-bg: rgba(102,187,106,0.12);
+    --red: #FF5252;
+    --red-bg: rgba(255,82,82,0.12);
+    --r-card: 8px;
+    --r-button: 10px;
+    --ease: 0.2s ease;
+  }
+
+  body {
+    background: #0a0e14;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(255,255,255,0.015) 2px,
+      rgba(255,255,255,0.015) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+
+  /* ── Wizard Container ── */
+  .wizard {
+    width: 620px;
+    max-height: 90vh;
+    background: rgba(28, 28, 30, 0.72);
+    backdrop-filter: blur(40px) saturate(1.4);
+    -webkit-backdrop-filter: blur(40px) saturate(1.4);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 16px;
+    box-shadow: 0 4px 40px rgba(0,0,0,0.6), inset 0 0.5px 0 rgba(255,255,255,0.05);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* ── Steps Viewport ── */
+  .steps-viewport {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    min-height: 420px;
+  }
+
+  .step {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    padding: 32px 36px;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s ease;
+    overflow-y: auto;
+  }
+  .step.active { transform: translateX(0); opacity: 1; z-index: 2; }
+  .step.left   { transform: translateX(-100%); opacity: 0; z-index: 1; }
+  .step.right  { transform: translateX(100%); opacity: 0; z-index: 1; }
+
+  .step h2 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--t-bright);
+    margin-bottom: 6px;
+  }
+  .step .subtitle {
+    font-size: 12px;
+    color: var(--t-secondary);
+    margin-bottom: 20px;
+  }
+
+  /* ── Navigation Bar ── */
+  .nav-bar {
+    padding: 16px 36px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-top: 1px solid var(--b-subtle);
+    background: rgba(20,20,22,0.5);
+  }
+
+  .dots {
+    display: flex;
+    gap: 6px;
+  }
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.15);
+    transition: all 0.3s ease;
+  }
+  .dot.active { background: var(--accent); box-shadow: 0 0 6px rgba(79,195,247,0.4); }
+  .dot.done { background: var(--accent-dim); }
+
+  .nav-btn {
+    padding: 8px 20px;
+    border-radius: var(--r-button);
+    border: 1px solid var(--b-light);
+    background: var(--s-light);
+    color: var(--t-primary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all var(--ease);
+  }
+  .nav-btn:hover { background: var(--s-medium); border-color: var(--b-hover); color: var(--t-bright); }
+  .nav-btn:disabled { opacity: 0.3; cursor: default; pointer-events: none; }
+  .nav-btn.primary {
+    background: rgba(79,195,247,0.15);
+    border-color: var(--accent-border);
+    color: var(--accent);
+  }
+  .nav-btn.primary:hover { background: rgba(79,195,247,0.25); }
+
+  /* ── Form Elements ── */
+  .field { margin-bottom: 16px; }
+  .field label {
+    display: block;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--t-secondary);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .field input, .field select {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--s-subtle);
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    color: var(--t-bright);
+    font-size: 13px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    outline: none;
+    transition: border-color var(--ease);
+  }
+  .field input:focus, .field select:focus {
+    border-color: var(--accent-border);
+  }
+  .field input::placeholder { color: var(--t-muted); font-family: inherit; }
+  .field .hint {
+    font-size: 11px;
+    color: var(--t-muted);
+    margin-top: 4px;
+  }
+  .field .error-text {
+    font-size: 11px;
+    color: var(--red);
+    margin-top: 4px;
+  }
+
+  .input-row {
+    display: flex;
+    gap: 8px;
+  }
+  .input-row input { flex: 1; }
+  .input-row .btn-sm {
+    padding: 8px 14px;
+    border-radius: var(--r-card);
+    border: 1px solid var(--b-light);
+    background: var(--s-light);
+    color: var(--t-primary);
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all var(--ease);
+  }
+  .input-row .btn-sm:hover { background: var(--s-medium); color: var(--t-bright); }
+
+  /* ── Provider Cards Grid ── */
+  .provider-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .provider-card {
+    padding: 10px 12px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    cursor: pointer;
+    transition: all var(--ease);
+    position: relative;
+  }
+  .provider-card:hover { background: var(--s-hover); border-color: var(--b-hover); }
+  .provider-card.selected {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+  }
+  .provider-card .pname {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--t-bright);
+  }
+  .provider-card .ptag {
+    position: absolute;
+    top: 6px; right: 8px;
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(79,195,247,0.15);
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .provider-card .pmodel {
+    font-size: 11px;
+    color: var(--t-muted);
+    margin-top: 2px;
+    font-family: monospace;
+  }
+
+  /* ── Tool Cards ── */
+  .tool-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .tool-card {
+    padding: 14px 12px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    cursor: pointer;
+    text-align: center;
+    transition: all var(--ease);
+  }
+  .tool-card:hover { background: var(--s-hover); border-color: var(--b-hover); }
+  .tool-card.selected {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+  }
+  .tool-card .tname {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--t-bright);
+  }
+  .tool-card .tfiles {
+    font-size: 10px;
+    color: var(--t-muted);
+    margin-top: 4px;
+    font-family: monospace;
+  }
+
+  /* ── Terminal Output ── */
+  .terminal {
+    background: rgba(0,0,0,0.5);
+    border: 1px solid var(--b-subtle);
+    border-radius: var(--r-card);
+    padding: 12px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 11px;
+    color: var(--t-secondary);
+    max-height: 180px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.5;
+    margin-bottom: 12px;
+  }
+
+  /* ── Status Indicators ── */
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    color: var(--t-primary);
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.green { background: var(--green); box-shadow: 0 0 6px rgba(102,187,106,0.4); }
+  .status-dot.red { background: var(--red); box-shadow: 0 0 6px rgba(255,82,82,0.3); }
+  .status-dot.yellow { background: #FFC107; box-shadow: 0 0 6px rgba(255,193,7,0.3); }
+  .status-dot.gray { background: rgba(255,255,255,0.2); }
+
+  /* ── Action Button ── */
+  .action-btn {
+    padding: 10px 24px;
+    border-radius: var(--r-button);
+    border: 1px solid var(--accent-border);
+    background: rgba(79,195,247,0.12);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--ease);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .action-btn:hover { background: rgba(79,195,247,0.22); }
+  .action-btn:disabled { opacity: 0.4; cursor: default; }
+  .action-btn.success {
+    border-color: rgba(102,187,106,0.35);
+    background: var(--green-bg);
+    color: var(--green);
+  }
+
+  /* ── SynaBun Eyes ── */
+  #synabun-bg {
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    user-select: none;
+    margin-bottom: 8px;
+  }
+
+  /* ── Typewriter ── */
+  .typewriter-line {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--t-bright);
+    text-align: center;
+    min-height: 28px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  }
+  .welcome-desc {
+    font-size: 13px;
+    color: var(--t-secondary);
+    text-align: center;
+    margin-top: 10px;
+    opacity: 0;
+    transition: opacity 0.6s ease;
+    line-height: 1.6;
+  }
+  .welcome-desc.visible { opacity: 1; }
+
+  /* ── Instructions Preview ── */
+  .instructions-preview {
+    background: rgba(0,0,0,0.4);
+    border: 1px solid var(--b-subtle);
+    border-radius: var(--r-card);
+    padding: 14px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 11px;
+    color: var(--t-secondary);
+    max-height: 240px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    line-height: 1.5;
+    margin-bottom: 12px;
+  }
+
+  /* ── Checklist ── */
+  .checklist {
+    list-style: none;
+    margin: 16px 0;
+  }
+  .checklist li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    font-size: 13px;
+    color: var(--t-primary);
+  }
+  .checklist .check {
+    color: var(--green);
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+
+  /* ── Spinner ── */
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid var(--accent-border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .btn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+
+<div style="display:flex;flex-direction:column;align-items:center;">
+<div class="wizard">
+  <div class="steps-viewport" id="stepsViewport">
+
+    <!-- Step 0: Welcome -->
+    <div class="step active" data-step="0">
+      <div style="height:12px"></div>
+      <div id="synabun-bg"></div>
+      <div class="typewriter-line" id="typewriter"></div>
+      <div class="welcome-desc" id="welcomeDesc">
+        I'll help you set up your persistent vector memory —<br>
+        Qdrant database, embedding provider, and AI tool integration.<br>
+        It only takes a minute!
+      </div>
+    </div>
+
+    <!-- Step 1: Qdrant Password -->
+    <div class="step right" data-step="1">
+      <h2>Qdrant API Key</h2>
+      <p class="subtitle">Secure your local Qdrant instance with a password.</p>
+      <div class="field">
+        <label>API Key</label>
+        <div class="input-row">
+          <input type="password" id="qdrantKey" placeholder="Enter a secure API key..." autocomplete="off">
+          <button class="btn-sm" id="toggleKeyVis" title="Show/hide">Show</button>
+          <button class="btn-sm" id="genKey">Generate</button>
+        </div>
+        <div class="hint">Minimum 8 characters. This key protects your Qdrant database.</div>
+        <div class="error-text" id="keyError"></div>
+      </div>
+    </div>
+
+    <!-- Step 2: Collection Name -->
+    <div class="step right" data-step="2">
+      <h2>Collection Name</h2>
+      <p class="subtitle">Name for your vector collection in Qdrant.</p>
+      <div class="field">
+        <label>Collection</label>
+        <input type="text" id="collectionName" value="claude_memory" placeholder="claude_memory">
+        <div class="hint">Lowercase letters, digits, and underscores. 3-50 characters.</div>
+        <div class="error-text" id="collectionError"></div>
+      </div>
+    </div>
+
+    <!-- Step 3: Embedding Provider -->
+    <div class="step right" data-step="3">
+      <h2>Embedding Provider</h2>
+      <p class="subtitle">Choose which API generates your memory embeddings.</p>
+      <div class="provider-grid" id="providerGrid"></div>
+      <div class="field">
+        <label>API Key</label>
+        <input type="password" id="embedKey" placeholder="sk-..." autocomplete="off">
+        <div class="hint" id="embedKeyHint"></div>
+      </div>
+      <div class="field" style="display:flex;gap:8px;">
+        <div style="flex:2">
+          <label>Model</label>
+          <input type="text" id="embedModel" placeholder="text-embedding-3-small">
+        </div>
+        <div style="flex:1">
+          <label>Dimensions</label>
+          <input type="number" id="embedDims" placeholder="1536">
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4: Docker -->
+    <div class="step right" data-step="4">
+      <h2>Spin Up Qdrant</h2>
+      <p class="subtitle">Start the Qdrant vector database via Docker.</p>
+      <div id="dockerStatus"></div>
+      <div class="terminal" id="dockerOutput">Waiting to start...</div>
+      <button class="action-btn" id="dockerBtn">Start Qdrant</button>
+    </div>
+
+    <!-- Step 5: Build MCP Server -->
+    <div class="step right" data-step="5">
+      <h2>Build MCP Server</h2>
+      <p class="subtitle">Compile the TypeScript MCP server to JavaScript.</p>
+      <div id="buildStatus"></div>
+      <div class="terminal" id="buildOutput">Waiting to build...</div>
+      <button class="action-btn" id="buildBtn">Build</button>
+    </div>
+
+    <!-- Step 6: AI Tool Selection -->
+    <div class="step right" data-step="6">
+      <h2>AI Tool Integration</h2>
+      <p class="subtitle">Select your AI coding tool to generate the right config.</p>
+      <div class="tool-grid" id="toolGrid"></div>
+      <div class="field">
+        <label>Target Project Directory</label>
+        <input type="text" id="targetDir" placeholder="C:\Users\...">
+        <div class="hint">The root of the project where you want memory enabled.</div>
+      </div>
+      <div class="btn-row">
+        <button class="action-btn" id="writeMcpBtn">Write .mcp.json</button>
+      </div>
+      <div id="mcpWriteStatus" style="margin-top:8px"></div>
+    </div>
+
+    <!-- Step 7: Markdown Instructions -->
+    <div class="step right" data-step="7">
+      <h2>Memory Instructions</h2>
+      <p class="subtitle">Add these instructions to your AI tool's config file.</p>
+      <div id="instrFileName" style="font-size:12px;color:var(--t-secondary);margin-bottom:8px;font-family:monospace;"></div>
+      <div class="instructions-preview" id="instrPreview"></div>
+      <div class="btn-row">
+        <button class="action-btn" id="copyInstrBtn">Copy to Clipboard</button>
+        <button class="action-btn" id="writeInstrBtn">Write to File</button>
+      </div>
+      <div id="instrWriteStatus" style="margin-top:8px"></div>
+    </div>
+
+    <!-- Step 8: Complete -->
+    <div class="step right" data-step="8">
+      <div style="height:16px"></div>
+      <h2 style="text-align:center;margin-bottom:12px;">Setup Complete!</h2>
+      <ul class="checklist" id="checklist"></ul>
+      <div style="text-align:center;margin-top:16px;">
+        <button class="action-btn" id="launchBtn" style="font-size:15px;padding:12px 32px;">Launch Neural Interface</button>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="nav-bar">
+    <button class="nav-btn" id="prevBtn" disabled>&larr; Back</button>
+    <div class="dots" id="dots"></div>
+    <button class="nav-btn primary" id="nextBtn">Begin &rarr;</button>
+  </div>
+</div>
+
+<div style="text-align:center;margin-top:12px;opacity:0.4;pointer-events:none;">
+  <img src="synabun.png" alt="SynaBun" style="height:26px;width:auto;">
+</div>
+</div>
+
+<script type="module">
+
+// ═══════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════
+
+const TOTAL_STEPS = 9;
+let currentStep = 0;
+
+const wizardState = {
+  qdrantApiKey: '',
+  collectionName: 'claude_memory',
+  selectedProvider: null,
+  embeddingApiKey: '',
+  embeddingBaseUrl: '',
+  embeddingModel: '',
+  embeddingDimensions: 0,
+  selectedTool: null,
+  targetDir: '',
+  dockerReady: false,
+  buildReady: false,
+  mcpWritten: false,
+  instrWritten: false,
+};
+
+const PROVIDERS = [
+  { id: 'openai',    name: 'OpenAI',       url: 'https://api.openai.com/v1',                                   model: 'text-embedding-3-small', dims: 1536, tag: 'Recommended', needsKey: true },
+  { id: 'gemini',    name: 'Google Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai',     model: 'text-embedding-004',     dims: 768,  tag: 'Free tier',   needsKey: true },
+  { id: 'qwen',      name: 'Qwen',         url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',      model: 'text-embedding-v4',      dims: 1024, tag: '',            needsKey: true },
+  { id: 'together',  name: 'Together AI',   url: 'https://api.together.xyz/v1',                                 model: 'togethercomputer/m2-bert-80M-8k-retrieval', dims: 768,  tag: '',  needsKey: true },
+  { id: 'fireworks', name: 'Fireworks AI',  url: 'https://api.fireworks.ai/inference/v1',                       model: 'nomic-ai/nomic-embed-text-v1.5', dims: 768,  tag: '',    needsKey: true },
+  { id: 'jina',      name: 'Jina AI',       url: 'https://api.jina.ai/v1',                                     model: 'jina-embeddings-v3',     dims: 1024, tag: '',            needsKey: true },
+  { id: 'mistral',   name: 'Mistral',       url: 'https://api.mistral.ai/v1',                                  model: 'mistral-embed',          dims: 1024, tag: '',            needsKey: true },
+  { id: 'voyage',    name: 'Voyage AI',     url: 'https://api.voyageai.com/v1',                                model: 'voyage-3.5-lite',        dims: 1024, tag: '',            needsKey: true },
+  { id: 'cohere',    name: 'Cohere',        url: 'https://api.cohere.com/compatibility/v1',                    model: 'embed-v4.0',             dims: 1024, tag: '',            needsKey: true },
+  { id: 'ollama',    name: 'Ollama',        url: 'http://localhost:11434/v1',                                   model: 'nomic-embed-text',       dims: 768,  tag: 'Local',       needsKey: false },
+  { id: 'lmstudio',  name: 'LM Studio',    url: 'http://localhost:1234/v1',                                    model: '(loaded model)',         dims: 768,  tag: 'Local',       needsKey: false },
+];
+
+const TOOLS = [
+  { id: 'claude',   name: 'Claude Code',  configFile: '.mcp.json', instrFile: 'CLAUDE.md' },
+  { id: 'cursor',   name: 'Cursor',       configFile: '.mcp.json', instrFile: '.cursorrules' },
+  { id: 'windsurf', name: 'Windsurf',     configFile: '.mcp.json', instrFile: '.windsurfrules' },
+  { id: 'codex',    name: 'Codex',        configFile: '.mcp.json', instrFile: 'AGENTS.md' },
+  { id: 'other',    name: 'Other',        configFile: '.mcp.json', instrFile: 'AGENTS.md' },
+];
+
+// ═══════════════════════════════════════════
+// DOM REFS
+// ═══════════════════════════════════════════
+
+const $steps     = document.querySelectorAll('.step');
+const $dots      = document.getElementById('dots');
+const $prevBtn   = document.getElementById('prevBtn');
+const $nextBtn   = document.getElementById('nextBtn');
+
+// ═══════════════════════════════════════════
+// DOTS
+// ═══════════════════════════════════════════
+
+for (let i = 0; i < TOTAL_STEPS; i++) {
+  const d = document.createElement('div');
+  d.className = 'dot' + (i === 0 ? ' active' : '');
+  $dots.appendChild(d);
+}
+
+function updateDots() {
+  $dots.querySelectorAll('.dot').forEach((d, i) => {
+    d.className = 'dot' + (i === currentStep ? ' active' : i < currentStep ? ' done' : '');
+  });
+}
+
+// ═══════════════════════════════════════════
+// STEP NAVIGATION
+// ═══════════════════════════════════════════
+
+function goToStep(n) {
+  if (n < 0 || n >= TOTAL_STEPS) return;
+  const dir = n > currentStep ? 1 : -1;
+
+  $steps.forEach((s, i) => {
+    if (i === n) {
+      s.className = 'step active';
+    } else if (i < n) {
+      s.className = 'step left';
+    } else {
+      s.className = 'step right';
+    }
+  });
+
+  currentStep = n;
+  updateDots();
+  updateNav();
+  onStepEnter(n);
+}
+
+function updateNav() {
+  $prevBtn.disabled = currentStep === 0;
+
+  const labels = ['Begin', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
+  $nextBtn.textContent = (labels[currentStep] || 'Next') + ' \u2192';
+
+  if (currentStep === TOTAL_STEPS - 1) {
+    $nextBtn.style.display = 'none';
+  } else {
+    $nextBtn.style.display = '';
+  }
+}
+
+$prevBtn.addEventListener('click', () => goToStep(currentStep - 1));
+$nextBtn.addEventListener('click', () => {
+  if (validateStep(currentStep)) {
+    goToStep(currentStep + 1);
+  }
+});
+
+// ═══════════════════════════════════════════
+// VALIDATION
+// ═══════════════════════════════════════════
+
+function validateStep(n) {
+  switch(n) {
+    case 1: {
+      const key = document.getElementById('qdrantKey').value.trim();
+      const err = document.getElementById('keyError');
+      if (key.length < 8) { err.textContent = 'Minimum 8 characters required.'; return false; }
+      err.textContent = '';
+      wizardState.qdrantApiKey = key;
+      return true;
+    }
+    case 2: {
+      const name = document.getElementById('collectionName').value.trim();
+      const err = document.getElementById('collectionError');
+      if (!/^[a-z][a-z0-9_]{2,49}$/.test(name)) {
+        err.textContent = 'Must start with lowercase letter, 3-50 chars, only a-z 0-9 _';
+        return false;
+      }
+      err.textContent = '';
+      wizardState.collectionName = name;
+      return true;
+    }
+    case 3: {
+      if (!wizardState.selectedProvider) return false;
+      const p = PROVIDERS.find(x => x.id === wizardState.selectedProvider);
+      if (p.needsKey && !document.getElementById('embedKey').value.trim()) return false;
+      wizardState.embeddingApiKey = document.getElementById('embedKey').value.trim();
+      wizardState.embeddingModel = document.getElementById('embedModel').value.trim() || p.model;
+      wizardState.embeddingDimensions = parseInt(document.getElementById('embedDims').value, 10) || p.dims;
+      wizardState.embeddingBaseUrl = p.url;
+      return true;
+    }
+    case 6: {
+      if (!wizardState.selectedTool) return false;
+      wizardState.targetDir = document.getElementById('targetDir').value.trim();
+      return true;
+    }
+    default:
+      return true;
+  }
+}
+
+// ═══════════════════════════════════════════
+// ON STEP ENTER (hooks)
+// ═══════════════════════════════════════════
+
+async function onStepEnter(n) {
+  if (n === 0) startMascot();
+  if (n === 4) onDockerStep();
+  if (n === 5) onBuildStep();
+  if (n === 6) onToolStep();
+  if (n === 7) onInstructionsStep();
+  if (n === 8) onCompleteStep();
+}
+
+// ═══════════════════════════════════════════
+// SYNABUN — Glowing Pill Eyes (background)
+// ═══════════════════════════════════════════
+
+let mascotRunning = false;
+let mouseX = 0, mouseY = 0;
+let lookX = 0, lookY = 0;
+
+document.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+
+// ── SynaBun Pill Eyes ──
+
+function initEyesSVG() {
+  const $el = document.getElementById('synabun-bg');
+  // Glowing pill-shaped eyes + smile
+  // viewBox 280×140, pill eyes centered at y=60, pill: 38×72 rx=19
+  $el.innerHTML = `
+    <svg viewBox="0 0 280 140" width="280" height="140" style="overflow:visible">
+      <defs>
+        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="6" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+
+      <!-- Left eye -->
+      <g class="syna-eye">
+        <g class="syna-lid">
+          <rect x="80" y="24" width="38" height="72" rx="19" fill="#00e5ff" filter="url(#glow)"/>
+        </g>
+      </g>
+
+      <!-- Right eye -->
+      <g class="syna-eye">
+        <g class="syna-lid">
+          <rect x="162" y="24" width="38" height="72" rx="19" fill="#00e5ff" filter="url(#glow)"/>
+        </g>
+      </g>
+
+      <!-- Smile -->
+      <path class="syna-mouth" d="M118,116 Q140,130 162,116" fill="none" stroke="rgba(0,229,255,0.25)" stroke-width="2.5" stroke-linecap="round"/>
+    </svg>
+  `;
+
+  return {
+    eyes: $el.querySelectorAll('.syna-eye'),
+    lids: $el.querySelectorAll('.syna-lid'),
+    mouth: $el.querySelector('.syna-mouth')
+  };
+}
+
+function updateEyesSVG(refs, lx, ly, blinkAmt, now) {
+  // Mouse tracking — slight shift on eyes
+  const moveX = lx * 4;
+  const moveY = ly * 3;
+
+  // Blink — scaleY squishes pill
+  const cy = 60;
+  const vScale = Math.max(0.06, 1 - blinkAmt * 0.94);
+  refs.lids.forEach(lid => {
+    lid.setAttribute('transform',
+      `translate(${moveX},${moveY}) translate(0,${cy}) scale(1,${vScale}) translate(0,${-cy})`);
+  });
+
+  // Mouth — follows eyes + subtle wobble
+  const t = (now || 0) * 0.001;
+  const wobbleX = Math.sin(t * 0.7) * 1.2;
+  const wobbleY = Math.cos(t * 1.1) * 0.8;
+  const mouthX = moveX * 0.5 + wobbleX;
+  const mouthY = moveY * 0.5 + wobbleY;
+  refs.mouth.setAttribute('transform', `translate(${mouthX},${mouthY})`);
+}
+
+// --- Animation loop ---
+
+function startMascot() {
+  if (mascotRunning) return;
+  mascotRunning = true;
+
+  const refs = initEyesSVG();
+
+  let blinkState = 'idle';
+  let blinkTimer = 0;
+  let blinkLid = 0;
+  let nextBlink = performance.now() + 3000 + Math.random() * 3000;
+
+  let twDone = false;
+  const twText = "Hi! I'm SynaBun!";
+  let twIndex = 0;
+  let twLast = 0;
+  const $tw = document.getElementById('typewriter');
+  const $desc = document.getElementById('welcomeDesc');
+
+  function render(now) {
+    if (currentStep !== 0) { mascotRunning = false; return; }
+
+    // Smooth mouse tracking
+    const tX = Math.max(-1, Math.min(1, (mouseX - window.innerWidth / 2) / (window.innerWidth * 0.5)));
+    const tY = Math.max(-1, Math.min(1, (mouseY - window.innerHeight / 2) / (window.innerHeight * 0.5)));
+    lookX += (tX - lookX) * 0.06;
+    lookY += (tY - lookY) * 0.06;
+
+    // Blink state machine
+    if (blinkState === 'idle' && now > nextBlink) { blinkState = 'closing'; blinkTimer = now; }
+    if (blinkState === 'closing') {
+      blinkLid = Math.min(1, (now - blinkTimer) / 90);
+      if (blinkLid >= 1) { blinkState = 'hold'; blinkTimer = now; }
+    }
+    if (blinkState === 'hold' && now - blinkTimer > 60) { blinkState = 'opening'; blinkTimer = now; }
+    if (blinkState === 'opening') {
+      blinkLid = Math.max(0, 1 - (now - blinkTimer) / 130);
+      if (blinkLid <= 0) { blinkState = 'idle'; nextBlink = now + 3000 + Math.random() * 4000; }
+    }
+
+    updateEyesSVG(refs, lookX, lookY, blinkLid, now);
+
+    // Typewriter
+    if (!twDone) {
+      if (now - twLast > 40 && twIndex <= twText.length) {
+        $tw.textContent = twText.slice(0, twIndex) + (twIndex < twText.length ? '\u2588' : '');
+        twIndex++;
+        twLast = now;
+        if (twIndex > twText.length) {
+          twDone = true;
+          $tw.textContent = twText;
+          setTimeout(() => $desc.classList.add('visible'), 300);
+        }
+      }
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  requestAnimationFrame(render);
+}
+
+// Happy variant — no-op, completion screen uses the logo image
+function renderHappyBun() {}
+
+// ═══════════════════════════════════════════
+// STEP 1: Qdrant Key
+// ═══════════════════════════════════════════
+
+document.getElementById('toggleKeyVis').addEventListener('click', () => {
+  const inp = document.getElementById('qdrantKey');
+  const btn = document.getElementById('toggleKeyVis');
+  if (inp.type === 'password') { inp.type = 'text'; btn.textContent = 'Hide'; }
+  else { inp.type = 'password'; btn.textContent = 'Show'; }
+});
+
+document.getElementById('genKey').addEventListener('click', () => {
+  const arr = new Uint8Array(24);
+  crypto.getRandomValues(arr);
+  const key = Array.from(arr, b => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+  document.getElementById('qdrantKey').value = key;
+  document.getElementById('qdrantKey').type = 'text';
+  document.getElementById('toggleKeyVis').textContent = 'Hide';
+});
+
+// ═══════════════════════════════════════════
+// STEP 3: Embedding Providers
+// ═══════════════════════════════════════════
+
+const $providerGrid = document.getElementById('providerGrid');
+PROVIDERS.forEach(p => {
+  const card = document.createElement('div');
+  card.className = 'provider-card';
+  card.dataset.id = p.id;
+  card.innerHTML = `
+    <div class="pname">${p.name}</div>
+    <div class="pmodel">${p.model} (${p.dims}d)</div>
+    ${p.tag ? `<div class="ptag">${p.tag}</div>` : ''}
+  `;
+  card.addEventListener('click', () => selectProvider(p.id));
+  $providerGrid.appendChild(card);
+});
+
+function selectProvider(id) {
+  const p = PROVIDERS.find(x => x.id === id);
+  if (!p) return;
+  wizardState.selectedProvider = id;
+
+  $providerGrid.querySelectorAll('.provider-card').forEach(c => {
+    c.classList.toggle('selected', c.dataset.id === id);
+  });
+
+  document.getElementById('embedModel').value = p.model;
+  document.getElementById('embedDims').value = p.dims;
+
+  const $key = document.getElementById('embedKey');
+  const $hint = document.getElementById('embedKeyHint');
+  if (p.needsKey) {
+    $key.disabled = false;
+    $key.placeholder = p.id === 'openai' ? 'sk-...' : 'Enter API key...';
+    $hint.textContent = `Get a key from ${p.name}'s dashboard.`;
+  } else {
+    $key.disabled = true;
+    $key.value = '';
+    $hint.textContent = 'Not required for local providers.';
+  }
+}
+
+// ═══════════════════════════════════════════
+// STEP 4: Docker
+// ═══════════════════════════════════════════
+
+async function onDockerStep() {
+  // First, save config from steps 1-3
+  try {
+    await fetch('/api/setup/save-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        qdrantApiKey: wizardState.qdrantApiKey,
+        collectionName: wizardState.collectionName,
+        embeddingApiKey: wizardState.embeddingApiKey,
+        embeddingBaseUrl: wizardState.embeddingBaseUrl,
+        embeddingModel: wizardState.embeddingModel,
+        embeddingDimensions: wizardState.embeddingDimensions,
+      }),
+    });
+  } catch {}
+
+  // Check current status
+  const $status = document.getElementById('dockerStatus');
+  const $btn = document.getElementById('dockerBtn');
+  const $out = document.getElementById('dockerOutput');
+
+  try {
+    const res = await fetch('/api/setup/test-qdrant');
+    const data = await res.json();
+    if (data.ok) {
+      wizardState.dockerReady = true;
+      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Qdrant is already running</div>';
+      $btn.textContent = 'Already Running';
+      $btn.classList.add('success');
+      $btn.disabled = true;
+      $out.textContent = 'Qdrant detected on localhost:6333';
+
+      // Create collection
+      $out.textContent += '\nCreating collection...';
+      const colRes = await fetch('/api/setup/create-collection', { method: 'POST' });
+      const colData = await colRes.json();
+      if (colData.ok) {
+        $out.textContent += '\n' + colData.message;
+      }
+      return;
+    }
+  } catch {}
+
+  $status.innerHTML = '<div class="status-row"><div class="status-dot gray"></div>Qdrant not detected</div>';
+}
+
+document.getElementById('dockerBtn').addEventListener('click', async () => {
+  const $btn = document.getElementById('dockerBtn');
+  const $out = document.getElementById('dockerOutput');
+  const $status = document.getElementById('dockerStatus');
+
+  $btn.disabled = true;
+  $btn.innerHTML = '<div class="spinner"></div> Starting...';
+  $out.textContent = '$ docker compose up -d\n';
+
+  try {
+    const res = await fetch('/api/setup/docker', { method: 'POST' });
+    const data = await res.json();
+
+    if (data.ok) {
+      $out.textContent += data.output + '\n';
+      if (data.ready) {
+        wizardState.dockerReady = true;
+        $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Qdrant is running</div>';
+        $btn.textContent = 'Running';
+        $btn.classList.add('success');
+
+        // Create collection
+        $out.textContent += '\nCreating collection...';
+        const colRes = await fetch('/api/setup/create-collection', { method: 'POST' });
+        const colData = await colRes.json();
+        if (colData.ok) {
+          $out.textContent += '\n' + colData.message;
+        }
+      } else {
+        $status.innerHTML = '<div class="status-row"><div class="status-dot yellow"></div>Docker started but Qdrant not responding yet</div>';
+        $btn.textContent = 'Retry';
+        $btn.disabled = false;
+      }
+    } else {
+      throw new Error(data.error);
+    }
+  } catch (err) {
+    $out.textContent += '\nError: ' + err.message;
+    $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>Failed to start Docker</div>';
+    $btn.textContent = 'Retry';
+    $btn.disabled = false;
+    $btn.classList.remove('success');
+  }
+});
+
+// ═══════════════════════════════════════════
+// STEP 5: Build
+// ═══════════════════════════════════════════
+
+async function onBuildStep() {
+  const $status = document.getElementById('buildStatus');
+  const $btn = document.getElementById('buildBtn');
+
+  try {
+    const res = await fetch('/api/setup/status');
+    const data = await res.json();
+    if (data.mcpBuilt) {
+      wizardState.buildReady = true;
+      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>MCP server already built</div>';
+      $btn.textContent = 'Already Built';
+      $btn.classList.add('success');
+      $btn.disabled = true;
+      document.getElementById('buildOutput').textContent = 'dist/index.js found — already compiled.';
+      return;
+    }
+  } catch {}
+
+  $status.innerHTML = '<div class="status-row"><div class="status-dot gray"></div>MCP server needs building</div>';
+}
+
+document.getElementById('buildBtn').addEventListener('click', async () => {
+  const $btn = document.getElementById('buildBtn');
+  const $out = document.getElementById('buildOutput');
+  const $status = document.getElementById('buildStatus');
+
+  $btn.disabled = true;
+  $btn.innerHTML = '<div class="spinner"></div> Building...';
+  $out.textContent = '$ npm install && npm run build\n';
+
+  try {
+    const res = await fetch('/api/setup/build', { method: 'POST' });
+    const data = await res.json();
+
+    if (data.ok) {
+      $out.textContent += data.output;
+      wizardState.buildReady = true;
+      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Build successful</div>';
+      $btn.textContent = 'Built';
+      $btn.classList.add('success');
+    } else {
+      throw new Error(data.error);
+    }
+  } catch (err) {
+    $out.textContent += '\nError: ' + err.message;
+    $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>Build failed</div>';
+    $btn.textContent = 'Retry';
+    $btn.disabled = false;
+  }
+});
+
+// ═══════════════════════════════════════════
+// STEP 6: Tool Selection
+// ═══════════════════════════════════════════
+
+const $toolGrid = document.getElementById('toolGrid');
+TOOLS.forEach(t => {
+  const card = document.createElement('div');
+  card.className = 'tool-card';
+  card.dataset.id = t.id;
+  card.innerHTML = `
+    <div class="tname">${t.name}</div>
+    <div class="tfiles">${t.configFile} + ${t.instrFile}</div>
+  `;
+  card.addEventListener('click', () => selectTool(t.id));
+  $toolGrid.appendChild(card);
+});
+
+function selectTool(id) {
+  wizardState.selectedTool = id;
+  $toolGrid.querySelectorAll('.tool-card').forEach(c => {
+    c.classList.toggle('selected', c.dataset.id === id);
+  });
+}
+
+async function onToolStep() {
+  try {
+    const res = await fetch('/api/setup/status');
+    const data = await res.json();
+    if (data.projectDir) {
+      document.getElementById('targetDir').value = document.getElementById('targetDir').value || data.projectDir;
+    }
+  } catch {}
+}
+
+document.getElementById('writeMcpBtn').addEventListener('click', async () => {
+  const targetDir = document.getElementById('targetDir').value.trim();
+  if (!targetDir) return;
+  const $status = document.getElementById('mcpWriteStatus');
+
+  try {
+    const res = await fetch('/api/setup/write-mcp-json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetDir }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      wizardState.mcpWritten = true;
+      wizardState.targetDir = targetDir;
+      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Written to ' + data.path + '</div>';
+    } else {
+      throw new Error(data.error);
+    }
+  } catch (err) {
+    $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>' + err.message + '</div>';
+  }
+});
+
+// ═══════════════════════════════════════════
+// STEP 7: Instructions
+// ═══════════════════════════════════════════
+
+function getInstructionsContent() {
+  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
+  if (tool.id === 'claude') return getClaudeInstructions();
+  if (tool.id === 'cursor') return getCursorInstructions();
+  return getGenericInstructions();
+}
+
+function getClaudeInstructions() {
+  return `## Persistent Memory System
+
+Claude has persistent vector memory via the \`memory\` MCP server (Qdrant + embeddings).
+
+### Memory Tools
+
+| Tool | Purpose |
+|------|---------|
+| \`remember\` | Store a memory (content, category, importance, tags) |
+| \`recall\` | Semantic search across all memories |
+| \`forget\` | Delete a memory by ID |
+| \`reflect\` | Update an existing memory |
+| \`memories\` | List recent memories or get stats |
+
+### Auto-Recall (do this automatically)
+
+- At session start: \`recall\` context about the current project
+- When user mentions a specific topic: \`recall\` what you know
+- Before architecture decisions: \`recall\` past decisions
+- When debugging: \`recall\` past similar bugs
+
+### Auto-Remember (do this automatically)
+
+- After fixing a hard bug: \`remember\` the solution (importance 7+)
+- After architecture decisions: \`remember\` the decision and why (importance 8+)
+- When user says "remember this": importance 8+
+- API quirks or gotchas discovered: \`remember\` as learning
+- Session-ending context: \`remember\` ongoing work as conversation
+
+### Importance Scale
+
+1-2=trivial, 3-4=low, 5=normal, 6-7=significant, 8-9=critical, 10=foundational`;
+}
+
+function getCursorInstructions() {
+  return `# Memory System
+
+You have persistent vector memory via the \`memory\` MCP server.
+
+## Tools: remember, recall, forget, reflect, memories
+
+## Rules
+- At session start: recall context about current project
+- After fixing bugs: remember the solution (importance 7+)
+- After architecture decisions: remember why (importance 8+)
+- When user says "remember this": importance 8+
+- Importance scale: 1-2=trivial, 5=normal, 7=significant, 9=critical, 10=foundational`;
+}
+
+function getGenericInstructions() {
+  return `## Memory System
+
+This project uses a persistent vector memory MCP server.
+
+### Available Tools
+- \`remember\` — Store a memory (content, category, importance, tags)
+- \`recall\` — Semantic search across all memories
+- \`forget\` — Delete a memory by ID
+- \`reflect\` — Update an existing memory
+- \`memories\` — List recent memories or get stats
+
+### Guidelines
+- Recall context at session start
+- Remember important decisions and bug fixes
+- Importance scale: 1-2=trivial, 5=normal, 7=significant, 9=critical, 10=foundational`;
+}
+
+function onInstructionsStep() {
+  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
+  document.getElementById('instrFileName').textContent = 'Target: ' + tool.instrFile;
+  document.getElementById('instrPreview').textContent = getInstructionsContent();
+}
+
+document.getElementById('copyInstrBtn').addEventListener('click', () => {
+  navigator.clipboard.writeText(getInstructionsContent());
+  const btn = document.getElementById('copyInstrBtn');
+  btn.textContent = 'Copied!';
+  btn.classList.add('success');
+  setTimeout(() => { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('success'); }, 2000);
+});
+
+document.getElementById('writeInstrBtn').addEventListener('click', async () => {
+  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
+  const targetDir = wizardState.targetDir || document.getElementById('targetDir').value.trim();
+  if (!targetDir) {
+    document.getElementById('instrWriteStatus').innerHTML = '<div class="status-row"><div class="status-dot red"></div>No target directory set (go back to step 6)</div>';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/setup/write-instructions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetDir,
+        fileName: tool.instrFile,
+        content: getInstructionsContent(),
+      }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      wizardState.instrWritten = true;
+      const msg = data.skipped ? 'Already present in ' + data.path : 'Written to ' + data.path;
+      document.getElementById('instrWriteStatus').innerHTML = '<div class="status-row"><div class="status-dot green"></div>' + msg + '</div>';
+    } else {
+      throw new Error(data.error);
+    }
+  } catch (err) {
+    document.getElementById('instrWriteStatus').innerHTML = '<div class="status-row"><div class="status-dot red"></div>' + err.message + '</div>';
+  }
+});
+
+// ═══════════════════════════════════════════
+// STEP 8: Complete
+// ═══════════════════════════════════════════
+
+async function onCompleteStep() {
+  renderHappyBun();
+
+  const items = [
+    { label: 'Qdrant API key configured', done: !!wizardState.qdrantApiKey },
+    { label: 'Collection name set', done: !!wizardState.collectionName },
+    { label: 'Embedding provider configured', done: !!wizardState.selectedProvider },
+    { label: 'Qdrant Docker container running', done: wizardState.dockerReady },
+    { label: 'MCP server built', done: wizardState.buildReady },
+    { label: '.mcp.json written', done: wizardState.mcpWritten },
+    { label: 'Instructions written', done: wizardState.instrWritten },
+  ];
+
+  const $list = document.getElementById('checklist');
+  $list.innerHTML = items.map(i => `
+    <li>
+      <span class="check">${i.done ? '\u2713' : '\u2013'}</span>
+      <span style="${i.done ? '' : 'color:var(--t-muted)'}">${i.label}</span>
+    </li>
+  `).join('');
+}
+
+document.getElementById('launchBtn').addEventListener('click', async () => {
+  try {
+    await fetch('/api/setup/complete', { method: 'POST' });
+  } catch {}
+  window.location.href = '/';
+});
+
+// ═══════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════
+
+async function init() {
+  try {
+    const res = await fetch('/api/setup/status');
+    const data = await res.json();
+    if (data.setupComplete) {
+      window.location.href = '/';
+      return;
+    }
+    // Pre-fill target dir
+    if (data.projectDir) {
+      wizardState.targetDir = data.projectDir;
+    }
+  } catch {}
+
+  updateNav();
+  startMascot();
+}
+
+init();
+
+</script>
+</body>
+</html>
