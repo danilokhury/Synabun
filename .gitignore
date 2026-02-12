@@ -1,2 +1,4 @@
 /.env
 /CLAUDE.md
+node_modules/
+mcp-server/dist/

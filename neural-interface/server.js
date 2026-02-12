@@ -960,7 +960,7 @@ app.post('/api/setup/write-mcp-json', (req, res) => {
     } catch {}
 
     if (!existing.mcpServers) existing.mcpServers = {};
-    existing.mcpServers.memory = mcpEntry;
+    existing.mcpServers.SynaBun = mcpEntry;
 
     writeFileSync(targetPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
     res.json({ ok: true, path: targetPath });
