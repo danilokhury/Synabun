@@ -85,7 +85,7 @@ Add to your project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "memory": {
+    "SynaBun": {
       "command": "node",
       "args": ["/path/to/Synabun/mcp-server/run.mjs"],
       "env": {
@@ -102,7 +102,7 @@ Add to your project's `.mcp.json`:
 Or register globally for all projects:
 
 ```bash
-claude mcp add memory -s user \
+claude mcp add SynaBun -s user \
   -e QDRANT_MEMORY_URL=http://localhost:6333 \
   -e QDRANT_MEMORY_API_KEY=claude-memory-local-key \
   -e QDRANT_MEMORY_COLLECTION=claude_memory \
@@ -112,7 +112,7 @@ claude mcp add memory -s user \
 
 ### 4. Verify
 
-Restart Claude Code, then run `/mcp`. You should see the `memory` server with 9 tools listed.
+Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 9 tools listed.
 
 <details>
 <summary><strong>Platform-specific path notes</strong></summary>
@@ -466,7 +466,7 @@ Add this to any project's `CLAUDE.md` to instruct Claude to use memory automatic
 ```markdown
 ## Persistent Memory
 
-You have persistent vector memory via the `memory` MCP server tools:
+You have persistent vector memory via the `SynaBun` MCP server tools:
 remember, recall, forget, reflect, memories.
 
 ### Auto-Recall (do this automatically)
