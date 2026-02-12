@@ -143,6 +143,8 @@ Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 9
 =======
 >>>>>>> 680a18cdc06026d9864584a0764f25dc05635e24
 
+</details>
+
 <details>
 <summary><strong>Platform-specific path notes</strong></summary>
 
