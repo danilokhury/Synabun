@@ -137,8 +137,11 @@ claude mcp add SynaBun -s user \
 ### 4. Verify
 
 Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 9 tools listed.
+<<<<<<< HEAD
 
 </details>
+=======
+>>>>>>> 680a18cdc06026d9864584a0764f25dc05635e24
 
 <details>
 <summary><strong>Platform-specific path notes</strong></summary>
