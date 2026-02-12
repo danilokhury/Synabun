@@ -57,7 +57,31 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 
 - Docker (Docker Desktop on Windows/macOS, or Docker Engine on Linux)
 - Node.js 18+
-- An OpenAI API key (or any OpenAI-compatible embedding provider)
+- An embedding API key (OpenAI, Google Gemini, or any OpenAI-compatible provider)
+
+### One-Command Setup
+
+```bash
+cd /path/to/Synabun
+npm start
+```
+
+This will:
+1. Check prerequisites (Node.js, Docker)
+2. Install all dependencies
+3. Build the MCP server
+4. Launch the Neural Interface
+5. Open the onboarding wizard in your browser
+
+The onboarding wizard guides you through:
+- Qdrant API key generation
+- Embedding provider selection
+- Docker/Qdrant startup
+- AI tool integration (`.mcp.json`)
+- CLAUDE.md memory instructions
+
+<details>
+<summary><strong>Manual setup (advanced)</strong></summary>
 
 ### 1. Start Qdrant
 
@@ -85,7 +109,7 @@ Add to your project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "memory": {
+    "SynaBun": {
       "command": "node",
       "args": ["/path/to/Synabun/mcp-server/run.mjs"],
       "env": {
@@ -102,7 +126,7 @@ Add to your project's `.mcp.json`:
 Or register globally for all projects:
 
 ```bash
-claude mcp add memory -s user \
+claude mcp add SynaBun -s user \
   -e QDRANT_MEMORY_URL=http://localhost:6333 \
   -e QDRANT_MEMORY_API_KEY=claude-memory-local-key \
   -e QDRANT_MEMORY_COLLECTION=claude_memory \
@@ -112,7 +136,9 @@ claude mcp add memory -s user \
 
 ### 4. Verify
 
-Restart Claude Code, then run `/mcp`. You should see the `memory` server with 9 tools listed.
+Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 9 tools listed.
+
+</details>
 
 <details>
 <summary><strong>Platform-specific path notes</strong></summary>
@@ -466,7 +492,7 @@ Add this to any project's `CLAUDE.md` to instruct Claude to use memory automatic
 ```markdown
 ## Persistent Memory
 
-You have persistent vector memory via the `memory` MCP server tools:
+You have persistent vector memory via the `SynaBun` MCP server tools:
 remember, recall, forget, reflect, memories.
 
 ### Auto-Recall (do this automatically)
