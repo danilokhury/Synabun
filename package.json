@@ -1,0 +1,13 @@
+{
+  "name": "synabun",
+  "version": "1.0.0",
+  "description": "Persistent vector memory for AI assistants",
+  "type": "module",
+  "scripts": {
+    "start": "node setup.js",
+    "stop": "docker compose down"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

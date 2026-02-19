@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__SynaBun__recall",
+      "WebSearch",
+      "Bash(python:*)"
+    ]
+  }
+}

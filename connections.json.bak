@@ -1,0 +1,60 @@
+{
+  "active": "memory-main",
+  "connections": {
+    "memory-main": {
+      "label": "Memory Main",
+      "url": "http://localhost:6333",
+      "apiKey": "claude-memory-local-key",
+      "collection": "claude_memory"
+    },
+    "synabun-main": {
+      "label": "SynaBun Main",
+      "url": "http://localhost:6345",
+      "apiKey": "62117d4743c08cd6faacc3d7e7e6ae8a",
+      "collection": "synabun"
+    },
+    "teste": {
+      "label": "Teste",
+      "url": "http://localhost:6333",
+      "apiKey": "f4203e4c49e7604d306a5bb4506c85e9",
+      "collection": "teste"
+    },
+    "claude-memory1111": {
+      "label": "Claude Memory1111",
+      "url": "http://localhost:6390",
+      "apiKey": "1d0c0fa9c2de98f9eb9f7f5f7dff3fc3",
+      "collection": "claude_memory1111"
+    },
+    "claude-memory111": {
+      "label": "Claude Memory111",
+      "url": "http://localhost:6360",
+      "apiKey": "cd1c4252c4510119c3703e96ca76a3b4",
+      "collection": "claude_memory111"
+    },
+    "claude-memory1": {
+      "label": "Claude Memory1",
+      "url": "http://localhost:6380",
+      "apiKey": "cd4cebc21eea2fd3d0c77cd21174193d",
+      "collection": "claude_memory1"
+    },
+    "claude-memory1325125125": {
+      "label": "Claude Memory1325125125",
+      "url": "http://localhost:6400",
+      "apiKey": "058ce1589976a3b88a49b485e8633ee7",
+      "collection": "claude_memory1325125125"
+    },
+    "claude-memoryaswasgasg": {
+      "label": "Claude Memoryaswasgasg",
+      "url": "http://localhost:6410",
+      "apiKey": "ee2db5dc4de17ee60cc5d233d5672133",
+      "collection": "claude_memoryaswasgasg"
+    }
+  },
+  "bridges": {
+    "openclaw": {
+      "enabled": true,
+      "workspacePath": "C:/Users/danil/.openclaw/workspace",
+      "lastSync": "2026-02-18T20:17:13.375Z"
+    }
+  }
+}
