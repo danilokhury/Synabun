@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/License-Apache_2.0-blue" alt="Apache 2.0 License" />
   <img src="https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodedotjs&logoColor=white" alt="Node.js 18+" />
   <img src="https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/Docker-Qdrant-2496ED?logo=docker&logoColor=white" alt="Docker" />
@@ -29,6 +30,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - **Neural Interface** — interactive 3D force-directed graph visualization at `localhost:3344`
 - **10+ Embedding Providers** — OpenAI, Google Gemini, Ollama, Mistral, Cohere, and more via OpenAI-compatible API
 - **Onboarding Wizard** — guided setup through the Neural Interface UI
+- **Claude Code Skills** — companion slash commands (like `/idea`) that orchestrate memory tools into higher-level workflows
 
 ## Table of Contents
 
@@ -43,6 +45,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - [Configuration](#configuration)
 - [Embedding Providers](#embedding-providers)
 - [Embedding Model Migration](#embedding-model-migration)
+- [Claude Code Skills](#claude-code-skills)
 - [CLAUDE.md Integration](#claudemd-integration)
 - [Multi-Project Support](#multi-project-support)
 - [Docker Management](#docker-management)
@@ -50,6 +53,19 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - [Troubleshooting](#troubleshooting)
 - [Cost](#cost)
 - [File Structure](#file-structure)
+- [License](#license)
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| **[README](./README.md)** | Quick start, architecture, configuration |
+| **[Usage Guide](./docs/usage-guide.md)** | Detailed usage patterns, tool quirks, best practices |
+| **[API Reference](./docs/api-reference.md)** | Neural Interface REST API (30 endpoints) |
+| **[Hooks Guide](./docs/hooks.md)** | Claude Code hooks: auto-recall, custom hooks |
+| **[Contributing](./CONTRIBUTING.md)** | How to contribute |
+| **[Security](./SECURITY.md)** | Security model and vulnerability reporting |
+| **[Changelog](./CHANGELOG.md)** | Version history |
 
 ## Quick Start
 
@@ -286,7 +302,7 @@ reflect({
 forget({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
 ```
 
-For detailed usage patterns and best practices, see [USAGE.md](./USAGE.md).
+For detailed usage patterns and best practices, see the [Usage Guide](./docs/usage-guide.md).
 
 ## Memory Categories
 
@@ -482,6 +498,66 @@ Since SynaBun stores the original text in every memory payload, you can re-embed
 
 **Recommendation:** Choose your embedding model during initial setup and stick with it.
 
+## Claude Code Skills
+
+SynaBun ships with companion [Claude Code skills](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials/custom-slash-commands) — slash commands that orchestrate the MCP tools into higher-level workflows. Skills are **not** MCP tools themselves; they are prompt files that teach Claude how to use the existing tools in structured patterns.
+
+### `/idea` — Memory-Powered Brainstorming
+
+The `/idea` skill turns SynaBun into an active creative partner. It loops through your stored memories using multiple recall passes with different query strategies, finds surprising connections between disparate memories, and synthesizes novel ideas.
+
+**Install:** Copy the skill to your global skills directory:
+
+```bash
+# The skill lives at:
+~/.claude/skills/idea/SKILL.md
+```
+
+**Usage:**
+```
+/idea real-time collaborative editing    # Topic-focused brainstorm
+/idea                                    # Freeform exploration across all memories
+```
+
+**How it works:**
+
+1. **Landscape survey** — calls `category_list` and `memories` to understand what memory domains exist
+2. **Multi-round recall** — executes 5 sequential recall rounds, each with a different query strategy:
+   - **Direct** — the topic verbatim
+   - **Adjacent** — related concepts extracted from Round 1 results
+   - **Problem-space** — challenges, bugs, and constraints
+   - **Solution-space** — past patterns, architectures, and approaches
+   - **Cross-domain** — deliberately queries an unrelated category for surprising connections
+3. **Synthesis** — maps connections between memories from different categories, identifies gaps and tensions, generates 3-5 concrete ideas
+4. **Presentation** — each idea includes a reasoning chain tracing back to specific memories
+5. **Capture** — offers to save ideas to an auto-created `ideas` category in SynaBun
+
+### Creating Your Own Skills
+
+You can create custom skills that orchestrate SynaBun's MCP tools:
+
+```bash
+mkdir -p ~/.claude/skills/my-skill
+```
+
+Create `SKILL.md` with:
+```markdown
+---
+name: my-skill
+description: >
+  What this skill does and when to use it.
+---
+
+# My Skill
+
+Instructions for how Claude should use SynaBun tools
+to accomplish the skill's purpose.
+
+$ARGUMENTS
+```
+
+Skills can call any SynaBun MCP tool (`recall`, `remember`, `reflect`, `category_list`, etc.) as part of their workflow. See the `/idea` skill for a comprehensive example.
+
 ## CLAUDE.md Integration
 
 Add this to any project's `CLAUDE.md` to instruct Claude to use memory automatically:
@@ -603,13 +679,30 @@ Cost is negligible even with heavy usage. Local providers (Ollama, LM Studio) ar
 
 ```
 Synabun/
+├── LICENSE                         # Apache 2.0 License
+├── CONTRIBUTING.md                 # Contribution guide
+├── CHANGELOG.md                    # Version history
+├── SECURITY.md                     # Security policy
+├── .env.example                    # Example environment configuration
+├── .env                            # API key config (generated by setup wizard, gitignored)
 ├── docker-compose.yml              # Qdrant container definition
-├── .env                            # API key config (generated by setup wizard)
+├── setup.js                        # One-command setup & launch script
+├── connections.json                # Multi-Qdrant connection registry (gitignored)
 ├── README.md                       # This file
-├── USAGE.md                        # Detailed usage patterns & best practices
-├── CLAUDE.md                       # Claude Code project instructions
+├── CLAUDE.md                       # Claude Code project instructions (gitignored)
 ├── public/
 │   └── synabun.png                 # Logo
+├── docs/
+│   ├── usage-guide.md             # Detailed usage patterns & best practices
+│   ├── api-reference.md           # Neural Interface REST API reference
+│   └── hooks.md                   # Claude Code hook system documentation
+├── skills/
+│   └── idea/
+│       └── SKILL.md               # /idea brainstorming skill for Claude Code
+├── hooks/
+│   └── claude-code/
+│       ├── session-start.mjs      # SessionStart hook (category tree, project detection)
+│       └── prompt-submit.mjs      # UserPromptSubmit hook (recall nudge)
 ├── neural-interface/               # 3D visualization UI (http://localhost:3344)
 │   ├── server.js                   # Express API — memory proxy, category CRUD
 │   ├── package.json
@@ -644,3 +737,13 @@ Synabun/
             ├── category-delete.ts  # Delete category (triggers schema refresh)
             └── category-list.ts    # List categories with hierarchy
 ```
+
+## License
+
+Licensed under the [Apache License, Version 2.0](./LICENSE).
+
+You are free to use, modify, and distribute SynaBun. The Apache 2.0 license includes an explicit patent grant and trademark protection (Section 6) — see [Trademark Notice](#trademark-notice) below.
+
+## Trademark Notice
+
+"SynaBun" is a trademark of its authors. The Apache 2.0 license does not grant permission to use the trade names, trademarks, service marks, or product names of the Licensor (Section 6). If you fork this project, please use a different name for your derivative work.

@@ -5,6 +5,7 @@ import { upsertMemory } from '../services/qdrant.js';
 import { buildCategoryDescription, validateCategory } from '../services/categories.js';
 import type { MemoryPayload, MemorySource } from '../types.js';
 import { detectProject } from '../config.js';
+import { computeChecksums } from '../services/file-checksums.js';
 
 export function buildRememberSchema() {
   return {
@@ -27,7 +28,7 @@ export function buildRememberSchema() {
     .optional()
     .describe('Tags for categorization (e.g. ["redis", "cache", "pricing"])'),
   importance: z
-    .number()
+    .coerce.number()
     .min(1)
     .max(10)
     .optional()
@@ -100,6 +101,7 @@ export async function handleRemember(args: {
     accessed_at: now,
     access_count: 0,
     related_files,
+    file_checksums: related_files?.length ? computeChecksums(related_files) : undefined,
   };
 
   const vector = await generateEmbedding(content);

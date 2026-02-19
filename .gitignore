@@ -1,4 +1,6 @@
 /.env
 /CLAUDE.md
+/connections.json
+/data/
 node_modules/
 mcp-server/dist/

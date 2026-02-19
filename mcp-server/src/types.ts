@@ -12,6 +12,8 @@ export interface MemoryPayload {
   access_count: number;
   related_files?: string[];
   related_memory_ids?: string[];
+  file_checksums?: Record<string, string>;
+  trashed_at?: string | null;
 }
 
 export type MemorySource =

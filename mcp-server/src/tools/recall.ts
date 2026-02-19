@@ -1,9 +1,11 @@
 import { z } from 'zod';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { generateEmbedding } from '../services/embeddings.js';
 import { searchMemories, updatePayload } from '../services/qdrant.js';
 import { buildCategoryDescription, validateCategory } from '../services/categories.js';
 import type { MemoryPayload } from '../types.js';
-import { detectProject } from '../config.js';
+import { config, detectProject } from '../config.js';
 
 export function buildRecallSchema() {
   return {
@@ -25,19 +27,19 @@ export function buildRecallSchema() {
       .optional()
       .describe('Optional: filter by tags (any match).'),
     limit: z
-      .number()
+      .coerce.number()
       .min(1)
       .max(20)
       .optional()
       .describe('Number of results (default 5).'),
     min_importance: z
-      .number()
+      .coerce.number()
       .min(1)
       .max(10)
       .optional()
       .describe('Minimum importance threshold.'),
     min_score: z
-      .number()
+      .coerce.number()
       .min(0)
       .max(1)
       .optional()
@@ -73,6 +75,16 @@ function formatAge(isoDate: string): string {
   const months = Math.floor(days / 30);
   if (months === 1) return '1 month ago';
   return `${months} months ago`;
+}
+
+function getRecallMaxChars(): number {
+  try {
+    const settingsPath = path.resolve(config.dataDir, 'display-settings.json');
+    const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    return data.recallMaxChars ?? 0;
+  } catch {
+    return 0; // default: no limit
+  }
 }
 
 export async function handleRecall(args: {
@@ -156,6 +168,8 @@ export async function handleRecall(args: {
     };
   }
 
+  const maxChars = getRecallMaxChars();
+
   const lines = scored.map((r, i) => {
     const p = r.payload;
     const score = (r.score * 100).toFixed(0);
@@ -164,7 +178,10 @@ export async function handleRecall(args: {
     const files = p.related_files?.length
       ? `\n   Files: ${p.related_files.join(', ')}`
       : '';
-    return `${i + 1}. [${r.id}] (${score}% match, importance: ${p.importance}, ${formatAge(p.created_at)})\n   ${p.category}${sub} | ${p.project}${tagStr}\n   ${p.content}${files}`;
+    const displayContent = (maxChars > 0 && p.content.length > maxChars)
+      ? p.content.substring(0, maxChars) + '...'
+      : p.content;
+    return `${i + 1}. [${r.id}] (${score}% match, importance: ${p.importance}, ${formatAge(p.created_at)})\n   ${p.category}${sub} | ${p.project}${tagStr}\n   ${displayContent}${files}`;
   });
 
   return {

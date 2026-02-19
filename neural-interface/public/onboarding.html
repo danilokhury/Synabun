@@ -8,192 +8,220 @@
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
   :root {
-    --t-faint: rgba(255,255,255,0.2);
-    --t-muted: rgba(255,255,255,0.3);
-    --t-secondary: rgba(255,255,255,0.5);
-    --t-primary: rgba(255,255,255,0.7);
-    --t-bright: rgba(255,255,255,0.9);
-    --s-subtle: rgba(255,255,255,0.04);
-    --s-light: rgba(255,255,255,0.06);
-    --s-medium: rgba(255,255,255,0.10);
-    --s-hover: rgba(255,255,255,0.08);
-    --s-active: rgba(255,255,255,0.14);
-    --b-subtle: rgba(255,255,255,0.06);
-    --b-light: rgba(255,255,255,0.10);
-    --b-hover: rgba(255,255,255,0.16);
-    --b-visible: rgba(255,255,255,0.22);
-    --accent: #4FC3F7;
-    --accent-bg: rgba(79,195,247,0.10);
-    --accent-border: rgba(79,195,247,0.25);
-    --accent-dim: rgba(79,195,247,0.5);
-    --green: #66BB6A;
-    --green-bg: rgba(102,187,106,0.12);
-    --red: #FF5252;
-    --red-bg: rgba(255,82,82,0.12);
-    --r-card: 8px;
-    --r-button: 10px;
-    --ease: 0.2s ease;
+    --t-faint: rgba(255,255,255,0.15);
+    --t-muted: rgba(255,255,255,0.32);
+    --t-secondary: rgba(255,255,255,0.52);
+    --t-primary: rgba(255,255,255,0.72);
+    --t-bright: rgba(255,255,255,0.92);
+    --s-subtle: rgba(255,255,255,0.03);
+    --s-light: rgba(255,255,255,0.05);
+    --s-medium: rgba(255,255,255,0.08);
+    --s-hover: rgba(255,255,255,0.06);
+    --s-active: rgba(255,255,255,0.12);
+    --b-subtle: rgba(255,255,255,0.05);
+    --b-light: rgba(255,255,255,0.08);
+    --b-hover: rgba(255,255,255,0.14);
+    --b-visible: rgba(255,255,255,0.20);
+    --accent: #ffffff;
+    --accent-bg: rgba(255,255,255,0.06);
+    --accent-border: rgba(255,255,255,0.18);
+    --accent-dim: rgba(255,255,255,0.45);
+    --green: #6dd58c;
+    --green-bg: rgba(109,213,140,0.10);
+    --red: #ff6b6b;
+    --red-bg: rgba(255,107,107,0.10);
+    --r-card: 12px;
+    --r-button: 12px;
+    --ease: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   body {
-    background: #0a0e14;
+    background: #050505;
     color: #e0e0e0;
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Fira Code', monospace;
     overflow: hidden;
     height: 100vh;
     width: 100vw;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
   }
 
-  body::before {
-    content: '';
+  /* Background canvas */
+  #bgCanvas {
     position: fixed;
-    top: 0; left: 0;
-    width: 100%; height: 100%;
-    background: repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 2px,
-      rgba(255,255,255,0.015) 2px,
-      rgba(255,255,255,0.015) 4px
-    );
+    inset: 0;
+    width: 100%;
+    height: 100%;
     pointer-events: none;
-    z-index: 9999;
+    z-index: 0;
   }
 
-  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
 
   /* ── Wizard Container ── */
   .wizard {
     width: 620px;
     max-height: 90vh;
-    background: rgba(28, 28, 30, 0.72);
-    backdrop-filter: blur(40px) saturate(1.4);
-    -webkit-backdrop-filter: blur(40px) saturate(1.4);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 16px;
-    box-shadow: 0 4px 40px rgba(0,0,0,0.6), inset 0 0.5px 0 rgba(255,255,255,0.05);
+    background: rgba(10, 10, 12, 0.85);
+    backdrop-filter: blur(60px) saturate(1.3);
+    -webkit-backdrop-filter: blur(60px) saturate(1.3);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 20px;
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,0.3),
+      0 2px 8px rgba(0,0,0,0.3),
+      0 12px 48px rgba(0,0,0,0.5),
+      inset 0 1px 0 rgba(255,255,255,0.04);
     display: flex;
     flex-direction: column;
     overflow: hidden;
     position: relative;
+    z-index: 2;
   }
 
   /* ── Steps Viewport ── */
   .steps-viewport {
-    flex: 1;
     position: relative;
     overflow: hidden;
-    min-height: 420px;
+    transition: height 0.45s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .step {
     position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    padding: 32px 36px;
+    top: 0; left: 0; right: 0;
+    padding: 36px 40px;
     display: flex;
     flex-direction: column;
-    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s ease;
+    transition: transform 0.45s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease;
     overflow-y: auto;
   }
   .step.active { transform: translateX(0); opacity: 1; z-index: 2; }
   .step.left   { transform: translateX(-100%); opacity: 0; z-index: 1; }
   .step.right  { transform: translateX(100%); opacity: 0; z-index: 1; }
 
+  .step-eyes {
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    user-select: none;
+    margin-bottom: 8px;
+    min-height: 0;
+    transition: opacity 0.4s ease;
+  }
+  .step-eyes:empty { display: none; }
+
   .step h2 {
-    font-size: 18px;
+    font-size: 20px;
     font-weight: 600;
     color: var(--t-bright);
     margin-bottom: 6px;
+    letter-spacing: -0.3px;
   }
   .step .subtitle {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--t-secondary);
-    margin-bottom: 20px;
+    margin-bottom: 24px;
+    line-height: 1.5;
   }
 
   /* ── Navigation Bar ── */
   .nav-bar {
-    padding: 16px 36px;
+    padding: 12px 24px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    border-top: 1px solid var(--b-subtle);
-    background: rgba(20,20,22,0.5);
+    border-top: 1px solid rgba(255,255,255,0.06);
+    background: rgba(0,0,0,0.25);
   }
 
   .dots {
     display: flex;
-    gap: 6px;
+    gap: 3px;
+    align-items: center;
   }
   .dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: rgba(255,255,255,0.15);
-    transition: all 0.3s ease;
+    width: 16px; height: 3px;
+    border-radius: 1px;
+    background: rgba(255,255,255,0.08);
+    transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .dot.active { background: var(--accent); box-shadow: 0 0 6px rgba(79,195,247,0.4); }
-  .dot.done { background: var(--accent-dim); }
+  .dot.active {
+    background: var(--accent);
+  }
+  .dot.done { background: rgba(255,255,255,0.30); }
 
   .nav-btn {
-    padding: 8px 20px;
-    border-radius: var(--r-button);
-    border: 1px solid var(--b-light);
-    background: var(--s-light);
-    color: var(--t-primary);
-    font-size: 13px;
+    padding: 7px 16px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.03);
+    color: var(--t-muted);
+    font-size: 11px;
+    font-family: inherit;
     cursor: pointer;
-    transition: all var(--ease);
+    transition: all 0.2s ease;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
-  .nav-btn:hover { background: var(--s-medium); border-color: var(--b-hover); color: var(--t-bright); }
-  .nav-btn:disabled { opacity: 0.3; cursor: default; pointer-events: none; }
+  .nav-btn:hover { color: var(--t-bright); background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12); }
+  .nav-btn:disabled { opacity: 0; cursor: default; pointer-events: none; }
   .nav-btn.primary {
-    background: rgba(79,195,247,0.15);
-    border-color: var(--accent-border);
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.18);
     color: var(--accent);
   }
-  .nav-btn.primary:hover { background: rgba(79,195,247,0.25); }
+  .nav-btn.primary:hover {
+    background: rgba(255,255,255,0.12);
+    border-color: rgba(255,255,255,0.30);
+  }
 
   /* ── Form Elements ── */
-  .field { margin-bottom: 16px; }
-  .field label {
+  .field { margin-bottom: 18px; }
+  .field label:not(.key-backup-check) {
     display: block;
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--t-secondary);
-    margin-bottom: 6px;
+    margin-bottom: 8px;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.6px;
   }
-  .field input, .field select {
+  .field input:not([type="checkbox"]), .field select {
     width: 100%;
-    padding: 10px 12px;
-    background: var(--s-subtle);
+    padding: 11px 14px;
+    background: rgba(255,255,255,0.03);
     border: 1px solid var(--b-light);
-    border-radius: var(--r-card);
+    border-radius: 10px;
     color: var(--t-bright);
     font-size: 13px;
-    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Fira Code', monospace;
     outline: none;
-    transition: border-color var(--ease);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .field input:focus, .field select:focus {
+  .field input:not([type="checkbox"]):focus, .field select:focus {
     border-color: var(--accent-border);
+    background: rgba(255,255,255,0.04);
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.04);
   }
-  .field input::placeholder { color: var(--t-muted); font-family: inherit; }
+  .field input:not([type="checkbox"])::placeholder { color: var(--t-muted); font-family: inherit; }
   .field .hint {
     font-size: 11px;
     color: var(--t-muted);
-    margin-top: 4px;
+    margin-top: 6px;
+    line-height: 1.4;
   }
   .field .error-text {
     font-size: 11px;
     color: var(--red);
-    margin-top: 4px;
+    margin-top: 6px;
+  }
+  .field .error-text:empty {
+    display: none;
   }
 
   .input-row {
@@ -202,119 +230,308 @@
   }
   .input-row input { flex: 1; }
   .input-row .btn-sm {
-    padding: 8px 14px;
-    border-radius: var(--r-card);
+    padding: 9px 14px;
+    border-radius: 10px;
     border: 1px solid var(--b-light);
     background: var(--s-light);
     color: var(--t-primary);
     font-size: 12px;
+    font-family: inherit;
     cursor: pointer;
     white-space: nowrap;
     transition: all var(--ease);
   }
-  .input-row .btn-sm:hover { background: var(--s-medium); color: var(--t-bright); }
+  .input-row .btn-sm:hover { background: var(--s-medium); color: var(--t-bright); border-color: var(--b-hover); }
+
+  /* ── Key Backup Notice ── */
+  .key-backup-notice {
+    margin-top: 16px;
+    padding: 12px 14px;
+    background: rgba(255,255,255,0.025);
+    border: 1px solid var(--b-light);
+    border-radius: 10px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .key-backup-icon {
+    flex-shrink: 0;
+    color: var(--t-muted);
+    margin-top: 1px;
+  }
+  .key-backup-text {
+    font-size: 12px;
+    color: var(--t-secondary);
+    line-height: 1.5;
+    margin: 0;
+  }
+  .key-backup-check {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+    color: var(--t-secondary);
+    padding: 10px 14px;
+    border: 1px solid var(--b-light);
+    border-radius: 10px;
+    background: var(--s-subtle);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .key-backup-check:hover {
+    background: var(--s-hover);
+    border-color: var(--b-hover);
+    color: var(--t-primary);
+  }
+  .key-backup-check:has(input:checked) {
+    border-color: rgba(109,213,140,0.25);
+    background: rgba(109,213,140,0.05);
+    color: var(--t-bright);
+  }
+  .key-backup-checkbox-wrap {
+    position: relative;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+  .key-backup-checkbox-wrap input {
+    position: absolute;
+    opacity: 0;
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    margin: 0;
+    z-index: 1;
+  }
+  .key-backup-checkmark {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--b-hover);
+    border-radius: 5px;
+    background: rgba(255,255,255,0.03);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    color: transparent;
+  }
+  .key-backup-checkbox-wrap input:checked ~ .key-backup-checkmark {
+    background: rgba(109,213,140,0.15);
+    border-color: rgba(109,213,140,0.35);
+    color: var(--green);
+  }
 
   /* ── Provider Cards Grid ── */
   .provider-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    margin-bottom: 16px;
+    gap: 10px;
+    margin-bottom: 20px;
   }
   .provider-card {
-    padding: 10px 12px;
+    padding: 12px 14px;
     border: 1px solid var(--b-light);
     border-radius: var(--r-card);
     background: var(--s-subtle);
     cursor: pointer;
-    transition: all var(--ease);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     position: relative;
   }
-  .provider-card:hover { background: var(--s-hover); border-color: var(--b-hover); }
+  .provider-card:hover { background: var(--s-hover); border-color: var(--b-hover); transform: translateY(-1px); }
   .provider-card.selected {
     border-color: var(--accent-border);
     background: var(--accent-bg);
+    box-shadow: 0 0 0 1px var(--accent-border);
   }
   .provider-card .pname {
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--t-bright);
   }
   .provider-card .ptag {
     position: absolute;
-    top: 6px; right: 8px;
+    top: 8px; right: 10px;
     font-size: 9px;
-    padding: 2px 6px;
-    border-radius: 4px;
-    background: rgba(79,195,247,0.15);
-    color: var(--accent);
+    padding: 2px 7px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.08);
+    color: var(--t-bright);
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    font-weight: 600;
   }
   .provider-card .pmodel {
     font-size: 11px;
     color: var(--t-muted);
-    margin-top: 2px;
-    font-family: monospace;
+    margin-top: 3px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 10px;
   }
+  .provider-card .plink {
+    display: inline-block;
+    font-size: 10px;
+    color: var(--accent-dim);
+    margin-top: 6px;
+    text-decoration: none;
+    transition: color 0.2s ease;
+  }
+  .provider-card .plink:hover { color: var(--accent); text-decoration: underline; }
+
+  /* ── Mode Toggle ── */
+  .mode-toggle {
+    display: flex;
+    gap: 0;
+    margin-bottom: 20px;
+    border: 1px solid var(--b-light);
+    border-radius: 10px;
+    overflow: hidden;
+    width: fit-content;
+    background: var(--s-subtle);
+  }
+  .mode-toggle button {
+    padding: 8px 20px;
+    border: none;
+    background: transparent;
+    color: var(--t-muted);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    letter-spacing: 0.01em;
+    font-weight: 500;
+  }
+  .mode-toggle button.active {
+    background: rgba(255,255,255,0.10);
+    color: var(--t-bright);
+  }
+  .mode-toggle button:hover:not(.active) { color: var(--t-primary); background: var(--s-hover); }
 
   /* ── Tool Cards ── */
   .tool-grid {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
-    gap: 8px;
-    margin-bottom: 16px;
+    gap: 10px;
+    margin-bottom: 20px;
   }
   .tool-card {
-    padding: 14px 12px;
+    padding: 16px 12px;
     border: 1px solid var(--b-light);
     border-radius: var(--r-card);
     background: var(--s-subtle);
     cursor: pointer;
     text-align: center;
-    transition: all var(--ease);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .tool-card:hover { background: var(--s-hover); border-color: var(--b-hover); }
+  .tool-card:hover { background: var(--s-hover); border-color: var(--b-hover); transform: translateY(-1px); }
   .tool-card.selected {
     border-color: var(--accent-border);
     background: var(--accent-bg);
+    box-shadow: 0 0 0 1px var(--accent-border);
   }
   .tool-card .tname {
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 600;
     color: var(--t-bright);
   }
-  .tool-card .tfiles {
-    font-size: 10px;
+
+  /* ── Dependency List ── */
+  .dep-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .dep-item {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.4s ease, transform 0.4s ease, border-color 0.3s ease, background 0.3s ease, box-shadow 0.3s ease;
+  }
+  .dep-item.visible { opacity: 1; transform: translateY(0); }
+  .dep-item.ok { border-color: rgba(255,255,255,0.12); background: rgba(255,255,255,0.03); }
+  .dep-item.warn { border-color: rgba(255,193,7,0.15); background: rgba(255,193,7,0.03); }
+  .dep-item.fail { border-color: rgba(255,107,107,0.15); background: rgba(255,107,107,0.03); }
+
+  .dep-icon {
+    width: 32px; height: 32px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+    transition: all 0.3s ease;
+  }
+  .dep-item.checking .dep-icon { background: var(--s-medium); color: var(--t-muted); }
+  .dep-item.ok .dep-icon { background: rgba(255,255,255,0.08); color: var(--t-bright); }
+  .dep-item.warn .dep-icon { background: rgba(255,193,7,0.12); color: #FFC107; }
+  .dep-item.fail .dep-icon { background: rgba(255,107,107,0.10); color: var(--red); }
+
+  .dep-info { flex: 1; min-width: 0; }
+  .dep-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--t-bright);
+  }
+  .dep-detail {
+    font-size: 11px;
     color: var(--t-muted);
-    margin-top: 4px;
-    font-family: monospace;
+    margin-top: 3px;
+  }
+  .dep-detail a {
+    color: var(--accent-dim);
+    text-decoration: none;
+    transition: color 0.2s ease;
+  }
+  .dep-detail a:hover { color: var(--accent); text-decoration: underline; }
+
+  @keyframes dep-spin {
+    to { transform: rotate(360deg); }
+  }
+  .dep-item.checking .dep-icon::after {
+    content: '';
+    width: 14px; height: 14px;
+    border: 2px solid var(--b-light);
+    border-top-color: var(--t-bright);
+    border-radius: 50%;
+    animation: dep-spin 0.7s linear infinite;
   }
 
   /* ── Terminal Output ── */
   .terminal {
-    background: rgba(0,0,0,0.5);
+    background: rgba(0,0,0,0.35);
     border: 1px solid var(--b-subtle);
-    border-radius: var(--r-card);
-    padding: 12px;
-    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Fira Code', monospace;
     font-size: 11px;
     color: var(--t-secondary);
     max-height: 180px;
     overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-all;
-    line-height: 1.5;
-    margin-bottom: 12px;
+    line-height: 1.6;
+    margin-bottom: 14px;
   }
 
   /* ── Status Indicators ── */
   .status-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 10px;
-    font-size: 12px;
+    gap: 10px;
+    margin-bottom: 12px;
+    font-size: 13px;
     color: var(--t-primary);
   }
   .status-dot {
@@ -322,32 +539,41 @@
     border-radius: 50%;
     flex-shrink: 0;
   }
-  .status-dot.green { background: var(--green); box-shadow: 0 0 6px rgba(102,187,106,0.4); }
-  .status-dot.red { background: var(--red); box-shadow: 0 0 6px rgba(255,82,82,0.3); }
-  .status-dot.yellow { background: #FFC107; box-shadow: 0 0 6px rgba(255,193,7,0.3); }
-  .status-dot.gray { background: rgba(255,255,255,0.2); }
+  .status-dot.green { background: var(--t-bright); }
+  .status-dot.red { background: var(--red); }
+  .status-dot.yellow { background: #FFC107; }
+  .status-dot.gray { background: rgba(255,255,255,0.15); }
 
   /* ── Action Button ── */
   .action-btn {
-    padding: 10px 24px;
+    padding: 11px 26px;
     border-radius: var(--r-button);
-    border: 1px solid var(--accent-border);
-    background: rgba(79,195,247,0.12);
-    color: var(--accent);
+    border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.06);
+    color: var(--t-bright);
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 600;
+    font-family: inherit;
     cursor: pointer;
-    transition: all var(--ease);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     display: inline-flex;
     align-items: center;
     gap: 8px;
   }
-  .action-btn:hover { background: rgba(79,195,247,0.22); }
-  .action-btn:disabled { opacity: 0.4; cursor: default; }
+  .action-btn:hover {
+    background: rgba(255,255,255,0.12);
+    border-color: rgba(255,255,255,0.30);
+    transform: translateY(-1px);
+  }
+  .action-btn:active { transform: translateY(0); }
+  .action-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
   .action-btn.success {
-    border-color: rgba(102,187,106,0.35);
+    border-color: rgba(109,213,140,0.30);
     background: var(--green-bg);
     color: var(--green);
+  }
+  .action-btn.success:hover {
+    background: rgba(109,213,140,0.12);
   }
 
   /* ── SynaBun Eyes ── */
@@ -356,43 +582,82 @@
     justify-content: center;
     pointer-events: none;
     user-select: none;
-    margin-bottom: 8px;
+    margin-bottom: 0;
   }
 
   /* ── Typewriter ── */
   .typewriter-line {
-    font-size: 20px;
-    font-weight: 600;
+    font-size: 28px;
+    font-weight: 700;
     color: var(--t-bright);
     text-align: center;
-    min-height: 28px;
-    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    min-height: 36px;
+    letter-spacing: -0.5px;
   }
   .welcome-desc {
-    font-size: 13px;
+    font-size: 15px;
     color: var(--t-secondary);
     text-align: center;
-    margin-top: 10px;
+    margin-top: 16px;
     opacity: 0;
     transition: opacity 0.6s ease;
-    line-height: 1.6;
+    line-height: 1.8;
   }
   .welcome-desc.visible { opacity: 1; }
 
   /* ── Instructions Preview ── */
   .instructions-preview {
-    background: rgba(0,0,0,0.4);
+    background: rgba(0,0,0,0.30);
     border: 1px solid var(--b-subtle);
-    border-radius: var(--r-card);
-    padding: 14px;
-    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    border-radius: 10px;
+    padding: 16px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Fira Code', monospace;
     font-size: 11px;
     color: var(--t-secondary);
     max-height: 240px;
     overflow-y: auto;
     white-space: pre-wrap;
-    line-height: 1.5;
-    margin-bottom: 12px;
+    line-height: 1.6;
+    margin-bottom: 14px;
+  }
+  .code-copy-wrap {
+    position: relative;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+  }
+  .code-copy-wrap:hover { opacity: 0.85; }
+  .code-copy-wrap:hover .code-copy-label { opacity: 1; }
+  .code-copy-wrap:active .instructions-preview {
+    border-color: rgba(255,255,255,0.22);
+  }
+  .code-copy-wrap .instructions-preview { margin-bottom: 0; }
+  .code-copy-label {
+    position: absolute;
+    bottom: 8px;
+    right: 12px;
+    font-size: 10px;
+    color: var(--t-muted);
+    opacity: 0.5;
+    transition: opacity 0.15s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    pointer-events: none;
+  }
+  .mascot-toast {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(40px, -50%);
+    font-size: 11px;
+    color: var(--t-bright);
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.25s ease, transform 0.3s ease;
+    pointer-events: none;
+  }
+  .mascot-toast.show {
+    opacity: 1;
+    transform: translate(50px, -50%);
   }
 
   /* ── Checklist ── */
@@ -403,13 +668,15 @@
   .checklist li {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 0;
+    gap: 12px;
+    padding: 10px 0;
     font-size: 13px;
     color: var(--t-primary);
+    border-bottom: 1px solid rgba(255,255,255,0.03);
   }
+  .checklist li:last-child { border-bottom: none; }
   .checklist .check {
-    color: var(--green);
+    color: var(--t-bright);
     font-size: 16px;
     flex-shrink: 0;
   }
@@ -418,8 +685,8 @@
   .spinner {
     display: inline-block;
     width: 14px; height: 14px;
-    border: 2px solid var(--accent-border);
-    border-top-color: var(--accent);
+    border: 2px solid rgba(255,255,255,0.12);
+    border-top-color: var(--t-bright);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
   }
@@ -428,30 +695,130 @@
   .btn-row {
     display: flex;
     gap: 8px;
-    margin-top: 8px;
+    margin-top: 10px;
+  }
+
+  /* ── Social Icons ── */
+  .social-bar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.02);
+  }
+  .social-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 24px;
+    border-radius: 4px;
+    color: rgba(255,255,255,0.20);
+    transition: all 0.2s ease;
+  }
+  .social-icon:hover {
+    color: rgba(255,255,255,0.60);
+    background: rgba(255,255,255,0.06);
+  }
+
+  /* ── Floating Mascot ── */
+  .wizard-wrap {
+    position: relative;
+    perspective: 600px;
+  }
+  #synabun-float {
+    position: absolute;
+    left: 50%;
+    top: -60px;
+    pointer-events: none;
+    user-select: none;
+    z-index: 3;
+    opacity: 0;
+    transform: translate(-50%, 20px);
+    transform-style: preserve-3d;
+    transition:
+      transform 1s cubic-bezier(0.34, 1.4, 0.64, 1),
+      opacity 0.5s ease;
+    will-change: transform, opacity;
+  }
+  #synabun-float.visible { opacity: 1; }
+
+  .float-inner {
+    will-change: transform;
+    transform-style: preserve-3d;
+    transform: rotateX(18deg);
+  }
+
+  /* ── Idle animations (all preserve rotateX tilt) ── */
+  @keyframes mascot-float {
+    0%, 100% { transform: rotateX(18deg) translateY(0) rotateZ(0deg); }
+    25% { transform: rotateX(20deg) translateY(-5px) rotateZ(0.5deg); }
+    75% { transform: rotateX(16deg) translateY(-2px) rotateZ(-0.5deg); }
+  }
+  @keyframes mascot-drift-r {
+    0%, 100% { transform: rotateX(18deg) translateX(0) translateY(0) rotateZ(0deg); }
+    30% { transform: rotateX(22deg) translateX(4px) translateY(-4px) rotateZ(2deg); }
+    70% { transform: rotateX(15deg) translateX(-2px) translateY(-2px) rotateZ(-1deg); }
+  }
+  @keyframes mascot-drift-l {
+    0%, 100% { transform: rotateX(18deg) translateX(0) translateY(0) rotateZ(0deg); }
+    30% { transform: rotateX(22deg) translateX(-4px) translateY(-4px) rotateZ(-2deg); }
+    70% { transform: rotateX(15deg) translateX(2px) translateY(-2px) rotateZ(1deg); }
+  }
+  @keyframes mascot-nod {
+    0%, 100% { transform: rotateX(18deg) translateY(0) scale(1); }
+    25% { transform: rotateX(28deg) translateY(4px) scale(1.02, 0.96); }
+    50% { transform: rotateX(12deg) translateY(-3px) scale(0.98, 1.04); }
+    75% { transform: rotateX(20deg) translateY(1px) scale(1); }
+  }
+  @keyframes mascot-celebrate {
+    0%, 100% { transform: rotateX(18deg) translateY(0) rotateZ(0deg) scale(1); }
+    20% { transform: rotateX(10deg) translateY(-8px) rotateZ(-3deg) scale(1.05); }
+    40% { transform: rotateX(22deg) translateY(-2px) rotateZ(3deg) scale(1); }
+    60% { transform: rotateX(12deg) translateY(-6px) rotateZ(-2deg) scale(1.03); }
+    80% { transform: rotateX(20deg) translateY(-1px) rotateZ(1deg) scale(1); }
+  }
+
+  #synabun-float svg {
+    filter: drop-shadow(0 6px 24px rgba(255, 255, 255, 0.08));
   }
 </style>
 </head>
 <body>
 
-<div style="display:flex;flex-direction:column;align-items:center;">
+<canvas id="bgCanvas"></canvas>
+
+<div class="wizard-wrap">
+<div id="synabun-float"><div class="float-inner" id="synabunFloatInner"></div></div>
 <div class="wizard">
   <div class="steps-viewport" id="stepsViewport">
 
     <!-- Step 0: Welcome -->
-    <div class="step active" data-step="0">
-      <div style="height:12px"></div>
+    <div class="step active" data-step="0" style="align-items:center;">
       <div id="synabun-bg"></div>
-      <div class="typewriter-line" id="typewriter"></div>
-      <div class="welcome-desc" id="welcomeDesc">
-        I'll help you set up your persistent vector memory —<br>
-        Qdrant database, embedding provider, and AI tool integration.<br>
-        It only takes a minute!
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="typewriter-line" id="typewriter"></div>
+        <div class="welcome-desc" id="welcomeDesc">
+          I'll help you set up your persistent vector memory.<br>
+          Qdrant database, embedding provider,<br>
+          and AI tool integration. It only takes a minute!
+        </div>
       </div>
     </div>
 
-    <!-- Step 1: Qdrant Password -->
+    <!-- Step 1: Dependencies -->
     <div class="step right" data-step="1">
+      <div class="step-eyes"></div>
+      <h2>Environment Check</h2>
+      <p class="subtitle">Verifying your system has everything SynaBun needs.</p>
+      <ul class="dep-list" id="depList"></ul>
+    </div>
+
+    <!-- Step 2: Qdrant Password -->
+    <div class="step right" data-step="2">
+      <div class="step-eyes"></div>
       <h2>Qdrant API Key</h2>
       <p class="subtitle">Secure your local Qdrant instance with a password.</p>
       <div class="field">
@@ -462,24 +829,42 @@
           <button class="btn-sm" id="genKey">Generate</button>
         </div>
         <div class="hint">Minimum 8 characters. This key protects your Qdrant database.</div>
+        <div class="key-backup-notice">
+          <div class="key-backup-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM7.25 5a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM7.25 7.25a.75.75 0 011.5 0v3.5a.75.75 0 01-1.5 0v-3.5z" fill="currentColor"/></svg>
+          </div>
+          <p class="key-backup-text">This key is the only way to access your memories. If lost, your data cannot be recovered.</p>
+        </div>
+        <label class="key-backup-check" id="keyBackupLabel">
+          <span class="key-backup-checkbox-wrap">
+            <input type="checkbox" id="keyBackupConfirm">
+            <span class="key-backup-checkmark">
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 3.5L3.5 6.5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+          </span>
+          I have saved this API key somewhere safe
+        </label>
         <div class="error-text" id="keyError"></div>
       </div>
     </div>
 
-    <!-- Step 2: Collection Name -->
-    <div class="step right" data-step="2">
-      <h2>Collection Name</h2>
-      <p class="subtitle">Name for your vector collection in Qdrant.</p>
+    <!-- Step 3: Memory Name -->
+    <div class="step right" data-step="3">
+      <div class="step-eyes"></div>
+      <h2>Memory Name</h2>
+      <p class="subtitle">A display name for your memory collection.</p>
       <div class="field">
-        <label>Collection</label>
-        <input type="text" id="collectionName" value="claude_memory" placeholder="claude_memory">
-        <div class="hint">Lowercase letters, digits, and underscores. 3-50 characters.</div>
+        <label>Name</label>
+        <input type="text" id="collectionName" value="Claude Memory" placeholder="Claude Memory">
+        <div class="hint">Type any name you like. It will be normalized for Qdrant automatically.</div>
+        <div class="hint" style="margin-top:4px;color:var(--t-muted);font-size:11px" id="collectionPreview"></div>
         <div class="error-text" id="collectionError"></div>
       </div>
     </div>
 
-    <!-- Step 3: Embedding Provider -->
-    <div class="step right" data-step="3">
+    <!-- Step 4: Embedding Provider -->
+    <div class="step right" data-step="4">
+      <div class="step-eyes"></div>
       <h2>Embedding Provider</h2>
       <p class="subtitle">Choose which API generates your memory embeddings.</p>
       <div class="provider-grid" id="providerGrid"></div>
@@ -488,29 +873,65 @@
         <input type="password" id="embedKey" placeholder="sk-..." autocomplete="off">
         <div class="hint" id="embedKeyHint"></div>
       </div>
-      <div class="field" style="display:flex;gap:8px;">
-        <div style="flex:2">
-          <label>Model</label>
-          <input type="text" id="embedModel" placeholder="text-embedding-3-small">
+      <input type="hidden" id="embedModel">
+      <input type="hidden" id="embedDims">
+    </div>
+
+    <!-- Step 5: Qdrant -->
+    <div class="step right" data-step="5">
+      <div class="step-eyes"></div>
+      <h2>Spin Up Qdrant</h2>
+      <p class="subtitle">Run Qdrant locally via Docker, or connect to a cloud instance or self-hosted VPS.</p>
+      <div class="mode-toggle" id="qdrantModeToggle">
+        <button class="active" data-mode="local">Local (Docker)</button>
+        <button data-mode="cloud">Remote / Cloud</button>
+      </div>
+
+      <!-- Local mode -->
+      <div id="qdrantLocalPanel">
+        <div id="qdrantAdvancedPanel" style="display:none;margin-bottom:16px;">
+          <div style="display:flex;gap:8px;">
+            <div class="field" style="flex:1;margin-bottom:0;">
+              <label>HTTP Port</label>
+              <input type="number" id="qdrantPort" value="6333" min="1024" max="65535" placeholder="6333">
+              <div class="hint">Auto-assigned to next available port</div>
+            </div>
+            <div class="field" style="flex:1;margin-bottom:0;">
+              <label>gRPC Port</label>
+              <input type="number" id="qdrantGrpcPort" value="6334" min="1024" max="65535" placeholder="6334">
+              <div class="hint">Automatically set to HTTP + 1</div>
+            </div>
+          </div>
         </div>
-        <div style="flex:1">
-          <label>Dimensions</label>
-          <input type="number" id="embedDims" placeholder="1536">
+        <div id="dockerStatus"></div>
+        <div class="terminal" id="dockerOutput">Waiting to start...</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="action-btn" id="dockerBtn" style="flex:1;">Start Qdrant</button>
+          <button type="button" id="qdrantAdvancedBtn" style="background:transparent;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.5);padding:10px 16px;border-radius:8px;cursor:pointer;font-size:13px;white-space:nowrap;transition:all 0.2s;" onmouseover="this.style.borderColor='rgba(255,255,255,0.3)';this.style.color='rgba(255,255,255,0.8)'" onmouseout="this.style.borderColor='rgba(255,255,255,0.15)';this.style.color='rgba(255,255,255,0.5)'">Advanced</button>
         </div>
+      </div>
+
+      <!-- Cloud / Remote mode -->
+      <div id="qdrantCloudPanel" style="display:none;">
+        <p style="color:rgba(255,255,255,0.4);font-size:13px;margin:0 0 16px;line-height:1.5;">Works with <a href="https://cloud.qdrant.io/" target="_blank" rel="noopener" style="color:var(--accent-dim);text-decoration:none;">Qdrant Cloud &#x2197;</a> or any self-hosted Qdrant instance on your own VPS.</p>
+        <div class="field">
+          <label>Qdrant URL</label>
+          <input type="text" id="cloudQdrantUrl" placeholder="https://xyz-abc.aws.cloud.qdrant.io:6333">
+          <div class="hint">Cloud URL or your VPS address (e.g. http://your-server:6333)</div>
+        </div>
+        <div class="field">
+          <label>API Key</label>
+          <input type="password" id="cloudQdrantKey" placeholder="Enter your Qdrant API key..." autocomplete="off">
+          <div class="hint">The API key configured for your Qdrant instance.</div>
+        </div>
+        <div id="cloudStatus"></div>
+        <button class="action-btn" id="cloudTestBtn">Test Connection</button>
       </div>
     </div>
 
-    <!-- Step 4: Docker -->
-    <div class="step right" data-step="4">
-      <h2>Spin Up Qdrant</h2>
-      <p class="subtitle">Start the Qdrant vector database via Docker.</p>
-      <div id="dockerStatus"></div>
-      <div class="terminal" id="dockerOutput">Waiting to start...</div>
-      <button class="action-btn" id="dockerBtn">Start Qdrant</button>
-    </div>
-
-    <!-- Step 5: Build MCP Server -->
-    <div class="step right" data-step="5">
+    <!-- Step 6: Build MCP Server -->
+    <div class="step right" data-step="6">
+      <div class="step-eyes"></div>
       <h2>Build MCP Server</h2>
       <p class="subtitle">Compile the TypeScript MCP server to JavaScript.</p>
       <div id="buildStatus"></div>
@@ -518,40 +939,52 @@
       <button class="action-btn" id="buildBtn">Build</button>
     </div>
 
-    <!-- Step 6: AI Tool Selection -->
-    <div class="step right" data-step="6">
-      <h2>AI Tool Integration</h2>
-      <p class="subtitle">Select your AI coding tool to generate the right config.</p>
-      <div class="tool-grid" id="toolGrid"></div>
-      <div class="field">
-        <label>Target Project Directory</label>
-        <input type="text" id="targetDir" placeholder="C:\Users\...">
-        <div class="hint">The root of the project where you want memory enabled.</div>
-      </div>
-      <div class="btn-row">
-        <button class="action-btn" id="writeMcpBtn">Write .mcp.json</button>
-      </div>
-      <div id="mcpWriteStatus" style="margin-top:8px"></div>
-    </div>
-
-    <!-- Step 7: Markdown Instructions -->
+    <!-- Step 7: AI Tool Integration -->
     <div class="step right" data-step="7">
-      <h2>Memory Instructions</h2>
-      <p class="subtitle">Add these instructions to your AI tool's config file.</p>
-      <div id="instrFileName" style="font-size:12px;color:var(--t-secondary);margin-bottom:8px;font-family:monospace;"></div>
-      <div class="instructions-preview" id="instrPreview"></div>
-      <div class="btn-row">
-        <button class="action-btn" id="copyInstrBtn">Copy to Clipboard</button>
-        <button class="action-btn" id="writeInstrBtn">Write to File</button>
+      <div style="position:relative;display:flex;justify-content:center;align-items:center;">
+        <div class="step-eyes"></div>
+        <span class="mascot-toast" id="mascotToast"></span>
       </div>
-      <div id="instrWriteStatus" style="margin-top:8px"></div>
+      <h2>AI Tool Integration</h2>
+      <p class="subtitle">Select your AI coding tool to get setup instructions.</p>
+      <div class="tool-grid" id="toolGrid"></div>
+      <div id="mcpSetupPanel" style="display:none;">
+        <div id="mcpSetupLabel" style="font-size:12px;color:var(--t-secondary);margin-bottom:8px;"></div>
+        <div class="code-copy-wrap" id="mcpCodeWrap">
+          <div class="instructions-preview" id="mcpSetupCode" style="max-height:180px;"></div>
+          <span class="code-copy-label">copy</span>
+        </div>
+        <div id="mcpSetupHint" style="margin-top:8px;font-size:11px;color:var(--t-muted);"></div>
+      </div>
     </div>
 
-    <!-- Step 8: Complete -->
+    <!-- Step 8: Markdown Instructions -->
     <div class="step right" data-step="8">
-      <div style="height:16px"></div>
+      <div style="position:relative;display:flex;justify-content:center;align-items:center;">
+        <div class="step-eyes"></div>
+        <span class="mascot-toast" id="mascotToast8"></span>
+      </div>
+      <h2>Memory Instructions</h2>
+      <p class="subtitle">Add these instructions to your project's config file so your AI tool uses memory automatically.</p>
+      <div id="instrFileName" style="font-size:12px;color:var(--t-secondary);margin-bottom:8px;font-family:monospace;"></div>
+      <div class="code-copy-wrap" id="instrCodeWrap">
+        <div class="instructions-preview" id="instrPreview"></div>
+        <span class="code-copy-label">copy</span>
+      </div>
+      <div id="instrCopyHint" style="margin-top:8px;font-size:11px;color:var(--t-muted);"></div>
+    </div>
+
+    <!-- Step 9: Complete -->
+    <div class="step right" data-step="9">
+      <div class="step-eyes"></div>
       <h2 style="text-align:center;margin-bottom:12px;">Setup Complete!</h2>
       <ul class="checklist" id="checklist"></ul>
+      <div id="restartNotice" style="margin:16px 0 0;padding:12px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.10);border-radius:var(--r-card);font-size:12px;color:var(--t-primary);line-height:1.5;">
+        <span style="color:var(--t-bright);font-weight:600;">Restart required</span> — Relaunch <span id="restartToolName" style="color:var(--t-bright);font-weight:500;"></span> for the MCP changes to be picked up.
+      </div>
+      <div style="margin:10px 0 0;padding:12px 14px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.18);border-radius:var(--r-card);font-size:12px;color:var(--t-primary);line-height:1.5;">
+        <span style="color:#ffaa00;font-weight:600;">Backup your API key</span> — Your Qdrant key is the password to your memory server. It's stored in <code style="font-size:11px;background:rgba(255,255,255,0.06);padding:2px 5px;border-radius:3px;">.env</code> — keep a copy somewhere safe.
+      </div>
       <div style="text-align:center;margin-top:16px;">
         <button class="action-btn" id="launchBtn" style="font-size:15px;padding:12px 32px;">Launch Neural Interface</button>
       </div>
@@ -565,11 +998,96 @@
     <button class="nav-btn primary" id="nextBtn">Begin &rarr;</button>
   </div>
 </div>
+</div>
 
-<div style="text-align:center;margin-top:12px;opacity:0.4;pointer-events:none;">
-  <img src="synabun.png" alt="SynaBun" style="height:26px;width:auto;">
+<div style="text-align:center;margin-top:16px;display:flex;flex-direction:column;align-items:center;gap:12px;">
+  <img src="synabun.png?v=2" alt="SynaBun" style="height:22px;width:auto;filter:grayscale(0.5);opacity:0.25;">
+  <div class="social-bar">
+    <a href="https://discord.gg/synabun" target="_blank" rel="noopener" class="social-icon" title="Discord">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+    </a>
+    <a href="https://github.com/synabun" target="_blank" rel="noopener" class="social-icon" title="GitHub">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+    </a>
+    <a href="https://synabun.dev" target="_blank" rel="noopener" class="social-icon" title="Website">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+    </a>
+  </div>
 </div>
-</div>
+
+<script>
+// ── Animated mesh background ──
+(function() {
+  const canvas = document.getElementById('bgCanvas');
+  const ctx = canvas.getContext('2d');
+  let w, h, nodes = [], edges = [];
+  const NODE_COUNT = 60;
+  const EDGE_DIST = 180;
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+  }
+
+  function init() {
+    resize();
+    nodes = [];
+    for (let i = 0; i < NODE_COUNT; i++) {
+      nodes.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+        r: 1 + Math.random() * 1.5,
+      });
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, w, h);
+
+    // Update positions
+    for (const n of nodes) {
+      n.x += n.vx;
+      n.y += n.vy;
+      if (n.x < 0 || n.x > w) n.vx *= -1;
+      if (n.y < 0 || n.y > h) n.vy *= -1;
+    }
+
+    // Draw edges
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const dx = nodes[i].x - nodes[j].x;
+        const dy = nodes[i].y - nodes[j].y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < EDGE_DIST) {
+          const alpha = (1 - dist / EDGE_DIST) * 0.08;
+          ctx.beginPath();
+          ctx.moveTo(nodes[i].x, nodes[i].y);
+          ctx.lineTo(nodes[j].x, nodes[j].y);
+          ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Draw nodes
+    for (const n of nodes) {
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fill();
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', () => { resize(); });
+  init();
+  draw();
+})();
+</script>
 
 <script type="module">
 
@@ -577,19 +1095,35 @@
 // STATE
 // ═══════════════════════════════════════════
 
-const TOTAL_STEPS = 9;
+const TOTAL_STEPS = 10;
 let currentStep = 0;
+
+// Normalize a friendly display name into a valid Qdrant collection name
+function normalizeCollectionName(displayName) {
+  return displayName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')  // replace non-alphanumeric runs with _
+    .replace(/^_+|_+$/g, '')       // trim leading/trailing underscores
+    .replace(/^(\d)/, 'c_$1')      // prefix if starts with digit
+    .slice(0, 50);
+}
 
 const wizardState = {
   qdrantApiKey: '',
+  qdrantMode: 'local',   // 'local' or 'cloud'
+  qdrantPort: 6333,
+  qdrantGrpcPort: 6334,
+  qdrantCloudUrl: '',
+  qdrantCloudKey: '',
   collectionName: 'claude_memory',
+  collectionDisplayName: 'Claude Memory',
   selectedProvider: null,
   embeddingApiKey: '',
   embeddingBaseUrl: '',
   embeddingModel: '',
   embeddingDimensions: 0,
   selectedTool: null,
-  targetDir: '',
+  projectRoot: '',
   dockerReady: false,
   buildReady: false,
   mcpWritten: false,
@@ -597,25 +1131,20 @@ const wizardState = {
 };
 
 const PROVIDERS = [
-  { id: 'openai',    name: 'OpenAI',       url: 'https://api.openai.com/v1',                                   model: 'text-embedding-3-small', dims: 1536, tag: 'Recommended', needsKey: true },
-  { id: 'gemini',    name: 'Google Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai',     model: 'text-embedding-004',     dims: 768,  tag: 'Free tier',   needsKey: true },
-  { id: 'qwen',      name: 'Qwen',         url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',      model: 'text-embedding-v4',      dims: 1024, tag: '',            needsKey: true },
-  { id: 'together',  name: 'Together AI',   url: 'https://api.together.xyz/v1',                                 model: 'togethercomputer/m2-bert-80M-8k-retrieval', dims: 768,  tag: '',  needsKey: true },
-  { id: 'fireworks', name: 'Fireworks AI',  url: 'https://api.fireworks.ai/inference/v1',                       model: 'nomic-ai/nomic-embed-text-v1.5', dims: 768,  tag: '',    needsKey: true },
-  { id: 'jina',      name: 'Jina AI',       url: 'https://api.jina.ai/v1',                                     model: 'jina-embeddings-v3',     dims: 1024, tag: '',            needsKey: true },
-  { id: 'mistral',   name: 'Mistral',       url: 'https://api.mistral.ai/v1',                                  model: 'mistral-embed',          dims: 1024, tag: '',            needsKey: true },
-  { id: 'voyage',    name: 'Voyage AI',     url: 'https://api.voyageai.com/v1',                                model: 'voyage-3.5-lite',        dims: 1024, tag: '',            needsKey: true },
-  { id: 'cohere',    name: 'Cohere',        url: 'https://api.cohere.com/compatibility/v1',                    model: 'embed-v4.0',             dims: 1024, tag: '',            needsKey: true },
-  { id: 'ollama',    name: 'Ollama',        url: 'http://localhost:11434/v1',                                   model: 'nomic-embed-text',       dims: 768,  tag: 'Local',       needsKey: false },
-  { id: 'lmstudio',  name: 'LM Studio',    url: 'http://localhost:1234/v1',                                    model: '(loaded model)',         dims: 768,  tag: 'Local',       needsKey: false },
+  { id: 'openai',    name: 'OpenAI',       url: 'https://api.openai.com/v1',                                   model: 'text-embedding-3-small', dims: 1536, tag: 'Recommended', needsKey: true,  dash: 'https://platform.openai.com/api-keys' },
+  { id: 'gemini',    name: 'Google Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai',     model: 'text-embedding-004',     dims: 768,  tag: 'Free tier',   needsKey: true,  dash: 'https://aistudio.google.com/apikey' },
+  { id: 'qwen',      name: 'Qwen',         url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',      model: 'text-embedding-v4',      dims: 1024, tag: '',            needsKey: true,  dash: 'https://dashscope.console.aliyun.com/' },
+  { id: 'together',  name: 'Together AI',   url: 'https://api.together.xyz/v1',                                 model: 'togethercomputer/m2-bert-80M-8k-retrieval', dims: 768,  tag: '',  needsKey: true,  dash: 'https://api.together.xyz/settings/api-keys' },
+  { id: 'ollama',    name: 'Ollama',        url: 'http://localhost:11434/v1',                                   model: 'nomic-embed-text',       dims: 768,  tag: 'Local',       needsKey: false, dash: 'https://ollama.com/library' },
+  { id: 'lmstudio',  name: 'LM Studio',    url: 'http://localhost:1234/v1',                                    model: '(loaded model)',         dims: 768,  tag: 'Local',       needsKey: false, dash: 'https://lmstudio.ai/' },
 ];
 
 const TOOLS = [
-  { id: 'claude',   name: 'Claude Code',  configFile: '.mcp.json', instrFile: 'CLAUDE.md' },
-  { id: 'cursor',   name: 'Cursor',       configFile: '.mcp.json', instrFile: '.cursorrules' },
-  { id: 'windsurf', name: 'Windsurf',     configFile: '.mcp.json', instrFile: '.windsurfrules' },
-  { id: 'codex',    name: 'Codex',        configFile: '.mcp.json', instrFile: 'AGENTS.md' },
-  { id: 'other',    name: 'Other',        configFile: '.mcp.json', instrFile: 'AGENTS.md' },
+  { id: 'claude',   name: 'Claude Code',  instrFile: 'CLAUDE.md' },
+  { id: 'cursor',   name: 'Cursor',       instrFile: '.cursorrules' },
+  { id: 'windsurf', name: 'Windsurf',     instrFile: '.windsurfrules' },
+  { id: 'codex',    name: 'Codex',        instrFile: 'AGENTS.md' },
+  { id: 'other',    name: 'Other',        instrFile: 'AGENTS.md' },
 ];
 
 // ═══════════════════════════════════════════
@@ -623,6 +1152,7 @@ const TOOLS = [
 // ═══════════════════════════════════════════
 
 const $steps     = document.querySelectorAll('.step');
+const $viewport  = document.getElementById('stepsViewport');
 const $dots      = document.getElementById('dots');
 const $prevBtn   = document.getElementById('prevBtn');
 const $nextBtn   = document.getElementById('nextBtn');
@@ -644,12 +1174,45 @@ function updateDots() {
 }
 
 // ═══════════════════════════════════════════
+// COLLECTION NAME LIVE PREVIEW
+// ═══════════════════════════════════════════
+
+const $collInput = document.getElementById('collectionName');
+const $collPreview = document.getElementById('collectionPreview');
+function updateCollectionPreview() {
+  const val = $collInput.value.trim();
+  if (val.length >= 2) {
+    $collPreview.textContent = 'Collection: ' + normalizeCollectionName(val);
+  } else {
+    $collPreview.textContent = '';
+  }
+}
+$collInput.addEventListener('input', updateCollectionPreview);
+updateCollectionPreview();
+
+// ═══════════════════════════════════════════
 // STEP NAVIGATION
 // ═══════════════════════════════════════════
 
+function resizeViewport(stepIndex) {
+  const step = $steps[stepIndex];
+  if (!step) return;
+  const pb = parseFloat(getComputedStyle(step).paddingBottom) || 0;
+  // Find the last visible child (skip hidden inputs, zero-height elements)
+  let last = null;
+  for (let i = step.children.length - 1; i >= 0; i--) {
+    if (step.children[i].offsetHeight > 0) { last = step.children[i]; break; }
+  }
+  if (!last) { $viewport.style.height = step.scrollHeight + 'px'; return; }
+  $viewport.style.height = (last.offsetTop + last.offsetHeight + pb) + 'px';
+}
+
 function goToStep(n) {
   if (n < 0 || n >= TOTAL_STEPS) return;
-  const dir = n > currentStep ? 1 : -1;
+
+  // Mascot: embed eyes in step, or return to welcome
+  if (currentStep > 0 && n === 0) returnMascotToStep0();
+  if (n > 0) positionMascotInStep(n);
 
   $steps.forEach((s, i) => {
     if (i === n) {
@@ -662,6 +1225,7 @@ function goToStep(n) {
   });
 
   currentStep = n;
+  resizeViewport(n);
   updateDots();
   updateNav();
   onStepEnter(n);
@@ -670,7 +1234,7 @@ function goToStep(n) {
 function updateNav() {
   $prevBtn.disabled = currentStep === 0;
 
-  const labels = ['Begin', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
+  const labels = ['Begin', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
   $nextBtn.textContent = (labels[currentStep] || 'Next') + ' \u2192';
 
   if (currentStep === TOTAL_STEPS - 1) {
@@ -693,26 +1257,37 @@ $nextBtn.addEventListener('click', () => {
 
 function validateStep(n) {
   switch(n) {
-    case 1: {
+    case 2: {
       const key = document.getElementById('qdrantKey').value.trim();
       const err = document.getElementById('keyError');
       if (key.length < 8) { err.textContent = 'Minimum 8 characters required.'; return false; }
+      if (!document.getElementById('keyBackupConfirm').checked) { err.textContent = 'Please confirm you have saved your API key.'; return false; }
       err.textContent = '';
       wizardState.qdrantApiKey = key;
       return true;
     }
-    case 2: {
-      const name = document.getElementById('collectionName').value.trim();
+    case 3: {
+      const displayName = document.getElementById('collectionName').value.trim();
       const err = document.getElementById('collectionError');
-      if (!/^[a-z][a-z0-9_]{2,49}$/.test(name)) {
-        err.textContent = 'Must start with lowercase letter, 3-50 chars, only a-z 0-9 _';
+      if (displayName.length < 2) {
+        err.textContent = 'Name must be at least 2 characters.';
+        return false;
+      }
+      if (displayName.length > 50) {
+        err.textContent = 'Name must be 50 characters or less.';
+        return false;
+      }
+      const normalized = normalizeCollectionName(displayName);
+      if (normalized.length < 3) {
+        err.textContent = 'Name must contain at least a few letters or numbers.';
         return false;
       }
       err.textContent = '';
-      wizardState.collectionName = name;
+      wizardState.collectionDisplayName = displayName;
+      wizardState.collectionName = normalized;
       return true;
     }
-    case 3: {
+    case 4: {
       if (!wizardState.selectedProvider) return false;
       const p = PROVIDERS.find(x => x.id === wizardState.selectedProvider);
       if (p.needsKey && !document.getElementById('embedKey').value.trim()) return false;
@@ -722,9 +1297,8 @@ function validateStep(n) {
       wizardState.embeddingBaseUrl = p.url;
       return true;
     }
-    case 6: {
+    case 7: {
       if (!wizardState.selectedTool) return false;
-      wizardState.targetDir = document.getElementById('targetDir').value.trim();
       return true;
     }
     default:
@@ -738,11 +1312,14 @@ function validateStep(n) {
 
 async function onStepEnter(n) {
   if (n === 0) startMascot();
-  if (n === 4) onDockerStep();
-  if (n === 5) onBuildStep();
-  if (n === 6) onToolStep();
-  if (n === 7) onInstructionsStep();
-  if (n === 8) onCompleteStep();
+  if (n === 1) await onDepsStep();
+  if (n === 5) await onDockerStep();
+  if (n === 6) await onBuildStep();
+  if (n === 7) await onToolStep();
+  if (n === 8) await onInstructionsStep();
+  if (n === 9) await onCompleteStep();
+  // Re-measure after async content loads
+  resizeViewport(n);
 }
 
 // ═══════════════════════════════════════════
@@ -757,35 +1334,28 @@ document.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.cli
 
 // ── SynaBun Pill Eyes ──
 
-function initEyesSVG() {
-  const $el = document.getElementById('synabun-bg');
-  // Glowing pill-shaped eyes + smile
-  // viewBox 280×140, pill eyes centered at y=60, pill: 38×72 rx=19
+function initEyesSVG(containerOrId, w, h) {
+  const $el = typeof containerOrId === 'string'
+    ? document.getElementById(containerOrId || 'synabun-bg')
+    : containerOrId;
   $el.innerHTML = `
-    <svg viewBox="0 0 280 140" width="280" height="140" style="overflow:visible">
-      <defs>
-        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="6" result="blur"/>
-          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
-      </defs>
-
+    <svg viewBox="0 0 280 140" width="${w || 280}" height="${h || 140}" style="overflow:visible">
       <!-- Left eye -->
       <g class="syna-eye">
         <g class="syna-lid">
-          <rect x="80" y="24" width="38" height="72" rx="19" fill="#00e5ff" filter="url(#glow)"/>
+          <rect x="80" y="24" width="38" height="72" rx="19" fill="#ffffff"/>
         </g>
       </g>
 
       <!-- Right eye -->
       <g class="syna-eye">
         <g class="syna-lid">
-          <rect x="162" y="24" width="38" height="72" rx="19" fill="#00e5ff" filter="url(#glow)"/>
+          <rect x="162" y="24" width="38" height="72" rx="19" fill="#ffffff"/>
         </g>
       </g>
 
       <!-- Smile -->
-      <path class="syna-mouth" d="M118,116 Q140,130 162,116" fill="none" stroke="rgba(0,229,255,0.25)" stroke-width="2.5" stroke-linecap="round"/>
+      <path class="syna-mouth" d="M118,116 Q140,130 162,116" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2.5" stroke-linecap="round"/>
     </svg>
   `;
 
@@ -820,11 +1390,47 @@ function updateEyesSVG(refs, lx, ly, blinkAmt, now) {
 
 // --- Animation loop ---
 
+let activeRefs = null;
+
+// Mascot is now embedded inside each step's .step-eyes container
+
+// Place eyes inside the active step's .step-eyes container
+function positionMascotInStep(step) {
+  const stepEl = $steps[step];
+  if (!stepEl) return;
+  const target = stepEl.querySelector('.step-eyes');
+  if (!target) return;
+
+  // Clear eyes from all other steps
+  document.querySelectorAll('.step-eyes').forEach(el => { el.innerHTML = ''; });
+
+  // Hide the floating mascot
+  const $float = document.getElementById('synabun-float');
+  $float.classList.remove('visible');
+  document.getElementById('synabunFloatInner').innerHTML = '';
+
+  // Inject eyes into the step
+  activeRefs = initEyesSVG(target, 160, 80);
+}
+
+function transitionMascotToFloat() {
+  positionMascotInStep(1);
+}
+
+function returnMascotToStep0() {
+  // Clear step eyes
+  document.querySelectorAll('.step-eyes').forEach(el => { el.innerHTML = ''; });
+  const $float = document.getElementById('synabun-float');
+  $float.classList.remove('visible');
+  document.getElementById('synabunFloatInner').innerHTML = '';
+  activeRefs = initEyesSVG('synabun-bg', 380, 190);
+}
+
 function startMascot() {
   if (mascotRunning) return;
   mascotRunning = true;
 
-  const refs = initEyesSVG();
+  activeRefs = initEyesSVG('synabun-bg', 380, 190);
 
   let blinkState = 'idle';
   let blinkTimer = 0;
@@ -839,8 +1445,6 @@ function startMascot() {
   const $desc = document.getElementById('welcomeDesc');
 
   function render(now) {
-    if (currentStep !== 0) { mascotRunning = false; return; }
-
     // Smooth mouse tracking
     const tX = Math.max(-1, Math.min(1, (mouseX - window.innerWidth / 2) / (window.innerWidth * 0.5)));
     const tY = Math.max(-1, Math.min(1, (mouseY - window.innerHeight / 2) / (window.innerHeight * 0.5)));
@@ -859,10 +1463,10 @@ function startMascot() {
       if (blinkLid <= 0) { blinkState = 'idle'; nextBlink = now + 3000 + Math.random() * 4000; }
     }
 
-    updateEyesSVG(refs, lookX, lookY, blinkLid, now);
+    if (activeRefs) updateEyesSVG(activeRefs, lookX, lookY, blinkLid, now);
 
-    // Typewriter
-    if (!twDone) {
+    // Typewriter (only on welcome step)
+    if (currentStep === 0 && !twDone) {
       if (now - twLast > 40 && twIndex <= twText.length) {
         $tw.textContent = twText.slice(0, twIndex) + (twIndex < twText.length ? '\u2588' : '');
         twIndex++;
@@ -885,7 +1489,7 @@ function startMascot() {
 function renderHappyBun() {}
 
 // ═══════════════════════════════════════════
-// STEP 1: Qdrant Key
+// STEP 2: Qdrant Key
 // ═══════════════════════════════════════════
 
 document.getElementById('toggleKeyVis').addEventListener('click', () => {
@@ -905,7 +1509,7 @@ document.getElementById('genKey').addEventListener('click', () => {
 });
 
 // ═══════════════════════════════════════════
-// STEP 3: Embedding Providers
+// STEP 4: Embedding Providers
 // ═══════════════════════════════════════════
 
 const $providerGrid = document.getElementById('providerGrid');
@@ -916,9 +1520,13 @@ PROVIDERS.forEach(p => {
   card.innerHTML = `
     <div class="pname">${p.name}</div>
     <div class="pmodel">${p.model} (${p.dims}d)</div>
+    <a class="plink" href="${p.dash}" target="_blank" rel="noopener">${p.needsKey ? 'Get API key \u2197' : 'Download \u2197'}</a>
     ${p.tag ? `<div class="ptag">${p.tag}</div>` : ''}
   `;
-  card.addEventListener('click', () => selectProvider(p.id));
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('.plink')) return;
+    selectProvider(p.id);
+  });
   $providerGrid.appendChild(card);
 });
 
@@ -939,7 +1547,7 @@ function selectProvider(id) {
   if (p.needsKey) {
     $key.disabled = false;
     $key.placeholder = p.id === 'openai' ? 'sk-...' : 'Enter API key...';
-    $hint.textContent = `Get a key from ${p.name}'s dashboard.`;
+    $hint.innerHTML = `Get a key from <a href="${p.dash}" target="_blank" rel="noopener" style="color:var(--accent-dim);text-decoration:none;">${p.name}'s dashboard \u2197</a>`;
   } else {
     $key.disabled = true;
     $key.value = '';
@@ -948,54 +1556,234 @@ function selectProvider(id) {
 }
 
 // ═══════════════════════════════════════════
-// STEP 4: Docker
+// STEP 1: Dependencies Check
 // ═══════════════════════════════════════════
 
-async function onDockerStep() {
-  // First, save config from steps 1-3
+async function onDepsStep() {
+  const $list = document.getElementById('depList');
+  $list.innerHTML = '';
+
+  let deps;
+  try {
+    const res = await fetch('/api/setup/check-deps');
+    const data = await res.json();
+    deps = data.deps;
+  } catch {
+    $list.innerHTML = '<li style="color:var(--t-muted);font-size:13px;">Could not reach server.</li>';
+    return;
+  }
+
+  // Build all items hidden first
+  const items = deps.map(dep => {
+    const li = document.createElement('li');
+    li.className = 'dep-item checking';
+    li.innerHTML = `
+      <div class="dep-icon"></div>
+      <div class="dep-info">
+        <div class="dep-name">${dep.name}</div>
+        <div class="dep-detail">Checking\u2026</div>
+      </div>`;
+    $list.appendChild(li);
+    return { li, dep };
+  });
+
+  // Pre-size viewport to account for all items before animation
+  resizeViewport(1);
+
+  // Staggered reveal + resolve
+  for (let i = 0; i < items.length; i++) {
+    const { li, dep } = items[i];
+
+    // Reveal with stagger
+    await wait(250);
+    li.classList.add('visible');
+
+    // Simulate a brief check delay, then resolve
+    await wait(400 + Math.random() * 200);
+
+    li.classList.remove('checking');
+    const icon = li.querySelector('.dep-icon');
+    const detail = li.querySelector('.dep-detail');
+
+    if (dep.ok) {
+      li.classList.add('ok');
+      icon.textContent = '\u2713';
+      detail.textContent = dep.detail;
+    } else if (dep.warn) {
+      li.classList.add('warn');
+      icon.textContent = '!';
+      detail.innerHTML = `${dep.detail} &mdash; <a href="${dep.url}" target="_blank" rel="noopener">Install \u2197</a>`;
+    } else {
+      li.classList.add('fail');
+      icon.textContent = '\u2717';
+      detail.innerHTML = `${dep.detail} &mdash; <a href="${dep.url}" target="_blank" rel="noopener">Download \u2197</a>`;
+    }
+  }
+}
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ═══════════════════════════════════════════
+// STEP 5: Qdrant (Local / Cloud)
+// ═══════════════════════════════════════════
+
+// Mode toggle
+document.getElementById('qdrantModeToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const mode = btn.dataset.mode;
+  wizardState.qdrantMode = mode;
+  document.querySelectorAll('#qdrantModeToggle button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  document.getElementById('qdrantLocalPanel').style.display = mode === 'local' ? '' : 'none';
+  document.getElementById('qdrantCloudPanel').style.display = mode === 'cloud' ? '' : 'none';
+});
+
+// Auto-sync gRPC port when HTTP port changes
+document.getElementById('qdrantPort').addEventListener('input', (e) => {
+  const p = parseInt(e.target.value, 10);
+  if (!isNaN(p)) document.getElementById('qdrantGrpcPort').value = p + 1;
+});
+
+// Advanced toggle for port fields
+document.getElementById('qdrantAdvancedBtn').addEventListener('click', () => {
+  const panel = document.getElementById('qdrantAdvancedPanel');
+  const btn = document.getElementById('qdrantAdvancedBtn');
+  const visible = panel.style.display !== 'none';
+  panel.style.display = visible ? 'none' : '';
+  btn.textContent = visible ? 'Advanced' : 'Hide Ports';
+  // Let the DOM reflow, then resize the step viewport to fit
+  requestAnimationFrame(() => resizeViewport(currentStep));
+});
+
+// Cloud test button
+document.getElementById('cloudTestBtn').addEventListener('click', async () => {
+  const url = document.getElementById('cloudQdrantUrl').value.trim().replace(/\/+$/, '');
+  const key = document.getElementById('cloudQdrantKey').value.trim();
+  const $status = document.getElementById('cloudStatus');
+  const $btn = document.getElementById('cloudTestBtn');
+
+  if (!url) { $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>URL is required</div>'; return; }
+  if (!key) { $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>API key is required</div>'; return; }
+
+  $btn.disabled = true;
+  $btn.innerHTML = '<div class="spinner"></div> Testing...';
+  $status.innerHTML = '';
+
+  try {
+    const res = await fetch('/api/setup/test-qdrant-cloud', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, apiKey: key }),
+    });
+    const data = await res.json();
+
+    if (data.ok) {
+      wizardState.qdrantCloudUrl = url;
+      wizardState.qdrantCloudKey = key;
+      wizardState.dockerReady = true;
+
+      // Save cloud config to .env so server uses the right URL
+      await saveSteps1to3();
+
+      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Connected to Qdrant Cloud</div>';
+      $btn.textContent = 'Connected';
+      $btn.classList.add('success');
+    } else {
+      throw new Error(data.error || 'Connection failed');
+    }
+  } catch (err) {
+    $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>' + err.message + '</div>';
+    $btn.textContent = 'Test Connection';
+    $btn.disabled = false;
+    $btn.classList.remove('success');
+  }
+});
+
+async function saveSteps1to3() {
+  const payload = {
+    qdrantApiKey: wizardState.qdrantApiKey,
+    collectionName: wizardState.collectionName,
+    collectionDisplayName: wizardState.collectionDisplayName,
+    embeddingApiKey: wizardState.embeddingApiKey,
+    embeddingBaseUrl: wizardState.embeddingBaseUrl,
+    embeddingModel: wizardState.embeddingModel,
+    embeddingDimensions: wizardState.embeddingDimensions,
+  };
+
+  // If cloud mode, also save cloud URL + key
+  if (wizardState.qdrantMode === 'cloud' && wizardState.qdrantCloudUrl) {
+    payload.qdrantUrl = wizardState.qdrantCloudUrl;
+    payload.qdrantApiKey = wizardState.qdrantCloudKey;
+  }
+
+  // If local mode, save custom ports + build the qdrantUrl from them
+  if (wizardState.qdrantMode === 'local') {
+    const port = wizardState.qdrantPort || 6333;
+    const grpcPort = wizardState.qdrantGrpcPort || 6334;
+    payload.qdrantPort = port;
+    payload.qdrantGrpcPort = grpcPort;
+    payload.qdrantUrl = `http://localhost:${port}`;
+  }
+
   try {
     await fetch('/api/setup/save-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        qdrantApiKey: wizardState.qdrantApiKey,
-        collectionName: wizardState.collectionName,
-        embeddingApiKey: wizardState.embeddingApiKey,
-        embeddingBaseUrl: wizardState.embeddingBaseUrl,
-        embeddingModel: wizardState.embeddingModel,
-        embeddingDimensions: wizardState.embeddingDimensions,
-      }),
+      body: JSON.stringify(payload),
     });
   } catch {}
+}
 
-  // Check current status
+async function onDockerStep() {
+  // Auto-suggest next available port if user hasn't manually changed the default
+  const $port = document.getElementById('qdrantPort');
+  const $grpc = document.getElementById('qdrantGrpcPort');
+  try {
+    const suggestRes = await fetch('/api/connections/suggest-port');
+    const suggestData = await suggestRes.json();
+    if (suggestData.port && $port.value === '6333') {
+      $port.value = suggestData.port;
+      $grpc.value = suggestData.grpcPort;
+    }
+  } catch {}
+
+  // Read port inputs into state
+  wizardState.qdrantPort = parseInt($port.value, 10) || 6333;
+  wizardState.qdrantGrpcPort = parseInt($grpc.value, 10) || 6334;
+
+  await saveSteps1to3();
+
+  // If cloud mode, skip Docker check entirely
+  if (wizardState.qdrantMode === 'cloud') return;
+
+  // Local mode: check if Qdrant is already running on the chosen port
   const $status = document.getElementById('dockerStatus');
   const $btn = document.getElementById('dockerBtn');
   const $out = document.getElementById('dockerOutput');
+  const port = wizardState.qdrantPort || 6333;
 
   try {
-    const res = await fetch('/api/setup/test-qdrant');
+    const res = await fetch(`/api/setup/test-qdrant?port=${port}`);
     const data = await res.json();
     if (data.ok) {
       wizardState.dockerReady = true;
-      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Qdrant is already running</div>';
-      $btn.textContent = 'Already Running';
-      $btn.classList.add('success');
-      $btn.disabled = true;
-      $out.textContent = 'Qdrant detected on localhost:6333';
+      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Qdrant detected on port ' + port + '</div>';
+      $out.textContent = `Qdrant detected on localhost:${port}\nCreating collection...`;
 
       // Create collection
-      $out.textContent += '\nCreating collection...';
       const colRes = await fetch('/api/setup/create-collection', { method: 'POST' });
       const colData = await colRes.json();
       if (colData.ok) {
         $out.textContent += '\n' + colData.message;
       }
+
+      $btn.textContent = 'Start Qdrant';
+      $btn.disabled = false;
       return;
     }
   } catch {}
 
-  $status.innerHTML = '<div class="status-row"><div class="status-dot gray"></div>Qdrant not detected</div>';
+  $status.innerHTML = '<div class="status-row"><div class="status-dot gray"></div>No Qdrant on port ' + port + '</div>';
 }
 
 document.getElementById('dockerBtn').addEventListener('click', async () => {
@@ -1003,9 +1791,14 @@ document.getElementById('dockerBtn').addEventListener('click', async () => {
   const $out = document.getElementById('dockerOutput');
   const $status = document.getElementById('dockerStatus');
 
+  // Read latest port values and save before starting
+  wizardState.qdrantPort = parseInt(document.getElementById('qdrantPort').value, 10) || 6333;
+  wizardState.qdrantGrpcPort = parseInt(document.getElementById('qdrantGrpcPort').value, 10) || 6334;
+  await saveSteps1to3();
+
   $btn.disabled = true;
   $btn.innerHTML = '<div class="spinner"></div> Starting...';
-  $out.textContent = '$ docker compose up -d\n';
+  $out.textContent = '$ Starting Qdrant container...\n';
 
   try {
     const res = await fetch('/api/setup/docker', { method: 'POST' });
@@ -1031,6 +1824,25 @@ document.getElementById('dockerBtn').addEventListener('click', async () => {
         $btn.textContent = 'Retry';
         $btn.disabled = false;
       }
+    } else if (data.portConflict) {
+      // Port already in use — highlight the conflicting port input
+      const busyPort = String(data.port);
+      const httpVal = document.getElementById('qdrantPort').value;
+      const grpcVal = document.getElementById('qdrantGrpcPort').value;
+      const which = busyPort === httpVal ? 'HTTP' : busyPort === grpcVal ? 'gRPC' : '';
+      $out.textContent += `\nPort ${busyPort} is already in use.`;
+      $status.innerHTML = `<div class="status-row"><div class="status-dot red"></div>Port ${busyPort}${which ? ' (' + which + ')' : ''} is already in use — pick a different port above</div>`;
+      $btn.textContent = 'Retry';
+      $btn.disabled = false;
+      $btn.classList.remove('success');
+      // Flash the conflicting input
+      const inputId = busyPort === httpVal ? 'qdrantPort' : busyPort === grpcVal ? 'qdrantGrpcPort' : null;
+      if (inputId) {
+        const inp = document.getElementById(inputId);
+        inp.style.borderColor = 'var(--red)';
+        inp.focus();
+        setTimeout(() => { inp.style.borderColor = ''; }, 3000);
+      }
     } else {
       throw new Error(data.error);
     }
@@ -1041,10 +1853,11 @@ document.getElementById('dockerBtn').addEventListener('click', async () => {
     $btn.disabled = false;
     $btn.classList.remove('success');
   }
+  resizeViewport(currentStep);
 });
 
 // ═══════════════════════════════════════════
-// STEP 5: Build
+// STEP 6: Build
 // ═══════════════════════════════════════════
 
 async function onBuildStep() {
@@ -1099,7 +1912,7 @@ document.getElementById('buildBtn').addEventListener('click', async () => {
 });
 
 // ═══════════════════════════════════════════
-// STEP 6: Tool Selection
+// STEP 7: Tool Selection
 // ═══════════════════════════════════════════
 
 const $toolGrid = document.getElementById('toolGrid');
@@ -1107,57 +1920,85 @@ TOOLS.forEach(t => {
   const card = document.createElement('div');
   card.className = 'tool-card';
   card.dataset.id = t.id;
-  card.innerHTML = `
-    <div class="tname">${t.name}</div>
-    <div class="tfiles">${t.configFile} + ${t.instrFile}</div>
-  `;
+  card.innerHTML = `<div class="tname">${t.name}</div>`;
   card.addEventListener('click', () => selectTool(t.id));
   $toolGrid.appendChild(card);
 });
+
+function getMcpSetup(id) {
+  const root = (wizardState.projectRoot || '').replace(/\\/g, '/');
+  const mcpPath = root + '/mcp-server/dist/preload.js';
+  const envPath = root + '/.env';
+
+  if (id === 'claude') {
+    return {
+      label: 'Run this in your terminal to register SynaBun globally:',
+      code: `claude mcp add SynaBun -s user -e DOTENV_PATH="${envPath}" -- node "${mcpPath}"`,
+      hint: 'This registers SynaBun for all your Claude Code projects. Restart Claude Code after running.',
+    };
+  }
+  if (id === 'cursor') {
+    const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env: { DOTENV_PATH: envPath } } } }, null, 2);
+    return {
+      label: 'Add to Cursor Settings > MCP Servers, or paste into .cursor/mcp.json:',
+      code: json,
+      hint: 'Cursor: Settings (Ctrl+,) > search "MCP" > Add Server, or create .cursor/mcp.json in your project root.',
+    };
+  }
+  if (id === 'windsurf') {
+    const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env: { DOTENV_PATH: envPath } } } }, null, 2);
+    return {
+      label: 'Add to ~/.codeium/windsurf/mcp_config.json:',
+      code: json,
+      hint: 'Windsurf: Cascade sidebar > hammer icon > Configure, or edit the config file directly.',
+    };
+  }
+  // codex, other
+  const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env: { DOTENV_PATH: envPath } } } }, null, 2);
+  return {
+    label: 'Add to your project\'s .mcp.json:',
+    code: json,
+    hint: 'Place this file in your project root. Most MCP-compatible tools will auto-detect it.',
+  };
+}
 
 function selectTool(id) {
   wizardState.selectedTool = id;
   $toolGrid.querySelectorAll('.tool-card').forEach(c => {
     c.classList.toggle('selected', c.dataset.id === id);
   });
+
+  const setup = getMcpSetup(id);
+  document.getElementById('mcpSetupLabel').textContent = setup.label;
+  document.getElementById('mcpSetupCode').textContent = setup.code;
+  document.getElementById('mcpSetupHint').textContent = setup.hint;
+  document.getElementById('mcpSetupPanel').style.display = '';
+  resizeViewport(currentStep);
 }
 
-async function onToolStep() {
-  try {
-    const res = await fetch('/api/setup/status');
-    const data = await res.json();
-    if (data.projectDir) {
-      document.getElementById('targetDir').value = document.getElementById('targetDir').value || data.projectDir;
-    }
-  } catch {}
+async function onToolStep() {}
+
+function showMascotToast(msg, duration = 2000) {
+  const toast = document.getElementById('mascotToast');
+  if (!toast) return;
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), duration);
 }
 
-document.getElementById('writeMcpBtn').addEventListener('click', async () => {
-  const targetDir = document.getElementById('targetDir').value.trim();
-  if (!targetDir) return;
-  const $status = document.getElementById('mcpWriteStatus');
-
-  try {
-    const res = await fetch('/api/setup/write-mcp-json', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetDir }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      wizardState.mcpWritten = true;
-      wizardState.targetDir = targetDir;
-      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Written to ' + data.path + '</div>';
-    } else {
-      throw new Error(data.error);
-    }
-  } catch (err) {
-    $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>' + err.message + '</div>';
-  }
+document.getElementById('mcpCodeWrap').addEventListener('click', () => {
+  const code = document.getElementById('mcpSetupCode').textContent;
+  navigator.clipboard.writeText(code);
+  wizardState.mcpWritten = true;
+  const label = document.querySelector('#mcpCodeWrap .code-copy-label');
+  label.textContent = 'copied!';
+  label.style.opacity = '1';
+  showMascotToast('Copied to clipboard!');
+  setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
 });
 
 // ═══════════════════════════════════════════
-// STEP 7: Instructions
+// STEP 8: Instructions
 // ═══════════════════════════════════════════
 
 function getInstructionsContent() {
@@ -1237,64 +2078,45 @@ This project uses a persistent vector memory MCP server.
 
 function onInstructionsStep() {
   const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
-  document.getElementById('instrFileName').textContent = 'Target: ' + tool.instrFile;
+  document.getElementById('instrFileName').textContent = 'Paste into: ' + tool.instrFile;
   document.getElementById('instrPreview').textContent = getInstructionsContent();
+  document.getElementById('instrCopyHint').textContent =
+    tool.id === 'claude' ? 'Paste this into your project\'s CLAUDE.md file.' :
+    tool.id === 'cursor' ? 'Paste this into your project\'s .cursorrules file.' :
+    tool.id === 'windsurf' ? 'Paste this into your project\'s .windsurfrules file.' :
+    'Paste this into your project\'s instructions file (AGENTS.md or equivalent).';
 }
 
-document.getElementById('copyInstrBtn').addEventListener('click', () => {
+document.getElementById('instrCodeWrap').addEventListener('click', () => {
   navigator.clipboard.writeText(getInstructionsContent());
-  const btn = document.getElementById('copyInstrBtn');
-  btn.textContent = 'Copied!';
-  btn.classList.add('success');
-  setTimeout(() => { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('success'); }, 2000);
-});
-
-document.getElementById('writeInstrBtn').addEventListener('click', async () => {
-  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
-  const targetDir = wizardState.targetDir || document.getElementById('targetDir').value.trim();
-  if (!targetDir) {
-    document.getElementById('instrWriteStatus').innerHTML = '<div class="status-row"><div class="status-dot red"></div>No target directory set (go back to step 6)</div>';
-    return;
-  }
-
-  try {
-    const res = await fetch('/api/setup/write-instructions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        targetDir,
-        fileName: tool.instrFile,
-        content: getInstructionsContent(),
-      }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      wizardState.instrWritten = true;
-      const msg = data.skipped ? 'Already present in ' + data.path : 'Written to ' + data.path;
-      document.getElementById('instrWriteStatus').innerHTML = '<div class="status-row"><div class="status-dot green"></div>' + msg + '</div>';
-    } else {
-      throw new Error(data.error);
-    }
-  } catch (err) {
-    document.getElementById('instrWriteStatus').innerHTML = '<div class="status-row"><div class="status-dot red"></div>' + err.message + '</div>';
-  }
+  wizardState.instrWritten = true;
+  const label = document.querySelector('#instrCodeWrap .code-copy-label');
+  label.textContent = 'copied!';
+  label.style.opacity = '1';
+  const toast = document.getElementById('mascotToast8');
+  if (toast) { toast.textContent = 'Copied to clipboard!'; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2000); }
+  setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
 });
 
 // ═══════════════════════════════════════════
-// STEP 8: Complete
+// STEP 9: Complete
 // ═══════════════════════════════════════════
 
 async function onCompleteStep() {
   renderHappyBun();
 
+  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
+  document.getElementById('restartToolName').textContent = tool.name;
+
+  const isCloud = wizardState.qdrantMode === 'cloud';
   const items = [
-    { label: 'Qdrant API key configured', done: !!wizardState.qdrantApiKey },
-    { label: 'Collection name set', done: !!wizardState.collectionName },
+    { label: isCloud ? 'Qdrant Cloud connected' : 'Qdrant API key configured', done: isCloud ? !!wizardState.qdrantCloudUrl : !!wizardState.qdrantApiKey },
+    { label: 'Memory name set', done: !!wizardState.collectionName },
     { label: 'Embedding provider configured', done: !!wizardState.selectedProvider },
-    { label: 'Qdrant Docker container running', done: wizardState.dockerReady },
+    { label: isCloud ? 'Qdrant Cloud reachable' : 'Qdrant Docker container running', done: wizardState.dockerReady },
     { label: 'MCP server built', done: wizardState.buildReady },
-    { label: '.mcp.json written', done: wizardState.mcpWritten },
-    { label: 'Instructions written', done: wizardState.instrWritten },
+    { label: 'MCP config copied', done: wizardState.mcpWritten },
+    { label: 'Instructions copied', done: wizardState.instrWritten },
   ];
 
   const $list = document.getElementById('checklist');
@@ -1325,14 +2147,15 @@ async function init() {
       window.location.href = '/';
       return;
     }
-    // Pre-fill target dir
     if (data.projectDir) {
-      wizardState.targetDir = data.projectDir;
+      wizardState.projectRoot = data.projectDir;
     }
   } catch {}
 
   updateNav();
   startMascot();
+  // Resize after mascot SVG is injected so scrollHeight includes it
+  requestAnimationFrame(() => resizeViewport(0));
 }
 
 init();
