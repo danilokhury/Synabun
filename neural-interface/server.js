@@ -618,8 +618,7 @@ app.get('/api/memories', async (req, res) => {
       }
     }
 
-    // Build links via cosine similarity + shared related files + parent category + related_memory_ids
-    const links = [];
+    // Build links via cosine similarity + shared related files + parent category + shared tags + manual links
     const SIM_THRESHOLD = 0.65;
 
     // Load categories to build parent lookup
@@ -638,59 +637,72 @@ app.get('/api/memories', async (req, res) => {
       categoryParentMap[cat.name] = cat.parent || cat.name;
     }
 
+    // Track link pairs to merge types when multiple methods connect the same pair
+    const linkMap = new Map(); // "idA|idB" → { source, target, strength, types[] }
+    function addLink(idA, idB, str, type) {
+      const key = idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
+      const existing = linkMap.get(key);
+      if (existing) {
+        existing.strength = Math.max(existing.strength, str);
+        if (!existing.types.includes(type)) existing.types.push(type);
+      } else {
+        linkMap.set(key, { source: idA, target: idB, strength: str, types: [type] });
+      }
+    }
+
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = nodes[i];
         const b = nodes[j];
 
-        // Cosine similarity
-        let strength = 0;
+        // Cosine similarity — "Similar Content"
         if (a.vector && b.vector) {
           const sim = cosineSimilarity(a.vector, b.vector);
           if (sim > SIM_THRESHOLD) {
-            strength = Math.max(strength, (sim - SIM_THRESHOLD) / (1 - SIM_THRESHOLD));
+            const str = (sim - SIM_THRESHOLD) / (1 - SIM_THRESHOLD);
+            addLink(a.id, b.id, str, 'similarity');
           }
         }
 
-        // Shared related files bonus
+        // Shared related files — "Shared Files"
         if (a.payload.related_files && b.payload.related_files) {
           const shared = a.payload.related_files.filter(f => b.payload.related_files.includes(f));
           if (shared.length > 0) {
-            strength = Math.max(strength, 0.3 + shared.length * 0.15);
+            addLink(a.id, b.id, 0.3 + shared.length * 0.15, 'files');
           }
         }
 
-        // Same parent category bonus
+        // Same parent category — "Same Family"
         const parentA = categoryParentMap[a.payload.category];
         const parentB = categoryParentMap[b.payload.category];
         if (parentA && parentB && parentA === parentB) {
-          strength = Math.max(strength, 0.2);
+          addLink(a.id, b.id, 0.2, 'family');
         }
 
-        if (strength > 0.1) {
-          links.push({
-            source: a.id,
-            target: b.id,
-            strength: Math.min(strength, 1),
-          });
+        // Shared tags — "Shared Tags"
+        if (a.payload.tags && b.payload.tags) {
+          const sharedTags = a.payload.tags.filter(t => b.payload.tags.includes(t));
+          if (sharedTags.length > 0) {
+            addLink(a.id, b.id, 0.25 + sharedTags.length * 0.1, 'tags');
+          }
         }
       }
 
-      // Explicit related_memory_ids
+      // Explicit related_memory_ids — "Manually Linked"
       if (nodes[i].payload.related_memory_ids) {
         for (const relId of nodes[i].payload.related_memory_ids) {
-          const exists = links.some(
-            l => (l.source === nodes[i].id && l.target === relId) ||
-                 (l.source === relId && l.target === nodes[i].id)
-          );
-          if (!exists && nodes.some(n => n.id === relId)) {
-            links.push({
-              source: nodes[i].id,
-              target: relId,
-              strength: 0.9,
-            });
+          if (nodes.some(n => n.id === relId)) {
+            addLink(nodes[i].id, relId, 0.9, 'manual');
           }
         }
+      }
+    }
+
+    // Filter to only links above threshold
+    const links = [];
+    for (const link of linkMap.values()) {
+      if (link.strength > 0.1) {
+        links.push({ source: link.source, target: link.target, strength: Math.min(link.strength, 1), types: link.types });
       }
     }
 
