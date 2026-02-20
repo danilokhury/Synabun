@@ -1,0 +1,20 @@
+{
+  "name": "synabun-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:verbose": "vitest run --reporter=verbose",
+    "test:report": "vitest run --reporter=verbose 2>&1 | tee reports/latest.txt"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  },
+  "dependencies": {
+    "tiktoken": "^1.0.17"
+  }
+}
