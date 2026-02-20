@@ -36,6 +36,7 @@ for (const dir of [PENDING_COMPACT_DIR, PENDING_REMEMBER_DIR]) {
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
+const EDIT_THRESHOLD = 3;
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -91,7 +92,14 @@ async function main() {
       writeFileSync(flagPath, JSON.stringify(flag));
     } catch { /* ok */ }
 
-    process.stdout.write(JSON.stringify({}));
+    // Proactive nudge when threshold is first crossed
+    if (flag.editCount === EDIT_THRESHOLD) {
+      process.stdout.write(JSON.stringify({
+        additionalContext: `SynaBun: ${flag.editCount} file edits so far — remember to store this work in memory before wrapping up.`,
+      }));
+    } else {
+      process.stdout.write(JSON.stringify({}));
+    }
     return;
   }
 

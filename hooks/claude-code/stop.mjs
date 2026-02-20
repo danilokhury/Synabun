@@ -98,14 +98,8 @@ async function main() {
   // ─── CHECK 1: Pending compact (higher priority) ───
   const compactResult = checkFlag(
     join(PENDING_COMPACT_DIR, `${sessionId}.json`),
-    (flag, attempt) => [
-      `BLOCKED: You have not stored the compacted session in SynaBun.`,
-      `A compaction occurred and the session MUST be indexed before you can finish responding.`,
-      `Call \`remember\` with category \`conversations\` containing a summary of this session.`,
-      `Then call \`reflect\` to set importance and tags.`,
-      `Say "Session indexed in SynaBun." when done.`,
-      `This is attempt ${attempt} of ${MAX_RETRIES}.`,
-    ].join(' ')
+    (_flag, attempt) =>
+      `SynaBun: Compacted session not yet indexed — store in conversations category before finishing. (${attempt}/${MAX_RETRIES})`
   );
 
   if (compactResult?.shouldBlock) {
@@ -151,13 +145,7 @@ async function main() {
       writeFileSync(rememberFlagPath, JSON.stringify(flag));
     } catch { /* ok */ }
 
-    const fileList = (flag.files || []).slice(0, 5).join(', ') || 'multiple files';
-    const reason = [
-      `BLOCKED: You completed work (${editCount} file edits across ${fileList}) without storing it in SynaBun memory.`,
-      `Call \`remember\` with a summary of the work you just completed, using the appropriate category.`,
-      `Then call \`recall\` to get the full UUID, and \`reflect\` to set importance and tags.`,
-      `This is attempt ${retries + 1} of ${MAX_RETRIES}.`,
-    ].join(' ');
+    const reason = `SynaBun: ${editCount} edits not yet stored in memory — remember this work before finishing. (${retries + 1}/${MAX_RETRIES})`;
 
     process.stdout.write(JSON.stringify({
       decision: 'block',

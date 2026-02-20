@@ -181,6 +181,7 @@
   }
 
   #toggle-links-btn,
+  #link-type-btn,
   #reset-positions-btn {
     background: var(--s-subtle);
     border: 1px solid var(--b-subtle);
@@ -196,12 +197,14 @@
     white-space: nowrap;
   }
   #toggle-links-btn:hover,
+  #link-type-btn:hover,
   #reset-positions-btn:hover {
     background: var(--s-hover);
     color: var(--t-primary);
     border-color: var(--b-light);
   }
   #toggle-links-btn:active,
+  #link-type-btn:active,
   #reset-positions-btn:active {
     background: var(--s-active);
     transform: scale(0.96);
@@ -4255,6 +4258,7 @@
 <div id="title-bar" class="glass">
   <img src="synabun.png?v=2" alt="SynaBun" style="height:32px;width:auto;opacity:0.8;">
   <button id="toggle-links-btn" data-tooltip="Toggle links: Off / Intra / All">All Links</button>
+  <button id="link-type-btn" data-tooltip="Filter by connection type">Show: All Types</button>
   <button id="reset-positions-btn">Reset Layout</button>
   <button id="help-btn" data-tooltip="Shortcuts">?</button>
   <button id="titlebar-trash-btn" data-tooltip="Trash"><svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:currentColor;stroke-width:2;fill:none"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-.7 12.1a2 2 0 0 1-2 1.9H7.7a2 2 0 0 1-2-1.9L5 6"/></svg><span class="count-badge count-badge--red" id="titlebar-trash-count"></span></button>
@@ -4542,12 +4546,12 @@ import TWEEN from 'https://esm.sh/@tweenjs/tween.js@23.1.3';
 const DEFAULT_COLOR = '#888888';
 
 const COLOR_PALETTE = [
-  '#5B9BD5', '#70AD47', '#FFC000', '#ED7D31', '#44C8F5',
-  '#A5A5A5', '#448AFF', '#FF6B9D', '#FFD700', '#E040FB',
-  '#00BFA5', '#FF6E40', '#7C4DFF', '#18FFFF', '#EEFF41',
-  '#F4511E', '#69F0AE', '#EA80FC', '#FFD740', '#40C4FF',
-  '#B2FF59', '#00E5FF', '#B388FF', '#FF5252', '#D32F2F',
-  '#64FFDA', '#536DFE', '#FF4081',
+  '#7BA3C4', '#8AAF7A', '#C4A84E', '#C08050', '#6BAABE',
+  '#9A9A9A', '#6B8AC4', '#C47A8E', '#C4AA5E', '#A870B8',
+  '#5EA898', '#C47A5E', '#7E6AAE', '#5EB0B8', '#B0B85E',
+  '#B06A4E', '#6AB898', '#B090C0', '#C4A060', '#60A0B8',
+  '#90B060', '#50A8B8', '#9080B0', '#C06868', '#A05050',
+  '#60B8A8', '#6A80B8', '#C06080',
 ];
 
 // All known category names (fetched from server)
@@ -4765,9 +4769,6 @@ function applyGfxPreset(presetKey) {
   localStorage.setItem('neural-gfx-preset', presetKey);
 
   if (graph) {
-    // Forces disabled — only update visual parameters
-    graph.linkOpacity(gfx.linkOpacity);
-
     // Live-update all node materials and scales
     const scene = graph.scene();
     scene.traverse(obj => {
@@ -4874,6 +4875,7 @@ let graph = null;
 let animFrameId = null;
 let graphRemovalTimer = null; // delayed node removal for smooth category toggle
 let _bloomPass = null; // reference to bloom post-processing pass
+const _worldPos = new THREE.Vector3(); // reused in animate loop — no per-frame alloc
 
 // ─── Drag state (single source of truth, outer scope for animate() access) ───
 const _drag = {
@@ -4883,8 +4885,6 @@ const _drag = {
   dragSet: new Set(),      // Node IDs moving as rigid body
   frozenSet: new Set(),    // Node IDs frozen during drag
   prevPos: null,
-  velocityRing: [],        // Last N deltas for inertial release
-  velocityRingMax: 5,
 };
 
 function scheduleGraphRemoval(delay = 600) {
@@ -5175,14 +5175,56 @@ function buildGraph() {
     .nodeThreeObjectExtend(false)
     .linkSource('source')
     .linkTarget('target')
-    .linkColor(link => {
-      const sourceNode = allNodes.find(n => n.id === (link.source.id || link.source));
-      return sourceNode ? catColor(sourceNode.payload.category) : '#556';
+    .linkThreeObject((() => {
+      // Pre-build node lookup + color cache to avoid O(n) scans per link
+      const nodeMap = new Map();
+      for (const n of allNodes) nodeMap.set(n.id, n);
+      const colorCache = new Map();
+      const _grey = new THREE.Color(0.45, 0.45, 0.45);
+      function getMutedColor(cat) {
+        let c = colorCache.get(cat);
+        if (!c) { c = new THREE.Color(catColor(cat)).lerp(_grey, 0.5); colorCache.set(cat, c); }
+        return c;
+      }
+      return link => {
+      const srcId = link.source.id || link.source;
+      const tgtId = link.target.id || link.target;
+      const srcNode = nodeMap.get(srcId);
+      const tgtNode = nodeMap.get(tgtId);
+      const srcCol = getMutedColor(srcNode ? srcNode.payload.category : '_fallback');
+      const tgtCol = getMutedColor(tgtNode ? tgtNode.payload.category : '_fallback');
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3));
+      const colors = new Float32Array([
+        srcCol.r, srcCol.g, srcCol.b,
+        tgtCol.r, tgtCol.g, tgtCol.b,
+      ]);
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+      const mat = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: gfx.linkOpacity || 0.12,
+        depthWrite: false,
+      });
+      return new THREE.Line(geo, mat);
+    };
+    })())
+    .linkPositionUpdate((line, { start, end }) => {
+      const pos = line.geometry.getAttribute('position');
+      pos.set([start.x, start.y, start.z, end.x, end.y, end.z]);
+      pos.needsUpdate = true;
+      // Live-sync opacity from GFX slider
+      if (line.material.opacity !== gfx.linkOpacity) {
+        line.material.opacity = gfx.linkOpacity;
+      }
+      return true;
     })
-    .linkOpacity(0.25)
-    .linkWidth(1)
+    .linkWidth(0)
     .linkCurvature(0)
     .linkDirectionalParticles(0)
+    .linkVisibility(link => !link._isStructural)
     .onNodeHover(handleNodeHover)
     .onNodeClick(handleNodeClick)
     .onBackgroundClick(handleBackgroundClick)
@@ -5311,12 +5353,12 @@ function buildGraph() {
   // Links visible by default — proximity system controls their opacity dynamically
   graph.linkVisibility(true);
 
-  // Bloom post-processing — atmospheric glow for plexus nodes
+  // Bloom post-processing — subtle ambient glow, not neon
   _bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.7,   // strength — visible glow around bright nodes
-    0.5,   // radius — balanced spread
-    0.2    // threshold — bloom on brighter elements
+    0.3,   // strength — soft, matte feel
+    0.4,   // radius — tight spread
+    0.45   // threshold — only brightest elements bloom
   );
   graph.postProcessingComposer().addPass(_bloomPass);
 
@@ -5503,13 +5545,13 @@ function createTagObject(node) {
 
   const group = new THREE.Group();
 
-  // Visible dot sprite — category color
+  // Visible dot sprite — category color, matte
   const dotMat = new THREE.SpriteMaterial({
     map: getSoftDotTexture(),
     color: hex,
     transparent: true,
-    opacity: 0.45,
-    blending: THREE.AdditiveBlending,
+    opacity: 0.35,
+    blending: THREE.NormalBlending,
     depthWrite: false,
   });
   const dot = new THREE.Sprite(dotMat);
@@ -5578,8 +5620,26 @@ function createTagObject(node) {
 }
 
 // ═══════════════════════════════════════════
-// MEMORY NODE — Soft constellation dot
+// MEMORY NODE — Wireframe geodesic with inner glow
 // ═══════════════════════════════════════════
+
+// Shared geometries (one per detail level, reused across all nodes)
+let _icoGeoLow = null;   // importance 1-4
+let _icoGeoMed = null;   // importance 5-7
+let _icoGeoHigh = null;  // importance 8-10
+function getIcoGeo(importance) {
+  if (importance >= 8) {
+    if (!_icoGeoHigh) _icoGeoHigh = new THREE.IcosahedronGeometry(1, 2); // 162 verts
+    return _icoGeoHigh;
+  }
+  if (importance >= 5) {
+    if (!_icoGeoMed) _icoGeoMed = new THREE.IcosahedronGeometry(1, 1);   // 42 verts
+    return _icoGeoMed;
+  }
+  if (!_icoGeoLow) _icoGeoLow = new THREE.IcosahedronGeometry(1, 0);     // 12 verts
+  return _icoGeoLow;
+}
+
 function createNodeObject(node) {
   if (node.payload && node.payload._isAnchor) return createAnchorObject(node);
   if (node.payload && node.payload._isTag) return createTagObject(node);
@@ -5587,36 +5647,52 @@ function createNodeObject(node) {
   const color = catColor(node.payload.category);
   const importance = node.payload.importance || 5;
   const hex = new THREE.Color(color);
-  // Dot size: 5-12 based on importance — clearly visible at all zoom levels
-  const dotSize = 5 + (importance - 1) * 0.78;
-  // Base opacity: 0.4 for low importance, 0.75 for high — bold and visible
-  const baseOpacity = 0.4 + (importance - 1) * 0.039;
+  // Radius: 2-5 based on importance
+  const radius = 2 + (importance - 1) * 0.33;
+  // Base opacity: subtle wireframe, 0.18-0.38 based on importance
+  const baseOpacity = 0.18 + (importance - 1) * 0.022;
 
   const group = new THREE.Group();
 
-  // Visible dot sprite — category color, plexus node
-  const dotMat = new THREE.SpriteMaterial({
-    map: getSoftDotTexture(),
-    color: hex,
+  // Wireframe geodesic sphere — muted category color
+  const mutedHex = hex.clone().lerp(new THREE.Color(0.35, 0.35, 0.35), 0.35);
+  const wireMat = new THREE.MeshBasicMaterial({
+    color: mutedHex,
+    wireframe: true,
     transparent: true,
     opacity: baseOpacity,
-    blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
-  const dot = new THREE.Sprite(dotMat);
-  dot.scale.set(dotSize, dotSize, 1);
-  dot.raycast = () => {};
-  group.add(dot);
+  const wire = new THREE.Mesh(getIcoGeo(importance), wireMat);
+  wire.scale.setScalar(radius);
+  // Random initial rotation for variety
+  wire.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+  wire.raycast = () => {};
+  group.add(wire);
 
-  // Invisible hitbox for click/hover detection
-  const hitRadius = Math.max(dotSize * 1.5, 3);
-  const hitboxGeo = new THREE.SphereGeometry(hitRadius, 6, 6);
+  // Subtle inner core — matte, no additive blending
+  const glowMat = new THREE.SpriteMaterial({
+    map: getSoftDotTexture(),
+    color: mutedHex,
+    transparent: true,
+    opacity: baseOpacity * 0.35,
+    blending: THREE.NormalBlending,
+    depthWrite: false,
+  });
+  const glow = new THREE.Sprite(glowMat);
+  glow.scale.set(radius * 0.9, radius * 0.9, 1);
+  glow.raycast = () => {};
+  group.add(glow);
+
+  // Hitbox — tightly matches the wireframe radius
+  const hitboxGeo = new THREE.SphereGeometry(radius * 1.1, 6, 6);
   const hitboxMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
   group.add(new THREE.Mesh(hitboxGeo, hitboxMat));
 
   group.userData.nodeId = node.id;
-  group.userData.dot = dot;
-  group.userData.baseRadius = dotSize;
+  group.userData.dot = wire;       // animate loop reads .dot.material.opacity
+  group.userData.glow = glow;
+  group.userData.baseRadius = radius;
   group.userData.baseOpacity = baseOpacity;
   group.userData.category = node.payload.category;
   group.userData.phase = Math.random() * Math.PI * 2;
@@ -5635,10 +5711,12 @@ function createNodeObject(node) {
 function addBackground() {
   // ── Layer A: Spherical particle shells ──
   // 3 concentric shells at increasing radii — creates parallax depth
+  // Shell counts scale proportionally from gfx.bgParticleCount (default 2000)
+  const pc = Math.max(300, gfx.bgParticleCount || 2000);
   const shells = [
-    { radius: 350,  spread: 100,  count: 800,  size: 2.5,  alpha: 0.18,  color: [0.45, 0.52, 0.72] },  // close: brighter, bigger, warm blue
-    { radius: 800,  spread: 250,  count: 1200, size: 1.8,  alpha: 0.10,  color: [0.38, 0.44, 0.65] },  // mid: medium, cooler
-    { radius: 1500, spread: 400,  count: 1500, size: 1.2,  alpha: 0.05,  color: [0.28, 0.32, 0.52] },  // far: tiny, dim, deep purple
+    { radius: 350,  spread: 100,  count: Math.round(pc * 0.23),  size: 2.5,  alpha: 0.18,  color: [0.45, 0.52, 0.72] },  // close: brighter, bigger, warm blue
+    { radius: 800,  spread: 250,  count: Math.round(pc * 0.34),  size: 1.8,  alpha: 0.10,  color: [0.38, 0.44, 0.65] },  // mid: medium, cooler
+    { radius: 1500, spread: 400,  count: Math.round(pc * 0.43),  size: 1.2,  alpha: 0.05,  color: [0.28, 0.32, 0.52] },  // far: tiny, dim, deep purple
   ];
 
   const totalCount = shells.reduce((s, sh) => s + sh.count, 0);
@@ -5679,7 +5757,7 @@ function addBackground() {
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
-    uniforms: { uTime: { value: 0 } },
+    uniforms: { uTime: { value: 0 }, uIntensity: { value: gfx.bgIntensity } },
     vertexShader: `
       attribute float aSize;
       attribute float aAlpha;
@@ -5688,6 +5766,7 @@ function addBackground() {
       varying float vAlpha;
       varying vec3 vColor;
       uniform float uTime;
+      uniform float uIntensity;
       void main() {
         vAlpha = aAlpha;
         vColor = aColor;
@@ -5697,7 +5776,7 @@ function addBackground() {
         pos += normalize(position) * sin(t) * 2.0;
         vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
         // Twinkle: subtle alpha oscillation
-        vAlpha = aAlpha * (0.7 + 0.3 * sin(uTime * 0.5 + aPhase * 6.28));
+        vAlpha = aAlpha * (0.7 + 0.3 * sin(uTime * 0.5 + aPhase * 6.28)) * uIntensity;
         gl_PointSize = aSize * (300.0 / max(-mvPos.z, 1.0));
         gl_Position = projectionMatrix * mvPos;
       }
@@ -6232,7 +6311,7 @@ function addBackgroundDeepGrid() {
 
   // ── Layer C: World-Space Floating Particles ──
   // Muted blue-grey dots — NOT camera-attached (real parallax)
-  const pCount = 2000;
+  const pCount = Math.max(200, gfx.bgParticleCount || 2000);
   const pPositions = new Float32Array(pCount * 3);
   const pSizes = new Float32Array(pCount);
   const pAlphas = new Float32Array(pCount);
@@ -6279,7 +6358,7 @@ function addBackgroundDeepGrid() {
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
-    uniforms: { uTime: { value: 0 } },
+    uniforms: { uTime: { value: 0 }, uIntensity: { value: gfx.bgIntensity } },
     vertexShader: `
       attribute float aSize;
       attribute float aAlpha;
@@ -6288,6 +6367,7 @@ function addBackgroundDeepGrid() {
       varying float vAlpha;
       varying vec3 vColor;
       uniform float uTime;
+      uniform float uIntensity;
       void main() {
         vColor = aColor;
         vec3 pos = position;
@@ -6300,7 +6380,7 @@ function addBackgroundDeepGrid() {
         float camDist = length(mvPos.xyz);
         float distFade = 1.0 - smoothstep(200.0, 2800.0, camDist);
 
-        vAlpha = aAlpha * (0.5 + 0.5 * sin(uTime * 0.4 + aPhase * 6.28)) * distFade;
+        vAlpha = aAlpha * (0.5 + 0.5 * sin(uTime * 0.4 + aPhase * 6.28)) * distFade * uIntensity;
         gl_PointSize = aSize * (400.0 / max(-mvPos.z, 1.0));
         gl_Position = projectionMatrix * mvPos;
       }
@@ -6570,22 +6650,22 @@ function applyBgTheme(theme) {
   if (theme === 'deep-grid') {
     addBackgroundDeepGrid();
     graph.backgroundColor('#000000');
-    // Tame bloom so it doesn't wash out the dark background
+    // Matte bloom for deep-grid
     if (_bloomPass) {
-      _bloomPass.strength = 0.4;
-      _bloomPass.threshold = 0.35;
-      _bloomPass.radius = 0.4;
+      _bloomPass.strength = 0.2;
+      _bloomPass.threshold = 0.5;
+      _bloomPass.radius = 0.3;
     }
     // Apply floor style for deep-grid
     applyFloorStyle(gfx.floorStyle || 'grid');
   } else {
     addBackground();
     graph.backgroundColor('#050505');
-    // Restore default bloom for nebula
+    // Matte bloom for nebula
     if (_bloomPass) {
-      _bloomPass.strength = 0.7;
-      _bloomPass.threshold = 0.2;
-      _bloomPass.radius = 0.5;
+      _bloomPass.strength = 0.3;
+      _bloomPass.threshold = 0.45;
+      _bloomPass.radius = 0.4;
     }
     // Remove floor for nebula theme (no ground plane)
     removeFloor();
@@ -6608,6 +6688,7 @@ function animate() {
   if (bgParticles && graph) {
     bgParticles.position.copy(graph.camera().position);
     bgParticles.material.uniforms.uTime.value = time;
+    bgParticles.material.uniforms.uIntensity.value = gfx.bgIntensity;
   }
   if (bgFogSphere && graph) {
     bgFogSphere.position.copy(graph.camera().position);
@@ -6629,6 +6710,7 @@ function animate() {
   }
   if (bgWorldParticles) {
     bgWorldParticles.material.uniforms.uTime.value = time;
+    bgWorldParticles.material.uniforms.uIntensity.value = gfx.bgIntensity;
   }
   if (bgGridFloor2) {
     bgGridFloor2.material.uniforms.uTime.value = time;
@@ -6640,7 +6722,6 @@ function animate() {
 
   // ── Mouse-reactive plexus ──
   if (graph) {
-    const _worldPos = new THREE.Vector3();
     const scene = graph.scene();
 
     // ── NODE PASS ──
@@ -6747,33 +6828,43 @@ function animate() {
         return;
       }
 
-      // ── Memory nodes — plexus dots ──
+      // ── Memory nodes — wireframe geodesic ──
       if (!dot) return;
 
       const baseOp = obj.userData.baseOpacity;
-      // Base is already visible; mouse proximity boosts brightness
-      let dotTarget = baseOp + mouseProx * 0.5;
+      let dotTarget = baseOp + mouseProx * 0.15;
 
       if (searchResults !== null) {
-        dotTarget = searchResults.has(obj.userData.nodeId) ? 0.9 : 0.05;
+        dotTarget = searchResults.has(obj.userData.nodeId) ? 0.5 : 0.02;
       }
       if (isCatHidden) dotTarget = 0;
       if (_drag.active && !isCatHidden) {
-        if (_drag.dragSet.has(obj.userData.nodeId)) dotTarget = Math.max(dotTarget, 0.7);
+        if (_drag.dragSet.has(obj.userData.nodeId)) dotTarget = Math.max(dotTarget, 0.35);
         else dotTarget *= 0.35;
       }
-      if (isHovered) dotTarget = 0.9;
-      if (isSelected) dotTarget = 1.0 + 0.05 * Math.sin(time * 2.5);
+      if (isHovered) dotTarget = 0.45;
+      if (isSelected) dotTarget = 0.55 + 0.05 * Math.sin(time * 2.5);
 
       const fadeSpeed = isCatHidden ? 0.18 : 0.12;
       dot.material.opacity += (dotTarget * breathe - dot.material.opacity) * fadeSpeed;
+
+      // Sync glow sprite opacity
+      const glowSprite = obj.userData.glow;
+      if (glowSprite) {
+        glowSprite.material.opacity += (dotTarget * 0.3 * breathe - glowSprite.material.opacity) * fadeSpeed;
+      }
+
+      // Slow rotation — each node spins at its own rate
+      const rotSpeed = 0.15 + (obj.userData.importance || 5) * 0.02;
+      dot.rotation.y += rotSpeed * 0.016; // ~per frame at 60fps
+      dot.rotation.x += rotSpeed * 0.008;
 
       // Scale: mouse proximity swells nodes, hovered/selected bigger
       let scaleMultiplier = 1 + mouseProx * 0.3;
       if (isCatHidden) scaleMultiplier = 0;
       else if (isSelected) scaleMultiplier = 2.0;
       else if (isHovered) scaleMultiplier = 1.6;
-      const targetScale = breathe * scaleMultiplier;
+      const targetScale = breathe * scaleMultiplier * noLinksScaleBoost;
       if (obj.userData._currentScale == null) obj.userData._currentScale = 0.01;
       obj.userData._currentScale += (targetScale - obj.userData._currentScale) * 0.12;
       obj.scale.setScalar(obj.userData._currentScale);
@@ -6887,14 +6978,36 @@ function handleNodeClick(node) {
     );
     return;
   }
-  // Tag nodes: zoom in closer
+  // Tag nodes: zoom to show tag + its memory sphere
   if (node.payload._isTag) {
-    const dist = gfx.gentleZoom;
-    graph.cameraPosition(
-      { x: node.x + dist, y: node.y + dist * 0.4, z: node.z + dist },
-      { x: node.x, y: node.y, z: node.z },
-      1500
-    );
+    const tagCat = node.payload._tagCategory;
+    const gd = graph.graphData();
+    const tagMems = gd.nodes.filter(n => n.payload && n.payload.category === tagCat && !n.payload._isAnchor && !n.payload._isTag);
+    if (tagMems.length > 0) {
+      // Compute bounding box of tag + its memories
+      let minX = node.x, maxX = node.x, minY = node.y, maxY = node.y, minZ = node.z, maxZ = node.z;
+      for (const n of tagMems) {
+        const x = n.x || 0, y = n.y || 0, z = n.z || 0;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+      }
+      const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = (minZ + maxZ) / 2;
+      const span = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 30);
+      const dist = span * 1.1 + 30;
+      graph.cameraPosition(
+        { x: cx + dist * 0.5, y: cy + dist * 0.3, z: cz + dist * 0.5 },
+        { x: cx, y: cy, z: cz },
+        1500
+      );
+    } else {
+      const dist = gfx.gentleZoom;
+      graph.cameraPosition(
+        { x: node.x + dist, y: node.y + dist * 0.4, z: node.z + dist },
+        { x: node.x, y: node.y, z: node.z },
+        1500
+      );
+    }
     return;
   }
   navigateToNode(node);
@@ -6949,8 +7062,6 @@ function closeDetailPanel() {
   }
 }
 
-// Explosion effect stub (particles removed)
-function triggerParticleExplosion() {}
 
 function exportMemoryAsMarkdown(node) {
   const p = node.payload;
@@ -7016,16 +7127,6 @@ function exportMemoryAsMarkdown(node) {
 
 async function deleteMemoryFromUI(node) {
 
-  // Capture node's 3D position before deletion
-  let explosionPos = null;
-  if (graph) {
-    const graphNodes = graph.graphData().nodes;
-    const gn = graphNodes.find(n => n.id === node.id);
-    if (gn && gn.x !== undefined) {
-      explosionPos = new THREE.Vector3(gn.x, gn.y, gn.z || 0);
-    }
-  }
-
   try {
     const res = await fetch('/api/memory/' + encodeURIComponent(node.id), { method: 'DELETE' });
     if (!res.ok) {
@@ -7035,9 +7136,6 @@ async function deleteMemoryFromUI(node) {
       if (confirmBtn) { confirmBtn.textContent = errMsg; confirmBtn.disabled = false; }
       return;
     }
-
-    // Trigger particle explosion at the node's position
-    if (explosionPos) triggerParticleExplosion(explosionPos);
 
     // Remove from local data
     allNodes = allNodes.filter(n => n.id !== node.id);
@@ -8406,13 +8504,32 @@ function computeLayout(nodes) {
 
   const GOLDEN = (1 + Math.sqrt(5)) / 2;
 
-  // ── Vertical hierarchy: chandelier layout ──
-  // Anchors far above, tags well below, memories hang deep underneath
-  // Large vertical gaps make the hierarchy unmistakable
+  // ── Geodesic sphere layout ──
+  // Each anchor sits at the center of a geodesic sphere formed by its memories.
+  // Tags are placed on an inner ring around the anchor.
+  // Memories fill a full sphere (Fibonacci distribution) around the anchor.
 
-  // ── 1. Anchors in a ring at the TOP ──
-  const anchorRadius = anchors.length > 1 ? 120 + anchors.length * 25 : 0;
-  const ANCHOR_Y = 150; // Far above everything else
+  // Helper: generate N points on a sphere using Fibonacci spiral (near-uniform distribution)
+  function fibSphere(n, radius, center) {
+    const points = [];
+    for (let i = 0; i < n; i++) {
+      const y = 1 - (2 * i + 1) / n; // -1 to 1
+      const r = Math.sqrt(1 - y * y);
+      const theta = 2 * Math.PI * i / GOLDEN;
+      points.push({
+        x: center.x + Math.cos(theta) * r * radius,
+        y: center.y + y * radius,
+        z: center.z + Math.sin(theta) * r * radius,
+      });
+    }
+    return points;
+  }
+
+  // ── 1. Anchors in a wide ring ──
+  const anchorRadius = anchors.length > 1 ? 200 + anchors.length * 60 : 0;
+  const ANCHOR_Y = 200;
+  const TAG_Y = ANCHOR_Y - 120;     // child categories well below parent
+  const SPHERE_GAP = 40;             // gap between tag label and sphere top
 
   anchors.forEach((anchor, i) => {
     const angle = (i / anchors.length) * Math.PI * 2 - Math.PI / 2;
@@ -8423,87 +8540,84 @@ function computeLayout(nodes) {
     placed.add(anchor.id);
   });
 
-  // ── 2. Tags hang well BELOW their anchor ──
-  const TAG_DROP = -100; // Big vertical gap — anchor clearly above
+  // ── 2. For each anchor: spread child tags in a wide ring, each with its own memory sphere ──
   anchors.forEach(anchor => {
     const cat = anchor.payload._anchorCategory;
     const childTags = tags.filter(t => t.payload._parentAnchor === cat);
-    if (!childTags.length) return;
 
-    const tagRadius = 60 + childTags.length * 12;
-    childTags.forEach((tag, i) => {
-      const angle = (i / childTags.length) * Math.PI * 2;
-      tag.x = anchor.x + Math.cos(angle) * tagRadius;
-      tag.y = anchor.y + TAG_DROP + (Math.random() - 0.5) * 10;
-      tag.z = anchor.z + Math.sin(angle) * tagRadius;
-      tag.fx = tag.x; tag.fy = tag.y; tag.fz = tag.z;
-      placed.add(tag.id);
-    });
-  });
-
-  // ── 3. Memories hang BELOW their tag — downward cone ──
-  const MEM_DROP = -30; // Gap between tag and memory cloud
-  tags.forEach(tag => {
-    const tagCat = tag.payload._tagCategory;
-    const tagMems = memories.filter(m => m.payload.category === tagCat);
-    if (!tagMems.length) return;
-
-    const memRadius = 15 + Math.sqrt(tagMems.length) * 6;
-    tagMems.forEach((mem, i) => {
-      // Bottom hemisphere only — memories always below their tag
-      const phi = (Math.PI / 2) + (Math.PI / 2) * (i + 0.5) / tagMems.length;
-      const theta = 2 * Math.PI * i / GOLDEN;
-      mem.x = tag.x + memRadius * Math.sin(phi) * Math.cos(theta);
-      mem.y = tag.y + MEM_DROP + memRadius * Math.cos(phi);
-      mem.z = tag.z + memRadius * Math.sin(phi) * Math.sin(theta);
-      mem.fx = mem.x; mem.fy = mem.y; mem.fz = mem.z;
-      placed.add(mem.id);
-    });
-  });
-
-  // ── 4. Direct-parent memories → hang below anchor (no tag) ──
-  anchors.forEach(anchor => {
-    const cat = anchor.payload._anchorCategory;
+    // Direct-parent memories (belong to parent category, no child tag)
     const directMems = memories.filter(m => m.payload.category === cat && !placed.has(m.id));
-    if (!directMems.length) return;
 
-    const memRadius = 20 + Math.sqrt(directMems.length) * 6;
-    directMems.forEach((mem, i) => {
-      const phi = (Math.PI / 2) + (Math.PI / 2) * (i + 0.5) / directMems.length;
-      const theta = 2 * Math.PI * i / GOLDEN;
-      mem.x = anchor.x + memRadius * Math.sin(phi) * Math.cos(theta);
-      mem.y = anchor.y + TAG_DROP + MEM_DROP + memRadius * Math.cos(phi);
-      mem.z = anchor.z + memRadius * Math.sin(phi) * Math.sin(theta);
-      mem.fx = mem.x; mem.fy = mem.y; mem.fz = mem.z;
-      placed.add(mem.id);
-    });
+    // If there are child tags, spread them in a ring around the anchor
+    if (childTags.length) {
+      // Ring radius sized so tags don't overlap — wider spacing per tag
+      const tagRingRadius = Math.max(120, childTags.length * 65);
+
+      childTags.forEach((tag, i) => {
+        const angle = (i / childTags.length) * Math.PI * 2;
+        tag.x = anchor.x + Math.cos(angle) * tagRingRadius;
+        tag.y = TAG_Y;
+        tag.z = anchor.z + Math.sin(angle) * tagRingRadius;
+        tag.fx = tag.x; tag.fy = tag.y; tag.fz = tag.z;
+        placed.add(tag.id);
+
+        // Each tag gets its own geodesic sphere of memories below it
+        const tagCat = tag.payload._tagCategory;
+        const tagMems = memories.filter(m => m.payload.category === tagCat && !placed.has(m.id));
+        if (tagMems.length) {
+          const r = 25 + Math.sqrt(tagMems.length) * 8;
+          const sphereCenter = { x: tag.x, y: tag.y - r - SPHERE_GAP, z: tag.z };
+          const positions = fibSphere(tagMems.length, r, sphereCenter);
+          tagMems.forEach((mem, j) => {
+            mem.x = positions[j].x;
+            mem.y = positions[j].y;
+            mem.z = positions[j].z;
+            mem.fx = mem.x; mem.fy = mem.y; mem.fz = mem.z;
+            placed.add(mem.id);
+          });
+        }
+      });
+    }
+
+    // Direct-parent memories form a small sphere directly below the anchor
+    if (directMems.length) {
+      const r = 25 + Math.sqrt(directMems.length) * 8;
+      const sphereCenter = { x: anchor.x, y: TAG_Y - r - SPHERE_GAP, z: anchor.z };
+      const positions = fibSphere(directMems.length, r, sphereCenter);
+      directMems.forEach((mem, i) => {
+        mem.x = positions[i].x;
+        mem.y = positions[i].y;
+        mem.z = positions[i].z;
+        mem.fx = mem.x; mem.fy = mem.y; mem.fz = mem.z;
+        placed.add(mem.id);
+      });
+    }
   });
 
-  // ── 5. Orphan memories → outer ring below the anchor plane ──
+  // ── 3. Orphan memories (no matching anchor) → outer spheres ──
   const orphans = memories.filter(m => !placed.has(m.id));
   if (orphans.length) {
     const catGroups = {};
     orphans.forEach(m => {
-      const cat = m.payload.category || '_uncategorized';
-      if (!catGroups[cat]) catGroups[cat] = [];
-      catGroups[cat].push(m);
+      const c = m.payload.category || '_uncategorized';
+      if (!catGroups[c]) catGroups[c] = [];
+      catGroups[c].push(m);
     });
     const groupNames = Object.keys(catGroups);
-    const orphanBase = anchorRadius + 100;
+    const orphanBase = anchorRadius + 150;
 
-    groupNames.forEach((cat, gi) => {
+    groupNames.forEach((c, gi) => {
       const angle = (gi / Math.max(groupNames.length, 1)) * Math.PI * 2;
       const cx = Math.cos(angle) * orphanBase;
       const cz = Math.sin(angle) * orphanBase;
-      const mems = catGroups[cat];
-      const r = 15 + Math.sqrt(mems.length) * 6;
+      const mems = catGroups[c];
+      const r = 25 + Math.sqrt(mems.length) * 8;
+      const positions = fibSphere(mems.length, r, { x: cx, y: 0, z: cz });
 
       mems.forEach((mem, i) => {
-        const phi = (Math.PI / 2) + (Math.PI / 2) * (i + 0.5) / mems.length;
-        const theta = 2 * Math.PI * i / GOLDEN;
-        mem.x = cx + r * Math.sin(phi) * Math.cos(theta);
-        mem.y = -20 + r * Math.cos(phi); // Below the anchor plane
-        mem.z = cz + r * Math.sin(phi) * Math.sin(theta);
+        mem.x = positions[i].x;
+        mem.y = positions[i].y;
+        mem.z = positions[i].z;
         mem.fx = mem.x; mem.fy = mem.y; mem.fz = mem.z;
         placed.add(mem.id);
       });
@@ -8629,10 +8743,6 @@ function applyGraphData() {
   } else {
     computeLayout(visibleNodes);
   }
-
-  console.log('[GRAPH DEBUG] nodes:', visibleNodes.length, 'links:', visibleLinks.length,
-    'structural:', visibleLinks.filter(l => l._isStructural).length,
-    'memory:', visibleLinks.filter(l => !l._isStructural).length);
 
   graph.graphData({ nodes: visibleNodes, links: visibleLinks });
 
@@ -9703,7 +9813,6 @@ let linksVisible = true;
 let noLinksScaleBoost = 1.0;
 document.getElementById('toggle-links-btn').addEventListener('click', () => {
   if (!graph) return;
-  // Cycle: off → intra → all → off
   const modes = ['off', 'intra', 'all'];
   const labels = { intra: 'Intra Links', all: 'All Links', off: 'Links Off' };
   const idx = modes.indexOf(_linkMode);
@@ -9711,20 +9820,50 @@ document.getElementById('toggle-links-btn').addEventListener('click', () => {
 
   if (_linkMode === 'off') {
     linksVisible = false;
-    graph.linkVisibility(false);
-    noLinksScaleBoost = 1.8;
+    noLinksScaleBoost = 3.0;
   } else {
     linksVisible = true;
-    graph.linkVisibility((link) => {
-      if (link._isStructural) return false; // Always hidden (force-only)
-      if (_linkMode === 'intra') return !link._crossCategory;
-      return true; // 'all' mode
-    });
     noLinksScaleBoost = 1.0;
-    // Re-inject cross-category links if switching to 'all', or remove if 'intra'
     applyGraphData();
   }
+  applyLinkVisibility();
   document.getElementById('toggle-links-btn').textContent = labels[_linkMode];
+});
+
+// ── Link type filter ──
+const LINK_TYPES = [
+  { key: 'all',        label: 'Show: All Types' },
+  { key: 'similarity', label: 'Show: Similar Content' },
+  { key: 'files',      label: 'Show: Shared Files' },
+  { key: 'tags',       label: 'Show: Shared Tags' },
+  { key: 'family',     label: 'Show: Same Family' },
+  { key: 'manual',     label: 'Show: Manually Linked' },
+];
+let _linkTypeFilter = 'all';
+
+function applyLinkVisibility() {
+  if (!graph) return;
+  if (_linkMode === 'off') {
+    graph.linkVisibility(false);
+    return;
+  }
+  graph.linkVisibility((link) => {
+    if (link._isStructural) return false;
+    if (_linkMode === 'intra' && link._crossCategory) return false;
+    if (_linkTypeFilter !== 'all') {
+      if (!link.types || !link.types.includes(_linkTypeFilter)) return false;
+    }
+    return true;
+  });
+}
+
+document.getElementById('link-type-btn').addEventListener('click', () => {
+  if (!graph) return;
+  const idx = LINK_TYPES.findIndex(t => t.key === _linkTypeFilter);
+  _linkTypeFilter = LINK_TYPES[(idx + 1) % LINK_TYPES.length].key;
+  const label = LINK_TYPES.find(t => t.key === _linkTypeFilter).label;
+  document.getElementById('link-type-btn').textContent = label;
+  applyLinkVisibility();
 });
 
 document.getElementById('reset-positions-btn').addEventListener('click', () => {
@@ -11636,7 +11775,8 @@ async function openSettingsModal() {
       overlay.querySelectorAll('.gfx-preset-card').forEach(c => c.classList.remove('active'));
       // Live-apply visual changes (forces disabled — layout is computed)
       if (graph) {
-        if (key === 'linkOpacity') graph.linkOpacity(val);
+        // linkOpacity is synced live via linkPositionUpdate
+        if (key === 'bgParticleCount') applyBgTheme(gfx.bgTheme || 'nebula');
       }
     });
   });
@@ -11655,7 +11795,8 @@ async function openSettingsModal() {
     overlay.querySelectorAll('.gfx-preset-card').forEach(c => c.classList.remove('active'));
     // Re-apply visual defaults (forces disabled — layout is computed)
     if (graph) {
-      graph.linkOpacity(GFX_DEFAULTS.linkOpacity);
+      // linkOpacity is synced live via linkPositionUpdate
+      applyBgTheme(GFX_DEFAULTS.bgTheme || 'nebula');
     }
   });
 
