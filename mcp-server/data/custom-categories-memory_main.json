@@ -106,6 +106,31 @@
       "description": "Feature ideas, product concepts, and future plans for SynaBun",
       "created_at": "2026-02-19T06:23:49.508Z",
       "parent": "synabun"
+    },
+    {
+      "name": "synabun-website",
+      "description": "SynaBun product website — design, responsive, content, assets, effects",
+      "created_at": "2026-02-19T19:24:43.771Z",
+      "color": "#8b5cf6",
+      "is_parent": true
+    },
+    {
+      "name": "design-system",
+      "description": "Color scheme, typography, CSS variables, visual design tokens",
+      "created_at": "2026-02-19T19:24:47.719Z",
+      "parent": "synabun-website"
+    },
+    {
+      "name": "site-structure",
+      "description": "HTML sections, page layout, navigation, content hierarchy",
+      "created_at": "2026-02-19T19:24:51.030Z",
+      "parent": "synabun-website"
+    },
+    {
+      "name": "effects-and-canvas",
+      "description": "Three.js scenes, 2D canvas effects, animations, scroll effects, interactive JS",
+      "created_at": "2026-02-19T19:24:54.603Z",
+      "parent": "synabun-website"
     }
   ]
 }

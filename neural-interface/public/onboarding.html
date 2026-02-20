@@ -2001,84 +2001,37 @@ document.getElementById('mcpCodeWrap').addEventListener('click', () => {
 // STEP 8: Instructions
 // ═══════════════════════════════════════════
 
+// Cache for live rulesets fetched from the API (single source of truth: CLAUDE.md)
+const _rulesetCache = {};
+
+async function fetchRuleset(format) {
+  if (_rulesetCache[format]) return _rulesetCache[format];
+  try {
+    const res = await fetch(`/api/claude-code/ruleset?format=${format}`);
+    const data = await res.json();
+    if (data.ok && data.ruleset) {
+      _rulesetCache[format] = data.ruleset;
+      return data.ruleset;
+    }
+  } catch {}
+  return null;
+}
+
+// Map tool ID to API format param
+const TOOL_FORMAT = { claude: 'claude', cursor: 'cursor' };
+
 function getInstructionsContent() {
   const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
-  if (tool.id === 'claude') return getClaudeInstructions();
-  if (tool.id === 'cursor') return getCursorInstructions();
-  return getGenericInstructions();
+  const format = TOOL_FORMAT[tool.id] || 'generic';
+  return _rulesetCache[format] || 'Failed to load ruleset. Please check that the Neural Interface server is running.';
 }
 
-function getClaudeInstructions() {
-  return `## Persistent Memory System
-
-Claude has persistent vector memory via the \`memory\` MCP server (Qdrant + embeddings).
-
-### Memory Tools
-
-| Tool | Purpose |
-|------|---------|
-| \`remember\` | Store a memory (content, category, importance, tags) |
-| \`recall\` | Semantic search across all memories |
-| \`forget\` | Delete a memory by ID |
-| \`reflect\` | Update an existing memory |
-| \`memories\` | List recent memories or get stats |
-
-### Auto-Recall (do this automatically)
-
-- At session start: \`recall\` context about the current project
-- When user mentions a specific topic: \`recall\` what you know
-- Before architecture decisions: \`recall\` past decisions
-- When debugging: \`recall\` past similar bugs
-
-### Auto-Remember (do this automatically)
-
-- After fixing a hard bug: \`remember\` the solution (importance 7+)
-- After architecture decisions: \`remember\` the decision and why (importance 8+)
-- When user says "remember this": importance 8+
-- API quirks or gotchas discovered: \`remember\` as learning
-- Session-ending context: \`remember\` ongoing work as conversation
-
-### Importance Scale
-
-1-2=trivial, 3-4=low, 5=normal, 6-7=significant, 8-9=critical, 10=foundational`;
-}
-
-function getCursorInstructions() {
-  return `# Memory System
-
-You have persistent vector memory via the \`memory\` MCP server.
-
-## Tools: remember, recall, forget, reflect, memories
-
-## Rules
-- At session start: recall context about current project
-- After fixing bugs: remember the solution (importance 7+)
-- After architecture decisions: remember why (importance 8+)
-- When user says "remember this": importance 8+
-- Importance scale: 1-2=trivial, 5=normal, 7=significant, 9=critical, 10=foundational`;
-}
-
-function getGenericInstructions() {
-  return `## Memory System
-
-This project uses a persistent vector memory MCP server.
-
-### Available Tools
-- \`remember\` — Store a memory (content, category, importance, tags)
-- \`recall\` — Semantic search across all memories
-- \`forget\` — Delete a memory by ID
-- \`reflect\` — Update an existing memory
-- \`memories\` — List recent memories or get stats
-
-### Guidelines
-- Recall context at session start
-- Remember important decisions and bug fixes
-- Importance scale: 1-2=trivial, 5=normal, 7=significant, 9=critical, 10=foundational`;
-}
-
-function onInstructionsStep() {
+async function onInstructionsStep() {
   const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
   document.getElementById('instrFileName').textContent = 'Paste into: ' + tool.instrFile;
+  document.getElementById('instrPreview').textContent = 'Loading ruleset...';
+  const format = TOOL_FORMAT[tool.id] || 'generic';
+  await fetchRuleset(format);
   document.getElementById('instrPreview').textContent = getInstructionsContent();
   document.getElementById('instrCopyHint').textContent =
     tool.id === 'claude' ? 'Paste this into your project\'s CLAUDE.md file.' :
