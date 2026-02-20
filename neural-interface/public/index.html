@@ -6,7 +6,7 @@
 <title>Neural Memory Interface</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
   /* ═══════════════════════════════════════════
      RESET & BASE
@@ -4701,6 +4701,8 @@ const GFX_DEFAULTS = {
   // Background
   bgIntensity: 0.5,
   bgParticleCount: 2000,
+  bgTheme: 'nebula', // 'nebula' | 'deep-grid'
+  floorStyle: 'grid', // 'grid' | 'dots' | 'hex' | 'ripples' | 'fog' | 'none'
 };
 
 // Graphics quality presets
@@ -4713,7 +4715,7 @@ const GFX_PRESETS = {
       coreOpacity: 0.5, glowOpacity: 0.15, glowScale: 3,
       colorDarken: 0.5, clickZoom: 120, gentleZoom: 180,
       selectedGlow: 0.8, selectedScale: 1.15,
-      bgIntensity: 0.2, bgParticleCount: 800,
+      bgIntensity: 0.2, bgParticleCount: 800, bgTheme: 'nebula', floorStyle: 'grid',
     },
   },
   medium: {
@@ -4724,7 +4726,7 @@ const GFX_PRESETS = {
       coreOpacity: 0.7, glowOpacity: 0.4, glowScale: 4.5,
       colorDarken: 0.5, clickZoom: 120, gentleZoom: 180,
       selectedGlow: 1.4, selectedScale: 1.3,
-      bgIntensity: 0.5, bgParticleCount: 2000,
+      bgIntensity: 0.5, bgParticleCount: 2000, bgTheme: 'nebula', floorStyle: 'grid',
     },
   },
   high: {
@@ -4735,7 +4737,7 @@ const GFX_PRESETS = {
       coreOpacity: 0.85, glowOpacity: 0.55, glowScale: 5.5,
       colorDarken: 0.45, clickZoom: 140, gentleZoom: 200,
       selectedGlow: 1.6, selectedScale: 1.4,
-      bgIntensity: 0.7, bgParticleCount: 3000,
+      bgIntensity: 0.7, bgParticleCount: 3000, bgTheme: 'nebula', floorStyle: 'grid',
     },
   },
   insane: {
@@ -4746,7 +4748,7 @@ const GFX_PRESETS = {
       coreOpacity: 0.95, glowOpacity: 0.7, glowScale: 7,
       colorDarken: 0.4, clickZoom: 160, gentleZoom: 230,
       selectedGlow: 2.0, selectedScale: 1.5,
-      bgIntensity: 1.0, bgParticleCount: 4000,
+      bgIntensity: 1.0, bgParticleCount: 4000, bgTheme: 'nebula', floorStyle: 'grid',
     },
   },
 };
@@ -4794,10 +4796,20 @@ function applyGfxPreset(presetKey) {
         if (valSpan) valSpan.textContent = Number(gfx[key]).toFixed(step < 1 ? 2 : 0);
       }
     });
-    panel.querySelectorAll('.gfx-preset-card').forEach(c => {
+    panel.querySelectorAll('.gfx-preset-card[data-preset]').forEach(c => {
       c.classList.toggle('active', c.dataset.preset === presetKey);
     });
+    // Update theme cards too
+    panel.querySelectorAll('.bg-theme-card').forEach(c => {
+      c.classList.toggle('active', c.dataset.bgTheme === gfx.bgTheme);
+    });
+    panel.querySelectorAll('.floor-card').forEach(c => {
+      c.classList.toggle('active', c.dataset.floorStyle === gfx.floorStyle);
+    });
   }
+
+  // Apply background theme if it changed
+  applyBgTheme(gfx.bgTheme || 'nebula');
 }
 
 function loadGfxConfig() {
@@ -4861,6 +4873,7 @@ let labelSizeMultiplier = 1.0;
 let graph = null;
 let animFrameId = null;
 let graphRemovalTimer = null; // delayed node removal for smooth category toggle
+let _bloomPass = null; // reference to bloom post-processing pass
 
 // ─── Drag state (single source of truth, outer scope for animate() access) ───
 const _drag = {
@@ -5290,25 +5303,25 @@ function buildGraph() {
   applyGraphData();
 
   // One-time reset: clear saved positions for new hierarchical layout (v2)
-  if (localStorage.getItem('synabun-layout-version') !== 'v3-chandelier') {
+  if (localStorage.getItem('synabun-layout-version') !== 'v4-spacing') {
     try { localStorage.removeItem(_posStorageKey); } catch (_) {}
-    localStorage.setItem('synabun-layout-version', 'v3-chandelier');
+    localStorage.setItem('synabun-layout-version', 'v4-spacing');
   }
 
   // Links visible by default — proximity system controls their opacity dynamically
   graph.linkVisibility(true);
 
   // Bloom post-processing — atmospheric glow for plexus nodes
-  const bloomPass = new UnrealBloomPass(
+  _bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
     0.7,   // strength — visible glow around bright nodes
     0.5,   // radius — balanced spread
     0.2    // threshold — bloom on brighter elements
   );
-  graph.postProcessingComposer().addPass(bloomPass);
+  graph.postProcessingComposer().addPass(_bloomPass);
 
-  // Add lightweight background
-  addBackground();
+  // Add background based on theme setting
+  applyBgTheme(gfx.bgTheme || 'nebula');
 
   // Start animation loop
   animate();
@@ -5388,49 +5401,51 @@ function createAnchorObject(node) {
 
   const group = new THREE.Group();
 
-  // Bright dot sprite — category color, clearly visible
-  const dotMat = new THREE.SpriteMaterial({
-    map: getSoftDotTexture(),
-    color: hex,
-    transparent: true,
-    opacity: 0.6,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const dot = new THREE.Sprite(dotMat);
-  dot.scale.set(dotSize, dotSize, 1);
-  dot.raycast = () => {};
-  group.add(dot);
+  // No dot sphere for parent categories — only text/image label is shown
 
-  // Label sprite — logo or text
-  const labelCanvas = document.createElement('canvas');
-  const labelCtx = labelCanvas.getContext('2d');
-  labelCanvas.width = 512;
-  labelCanvas.height = 256;
-  labelCtx.clearRect(0, 0, 512, 256);
-
-  const cx = 256;
+  // Label sprite — tightly sized canvas so hitbox matches content precisely
   const _logoEntry = _categoryLogos.get(parentName);
   const useLogo = (_logoEntry && _logoEntry.ready) || (parentName === 'openclaw' && _openclawLogoReady);
   const logoImage = (_logoEntry && _logoEntry.ready) ? _logoEntry.img : _openclawLogo;
 
+  // Measure content to size canvas tightly
+  let contentW, contentH;
+  const PAD = 16; // small padding around content
+
   if (useLogo) {
     const aspect = logoImage.naturalWidth / (logoImage.naturalHeight || 1);
     const maxW = 380, maxH = 100;
-    let logoW, logoH;
-    if (aspect >= maxW / maxH) { logoW = maxW; logoH = maxW / aspect; }
-    else { logoH = maxH; logoW = maxH * aspect; }
-    const logoY = 50 + (maxH - logoH) / 2;
-    const logoX = cx - logoW / 2;
+    if (aspect >= maxW / maxH) { contentW = maxW; contentH = maxW / aspect; }
+    else { contentH = maxH; contentW = maxH * aspect; }
+  } else {
+    // Measure text width
+    const measureCanvas = document.createElement('canvas');
+    const measureCtx = measureCanvas.getContext('2d');
+    measureCtx.font = '600 36px "Space Grotesk", "Inter", system-ui, sans-serif';
+    const metrics = measureCtx.measureText(parentName.toUpperCase());
+    contentW = Math.ceil(metrics.width);
+    contentH = 44; // font size + descenders
+  }
+
+  const canvasW = Math.ceil(contentW + PAD * 2);
+  const canvasH = Math.ceil(contentH + PAD * 2);
+
+  const labelCanvas = document.createElement('canvas');
+  const labelCtx = labelCanvas.getContext('2d');
+  labelCanvas.width = canvasW;
+  labelCanvas.height = canvasH;
+  labelCtx.clearRect(0, 0, canvasW, canvasH);
+
+  if (useLogo) {
     labelCtx.globalAlpha = 0.85;
-    labelCtx.drawImage(logoImage, logoX, logoY, logoW, logoH);
+    labelCtx.drawImage(logoImage, PAD, PAD, contentW, contentH);
     labelCtx.globalAlpha = 1.0;
   } else {
-    labelCtx.font = '600 36px "Inter", "SF Pro", system-ui, sans-serif';
+    labelCtx.font = '600 36px "Space Grotesk", "Inter", system-ui, sans-serif';
     labelCtx.textAlign = 'center';
     labelCtx.textBaseline = 'middle';
-    labelCtx.fillStyle = 'rgba(255,255,255,0.75)';
-    labelCtx.fillText(parentName.toUpperCase(), cx, 100);
+    labelCtx.fillStyle = 'rgba(255,255,255,0.85)';
+    labelCtx.fillText(parentName.toUpperCase(), canvasW / 2, canvasH / 2);
   }
 
   const labelTex = new THREE.CanvasTexture(labelCanvas);
@@ -5441,22 +5456,29 @@ function createAnchorObject(node) {
     depthWrite: false,
   });
   const label = new THREE.Sprite(labelMat);
-  label.scale.set(dotSize * 5, dotSize * 2.5, 1);
+  // Scale sprite to match content — world units proportional to canvas pixels
+  // ~0.2 world units per canvas pixel gives readable size
+  const SCALE = 0.2;
+  const labelW = canvasW * SCALE;
+  const labelH = canvasH * SCALE;
+  label.scale.set(labelW, labelH, 1);
   label.position.set(0, 0, 0.5);
-  // label is clickable — triggers zoom-to-cluster
+  // Label IS the hitbox — precisely sized to content bounds
   group.add(label);
 
-  // Invisible hitbox for click/drag detection
-  const hitboxGeo = new THREE.SphereGeometry(dotSize * 1.5, 8, 8);
-  const hitboxMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
-  group.add(new THREE.Mesh(hitboxGeo, hitboxMat));
+  // Flat plane hitbox — precisely matches label dimensions for click/drag
+  const hitGeo = new THREE.PlaneGeometry(labelW, labelH);
+  const hitMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+  const hitbox = new THREE.Mesh(hitGeo, hitMat);
+  hitbox.position.set(0, 0, 0.5);
+  group.add(hitbox);
 
   group.userData.nodeId = node.id;
   group.userData.isAnchor = true;
   group.userData.anchorCategory = parentName;
-  group.userData.dot = dot;
+  group.userData.dot = null; // no dot sphere for parent categories
   group.userData.label = label;
-  group.userData.baseLabelScale = { x: dotSize * 5, y: dotSize * 2.5 };
+  group.userData.baseLabelScale = { x: labelW, y: labelH };
   group.userData.baseLabelY = 0;
   group.userData.baseRadius = dotSize;
   group.userData.category = parentName;
@@ -5495,37 +5517,53 @@ function createTagObject(node) {
   dot.raycast = () => {};
   group.add(dot);
 
-  // Small text label
+  // Small text label — tightly sized canvas
+  const measureCanvas = document.createElement('canvas');
+  const measureCtx = measureCanvas.getContext('2d');
+  measureCtx.font = '500 28px "JetBrains Mono", "Space Grotesk", monospace';
+  const tagMetrics = measureCtx.measureText(catName);
+  const tagTextW = Math.ceil(tagMetrics.width);
+  const tagTextH = 36;
+  const tagPad = 12;
+  const tagCanvasW = tagTextW + tagPad * 2;
+  const tagCanvasH = tagTextH + tagPad * 2;
+
   const labelCanvas = document.createElement('canvas');
   const labelCtx = labelCanvas.getContext('2d');
-  labelCanvas.width = 512;
-  labelCanvas.height = 128;
-  labelCtx.clearRect(0, 0, 512, 128);
-  labelCtx.font = '500 28px "Inter", "SF Pro", system-ui, sans-serif';
+  labelCanvas.width = tagCanvasW;
+  labelCanvas.height = tagCanvasH;
+  labelCtx.clearRect(0, 0, tagCanvasW, tagCanvasH);
+  labelCtx.font = '500 28px "JetBrains Mono", "Space Grotesk", monospace';
   labelCtx.textAlign = 'center';
   labelCtx.textBaseline = 'middle';
   labelCtx.fillStyle = color;
-  labelCtx.fillText(catName, 256, 50);
+  labelCtx.fillText(catName, tagCanvasW / 2, tagCanvasH / 2);
 
   const labelTex = new THREE.CanvasTexture(labelCanvas);
   const labelMat = new THREE.SpriteMaterial({ map: labelTex, transparent: true, opacity: 0.6, depthWrite: false });
   const label = new THREE.Sprite(labelMat);
-  label.scale.set(dotSize * 5, dotSize * 1.25, 1);
+  const TAG_SCALE = 0.15;
+  const tagLabelW = tagCanvasW * TAG_SCALE;
+  const tagLabelH = tagCanvasH * TAG_SCALE;
+  label.scale.set(tagLabelW, tagLabelH, 1);
   label.position.set(0, dotSize * 0.8, 0);
-  // label is clickable — triggers zoom-to-tag
   group.add(label);
 
-  // Hitbox
-  const hitboxGeo = new THREE.SphereGeometry(dotSize * 1.5, 8, 8);
-  const hitboxMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
-  group.add(new THREE.Mesh(hitboxGeo, hitboxMat));
+  // Flat plane hitbox — precisely matches label + dot area
+  const hitW = Math.max(tagLabelW, dotSize);
+  const hitH = tagLabelH + dotSize;
+  const hitGeo = new THREE.PlaneGeometry(hitW, hitH);
+  const hitMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+  const hitbox = new THREE.Mesh(hitGeo, hitMat);
+  hitbox.position.set(0, dotSize * 0.4, 0);
+  group.add(hitbox);
 
   group.userData.nodeId = node.id;
   group.userData.isTag = true;
   group.userData.tagCategory = catName;
   group.userData.dot = dot;
   group.userData.label = label;
-  group.userData.baseLabelScale = { x: dotSize * 5, y: dotSize * 1.25 };
+  group.userData.baseLabelScale = { x: tagLabelW, y: tagLabelH };
   group.userData.baseLabelY = dotSize * 0.8;
   group.userData.baseRadius = dotSize;
   group.userData.category = catName;
@@ -5718,6 +5756,842 @@ function addBackground() {
 let bgParticles = null;
 let bgFogSphere = null;
 
+// Deep Grid theme objects
+let bgGrid = null;
+let bgGridPillars = null;
+let bgWorldParticles = null;
+let bgGridFloor2 = null;
+let bgSkyDome = null;
+let _cloudPlanes = [];
+let bgSkyParticles = null;
+let _origControlsUpdate = null; // saved reference for cleanup
+
+// Floor effect objects (independent of bg theme)
+let floorMesh = null;
+let floorParticles = null;
+const FLOOR_Y_CONST = -200;
+
+// ═══════════════════════════════════════════
+// FLOOR EFFECTS — Selectable floor styles
+// ═══════════════════════════════════════════
+
+function removeFloor() {
+  const scene = graph.scene();
+  if (floorMesh) { scene.remove(floorMesh); floorMesh.geometry.dispose(); floorMesh.material.dispose(); floorMesh = null; }
+  if (floorParticles) { scene.remove(floorParticles); floorParticles.geometry.dispose(); floorParticles.material.dispose(); floorParticles = null; }
+}
+
+// ── Floor: Grid ──
+function addFloorGrid() {
+  const scene = graph.scene();
+  const gridSize = 8000;
+  const gridGeo = new THREE.PlaneGeometry(gridSize, gridSize, 1, 1);
+  gridGeo.rotateX(-Math.PI / 2);
+
+  const gridMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uTime: { value: 0 },
+      uCamY: { value: 300 },
+    },
+    vertexShader: `
+      varying vec3 vWorldPos;
+      void main() {
+        vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vWorldPos;
+      uniform float uTime;
+      uniform float uCamY;
+
+      float softLine(float coord, float spacing, float sharpness) {
+        float d = abs(mod(coord + spacing * 0.5, spacing) - spacing * 0.5);
+        // Combine gaussian glow with screen-space AA to kill edge aliasing
+        float fw = fwidth(coord / spacing) * spacing * 1.5;
+        float aa = 1.0 - smoothstep(0.0, max(fw, 0.5), d);
+        float glow = exp(-d * d * sharpness);
+        return max(aa * 0.6, glow);
+      }
+
+      void main() {
+        float distFromCenter = length(vWorldPos.xz);
+        float fade = 1.0 - smoothstep(1200.0, 3800.0, distFromCenter);
+
+        // Sharpness decreases with distance — lines get softer/wider further out
+        float sharpness = mix(1.2, 0.15, smoothstep(0.0, 2500.0, distFromCenter));
+
+        float lx = softLine(vWorldPos.x, 200.0, sharpness);
+        float lz = softLine(vWorldPos.z, 200.0, sharpness);
+        float grid = max(lx, lz);
+
+        float dot = lx * lz;
+        float pulse = sin(uTime * 2.0 + vWorldPos.x * 0.04 + vWorldPos.z * 0.03) * 0.5 + 0.5;
+        float dotGlow = dot * (0.08 + pulse * 0.08);
+
+        vec3 col = vec3(1.0);
+        float alpha = (grid * 0.045 + dotGlow) * fade;
+
+        float camFade = smoothstep(0.0, 10.0, abs(uCamY - ${FLOOR_Y_CONST}.0));
+        alpha *= 0.4 + camFade * 0.6;
+
+        if (alpha < 0.002) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+  });
+
+  floorMesh = new THREE.Mesh(gridGeo, gridMat);
+  floorMesh.position.y = FLOOR_Y_CONST;
+  floorMesh.renderOrder = -10;
+  scene.add(floorMesh);
+}
+
+// ── Floor: Dot Field with proximity glow ──
+function addFloorDots() {
+  const scene = graph.scene();
+  const spacing = 50;
+  const extent = 3200;
+  const count = Math.pow(Math.floor(extent * 2 / spacing) + 1, 2);
+  const positions = new Float32Array(count * 3);
+  const phases = new Float32Array(count);
+  let idx = 0;
+
+  for (let x = -extent; x <= extent; x += spacing) {
+    for (let z = -extent; z <= extent; z += spacing) {
+      positions[idx * 3] = x + (Math.random() - 0.5) * 4;
+      positions[idx * 3 + 1] = FLOOR_Y_CONST;
+      positions[idx * 3 + 2] = z + (Math.random() - 0.5) * 4;
+      phases[idx] = Math.random() * Math.PI * 2;
+      idx++;
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions.slice(0, idx * 3), 3));
+  geo.setAttribute('aPhase', new THREE.Float32BufferAttribute(phases.slice(0, idx), 1));
+
+  const mat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uTime: { value: 0 },
+      uCamPos: { value: new THREE.Vector3(0, 300, 0) },
+    },
+    vertexShader: `
+      attribute float aPhase;
+      varying float vAlpha;
+      varying float vProximity;
+      uniform float uTime;
+      uniform vec3 uCamPos;
+      void main() {
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        float distFromCenter = length(worldPos.xz);
+        float fade = 1.0 - smoothstep(1200.0, 3200.0, distFromCenter);
+
+        // Proximity glow — brighter near camera xz
+        float camDist = length(worldPos.xz - uCamPos.xz);
+        vProximity = exp(-camDist * camDist * 0.000003);
+
+        float twinkle = 0.5 + 0.5 * sin(uTime * 1.5 + aPhase * 6.28);
+        vAlpha = fade * (0.06 + twinkle * 0.06 + vProximity * 0.25);
+
+        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        float size = (2.0 + vProximity * 4.0) * (300.0 / max(-mvPos.z, 1.0));
+        gl_PointSize = size;
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      varying float vProximity;
+      void main() {
+        float dist = length(gl_PointCoord - vec2(0.5));
+        if (dist > 0.5) discard;
+        float core = exp(-dist * dist * 20.0);
+        float glow = exp(-dist * dist * 6.0) * 0.4;
+        float alpha = (core + glow) * vAlpha;
+        vec3 col = mix(vec3(0.7, 0.75, 0.9), vec3(1.0), vProximity);
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+  });
+
+  floorParticles = new THREE.Points(geo, mat);
+  floorParticles.renderOrder = -10;
+  scene.add(floorParticles);
+}
+
+// ── Floor: Hex Grid ──
+function addFloorHex() {
+  const scene = graph.scene();
+  const gridSize = 8000;
+  const gridGeo = new THREE.PlaneGeometry(gridSize, gridSize, 1, 1);
+  gridGeo.rotateX(-Math.PI / 2);
+
+  const hexMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uTime: { value: 0 },
+      uCamY: { value: 300 },
+    },
+    vertexShader: `
+      varying vec3 vWorldPos;
+      void main() {
+        vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vWorldPos;
+      uniform float uTime;
+      uniform float uCamY;
+
+      // Hex distance field
+      float hexDist(vec2 p) {
+        p = abs(p);
+        return max(dot(p, normalize(vec2(1.0, 1.732))), p.x);
+      }
+
+      vec4 hexCoords(vec2 uv, float scale) {
+        vec2 r = vec2(1.0, 1.732);
+        vec2 h = r * 0.5;
+        vec2 a = mod(uv, r) - h;
+        vec2 b = mod(uv - h, r) - h;
+        vec2 gv = length(a) < length(b) ? a : b;
+        float edge = 0.5 * scale - hexDist(gv);
+        vec2 id = uv - gv;
+        return vec4(gv, id);
+      }
+
+      void main() {
+        float distFromCenter = length(vWorldPos.xz);
+        float fade = 1.0 - smoothstep(1200.0, 3800.0, distFromCenter);
+
+        float scale = 45.0;
+        vec2 uv = vWorldPos.xz / scale;
+        vec4 hc = hexCoords(uv, 1.0);
+
+        float edgeDist = 0.5 - hexDist(hc.xy);
+        float edge = exp(-pow(edgeDist * 12.0, 2.0));
+
+        // Vertex glow at hex corners
+        float vertDist = length(hc.xy) - 0.5;
+        float vert = exp(-vertDist * vertDist * 80.0);
+
+        // Pulse per cell
+        float pulse = sin(uTime * 1.5 + hc.z * 3.0 + hc.w * 2.0) * 0.5 + 0.5;
+
+        vec3 col = vec3(1.0);
+        float alpha = (edge * 0.05 + vert * (0.08 + pulse * 0.06)) * fade;
+
+        float camFade = smoothstep(0.0, 10.0, abs(uCamY - ${FLOOR_Y_CONST}.0));
+        alpha *= 0.4 + camFade * 0.6;
+
+        if (alpha < 0.002) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+  });
+
+  floorMesh = new THREE.Mesh(gridGeo, hexMat);
+  floorMesh.position.y = FLOOR_Y_CONST;
+  floorMesh.renderOrder = -10;
+  scene.add(floorMesh);
+}
+
+// ── Floor: Concentric Ripples ──
+function addFloorRipples() {
+  const scene = graph.scene();
+  const gridSize = 8000;
+  const gridGeo = new THREE.PlaneGeometry(gridSize, gridSize, 1, 1);
+  gridGeo.rotateX(-Math.PI / 2);
+
+  const rippleMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uTime: { value: 0 },
+      uCamY: { value: 300 },
+    },
+    vertexShader: `
+      varying vec3 vWorldPos;
+      void main() {
+        vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vWorldPos;
+      uniform float uTime;
+      uniform float uCamY;
+
+      void main() {
+        float distFromCenter = length(vWorldPos.xz);
+        float fade = 1.0 - smoothstep(1200.0, 3800.0, distFromCenter);
+
+        // Concentric rings expanding outward
+        float ringSpacing = 80.0;
+        float scrollDist = distFromCenter - uTime * 15.0;
+        float ring = abs(mod(scrollDist, ringSpacing) - ringSpacing * 0.5);
+        float ringLine = exp(-ring * ring * 0.08);
+
+        // Static rings for structure
+        float staticRing = abs(mod(distFromCenter, ringSpacing * 2.5) - ringSpacing * 1.25);
+        float staticLine = exp(-staticRing * staticRing * 0.04);
+
+        // Radial spokes — very subtle
+        float angle = atan(vWorldPos.z, vWorldPos.x);
+        float spoke = exp(-pow(mod(angle + 3.1416, 0.3927) - 0.19635, 2.0) * 600.0);
+        float spokeFade = smoothstep(0.0, 400.0, distFromCenter) * 0.3;
+
+        vec3 col = vec3(1.0);
+        float alpha = (ringLine * 0.06 + staticLine * 0.03 + spoke * spokeFade * 0.04) * fade;
+
+        float camFade = smoothstep(0.0, 10.0, abs(uCamY - ${FLOOR_Y_CONST}.0));
+        alpha *= 0.4 + camFade * 0.6;
+
+        if (alpha < 0.002) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+  });
+
+  floorMesh = new THREE.Mesh(gridGeo, rippleMat);
+  floorMesh.position.y = FLOOR_Y_CONST;
+  floorMesh.renderOrder = -10;
+  scene.add(floorMesh);
+}
+
+// ── Floor: Ground Fog Particles ──
+function addFloorFog() {
+  const scene = graph.scene();
+  const count = 3000;
+  const positions = new Float32Array(count * 3);
+  const sizes = new Float32Array(count);
+  const alphas = new Float32Array(count);
+  const phases = new Float32Array(count);
+
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = Math.random() * 3000;
+    positions[i * 3] = Math.cos(angle) * radius;
+    positions[i * 3 + 1] = FLOOR_Y_CONST + Math.random() * 60;
+    positions[i * 3 + 2] = Math.sin(angle) * radius;
+    sizes[i] = 8 + Math.random() * 25;
+    alphas[i] = 0.01 + Math.random() * 0.04;
+    phases[i] = Math.random() * Math.PI * 2;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('aSize', new THREE.Float32BufferAttribute(sizes, 1));
+  geo.setAttribute('aAlpha', new THREE.Float32BufferAttribute(alphas, 1));
+  geo.setAttribute('aPhase', new THREE.Float32BufferAttribute(phases, 1));
+
+  const mat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float aSize;
+      attribute float aAlpha;
+      attribute float aPhase;
+      varying float vAlpha;
+      uniform float uTime;
+      void main() {
+        vec3 pos = position;
+        float t = uTime * 0.15 + aPhase;
+        pos.x += sin(t * 0.7 + aPhase * 3.0) * 8.0;
+        pos.z += cos(t * 0.5 + aPhase * 2.0) * 8.0;
+        pos.y += sin(t) * 3.0;
+
+        vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
+        float camDist = length(mvPos.xyz);
+        float distFade = 1.0 - smoothstep(500.0, 3000.0, camDist);
+        float breathe = 0.6 + 0.4 * sin(uTime * 0.4 + aPhase * 6.28);
+
+        vAlpha = aAlpha * distFade * breathe;
+        gl_PointSize = aSize * (400.0 / max(-mvPos.z, 1.0));
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      void main() {
+        float dist = length(gl_PointCoord - vec2(0.5));
+        if (dist > 0.5) discard;
+        float soft = exp(-dist * dist * 8.0);
+        gl_FragColor = vec4(0.75, 0.78, 0.88, soft * vAlpha);
+      }
+    `,
+  });
+
+  floorParticles = new THREE.Points(geo, mat);
+  floorParticles.renderOrder = -10;
+  scene.add(floorParticles);
+}
+
+// ── Floor dispatcher ──
+function applyFloorStyle(style) {
+  if (!graph) return;
+  removeFloor();
+  switch (style) {
+    case 'grid': addFloorGrid(); break;
+    case 'dots': addFloorDots(); break;
+    case 'hex': addFloorHex(); break;
+    case 'ripples': addFloorRipples(); break;
+    case 'fog': addFloorFog(); break;
+    case 'none': break;
+  }
+}
+
+// ═══════════════════════════════════════════
+// BACKGROUND — Deep Grid theme
+// Perspective grid floor + world-space particles + vertical pillars
+// Gives true spatial depth and grounding
+// ═══════════════════════════════════════════
+function addBackgroundDeepGrid() {
+  const scene = graph.scene();
+  const FLOOR_Y = -200;
+
+  // Floor is now handled by applyFloorStyle() — separate system
+
+  // ── Layer B: Vertical Accent Pillars ──
+  // Muted grey-blue, very subtle
+  const pillarCount = 90;
+  const pillarPositions = new Float32Array(pillarCount * 6);
+  const pillarAlphas = new Float32Array(pillarCount * 2);
+  const pillarPhases = new Float32Array(pillarCount * 2);
+  const pillarSpacing = 70;
+  const pillarSpread = 2000;
+
+  for (let i = 0; i < pillarCount; i++) {
+    const gx = (Math.floor(Math.random() * (pillarSpread / pillarSpacing) * 2) - pillarSpread / pillarSpacing) * pillarSpacing;
+    const gz = (Math.floor(Math.random() * (pillarSpread / pillarSpacing) * 2) - pillarSpread / pillarSpacing) * pillarSpacing;
+    const height = 30 + Math.random() * 120;
+
+    pillarPositions[i * 6]     = gx;
+    pillarPositions[i * 6 + 1] = FLOOR_Y;
+    pillarPositions[i * 6 + 2] = gz;
+    pillarPositions[i * 6 + 3] = gx;
+    pillarPositions[i * 6 + 4] = FLOOR_Y + height;
+    pillarPositions[i * 6 + 5] = gz;
+
+    const a = 0.04 + Math.random() * 0.08;
+    const ph = Math.random() * Math.PI * 2;
+    pillarAlphas[i * 2] = a * 0.2;
+    pillarAlphas[i * 2 + 1] = a;
+    pillarPhases[i * 2] = ph;
+    pillarPhases[i * 2 + 1] = ph;
+  }
+
+  const pillarGeo = new THREE.BufferGeometry();
+  pillarGeo.setAttribute('position', new THREE.Float32BufferAttribute(pillarPositions, 3));
+  pillarGeo.setAttribute('aAlpha', new THREE.Float32BufferAttribute(pillarAlphas, 1));
+  pillarGeo.setAttribute('aPhase', new THREE.Float32BufferAttribute(pillarPhases, 1));
+
+  const pillarMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float aAlpha;
+      attribute float aPhase;
+      varying float vAlpha;
+      uniform float uTime;
+      void main() {
+        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        float camDist = length(mvPos.xyz);
+        float distFade = 1.0 - smoothstep(300.0, 1500.0, camDist);
+        vAlpha = aAlpha * (0.6 + 0.4 * sin(uTime * 0.3 + aPhase * 6.28)) * distFade;
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      void main() {
+        if (vAlpha < 0.003) discard;
+        gl_FragColor = vec4(0.50, 0.56, 0.75, vAlpha);
+      }
+    `,
+  });
+
+  bgGridPillars = new THREE.LineSegments(pillarGeo, pillarMat);
+  bgGridPillars.renderOrder = -9;
+  scene.add(bgGridPillars);
+
+  // ── Layer C: World-Space Floating Particles ──
+  // Muted blue-grey dots — NOT camera-attached (real parallax)
+  const pCount = 2000;
+  const pPositions = new Float32Array(pCount * 3);
+  const pSizes = new Float32Array(pCount);
+  const pAlphas = new Float32Array(pCount);
+  const pColors = new Float32Array(pCount * 3);
+  const pPhases = new Float32Array(pCount);
+
+  for (let i = 0; i < pCount; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 50 + Math.random() * 2800;
+    const height = FLOOR_Y + 10 + Math.random() * 600;
+
+    pPositions[i * 3]     = Math.cos(angle) * radius;
+    pPositions[i * 3 + 1] = height;
+    pPositions[i * 3 + 2] = Math.sin(angle) * radius;
+
+    const distNorm = radius / 2800;
+    pSizes[i] = (1.0 - distNorm * 0.5) * (1.2 + Math.random() * 2.0);
+    pAlphas[i] = (1.0 - distNorm * 0.6) * (0.03 + Math.random() * 0.09);
+
+    // Muted blue-grey palette (matching website rgba(130,145,195))
+    const v = Math.random();
+    // Base: desaturated blue-grey with slight variation
+    pColors[i * 3]     = 0.45 + (Math.random() - 0.5) * 0.12;
+    pColors[i * 3 + 1] = 0.50 + (Math.random() - 0.5) * 0.12;
+    pColors[i * 3 + 2] = 0.68 + (Math.random() - 0.5) * 0.12;
+    // 15% chance of slightly warmer accent
+    if (v > 0.85) {
+      pColors[i * 3]     = 0.58 + Math.random() * 0.08;
+      pColors[i * 3 + 1] = 0.55 + Math.random() * 0.06;
+      pColors[i * 3 + 2] = 0.72 + Math.random() * 0.08;
+    }
+
+    pPhases[i] = Math.random() * Math.PI * 2;
+  }
+
+  const pGeo = new THREE.BufferGeometry();
+  pGeo.setAttribute('position', new THREE.Float32BufferAttribute(pPositions, 3));
+  pGeo.setAttribute('aSize', new THREE.Float32BufferAttribute(pSizes, 1));
+  pGeo.setAttribute('aAlpha', new THREE.Float32BufferAttribute(pAlphas, 1));
+  pGeo.setAttribute('aColor', new THREE.Float32BufferAttribute(pColors, 3));
+  pGeo.setAttribute('aPhase', new THREE.Float32BufferAttribute(pPhases, 1));
+
+  const pMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float aSize;
+      attribute float aAlpha;
+      attribute vec3 aColor;
+      attribute float aPhase;
+      varying float vAlpha;
+      varying vec3 vColor;
+      uniform float uTime;
+      void main() {
+        vColor = aColor;
+        vec3 pos = position;
+        float t = uTime * 0.08 + aPhase;
+        pos.y += sin(t) * 6.0;
+        pos.x += cos(t * 0.7 + aPhase * 3.0) * 3.0;
+        pos.z += sin(t * 0.5 + aPhase * 2.0) * 3.0;
+
+        vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
+        float camDist = length(mvPos.xyz);
+        float distFade = 1.0 - smoothstep(200.0, 2800.0, camDist);
+
+        vAlpha = aAlpha * (0.5 + 0.5 * sin(uTime * 0.4 + aPhase * 6.28)) * distFade;
+        gl_PointSize = aSize * (400.0 / max(-mvPos.z, 1.0));
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      varying vec3 vColor;
+      void main() {
+        float dist = length(gl_PointCoord - vec2(0.5));
+        if (dist > 0.5) discard;
+        float core = smoothstep(0.5, 0.0, dist);
+        float glow = smoothstep(0.5, 0.15, dist);
+        float alpha = (core * 0.6 + glow * 0.4) * vAlpha;
+        gl_FragColor = vec4(vColor * (0.7 + core * 0.3), alpha);
+      }
+    `,
+  });
+
+  bgWorldParticles = new THREE.Points(pGeo, pMat);
+  bgWorldParticles.renderOrder = -8;
+  scene.add(bgWorldParticles);
+
+  // ── Layer D: Horizon Glow ──
+  // Cylindrical band at the grid edge creating a soft horizon line
+  const horizGeo = new THREE.CylinderGeometry(3800, 3800, 800, 64, 1, true);
+  const horizMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vWorldPos;
+      void main() {
+        vUv = uv;
+        vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      varying vec3 vWorldPos;
+      uniform float uTime;
+      void main() {
+        // Wide, soft gaussian-like glow centered at lower-mid height
+        float center = 0.3;
+        float spread = 0.4; // very wide spread
+        float yFade = exp(-pow((vUv.y - center) / spread, 2.0));
+
+        // Muted blue-grey glow
+        vec3 col = vec3(0.22, 0.28, 0.42);
+
+        // Very subtle shimmer
+        float shimmer = 0.9 + 0.1 * sin(vUv.x * 20.0 + uTime * 0.15);
+
+        float alpha = yFade * 0.025 * shimmer;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+  });
+
+  bgGridFloor2 = new THREE.Mesh(horizGeo, horizMat);
+  bgGridFloor2.position.y = FLOOR_Y + 20;
+  bgGridFloor2.renderOrder = -7;
+  scene.add(bgGridFloor2);
+
+  // ── Layer E: Sky gradient sphere — atmospheric perspective ──
+  // Inverted sphere behind everything: zenith=black, horizon=faint warm-purple
+  const skyGradGeo = new THREE.SphereGeometry(30000, 24, 16);
+  const skyGradMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false,
+    vertexShader: `
+      varying vec3 vWorldPos;
+      void main() {
+        vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vWorldPos;
+      void main() {
+        // Normalized height: 0 at bottom, 1 at top
+        float h = normalize(vWorldPos).y;
+        // Zenith (h=1): pure black
+        vec3 zenith  = vec3(0.003, 0.003, 0.004);
+        // Mid-sky (h~0.4): barely-there dark grey
+        vec3 midSky  = vec3(0.01, 0.01, 0.012);
+        // Horizon (h=0): subtle dark grey
+        vec3 horizon = vec3(0.022, 0.02, 0.022);
+        // Below horizon: black
+        vec3 below   = vec3(0.002, 0.002, 0.002);
+
+        vec3 col;
+        if (h > 0.4) {
+          col = mix(midSky, zenith, smoothstep(0.4, 1.0, h));
+        } else if (h > 0.0) {
+          col = mix(horizon, midSky, smoothstep(0.0, 0.4, h));
+        } else {
+          col = mix(below, horizon, smoothstep(-0.3, 0.0, h));
+        }
+        gl_FragColor = vec4(col, 0.95);
+      }
+    `,
+  });
+  bgSkyDome = new THREE.Mesh(skyGradGeo, skyGradMat);
+  bgSkyDome.renderOrder = -10;
+  scene.add(bgSkyDome);
+  _cloudPlanes = [];
+
+  // ── Layer F: World-space parallax star field ──
+  // 3 shells at increasing radii with color temperature variation
+  // NOT camera-attached — real parallax as camera orbits
+  const shells = [
+    { start: 0,    count: 600,  rMin: 3500,  rMax: 5000,  sMin: 3.0, sMax: 6.0,  aMin: 0.20, aMax: 0.50, col: [0.78, 0.74, 0.68] },  // near: warm white-gold
+    { start: 600,  count: 1000, rMin: 6000,  rMax: 10000, sMin: 4.0, sMax: 8.0,  aMin: 0.15, aMax: 0.35, col: [0.62, 0.66, 0.80] },  // mid: neutral blue-white
+    { start: 1600, count: 1400, rMin: 14000, rMax: 25000, sMin: 6.0, sMax: 14.0, aMin: 0.10, aMax: 0.25, col: [0.48, 0.50, 0.75] },  // far: cool blue-violet
+  ];
+  const spCount = 3000;
+  const spPositions = new Float32Array(spCount * 3);
+  const spSizes = new Float32Array(spCount);
+  const spAlphas = new Float32Array(spCount);
+  const spColors = new Float32Array(spCount * 3);
+  const spPhases = new Float32Array(spCount);
+
+  for (const shell of shells) {
+    for (let i = 0; i < shell.count; i++) {
+      const idx = shell.start + i;
+      // Fibonacci sphere, upper hemisphere bias
+      const y = 1 - (i / shell.count) * 1.5; // range 1 to -0.5
+      const xyRadius = Math.sqrt(Math.max(0, 1 - y * y));
+      const theta = Math.PI * (1 + Math.sqrt(5)) * i;
+      const r = shell.rMin + Math.random() * (shell.rMax - shell.rMin);
+
+      spPositions[idx * 3]     = Math.cos(theta) * xyRadius * r;
+      spPositions[idx * 3 + 1] = y * r;
+      spPositions[idx * 3 + 2] = Math.sin(theta) * xyRadius * r;
+
+      spSizes[idx] = shell.sMin + Math.random() * (shell.sMax - shell.sMin);
+      spAlphas[idx] = shell.aMin + Math.random() * (shell.aMax - shell.aMin);
+      // Color with slight per-star variation
+      spColors[idx * 3]     = shell.col[0] + (Math.random() - 0.5) * 0.08;
+      spColors[idx * 3 + 1] = shell.col[1] + (Math.random() - 0.5) * 0.08;
+      spColors[idx * 3 + 2] = shell.col[2] + (Math.random() - 0.5) * 0.08;
+      spPhases[idx] = Math.random() * Math.PI * 2;
+    }
+  }
+
+  const spGeo = new THREE.BufferGeometry();
+  spGeo.setAttribute('position', new THREE.Float32BufferAttribute(spPositions, 3));
+  spGeo.setAttribute('aSize', new THREE.Float32BufferAttribute(spSizes, 1));
+  spGeo.setAttribute('aAlpha', new THREE.Float32BufferAttribute(spAlphas, 1));
+  spGeo.setAttribute('aColor', new THREE.Float32BufferAttribute(spColors, 3));
+  spGeo.setAttribute('aPhase', new THREE.Float32BufferAttribute(spPhases, 1));
+
+  const spMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float aSize;
+      attribute float aAlpha;
+      attribute vec3 aColor;
+      attribute float aPhase;
+      varying float vAlpha;
+      varying vec3 vColor;
+      uniform float uTime;
+      void main() {
+        vColor = aColor;
+        // Differential Y-axis rotation: near stars drift faster than far stars
+        float r = length(position);
+        float rotSpeed = mix(0.003, 0.0008, smoothstep(3500.0, 25000.0, r));
+        float angle = uTime * rotSpeed;
+        float cs = cos(angle);
+        float sn = sin(angle);
+        vec3 rotPos = vec3(
+          position.x * cs - position.z * sn,
+          position.y,
+          position.x * sn + position.z * cs
+        );
+        vec4 mvPos = modelViewMatrix * vec4(rotPos, 1.0);
+        vAlpha = aAlpha * (0.3 + 0.7 * sin(uTime * 0.6 + aPhase * 6.28));
+        // Perspective size with floor so distant stars stay visible
+        gl_PointSize = max(1.0, aSize * (3000.0 / max(-mvPos.z, 1.0)));
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      varying vec3 vColor;
+      void main() {
+        float dist = length(gl_PointCoord - vec2(0.5));
+        if (dist > 0.5) discard;
+        float core = exp(-dist * dist * 80.0);
+        float glow = exp(-dist * dist * 12.0) * 0.2;
+        gl_FragColor = vec4(vColor, (core + glow) * vAlpha);
+      }
+    `,
+  });
+
+  bgSkyParticles = new THREE.Points(spGeo, spMat);
+  bgSkyParticles.renderOrder = -6;
+  scene.add(bgSkyParticles);
+
+  // ── Scene fog for atmospheric depth ──
+  scene.fog = new THREE.FogExp2(0x000000, 0.00012);
+
+  // ── Camera constraints ──
+  const controls = graph.controls();
+  if (controls) {
+    // Zoom limit: keep camera inside the sky dome
+    controls.maxDistance = 2800;
+    controls.minDistance = 30;
+
+    // Floor + ceiling constraint via update override
+    _origControlsUpdate = controls.update.bind(controls);
+    controls.update = function() {
+      _origControlsUpdate();
+      const cam = graph.camera();
+      if (cam.position.y < FLOOR_Y + 15) cam.position.y = FLOOR_Y + 15;
+      if (cam.position.y > 2500) cam.position.y = 2500;
+    };
+  }
+}
+
+// ═══════════════════════════════════════════
+// BACKGROUND — Dispatcher
+// Calls the right background builder based on theme
+// ═══════════════════════════════════════════
+function removeBackground() {
+  const scene = graph.scene();
+  // Remove nebula objects
+  if (bgParticles) { scene.remove(bgParticles); bgParticles.geometry.dispose(); bgParticles.material.dispose(); bgParticles = null; }
+  if (bgFogSphere) { scene.remove(bgFogSphere); bgFogSphere.geometry.dispose(); bgFogSphere.material.dispose(); bgFogSphere = null; }
+  // Remove deep-grid objects (floor is managed separately by removeFloor)
+  if (bgGridPillars) { scene.remove(bgGridPillars); bgGridPillars.geometry.dispose(); bgGridPillars.material.dispose(); bgGridPillars = null; }
+  if (bgWorldParticles) { scene.remove(bgWorldParticles); bgWorldParticles.geometry.dispose(); bgWorldParticles.material.dispose(); bgWorldParticles = null; }
+  if (bgGridFloor2) { scene.remove(bgGridFloor2); bgGridFloor2.geometry.dispose(); bgGridFloor2.material.dispose(); bgGridFloor2 = null; }
+  if (bgSkyDome) {
+    scene.remove(bgSkyDome);
+    if (bgSkyDome.isGroup) {
+      bgSkyDome.children.forEach(c => { c.geometry.dispose(); c.material.dispose(); });
+    } else {
+      bgSkyDome.geometry.dispose(); bgSkyDome.material.dispose();
+    }
+    bgSkyDome = null; _cloudPlanes = [];
+  }
+  if (bgSkyParticles) { scene.remove(bgSkyParticles); bgSkyParticles.geometry.dispose(); bgSkyParticles.material.dispose(); bgSkyParticles = null; }
+  // Restore original controls if overridden
+  const controls = graph.controls();
+  if (controls && _origControlsUpdate) {
+    controls.update = _origControlsUpdate;
+    _origControlsUpdate = null;
+    controls.maxDistance = Infinity;
+    controls.minDistance = 0;
+  }
+  // Clear scene fog
+  scene.fog = null;
+}
+
+function applyBgTheme(theme) {
+  if (!graph) return;
+  removeBackground();
+  if (theme === 'deep-grid') {
+    addBackgroundDeepGrid();
+    graph.backgroundColor('#000000');
+    // Tame bloom so it doesn't wash out the dark background
+    if (_bloomPass) {
+      _bloomPass.strength = 0.4;
+      _bloomPass.threshold = 0.35;
+      _bloomPass.radius = 0.4;
+    }
+    // Apply floor style for deep-grid
+    applyFloorStyle(gfx.floorStyle || 'grid');
+  } else {
+    addBackground();
+    graph.backgroundColor('#050505');
+    // Restore default bloom for nebula
+    if (_bloomPass) {
+      _bloomPass.strength = 0.7;
+      _bloomPass.threshold = 0.2;
+      _bloomPass.radius = 0.5;
+    }
+    // Remove floor for nebula theme (no ground plane)
+    removeFloor();
+  }
+}
+
 // ═══════════════════════════════════════════
 // ANIMATION LOOP
 // ═══════════════════════════════════════════
@@ -5730,13 +6604,38 @@ function animate() {
   // Update 3D mouse position via raycasting
   updateMouse3D();
 
-  // ── Background — follows camera like a skybox ──
+  // ── Background — Nebula theme (follows camera like a skybox) ──
   if (bgParticles && graph) {
     bgParticles.position.copy(graph.camera().position);
     bgParticles.material.uniforms.uTime.value = time;
   }
   if (bgFogSphere && graph) {
     bgFogSphere.position.copy(graph.camera().position);
+  }
+
+  // ── Floor effect (independent of bg theme) ──
+  if (floorMesh && floorMesh.material.uniforms) {
+    if (floorMesh.material.uniforms.uTime) floorMesh.material.uniforms.uTime.value = time;
+    if (floorMesh.material.uniforms.uCamY && graph) floorMesh.material.uniforms.uCamY.value = graph.camera().position.y;
+  }
+  if (floorParticles && floorParticles.material.uniforms) {
+    if (floorParticles.material.uniforms.uTime) floorParticles.material.uniforms.uTime.value = time;
+    if (floorParticles.material.uniforms.uCamPos && graph) floorParticles.material.uniforms.uCamPos.value.copy(graph.camera().position);
+  }
+
+  // ── Background — Deep Grid theme (world-space, real depth) ──
+  if (bgGridPillars) {
+    bgGridPillars.material.uniforms.uTime.value = time;
+  }
+  if (bgWorldParticles) {
+    bgWorldParticles.material.uniforms.uTime.value = time;
+  }
+  if (bgGridFloor2) {
+    bgGridFloor2.material.uniforms.uTime.value = time;
+  }
+  // Layer F: world-space stars (no camera-attach — real parallax)
+  if (bgSkyParticles) {
+    bgSkyParticles.material.uniforms.uTime.value = time;
   }
 
   // ── Mouse-reactive plexus ──
@@ -6868,10 +7767,24 @@ function buildCategorySidebar(presentCats) {
     .sort((a, b) => (counts[b] || 0) - (counts[a] || 0));
   const sorted = [...ordered, ...remaining];
 
+  // Regroup sorted: parent clusters contiguous (header + all children), orphans at end.
+  // Prevents orphan categories from interleaving with cluster children (false 3rd nesting level).
+  const regrouped = [];
+  const _grouped = new Set();
+  const _pNames = new Set();
+  sorted.forEach(c => { const m = categoryMetadata[c] || {}; if (m.is_parent || categoryGroups[c]) _pNames.add(c); if (m.parent) _pNames.add(m.parent); });
+  const _pOrd = [], _pSeen = new Set();
+  sorted.forEach(c => { const m = categoryMetadata[c] || {}; const p = m.parent || (_pNames.has(c) ? c : null); if (p && !_pSeen.has(p)) { _pSeen.add(p); _pOrd.push(p); } });
+  _pOrd.forEach(p => {
+    regrouped.push(p); _grouped.add(p);
+    sorted.forEach(c => { if ((categoryMetadata[c] || {}).parent === p) { regrouped.push(c); _grouped.add(c); } });
+  });
+  sorted.forEach(c => { if (!_grouped.has(c)) regrouped.push(c); });
+
   // Track which parent clusters we've rendered
   const renderedClusters = new Set();
 
-  sorted.forEach(cat => {
+  regrouped.forEach(cat => {
     const meta = categoryMetadata[cat] || {};
 
     // If this category has a parent and we haven't rendered that cluster header yet
@@ -7517,7 +8430,7 @@ function computeLayout(nodes) {
     const childTags = tags.filter(t => t.payload._parentAnchor === cat);
     if (!childTags.length) return;
 
-    const tagRadius = 30 + childTags.length * 10;
+    const tagRadius = 60 + childTags.length * 12;
     childTags.forEach((tag, i) => {
       const angle = (i / childTags.length) * Math.PI * 2;
       tag.x = anchor.x + Math.cos(angle) * tagRadius;
@@ -7595,6 +8508,15 @@ function computeLayout(nodes) {
         placed.add(mem.id);
       });
     });
+  }
+
+  // ── Floor clamp: no node below the grid floor ──
+  const NODE_FLOOR = -200 + 10; // FLOOR_Y + margin
+  for (const n of nodes) {
+    if (n.y < NODE_FLOOR) {
+      n.y = NODE_FLOOR;
+      if (n.fy !== undefined) n.fy = NODE_FLOOR;
+    }
   }
 }
 
@@ -10272,7 +11194,7 @@ async function openSettingsModal() {
               <div class="cc-integration-item${ptOn ? ' enabled' : ''}" data-hook="PostToolUse">
                 <div class="cc-integration-info">
                   <div class="cc-integration-label">PostToolUse</div>
-                  <div class="cc-integration-path">Clears enforcement flag when session is stored</div>
+                  <div class="cc-integration-path">Tracks edits and clears enforcement flags on remember</div>
                 </div>
                 <button class="cc-toggle${ptOn ? ' on' : ''}" data-cc-hook="PostToolUse" data-cc-scope="global"></button>
               </div>
@@ -10292,6 +11214,16 @@ async function openSettingsModal() {
                 <button class="cc-toggle${cmOn ? ' on' : ''}" data-cc-feature="conversationMemory"></button>
               </div>`;
               })()}
+            </div>
+
+            <div class="cc-section-label">CLAUDE.md Ruleset</div>
+            <div class="cc-hint" style="margin-bottom:6px;font-size:11px">Memory instructions to paste into your project's CLAUDE.md.</div>
+            <div style="position:relative">
+              <div id="cc-ruleset-preview" style="max-height:140px;overflow-y:auto;background:rgba(255,255,255,0.03);border:1px solid var(--b-subtle);border-radius:6px;padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:10px;line-height:1.5;color:var(--t-secondary);white-space:pre-wrap;word-break:break-word;">Loading...</div>
+              <button class="conn-add-btn" id="cc-ruleset-copy" style="margin:6px 0 0;width:100%;font-size:11px;padding:6px 10px;border-style:solid;background:rgba(255,255,255,0.03)">
+                <svg viewBox="0 0 24 24" style="width:11px;height:11px;opacity:0.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy SynaBun's CLAUDE.md Ruleset
+              </button>
             </div>
 
             <div class="cc-section-label">MCP Server</div>
@@ -10462,6 +11394,47 @@ async function openSettingsModal() {
       <div class="settings-tab-body" data-tab="interface">
         <div class="gfx-group-title">Appearance</div>
         <div class="settings-hint" style="margin-bottom:16px">Customize the look and feel of the Neural Interface.</div>
+
+        <div class="gfx-preset-label">Background Theme</div>
+        <div class="gfx-presets" id="bg-theme-cards">
+          <div class="gfx-preset-card bg-theme-card${gfx.bgTheme === 'nebula' ? ' active' : ''}" data-bg-theme="nebula">
+            <span class="gfx-preset-name">Nebula</span>
+            <span class="gfx-preset-desc">Ambient particle shells</span>
+          </div>
+          <div class="gfx-preset-card bg-theme-card${gfx.bgTheme === 'deep-grid' ? ' active' : ''}" data-bg-theme="deep-grid">
+            <span class="gfx-preset-name">Deep Grid</span>
+            <span class="gfx-preset-desc">Spatial depth + atmosphere</span>
+          </div>
+        </div>
+
+        <div class="gfx-preset-label" style="margin-top:16px">Floor Effect</div>
+        <div class="settings-hint" style="margin-bottom:8px">Only visible with Deep Grid theme.</div>
+        <div class="gfx-presets" id="floor-style-cards">
+          <div class="gfx-preset-card floor-card${gfx.floorStyle === 'grid' ? ' active' : ''}" data-floor-style="grid">
+            <span class="gfx-preset-name">Grid</span>
+            <span class="gfx-preset-desc">Soft glowing lines</span>
+          </div>
+          <div class="gfx-preset-card floor-card${gfx.floorStyle === 'dots' ? ' active' : ''}" data-floor-style="dots">
+            <span class="gfx-preset-name">Dot Field</span>
+            <span class="gfx-preset-desc">Proximity glow dots</span>
+          </div>
+          <div class="gfx-preset-card floor-card${gfx.floorStyle === 'hex' ? ' active' : ''}" data-floor-style="hex">
+            <span class="gfx-preset-name">Hex Grid</span>
+            <span class="gfx-preset-desc">Hexagonal cells</span>
+          </div>
+          <div class="gfx-preset-card floor-card${gfx.floorStyle === 'ripples' ? ' active' : ''}" data-floor-style="ripples">
+            <span class="gfx-preset-name">Ripples</span>
+            <span class="gfx-preset-desc">Concentric waves</span>
+          </div>
+          <div class="gfx-preset-card floor-card${gfx.floorStyle === 'fog' ? ' active' : ''}" data-floor-style="fog">
+            <span class="gfx-preset-name">Ground Fog</span>
+            <span class="gfx-preset-desc">Drifting mist</span>
+          </div>
+          <div class="gfx-preset-card floor-card${gfx.floorStyle === 'none' ? ' active' : ''}" data-floor-style="none">
+            <span class="gfx-preset-name">None</span>
+            <span class="gfx-preset-desc">No floor effect</span>
+          </div>
+        </div>
       </div>
 
       <!-- GRAPH TAB -->
@@ -10542,6 +11515,35 @@ async function openSettingsModal() {
       overlay.querySelectorAll('.settings-tab-body').forEach(b => b.classList.remove('active'));
       nav.classList.add('active');
       overlay.querySelector(`.settings-tab-body[data-tab="${nav.dataset.tab}"]`).classList.add('active');
+    });
+  });
+
+  // Background theme cards
+  overlay.querySelectorAll('.bg-theme-card[data-bg-theme]').forEach(card => {
+    card.addEventListener('click', () => {
+      const theme = card.dataset.bgTheme;
+      gfx.bgTheme = theme;
+      saveGfxConfig(gfx);
+      // Update active state on cards
+      overlay.querySelectorAll('.bg-theme-card').forEach(c => c.classList.remove('active'));
+      card.classList.add('active');
+      // Apply theme
+      applyBgTheme(theme);
+    });
+  });
+
+  // Floor style cards
+  overlay.querySelectorAll('.floor-card[data-floor-style]').forEach(card => {
+    card.addEventListener('click', () => {
+      const style = card.dataset.floorStyle;
+      gfx.floorStyle = style;
+      saveGfxConfig(gfx);
+      overlay.querySelectorAll('.floor-card').forEach(c => c.classList.remove('active'));
+      card.classList.add('active');
+      // Only apply if deep-grid is active
+      if (gfx.bgTheme === 'deep-grid') {
+        applyFloorStyle(style);
+      }
     });
   });
 
@@ -11984,6 +12986,34 @@ async function openSettingsModal() {
       mcpCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
       setTimeout(() => {
         mcpCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy CLI Command';
+      }, 2000);
+    });
+  }
+
+  // Ruleset preview + copy
+  const rulesetPreview = overlay.querySelector('#cc-ruleset-preview');
+  const rulesetCopy = overlay.querySelector('#cc-ruleset-copy');
+  let cachedRuleset = '';
+  if (rulesetPreview) {
+    fetch('/api/claude-code/ruleset').then(r => r.json()).then(data => {
+      if (data.ok && data.ruleset) {
+        cachedRuleset = data.ruleset;
+        // Show truncated preview
+        const lines = data.ruleset.split('\n');
+        const preview = lines.slice(0, 20).join('\n') + (lines.length > 20 ? '\n...' : '');
+        rulesetPreview.textContent = preview;
+      } else {
+        rulesetPreview.textContent = 'Could not load ruleset.';
+      }
+    }).catch(() => { rulesetPreview.textContent = 'Failed to load.'; });
+  }
+  if (rulesetCopy) {
+    rulesetCopy.addEventListener('click', () => {
+      if (!cachedRuleset) { alert('Ruleset not loaded yet'); return; }
+      navigator.clipboard.writeText(cachedRuleset);
+      rulesetCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
+      setTimeout(() => {
+        rulesetCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy SynaBun\'s CLAUDE.md Ruleset';
       }, 2000);
     });
   }

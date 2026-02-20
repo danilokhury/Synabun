@@ -2935,7 +2935,7 @@ const HOOK_SCRIPTS = [
   { event: 'UserPromptSubmit',  script: 'prompt-submit.mjs', timeout: 3 },
   { event: 'PreCompact',        script: 'pre-compact.mjs',   timeout: 10 },
   { event: 'Stop',              script: 'stop.mjs',          timeout: 3 },
-  { event: 'PostToolUse',       script: 'post-remember.mjs', timeout: 3, matcher: 'mcp__SynaBun__remember' },
+  { event: 'PostToolUse',       script: 'post-remember.mjs', timeout: 3, matcher: '^Edit$|^Write$|^NotebookEdit$|Syna[Bb]un__remember' },
 ];
 
 function getClaudeSettingsPath(projectPath) {
@@ -3245,6 +3245,57 @@ app.put('/api/claude-code/hook-features', (req, res) => {
     features[feature] = enabled;
     saveHookFeatures(features);
     res.json({ ok: true, features });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/claude-code/ruleset — Return the SynaBun CLAUDE.md memory ruleset for copy/paste
+// Supports ?format=claude (default) | cursor | generic
+app.get('/api/claude-code/ruleset', (req, res) => {
+  try {
+    const claudeMdPath = resolve(PROJECT_ROOT, 'CLAUDE.md');
+    if (!existsSync(claudeMdPath)) {
+      return res.status(404).json({ error: 'CLAUDE.md not found' });
+    }
+    const content = readFileSync(claudeMdPath, 'utf-8');
+    const format = (req.query.format || 'claude').toLowerCase();
+
+    // Section markers in CLAUDE.md
+    const MARKERS = {
+      claude:  { start: '### Persistent Memory System', end: '### Cursor Rules (Condensed)' },
+      cursor:  { start: '### Cursor Rules (Condensed)',  end: '### Generic Rules (Condensed)' },
+      generic: { start: '### Generic Rules (Condensed)', end: '\n---' },
+    };
+
+    const marker = MARKERS[format];
+    if (!marker) {
+      return res.status(400).json({ error: `Invalid format: ${format}. Use claude, cursor, or generic.` });
+    }
+
+    const startIdx = content.indexOf(marker.start);
+    if (startIdx === -1) {
+      return res.status(404).json({ error: `Section "${marker.start}" not found in CLAUDE.md` });
+    }
+
+    // Extract content between start marker and end marker (or EOF)
+    const contentAfterStart = marker.start === '\n---'
+      ? content.indexOf(marker.end, startIdx)
+      : content.indexOf(marker.end, startIdx + marker.start.length);
+    const ruleset = contentAfterStart !== -1
+      ? content.substring(startIdx, contentAfterStart).trim()
+      : content.substring(startIdx).trim();
+
+    // Strip the section header line (### Cursor Rules / ### Generic Rules) — leave only the content below it
+    let output;
+    if (format === 'claude') {
+      output = ruleset.replace(/^### Persistent Memory System/, '## Persistent Memory System');
+    } else {
+      // Remove the marker heading line, return just the content
+      output = ruleset.replace(/^### (Cursor|Generic) Rules \(Condensed\)\s*\n?/, '').trim();
+    }
+
+    res.json({ ok: true, ruleset: output, format });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
