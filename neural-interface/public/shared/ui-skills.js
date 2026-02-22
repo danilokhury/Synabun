@@ -317,7 +317,7 @@ function buildPanelHTML() {
         <button class="ss-header-btn" id="ss-new-btn">+ New</button>
         <button class="ss-header-btn" id="ss-import-btn">Import</button>
       </div>
-      <button class="ss-focus-btn" id="ss-focus" title="Focus mode">
+      <button class="ss-focus-btn" id="ss-focus" data-tooltip="Focus mode">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
           <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
         </svg>
@@ -659,19 +659,19 @@ function renderEditor() {
       <div class="ss-editor-content">
         <div class="ss-tab-bar" id="ss-tab-bar"></div>
         <div class="ss-md-toolbar" id="ss-md-toolbar">
-          <button class="ss-md-tool" data-cmd="heading" title="Heading (Ctrl+H)"><svg viewBox="0 0 24 24"><path d="M4 4v16M20 4v16M4 12h16"/></svg></button>
-          <button class="ss-md-tool" data-cmd="bold" title="Bold (Ctrl+B)"><b style="font-size:13px">B</b></button>
-          <button class="ss-md-tool" data-cmd="italic" title="Italic (Ctrl+I)"><i style="font-size:13px">I</i></button>
-          <button class="ss-md-tool" data-cmd="strikethrough" title="Strikethrough"><s style="font-size:12px">S</s></button>
+          <button class="ss-md-tool" data-cmd="heading" data-tooltip="Heading (Ctrl+H)"><svg viewBox="0 0 24 24"><path d="M4 4v16M20 4v16M4 12h16"/></svg></button>
+          <button class="ss-md-tool" data-cmd="bold" data-tooltip="Bold (Ctrl+B)"><b style="font-size:13px">B</b></button>
+          <button class="ss-md-tool" data-cmd="italic" data-tooltip="Italic (Ctrl+I)"><i style="font-size:13px">I</i></button>
+          <button class="ss-md-tool" data-cmd="strikethrough" data-tooltip="Strikethrough"><s style="font-size:12px">S</s></button>
           <div class="ss-md-toolbar-sep"></div>
-          <button class="ss-md-tool" data-cmd="ul" title="Bullet list"><svg viewBox="0 0 24 24"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="5" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="5" cy="18" r="1.5" fill="currentColor" stroke="none"/></svg></button>
-          <button class="ss-md-tool" data-cmd="ol" title="Numbered list"><svg viewBox="0 0 24 24"><line x1="10" y1="6" x2="20" y2="6"/><line x1="10" y1="12" x2="20" y2="12"/><line x1="10" y1="18" x2="20" y2="18"/><text x="4" y="8" font-size="7" fill="currentColor" stroke="none" font-weight="600">1</text><text x="4" y="14" font-size="7" fill="currentColor" stroke="none" font-weight="600">2</text><text x="4" y="20" font-size="7" fill="currentColor" stroke="none" font-weight="600">3</text></svg></button>
-          <button class="ss-md-tool" data-cmd="quote" title="Blockquote"><svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h12"/><rect x="1" y="5" width="2" height="14" rx="1" fill="currentColor" stroke="none" opacity="0.4"/></svg></button>
+          <button class="ss-md-tool" data-cmd="ul" data-tooltip="Bullet list"><svg viewBox="0 0 24 24"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="5" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="5" cy="18" r="1.5" fill="currentColor" stroke="none"/></svg></button>
+          <button class="ss-md-tool" data-cmd="ol" data-tooltip="Numbered list"><svg viewBox="0 0 24 24"><line x1="10" y1="6" x2="20" y2="6"/><line x1="10" y1="12" x2="20" y2="12"/><line x1="10" y1="18" x2="20" y2="18"/><text x="4" y="8" font-size="7" fill="currentColor" stroke="none" font-weight="600">1</text><text x="4" y="14" font-size="7" fill="currentColor" stroke="none" font-weight="600">2</text><text x="4" y="20" font-size="7" fill="currentColor" stroke="none" font-weight="600">3</text></svg></button>
+          <button class="ss-md-tool" data-cmd="quote" data-tooltip="Blockquote"><svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h12"/><rect x="1" y="5" width="2" height="14" rx="1" fill="currentColor" stroke="none" opacity="0.4"/></svg></button>
           <div class="ss-md-toolbar-sep"></div>
-          <button class="ss-md-tool" data-cmd="code" title="Inline code"><svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button>
-          <button class="ss-md-tool" data-cmd="codeblock" title="Code block"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="9 8 5 12 9 16" stroke-width="1.5"/><polyline points="15 8 19 12 15 16" stroke-width="1.5"/></svg></button>
-          <button class="ss-md-tool" data-cmd="link" title="Link (Ctrl+K)"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>
-          <button class="ss-md-tool" data-cmd="hr" title="Horizontal rule">&mdash;</button>
+          <button class="ss-md-tool" data-cmd="code" data-tooltip="Inline code"><svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button>
+          <button class="ss-md-tool" data-cmd="codeblock" data-tooltip="Code block"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="9 8 5 12 9 16" stroke-width="1.5"/><polyline points="15 8 19 12 15 16" stroke-width="1.5"/></svg></button>
+          <button class="ss-md-tool" data-cmd="link" data-tooltip="Link (Ctrl+K)"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>
+          <button class="ss-md-tool" data-cmd="hr" data-tooltip="Horizontal rule">&mdash;</button>
           <div class="ss-view-toggle">
             <button class="ss-view-toggle-btn${_previewMode ? '' : ' active'}" data-mode="raw">Raw</button>
             <button class="ss-view-toggle-btn${_previewMode ? ' active' : ''}" data-mode="preview">Preview</button>
@@ -818,18 +818,18 @@ function buildFileTree(subFiles) {
   function renderItem(item, depth = 0) {
     const pad = depth * 14;
     if (item.type === 'dir') {
-      html += `<div class="ss-file-item ss-file-dir" style="padding-left:${pad + 8}px" title="${esc(item.name)}/">
+      html += `<div class="ss-file-item ss-file-dir" style="padding-left:${pad + 8}px" data-tooltip="${esc(item.name)}/">
         <span class="ss-file-icon">${folderSvg}</span>
         <span class="ss-file-name">${esc(item.name)}/</span>
       </div>`;
       if (item.children) item.children.forEach(c => renderItem(c, depth + 1));
     } else {
-      html += `<div class="ss-file-item" style="padding-left:${pad + 8}px" data-path="${esc(item.path)}" title="${esc(item.name)}">
+      html += `<div class="ss-file-item" style="padding-left:${pad + 8}px" data-path="${esc(item.path)}" data-tooltip="${esc(item.name)}">
         <span class="ss-file-icon">${fileSvg}</span>
         <span class="ss-file-name">${esc(item.name)}</span>
         <span class="ss-file-size">${item.size > 1024 ? Math.round(item.size / 1024) + 'K' : item.size + 'B'}</span>
         <div class="ss-file-actions">
-          <button class="ss-file-del-btn" data-path="${esc(item.path)}" title="Delete">\u2715</button>
+          <button class="ss-file-del-btn" data-path="${esc(item.path)}" data-tooltip="Delete">\u2715</button>
         </div>
       </div>`;
     }
@@ -1079,16 +1079,15 @@ function openAddFileDialog() {
 
   let selectedDir = '';
   let newFolderMode = false;
-  let mode = 'create'; // 'create' or 'upload'
 
   // Build the overlay
   const overlay = document.createElement('div');
   overlay.className = 'ss-file-dialog-overlay';
-  overlay.innerHTML = buildFileDialogHTML(dirs, selectedDir, newFolderMode, mode);
+  overlay.innerHTML = buildFileDialogHTML(dirs, selectedDir, newFolderMode);
   _panel.appendChild(overlay);
 
   function refresh() {
-    overlay.innerHTML = buildFileDialogHTML(dirs, selectedDir, newFolderMode, mode);
+    overlay.innerHTML = buildFileDialogHTML(dirs, selectedDir, newFolderMode);
     wireFileDialog();
   }
 
@@ -1096,18 +1095,6 @@ function openAddFileDialog() {
     // Close / Cancel
     overlay.querySelector('#ss-fd-cancel')?.addEventListener('click', () => overlay.remove());
     overlay.querySelector('.ss-fd-backdrop')?.addEventListener('click', () => overlay.remove());
-
-    // Mode tabs
-    overlay.querySelector('#ss-fd-mode-create')?.addEventListener('click', () => {
-      mode = 'create';
-      newFolderMode = false;
-      refresh();
-    });
-    overlay.querySelector('#ss-fd-mode-upload')?.addEventListener('click', () => {
-      mode = 'upload';
-      newFolderMode = false;
-      refresh();
-    });
 
     // Directory clicks
     overlay.querySelectorAll('.ss-fd-dir').forEach(el => {
@@ -1148,7 +1135,7 @@ function openAddFileDialog() {
       if (e.key === 'Escape') { newFolderMode = false; refresh(); }
     });
 
-    // Create button (for create mode)
+    // Create button
     overlay.querySelector('#ss-fd-create')?.addEventListener('click', async () => {
       const nameInput = overlay.querySelector('#ss-fd-filename');
       const filename = nameInput?.value.trim();
@@ -1202,14 +1189,14 @@ function openAddFileDialog() {
       overlay.querySelector('#ss-fd-upload-input')?.click();
     });
 
-    // Focus filename input (create mode)
-    if (!newFolderMode && mode === 'create') overlay.querySelector('#ss-fd-filename')?.focus();
+    // Focus filename input
+    if (!newFolderMode) overlay.querySelector('#ss-fd-filename')?.focus();
   }
 
   wireFileDialog();
 }
 
-function buildFileDialogHTML(dirs, selectedDir, newFolderMode = false, mode = 'create') {
+function buildFileDialogHTML(dirs, selectedDir, newFolderMode = false) {
   const pathPreview = selectedDir ? selectedDir + '/' : '';
 
   // Build visual tree of dirs
@@ -1230,76 +1217,63 @@ function buildFileDialogHTML(dirs, selectedDir, newFolderMode = false, mode = 'c
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
         </svg>
-        <span>New File</span>
-      </div>
-
-      <div class="ss-fd-mode-tabs">
-        <button class="ss-fd-mode-tab${mode === 'create' ? ' active' : ''}" id="ss-fd-mode-create">Create New</button>
-        <button class="ss-fd-mode-tab${mode === 'upload' ? ' active' : ''}" id="ss-fd-mode-upload">Add from Computer</button>
+        <span>Add File</span>
       </div>
 
       <div class="ss-fd-body">
-        ${mode === 'create' ? `
-          <div class="ss-fd-section-label">Choose location</div>
-          <div class="ss-fd-dirs">
-            ${tree.map(d => `
-              <div class="ss-fd-dir${d.path === selectedDir ? ' selected' : ''}" data-path="${esc(d.path)}" style="padding-left:${d.depth * 16 + 8}px">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                  ${d.path === selectedDir
-                    ? '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--accent-blue)" stroke="var(--accent-blue)" opacity="0.7"/>'
-                    : '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'}
-                </svg>
-                <span>${esc(d.name)}</span>
-              </div>
-            `).join('')}
-          </div>
-
-          ${newFolderMode ? `
-            <div class="ss-fd-new-folder">
-              <input type="text" class="ss-input ss-fd-input" id="ss-fd-new-folder-name" placeholder="folder-name" spellcheck="false">
-              <button class="ss-fd-btn ss-fd-btn--ok" id="ss-fd-new-folder-ok">Add</button>
-              <button class="ss-fd-btn ss-fd-btn--cancel" id="ss-fd-new-folder-cancel">&times;</button>
+        <div class="ss-fd-section-label">Location</div>
+        <div class="ss-fd-dirs">
+          ${tree.map(d => `
+            <div class="ss-fd-dir${d.path === selectedDir ? ' selected' : ''}" data-path="${esc(d.path)}" style="padding-left:${d.depth * 16 + 8}px">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                ${d.path === selectedDir
+                  ? '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--accent-blue)" stroke="var(--accent-blue)" opacity="0.7"/>'
+                  : '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'}
+              </svg>
+              <span>${esc(d.name)}</span>
             </div>
-          ` : `
-            <button class="ss-fd-new-folder-trigger" id="ss-fd-new-folder-btn">+ New Folder</button>
-          `}
+          `).join('')}
+        </div>
 
-          <div class="ss-fd-section-label" style="margin-top:12px">Filename</div>
-          <div class="ss-fd-filename-row">
-            <span class="ss-fd-path-prefix">${esc(pathPreview)}</span>
-            <input type="text" class="ss-input ss-fd-input ss-fd-filename-input" id="ss-fd-filename" placeholder="my-file.md" spellcheck="false" autocomplete="off">
+        ${newFolderMode ? `
+          <div class="ss-fd-new-folder">
+            <input type="text" class="ss-input ss-fd-input" id="ss-fd-new-folder-name" placeholder="folder-name" spellcheck="false">
+            <button class="ss-fd-btn ss-fd-btn--ok" id="ss-fd-new-folder-ok">Add</button>
+            <button class="ss-fd-btn ss-fd-btn--cancel" id="ss-fd-new-folder-cancel">&times;</button>
           </div>
         ` : `
-          <div class="ss-fd-section-label">Choose location</div>
-          <div class="ss-fd-dirs">
-            ${tree.map(d => `
-              <div class="ss-fd-dir${d.path === selectedDir ? ' selected' : ''}" data-path="${esc(d.path)}" style="padding-left:${d.depth * 16 + 8}px">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                  ${d.path === selectedDir
-                    ? '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--accent-blue)" stroke="var(--accent-blue)" opacity="0.7"/>'
-                    : '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'}
-                </svg>
-                <span>${esc(d.name)}</span>
-              </div>
-            `).join('')}
+          <button class="ss-fd-new-folder-trigger" id="ss-fd-new-folder-btn">+ Folder</button>
+        `}
+
+        <div class="ss-fd-divider"></div>
+
+        <div class="ss-fd-action-group">
+          <div class="ss-fd-action">
+            <div class="ss-fd-action-label">Create New</div>
+            <div class="ss-fd-filename-row">
+              <span class="ss-fd-path-prefix">${esc(pathPreview)}</span>
+              <input type="text" class="ss-input ss-fd-input ss-fd-filename-input" id="ss-fd-filename" placeholder="my-file.md" spellcheck="false" autocomplete="off">
+            </div>
+            <button class="ss-fd-action-btn ss-fd-create-btn" id="ss-fd-create">Create</button>
           </div>
 
-          <div class="ss-fd-section-label" style="margin-top:12px">Select File</div>
-          <button class="ss-fd-upload-btn" id="ss-fd-upload-btn">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            <span>Choose File from Computer</span>
-          </button>
-          <input type="file" id="ss-fd-upload-input" style="display:none">
-        `}
+          <div class="ss-fd-action">
+            <div class="ss-fd-action-label">Or Upload</div>
+            <button class="ss-fd-upload-btn" id="ss-fd-upload-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span>Choose File</span>
+            </button>
+            <input type="file" id="ss-fd-upload-input" style="display:none">
+          </div>
+        </div>
       </div>
 
       <div class="ss-fd-footer">
         <button class="ss-header-btn" id="ss-fd-cancel">Cancel</button>
-        ${mode === 'create' ? `<button class="ss-header-btn ss-save-btn" id="ss-fd-create">Create</button>` : ''}
       </div>
     </div>
   `;
