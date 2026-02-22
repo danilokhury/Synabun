@@ -7975,13 +7975,22 @@
     position: absolute;
     inset: 0;
     padding: 8px 12px;
+    overflow: hidden !important;
   }
   .term-viewport.term-drop-active {
     outline: 2px solid rgba(110,181,255,0.5);
     outline-offset: -2px;
     background: rgba(110,181,255,0.04);
   }
-  .term-viewport .xterm { height: 100%; }
+  .term-viewport .xterm {
+    height: 100%;
+    overflow: visible !important;
+  }
+  .term-viewport .xterm-screen {
+    overflow-y: auto !important;
+    scrollbar-width: thin !important;
+    scrollbar-color: rgba(255,255,255,0.35) transparent !important;
+  }
   .term-viewport .xterm-viewport {
     overflow-y: auto !important;
     overflow-x: hidden !important;
@@ -7998,10 +8007,10 @@
 
   /* Webkit scrollbar — auto-fade, smooth transitions */
   .term-viewport .xterm-viewport::-webkit-scrollbar {
-    width: 8px;
+    width: 10px !important;
   }
   .term-viewport .xterm-viewport::-webkit-scrollbar-track {
-    background: transparent;
+    background: transparent !important;
     border-radius: 4px;
   }
   .term-viewport .xterm-viewport::-webkit-scrollbar-thumb {
