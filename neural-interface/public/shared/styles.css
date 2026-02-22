@@ -2117,47 +2117,63 @@
 
   /* ── Icon buttons (shared) ── circular action buttons in panels ── */
   .icon-btn {
-    width: 28px; height: 28px;
+    width: 30px; height: 30px;
     border-radius: var(--r-circle);
-    background: var(--s-subtle);
-    border: 1px solid var(--b-subtle);
-    color: var(--t-muted);
+    background: rgba(96, 165, 250, 0.06);
+    border: 1px solid rgba(96, 165, 250, 0.12);
+    color: rgba(96, 165, 250, 0.55);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all var(--ease);
+    transition: all 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
     flex-shrink: 0;
     font-size: var(--fs-lg);
     line-height: 1;
     padding: 0;
+    box-shadow: 0 0 8px rgba(96, 165, 250, 0.03);
   }
   .icon-btn:hover {
-    background: var(--s-hover);
-    color: var(--t-primary);
-    border-color: var(--b-light);
+    background: rgba(96, 165, 250, 0.12);
+    color: rgba(96, 165, 250, 0.85);
+    border-color: rgba(96, 165, 250, 0.2);
+    box-shadow: 0 0 12px rgba(96, 165, 250, 0.08);
+    transform: translateY(-2px);
   }
   .icon-btn svg {
-    width: 14px; height: 14px;
+    width: 15px; height: 15px;
     stroke: currentColor;
-    stroke-width: 1.8;
+    stroke-width: 1.5;
     fill: none;
-    transition: fill var(--ease), stroke var(--ease);
+    transition: all 0.15s ease;
+  }
+  .icon-btn:hover svg { stroke-width: 1.8; }
+  .icon-btn--danger {
+    border-color: rgba(255, 82, 82, 0.15);
+    color: rgba(255, 82, 82, 0.5);
+    background: rgba(255, 82, 82, 0.05);
   }
   .icon-btn--danger:hover {
-    background: var(--accent-red-bg);
-    color: var(--accent-red);
-    border-color: rgba(255,82,82,0.2);
+    background: rgba(255, 82, 82, 0.12);
+    color: rgba(255, 82, 82, 0.9);
+    border-color: rgba(255, 82, 82, 0.25);
+    box-shadow: 0 0 12px rgba(255, 82, 82, 0.1);
+  }
+  .icon-btn--gold {
+    border-color: rgba(255, 183, 77, 0.15);
+    color: rgba(255, 183, 77, 0.5);
+    background: rgba(255, 183, 77, 0.05);
   }
   .icon-btn--gold:hover {
-    background: var(--accent-gold-bg);
-    color: var(--accent-gold);
-    border-color: var(--accent-gold-border);
+    background: rgba(255, 183, 77, 0.12);
+    color: rgba(255, 183, 77, 0.9);
+    border-color: rgba(255, 183, 77, 0.25);
+    box-shadow: 0 0 12px rgba(255, 183, 77, 0.1);
   }
   .icon-btn--gold.active {
-    background: var(--accent-gold-bg);
-    color: var(--accent-gold);
-    border-color: var(--accent-gold-border);
+    background: rgba(255, 183, 77, 0.12);
+    color: rgba(255, 183, 77, 0.9);
+    border-color: rgba(255, 183, 77, 0.3);
   }
   .icon-btn--gold.active svg.filled { fill: currentColor; }
 
@@ -6540,6 +6556,15 @@
    SKILLS STUDIO PANEL
    ══════════════════════════════════════════════ */
 
+  /* Disable native tooltips in Skills Studio — use custom tooltips */
+  .skills-studio-panel [data-tooltip] {
+    position: relative;
+  }
+  /* Hide title attribute tooltips on any element within Skills Studio */
+  .skills-studio-panel [title] {
+    position: relative;
+  }
+
   .ss-backdrop {
     position: fixed; inset: 0; z-index: 299;
     background: rgba(0,0,0,0.35);
@@ -7115,87 +7140,96 @@
   .ss-hidden { display: none !important; }
 
   /* ── Tool chips ── */
-  .ss-tools-list { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ss-tools-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .ss-chip {
-    display: inline-flex; align-items: center; gap: 4px;
-    padding: 3px 9px; border-radius: var(--r-pill);
-    font-size: 10px; font-weight: 500;
-    background: hsla(var(--accent-hue, 210), 40%, 50%, 0.08);
-    border: 1px solid hsla(var(--accent-hue, 210), 40%, 50%, 0.15);
-    color: hsla(var(--accent-hue, 210), 50%, 70%, 0.9);
-    letter-spacing: 0.01em;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px; border-radius: var(--r-pill);
+    font-size: 11px; font-weight: 500;
+    background: rgba(96, 165, 250, 0.12);
+    border: 1px solid rgba(96, 165, 250, 0.22);
+    color: rgba(96, 165, 250, 0.8);
+    letter-spacing: 0.02em;
+    transition: all 0.15s ease;
+    position: relative;
+  }
+  .ss-chip:hover {
+    background: rgba(96, 165, 250, 0.18);
+    border-color: rgba(96, 165, 250, 0.32);
   }
   .ss-chip-x {
-    background: none; border: none; color: var(--t-faint);
-    cursor: pointer; font-size: 12px; padding: 0; line-height: 1;
+    background: none; border: none; color: rgba(96, 165, 250, 0.45);
+    cursor: pointer; font-size: 13px; padding: 0; line-height: 1;
     transition: color 0.12s ease;
+    display: flex; align-items: center; justify-content: center;
   }
-  .ss-chip-x:hover { color: hsla(0, 65%, 68%, 1); }
+  .ss-chip-x:hover {
+    color: rgba(255, 82, 82, 0.7);
+  }
   /* ── Custom dropdown (tools picker) ── */
-  .ss-dropdown { position: relative; margin-top: 4px; }
+  .ss-dropdown { position: relative; margin-top: 6px; }
   .ss-dropdown-trigger {
-    display: flex; align-items: center; justify-content: space-between; gap: 6px;
-    width: 100%; padding: 6px 10px;
-    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
-    border-radius: var(--r-small); font-size: 10px; font-weight: 500;
-    color: var(--t-muted); cursor: pointer; outline: none;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    width: 100%; padding: 7px 12px;
+    background: rgba(96, 165, 250, 0.08);
+    border: 1px solid rgba(96, 165, 250, 0.18);
+    border-radius: var(--r-small); font-size: 11px; font-weight: 500;
+    color: rgba(96, 165, 250, 0.65); cursor: pointer; outline: none;
     transition: all 0.15s ease;
     font-family: inherit;
   }
   .ss-dropdown-trigger svg {
-    opacity: 0.5; transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.15s ease;
+    opacity: 0.45; transition: transform 0.2s ease, opacity 0.15s ease;
     flex-shrink: 0; width: 10px; height: 10px;
   }
   .ss-dropdown-trigger:hover {
-    border-color: rgba(255,255,255,0.12);
-    color: var(--t-secondary);
-    background: rgba(255,255,255,0.06);
+    border-color: rgba(96, 165, 250, 0.26);
+    color: rgba(96, 165, 250, 0.75);
+    background: rgba(96, 165, 250, 0.13);
   }
-  .ss-dropdown-trigger:hover svg { opacity: 0.75; }
+  .ss-dropdown-trigger:hover svg { opacity: 0.6; }
   .ss-dropdown-trigger.open {
     border-color: rgba(96, 165, 250, 0.3);
-    color: var(--t-primary);
-    background: rgba(96, 165, 250, 0.08);
+    color: rgba(96, 165, 250, 0.85);
+    background: rgba(96, 165, 250, 0.14);
   }
   .ss-dropdown-trigger.open svg {
     transform: rotate(180deg);
-    opacity: 0.8;
-    color: rgba(96, 165, 250, 0.6);
+    opacity: 0.7;
   }
 
   .ss-dropdown-menu {
     position: absolute; z-index: 400;
-    top: calc(100% + 4px); left: 0; right: 0;
+    top: calc(100% + 6px); left: 0; right: 0;
     display: none; flex-direction: column;
-    background: rgba(20, 20, 28, 0.98);
-    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(18, 20, 28, 0.92);
+    border: 1px solid rgba(96, 165, 250, 0.16);
     border-radius: var(--r-button);
-    box-shadow: 0 12px 32px rgba(0,0,0,0.6), 0 0 1px rgba(96, 165, 250, 0.1);
-    padding: 6px 0;
-    backdrop-filter: blur(16px);
+    box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+    padding: 8px 0;
+    backdrop-filter: blur(12px);
     max-height: 240px; overflow-y: auto;
-    scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent;
-    animation: ss-dropdown-in 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    scrollbar-width: thin; scrollbar-color: rgba(96, 165, 250, 0.12) transparent;
+    animation: ss-dropdown-in 0.2s ease;
   }
   .ss-dropdown-menu.open { display: flex; }
   @keyframes ss-dropdown-in {
-    from { opacity: 0; transform: translateY(-6px); }
-    to { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
   }
 
   .ss-dropdown-item {
-    padding: 8px 12px; font-size: 11px; font-weight: 500;
-    color: var(--t-secondary); cursor: pointer;
-    transition: all 0.1s ease;
+    padding: 9px 14px; font-size: 11px; font-weight: 500;
+    color: rgba(255,255,255,0.6); cursor: pointer;
+    transition: all 0.12s ease;
     white-space: nowrap;
   }
   .ss-dropdown-item:hover {
-    background: rgba(96, 165, 250, 0.12);
-    color: var(--t-bright);
+    background: rgba(96, 165, 250, 0.15);
+    color: rgba(96, 165, 250, 0.95);
   }
   .ss-dropdown-item.disabled {
-    color: var(--t-faint); cursor: default;
-    pointer-events: none; opacity: 0.4;
+    color: rgba(255,255,255,0.25); cursor: default;
+    pointer-events: none;
   }
 
   /* ── Section label ── */
@@ -7293,29 +7327,24 @@
     font-size: var(--fs-sm); font-weight: 600;
     color: var(--t-primary);
   }
-  /* ── Mode tabs ── */
-  .ss-fd-mode-tabs {
-    display: flex; gap: 0;
-    padding: 0;
-    background: rgba(0,0,0,0.1);
-    border-bottom: 1px solid var(--b-subtle);
+  /* ── Unified action layout ── */
+  .ss-fd-divider {
+    height: 1px; background: var(--b-subtle);
+    margin: 12px 0;
   }
-  .ss-fd-mode-tab {
-    flex: 1; padding: 10px 12px;
-    border: none; background: none;
+  .ss-fd-action-group {
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .ss-fd-action {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .ss-fd-action-label {
     font-size: 11px; font-weight: 500;
-    color: var(--t-muted);
-    cursor: pointer; text-transform: capitalize;
-    border-bottom: 2px solid transparent;
-    transition: all 0.15s ease;
-  }
-  .ss-fd-mode-tab:hover { color: var(--t-secondary); background: rgba(255,255,255,0.03); }
-  .ss-fd-mode-tab.active {
-    color: rgba(96, 165, 250, 0.9);
-    border-bottom-color: rgba(96, 165, 250, 0.6);
+    color: var(--t-muted); text-transform: uppercase;
+    letter-spacing: 0.05em;
   }
   .ss-fd-body {
-    padding: 12px 16px; overflow-y: auto; flex: 1;
+    padding: 14px 16px; overflow-y: auto; flex: 1;
   }
   .ss-fd-section-label {
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
@@ -7345,11 +7374,27 @@
     transition: color 0.15s;
   }
   .ss-fd-new-folder-trigger:hover { color: var(--accent-blue, #4a90d9); }
-  /* ── Upload button ── */
-  .ss-fd-upload-btn {
-    margin-top: 8px; width: 100%;
+  /* ── Action buttons ── */
+  .ss-fd-create-btn {
+    width: 100%;
     display: flex; align-items: center; justify-content: center; gap: 8px;
-    padding: 12px 14px;
+    padding: 10px 14px;
+    background: rgba(96, 165, 250, 0.1);
+    border: 1px solid rgba(96, 165, 250, 0.25);
+    border-radius: var(--r-small);
+    color: rgba(96, 165, 250, 0.8);
+    font-size: 12px; font-weight: 500;
+    cursor: pointer; transition: all 0.15s ease;
+  }
+  .ss-fd-create-btn:hover {
+    background: rgba(96, 165, 250, 0.15);
+    border-color: rgba(96, 165, 250, 0.4);
+    color: rgba(96, 165, 250, 1);
+  }
+  .ss-fd-upload-btn {
+    width: 100%;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 10px 14px;
     background: rgba(96, 165, 250, 0.08);
     border: 2px dashed rgba(96, 165, 250, 0.3);
     border-radius: var(--r-small);
@@ -7362,7 +7407,7 @@
     background: rgba(96, 165, 250, 0.12);
     color: rgba(96, 165, 250, 0.9);
   }
-  .ss-fd-upload-btn svg { flex-shrink: 0; }
+  .ss-fd-upload-btn svg, .ss-fd-create-btn svg { flex-shrink: 0; }
   .ss-fd-new-folder {
     display: flex; align-items: center; gap: 4px;
     margin-bottom: 4px;
@@ -7939,13 +7984,13 @@
   .term-viewport .xterm { height: 100%; }
   .term-viewport .xterm-viewport {
     overflow-y: auto !important;
+    overflow-x: hidden !important;
     scroll-behavior: smooth;
     overscroll-behavior: contain;
 
-    /* Firefox scrollbar — always faintly visible */
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255,255,255,0.08) transparent;
-    transition: scrollbar-color 0.2s ease;
+    /* Firefox scrollbar — force visible with !important */
+    scrollbar-width: thin !important;
+    scrollbar-color: rgba(255,255,255,0.35) transparent !important;
   }
   .term-viewport:hover .xterm-viewport {
     scrollbar-color: rgba(255,255,255,0.15) transparent;
@@ -7960,22 +8005,22 @@
     border-radius: 4px;
   }
   .term-viewport .xterm-viewport::-webkit-scrollbar-thumb {
-    background: rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.35) !important;
     border-radius: 4px;
     border: 2px solid transparent;
     background-clip: padding-box;
-    transition: background 0.2s ease;
+    transition: background 0.15s ease;
   }
   .term-viewport:hover .xterm-viewport::-webkit-scrollbar-thumb {
-    background: rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.35);
     background-clip: padding-box;
   }
   .term-viewport .xterm-viewport::-webkit-scrollbar-thumb:hover {
-    background: rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.45);
     background-clip: padding-box;
   }
   .term-viewport .xterm-viewport::-webkit-scrollbar-thumb:active {
-    background: rgba(255,255,255,0.32);
+    background: rgba(255,255,255,0.5);
     background-clip: padding-box;
   }
   .term-viewport .xterm-viewport::-webkit-scrollbar-corner {
