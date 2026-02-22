@@ -11,14 +11,17 @@
  *    increments a pending-remember counter. If Claude finishes responding
  *    with 3+ unremembered edits, the Stop hook will block it.
  *
- * 2. FLAG CLEARING — When Claude calls `remember`:
+ * 2. FLAG MANAGEMENT — When Claude calls `remember`:
  *    - category "conversations" → clears pending-compact flag (compaction enforcement)
- *    - any other category       → clears pending-remember flag (task enforcement)
+ *    - any other category       → resets pending-remember flag (editCount→0,
+ *      keeps rememberCount/totalEdits so subsequent edits start a fresh segment)
  *
  * Input (stdin JSON):
  *   { session_id, tool_name, tool_input: { ... }, tool_response: { ... } }
  *
- * Output (stdout JSON): {} (no-op, side effects only)
+ * Output (stdout JSON):
+ *   - On edit at threshold multiples (3, 6, 9...): { additionalContext: "..." }
+ *   - Otherwise: {} (side effects only)
  */
 
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
@@ -77,8 +80,9 @@ async function main() {
       } catch { /* start fresh */ }
     }
 
-    // Increment edit counter
+    // Increment edit counters
     flag.editCount = (flag.editCount || 0) + 1;
+    flag.totalEdits = (flag.totalEdits || 0) + 1;
     if (!flag.firstEditAt) flag.firstEditAt = new Date().toISOString();
     flag.lastEditAt = new Date().toISOString();
 
@@ -92,11 +96,17 @@ async function main() {
       writeFileSync(flagPath, JSON.stringify(flag));
     } catch { /* ok */ }
 
-    // Proactive nudge when threshold is first crossed
-    if (flag.editCount === EDIT_THRESHOLD) {
-      process.stdout.write(JSON.stringify({
-        additionalContext: `SynaBun: ${flag.editCount} file edits so far — remember to store this work in memory before wrapping up.`,
-      }));
+    // Proactive nudge at every multiple of threshold (3, 6, 9, ...)
+    if (flag.editCount > 0 && flag.editCount % EDIT_THRESHOLD === 0) {
+      let nudgeText;
+      if (flag.editCount <= EDIT_THRESHOLD) {
+        nudgeText = `SynaBun: ${flag.editCount} file edits so far — remember to store this work in memory before wrapping up.`;
+      } else if (flag.editCount <= EDIT_THRESHOLD * 2) {
+        nudgeText = `SynaBun: ${flag.editCount} file edits without storing to memory. Call \`remember\` soon to avoid losing context.`;
+      } else {
+        nudgeText = `SynaBun: ${flag.editCount} file edits — this is significant work. You MUST call \`remember\` before continuing.`;
+      }
+      process.stdout.write(JSON.stringify({ additionalContext: nudgeText }));
     } else {
       process.stdout.write(JSON.stringify({}));
     }
@@ -113,11 +123,48 @@ async function main() {
       if (existsSync(compactFlagPath)) {
         try { unlinkSync(compactFlagPath); } catch { /* ok */ }
       }
-    } else if (category) {
-      // Clear pending-remember flag (task enforcement)
+      // Also reset pending-remember flag (conversations remember counts too)
       const rememberFlagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
       if (existsSync(rememberFlagPath)) {
-        try { unlinkSync(rememberFlagPath); } catch { /* ok */ }
+        try {
+          let flag = {};
+          try { flag = JSON.parse(readFileSync(rememberFlagPath, 'utf-8')); } catch { /* fresh */ }
+          flag.messageCount = 0;
+          flag.retries = 0;
+          flag.rememberCount = (flag.rememberCount || 0) + 1;
+          flag.lastRememberedAt = new Date().toISOString();
+          writeFileSync(rememberFlagPath, JSON.stringify(flag));
+        } catch { /* ok */ }
+      }
+    } else if (category) {
+      // Reset pending-remember flag (keep file, zero counters for next task segment)
+      const rememberFlagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+      if (existsSync(rememberFlagPath)) {
+        try {
+          let flag = {};
+          try { flag = JSON.parse(readFileSync(rememberFlagPath, 'utf-8')); } catch { /* start fresh */ }
+
+          const prevTotal = flag.totalEdits || flag.editCount || 0;
+          const prevRememberCount = flag.rememberCount || 0;
+
+          // Reset edit + message tracking but keep session-level stats
+          flag.editCount = 0;
+          flag.messageCount = 0;
+          flag.retries = 0;
+          flag.files = [];
+          flag.firstEditAt = null;
+          flag.lastEditAt = null;
+          flag.firstMessageAt = null;
+          flag.lastMessageAt = null;
+          flag.lastRememberedAt = new Date().toISOString();
+          flag.rememberCount = prevRememberCount + 1;
+          flag.totalEdits = prevTotal;
+
+          writeFileSync(rememberFlagPath, JSON.stringify(flag));
+        } catch {
+          // If reset fails, fall back to deleting
+          try { unlinkSync(rememberFlagPath); } catch { /* ok */ }
+        }
       }
     }
   }

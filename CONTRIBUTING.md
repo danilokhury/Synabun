@@ -48,15 +48,18 @@ docker compose logs -f   # View logs
 synabun/
 ├── mcp-server/         # MCP Protocol server (TypeScript)
 │   └── src/
-│       ├── tools/      # 9 MCP tools (remember, recall, etc.)
-│       └── services/   # Qdrant, embeddings, categories
+│       ├── tools/      # 11 MCP tools (remember, recall, forget, restore, reflect, memories, sync, category_*)
+│       └── services/   # Qdrant, embeddings, categories, file-checksums
 ├── neural-interface/   # 3D visualization UI (Express + Three.js)
-│   ├── server.js       # REST API backend
-│   └── public/         # Frontend HTML/JS
+│   ├── server.js       # REST API backend (55+ endpoints)
+│   └── public/         # Frontend HTML/JS (3D + 2D variants)
 ├── hooks/              # Claude Code lifecycle hooks
-│   └── claude-code/    # SessionStart + PromptSubmit hooks
+│   └── claude-code/    # 5 hooks: SessionStart, PromptSubmit, PreCompact, Stop, PostToolUse
 ├── skills/             # Claude Code skills (slash commands)
-│   └── idea/           # /idea brainstorming skill
+│   └── synabun/        # /synabun command hub (brainstorm, audit, health, search)
+├── data/               # Runtime data (flags, caches, feature toggles)
+├── memory-seed/        # Bootstrap seed data for new installations
+├── .tests/             # Vitest test suite (unit + scenario/cost tests)
 ├── docs/               # Extended documentation
 └── setup.js            # One-command setup wizard
 ```
@@ -78,15 +81,19 @@ See the [README File Structure](./README.md#file-structure) section for a comple
 
 | Change type | Where |
 |------------|-------|
-| New MCP tool | `mcp-server/src/tools/` (TypeScript) |
+| New MCP tool | `mcp-server/src/tools/` (TypeScript) — register in `index.ts` |
 | Qdrant queries | `mcp-server/src/services/qdrant.ts` |
 | Embedding logic | `mcp-server/src/services/embeddings.ts` |
 | Category management | `mcp-server/src/services/categories.ts` |
+| File hash tracking | `mcp-server/src/services/file-checksums.ts` |
 | Neural Interface API | `neural-interface/server.js` |
 | 3D visualization | `neural-interface/public/index.html` |
+| 2D visualization | `neural-interface/public/index2d.html` |
 | Setup wizard | `neural-interface/public/onboarding.html` |
-| Claude Code hooks | `hooks/claude-code/` |
-| Claude Code skills | `skills/` (SKILL.md format, see [README](./README.md#claude-code-skills)) |
+| Claude Code hooks | `hooks/claude-code/` (5 hook files) |
+| Claude Code skills | `skills/synabun/` (SKILL.md + modules/) |
+| Hook feature flags | `data/hook-features.json` |
+| Seed data | `memory-seed/` (categorized markdown files) |
 
 ### After Making Changes
 
@@ -108,13 +115,29 @@ There is no linter configured yet. We rely on consistent style through conventio
 
 ## Testing
 
-There is no automated test suite yet. Manual testing:
+### Automated Tests (Vitest)
 
-1. **MCP tools:** Restart Claude Code, run `/mcp` to verify tools are listed, then use `remember`, `recall`, etc.
-2. **Neural Interface:** Open `http://localhost:3344`, verify the 3D graph renders, test search, category management, and memory editing.
-3. **Hooks:** Start a new Claude Code session and verify the category tree appears in the system context.
+SynaBun includes a Vitest test suite in `.tests/`:
 
-If you add a new MCP tool, verify it appears in Claude Code's tool list via `/mcp`.
+```bash
+cd .tests
+npm install
+npx vitest run          # Run all tests
+npx vitest run unit     # Unit tests only
+npx vitest run scenarios # Scenario/cost tests only
+```
+
+- **Unit tests** cover all 11 MCP tools (remember, recall, forget, restore, reflect, memories, sync, category_*)
+- **Scenario tests** simulate usage patterns (light/medium/heavy user) and benchmark Claude API call costs
+
+### Manual Testing
+
+1. **MCP tools:** Restart Claude Code, run `/mcp` to verify all 11 tools are listed, then use `remember`, `recall`, etc.
+2. **Neural Interface:** Open `http://localhost:3344`, verify the 3D graph renders, test search, category management, trash, sync, and memory editing.
+3. **Hooks:** Start a new Claude Code session and verify the category tree and 4 directives appear in the system context.
+4. **Skills:** Run `/synabun` to access the command hub, test all menu options (Brainstorm Ideas, Audit Memories, Memory Health, Search Memories).
+
+If you add a new MCP tool, register it in `mcp-server/src/index.ts` and verify it appears in Claude Code's tool list via `/mcp`.
 
 ## Pull Requests
 
@@ -125,8 +148,9 @@ When submitting a PR, please:
    - New/changed MCP tools -> update the README [MCP Tools](./README.md#mcp-tools) table
    - New/changed API endpoints -> update [docs/api-reference.md](./docs/api-reference.md)
    - New/changed env vars -> update [.env.example](./.env.example) and README [Configuration](./README.md#configuration)
-   - New/changed hooks -> update [docs/hooks.md](./docs/hooks.md)
+   - New/changed hooks -> update [docs/hooks.md](./docs/hooks.md) and README [Claude Code Hooks](./README.md#claude-code-hooks) table
    - New/changed skills -> update README [Claude Code Skills](./README.md#claude-code-skills) section
+   - New seed data -> add to `memory-seed/` in the appropriate subdirectory
 3. **Test your changes** manually before submitting
 
 ## Reporting Issues

@@ -1,0 +1,823 @@
+{
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "close": "Close",
+    "create": "Create",
+    "edit": "Edit",
+    "copy": "Copy",
+    "copied": "Copied!",
+    "loading": "Loading...",
+    "retry": "Retry",
+    "start": "Start",
+    "confirm": "Confirm",
+    "back": "Back",
+    "next": "Next",
+    "done": "Done",
+    "yes": "Yes",
+    "no": "No",
+    "ok": "OK",
+    "add": "Add",
+    "remove": "Remove",
+    "export": "Export",
+    "import": "Import",
+    "search": "Search",
+    "filter": "Filter",
+    "reset": "Reset",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "name": "Name",
+    "description": "Description",
+    "none": "None",
+    "all": "All",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "on": "On",
+    "off": "Off",
+    "show": "Show",
+    "hide": "Hide",
+    "select": "Select",
+    "open": "Open",
+    "settings": "Settings",
+    "move": "Move",
+    "discard": "Discard"
+  },
+
+  "nav": {
+    "view": "View",
+    "graph": "Graph",
+    "skills": "Skills",
+    "terminal": "Terminal",
+    "bookmarks": "Bookmarks",
+    "layouts": "Layouts",
+    "trash": "Trash",
+    "settings": "Settings",
+    "toggle2d": "2D",
+    "toggle3d": "3D"
+  },
+
+  "menu": {
+    "view": {
+      "categories": "Categories",
+      "explorer": "Explorer",
+      "help": "Help"
+    },
+    "graph": {
+      "linksGroup": "Links",
+      "linksOff": "Links Off",
+      "linksIntra": "Intra Links",
+      "linksAll": "All Links",
+      "linkTypeGroup": "Link Type",
+      "allTypes": "All Types",
+      "resetLayout": "Reset Layout"
+    },
+    "skills": {
+      "skillsStudio": "Skills Studio",
+      "newSkill": "New Skill...",
+      "import": "Import..."
+    },
+    "terminal": {
+      "claudeCode": "Claude Code",
+      "codexCli": "Codex CLI",
+      "geminiCli": "Gemini CLI",
+      "shell": "Shell",
+      "showTerminal": "Show Terminal"
+    }
+  },
+
+  "search": {
+    "placeholder": "Search memories...",
+    "searching": "Searching...",
+    "noResults": "No results",
+    "searchError": "Search error",
+    "resultCount": {
+      "one": "1 result",
+      "other": "{count} results"
+    },
+    "matchCount": "Search: {count} matches"
+  },
+
+  "stats": {
+    "memories": "Memories:",
+    "visible": "Visible:",
+    "links": "Links:"
+  },
+
+  "loading": {
+    "connecting": "Connecting",
+    "initializingNeural": "Initializing neural pathways...",
+    "startDocker": "Start Docker",
+    "starting": "Starting...",
+    "takeMoment": "This may take a moment...",
+    "couldNotStart": "Could not start. Try again.",
+    "somethingWrong": "Something went wrong. Try again.",
+    "retryConnection": "Retry Connection",
+    "checking": "Checking...",
+    "connectedLoading": "Connected! Loading...",
+    "notReadyYet": "Server responded but is not ready yet",
+    "stillOffline": "Still offline \u2014 start the server and try again",
+    "runCommand": "Run this command to start the server:",
+    "copyToClipboard": "Copy to clipboard",
+    "serverOffline": "Server Offline",
+    "serverNotRunning": "The Neural Interface server is not running",
+    "connectionFailed": "Connection Failed",
+    "health": {
+      "dockerNotRunning": {
+        "title": "Database Offline",
+        "sub": "The memory database needs to be started"
+      },
+      "containerStopped": {
+        "title": "Database Stopped",
+        "sub": "The memory database was stopped"
+      },
+      "qdrantUnreachable": {
+        "title": "Database Unreachable",
+        "sub": "The database engine is not responding"
+      },
+      "remoteUnreachable": {
+        "title": "Connection Failed",
+        "sub": "Cannot reach the remote database"
+      },
+      "authError": {
+        "title": "Authentication Error",
+        "sub": "The database rejected the connection"
+      },
+      "connectionError": {
+        "title": "Connection Error",
+        "sub": "Cannot connect to the database"
+      }
+    }
+  },
+
+  "sidebar": {
+    "title": "Categories",
+    "allMemories": "All Memories",
+    "selectAll": "Select all",
+    "deselectAll": "Deselect all",
+    "toggleLabels": "Toggle labels",
+    "labelSize": "Label size",
+    "addCategory": "Add category",
+    "addParent": "Add parent",
+    "category": "Category",
+    "parent": "Parent",
+    "createCategory": "Create Category",
+    "createParentCategory": "Create Parent Category",
+    "editCategory": "Edit Category",
+    "deleteCategory": "Delete Category",
+    "categoryName": "category-name",
+    "shortDescription": "Short description...",
+    "noneStandalone": "(None - standalone category)",
+    "color": "Color",
+    "pickColor": "Pick a Color",
+    "custom": "Custom",
+    "resetToDefault": "Reset to Default",
+    "validation": {
+      "nameRequired": "Name is required",
+      "lengthRange": "Must be 2-30 characters",
+      "startWithLetter": "Must start with a letter",
+      "onlyLowercase": "Only lowercase letters, digits, and hyphens allowed",
+      "alreadyExists": "A category with this name already exists",
+      "descriptionRequired": "Description required"
+    },
+    "deleteConfirm": "Are you sure you want to delete '{name}'?",
+    "hasMemories": "This category has {count} memories. Choose what to do with them:",
+    "moveToAnother": "Move to another category",
+    "moveToUncategorized": "Move to uncategorized",
+    "deleting": "Deleting...",
+    "unsavedChanges": "Unsaved changes. Discard?",
+    "addChild": "Add Child Category",
+    "setColor": "Set Color",
+    "isParentHint": "This is a parent category. It groups child categories.",
+    "dropToNest": "Drop categories here to nest them",
+    "addDescription": "Add description...",
+    "editDescription": "Edit description"
+  },
+
+  "explorer": {
+    "title": "Explorer",
+    "filterPlaceholder": "Filter memories...",
+    "collapseAll": "Collapse all",
+    "expandAll": "Expand all",
+    "sortNewest": "Sort: newest first",
+    "sortOldest": "Sort: oldest first",
+    "sortImportanceDesc": "Sort: importance (high-low)",
+    "sortImportanceAsc": "Sort: importance (low-high)",
+    "sortCategoryAZ": "Sort: category A-Z",
+    "sortCategoryZA": "Sort: category Z-A",
+    "sortProjectAZ": "Sort: project A-Z",
+    "toggleLabels": "Toggle labels",
+    "labelSize": "Label size",
+    "showAllCategories": "Show all categories",
+    "hideAllCategories": "Hide all categories",
+    "memoryCount": {
+      "one": "1 memory",
+      "other": "{count} memories"
+    },
+    "filteredCount": "{shown} of {total} memories",
+    "emptyState": "No memories found",
+    "noMatchFilter": "No memories match the current filter",
+    "importanceTooltip": "Importance: {n}/10",
+    "contextMenu": {
+      "open": "Open",
+      "openNewTab": "Open in New Tab",
+      "edit": "Edit",
+      "delete": "Delete",
+      "moveTo": "Move to...",
+      "exportMd": "Export as Markdown",
+      "copyId": "Copy ID"
+    }
+  },
+
+  "detail": {
+    "category": "Category",
+    "subcategory": "Subcategory",
+    "importance": "Importance",
+    "project": "Project",
+    "source": "Source",
+    "created": "Created",
+    "updated": "Updated",
+    "id": "ID",
+    "tags": "Tags",
+    "relatedFiles": "Related Files",
+    "metadata": "Metadata",
+    "content": "Content",
+    "linked": "Linked",
+    "addTag": "Add tag...",
+    "removeTag": "Remove tag",
+    "edit": "Edit",
+    "bookmark": "Bookmark",
+    "moveCat": "Move",
+    "exportMd": "Export MD",
+    "compact": "Compact",
+    "copyId": "Copy ID",
+    "deleteConfirm": {
+      "title": "Delete Memory",
+      "message": "Are you sure you want to delete this memory? This cannot be undone."
+    },
+    "moveConfirm": {
+      "title": "Move to Category"
+    },
+    "editor": {
+      "placeholder": "Memory content...",
+      "bold": "Bold",
+      "italic": "Italic",
+      "code": "Code",
+      "list": "List",
+      "heading": "Heading",
+      "link": "Link",
+      "quote": "Quote"
+    },
+    "discardChanges": "Discard changes?",
+    "sourceValues": {
+      "userTold": "user-told",
+      "selfDiscovered": "self-discovered",
+      "autoSaved": "auto-saved"
+    },
+    "importanceValue": "{n}/10",
+    "focusLinked": "Show only linked memories"
+  },
+
+  "bookmarks": {
+    "title": "Bookmarks",
+    "emptyState": "No bookmarks yet",
+    "dragHint": "Drag memories here or right-click a node to bookmark",
+    "remove": "Remove"
+  },
+
+  "layouts": {
+    "placeholder": "Layout name...",
+    "save": "Save",
+    "noPinnedNodes": "No pinned nodes to save",
+    "noSavedLayouts": "No saved layouts",
+    "auto": "auto",
+    "deleteTooltip": "Delete"
+  },
+
+  "trash": {
+    "title": "Trash",
+    "emptyTrash": "Empty Trash",
+    "emptyState": "Trash is empty",
+    "noTrashedMemories": "No trashed memories",
+    "restore": "Restore",
+    "deletePermanently": "Delete Permanently",
+    "restoreAll": "Restore All",
+    "confirmDelete": {
+      "title": "Permanently delete this memory?",
+      "message": "This cannot be undone."
+    },
+    "confirmEmpty": {
+      "title": "Empty trash?",
+      "message": "This will permanently delete all {count} trashed memories."
+    }
+  },
+
+  "multiselect": {
+    "selected": {
+      "one": "1 selected",
+      "other": "{count} selected"
+    },
+    "move": "Move",
+    "export": "Export",
+    "trash": "Trash",
+    "clear": "Clear"
+  },
+
+  "help": {
+    "title": "Controls",
+    "tabs": {
+      "keyboard": "Keyboard",
+      "mouse": "Mouse",
+      "panels": "Panels",
+      "sidebar": "Sidebar"
+    },
+    "keyboard": {
+      "navigation": "Navigation",
+      "panels": "Panels",
+      "actions": "Actions",
+      "camera": "Camera",
+      "toggleSearch": "Toggle search",
+      "toggleExplorer": "Toggle explorer",
+      "toggleSidebar": "Toggle sidebar",
+      "toggleBookmarks": "Toggle bookmarks",
+      "openSettings": "Open settings",
+      "closeModal": "Close modal",
+      "navigate": "Navigate",
+      "selectItem": "Select",
+      "deleteSelected": "Delete selected",
+      "multiSelect": "Multi-select"
+    },
+    "mouse": {
+      "leftClick": "Left click",
+      "rightClick": "Right click",
+      "doubleClick": "Double click",
+      "scrollWheel": "Scroll wheel",
+      "middleClick": "Middle click",
+      "clickDrag": "Click + Drag",
+      "selectNode": "Select node",
+      "contextMenu": "Context menu",
+      "focusNode": "Focus node",
+      "zoom": "Zoom",
+      "pan": "Pan",
+      "rotate": "Rotate"
+    }
+  },
+
+  "settings": {
+    "title": "Settings",
+    "tabs": {
+      "server": "Server",
+      "connections": "Connections",
+      "collections": "Collections",
+      "projects": "Projects",
+      "memory": "Memory",
+      "interface": "Interface"
+    },
+    "server": {
+      "qdrantUrl": "Qdrant URL",
+      "apiKey": "API Key",
+      "collection": "Collection",
+      "status": "Status",
+      "connected": "Connected",
+      "disconnected": "Disconnected",
+      "connecting": "Connecting...",
+      "testConnection": "Test Connection",
+      "saving": "Saving...",
+      "saved": "Saved",
+      "error": "Error"
+    },
+    "connections": {
+      "title": "Connections",
+      "addConnection": "Add Connection",
+      "noConnections": "No connections configured",
+      "active": "Active",
+      "switch": "Switch",
+      "remove": "Remove",
+      "offline": "This connection is offline. Start the container first.",
+      "removeConfirm": "Remove connection '{name}'? This will delete all local data for this connection.",
+      "failedSwitch": "Failed to switch connection",
+      "failedRemove": "Failed to remove connection",
+      "statusOnline": "Online",
+      "statusOffline": "Offline",
+      "statusUnreachable": "Unreachable"
+    },
+    "collections": {
+      "title": "Collections",
+      "restoreCollection": "Restore Collection",
+      "restoreFromBackup": "Restore from Backup",
+      "qdrantUrl": "Qdrant URL",
+      "apiKey": "API Key",
+      "collectionName": "Collection Name",
+      "labelOptional": "Label (optional)",
+      "noFileSelected": "No file selected",
+      "chooseSnapshot": "Choose .snapshot file",
+      "uploading": "Uploading and restoring snapshot...",
+      "restore": "Restore",
+      "restoring": "Restoring..."
+    },
+    "addCollection": {
+      "title": "New Collection",
+      "newDocker": "New Docker Instance",
+      "newDockerDesc": "Spin up a fresh Qdrant container",
+      "existingInstance": "Existing Instance",
+      "existingInstanceDesc": "Connect to a running Qdrant server",
+      "configureContainer": "Configure Container",
+      "instanceDetails": "Instance Details",
+      "label": "Label",
+      "collectionName": "Collection Name",
+      "httpPort": "HTTP Port",
+      "grpcPort": "gRPC Port",
+      "apiKeyOptional": "API Key (optional)",
+      "placeholderLabel": "My Memory",
+      "placeholderCollection": "claude_memory",
+      "startContainer": "Start Container",
+      "createCollection": "Create Collection",
+      "testAndCreate": "Test & Create",
+      "startingDocker": "Starting Docker container...",
+      "creatingCollection": "Creating collection...",
+      "testingConnection": "Testing connection...",
+      "confirmAndSave": "Confirm & Save",
+      "addCollection": "Add Collection",
+      "validation": {
+        "labelRequired": "Label is required",
+        "labelLength": "Must be 3-50 characters",
+        "collectionFormat": "Collection name must be 3-50 chars, lowercase letters, digits, underscores",
+        "urlFormat": "Must start with http:// or https://"
+      }
+    },
+    "projects": {
+      "title": "Projects",
+      "addProject": "Add Project",
+      "projectPath": "Project Path",
+      "label": "Label",
+      "addAndEnable": "Add & Enable",
+      "adding": "Adding...",
+      "pathRequired": "Project path is required.",
+      "removeConfirm": "Remove from tracked projects?"
+    },
+    "memory": {
+      "title": "Memory Sync",
+      "allClear": "All clear \u2014 no stale memories detected",
+      "staleCount": "{stale} of {total} memories are stale \u2014 their related files have changed since the memory was stored.",
+      "deselectAll": "Deselect all",
+      "refresh": "Refresh",
+      "updateSelected": "Update Selected"
+    },
+    "interface": {
+      "title": "Interface"
+    },
+    "openclaw": {
+      "title": "OpenClaw Bridge",
+      "syncing": "Syncing...",
+      "nodesSynced": "{count} nodes synced",
+      "disconnectConfirm": "Disconnect OpenClaw bridge?",
+      "statusOff": "Off",
+      "statusConnected": "Connected",
+      "connect": "Connect"
+    },
+    "claude": {
+      "title": "Claude Code",
+      "connected": "Connected",
+      "partial": "Partial",
+      "off": "Off",
+      "enabled": "Enabled",
+      "enable": "Enable"
+    },
+    "tunnel": {
+      "title": "Expose MCP to Claude web via public URL",
+      "starting": "Starting...",
+      "running": "Running",
+      "ready": "Ready",
+      "timeout": "Timeout",
+      "copyMcpUrl": "Copy MCP URL",
+      "failedUrl": "Failed to get tunnel URL"
+    },
+    "apiKey": {
+      "generate": "Generate",
+      "regenerate": "Regenerate",
+      "copyKey": "Copy Key",
+      "revoke": "Revoke",
+      "noKey": "No key configured \u2014 tunnel is open",
+      "saveNow": "Save this key now \u2014 it won't be shown again"
+    }
+  },
+
+  "skills": {
+    "title": "Skills Studio",
+    "new": "+ New",
+    "import": "Import",
+    "focusMode": "Focus mode",
+    "filterPlaceholder": "Filter...",
+    "filterAll": "All",
+    "filterSkills": "Skills",
+    "filterCmds": "/ Cmds",
+    "filterAgents": "Agents",
+    "types": {
+      "skill": "skill",
+      "command": "command",
+      "agent": "agent"
+    },
+    "scopes": {
+      "global": "global",
+      "project": "project"
+    },
+    "badges": {
+      "notInstalled": "not installed",
+      "bundled": "bundled"
+    },
+    "emptyState": "No skills found",
+    "welcome": {
+      "title": "Skills Studio",
+      "description": "Browse, edit, and create Claude Code skills, commands, and agents.",
+      "selectHint": "Select an item from the sidebar, or create a new one."
+    },
+    "editor": {
+      "library": "Library",
+      "export": "Export",
+      "install": "Install",
+      "uninstall": "Uninstall",
+      "delete": "Delete",
+      "discard": "Discard",
+      "save": "Save",
+      "failedLoad": "Failed to load artifact",
+      "raw": "Raw",
+      "preview": "Preview"
+    },
+    "metadata": {
+      "name": "Name",
+      "description": "Description",
+      "argumentHint": "Argument Hint",
+      "allowedTools": "Allowed Tools",
+      "addTool": "Add tool...",
+      "options": "Options",
+      "userInvocable": "User-invocable",
+      "disableModelInvocation": "Disable model invocation",
+      "model": "Model",
+      "modelInherit": "inherit",
+      "toolsCsv": "Tools (comma-separated)",
+      "maxTurns": "Max Turns",
+      "maxTurnsPlaceholder": "0 = unlimited",
+      "color": "Color"
+    },
+    "files": {
+      "subFiles": "Sub-files",
+      "newFile": "New File",
+      "chooseLocation": "Choose location",
+      "root": "/ (root)",
+      "newFolder": "New Folder",
+      "filenamePlaceholder": "my-file.md"
+    },
+    "toolbar": {
+      "heading": "Heading",
+      "bold": "Bold",
+      "italic": "Italic",
+      "strikethrough": "Strikethrough",
+      "bulletedList": "Bulleted List",
+      "numberedList": "Numbered List",
+      "blockquote": "Blockquote",
+      "codeBlock": "Code Block",
+      "link": "Link",
+      "horizontalRule": "Horizontal Rule"
+    },
+    "saved": "Saved",
+    "deleteConfirm": "Delete '{name}'? This cannot be undone.",
+    "installed": "Installed '{name}' \u2014 restart Claude Code to use",
+    "uninstalled": "Uninstalled '{name}'",
+    "wizard": {
+      "whatCreate": "What do you want to create?",
+      "steps": {
+        "type": "Type",
+        "template": "Template",
+        "details": "Details",
+        "content": "Content"
+      },
+      "types": {
+        "skill": {
+          "title": "Skill",
+          "description": "Reusable prompt template triggered by AI or user"
+        },
+        "command": {
+          "title": "Command",
+          "description": "Custom slash command for Claude Code"
+        },
+        "agent": {
+          "title": "Agent",
+          "description": "Autonomous agent with specialized behavior"
+        }
+      },
+      "templates": {
+        "blank": { "title": "Blank", "description": "Start from scratch" },
+        "simple": { "title": "Simple", "description": "Single-file with prompt" },
+        "orchestrator": { "title": "Orchestrator", "description": "Multi-step task coordinator" },
+        "modular": { "title": "Modular", "description": "File-tree with sub-files" },
+        "expert": { "title": "Expert", "description": "Domain specialist" },
+        "analysis": { "title": "Analysis", "description": "Code analysis template" },
+        "workflow": { "title": "Workflow", "description": "Multi-step workflow" },
+        "domainExpert": { "title": "Domain Expert", "description": "Deep knowledge agent" },
+        "researcher": { "title": "Researcher", "description": "Information gathering" }
+      },
+      "details": {
+        "name": "Name",
+        "scope": "Scope",
+        "scopeGlobal": "Global",
+        "scopeProject": "Project",
+        "description": "Description"
+      },
+      "reviewAndEdit": "Review & Edit",
+      "create": "Create"
+    },
+    "importInvalid": "Invalid bundle format",
+    "importScope": "Import scope (global or project):",
+    "imported": "Imported '{name}'!",
+    "validation": {
+      "nameRequired": "Name is required",
+      "nameFormat": "Name must be lowercase, start with a letter, only letters/digits/hyphens",
+      "contentRequired": "Content is required",
+      "filenameRequired": "Filename is required"
+    }
+  },
+
+  "context": {
+    "focus": "Focus",
+    "orbitHere": "Orbit Here",
+    "bookmark": "Bookmark",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "openDetail": "Open Detail",
+    "copyId": "Copy ID",
+    "delete": "Delete"
+  },
+
+  "gfx": {
+    "tabLabel": "Graphics",
+    "resetDefaults": "Reset All to Defaults",
+    "3d": {
+      "floorEffect": "Floor Effect",
+      "links": "Links",
+      "camera": "Camera",
+      "background": "Background",
+      "opacity": "Opacity",
+      "clickZoom": "Click Zoom",
+      "gentleZoom": "Gentle Zoom",
+      "particleGlow": "Particle Glow",
+      "particleCount": "Particle Count",
+      "floorStyles": {
+        "grid": { "name": "Grid", "description": "Soft glowing lines" },
+        "dotField": { "name": "Dot Field", "description": "Proximity glow dots" },
+        "hexGrid": { "name": "Hex Grid", "description": "Hexagonal cells" },
+        "ripples": { "name": "Ripples", "description": "Concentric waves" },
+        "groundFog": { "name": "Ground Fog", "description": "Drifting mist" },
+        "none": { "name": "None", "description": "No floor effect" }
+      },
+      "presets": {
+        "low": { "name": "Low", "description": "Battery saver" },
+        "medium": { "name": "Medium", "description": "Balanced" },
+        "high": { "name": "High", "description": "Rich visuals" },
+        "insane": { "name": "Insane", "description": "Max everything" }
+      },
+      "hud": {
+        "boost": "BOOST",
+        "move": "MOVE"
+      }
+    },
+    "2d": {
+      "linkOpacity": "Link Opacity",
+      "nodeSizeMultiplier": "Node Size Multiplier",
+      "labelThreshold": "Label Threshold (importance >=)",
+      "hullOpacity": "Hull Opacity",
+      "showDotGrid": "Show background dot grid"
+    }
+  },
+
+  "time": {
+    "justNow": "just now",
+    "minutesAgo": "{n}m ago",
+    "hoursAgo": "{n}h ago",
+    "dayAgo": "1 day ago",
+    "daysAgo": "{n} days ago",
+    "monthAgo": "1 month ago",
+    "monthsAgo": "{n} months ago"
+  },
+
+  "export": {
+    "fieldLabel": "Field",
+    "valueLabel": "Value",
+    "categoryLabel": "Category",
+    "importanceLabel": "Importance",
+    "projectLabel": "Project",
+    "sourceLabel": "Source",
+    "createdLabel": "Created",
+    "updatedLabel": "Updated",
+    "idLabel": "ID",
+    "tagsLabel": "Tags:",
+    "contentHeading": "Content",
+    "relatedFilesHeading": "Related Files",
+    "emptyContent": "*(empty)*"
+  },
+
+  "tooltip": {
+    "toggleViz": "Toggle Visualization (V)",
+    "fullscreen": "Fullscreen (F11)",
+    "toggleExplorer": "Toggle Explorer (F)"
+  },
+
+  "onboarding": {
+    "welcome": {
+      "greeting": "Hi! I'm SynaBun!",
+      "description": "I'll help you set up your persistent vector memory for AI coding assistants.",
+      "begin": "Begin"
+    },
+    "environment": {
+      "title": "Environment Check",
+      "subtitle": "Verifying your system has everything SynaBun needs.",
+      "checking": "Checking...",
+      "found": "Found",
+      "notFound": "Not Found",
+      "optional": "Optional"
+    },
+    "apiKey": {
+      "title": "Qdrant API Key",
+      "subtitle": "Secure your local Qdrant instance with a password.",
+      "show": "Show",
+      "hide": "Hide",
+      "generate": "Generate",
+      "copy": "Copy",
+      "minChars": "Minimum 8 characters required.",
+      "confirmSaved": "Please confirm you have saved your API key.",
+      "warning": "This key is the only way to access your memories. If you lose it, your data is unrecoverable.",
+      "checkbox": "I have saved this API key somewhere safe"
+    },
+    "memoryName": {
+      "title": "Memory Name",
+      "subtitle": "A display name for your memory collection.",
+      "default": "Claude Memory",
+      "collectionPreview": "Collection: {slug}"
+    },
+    "embedding": {
+      "title": "Embedding Provider",
+      "recommended": "Recommended",
+      "freeTier": "Free tier",
+      "local": "Local",
+      "getApiKey": "Get API key",
+      "download": "Download",
+      "notRequired": "Not required for local providers.",
+      "apiKeyLabel": "API Key"
+    },
+    "qdrant": {
+      "title": "Spin Up Qdrant",
+      "localDocker": "Local (Docker)",
+      "remoteCloud": "Remote / Cloud",
+      "advanced": "Advanced",
+      "hidePorts": "Hide Ports",
+      "waiting": "Waiting to start...",
+      "startQdrant": "Start Qdrant",
+      "qdrantUrl": "Qdrant URL",
+      "apiKey": "API Key",
+      "clusterName": "Cluster Name",
+      "testConnection": "Test Connection",
+      "detected": "Qdrant detected on port {port}!",
+      "notDetected": "No Qdrant on port {port}",
+      "cloudConnected": "Connected to Qdrant Cloud!",
+      "dockerNotResponding": "Docker started but Qdrant not responding yet...",
+      "dockerFailed": "Failed to start Docker container"
+    },
+    "build": {
+      "title": "Build MCP Server",
+      "subtitle": "Compile the TypeScript MCP server to JavaScript.",
+      "build": "Build",
+      "building": "Building...",
+      "alreadyBuilt": "Already Built",
+      "buildSuccess": "Build successful!",
+      "buildFailed": "Build failed",
+      "needsBuilding": "MCP server needs building",
+      "alreadyBuiltStatus": "MCP server already built"
+    },
+    "integration": {
+      "title": "AI Tool Integration"
+    },
+    "instructions": {
+      "title": "Memory Instructions",
+      "loadingRuleset": "Loading ruleset..."
+    },
+    "complete": {
+      "title": "Setup Complete!",
+      "qdrantKeyConfigured": "Qdrant API key configured",
+      "qdrantCloudConnected": "Qdrant Cloud connected",
+      "memoryNameSet": "Memory name set: {name}",
+      "embeddingProvider": "Embedding provider: {provider}",
+      "qdrantRunning": "Qdrant running on port {port}",
+      "connectedToCloud": "Connected to Qdrant Cloud",
+      "mcpBuilt": "MCP server built",
+      "toolConfigured": "Tool configured: {tool}",
+      "restartWarning": "Restart required \u2014 restart your AI tool to load the new MCP server",
+      "backupWarning": "Backup your API key \u2014 store it somewhere safe, you'll need it if you reinstall",
+      "launchNeural": "Launch Neural Interface"
+    },
+    "nav": {
+      "back": "Back",
+      "begin": "Begin",
+      "next": "Next",
+      "finish": "Finish"
+    }
+  }
+}

@@ -34,6 +34,7 @@ const PENDING_COMPACT_DIR = join(DATA_DIR, 'pending-compact');
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 const MAX_RETRIES = 3;
 const EDIT_THRESHOLD = 3;
+const MESSAGE_THRESHOLD = 5;
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -124,6 +125,13 @@ async function main() {
 
     const editCount = flag.editCount || 0;
 
+    // editCount 0 means all work was remembered — clean up and allow stop
+    if (editCount === 0) {
+      try { unlinkSync(rememberFlagPath); } catch { /* ok */ }
+      process.stdout.write(JSON.stringify({}));
+      return;
+    }
+
     // Below threshold → allow stop, clean up flag
     if (editCount < EDIT_THRESHOLD) {
       try { unlinkSync(rememberFlagPath); } catch { /* ok */ }
@@ -145,13 +153,59 @@ async function main() {
       writeFileSync(rememberFlagPath, JSON.stringify(flag));
     } catch { /* ok */ }
 
-    const reason = `SynaBun: ${editCount} edits not yet stored in memory — remember this work before finishing. (${retries + 1}/${MAX_RETRIES})`;
+    const rememberCount = flag.rememberCount || 0;
+    const statsNote = rememberCount > 0
+      ? ` (${rememberCount} task${rememberCount !== 1 ? 's' : ''} already stored this session)`
+      : '';
+    const reason = `SynaBun: ${editCount} edits not yet stored in memory — remember this work before finishing.${statsNote} (${retries + 1}/${MAX_RETRIES})`;
 
     process.stdout.write(JSON.stringify({
       decision: 'block',
       reason,
     }));
     return;
+  }
+
+  // ─── CHECK 3: Conversation turn enforcement (no edits, but substantial conversation) ───
+  const rememberFlagPath2 = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+  if (existsSync(rememberFlagPath2)) {
+    let flag;
+    try {
+      flag = JSON.parse(readFileSync(rememberFlagPath2, 'utf-8'));
+    } catch {
+      try { unlinkSync(rememberFlagPath2); } catch { /* ok */ }
+      process.stdout.write(JSON.stringify({}));
+      return;
+    }
+
+    const messageCount = flag.messageCount || 0;
+    const rememberCount = flag.rememberCount || 0;
+    const editCount = flag.editCount || 0;
+
+    // Only enforce if: enough messages, no remember calls at all, and no pending edits (those are handled by CHECK 2)
+    if (messageCount >= MESSAGE_THRESHOLD && rememberCount === 0 && editCount < EDIT_THRESHOLD) {
+      const retries = flag.retries || 0;
+
+      if (retries >= MAX_RETRIES) {
+        try { unlinkSync(rememberFlagPath2); } catch { /* ok */ }
+        process.stdout.write(JSON.stringify({}));
+        return;
+      }
+
+      flag.retries = retries + 1;
+      try { writeFileSync(rememberFlagPath2, JSON.stringify(flag)); } catch { /* ok */ }
+
+      process.stdout.write(JSON.stringify({
+        decision: 'block',
+        reason: `SynaBun: This session had ${messageCount} exchanges with no memory stored — store what was discussed/accomplished before finishing. (${retries + 1}/${MAX_RETRIES})`,
+      }));
+      return;
+    }
+
+    // If rememberCount > 0 or below threshold, clean up flag and allow stop
+    if (editCount === 0 && messageCount < MESSAGE_THRESHOLD) {
+      try { unlinkSync(rememberFlagPath2); } catch { /* ok */ }
+    }
   }
 
   // No flags → allow stop

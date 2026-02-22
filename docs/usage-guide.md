@@ -5,7 +5,7 @@ Detailed usage patterns, workflows, and troubleshooting for SynaBun's MCP tools.
 For installation and setup, see the [README](../README.md).
 
 ## Table of Contents
-- [Basic Workflows](#basic-workflows)
+- [Basic Workflows](#basic-workflows) (store, search, update, delete, restore, sync, audit)
 - [Advanced Patterns](#advanced-patterns)
 - [Tool-Specific Quirks](#tool-specific-quirks)
 - [Best Practices](#best-practices)
@@ -103,9 +103,43 @@ reflect({
 // Get the UUID first
 recall({ query: "obsolete feature", limit: 1 })
 
-// Then delete
+// Soft-delete (moves to trash — can be restored)
 forget({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
 ```
+
+### Restoring deleted memories
+
+```javascript
+// Undo a forget — restore from trash
+restore({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
+```
+
+`forget` is a soft delete that sets a `trashed_at` timestamp. The memory remains in Qdrant but is excluded from search results. Use `restore` to undo, or permanently purge from the Neural Interface (Settings > Trash > Purge All).
+
+### Detecting stale memories
+
+```javascript
+// Check which memories reference files that have changed
+sync({ project: "my-project" })
+```
+
+The `sync` tool compares SHA-256 hashes of files listed in `related_files` against stored checksums. Returns a list of memories that may be outdated. Useful after code refactors or large changes.
+
+**Workflow:**
+1. Run `sync` to find stale memories
+2. Review each stale memory
+3. Either `reflect` to update the content, or `forget` if no longer relevant
+4. Re-run `sync` to confirm all memories are current
+
+### Memory audit via `/synabun`
+
+The `/synabun` command hub includes an **Audit Memories** option that automates the stale memory detection workflow:
+
+```
+/synabun    # Select "Audit Memories" from the interactive menu
+```
+
+The audit runs 6 phases: landscape survey → checksum pre-scan → bulk retrieval → parallel semantic verification → interactive classification → audit report. See [README: Claude Code `/synabun` Command](../README.md#claude-code-synabun-command) for details.
 
 ---
 
@@ -176,16 +210,15 @@ remember({
 })
 ```
 
-### Brainstorming with `/idea`
+### Brainstorming via `/synabun`
 
-SynaBun includes a `/idea` skill that uses multi-round recall to brainstorm. Instead of a single `recall`, it executes 5 rounds with different query strategies (direct, adjacent, problem-space, solution-space, cross-domain) and synthesizes connections between disparate memories.
+The `/synabun` command hub includes a **Brainstorm Ideas** option that uses multi-round recall. Instead of a single `recall`, it executes 5 rounds with different query strategies (direct, adjacent, problem-space, solution-space, cross-domain) and synthesizes connections between disparate memories.
 
 ```
-/idea real-time notifications         # Topic-focused brainstorm
-/idea                                 # Freeform exploration
+/synabun    # Select "Brainstorm Ideas" from the interactive menu
 ```
 
-The skill generates 3-5 concrete ideas, each traced back to specific memories that inspired it. See the [README](../README.md#claude-code-skills) for full details.
+The brainstorming generates 3-5 concrete ideas, each traced back to specific memories that inspired it. See the [README](../README.md#claude-code-synabun-command) for full details.
 
 You can also build your own multi-round recall workflows:
 
@@ -218,30 +251,29 @@ remember({
 })
 ```
 
-**May fail (AI-specific):**
+**Full example with all fields:**
 ```javascript
 remember({
   content: "Content here",
   category: "project",
-  importance: 7,  // May fail with "Expected number, received string"
-  tags: ["tag1", "tag2"]  // May fail with "Expected array, received string"
+  importance: 7,
+  tags: ["tag1", "tag2"]
 })
+// Returns: Remembered [full-uuid-here] (project/myproject, importance: 7): "Content here"
 ```
 
-**Reason:** Some AI tools (like Claude Code) serialize all parameters as strings due to XML-based tool calling, causing type validation errors.
-
-**Workaround:** Use `reflect` after `remember` to set importance and tags.
+`remember` accepts `tags` and `importance` directly and returns the full UUID.
 
 ---
 
 ### `reflect` tool
 
-**Critical requirement:** Must use the **full UUID**, not the shortened ID.
+**Critical requirement:** Must use the **full UUID**, not a shortened ID.
 
 **Wrong:**
 ```javascript
 reflect({
-  memory_id: "8f7cab3b",  // Shortened ID from remember output
+  memory_id: "8f7cab3b",  // Shortened ID — will fail
   importance: 7
 })
 // Returns: Bad Request
@@ -261,7 +293,7 @@ reflect({
 // Returns: Updated [8f7cab3b]: importance -> 7
 ```
 
-**Why:** The `remember` tool output shows a shortened ID for display purposes (`[8f7cab3b]`), but the internal memory ID is a full UUID. The `reflect` tool validates the UUID format and rejects shortened IDs.
+**Why:** The `remember` tool now returns the full UUID in its output (`[8f7cab3b-644e-4cea-8662-de0ca695bdf2]`). Use this directly. The `reflect` tool validates the UUID format and rejects shortened IDs.
 
 **Parameter name:** Use `memory_id`, not `id` or `uuid`.
 
@@ -290,9 +322,9 @@ recall({
 
 ---
 
-### `forget` tool
+### `forget` and `restore` tools
 
-**Important:** Deletion is permanent and immediate. There's no undo.
+`forget` performs a **soft delete** — it sets a `trashed_at` timestamp on the memory. The memory remains in Qdrant but is excluded from `recall` search results.
 
 **Best practice:** Always verify the memory content before deletion:
 
@@ -302,9 +334,30 @@ recall({ query: "obsolete feature", limit: 3 })
 
 // Step 2: Confirm which one to delete (read the content)
 
-// Step 3: Delete by full UUID
+// Step 3: Soft-delete by full UUID
 forget({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
+
+// Step 4 (if needed): Undo the deletion
+restore({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
 ```
+
+**Permanent deletion:** To permanently remove trashed memories, use the Neural Interface (Trash panel > Purge All) or call `DELETE /api/trash/purge`.
+
+---
+
+### `sync` tool
+
+Detects memories whose `related_files` have changed since the memory was last updated. Uses SHA-256 content hashing.
+
+```javascript
+// Check all memories
+sync()
+
+// Check memories for a specific project
+sync({ project: "my-project" })
+```
+
+Returns a list of stale memories with details about which files changed. Use this after code refactors to identify memories that need updating.
 
 ---
 
@@ -400,31 +453,34 @@ recall({ query: "similar bug with caching", category: "learning", limit: 3 })
 
 **Cause:** Using shortened memory ID instead of full UUID.
 
-**Solution:**
+**Solution:** `remember` now returns the full UUID. Use it directly:
 ```javascript
-// 1. Search to get full UUID
-recall({ query: "relevant search", limit: 1 })
-// Look for: [8f7cab3b-644e-4cea-8662-de0ca695bdf2]
-
-// 2. Use full UUID in reflect
+// remember returns: Remembered [8f7cab3b-644e-4cea-8662-de0ca695bdf2] (...)
+// Use the full UUID with reflect:
 reflect({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2", ... })
+
+// For existing memories, use recall to get the full UUID:
+recall({ query: "relevant search", limit: 1 })
 ```
 
 ---
 
 ### Problem: `remember` fails with "Expected array, received string"
 
-**Cause:** AI tool serializing array/number parameters as strings.
+**Cause:** AI tool serializing array/number parameters as strings (rare — mostly resolved in modern MCP SDK).
 
-**Solution:** Use two-step approach:
+**Solution:** `remember` now uses `z.coerce.number()` for importance and standard array validation for tags. Pass them directly:
 ```javascript
-// Step 1: Create without tags/importance
-remember({ content: "...", category: "project" })
-
-// Step 2: Add metadata via reflect
-recall({ query: "...", limit: 1 })  // Get UUID
-reflect({ memory_id: "uuid-here", importance: 7, tags: ["tag1", "tag2"] })
+remember({
+  content: "...",
+  category: "project",
+  importance: 7,
+  tags: ["tag1", "tag2"]
+})
+// Returns full UUID — no need for recall+reflect
 ```
+
+If your MCP client still fails, use `reflect` as a fallback to set these fields after `remember`.
 
 ---
 
@@ -481,24 +537,24 @@ Add to `.cursorrules`:
 
 ```
 Memory MCP Tools Available:
-- remember: Store knowledge (content, category, project)
+- remember: Store knowledge (content, category, project, tags, importance)
 - recall: Semantic search (query, limit, filters)
-- reflect: Update memory (requires full UUID from recall)
+- reflect: Update existing memory (requires full UUID)
 - forget: Delete memory (requires full UUID)
 - memories: List/stats (recent, by-category, by-project)
 
 Usage:
 - Use recall at session start to load context
-- Use remember for: bug fixes (importance 7+), architecture decisions (8+), ongoing work (6)
-- Always use recall to get full UUID before calling reflect
+- Use remember with tags + importance for: bug fixes (7+), architecture decisions (8+), ongoing work (6)
+- remember returns full UUID. Use reflect only to update existing memories.
 - Call tools sequentially, not in parallel
 ```
 
 ### For other MCP clients
 
-1. **Test parameter serialization:** Try passing arrays and numbers to `remember`. If it fails, use the two-step `remember` -> `reflect` workflow.
+1. **Test parameter serialization:** Try passing arrays and numbers to `remember`. Modern MCP SDKs handle this correctly. If your client still fails, use `reflect` as a fallback.
 
-2. **UUID handling:** Check if your tool shows shortened IDs. If yes, always use `recall` to get the full UUID before calling `reflect`.
+2. **UUID handling:** `remember` now returns the full UUID. Use it directly with `reflect` if needed. For existing memories, use `recall` to get the full UUID.
 
 3. **Error handling:** If you see "Sibling tool call errored", make calls sequentially.
 
@@ -611,7 +667,7 @@ remember({
 })
 ```
 
-The `/idea` skill automates this entire workflow. See the [README](../README.md#claude-code-skills).
+The **Brainstorm Ideas** option in `/synabun` automates this entire workflow. See the [README](../README.md#claude-code-synabun-command).
 
 ---
 
@@ -669,7 +725,7 @@ remember({
 
 ### 2. Use full UUIDs with `reflect`
 
-Always use `recall` to get the full UUID before calling `reflect`. Never use shortened IDs.
+`remember` returns the full UUID directly. Use it with `reflect` when needed. For existing memories, use `recall` to get the full UUID. Never use shortened IDs.
 
 ---
 
@@ -679,9 +735,9 @@ Never make parallel memory tool calls. Always wait for one to complete before ca
 
 ---
 
-### 4. Test parameter serialization
+### 4. Pass all fields to `remember` directly
 
-Test if your AI client can pass arrays/numbers correctly to `remember`. If not, use the two-step `remember` -> `reflect` workflow.
+`remember` accepts `tags`, `importance`, and all other fields directly. No need for a separate `reflect` call. If your MCP client has serialization issues with arrays/numbers, use `reflect` as a fallback.
 
 ---
 
@@ -699,7 +755,7 @@ Store memories proactively:
 
 **Golden rules:**
 1. **Format memory content in Markdown** for readability and structure
-2. Use `recall` to get full UUIDs before calling `reflect`
+2. Pass `tags` and `importance` directly to `remember` — it returns the full UUID
 3. Call memory tools sequentially, never in parallel
 4. Use importance 8+ for critical knowledge
 5. Add `related_files` for code-related memories

@@ -4,7 +4,7 @@ description: >
   SynaBun command hub — interactive menu for all memory-powered capabilities.
   Routes to brainstorming, auditing, health checks, and memory search.
   Triggers on: "synabun", "memory menu", "synabun menu".
-argument-hint: "[idea|audit|health|search] or leave blank for interactive menu"
+argument-hint: "[idea|audit|memorize|health|search] or leave blank for interactive menu"
 ---
 
 # SynaBun — Command Hub
@@ -18,8 +18,8 @@ You are the SynaBun assistant hub. The user has invoked `/synabun`.
 ## CRITICAL: SynaBun MCP Tool Quirks
 
 - Make ALL SynaBun MCP calls **sequentially** (never in parallel — one failure cascades to all sibling calls in the batch).
-- When using `remember`, **omit** the `tags` and `importance` parameters (they cause type errors via XML serialization). Use `reflect` after to set them.
-- The `reflect` tool requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`), not the shortened ID. Use `recall` first to get the full UUID if you only have a short ID.
+- `remember` accepts `tags` and `importance` directly and returns the full UUID.
+- `reflect` requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`). Use the UUID returned by `remember`, or `recall` to find existing memories.
 
 ---
 
@@ -30,6 +30,7 @@ Parse `$ARGUMENTS` to determine the path:
 **Direct routing** (skip the menu entirely):
 - If args start with `idea` or `brainstorm` → extract the rest as the topic, set `$ARGUMENTS` to that topic, then jump to **Step 2a: Brainstorm Ideas**.
 - If args start with `audit` → extract the rest as the scope, set `$ARGUMENTS` to that scope, then jump to **Step 2b: Audit Memories**.
+- If args start with `memorize` or `remember` or `store` or `save` → extract the rest as the focus hint, set `$ARGUMENTS` to that hint, then jump to **Step 2c: Memorize Context**.
 - If args start with `health` or `stats` → jump to **Step 3: Memory Health**.
 - If args start with `search` or `recall` or `find` → jump to **Step 4: Search Memories**, using the rest as the initial query.
 
@@ -39,12 +40,24 @@ Output a single line:
 
 > **SynaBun** — What would you like to do?
 
-Then immediately use `AskUserQuestion` with these options:
+The menu is paginated (3 features + 1 navigation slot per page). Start on **Page 1**.
+
+**Page 1** — use `AskUserQuestion` with:
 
 - **Brainstorm Ideas** — "Cross-pollinate memories to spark creative ideas and novel connections"
 - **Audit Memories** — "Validate stored memories against the current codebase for staleness"
+- **Memorize Context** — "Convert the current conversation into a structured, tagged memory"
+- **More...** — "Memory Health, Search Memories"
+
+If user picks **More...** → show **Page 2**.
+
+**Page 2** — use `AskUserQuestion` with:
+
 - **Memory Health** — "Quick stats overview and staleness check of your memory system"
 - **Search Memories** — "Find something specific across your entire memory bank"
+- **Back** — "Return to page 1"
+
+If user picks **Back** → show **Page 1** again.
 
 Based on the user's selection, proceed to the matching step below.
 
@@ -72,6 +85,12 @@ Based on the user's answer, set `$ARGUMENTS` to:
 ## Step 2b: Audit Memories
 
 **Directly**: Use the `Read` tool to read the file at `$SKILL_DIR/modules/audit.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value. That file is your complete audit procedure — execute it fully.
+
+---
+
+## Step 2c: Memorize Context
+
+**Directly**: Use the `Read` tool to read the file at `$SKILL_DIR/modules/memorize.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value (the focus hint, if any). That file is your complete memorization procedure — execute it fully.
 
 ---
 
