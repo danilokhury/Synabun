@@ -131,6 +131,18 @@
       "description": "Three.js scenes, 2D canvas effects, animations, scroll effects, interactive JS",
       "created_at": "2026-02-19T19:24:54.603Z",
       "parent": "synabun-website"
+    },
+    {
+      "name": "uncategorized",
+      "description": "Default category for memories that have no category assigned",
+      "created_at": "2026-02-22T03:58:46.221Z",
+      "color": "#6b7280"
+    },
+    {
+      "name": "synabun-bugs",
+      "description": "Bug fixes and known issues specific to SynaBun — MCP server, neural interface, hooks, memory system",
+      "created_at": "2026-02-22T06:48:57.907Z",
+      "parent": "synabun"
     }
   ]
 }

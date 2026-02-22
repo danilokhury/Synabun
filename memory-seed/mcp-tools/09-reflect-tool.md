@@ -15,11 +15,11 @@ The reflect tool (`mcp-server/src/tools/reflect.ts`, 157 lines) updates an exist
 
 ## CRITICAL: Full UUID Required
 
-Requires the FULL UUID (36 characters with dashes), NOT the shortened 8-char ID returned by `remember`.
+Requires the FULL UUID (36 characters with dashes). The `remember` tool now returns the full UUID in its output, so use it directly. For existing memories, use `recall` to get the full UUID.
 
 UUID regex validation: `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i`
 
-If a shortened ID is provided, returns a detailed error: *"The 'remember' tool returns a shortened ID for display, but 'reflect' requires the full UUID. Use 'recall' to get the full UUID first."*
+If a shortened ID is provided, returns a detailed error message explaining that the full UUID is required.
 
 ## Parameters
 

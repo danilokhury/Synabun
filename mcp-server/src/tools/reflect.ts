@@ -66,7 +66,7 @@ export async function handleReflect(args: {
       content: [
         {
           type: 'text' as const,
-          text: `Invalid memory_id format. Expected full UUID (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), got: ${memoryId}\n\nThe 'remember' tool returns a shortened ID for display, but 'reflect' requires the full UUID. Use 'recall' to get the full UUID first.`,
+          text: `Invalid memory_id format. Expected full UUID (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), got: ${memoryId}\n\nUse the full UUID returned by 'remember', or call 'recall' to find the full UUID of an existing memory.`,
         },
       ],
     };

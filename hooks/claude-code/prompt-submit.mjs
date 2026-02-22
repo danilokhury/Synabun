@@ -16,12 +16,14 @@
  * only when a recall-worthy signal is detected.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const HOOK_FEATURES_PATH = join(__dirname, '..', '..', 'data', 'hook-features.json');
+const DATA_DIR = join(__dirname, '..', '..', 'data');
+const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
+const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 
 function getHookFeatures() {
   try {
@@ -152,6 +154,22 @@ const SKIP_PATTERNS = [
 // ============================================================
 
 const NUDGE = {
+  pendingRemember: (editCount, files) => {
+    const fileList = files.length > 0
+      ? ` Files: ${files.slice(0, 5).join(', ')}${files.length > 5 ? ` (+${files.length - 5} more)` : ''}.`
+      : '';
+    const urgency = editCount >= 5
+      ? `CRITICAL: ${editCount} file edits`
+      : editCount >= 3
+        ? `IMPORTANT: ${editCount} file edits`
+        : `${editCount} file edit${editCount !== 1 ? 's' : ''}`;
+    return [
+      `SynaBun TASK BOUNDARY: ${urgency} from your previous work have NOT been stored in memory.`,
+      `You MUST call \`remember\` for that completed work BEFORE starting this new task.${fileList}`,
+      `Summarize what was done, why, and how — then proceed with the user's new request.`,
+    ].join(' ');
+  },
+
   conversation: [
     `The user is asking about a past conversation. Follow the Conversation Recall Workflow:`,
     `1. Calculate exact dates from relative references (e.g., "4 days ago" → compute the date).`,
@@ -237,13 +255,45 @@ function looksEnglish(text) {
 
 async function main() {
   let prompt = '';
+  let sessionId = '';
   try {
     const raw = await readStdin();
     const input = JSON.parse(raw);
     prompt = input.prompt || '';
+    sessionId = input.session_id || '';
   } catch { /* proceed with empty */ }
 
   const trimmed = prompt.trim();
+
+  // --- Track message count (BEFORE skip check — all messages count) ---
+  if (sessionId && trimmed.length > 0) {
+    const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+    if (!existsSync(PENDING_REMEMBER_DIR)) mkdirSync(PENDING_REMEMBER_DIR, { recursive: true });
+    let flag = { editCount: 0, retries: 0, files: [], messageCount: 0 };
+    if (existsSync(flagPath)) {
+      try { flag = JSON.parse(readFileSync(flagPath, 'utf-8')); } catch { /* start fresh */ }
+    }
+    flag.messageCount = (flag.messageCount || 0) + 1;
+    if (!flag.firstMessageAt) flag.firstMessageAt = new Date().toISOString();
+    flag.lastMessageAt = new Date().toISOString();
+    try { writeFileSync(flagPath, JSON.stringify(flag)); } catch { /* ok */ }
+
+    // --- Greeting reinforcement (first message only, before skip patterns) ---
+    if (flag.messageCount === 1 && !flag.greetingDelivered) {
+      const greetingFeatures = getHookFeatures();
+      if (greetingFeatures.greeting === true) {
+        flag.greetingDelivered = true;
+        try { writeFileSync(flagPath, JSON.stringify(flag)); } catch { /* ok */ }
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'UserPromptSubmit',
+            additionalContext: 'SynaBun: This is the FIRST message of the session. Output the greeting from the GREETING DIRECTIVE in your session context NOW, then respond to the user\'s message. If their message is just a greeting (hi, hello, hey, or a single character), the greeting IS your full response — no need to ask what they need.',
+          },
+        }));
+        return;
+      }
+    }
+  }
 
   // Skip trivial messages first (fastest path)
   if (SKIP_PATTERNS.some(p => p.test(trimmed))) {
@@ -253,7 +303,28 @@ async function main() {
 
   const features = getHookFeatures();
 
-  // --- Priority 1: Conversation recall (highest priority) ---
+  // --- Priority 0: TASK BOUNDARY — pending-remember check (highest priority) ---
+  if (sessionId) {
+    const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+    if (existsSync(flagPath)) {
+      try {
+        const flag = JSON.parse(readFileSync(flagPath, 'utf-8'));
+        const editCount = flag.editCount || 0;
+        if (editCount >= 1) {
+          const files = Array.isArray(flag.files) ? flag.files : [];
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'UserPromptSubmit',
+              additionalContext: NUDGE.pendingRemember(editCount, files),
+            },
+          }));
+          return;
+        }
+      } catch { /* corrupt flag — ignore, don't block */ }
+    }
+  }
+
+  // --- Priority 1: Conversation recall (highest recall priority) ---
   const conversationMemoryEnabled = features.conversationMemory !== false;
   if (conversationMemoryEnabled) {
     const convMatches = CONVERSATION_RECALL_TRIGGERS.filter(p => p.test(prompt));

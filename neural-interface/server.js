@@ -1,13 +1,17 @@
 import 'dotenv/config';
 import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { basename, dirname, join, resolve } from 'path';
+import { basename, dirname, extname, join, resolve } from 'path';
 import { config as dotenvConfig } from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, renameSync, cpSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, renameSync, cpSync, appendFileSync } from 'fs';
 import { randomBytes, createHash } from 'crypto';
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { Readable } from 'stream';
+import { createConnection as netConnect } from 'net';
+import { WebSocketServer } from 'ws';
+import os from 'node:os';
+import pty from 'node-pty';
 
 const execAsync = promisify(exec);
 
@@ -84,15 +88,35 @@ const GLOBAL_CATEGORIES_PATH = resolve(CATEGORIES_DATA_DIR, 'custom-categories.j
 const NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
 const CATEGORIES_POINT_ID = '00000000-0000-0000-0000-000000000000';
 
+// Default categories seeded on first startup (new connection)
+const DEFAULT_CATEGORIES = [
+  {
+    name: 'uncategorized',
+    description: 'Fallback category for memories stored without an explicit category. Any memory whose category is null, undefined, or empty is automatically assigned here during data normalization. Ensures every memory is always categorized for filtering, sidebar visibility toggling, and graph rendering.',
+    color: '#6b7280',
+  },
+  {
+    name: 'conversations',
+    description: 'Indexed conversation sessions with compacted summaries for cross-session recall. Stores session metadata (date, branch, session ID, file path) and topic summaries so users can search and retrieve past conversations naturally — e.g. "what did we work on yesterday?" or "remember that conversation about auth?"',
+    color: '#a855f7',
+    is_parent: true,
+  },
+  {
+    name: 'ideas',
+    description: 'Feature ideas, product concepts, brainstorms, and future plans. A general-purpose category for capturing forward-looking thoughts that haven\'t been implemented yet — new features to build, architectural experiments to try, UX improvements to explore, or any creative concept worth revisiting later.',
+    color: '#f59e0b',
+  },
+];
+
 function getCategoriesPath() {
   const activeId = getActiveConnectionIdFromEnv() || 'default';
   const perConnPath = resolve(CATEGORIES_DATA_DIR, `custom-categories-${activeId}.json`);
 
-  // If per-connection file doesn't exist, start empty (Qdrant is source of truth)
+  // If per-connection file doesn't exist, seed with defaults (Qdrant is source of truth)
   if (!existsSync(perConnPath)) {
     const dir = resolve(perConnPath, '..');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(perConnPath, JSON.stringify({ version: 1, categories: [] }, null, 2), 'utf-8');
+    writeFileSync(perConnPath, JSON.stringify({ version: 1, categories: DEFAULT_CATEGORIES }, null, 2), 'utf-8');
   }
 
   return perConnPath;
@@ -521,6 +545,7 @@ app.get('/', (req, res, next) => {
   res.redirect('/onboarding.html');
 });
 
+app.use('/i18n', express.static(join(__dirname, 'i18n')));
 app.use(express.static(join(__dirname, 'public')));
 
 // --- Helpers ---
@@ -2614,58 +2639,146 @@ app.post('/api/setup/docker', async (req, res) => {
     const collSafe = COLLECTION.replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
     const containerName = 'synabun-qdrant-' + collSafe;
     const volumeName = containerName + '-data';
-    const port = parseInt(new URL(QDRANT_URL).port, 10) || 6333;
-    const grpcPort = port + 1;
+    let port = parseInt(new URL(QDRANT_URL).port, 10) || 6333;
+    let grpcPort = port + 1;
 
-    const cmd = [
-      'docker run -d',
-      `--name ${containerName}`,
-      '--restart unless-stopped',
-      `-p ${port}:6333`,
-      `-p ${grpcPort}:6334`,
-      `-v ${volumeName}:/qdrant/storage`,
-      `-e QDRANT__SERVICE__API_KEY=${QDRANT_KEY}`,
-      `-e QDRANT__LOG_LEVEL=WARN`,
-      'qdrant/qdrant:latest',
-    ].join(' ');
+    // Helper: check if a port is free by attempting a TCP connection
+    async function isPortFree(p) {
+      return new Promise(resolve => {
+        const sock = netConnect({ port: p, host: '127.0.0.1' }, () => {
+          sock.destroy();
+          resolve(false); // something is listening — port is taken
+        });
+        sock.on('error', () => resolve(true)); // nothing listening — port is free
+        sock.setTimeout(1000, () => { sock.destroy(); resolve(true); });
+      });
+    }
+
+    // Helper: find the next free port starting from a given port
+    async function findFreePort(startPort) {
+      let p = startPort;
+      for (let i = 0; i < 20; i++) {
+        const httpFree = await isPortFree(p);
+        const grpcFree = await isPortFree(p + 1);
+        if (httpFree && grpcFree) return p;
+        p += 10; // jump in increments of 10 for clean spacing
+      }
+      return null;
+    }
+
+    // ── Helper: get the real host port a container is mapped to ──
+    async function getContainerPort(name) {
+      try {
+        const result = await execAsync(`docker port ${name} 6333`, { timeout: 5000 });
+        // Output like "0.0.0.0:6333" or ":::6333"
+        const m = (result.stdout || '').match(/:(\d+)\s*$/m);
+        return m ? parseInt(m[1], 10) : null;
+      } catch { return null; }
+    }
+
+    // ── Check if our container already exists (running or stopped) ──
+    let containerExists = false;
+    let containerRunning = false;
+    try {
+      const inspect = await execAsync(
+        `docker inspect --format={{.State.Running}} ${containerName}`,
+        { timeout: 5000 }
+      );
+      containerExists = true;
+      containerRunning = (inspect.stdout || '').trim() === 'true';
+    } catch {} // container doesn't exist — will create fresh
 
     let stdout = '', stderr = '';
-    try {
-      const result = await execAsync(cmd, { timeout: 30000 });
-      stdout = result.stdout || '';
-      stderr = result.stderr || '';
-    } catch (err) {
-      const combined = (err.stderr || '') + (err.message || '');
 
-      // Detect port-in-use conflict
-      if (combined.includes('port is already allocated') || combined.includes('address already in use')) {
-        const portMatch = combined.match(/(\d+)/);
-        return res.status(409).json({
-          error: `Port ${port} is already in use by another process or container. Change the port above and try again.`,
-          portConflict: true,
-          port: String(port),
-          output: combined,
-        });
-      }
-      // Detect container name conflict — container already exists, try to start it
-      if (combined.includes('Conflict') || combined.includes('already in use by container')) {
-        try {
-          const startResult = await execAsync(`docker start ${containerName}`, { timeout: 15000 });
-          stdout = startResult.stdout || '';
-          stderr = `Container "${containerName}" already exists, restarting it.\n` + (startResult.stderr || '');
-        } catch (startErr) {
-          throw startErr;
-        }
+    if (containerExists) {
+      // Container exists — get its REAL port mapping (can't be changed after creation)
+      const realPort = containerRunning ? await getContainerPort(containerName) : null;
+
+      if (containerRunning && realPort) {
+        // Already running — use its actual port
+        port = realPort;
+        grpcPort = realPort + 1;
+        stdout = `Container "${containerName}" is already running on port ${port}.`;
+      } else if (containerRunning) {
+        // Running but can't determine port — trust configured port
+        stdout = `Container "${containerName}" is already running.`;
       } else {
-        throw err;
+        // Stopped — need to check if its port mapping matches what we want
+        // Get the port from the container's config (works even when stopped)
+        let mappedPort = null;
+        try {
+          const inspectPorts = await execAsync(
+            `docker inspect --format={{json .HostConfig.PortBindings}} ${containerName}`,
+            { timeout: 5000 }
+          );
+          const bindings = JSON.parse((inspectPorts.stdout || '').trim());
+          const httpBinding = bindings['6333/tcp'];
+          if (httpBinding && httpBinding[0]) {
+            mappedPort = parseInt(httpBinding[0].HostPort, 10);
+          }
+        } catch {}
+
+        if (mappedPort && mappedPort !== port) {
+          // Container was created with a different port — check if that port is free
+          if (await isPortFree(mappedPort) && await isPortFree(mappedPort + 1)) {
+            // Original port is free — start on it and update our port var
+            port = mappedPort;
+            grpcPort = mappedPort + 1;
+          } else {
+            // Original port is taken — remove old container and recreate with new port
+            await execAsync(`docker rm ${containerName}`, { timeout: 10000 });
+            containerExists = false; // fall through to fresh creation below
+          }
+        }
+
+        if (containerExists) {
+          // Start the existing container on its original port
+          const startResult = await execAsync(`docker start ${containerName}`, { timeout: 15000 });
+          stdout = `Starting container "${containerName}" on port ${port}...\n` + (startResult.stdout || '');
+          stderr = startResult.stderr || '';
+        }
       }
     }
 
-    // Wait for Qdrant to be ready (up to 30s)
+    if (!containerExists) {
+      // Container doesn't exist — check ports and create fresh
+      if (!(await isPortFree(port)) || !(await isPortFree(grpcPort))) {
+        const freePort = await findFreePort(port + 10);
+        if (!freePort) {
+          return res.status(409).json({
+            error: `Port ${port} is in use and no free port found in range ${port + 10}-${port + 210}. Change the port above and try again.`,
+            portConflict: true,
+            port: String(port),
+            output: `Scanned ports ${port + 10} to ${port + 210}, all busy.`,
+          });
+        }
+        port = freePort;
+        grpcPort = freePort + 1;
+      }
+
+      const cmd = [
+        'docker run -d',
+        `--name ${containerName}`,
+        '--restart unless-stopped',
+        `-p ${port}:6333`,
+        `-p ${grpcPort}:6334`,
+        `-v ${volumeName}:/qdrant/storage`,
+        `-e QDRANT__SERVICE__API_KEY=${QDRANT_KEY}`,
+        `-e QDRANT__LOG_LEVEL=WARN`,
+        'qdrant/qdrant:latest',
+      ].join(' ');
+
+      const result = await execAsync(cmd, { timeout: 30000 });
+      stdout = result.stdout || '';
+      stderr = result.stderr || '';
+    }
+
+    // Wait for Qdrant to be ready on the ACTUAL port (up to 30s)
+    const resolvedUrl = `http://localhost:${port}`;
     let ready = false;
     for (let i = 0; i < 30; i++) {
       try {
-        const ping = await fetch(`${QDRANT_URL}/collections`, {
+        const ping = await fetch(`${resolvedUrl}/collections`, {
           headers: { 'api-key': QDRANT_KEY },
           signal: AbortSignal.timeout(2000),
         });
@@ -2674,7 +2787,7 @@ app.post('/api/setup/docker', async (req, res) => {
       await new Promise(r => setTimeout(r, 1000));
     }
 
-    res.json({ ok: true, output: stdout + (stderr || ''), ready });
+    res.json({ ok: true, output: stdout + (stderr || ''), ready, port, grpcPort });
   } catch (err) {
     console.error('POST /api/setup/docker error:', err.message);
     res.status(500).json({ error: err.message, output: err.stderr || '' });
@@ -3262,6 +3375,52 @@ app.put('/api/claude-code/hook-features', (req, res) => {
   }
 });
 
+// ── Greeting Config (read/write greeting-config.json for the greeting hook) ──
+
+const GREETING_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'greeting-config.json');
+
+function loadGreetingConfig() {
+  try {
+    if (!existsSync(GREETING_CONFIG_PATH)) return { version: 1, defaults: {}, projects: {}, global: {} };
+    return JSON.parse(readFileSync(GREETING_CONFIG_PATH, 'utf-8'));
+  } catch { return { version: 1, defaults: {}, projects: {}, global: {} }; }
+}
+
+// GET /api/greeting/config — read the full greeting configuration
+app.get('/api/greeting/config', (req, res) => {
+  try {
+    res.json({ ok: true, config: loadGreetingConfig() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// PUT /api/greeting/config/:project — update a project's greeting config
+app.put('/api/greeting/config/:project', (req, res) => {
+  try {
+    const { project } = req.params;
+    const { greetingTemplate, showReminders, showLastSession, reminders, label } = req.body;
+    const config = loadGreetingConfig();
+
+    const target = project === 'global'
+      ? (config.global || (config.global = {}))
+      : (config.projects[project] || (config.projects[project] = {}));
+
+    if (greetingTemplate !== undefined) target.greetingTemplate = greetingTemplate;
+    if (showReminders !== undefined) target.showReminders = showReminders;
+    if (showLastSession !== undefined) target.showLastSession = showLastSession;
+    if (reminders !== undefined) target.reminders = reminders;
+    if (label !== undefined) target.label = label;
+
+    const dir = dirname(GREETING_CONFIG_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(GREETING_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET /api/claude-code/ruleset — Return the SynaBun CLAUDE.md memory ruleset for copy/paste
 // Supports ?format=claude (default) | cursor | generic
 app.get('/api/claude-code/ruleset', (req, res) => {
@@ -3275,9 +3434,9 @@ app.get('/api/claude-code/ruleset', (req, res) => {
 
     // Section markers in CLAUDE.md
     const MARKERS = {
-      claude:  { start: '### Persistent Memory System', end: '### Cursor Rules (Condensed)' },
-      cursor:  { start: '### Cursor Rules (Condensed)',  end: '### Generic Rules (Condensed)' },
-      generic: { start: '### Generic Rules (Condensed)', end: '\n---' },
+      claude:  { start: '## Memory Ruleset', end: '## Condensed Rulesets' },
+      cursor:  { start: '### Cursor',  end: '### Generic' },
+      generic: { start: '### Generic', end: '\n---' },
     };
 
     const marker = MARKERS[format];
@@ -3298,13 +3457,13 @@ app.get('/api/claude-code/ruleset', (req, res) => {
       ? content.substring(startIdx, contentAfterStart).trim()
       : content.substring(startIdx).trim();
 
-    // Strip the section header line (### Cursor Rules / ### Generic Rules) — leave only the content below it
+    // Strip the section header line — leave only the content below it
     let output;
     if (format === 'claude') {
-      output = ruleset.replace(/^### Persistent Memory System/, '## Persistent Memory System');
+      output = ruleset;
     } else {
       // Remove the marker heading line, return just the content
-      output = ruleset.replace(/^### (Cursor|Generic) Rules \(Condensed\)\s*\n?/, '').trim();
+      output = ruleset.replace(/^### (Cursor|Generic)\s*\n?/, '').trim();
     }
 
     res.json({ ok: true, ruleset: output, format });
@@ -3375,6 +3534,11 @@ app.delete('/api/claude-code/mcp', (req, res) => {
 
 const SKILLS_SOURCE_DIR = resolve(PROJECT_ROOT, 'skills');
 
+/** Dirent.isDirectory() returns false for symlinks — check both */
+function isDirEntry(entry) {
+  return entry.isDirectory() || entry.isSymbolicLink();
+}
+
 function getGlobalSkillsDir() {
   const home = process.env.USERPROFILE || process.env.HOME || '';
   return join(home, '.claude', 'skills');
@@ -3398,7 +3562,7 @@ function listAvailableSkills() {
   const entries = readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true });
   const skills = [];
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (!isDirEntry(entry)) continue;
     const skillFile = join(SKILLS_SOURCE_DIR, entry.name, 'SKILL.md');
     if (!existsSync(skillFile)) continue;
     const content = readFileSync(skillFile, 'utf-8');
@@ -3458,6 +3622,766 @@ app.delete('/api/claude-code/skills', (req, res) => {
     rmSync(targetDir, { recursive: true, force: true });
 
     res.json({ ok: true, message: `Skill "${name}" uninstalled.` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════
+// Skills Studio API
+// ═══════════════════════════════════════════
+
+function getGlobalAgentsDir() {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  return join(home, '.claude', 'agents');
+}
+
+function encodeArtifactId(id) {
+  return Buffer.from(id).toString('base64url');
+}
+function decodeArtifactId(encoded) {
+  return Buffer.from(encoded, 'base64url').toString('utf-8');
+}
+
+/** Resolve the actual .md file path from a decoded artifact ID.
+ *  Skills use directory IDs (skill:C:\...\ads) → need SKILL.md appended.
+ *  Commands/agents already point to the .md file. */
+function resolveArtifactFile(decodedId) {
+  const [type, ...rest] = decodedId.split(':');
+  const rawPath = rest.join(':');
+  if (type === 'skill') {
+    return { type, dirPath: rawPath, filePath: join(rawPath, 'SKILL.md') };
+  }
+  return { type, dirPath: dirname(rawPath), filePath: rawPath };
+}
+
+const ICON_EXTENSIONS = ['.png', '.svg', '.jpg', '.jpeg', '.webp'];
+
+/** Find the icon file for an artifact, if one exists. */
+function resolveArtifactIcon(decodedId) {
+  const { type, dirPath, filePath } = resolveArtifactFile(decodedId);
+  if (type === 'skill') {
+    for (const ext of ICON_EXTENSIONS) {
+      const p = join(dirPath, `icon${ext}`);
+      if (existsSync(p)) return p;
+    }
+  } else {
+    const name = basename(filePath, '.md');
+    const dir = dirname(filePath);
+    for (const ext of ICON_EXTENSIONS) {
+      const p = join(dir, `${name}.icon${ext}`);
+      if (existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
+/** Parse full YAML frontmatter from a skill/command/agent .md file */
+function parseFullFrontmatter(content) {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return {};
+  const fm = match[1];
+  const result = {};
+  const lines = fm.split(/\r?\n/);
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // Skip blank lines
+    if (!line.trim()) { i++; continue; }
+    // Key-value pair
+    const kv = line.match(/^(\S[\w-]*):\s*(.*)/);
+    if (!kv) { i++; continue; }
+    const key = kv[1];
+    let val = kv[2].trim();
+    // Block scalar (description: >)
+    if (val === '>' || val === '|') {
+      const blockLines = [];
+      i++;
+      while (i < lines.length && (lines[i].startsWith('  ') || lines[i].trim() === '')) {
+        blockLines.push(lines[i].replace(/^  /, ''));
+        i++;
+      }
+      result[key] = blockLines.join('\n').trim();
+      continue;
+    }
+    // YAML list (key with no value, followed by - items)
+    if (val === '' && i + 1 < lines.length && lines[i + 1].match(/^\s+-\s/)) {
+      const items = [];
+      i++;
+      while (i < lines.length && lines[i].match(/^\s+-\s/)) {
+        items.push(lines[i].replace(/^\s+-\s*/, '').trim());
+        i++;
+      }
+      result[key] = items;
+      continue;
+    }
+    // Boolean
+    if (val === 'true') { result[key] = true; i++; continue; }
+    if (val === 'false') { result[key] = false; i++; continue; }
+    // Number
+    if (/^\d+$/.test(val)) { result[key] = parseInt(val, 10); i++; continue; }
+    // Quoted string
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      result[key] = val.slice(1, -1);
+      i++; continue;
+    }
+    // Plain string
+    result[key] = val;
+    i++;
+  }
+  return result;
+}
+
+/** Get the markdown body (after frontmatter) */
+function getFrontmatterBody(content) {
+  const match = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?([\s\S]*)/);
+  return match ? match[1] : content;
+}
+
+/** Build a recursive file tree for a directory */
+function buildSubFileTree(dir, basePath) {
+  if (!existsSync(dir)) return [];
+  const entries = readdirSync(dir, { withFileTypes: true });
+  const tree = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+    const fullPath = join(dir, entry.name);
+    const relPath = basePath ? `${basePath}/${entry.name}` : entry.name;
+    if (isDirEntry(entry)) {
+      tree.push({ name: entry.name, path: relPath, type: 'dir', children: buildSubFileTree(fullPath, relPath) });
+    } else {
+      const stat = statSync(fullPath);
+      tree.push({ name: entry.name, path: relPath, type: 'file', size: stat.size });
+    }
+  }
+  return tree.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/** Discover all Claude Code artifacts from all known locations */
+function discoverAllArtifacts() {
+  const artifacts = [];
+
+  // 1. Global skills (~/.claude/skills/)
+  const globalSkillsDir = getGlobalSkillsDir();
+  if (existsSync(globalSkillsDir)) {
+    for (const entry of readdirSync(globalSkillsDir, { withFileTypes: true })) {
+      if (!isDirEntry(entry)) continue;
+      const skillFile = join(globalSkillsDir, entry.name, 'SKILL.md');
+      if (!existsSync(skillFile)) continue;
+      const content = readFileSync(skillFile, 'utf-8');
+      const frontmatter = parseFullFrontmatter(content);
+      const dir = join(globalSkillsDir, entry.name);
+      // Check if this was installed from bundled
+      const bundledSource = join(SKILLS_SOURCE_DIR, entry.name, 'SKILL.md');
+      const isBundledInstall = existsSync(bundledSource);
+      artifacts.push({
+        id: `skill:${dir}`,
+        type: 'skill',
+        scope: isBundledInstall ? 'bundled' : 'global',
+        name: frontmatter.name || entry.name,
+        dirName: entry.name,
+        filePath: skillFile,
+        dirPath: dir,
+        description: frontmatter.description || '',
+        frontmatter,
+        hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(dir, `icon${ext}`))),
+        subFiles: buildSubFileTree(dir, '').filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
+        bundledSource: isBundledInstall ? bundledSource : null,
+        installed: isBundledInstall ? true : undefined,
+      });
+    }
+  }
+
+  // 2. Global agents (~/.claude/agents/)
+  const globalAgentsDir = getGlobalAgentsDir();
+  if (existsSync(globalAgentsDir)) {
+    for (const entry of readdirSync(globalAgentsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      const filePath = join(globalAgentsDir, entry.name);
+      const content = readFileSync(filePath, 'utf-8');
+      const frontmatter = parseFullFrontmatter(content);
+      artifacts.push({
+        id: `agent:${filePath}`,
+        type: 'agent',
+        scope: 'global',
+        name: frontmatter.name || entry.name.replace(/\.md$/, ''),
+        dirName: entry.name.replace(/\.md$/, ''),
+        filePath,
+        dirPath: globalAgentsDir,
+        description: frontmatter.description || '',
+        frontmatter,
+        hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(globalAgentsDir, `${entry.name.replace(/\.md$/, '')}.icon${ext}`))),
+        subFiles: [],
+      });
+    }
+  }
+
+  // 3. Project-scoped commands and agents
+  const projects = loadHookProjects();
+  for (const proj of projects) {
+    const projPath = proj.path;
+    const projLabel = proj.label || basename(projPath);
+
+    // Commands
+    const cmdDir = join(projPath, '.claude', 'commands');
+    if (existsSync(cmdDir)) {
+      for (const entry of readdirSync(cmdDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+        const filePath = join(cmdDir, entry.name);
+        const content = readFileSync(filePath, 'utf-8');
+        const frontmatter = parseFullFrontmatter(content);
+        artifacts.push({
+          id: `command:${filePath}`,
+          type: 'command',
+          scope: 'project',
+          scopeLabel: projLabel,
+          scopePath: projPath,
+          name: entry.name.replace(/\.md$/, ''),
+          dirName: entry.name.replace(/\.md$/, ''),
+          filePath,
+          dirPath: cmdDir,
+          description: frontmatter.description || '',
+          frontmatter,
+          hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(cmdDir, `${entry.name.replace(/\.md$/, '')}.icon${ext}`))),
+          subFiles: [],
+        });
+      }
+    }
+
+    // Project agents
+    const agentDir = join(projPath, '.claude', 'agents');
+    if (existsSync(agentDir)) {
+      for (const entry of readdirSync(agentDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+        const filePath = join(agentDir, entry.name);
+        const content = readFileSync(filePath, 'utf-8');
+        const frontmatter = parseFullFrontmatter(content);
+        artifacts.push({
+          id: `agent:${filePath}`,
+          type: 'agent',
+          scope: 'project',
+          scopeLabel: projLabel,
+          scopePath: projPath,
+          name: frontmatter.name || entry.name.replace(/\.md$/, ''),
+          dirName: entry.name.replace(/\.md$/, ''),
+          filePath,
+          dirPath: agentDir,
+          description: frontmatter.description || '',
+          frontmatter,
+          hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(agentDir, `${entry.name.replace(/\.md$/, '')}.icon${ext}`))),
+          subFiles: [],
+        });
+      }
+    }
+
+    // Project skills
+    const projSkillsDir = join(projPath, '.claude', 'skills');
+    if (existsSync(projSkillsDir)) {
+      for (const entry of readdirSync(projSkillsDir, { withFileTypes: true })) {
+        if (!isDirEntry(entry)) continue;
+        const skillFile = join(projSkillsDir, entry.name, 'SKILL.md');
+        if (!existsSync(skillFile)) continue;
+        const content = readFileSync(skillFile, 'utf-8');
+        const frontmatter = parseFullFrontmatter(content);
+        const dir = join(projSkillsDir, entry.name);
+        artifacts.push({
+          id: `skill:${dir}`,
+          type: 'skill',
+          scope: 'project',
+          scopeLabel: projLabel,
+          scopePath: projPath,
+          name: frontmatter.name || entry.name,
+          dirName: entry.name,
+          filePath: skillFile,
+          dirPath: dir,
+          description: frontmatter.description || '',
+          frontmatter,
+          hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(dir, `icon${ext}`))),
+          subFiles: buildSubFileTree(dir, '').filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
+        });
+      }
+    }
+  }
+
+  // 4. Bundled SynaBun skills (not yet installed)
+  if (existsSync(SKILLS_SOURCE_DIR)) {
+    for (const entry of readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true })) {
+      if (!isDirEntry(entry)) continue;
+      const skillFile = join(SKILLS_SOURCE_DIR, entry.name, 'SKILL.md');
+      if (!existsSync(skillFile)) continue;
+      // Skip if already discovered as a global install
+      const installedPath = join(globalSkillsDir, entry.name, 'SKILL.md');
+      if (existsSync(installedPath)) continue; // already in global skills
+      const content = readFileSync(skillFile, 'utf-8');
+      const frontmatter = parseFullFrontmatter(content);
+      const dir = join(SKILLS_SOURCE_DIR, entry.name);
+      artifacts.push({
+        id: `skill:${dir}`,
+        type: 'skill',
+        scope: 'bundled',
+        name: frontmatter.name || entry.name,
+        dirName: entry.name,
+        filePath: skillFile,
+        dirPath: dir,
+        description: frontmatter.description || '',
+        frontmatter,
+        installed: false,
+        hasIcon: ICON_EXTENSIONS.some(ext => existsSync(join(dir, `icon${ext}`))),
+        subFiles: buildSubFileTree(dir, '').filter(f => f.name !== 'SKILL.md' && !f.name.match(/^icon\.(png|svg|jpe?g|webp)$/i)),
+      });
+    }
+  }
+
+  return artifacts;
+}
+
+// GET /api/skills-studio/library
+app.get('/api/skills-studio/library', (req, res) => {
+  try {
+    const artifacts = discoverAllArtifacts();
+    const projects = loadHookProjects().map(p => ({ path: p.path, label: p.label || basename(p.path) }));
+    res.json({ ok: true, artifacts, projects });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/skills-studio/artifact/:id — full content + file tree
+app.get('/api/skills-studio/artifact/:id', (req, res) => {
+  try {
+    const id = decodeArtifactId(req.params.id);
+    const { type, dirPath, filePath } = resolveArtifactFile(id);
+    if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
+    const content = readFileSync(filePath, 'utf-8');
+    const frontmatter = parseFullFrontmatter(content);
+    const body = getFrontmatterBody(content);
+    // For skills (directory-based), include sub-file tree
+    let subFiles = [];
+    if (type === 'skill') {
+      subFiles = buildSubFileTree(dirPath, '').filter(f => f.name !== 'SKILL.md');
+    }
+    res.json({ ok: true, frontmatter, body, rawContent: content, subFiles });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/skills-studio/artifact/:id/file — read a sub-file
+app.get('/api/skills-studio/artifact/:id/file', (req, res) => {
+  try {
+    const id = decodeArtifactId(req.params.id);
+    const { dirPath: dir } = resolveArtifactFile(id);
+    const subPath = req.query.path;
+    if (!subPath) return res.status(400).json({ error: 'path query param required.' });
+    const fullPath = join(dir, subPath);
+    // Security: ensure the path doesn't escape the directory
+    if (!resolve(fullPath).startsWith(resolve(dir))) {
+      return res.status(403).json({ error: 'Path traversal not allowed.' });
+    }
+    if (!existsSync(fullPath)) return res.status(404).json({ error: 'File not found.' });
+    const content = readFileSync(fullPath, 'utf-8');
+    res.json({ ok: true, content, path: subPath });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/skills-studio/artifact/:id/icon — serve the custom icon
+app.get('/api/skills-studio/artifact/:id/icon', (req, res) => {
+  try {
+    const id = decodeArtifactId(req.params.id);
+    const iconPath = resolveArtifactIcon(id);
+    if (!iconPath) return res.status(404).json({ error: 'No icon found.' });
+    const ext = extname(iconPath).toLowerCase();
+    const mimeMap = { '.png': 'image/png', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
+    res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.send(readFileSync(iconPath));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skills-studio/artifact/:id/icon — upload a custom icon
+app.post('/api/skills-studio/artifact/:id/icon',
+  express.raw({ type: ['image/png', 'image/svg+xml', 'image/jpeg', 'image/webp'], limit: '2mb' }),
+  (req, res) => {
+    try {
+      const id = decodeArtifactId(req.params.id);
+      const { type, dirPath, filePath } = resolveArtifactFile(id);
+      if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
+      if (!req.body || req.body.length === 0) return res.status(400).json({ error: 'No image data received.' });
+      const contentType = req.headers['content-type'] || 'image/png';
+      const extMap = { 'image/png': '.png', 'image/svg+xml': '.svg', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
+      const ext = extMap[contentType] || '.png';
+      // Remove any existing icon files first
+      if (type === 'skill') {
+        for (const e of ICON_EXTENSIONS) { const old = join(dirPath, `icon${e}`); if (existsSync(old)) unlinkSync(old); }
+        writeFileSync(join(dirPath, `icon${ext}`), req.body);
+      } else {
+        const name = basename(filePath, '.md');
+        const dir = dirname(filePath);
+        for (const e of ICON_EXTENSIONS) { const old = join(dir, `${name}.icon${e}`); if (existsSync(old)) unlinkSync(old); }
+        writeFileSync(join(dir, `${name}.icon${ext}`), req.body);
+      }
+      res.json({ ok: true, hasIcon: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// DELETE /api/skills-studio/artifact/:id/icon — remove custom icon
+app.delete('/api/skills-studio/artifact/:id/icon', (req, res) => {
+  try {
+    const id = decodeArtifactId(req.params.id);
+    const { type, dirPath, filePath } = resolveArtifactFile(id);
+    if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
+    if (type === 'skill') {
+      for (const ext of ICON_EXTENSIONS) { const p = join(dirPath, `icon${ext}`); if (existsSync(p)) unlinkSync(p); }
+    } else {
+      const name = basename(filePath, '.md');
+      const dir = dirname(filePath);
+      for (const ext of ICON_EXTENSIONS) { const p = join(dir, `${name}.icon${ext}`); if (existsSync(p)) unlinkSync(p); }
+    }
+    res.json({ ok: true, hasIcon: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/skills-studio/artifact/:id — save frontmatter + body
+app.put('/api/skills-studio/artifact/:id', (req, res) => {
+  try {
+    const id = decodeArtifactId(req.params.id);
+    const { filePath } = resolveArtifactFile(id);
+    if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
+    const { rawContent } = req.body;
+    if (typeof rawContent !== 'string') return res.status(400).json({ error: 'rawContent is required.' });
+    writeFileSync(filePath, rawContent, 'utf-8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/skills-studio/artifact/:id/file — save a sub-file
+app.put('/api/skills-studio/artifact/:id/file', (req, res) => {
+  try {
+    const id = decodeArtifactId(req.params.id);
+    const { dirPath: dir } = resolveArtifactFile(id);
+    const { path: subPath, content } = req.body;
+    if (!subPath || typeof content !== 'string') return res.status(400).json({ error: 'path and content required.' });
+    const fullPath = join(dir, subPath);
+    if (!resolve(fullPath).startsWith(resolve(dir))) {
+      return res.status(403).json({ error: 'Path traversal not allowed.' });
+    }
+    const parentDir = dirname(fullPath);
+    if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
+    writeFileSync(fullPath, content, 'utf-8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skills-studio/artifact/:id/file — create new sub-file or directory
+app.post('/api/skills-studio/artifact/:id/file', (req, res) => {
+  try {
+    const id = decodeArtifactId(req.params.id);
+    const { dirPath: dir } = resolveArtifactFile(id);
+    const { path: subPath, content, isDir } = req.body;
+    if (!subPath) return res.status(400).json({ error: 'path required.' });
+    const fullPath = join(dir, subPath);
+    if (!resolve(fullPath).startsWith(resolve(dir))) {
+      return res.status(403).json({ error: 'Path traversal not allowed.' });
+    }
+    if (existsSync(fullPath)) return res.status(409).json({ error: 'File already exists.' });
+    if (isDir) {
+      mkdirSync(fullPath, { recursive: true });
+    } else {
+      const parentDir = dirname(fullPath);
+      if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
+      writeFileSync(fullPath, content || '', 'utf-8');
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/skills-studio/artifact/:id/file — delete a sub-file
+app.delete('/api/skills-studio/artifact/:id/file', (req, res) => {
+  try {
+    const id = decodeArtifactId(req.params.id);
+    const { dirPath: dir } = resolveArtifactFile(id);
+    const { path: subPath } = req.body;
+    if (!subPath) return res.status(400).json({ error: 'path required.' });
+    const fullPath = join(dir, subPath);
+    if (!resolve(fullPath).startsWith(resolve(dir))) {
+      return res.status(403).json({ error: 'Path traversal not allowed.' });
+    }
+    if (!existsSync(fullPath)) return res.status(404).json({ error: 'File not found.' });
+    const stat = statSync(fullPath);
+    if (stat.isDirectory()) {
+      rmSync(fullPath, { recursive: true, force: true });
+    } else {
+      unlinkSync(fullPath);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skills-studio/create — create a new skill/command/agent
+app.post('/api/skills-studio/create', (req, res) => {
+  try {
+    const { type, scope, projectPath, name, rawContent } = req.body;
+    if (!type || !scope || !name || !rawContent) {
+      return res.status(400).json({ error: 'type, scope, name, and rawContent are required.' });
+    }
+    if (!/^[a-z][a-z0-9-]*$/.test(name) && !/^[a-z][a-z0-9-.]*$/.test(name)) {
+      return res.status(400).json({ error: 'Name must be lowercase, start with a letter, and use only letters, digits, hyphens, and dots.' });
+    }
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    let targetPath;
+    if (type === 'skill') {
+      const baseDir = scope === 'global' ? join(home, '.claude', 'skills', name)
+        : scope === 'project' && projectPath ? join(projectPath, '.claude', 'skills', name)
+        : null;
+      if (!baseDir) return res.status(400).json({ error: 'Invalid scope or missing projectPath.' });
+      if (!existsSync(baseDir)) mkdirSync(baseDir, { recursive: true });
+      targetPath = join(baseDir, 'SKILL.md');
+    } else if (type === 'command') {
+      const baseDir = scope === 'project' && projectPath ? join(projectPath, '.claude', 'commands')
+        : scope === 'global' ? join(home, '.claude', 'commands')
+        : null;
+      if (!baseDir) return res.status(400).json({ error: 'Invalid scope or missing projectPath.' });
+      if (!existsSync(baseDir)) mkdirSync(baseDir, { recursive: true });
+      targetPath = join(baseDir, `${name}.md`);
+    } else if (type === 'agent') {
+      const baseDir = scope === 'global' ? join(home, '.claude', 'agents')
+        : scope === 'project' && projectPath ? join(projectPath, '.claude', 'agents')
+        : null;
+      if (!baseDir) return res.status(400).json({ error: 'Invalid scope or missing projectPath.' });
+      if (!existsSync(baseDir)) mkdirSync(baseDir, { recursive: true });
+      targetPath = join(baseDir, `${name}.md`);
+    } else {
+      return res.status(400).json({ error: 'type must be skill, command, or agent.' });
+    }
+    if (existsSync(targetPath)) return res.status(409).json({ error: `Artifact "${name}" already exists at that location.` });
+    writeFileSync(targetPath, rawContent, 'utf-8');
+    const id = type === 'skill' ? `skill:${targetPath}` : `${type}:${targetPath}`;
+    res.json({ ok: true, id: encodeArtifactId(id), filePath: targetPath });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/skills-studio/artifact/:id — delete an artifact
+app.delete('/api/skills-studio/artifact/:id', (req, res) => {
+  try {
+    const id = decodeArtifactId(req.params.id);
+    const { type, dirPath, filePath } = resolveArtifactFile(id);
+    if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
+    if (type === 'skill') {
+      // Delete entire skill directory
+      rmSync(dirPath, { recursive: true, force: true });
+    } else {
+      // Also remove sibling icon file if exists
+      const name = basename(filePath, '.md');
+      const dir = dirname(filePath);
+      for (const ext of ICON_EXTENSIONS) { const p = join(dir, `${name}.icon${ext}`); if (existsSync(p)) unlinkSync(p); }
+      unlinkSync(filePath);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skills-studio/validate — validate frontmatter structure
+app.post('/api/skills-studio/validate', (req, res) => {
+  try {
+    const { rawContent, type } = req.body;
+    const errors = [];
+    const warnings = [];
+    if (!rawContent) { errors.push('Content is empty.'); return res.json({ ok: true, errors, warnings }); }
+    const fm = parseFullFrontmatter(rawContent);
+    if (type === 'skill') {
+      if (!fm.name) warnings.push('Missing "name" field in frontmatter.');
+      if (!fm.description) warnings.push('Missing "description" field — Claude cannot auto-detect this skill.');
+    }
+    if (type === 'agent') {
+      if (!fm.name) warnings.push('Missing "name" field in frontmatter.');
+      if (!fm.description) errors.push('Agents require a "description" field.');
+    }
+    if (type === 'command') {
+      if (!fm.description) warnings.push('Missing "description" field.');
+    }
+    const body = getFrontmatterBody(rawContent);
+    if (!body.trim()) warnings.push('Body is empty — the skill has no instructions.');
+    res.json({ ok: true, errors, warnings });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skills-studio/install — install bundled skill globally
+app.post('/api/skills-studio/install', (req, res) => {
+  try {
+    const { dirName } = req.body;
+    if (!dirName) return res.status(400).json({ error: 'dirName is required.' });
+    const sourceDir = join(SKILLS_SOURCE_DIR, dirName);
+    if (!existsSync(join(sourceDir, 'SKILL.md'))) return res.status(404).json({ error: `Bundled skill "${dirName}" not found.` });
+    const targetDir = join(getGlobalSkillsDir(), dirName);
+    if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
+    cpSync(sourceDir, targetDir, { recursive: true });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/skills-studio/install — uninstall a globally installed skill
+app.delete('/api/skills-studio/install', (req, res) => {
+  try {
+    const { dirName } = req.body;
+    if (!dirName) return res.status(400).json({ error: 'dirName is required.' });
+    const targetDir = join(getGlobalSkillsDir(), dirName);
+    if (!existsSync(targetDir)) return res.json({ ok: true });
+    rmSync(targetDir, { recursive: true, force: true });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/skills-studio/export/:id — export as downloadable file
+app.get('/api/skills-studio/export/:id', (req, res) => {
+  try {
+    const id = decodeArtifactId(req.params.id);
+    const { type, dirPath, filePath } = resolveArtifactFile(id);
+    if (!existsSync(filePath)) return res.status(404).json({ error: 'Artifact not found.' });
+
+    if (type === 'skill') {
+      // Export entire directory as a simple JSON bundle (portable, no ZIP dep needed)
+      const name = basename(dirPath);
+      const files = {};
+      function collectFiles(d, prefix) {
+        for (const entry of readdirSync(d, { withFileTypes: true })) {
+          if (entry.name.startsWith('.')) continue;
+          const full = join(d, entry.name);
+          const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+          if (isDirEntry(entry)) {
+            collectFiles(full, rel);
+          } else {
+            if (full.match(/\.(png|jpe?g|webp)$/i)) {
+              files[rel] = { base64: readFileSync(full).toString('base64') };
+            } else {
+              files[rel] = readFileSync(full, 'utf-8');
+            }
+          }
+        }
+      }
+      collectFiles(dirPath, '');
+      const bundle = { format: 'synabun-skill-bundle', version: 1, type: 'skill', name, files };
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="${name}.skill.json"`);
+      res.send(JSON.stringify(bundle, null, 2));
+    } else {
+      // Single file: export as .md
+      const name = basename(filePath, '.md');
+      const content = readFileSync(filePath, 'utf-8');
+      const bundleFiles = { [`${name}.md`]: content };
+      // Include sibling icon file if present
+      const dir = dirname(filePath);
+      for (const ext of ICON_EXTENSIONS) {
+        const iconPath = join(dir, `${name}.icon${ext}`);
+        if (existsSync(iconPath)) {
+          const iconKey = `${name}.icon${ext}`;
+          bundleFiles[iconKey] = ext === '.svg' ? readFileSync(iconPath, 'utf-8') : { base64: readFileSync(iconPath).toString('base64') };
+          break;
+        }
+      }
+      const bundle = { format: 'synabun-skill-bundle', version: 1, type, name, files: bundleFiles };
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="${name}.${type}.json"`);
+      res.send(JSON.stringify(bundle, null, 2));
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skills-studio/import — import a skill bundle
+app.post('/api/skills-studio/import', (req, res) => {
+  try {
+    const { bundle, scope, projectPath } = req.body;
+    if (!bundle || !bundle.format || bundle.format !== 'synabun-skill-bundle') {
+      return res.status(400).json({ error: 'Invalid bundle format.' });
+    }
+    const { type, name, files } = bundle;
+    if (!type || !name || !files) return res.status(400).json({ error: 'Bundle missing required fields.' });
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    const effectiveScope = scope || 'global';
+    let targetDir;
+    if (type === 'skill') {
+      targetDir = effectiveScope === 'project' && projectPath
+        ? join(projectPath, '.claude', 'skills', name)
+        : join(home, '.claude', 'skills', name);
+      if (existsSync(targetDir)) return res.status(409).json({ error: `Skill "${name}" already exists. Delete it first.` });
+      mkdirSync(targetDir, { recursive: true });
+      for (const [rel, content] of Object.entries(files)) {
+        const fullPath = join(targetDir, rel);
+        const dir = dirname(fullPath);
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        if (typeof content === 'object' && content.base64) {
+          writeFileSync(fullPath, Buffer.from(content.base64, 'base64'));
+        } else {
+          writeFileSync(fullPath, content, 'utf-8');
+        }
+      }
+    } else if (type === 'command') {
+      targetDir = effectiveScope === 'project' && projectPath
+        ? join(projectPath, '.claude', 'commands')
+        : join(home, '.claude', 'commands');
+      if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+      const targetFile = join(targetDir, `${name}.md`);
+      if (existsSync(targetFile)) return res.status(409).json({ error: `Command "${name}" already exists.` });
+      // Write main .md file + any sibling icon files
+      for (const [rel, content] of Object.entries(files)) {
+        const fullPath = join(targetDir, rel);
+        if (typeof content === 'object' && content.base64) {
+          writeFileSync(fullPath, Buffer.from(content.base64, 'base64'));
+        } else {
+          writeFileSync(fullPath, content, 'utf-8');
+        }
+      }
+    } else if (type === 'agent') {
+      targetDir = effectiveScope === 'project' && projectPath
+        ? join(projectPath, '.claude', 'agents')
+        : join(home, '.claude', 'agents');
+      if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+      const targetFile = join(targetDir, `${name}.md`);
+      if (existsSync(targetFile)) return res.status(409).json({ error: `Agent "${name}" already exists.` });
+      // Write main .md file + any sibling icon files
+      for (const [rel, content] of Object.entries(files)) {
+        const fullPath = join(targetDir, rel);
+        if (typeof content === 'object' && content.base64) {
+          writeFileSync(fullPath, Buffer.from(content.base64, 'base64'));
+        } else {
+          writeFileSync(fullPath, content, 'utf-8');
+        }
+      }
+    } else {
+      return res.status(400).json({ error: 'Unknown artifact type.' });
+    }
+    res.json({ ok: true, name, type });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3759,20 +4683,134 @@ try {
   console.error('  MCP HTTP mount failed (run npm run build in mcp-server):', err.message);
 }
 
+// ═══════════════════════════════════════════
+// TERMINAL — PTY Session Manager
+// ═══════════════════════════════════════════
+
+const terminalSessions = new Map(); // sessionId → { pty, clients, profile, cwd }
+
+const IS_WIN = process.platform === 'win32';
+const DEFAULT_SHELL = IS_WIN ? (process.env.COMSPEC || 'cmd.exe') : (process.env.SHELL || '/bin/bash');
+
+const TERMINAL_PROFILES = {
+  'claude-code': {
+    shell: DEFAULT_SHELL,
+    args: IS_WIN ? ['/k', 'claude'] : ['-c', 'claude; exec $SHELL'],
+    env: { FORCE_COLOR: '1', TERM: 'xterm-256color' },
+  },
+  'codex': {
+    shell: DEFAULT_SHELL,
+    args: IS_WIN ? ['/k', 'codex'] : ['-c', 'codex; exec $SHELL'],
+    env: { FORCE_COLOR: '1', TERM: 'xterm-256color' },
+  },
+  'gemini': {
+    shell: DEFAULT_SHELL,
+    args: IS_WIN ? ['/k', 'gemini'] : ['-c', 'gemini; exec $SHELL'],
+    env: { FORCE_COLOR: '1', TERM: 'xterm-256color' },
+  },
+  'shell': {
+    shell: DEFAULT_SHELL,
+    args: [],
+    env: {},
+  },
+};
+
+function createTerminalSession(profile, cols, rows, cwd) {
+  const sessionId = randomBytes(16).toString('hex');
+  const profileCfg = TERMINAL_PROFILES[profile] || TERMINAL_PROFILES['shell'];
+
+  const ptyProcess = pty.spawn(profileCfg.shell, profileCfg.args, {
+    name: 'xterm-256color',
+    cols: cols || 120,
+    rows: rows || 30,
+    cwd: cwd || process.env.USERPROFILE || process.env.HOME || process.cwd(),
+    env: { ...process.env, ...profileCfg.env },
+    useConpty: IS_WIN,
+  });
+
+  const session = { pty: ptyProcess, clients: new Set(), profile, cwd };
+  terminalSessions.set(sessionId, session);
+
+  ptyProcess.onData((data) => {
+    const msg = JSON.stringify({ type: 'output', data });
+    session.clients.forEach(ws => {
+      if (ws.readyState === 1) ws.send(msg);
+    });
+  });
+
+  ptyProcess.onExit(({ exitCode }) => {
+    const msg = JSON.stringify({ type: 'exit', exitCode });
+    session.clients.forEach(ws => {
+      if (ws.readyState === 1) ws.send(msg);
+    });
+    // Clean up temp files from image paste
+    if (session.tempFiles) {
+      session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
+    }
+    terminalSessions.delete(sessionId);
+  });
+
+  return sessionId;
+}
+
+// ── Terminal REST endpoints ──
+
+app.get('/api/terminal/sessions', (req, res) => {
+  const sessions = [...terminalSessions.entries()].map(([id, s]) => ({
+    id,
+    profile: s.profile,
+    clients: s.clients.size,
+  }));
+  res.json({ sessions });
+});
+
+app.post('/api/terminal/sessions', (req, res) => {
+  const { profile = 'shell', cols = 120, rows = 30, cwd } = req.body;
+  try {
+    const sessionId = createTerminalSession(profile, cols, rows, cwd);
+    res.json({ sessionId, profile });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/terminal/sessions/:id', (req, res) => {
+  const session = terminalSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  session.pty.kill();
+  // Clean up temp files from image paste
+  if (session.tempFiles) {
+    session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
+  }
+  terminalSessions.delete(req.params.id);
+  res.json({ ok: true });
+});
+
+app.get('/api/terminal/profiles', (req, res) => {
+  const profiles = Object.entries(TERMINAL_PROFILES).map(([id, cfg]) => ({
+    id,
+    shell: cfg.shell,
+    args: cfg.args,
+  }));
+  const projects = loadHookProjects().map(p => ({ path: p.path, label: p.label || basename(p.path) }));
+  res.json({ profiles, projects });
+});
+
 // --- Start ---
 // Migrate connections.json → .env if it still exists (one-time)
 migrateConnectionsJsonToEnv();
 // Load active connection from .env
 reloadConfig();
 
-app.listen(PORT, async () => {
+const httpServer = app.listen(PORT, async () => {
   console.log(`\n  Neural Memory Interface`);
   console.log(`  ──────────────────────`);
   console.log(`  Server:  http://localhost:${PORT}`);
   console.log(`  MCP:     http://localhost:${PORT}/mcp`);
   console.log(`  Qdrant:  ${QDRANT_URL}`);
   console.log(`  Collection: ${COLLECTION}`);
-  console.log(`  OpenAI:  ${OPENAI_KEY ? 'configured' : 'MISSING'}\n`);
+  console.log(`  OpenAI:  ${OPENAI_KEY ? 'configured' : 'MISSING'}`);
+  console.log(`  Terminal: WebSocket on ws://localhost:${PORT}/ws/terminal/*\n`);
 
   // Ensure trashed_at index exists for soft-delete filtering on existing collections
   try {
@@ -3798,4 +4836,82 @@ app.listen(PORT, async () => {
   } catch (err) {
     console.warn('  OpenClaw bridge sync warning:', err.message);
   }
+});
+
+// ═══════════════════════════════════════════
+// TERMINAL — WebSocket Server
+// ═══════════════════════════════════════════
+
+const wss = new WebSocketServer({ noServer: true });
+
+httpServer.on('upgrade', (req, socket, head) => {
+  // Block tunnel traffic from WebSocket upgrades
+  if (req.headers['cf-connecting-ip']) {
+    socket.destroy();
+    return;
+  }
+
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  if (!url.pathname.startsWith('/ws/terminal/')) {
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
+});
+
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  const sessionId = url.pathname.replace('/ws/terminal/', '');
+  const session = terminalSessions.get(sessionId);
+
+  if (!session) {
+    ws.send(JSON.stringify({ type: 'error', message: 'Session not found' }));
+    ws.close();
+    return;
+  }
+
+  session.clients.add(ws);
+
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'input') {
+        session.pty.write(msg.data);
+      } else if (msg.type === 'resize') {
+        session.pty.resize(msg.cols, msg.rows);
+      } else if (msg.type === 'image_paste' && msg.data) {
+        // Save pasted image to temp file
+        const ext = (msg.mimeType === 'image/jpeg') ? 'jpg' : 'png';
+        const tmpPath = join(os.tmpdir(), `synabun-paste-${sessionId}-${Date.now()}.${ext}`);
+        try {
+          writeFileSync(tmpPath, Buffer.from(msg.data, 'base64'));
+          if (!session.tempFiles) session.tempFiles = [];
+          session.tempFiles.push(tmpPath);
+          // Send path back to client (client decides whether to insert into PTY)
+          ws.send(JSON.stringify({ type: 'image_saved', path: tmpPath }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: `Image paste failed: ${err.message}` }));
+        }
+      } else if (msg.type === 'memory_drop' && msg.content) {
+        // Save memory as .md temp file so CLI can pick it up as a file reference
+        const slug = (msg.title || 'memory').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
+        const tmpPath = join(os.tmpdir(), `synabun-${slug}-${Date.now()}.md`);
+        try {
+          writeFileSync(tmpPath, msg.content, 'utf-8');
+          if (!session.tempFiles) session.tempFiles = [];
+          session.tempFiles.push(tmpPath);
+          ws.send(JSON.stringify({ type: 'memory_saved', path: tmpPath }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: `Memory drop failed: ${err.message}` }));
+        }
+      }
+    } catch { /* ignore malformed messages */ }
+  });
+
+  ws.on('close', () => {
+    session.clients.delete(ws);
+  });
 });

@@ -111,7 +111,7 @@ export async function handleRemember(args: {
     content: [
       {
         type: 'text' as const,
-        text: `Remembered [${id.slice(0, 8)}] (${category}/${project}, importance: ${importance}): "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`,
+        text: `Remembered [${id}] (${category}/${project}, importance: ${importance}): "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`,
       },
     ],
   };

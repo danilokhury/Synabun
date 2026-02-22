@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neural Memory Interface — 2D</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://db.onlinewebfonts.com/c/3284c3a32cf946466fb963369b3c5b2d?family=Disket+Mono" rel="stylesheet">
+<link rel="stylesheet" href="/shared/styles.css">
+<style>
+  /* ═══════════════════════════════════════════
+     2D VARIANT — Minimap
+     ═══════════════════════════════════════════ */
+  #minimap {
+    position: fixed;
+    bottom: 52px;
+    right: 12px;
+    width: 200px;
+    height: 140px;
+    z-index: 90;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(28,28,30,0.72);
+    backdrop-filter: blur(40px) saturate(1.4);
+    -webkit-backdrop-filter: blur(40px) saturate(1.4);
+    box-shadow: 0 2px 20px rgba(0,0,0,0.4);
+    transition: opacity var(--ease);
+  }
+  #minimap.hidden { opacity: 0; pointer-events: none; }
+  #minimap-canvas { width: 100%; height: 100%; display: block; }
+  #minimap-label {
+    position: absolute;
+    top: 4px; left: 8px;
+    font-size: 9px; font-weight: 600;
+    letter-spacing: 0.15em; text-transform: uppercase;
+    color: rgba(255,255,255,0.2); pointer-events: none;
+  }
+
+  /* ═══════════════════════════════════════════
+     2D VARIANT — Context Menu
+     ═══════════════════════════════════════════ */
+  #context-menu {
+    position: fixed;
+    z-index: 500;
+    min-width: 180px;
+    padding: 4px;
+    display: none;
+    animation: dropdownFadeIn 0.1s ease-out;
+  }
+  #context-menu.open { display: block; }
+  .ctx-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; border-radius: 6px; cursor: pointer;
+    font-size: 13px; color: var(--t-secondary); transition: background 0.1s;
+  }
+  .ctx-item:hover { background: var(--s-hover); color: var(--t-bright); }
+  .ctx-item svg { width: 14px; height: 14px; stroke: currentColor; stroke-width: 1.8; fill: none; }
+  .ctx-item--danger:hover { color: var(--accent-red); background: var(--accent-red-bg); }
+  .ctx-sep { height: 1px; background: var(--b-subtle); margin: 3px 4px; }
+
+  /* ═══════════════════════════════════════════
+     2D VARIANT — Lasso Selection
+     ═══════════════════════════════════════════ */
+  #lasso-canvas {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    z-index: 5;
+    pointer-events: none;
+  }
+
+  /* ═══════════════════════════════════════════
+     2D VARIANT — Background Canvas
+     ═══════════════════════════════════════════ */
+  #bg-canvas {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  /* ═══════════════════════════════════════════
+     2D VARIANT — Hull Canvas
+     ═══════════════════════════════════════════ */
+  #hull-canvas {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    z-index: 3;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<!-- 2D-only: Background Canvas -->
+<canvas id="bg-canvas"></canvas>
+
+<!-- 2D-only: Hull Overlay Canvas -->
+<canvas id="hull-canvas"></canvas>
+
+<!-- 2D-only: Lasso Selection Canvas -->
+<canvas id="lasso-canvas"></canvas>
+
+<!-- 2D-only: Minimap -->
+<div id="minimap" class="glass">
+  <canvas id="minimap-canvas" width="200" height="140"></canvas>
+</div>
+
+<!-- 2D-only: Context Menu -->
+<div id="context-menu" class="glass">
+  <div class="ctx-item" data-action="open">Open Memory</div>
+  <div class="ctx-item" data-action="edit">Edit Memory</div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item" data-action="move">Move to Category...</div>
+  <div class="ctx-item" data-action="pin">Pin / Unpin</div>
+  <div class="ctx-item" data-action="focus">Focus: Show Linked</div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item" data-action="bookmark">Add to Bookmarks</div>
+  <div class="ctx-item ctx-item--danger" data-action="trash">Move to Trash</div>
+</div>
+
+<!-- Boot 2D variant -->
+<script type="module" src="/variant/2d/main.js"></script>
+</body>
+</html>

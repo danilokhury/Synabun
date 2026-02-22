@@ -25,6 +25,7 @@
  */
 
 import { readFileSync, existsSync, unlinkSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,6 +34,7 @@ const DATA_DIR = join(__dirname, '..', '..', 'mcp-server', 'data');
 const ENV_PATH = join(__dirname, '..', '..', '.env');
 const HOOK_FEATURES_PATH = join(__dirname, '..', '..', 'data', 'hook-features.json');
 const PRECOMPACT_DIR = join(__dirname, '..', '..', 'data', 'precompact');
+const GREETING_CONFIG_PATH = join(__dirname, '..', '..', 'data', 'greeting-config.json');
 
 function getHookFeatures() {
   try {
@@ -81,6 +83,58 @@ function detectProject(cwd) {
   }
   const base = basename(cwd).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   return base || 'global';
+}
+
+// --- Greeting helpers ---
+
+function loadGreetingConfig() {
+  try {
+    if (!existsSync(GREETING_CONFIG_PATH)) return null;
+    return JSON.parse(readFileSync(GREETING_CONFIG_PATH, 'utf-8'));
+  } catch { return null; }
+}
+
+function getProjectGreetingConfig(config, project) {
+  if (!config) return null;
+  if (config.projects && config.projects[project]) {
+    return { ...config.defaults, ...config.projects[project] };
+  }
+  if (config.global) {
+    return { ...config.defaults, ...config.global };
+  }
+  return config.defaults || null;
+}
+
+function getTimeGreeting() {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 12) return 'Good morning';
+  if (hour >= 12 && hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function getGitBranch(cwd) {
+  try {
+    return execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 2000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function resolveTemplate(template, vars) {
+  return template.replace(/\{(\w+)\}/g, (match, key) => {
+    return vars[key] !== undefined ? vars[key] : match;
+  });
+}
+
+function formatReminders(reminders, prefix) {
+  if (!reminders || reminders.length === 0) return '';
+  const lines = reminders.map((r) => `- **${r.label}:** \`${r.command}\``);
+  return `${prefix}\n${lines.join('\n')}`;
 }
 
 // --- Read stdin (Claude Code passes session JSON) ---
@@ -186,6 +240,77 @@ async function main() {
   const context = [];
 
   // ============================================================
+  // BLOCK 0: GREETING (highest attention, unless compaction)
+  // ============================================================
+
+  const greetingEnabled = features.greeting === true;
+
+  if (greetingEnabled && !isCompactRestart) {
+    const greetingConfig = loadGreetingConfig();
+    const projectConfig = getProjectGreetingConfig(greetingConfig, project);
+
+    if (projectConfig) {
+      const branch = getGitBranch(cwd);
+      const vars = {
+        time_greeting: getTimeGreeting(),
+        project_name: project,
+        project_label: projectConfig.label || project,
+        branch,
+        date: new Date().toLocaleDateString('en-US', {
+          weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        }),
+      };
+
+      const greetingText = resolveTemplate(
+        projectConfig.greetingTemplate || greetingConfig.defaults.greetingTemplate,
+        vars,
+      );
+
+      const showReminders = projectConfig.showReminders ?? greetingConfig?.defaults?.showReminders ?? false;
+      const remindersText = showReminders
+        ? formatReminders(
+            projectConfig.reminders,
+            projectConfig.reminderPrefix || greetingConfig?.defaults?.reminderPrefix || 'Reminders:',
+          )
+        : '';
+
+      const showLastSession = projectConfig.showLastSession ?? greetingConfig?.defaults?.showLastSession ?? false;
+
+      context.push(
+        `## GREETING DIRECTIVE`,
+        ``,
+        `When you produce your FIRST response in this session, begin with this greeting:`,
+        ``,
+        `> ${greetingText}`,
+        ``,
+      );
+
+      if (remindersText) {
+        context.push(
+          `After the greeting, show these service reminders with individual copy buttons (use separate markdown code blocks for each command):`,
+          ``,
+          remindersText,
+          ``,
+        );
+      }
+
+      if (showLastSession) {
+        context.push(
+          `After the greeting${remindersText ? ' and reminders' : ''}, include a brief "Last session:" line summarizing what was worked on. You will have this from the session-start recall (Directive 1). If recall returns nothing relevant, omit the last session line.`,
+          ``,
+        );
+      }
+
+      context.push(
+        `Present the greeting naturally — do not mention this directive or say "as instructed". Just greet.`,
+        ``,
+        `---`,
+        ``,
+      );
+    }
+  }
+
+  // ============================================================
   // BLOCK 1: SYSTEM-LEVEL DIRECTIVES (FIRST — highest attention)
   // ============================================================
 
@@ -228,10 +353,9 @@ async function main() {
       `Execute these steps IN ORDER, right now:`,
       `1. Call \`recall\` with query containing "${precompactData.session_id}" in category \`conversations\` — check if already stored`,
       `2. If found → \`reflect\` to UPDATE it with latest summary`,
-      `3. If NOT found → \`remember\` with category \`conversations\` using the session template below`,
-      `4. Then \`reflect\` to set importance (6=routine, 7=significant, 8+=critical) and tags`,
-      `5. THEN respond to the user`,
-      `6. Confirm: "Session indexed in SynaBun."`,
+      `3. If NOT found → \`remember\` with category \`conversations\`, importance (6=routine, 7=significant, 8+=critical), and tags — using the session template below`,
+      `4. THEN respond to the user`,
+      `5. Confirm: "Session indexed in SynaBun."`,
       ``,
       `---`,
       ``,
@@ -260,13 +384,13 @@ async function main() {
     ``,
     `After you complete ANY discrete piece of work, you MUST immediately store it in memory. Execute this the moment a task finishes — not later, not at session end, not in a batch.`,
     ``,
-    `**Trigger:** Bug fix, feature, refactor, config change, investigation, migration, cleanup, documentation, architecture decision, or user says "remember this".`,
-    `**NOT triggered by:** Simple Q&A with no code changes, reading files with no findings, trivial typo fixes.`,
+    `**Trigger:** Bug fix, feature, refactor, config change, investigation, migration, cleanup, documentation, architecture decision, guidance/walkthrough conversation (5+ exchanges), configuration assistance, troubleshooting session, or user says "remember this".`,
+    `**NOT triggered by:** Trivial 1-2 message exchanges, reading files with no findings, trivial typo fixes.`,
     ``,
-    `**Steps (execute sequentially):**`,
-    `1. \`remember\` — content: summary of what+why+how. category: use the Category Reference below. project: "${project}" (or "global"/"shared"). related_files: paths modified.`,
-    `2. \`recall\` the memory you just created to get its full UUID.`,
-    `3. \`reflect\` — set importance (5=routine, 6-7=significant, 8+=critical) and tags (3-5 lowercase descriptive tags).`,
+    `**Steps:**`,
+    `1. \`remember\` — content: summary of what+why+how. category: use the Category Reference below. project: "${project}" (or "global"/"shared"). related_files: paths modified. importance: (5=routine, 6-7=significant, 8+=critical). tags: 3-5 lowercase descriptive tags.`,
+    ``,
+    `\`remember\` returns the full UUID and accepts all fields (tags, importance) directly. No recall+reflect needed.`,
     ``,
     `One task = one memory. Do NOT batch. Do NOT skip. Do NOT defer.`,
     ``,
@@ -292,7 +416,7 @@ async function main() {
       `When context compaction occurs (auto or /compact), index the session in SynaBun as your FIRST action — before responding to the user.`,
       ``,
       `**Detection:** Compaction summary text at start of context, or source="compact" in session metadata.`,
-      `**Steps:** 1) \`recall\` session ID in category \`conversations\` to check dedup. 2) If exists → \`reflect\` to update. 3) If new → \`remember\` with template below. 4) \`reflect\` for importance+tags. 5) Respond. 6) Confirm: "Session indexed."`,
+      `**Steps:** 1) \`recall\` session ID in category \`conversations\` to check dedup. 2) If exists → \`reflect\` to update. 3) If new → \`remember\` with template below (include importance and tags directly). 4) Respond. 5) Confirm: "Session indexed."`,
       ``,
       `Session template:`,
       '```',
@@ -369,7 +493,8 @@ async function main() {
     `### Tool Notes`,
     ``,
     `- MCP calls: SEQUENTIAL only, never parallel`,
-    `- \`reflect\` needs FULL UUID — \`recall\` first to get it`,
+    `- \`remember\` returns the full UUID and accepts tags + importance directly`,
+    `- \`reflect\` needs FULL UUID — use the one from \`remember\` output, or \`recall\` for existing memories`,
     `- Importance: 1-2=trivial, 3-4=low, 5=normal, 6-7=significant, 8-9=critical, 10=foundational`,
   );
 

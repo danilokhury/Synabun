@@ -11,8 +11,8 @@ You are now in **memory audit mode**. Your job is to systematically validate Syn
 ## CRITICAL: SynaBun MCP Tool Quirks
 
 - Make ALL SynaBun MCP calls **sequentially** (never in parallel — one failure cascades to all sibling calls in the batch).
-- When using `remember`, **omit** the `tags` and `importance` parameters (they cause type errors via XML serialization). Use `reflect` after to set them.
-- The `reflect` tool requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`), not the shortened ID. Use `recall` first to get the full UUID if you only have a short ID.
+- `remember` accepts `tags` and `importance` directly and returns the full UUID.
+- `reflect` requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`). Use the UUID returned by `remember`, or `recall` to find existing memories.
 - The `forget` tool also requires the full UUID.
 - The `memories` tool maxes out at 50 results per call. If a category has more than 50 memories, warn the user that only the 50 most recent will be audited.
 
@@ -356,10 +356,8 @@ If save:
    - `content`: Structured summary — date, scope, model, counts per classification, list of updated/deleted memory short-IDs, notable findings
    - `category`: "synabun"
    - `project`: current detected project
-   - (Omit `tags` and `importance`)
-2. Then call `reflect` on the new memory to set:
    - `importance`: 6
-   - `add_tags`: ["audit", "memory-health"]
+   - `tags`: ["audit", "memory-health"]
 
 ---
 

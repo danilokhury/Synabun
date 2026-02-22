@@ -2,7 +2,7 @@
 
 REST API served by the Neural Interface at `http://localhost:3344`.
 
-The Neural Interface is the HTTP server that bridges the SynaBun web UI, MCP server, and Qdrant vector database. It manages memories, categories, connections to Qdrant instances, settings, setup/onboarding, and Claude Code hook integrations.
+The Neural Interface is the HTTP server that bridges the SynaBun web UI, MCP server, and Qdrant vector database. It manages memories, categories, connections to Qdrant instances, settings, setup/onboarding, Claude Code integrations (hooks, MCP registration, skills), OpenClaw bridge, trash management, backup/restore, and more. 55+ endpoints across 12 groups.
 
 ## Table of Contents
 
@@ -44,6 +44,42 @@ The Neural Interface is the HTTP server that bridges the SynaBun web UI, MCP ser
   - [POST /api/claude-code/integrations](#post-apiclaude-codeintegrations)
   - [DELETE /api/claude-code/integrations](#delete-apiclaude-codeintegrations)
   - [DELETE /api/claude-code/projects/:index](#delete-apiclaude-codeprojectsindex)
+- [Trash Endpoints](#trash-endpoints)
+  - [GET /api/trash](#get-apitrash)
+  - [POST /api/trash/:id/restore](#post-apitrashidrestore)
+  - [DELETE /api/trash/purge](#delete-apitrashpurge)
+- [Sync Endpoints](#sync-endpoints)
+  - [GET /api/sync/check](#get-apisynccheck)
+- [Display Settings Endpoints](#display-settings-endpoints)
+  - [GET /api/display-settings](#get-apidisplay-settings)
+  - [PUT /api/display-settings](#put-apidisplay-settings)
+- [Category Logo Endpoints](#category-logo-endpoints)
+  - [POST /api/categories/:name/logo](#post-apicategoriesname-logo)
+  - [DELETE /api/categories/:name/logo](#delete-apicategoriesname-logo)
+- [Category Export Endpoints](#category-export-endpoints)
+  - [GET /api/categories/:name/export](#get-apicategoriesname-export)
+- [Connection Management (Extended)](#connection-management-extended)
+  - [GET /api/connections/suggest-port](#get-apiconnectionssuggest-port)
+  - [POST /api/connections/start-container](#post-apiconnectionsstart-container)
+  - [POST /api/connections/:id/backup](#post-apiconnectionsidbackup)
+  - [POST /api/connections/:id/restore](#post-apiconnectionsidrestore)
+  - [POST /api/connections/restore-standalone](#post-apiconnectionsrestore-standalone)
+  - [POST /api/connections/docker-new](#post-apiconnectionsdocker-new)
+  - [POST /api/connections/create-collection](#post-apiconnectionscreate-collection)
+- [OpenClaw Bridge Endpoints](#openclaw-bridge-endpoints)
+  - [GET /api/bridges/openclaw](#get-apibridgesopenclaw)
+  - [POST /api/bridges/openclaw/connect](#post-apibridgesopenclawconnect)
+  - [POST /api/bridges/openclaw/sync](#post-apibridgesopenclawsync)
+  - [DELETE /api/bridges/openclaw](#delete-apibridgesopenclaw)
+- [Claude Code MCP Management Endpoints](#claude-code-mcp-management-endpoints)
+  - [GET /api/claude-code/mcp](#get-apiclaude-codemcp)
+  - [POST /api/claude-code/mcp](#post-apiclaude-codemcp)
+  - [DELETE /api/claude-code/mcp](#delete-apiclaude-codemcp)
+  - [GET /api/claude-code/hook-features](#get-apiclaude-codehook-features)
+  - [PUT /api/claude-code/hook-features](#put-apiclaude-codehook-features)
+  - [GET /api/claude-code/ruleset](#get-apiclaude-coderuleset)
+- [Setup Endpoints (Extended)](#setup-endpoints-extended)
+  - [POST /api/setup/start-docker-desktop](#post-apisetupstart-docker-desktop)
 
 ---
 
@@ -1625,4 +1661,341 @@ Removes a project from the tracked projects list (`data/claude-code-projects.jso
 
 ```bash
 curl -X DELETE http://localhost:3344/api/claude-code/projects/0
+```
+
+---
+
+## Trash Endpoints
+
+### GET /api/trash
+
+Lists all trashed (soft-deleted) memories. Memories end up here when `forget` is called via the MCP tool.
+
+**Response**
+
+```json
+{
+  "nodes": [
+    {
+      "id": "uuid",
+      "payload": {
+        "content": "string",
+        "category": "string",
+        "trashed_at": "ISO 8601 string",
+        "...": "other payload fields"
+      }
+    }
+  ]
+}
+```
+
+### POST /api/trash/:id/restore
+
+Restores a trashed memory by clearing its `trashed_at` field.
+
+| Parameter | Location | Type | Required | Description |
+|-----------|----------|------|----------|-------------|
+| `id` | Path | string (UUID) | Yes | Memory ID to restore |
+
+**Response**
+
+```json
+{ "ok": true }
+```
+
+### DELETE /api/trash/purge
+
+Permanently deletes ALL trashed memories. This is irreversible.
+
+**Response**
+
+```json
+{ "ok": true, "purged": 5 }
+```
+
+---
+
+## Sync Endpoints
+
+### GET /api/sync/check
+
+Detects stale memories by comparing SHA-256 file hashes against stored checksums.
+
+**Response**
+
+```json
+{
+  "stale": [
+    {
+      "id": "uuid",
+      "content": "string",
+      "related_files": ["path"],
+      "changed_files": ["path"]
+    }
+  ],
+  "total_checked": 42,
+  "total_with_files": 30,
+  "total_stale": 5
+}
+```
+
+---
+
+## Display Settings Endpoints
+
+### GET /api/display-settings
+
+Returns the current display settings.
+
+**Response**
+
+```json
+{
+  "recallMaxChars": 0
+}
+```
+
+### PUT /api/display-settings
+
+Updates display settings. Currently controls MCP response truncation behavior.
+
+**Request Body**
+
+```json
+{
+  "recallMaxChars": 2000
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `recallMaxChars` | number | Maximum characters in MCP recall responses. `0` = unlimited. |
+
+---
+
+## Category Logo Endpoints
+
+### POST /api/categories/:name/logo
+
+Uploads a logo image for a parent category. The logo is rendered on the category's sun node in the 3D visualization.
+
+| Parameter | Location | Type | Required | Description |
+|-----------|----------|------|----------|-------------|
+| `name` | Path | string | Yes | Category name |
+| `logo` | Body (multipart) | File | Yes | PNG, JPEG, WEBP, or GIF (max 5MB) |
+
+Saved as `neural-interface/public/logo-{name}.{ext}`.
+
+**Response**
+
+```json
+{ "ok": true, "path": "logo-my-category.png" }
+```
+
+### DELETE /api/categories/:name/logo
+
+Removes a category's logo file.
+
+**Response**
+
+```json
+{ "ok": true }
+```
+
+---
+
+## Category Export Endpoints
+
+### GET /api/categories/:name/export
+
+Downloads all memories in a category as a Markdown file.
+
+**Response:** `Content-Disposition: attachment; filename="category-{name}.md"`
+
+---
+
+## Connection Management (Extended)
+
+### GET /api/connections/suggest-port
+
+Suggests the next available port for a new Qdrant instance.
+
+**Response**
+
+```json
+{ "port": 6340, "grpcPort": 6341 }
+```
+
+### POST /api/connections/start-container
+
+Starts a stopped Docker container for a connection, with Qdrant readiness polling.
+
+**Request Body**
+
+```json
+{ "id": "connection-id" }
+```
+
+### POST /api/connections/:id/backup
+
+Creates a Qdrant snapshot and streams it as a downloadable `.snapshot` binary.
+
+| Parameter | Location | Type | Required | Description |
+|-----------|----------|------|----------|-------------|
+| `id` | Path | string | Yes | Connection ID |
+
+**Response:** Binary stream (`application/octet-stream`). Timeout: 120s creation + 5min download.
+
+### POST /api/connections/:id/restore
+
+Restores a `.snapshot` binary to a connection's Qdrant collection.
+
+| Parameter | Location | Type | Required | Description |
+|-----------|----------|------|----------|-------------|
+| `id` | Path | string | Yes | Connection ID |
+| `snapshot` | Body (multipart) | File | Yes | `.snapshot` binary (max 500MB) |
+
+### POST /api/connections/restore-standalone
+
+Restores a snapshot to any Qdrant instance by URL, then auto-adds it as a connection.
+
+**Query Parameters:** `url`, `apiKey`, `collection`
+
+### POST /api/connections/docker-new
+
+Spins up a new Qdrant Docker container on a specified port.
+
+**Request Body**
+
+```json
+{
+  "port": 6340,
+  "grpcPort": 6341,
+  "apiKey": "generated-key",
+  "label": "My Second Instance"
+}
+```
+
+### POST /api/connections/create-collection
+
+Creates a Qdrant collection on any arbitrary instance.
+
+**Request Body**
+
+```json
+{
+  "url": "http://localhost:6340",
+  "apiKey": "key",
+  "collection": "claude_memory",
+  "dimensions": 1536
+}
+```
+
+---
+
+## OpenClaw Bridge Endpoints
+
+### GET /api/bridges/openclaw
+
+Returns the status of the OpenClaw bridge integration.
+
+**Response**
+
+```json
+{
+  "enabled": true,
+  "workspacePath": "~/.openclaw/workspace",
+  "lastSync": "ISO 8601 string",
+  "nodeCount": 45,
+  "categoryCount": 3
+}
+```
+
+### POST /api/bridges/openclaw/connect
+
+Connects the bridge to an OpenClaw workspace. Auto-detects `~/.openclaw/workspace` if no path provided. Validates by checking for `AGENTS.md` presence.
+
+**Request Body**
+
+```json
+{
+  "workspacePath": "/path/to/openclaw/workspace"
+}
+```
+
+### POST /api/bridges/openclaw/sync
+
+Re-reads and parses all OpenClaw workspace files. Three parsers run:
+- `parseMemoryMd` — `MEMORY.md` (long-term curated memories)
+- `parseDailyLogs` — `memory/*.md` (daily session logs)
+- `parseWorkspaceConfigs` — 7 config files (AGENTS.md, SOUL.md, etc.)
+
+All nodes are in-memory only (not stored in Qdrant).
+
+### DELETE /api/bridges/openclaw
+
+Disconnects the OpenClaw bridge and clears ephemeral nodes.
+
+---
+
+## Claude Code MCP Management Endpoints
+
+### GET /api/claude-code/mcp
+
+Checks if SynaBun is registered in `~/.claude.json`.
+
+**Response**
+
+```json
+{ "installed": true }
+```
+
+### POST /api/claude-code/mcp
+
+Registers the SynaBun MCP server in `~/.claude.json`.
+
+### DELETE /api/claude-code/mcp
+
+Removes SynaBun from `~/.claude.json`.
+
+### GET /api/claude-code/hook-features
+
+Returns hook feature flags from `data/hook-features.json`.
+
+**Response**
+
+```json
+{ "conversationMemory": true }
+```
+
+### PUT /api/claude-code/hook-features
+
+Toggles a single feature flag.
+
+**Request Body**
+
+```json
+{ "feature": "conversationMemory", "enabled": false }
+```
+
+### GET /api/claude-code/ruleset
+
+Returns the CLAUDE.md memory ruleset section for copy-paste into any project.
+
+| Parameter | Location | Type | Required | Description |
+|-----------|----------|------|----------|-------------|
+| `format` | Query | string | No | `claude` (default), `cursor`, or `generic` |
+
+---
+
+## Setup Endpoints (Extended)
+
+### POST /api/setup/start-docker-desktop
+
+Launches Docker Desktop on Windows and polls until the Docker daemon is ready (45s timeout).
+
+**Response**
+
+```json
+{ "ok": true, "message": "Docker Desktop started" }
 ```

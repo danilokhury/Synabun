@@ -9,8 +9,8 @@ If the input topic is empty, you are in **freeform mode** — explore the full m
 ## CRITICAL: SynaBun MCP Tool Quirks
 
 - Make ALL SynaBun MCP calls **sequentially** (never in parallel — one failure cascades)
-- When using `remember`, **omit** the `tags` and `importance` parameters (they cause type errors via XML serialization). Use `reflect` after to set them.
-- The `reflect` tool requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`), not the shortened ID. Use `recall` first to get the full UUID.
+- `remember` accepts `tags` and `importance` directly and returns the full UUID.
+- `reflect` requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`). Use the UUID returned by `remember`, or `recall` to find existing memories.
 
 ## Process
 
@@ -129,8 +129,6 @@ If the user says yes:
    - `content`: The full idea text (title + concept + reasoning chain + next steps)
    - `category`: "ideas"
    - `project`: current project name
-   - (Omit `tags` and `importance` — known quirk)
-4. Then call `reflect` on each saved memory to set:
    - `importance`: 6 for speculative ideas, 7 for actionable ones
    - `tags`: ["brainstorm", topic keywords]
 
