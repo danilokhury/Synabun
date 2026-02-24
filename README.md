@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://synabun.dev">synabun.dev</a>
+  <a href="https://synabun.ai">synabun.ai</a>
 </p>
 
 ---
@@ -70,7 +70,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 
 | Document | Description |
 |----------|-------------|
-| **[Website Docs](https://synabun.dev/docs.html)** | Full documentation on synabun.dev |
+| **[Website Docs](https://synabun.ai/docs.html)** | Full documentation on synabun.ai |
 | **[README](./README.md)** | Quick start, architecture, configuration |
 | **[Usage Guide](./docs/usage-guide.md)** | Detailed usage patterns, tool quirks, best practices |
 | **[API Reference](./docs/api-reference.md)** | Neural Interface REST API (55+ endpoints) |
