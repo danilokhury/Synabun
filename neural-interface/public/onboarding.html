@@ -608,6 +608,105 @@
   }
   .welcome-desc.visible { opacity: 1; }
 
+  /* ── Welcome Choice Cards ── */
+  .welcome-choices {
+    display: flex;
+    gap: 14px;
+    margin-top: 28px;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    width: 100%;
+    max-width: 440px;
+  }
+  .welcome-choices.visible { opacity: 1; }
+  .welcome-choice {
+    flex: 1;
+    padding: 20px 16px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .welcome-choice:hover {
+    background: var(--s-hover);
+    border-color: var(--b-hover);
+    transform: translateY(-2px);
+  }
+  .welcome-choice-icon {
+    width: 32px;
+    height: 32px;
+    color: var(--t-muted);
+    transition: color 0.2s ease;
+  }
+  .welcome-choice:hover .welcome-choice-icon { color: var(--t-bright); }
+  .welcome-choice-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--t-bright);
+  }
+  .welcome-choice-desc {
+    font-size: 11px;
+    color: var(--t-muted);
+    line-height: 1.4;
+  }
+
+  /* Restore sub-panel inside step 0 */
+  .welcome-restore-panel {
+    width: 100%;
+    max-width: 440px;
+    margin-top: 20px;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    display: none;
+  }
+  .welcome-restore-panel.visible {
+    display: block;
+    opacity: 1;
+  }
+  .restore-dropzone {
+    padding: 28px 20px;
+    border: 2px dashed var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.25s ease;
+  }
+  .restore-dropzone:hover,
+  .restore-dropzone.dragover {
+    border-color: var(--b-hover);
+    background: var(--s-hover);
+  }
+  .restore-dropzone-icon {
+    color: var(--t-muted);
+    margin-bottom: 8px;
+  }
+  .restore-dropzone-text {
+    font-size: 13px;
+    color: var(--t-secondary);
+  }
+  .restore-dropzone-hint {
+    font-size: 11px;
+    color: var(--t-muted);
+    margin-top: 4px;
+  }
+  .restore-back-link {
+    display: inline-block;
+    margin-top: 14px;
+    font-size: 11px;
+    color: var(--t-muted);
+    cursor: pointer;
+    transition: color 0.2s ease;
+    text-decoration: none;
+  }
+  .restore-back-link:hover { color: var(--t-bright); }
+
   /* ── Instructions Preview ── */
   .instructions-preview {
     background: rgba(0,0,0,0.30);
@@ -808,9 +907,43 @@
       <div style="display:flex;flex-direction:column;align-items:center;">
         <div class="typewriter-line" id="typewriter"></div>
         <div class="welcome-desc" id="welcomeDesc">
-          I'll help you set up your persistent vector memory.<br>
-          Qdrant database, embedding provider,<br>
-          and AI tool integration. It only takes a minute!
+          Persistent vector memory for your AI coding tools.<br>
+          How would you like to get started?
+        </div>
+        <div class="welcome-choices" id="welcomeChoices">
+          <div class="welcome-choice" id="choiceFreshInstall">
+            <svg class="welcome-choice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+            <div class="welcome-choice-title">Fresh Install</div>
+            <div class="welcome-choice-desc">Set up SynaBun from scratch with the guided wizard</div>
+          </div>
+          <div class="welcome-choice" id="choiceRestore">
+            <svg class="welcome-choice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <div class="welcome-choice-title">Restore Backup</div>
+            <div class="welcome-choice-desc">Restore from a previous SynaBun backup file</div>
+          </div>
+        </div>
+        <div class="welcome-restore-panel" id="welcomeRestorePanel">
+          <div class="restore-dropzone" id="restoreDropzone">
+            <div class="restore-dropzone-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </div>
+            <div class="restore-dropzone-text">Drop your backup .zip here</div>
+            <div class="restore-dropzone-hint">or click to browse</div>
+          </div>
+          <input type="file" id="onboardRestoreFile" accept=".zip" style="display:none">
+          <div id="onboardRestoreStatus" style="display:none;margin-top:12px;font-size:12px;align-items:center;gap:8px">
+            <div class="wiz-status-dot spin" id="onboardRestoreDot"></div>
+            <span id="onboardRestoreText"></span>
+          </div>
+          <div style="text-align:center">
+            <span class="restore-back-link" id="restoreBackLink">&larr; Back to options</span>
+          </div>
         </div>
       </div>
     </div>
@@ -1013,13 +1146,16 @@
 
 <div style="text-align:center;margin-top:16px;display:flex;flex-direction:column;align-items:center;gap:12px;">
   <div class="social-bar">
-    <a href="https://discord.gg/synabun" target="_blank" rel="noopener" class="social-icon" title="Discord">
+    <a href="https://discord.gg/nyv95tgD" target="_blank" rel="noopener" class="social-icon" title="Discord">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
     </a>
-    <a href="https://github.com/synabun" target="_blank" rel="noopener" class="social-icon" title="GitHub">
+    <a href="https://x.com/SynabunAI" target="_blank" rel="noopener" class="social-icon" title="X / Twitter">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+    </a>
+    <a href="https://github.com/danilokhury/Synabun" target="_blank" rel="noopener" class="social-icon" title="GitHub">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
     </a>
-    <a href="https://synabun.dev" target="_blank" rel="noopener" class="social-icon" title="Website">
+    <a href="https://synabun.ai" target="_blank" rel="noopener" class="social-icon" title="Website">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
     </a>
   </div>
@@ -1246,10 +1382,10 @@ function goToStep(n) {
 function updateNav() {
   $prevBtn.disabled = currentStep === 0;
 
-  const labels = ['Begin', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
+  const labels = ['', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
   $nextBtn.textContent = (labels[currentStep] || 'Next') + ' \u2192';
 
-  if (currentStep === TOTAL_STEPS - 1) {
+  if (currentStep === 0 || currentStep === TOTAL_STEPS - 1) {
     $nextBtn.style.display = 'none';
   } else {
     $nextBtn.style.display = '';
@@ -1486,7 +1622,14 @@ function startMascot() {
         if (twIndex > twText.length) {
           twDone = true;
           $tw.textContent = twText;
-          setTimeout(() => $desc.classList.add('visible'), 300);
+          setTimeout(() => {
+            $desc.classList.add('visible');
+            setTimeout(() => {
+              const $choices = document.getElementById('welcomeChoices');
+              if ($choices) $choices.classList.add('visible');
+              resizeViewport(0);
+            }, 400);
+          }, 300);
         }
       }
     }
@@ -1499,6 +1642,281 @@ function startMascot() {
 
 // Happy variant — no-op, completion screen uses the logo image
 function renderHappyBun() {}
+
+// ═══════════════════════════════════════════
+// STEP 0: Welcome Choices (Fresh Install / Restore)
+// ═══════════════════════════════════════════
+
+(function initWelcomeChoices() {
+  const $choices      = document.getElementById('welcomeChoices');
+  const $restorePanel = document.getElementById('welcomeRestorePanel');
+  const $dropzone     = document.getElementById('restoreDropzone');
+  const $fileInput    = document.getElementById('onboardRestoreFile');
+  const $statusEl     = document.getElementById('onboardRestoreStatus');
+  const $statusDot    = document.getElementById('onboardRestoreDot');
+  const $statusText   = document.getElementById('onboardRestoreText');
+  const $backLink     = document.getElementById('restoreBackLink');
+
+  // Fresh Install → proceed to step 1
+  document.getElementById('choiceFreshInstall').addEventListener('click', () => {
+    goToStep(1);
+  });
+
+  // Restore → show restore panel
+  document.getElementById('choiceRestore').addEventListener('click', () => {
+    $choices.style.display = 'none';
+    $restorePanel.style.display = 'block';
+    requestAnimationFrame(() => {
+      $restorePanel.classList.add('visible');
+      resizeViewport(0);
+    });
+  });
+
+  // Back to options
+  $backLink.addEventListener('click', () => {
+    $restorePanel.classList.remove('visible');
+    $restorePanel.style.display = 'none';
+    $statusEl.style.display = 'none';
+    $choices.style.display = '';
+    resizeViewport(0);
+  });
+
+  // Dropzone click → trigger file input
+  $dropzone.addEventListener('click', () => $fileInput.click());
+
+  // Drag and drop
+  $dropzone.addEventListener('dragover', (e) => { e.preventDefault(); $dropzone.classList.add('dragover'); });
+  $dropzone.addEventListener('dragleave', () => $dropzone.classList.remove('dragover'));
+  $dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    $dropzone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file && file.name.endsWith('.zip')) handleRestoreFile(file);
+  });
+
+  // File input change
+  $fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) handleRestoreFile(file);
+    e.target.value = '';
+  });
+
+  async function handleRestoreFile(file) {
+    $dropzone.style.display = 'none';
+    $backLink.style.display = 'none';
+    $statusEl.style.display = 'flex';
+    $statusDot.className = 'wiz-status-dot spin';
+    $statusText.textContent = 'Reading backup file...';
+    resizeViewport(0);
+
+    try {
+      const buffer = await file.arrayBuffer();
+
+      $statusText.textContent = 'Validating backup...';
+      const previewRes = await fetch('/api/system/restore/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip' },
+        body: buffer,
+      });
+      if (!previewRes.ok) {
+        let errMsg = 'Invalid backup file';
+        try { const body = await previewRes.json(); errMsg = body.error || errMsg; } catch {}
+        throw new Error(errMsg);
+      }
+      const { manifest: m } = await previewRes.json();
+
+      // Show confirmation
+      $statusEl.style.display = 'none';
+      showRestoreConfirm(m, buffer);
+
+    } catch (err) {
+      $statusDot.className = 'wiz-status-dot red';
+      $statusText.textContent = err.message;
+      $backLink.style.display = '';
+    }
+  }
+
+  function showRestoreConfirm(m, buffer) {
+    const connList = Object.entries(m.connections || {})
+      .map(([id, c]) => `<li><strong>${esc(c.label)}</strong> (${esc(c.collection)}) \u2014 ${c.pointCount} memories</li>`)
+      .join('');
+    const fileCount = (m.files || []).length;
+
+    $restorePanel.innerHTML = `
+      <div style="padding:20px 0;">
+        <h3 style="font-size:16px;font-weight:600;color:var(--t-bright);margin-bottom:4px;">Restore Backup</h3>
+        <p style="font-size:11px;color:var(--t-muted);margin-bottom:14px;">
+          Created: ${new Date(m.created).toLocaleString()} on ${esc(m.hostname || 'unknown')}
+        </p>
+        <div style="font-size:12px;color:var(--t-primary);margin-bottom:6px;">
+          <strong>${fileCount}</strong> config files
+        </div>
+        ${connList ? `<div style="font-size:12px;color:var(--t-primary);margin-bottom:10px;">
+          <strong>Qdrant snapshots:</strong>
+          <ul style="margin:4px 0 0 16px;padding:0">${connList}</ul>
+        </div>` : ''}
+        <p style="font-size:11px;color:var(--accent-dim);margin-bottom:16px;">
+          This will restore your .env, data files, and Qdrant collections.
+        </p>
+        <div style="display:flex;gap:10px;justify-content:center;">
+          <button class="nav-btn" id="onboardRestoreCancel">Cancel</button>
+          <button class="nav-btn primary" id="onboardRestoreConfirm">Restore</button>
+        </div>
+        <div id="onboardRestoreProgress" style="display:none;margin-top:12px;font-size:12px;align-items:center;gap:8px;justify-content:center;">
+          <div class="wiz-status-dot spin" id="onboardRestoreProgressDot"></div>
+          <span id="onboardRestoreProgressText"></span>
+        </div>
+      </div>
+    `;
+    resizeViewport(0);
+
+    document.getElementById('onboardRestoreCancel').addEventListener('click', () => {
+      // Reset to dropzone view
+      resetRestorePanel();
+    });
+
+    document.getElementById('onboardRestoreConfirm').addEventListener('click', async () => {
+      const confirmBtn = document.getElementById('onboardRestoreConfirm');
+      const cancelBtn = document.getElementById('onboardRestoreCancel');
+      const progressEl = document.getElementById('onboardRestoreProgress');
+      const progressDot = document.getElementById('onboardRestoreProgressDot');
+      const progressText = document.getElementById('onboardRestoreProgressText');
+
+      confirmBtn.textContent = 'Restoring...';
+      confirmBtn.disabled = true;
+      cancelBtn.style.display = 'none';
+      progressEl.style.display = 'flex';
+      progressDot.className = 'wiz-status-dot spin';
+
+      const hasSnapshots = Object.keys(m.connections || {}).length > 0;
+
+      try {
+        // Phase 1: Restore config files (.env, data/) first
+        progressText.textContent = 'Restoring config files...';
+        const configRes = await fetch('/api/system/restore?mode=config-only', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/zip' },
+          body: buffer,
+        });
+        if (!configRes.ok) {
+          let errMsg = 'Config restore failed';
+          try { const body = await configRes.json(); errMsg = body.error || errMsg; } catch {}
+          throw new Error(errMsg);
+        }
+
+        // Phase 2: Spin up Qdrant if backup has snapshots to restore
+        if (hasSnapshots) {
+          progressText.textContent = 'Starting Qdrant...';
+          resizeViewport(0);
+
+          const healthRes = await fetch('/api/health/start', { method: 'POST' });
+          const healthData = await healthRes.json();
+          if (!healthData.ok) {
+            throw new Error('Failed to start Qdrant: ' + (healthData.error || 'unknown error'));
+          }
+          if (!healthData.ready) {
+            throw new Error('Qdrant started but is not responding. Try again.');
+          }
+
+          // Phase 3: Restore Qdrant snapshots
+          progressText.textContent = 'Restoring memory snapshots...';
+          resizeViewport(0);
+          const snapRes = await fetch('/api/system/restore?mode=snapshots-only', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/zip' },
+            body: buffer,
+          });
+          if (!snapRes.ok) {
+            let errMsg = 'Snapshot restore failed';
+            try { const body = await snapRes.json(); errMsg = body.error || errMsg; } catch {}
+            throw new Error(errMsg);
+          }
+          const snapResult = await snapRes.json();
+          if (snapResult.results && snapResult.results.errors && snapResult.results.errors.length > 0) {
+            console.warn('Snapshot restore warnings:', snapResult.results.errors);
+          }
+        }
+
+        progressDot.className = 'wiz-status-dot green';
+        progressText.textContent = 'Restore complete! Launching...';
+        confirmBtn.style.display = 'none';
+
+        // Mark setup as complete and launch
+        try { await fetch('/api/setup/complete', { method: 'POST' }); } catch {}
+        setTimeout(() => { window.location.href = '/'; }, 1500);
+
+      } catch (err) {
+        progressDot.className = 'wiz-status-dot red';
+        progressText.textContent = err.message;
+        confirmBtn.textContent = 'Restore';
+        confirmBtn.disabled = false;
+        cancelBtn.style.display = '';
+      }
+    });
+  }
+
+  function resetRestorePanel() {
+    $restorePanel.classList.remove('visible');
+    $restorePanel.style.display = 'none';
+    // Rebuild the original restore panel content
+    $restorePanel.innerHTML = `
+      <div class="restore-dropzone" id="restoreDropzone">
+        <div class="restore-dropzone-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <div class="restore-dropzone-text">Drop your backup .zip here</div>
+        <div class="restore-dropzone-hint">or click to browse</div>
+      </div>
+      <input type="file" id="onboardRestoreFile" accept=".zip" style="display:none">
+      <div id="onboardRestoreStatus" style="display:none;margin-top:12px;font-size:12px;align-items:center;gap:8px">
+        <div class="wiz-status-dot spin" id="onboardRestoreDot"></div>
+        <span id="onboardRestoreText"></span>
+      </div>
+      <div style="text-align:center">
+        <span class="restore-back-link" id="restoreBackLink">&larr; Back to options</span>
+      </div>
+    `;
+    // Show the choices again
+    $choices.style.display = '';
+    resizeViewport(0);
+
+    // Re-wire dropzone events on the new DOM
+    rewireDropzone();
+  }
+
+  function rewireDropzone() {
+    const dz = document.getElementById('restoreDropzone');
+    const fi = document.getElementById('onboardRestoreFile');
+    const bl = document.getElementById('restoreBackLink');
+
+    dz.addEventListener('click', () => fi.click());
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+    dz.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dz.classList.remove('dragover');
+      const file = e.dataTransfer.files[0];
+      if (file && file.name.endsWith('.zip')) handleRestoreFile(file);
+    });
+    fi.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) handleRestoreFile(file);
+      e.target.value = '';
+    });
+    bl.addEventListener('click', () => {
+      const rp = document.getElementById('welcomeRestorePanel');
+      rp.classList.remove('visible');
+      rp.style.display = 'none';
+      document.getElementById('onboardRestoreStatus').style.display = 'none';
+      $choices.style.display = '';
+      resizeViewport(0);
+    });
+  }
+
+  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+})();
 
 // ═══════════════════════════════════════════
 // STEP 2: Qdrant Key

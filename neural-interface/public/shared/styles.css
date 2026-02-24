@@ -2943,6 +2943,11 @@
     user-select: none;
   }
 
+  /* When workspace dropdown is open, elevate above pinned terminals (z:10002) */
+  #topright-controls:has(#ws-indicator.open) {
+    z-index: 100000;
+  }
+
   #topright-controls.viz-hidden {
     opacity: 0.4;
   }
@@ -9041,6 +9046,7 @@
     border-bottom: 1px solid rgba(255,255,255,0.06);
     backdrop-filter: blur(20px);
     z-index: 10;
+    flex-shrink: 0;
   }
   .term-search-bar.open { display: flex; }
 

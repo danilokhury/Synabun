@@ -1,8 +1,46 @@
 # Contributing to SynaBun
 
-Thanks for your interest in contributing to SynaBun! This document explains how to get started, make changes, and submit them for review.
+## How to Contribute
 
-## Development Setup
+SynaBun is open-source software maintained by a single author. We welcome bug reports, feature requests, and discussions through [GitHub Issues](https://github.com/ZaphreBR/synabun/issues), but **we do not accept pull requests**.
+
+You are free to fork and modify SynaBun under the [Apache 2.0 license](./LICENSE).
+
+### Report a Bug
+
+Open an issue using the **Bug Report** template. Include:
+
+- Operating system and version
+- Node.js version (`node --version`)
+- Docker version (`docker --version`)
+- Full error output or stack trace
+- Steps to reproduce
+
+### Request a Feature
+
+Open an issue using the **Feature Request** template. Describe:
+
+- The problem you are trying to solve
+- Your proposed solution (if any)
+- Why this would be valuable
+
+### Security Vulnerabilities
+
+Do NOT open a public issue for security vulnerabilities. Use [GitHub's private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability). See [SECURITY.md](./SECURITY.md) for details.
+
+## Why No Pull Requests?
+
+SynaBun is maintained by a single author. Accepting external code contributions adds review overhead, license complexity, and maintenance burden that would slow down development. We prefer to move fast and keep the codebase coherent.
+
+Your bug reports and feature requests are invaluable — they directly shape the roadmap.
+
+## Forking
+
+You are free to fork SynaBun and modify it for any purpose under the [Apache 2.0 license](./LICENSE). If you fork the project, you **must** use a different name — see the [Trademark Notice](#trademark-notice) below.
+
+---
+
+## Development Setup (for forkers)
 
 ### Prerequisites
 
@@ -42,7 +80,7 @@ docker compose down      # Stop
 docker compose logs -f   # View logs
 ```
 
-## Project Structure
+## Project Structure (for forkers)
 
 ```
 synabun/
@@ -66,18 +104,7 @@ synabun/
 
 See the [README File Structure](./README.md#file-structure) section for a complete listing.
 
-## Making Changes
-
-### Workflow
-
-1. Fork the repository
-2. Create a branch from `main`: `git checkout -b my-feature`
-3. Make your changes
-4. Test manually (see [Testing](#testing) below)
-5. Commit with a clear message
-6. Open a pull request
-
-### Where to Make Changes
+## Where to Make Changes (for forkers)
 
 | Change type | Where |
 |------------|-------|
@@ -102,7 +129,7 @@ See the [README File Structure](./README.md#file-structure) section for a comple
 - **Hook changes:** No build needed. Hooks are plain `.mjs` files loaded at runtime.
 - **Skill changes:** No build needed. Skills are `.md` prompt files. Install globally by copying to `~/.claude/skills/`.
 
-## Code Style
+## Code Style (for forkers)
 
 - **ES modules** throughout (`"type": "module"` in all package.json files)
 - **TypeScript** for the MCP server, **plain JavaScript** for the Neural Interface and hooks
@@ -113,7 +140,7 @@ See the [README File Structure](./README.md#file-structure) section for a comple
 
 There is no linter configured yet. We rely on consistent style through convention.
 
-## Testing
+## Testing (for forkers)
 
 ### Automated Tests (Vitest)
 
@@ -139,39 +166,19 @@ npx vitest run scenarios # Scenario/cost tests only
 
 If you add a new MCP tool, register it in `mcp-server/src/index.ts` and verify it appears in Claude Code's tool list via `/mcp`.
 
-## Pull Requests
-
-When submitting a PR, please:
-
-1. **Describe the change** — what it does and why
-2. **Update documentation** if your change affects:
-   - New/changed MCP tools -> update the README [MCP Tools](./README.md#mcp-tools) table
-   - New/changed API endpoints -> update [docs/api-reference.md](./docs/api-reference.md)
-   - New/changed env vars -> update [.env.example](./.env.example) and README [Configuration](./README.md#configuration)
-   - New/changed hooks -> update [docs/hooks.md](./docs/hooks.md) and README [Claude Code Hooks](./README.md#claude-code-hooks) table
-   - New/changed skills -> update README [Claude Code Skills](./README.md#claude-code-skills) section
-   - New seed data -> add to `memory-seed/` in the appropriate subdirectory
-3. **Test your changes** manually before submitting
-
-## Reporting Issues
-
-When opening an issue, include:
-
-- **Operating system** and version
-- **Node.js version** (`node --version`)
-- **Docker version** (`docker --version`)
-- **Error output** (full stack trace if available)
-- **Steps to reproduce**
-
 ## Trademark Notice
 
-"SynaBun" is a trademark. If you fork this project, please use a different name for your fork. The Apache 2.0 license (Section 6) does not grant permission to use the SynaBun name, trademarks, or branding.
+"SynaBun" is a trademark. If you fork this project, you **must** use a different name for your fork or derivative work. The license does not grant permission to use the SynaBun name, trademarks, or branding.
 
 You are free to:
-- Use, modify, and distribute the code
+- Use, modify, and distribute the code under Apache 2.0
 - Build your own memory system based on this codebase
 - Reference SynaBun as the original project
 
 You must not:
 - Use "SynaBun" as the name of your fork or derivative product
 - Imply official endorsement or affiliation
+
+## License
+
+SynaBun is licensed under the [Apache License 2.0](./LICENSE). Premium features and enterprise extensions may be offered under a separate commercial license. See [LICENSE-COMMERCIAL.md](./LICENSE-COMMERCIAL.md) for details.

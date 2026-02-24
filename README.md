@@ -73,9 +73,11 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 | **[Usage Guide](./docs/usage-guide.md)** | Detailed usage patterns, tool quirks, best practices |
 | **[API Reference](./docs/api-reference.md)** | Neural Interface REST API (55+ endpoints) |
 | **[Hooks Guide](./docs/hooks.md)** | Claude Code hooks: 5 lifecycle hooks for memory automation |
-| **[Contributing](./CONTRIBUTING.md)** | How to contribute |
+| **[Contributing](./CONTRIBUTING.md)** | Bug reports, feature requests, and forking guide |
 | **[Security](./SECURITY.md)** | Security model and vulnerability reporting |
 | **[Changelog](./CHANGELOG.md)** | Version history |
+
+**Contributions:** We welcome [bug reports and feature requests](https://github.com/ZaphreBR/synabun/issues). Pull requests are not accepted. See [CONTRIBUTING.md](./CONTRIBUTING.md) for details.
 
 ## Quick Start
 
@@ -733,7 +735,8 @@ Cost is negligible even with heavy usage. Local providers (Ollama, LM Studio) ar
 ```
 Synabun/
 ├── LICENSE                         # Apache 2.0 License
-├── CONTRIBUTING.md                 # Contribution guide
+├── LICENSE-COMMERCIAL.md           # Commercial licensing (Open Core model)
+├── CONTRIBUTING.md                 # Bug reports, feature requests, and forking guide
 ├── CHANGELOG.md                    # Version history
 ├── SECURITY.md                     # Security policy
 ├── .env.example                    # Example environment configuration
@@ -828,8 +831,8 @@ Synabun/
 
 Licensed under the [Apache License, Version 2.0](./LICENSE).
 
-You are free to use, modify, and distribute SynaBun. The Apache 2.0 license includes an explicit patent grant and trademark protection (Section 6) — see [Trademark Notice](#trademark-notice) below.
+You are free to use, modify, and distribute SynaBun under Apache 2.0. Premium features and enterprise extensions may be offered under a separate commercial license. See [LICENSE-COMMERCIAL.md](./LICENSE-COMMERCIAL.md) for details.
 
 ## Trademark Notice
 
-"SynaBun" is a trademark of its authors. The Apache 2.0 license does not grant permission to use the trade names, trademarks, service marks, or product names of the Licensor (Section 6). If you fork this project, please use a different name for your derivative work.
+"SynaBun" is a trademark of its authors. The license does not grant permission to use the SynaBun name, trademarks, service marks, or branding. If you fork this project, you must use a different name for your derivative work.
