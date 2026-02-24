@@ -16,6 +16,10 @@
   <img src="https://img.shields.io/badge/Qdrant-Vector_DB-DC382D?logo=qdrant" alt="Qdrant" />
 </p>
 
+<p align="center">
+  <a href="https://synabun.dev">synabun.dev</a>
+</p>
+
 ---
 
 Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and retain knowledge across sessions through semantic vector search. Memories are stored in a single Qdrant collection with payload-based filtering — no fragmented search across databases.
@@ -66,6 +70,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 
 | Document | Description |
 |----------|-------------|
+| **[Website Docs](https://synabun.dev/docs.html)** | Full documentation on synabun.dev |
 | **[README](./README.md)** | Quick start, architecture, configuration |
 | **[Usage Guide](./docs/usage-guide.md)** | Detailed usage patterns, tool quirks, best practices |
 | **[API Reference](./docs/api-reference.md)** | Neural Interface REST API (55+ endpoints) |
