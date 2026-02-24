@@ -6,7 +6,7 @@
   "author": "The SynaBun Authors",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ZaphreBR/synabun.git"
+    "url": "https://github.com/danilokhury/Synabun.git"
   },
   "type": "module",
   "scripts": {
