@@ -1890,7 +1890,7 @@ async function onBuildStep() {
   const $btn = document.getElementById('buildBtn');
 
   try {
-    const res = await fetch('/api/setup/status');
+    const res = await fetch('/api/setup/onboarding');
     const data = await res.json();
     if (data.mcpBuilt) {
       wizardState.buildReady = true;
@@ -2119,7 +2119,7 @@ document.getElementById('launchBtn').addEventListener('click', async () => {
 
 async function init() {
   try {
-    const res = await fetch('/api/setup/status');
+    const res = await fetch('/api/setup/onboarding');
     const data = await res.json();
     if (data.setupComplete) {
       window.location.href = '/';

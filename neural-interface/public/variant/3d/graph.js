@@ -9,6 +9,7 @@
 
 import { state, emit, on } from '../../shared/state.js';
 import { KEYS } from '../../shared/constants.js';
+import { storage } from '../../shared/storage.js';
 import { catColor } from '../../shared/colors.js';
 import { gfx } from './gfx.js';
 
@@ -496,12 +497,12 @@ export function saveNodePositions() {
       positions[n.id] = { x: n.x, y: n.y, z: n.z };
     }
   }
-  try { localStorage.setItem(_posStorageKey, JSON.stringify(positions)); } catch (_) {}
+  try { storage.setItem(_posStorageKey, JSON.stringify(positions)); } catch (_) {}
 }
 
 function restoreNodePositions(nodes) {
   try {
-    const saved = JSON.parse(localStorage.getItem(_posStorageKey) || '{}');
+    const saved = JSON.parse(storage.getItem(_posStorageKey) || '{}');
     if (!Object.keys(saved).length) return;
     for (const n of nodes) {
       if (saved[n.id]) {
@@ -825,7 +826,7 @@ export function applyGraphData() {
   }
 
   // Restore saved positions or compute layout
-  const savedPositions = JSON.parse(localStorage.getItem(_posStorageKey) || '{}');
+  const savedPositions = JSON.parse(storage.getItem(_posStorageKey) || '{}');
   const hasSaved = Object.keys(savedPositions).length > 0;
 
   if (hasSaved) {
@@ -1049,7 +1050,7 @@ export function navigateToNode(node, { zoom = 'close' } = {}) {
   if (!node) return;
   if (node.payload && (node.payload._isAnchor || node.payload._isTag)) return;
   state.selectedNodeId = node.id;
-  localStorage.setItem(KEYS.SELECTED_NODE, node.id);
+  storage.setItem(KEYS.SELECTED_NODE, node.id);
 
   // Ensure category is visible
   if (!state.activeCategories.has(node.payload.category)) {
@@ -1171,7 +1172,7 @@ function animate() {
         if (!state.labelsVisible) labelTarget = 0;
         if (isCatHidden) { dotTarget = 0; labelTarget = 0; }
         else if (state.searchResults !== null && !state.searchResults.has(obj.userData.nodeId)) {
-          dotTarget *= 0.4; labelTarget *= 0.4;
+          dotTarget = 0; labelTarget = 0;
         }
         if (_drag.active && !isCatHidden) {
           if (_drag.dragSet.has(obj.userData.nodeId)) dotTarget = Math.max(dotTarget, 0.9);
@@ -1209,7 +1210,7 @@ function animate() {
 
         if (isCatHidden) { dotTarget = 0; labelTarget = 0; }
         else if (state.searchResults !== null && !state.searchResults.has(obj.userData.nodeId)) {
-          dotTarget *= 0.35; labelTarget *= 0.35;
+          dotTarget = 0; labelTarget = 0;
         }
         if (_drag.active && !isCatHidden) {
           if (_drag.dragSet.has(obj.userData.nodeId)) dotTarget = Math.max(dotTarget, 0.8);
@@ -1244,10 +1245,11 @@ function animate() {
 
       const baseOp = obj.userData.baseOpacity;
       let dotTarget = baseOp + mouseProx * 0.15;
+      const isSearchMatch = state.searchResults !== null && state.searchResults.has(obj.userData.nodeId);
+      const isSearchMiss = state.searchResults !== null && !isSearchMatch;
 
-      if (state.searchResults !== null) {
-        dotTarget = state.searchResults.has(obj.userData.nodeId) ? 0.5 : 0.02;
-      }
+      if (isSearchMatch) dotTarget = 0.85;
+      else if (isSearchMiss) dotTarget = 0;
       if (isCatHidden) dotTarget = 0;
       if (_drag.active && !isCatHidden) {
         if (_drag.dragSet.has(obj.userData.nodeId)) dotTarget = Math.max(dotTarget, 0.35);
@@ -1263,7 +1265,8 @@ function animate() {
 
       const glowSprite = obj.userData.glow;
       if (glowSprite) {
-        glowSprite.material.opacity += (dotTarget * 0.3 * breathe - glowSprite.material.opacity) * fadeSpeed;
+        const glowMult = isSearchMatch ? 0.6 : 0.3;
+        glowSprite.material.opacity += (dotTarget * glowMult * breathe - glowSprite.material.opacity) * fadeSpeed;
       }
 
       // Multi-select color tint
@@ -1280,10 +1283,12 @@ function animate() {
       dot.rotation.y += rotSpeed * 0.016;
       dot.rotation.x += rotSpeed * 0.008;
 
-      // Scale
+      // Scale — search matches get boosted
       let scaleMultiplier = 1 + mouseProx * 0.3;
       if (isCatHidden) scaleMultiplier = 0;
-      else if (isSelected) scaleMultiplier = 2.0;
+      else if (isSearchMiss) scaleMultiplier = 0;
+      else if (isSearchMatch) scaleMultiplier = 1.8;
+      if (isSelected) scaleMultiplier = 2.0;
       else if (isMultiSelected) scaleMultiplier = 1.5;
       else if (isHovered) scaleMultiplier = 1.6;
       const targetScale = breathe * scaleMultiplier * noLinksScaleBoost;
@@ -1323,6 +1328,12 @@ function animate() {
             const tgtCat = tgtNode.payload ? tgtNode.payload.category : null;
             if (srcCat && !state.activeCategories.has(srcCat)) continue;
             if (tgtCat && !state.activeCategories.has(tgtCat)) continue;
+            // Hide links where both endpoints are not search matches
+            if (state.searchResults !== null) {
+              const srcMatch = state.searchResults.has(srcId);
+              const tgtMatch = state.searchResults.has(tgtId);
+              if (!srcMatch && !tgtMatch) continue;
+            }
             if (ci + 6 > cols.length) break;
             link._srcNode = srcNode;
             link._tgtNode = tgtNode;
@@ -1485,9 +1496,9 @@ export function initGraph(container, options = {}) {
   applyGraphData();
 
   // One-time reset: clear saved positions for new layout version
-  if (localStorage.getItem(KEYS.LAYOUT_VERSION) !== 'v4-spacing') {
-    try { localStorage.removeItem(_posStorageKey); } catch (_) {}
-    localStorage.setItem(KEYS.LAYOUT_VERSION, 'v4-spacing');
+  if (storage.getItem(KEYS.LAYOUT_VERSION) !== 'v4-spacing') {
+    try { storage.removeItem(_posStorageKey); } catch (_) {}
+    storage.setItem(KEYS.LAYOUT_VERSION, 'v4-spacing');
   }
 
   // Apply link visibility
@@ -1565,7 +1576,7 @@ export function startAnimation() {
 
 /** Clear saved node positions from localStorage. */
 export function clearSavedPositions() {
-  try { localStorage.removeItem(_posStorageKey); } catch (_) {}
+  try { storage.removeItem(_posStorageKey); } catch (_) {}
 }
 
 /** Recompute layout from scratch (no saved positions). */

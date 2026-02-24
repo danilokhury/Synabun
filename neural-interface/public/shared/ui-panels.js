@@ -4,6 +4,7 @@
 // ═══════════════════════════════════════════
 
 import { KEYS } from './constants.js';
+import { storage } from './storage.js';
 import { state, emit } from './state.js';
 
 const MIN_W = 140;
@@ -72,11 +73,11 @@ export function savePanelLayout(el) {
     height: el.style.height || null,
     maxHeight: el.style.maxHeight || null,
   };
-  localStorage.setItem(KEYS.PANEL_PREFIX + id, JSON.stringify(data));
+  storage.setItem(KEYS.PANEL_PREFIX + id, JSON.stringify(data));
 }
 
 export function restorePanelLayout(el, sizeOnly) {
-  const saved = localStorage.getItem(KEYS.PANEL_PREFIX + el.id);
+  const saved = storage.getItem(KEYS.PANEL_PREFIX + el.id);
   if (!saved) return;
   try {
     const data = JSON.parse(saved);
@@ -166,7 +167,7 @@ export function initPanelSystem() {
       startVisualLeft: rect.left, startVisualTop: rect.top,
       startW: rect.width, startH: rect.height,
     };
-    document.body.style.cursor = 'grabbing';
+    document.body.style.cursor = 'move';
     document.body.style.userSelect = 'none';
   });
 
@@ -189,7 +190,7 @@ export function initPanelSystem() {
       if (dir === 't' || dir === 'tr' || dir === 'tl') { newH = Math.max(rMinH, startH - dy); newT = startT + startH - newH; }
 
       newL = Math.max(0, newL);
-      newT = Math.max(0, newT);
+      newT = Math.max(48, newT);
       const maxWidth = window.innerWidth / rScale - newL - 10;
       const maxHeight = window.innerHeight / rScale - newT - 10;
       newW = Math.min(newW, maxWidth);
@@ -219,6 +220,8 @@ export function initPanelSystem() {
         finalTop  = Math.round(finalTop / gs) * gs;
       }
 
+      // Keep panels below the title bar (48px)
+      finalTop = Math.max(48, finalTop);
       el.style.left = finalLeft + 'px';
       el.style.top  = finalTop + 'px';
     }
@@ -240,11 +243,13 @@ export function initPanelSystem() {
       document.querySelectorAll('.resize-handle.active').forEach(h => h.classList.remove('active'));
       resizing.el.classList.remove('dragging');
       savePanelLayout(resizing.el);
+      if (resizing.el.classList.contains('detail-card')) emit('detail:layout-changed');
       resizing = null;
     }
     if (dragging) {
       dragging.el.classList.remove('dragging');
       savePanelLayout(dragging.el);
+      if (dragging.el.classList.contains('detail-card')) emit('detail:layout-changed');
       dragging = null;
     }
     document.body.style.cursor = '';
@@ -273,7 +278,7 @@ export function initPinToggle() {
     const panel = document.getElementById(panelId);
     if (!panel) return;
     const key = 'neural-pinned-' + panelId;
-    if (localStorage.getItem(key) === 'true') {
+    if (storage.getItem(key) === 'true') {
       panel.classList.add('locked');
       btn.classList.add('pinned');
     }
@@ -289,6 +294,6 @@ export function initPinToggle() {
     e.stopPropagation();
     const pinned = panel.classList.toggle('locked');
     btn.classList.toggle('pinned', pinned);
-    localStorage.setItem('neural-pinned-' + panelId, pinned);
+    storage.setItem('neural-pinned-' + panelId, pinned);
   });
 }

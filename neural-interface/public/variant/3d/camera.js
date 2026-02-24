@@ -6,16 +6,17 @@
 
 import { state, emit, on } from '../../shared/state.js';
 import { KEYS } from '../../shared/constants.js';
+import { storage } from '../../shared/storage.js';
 import { gfx } from './gfx.js';
 
 // ── Constants ──
 const FLOOR_Y = -200;
 const CEILING_Y = 2500;
-const CAM_BASE_SPEED = 3.5;      // base movement speed per frame
+const CAM_BASE_SPEED = 6.0;      // base movement speed per frame
 const CAM_BOOST_MULT = 3.0;      // shift multiplier
-const CAM_ACCEL = 0.12;          // acceleration smoothing (0-1, higher = snappier)
+const CAM_ACCEL = 0.15;          // acceleration smoothing (0-1, higher = snappier)
 const CAM_DECEL = 0.08;          // deceleration smoothing (lower = more glide)
-const CAM_HEIGHT_SPEED = 2.5;    // vertical movement speed
+const CAM_HEIGHT_SPEED = 4.5;    // vertical movement speed
 
 // ── Three.js reusable vectors (global THREE from CDN) ──
 const _camVelocity = new THREE.Vector3();
@@ -36,8 +37,10 @@ let _camMoving = false;
 let _camHudVisible = false;
 let _camHudTimeout = null;
 let _hudDrag = null;
-let _camHudPinned = localStorage.getItem(KEYS.CAM_HUD_PINNED) === 'true';
+let _camHudPinned = storage.getItem(KEYS.CAM_HUD_PINNED) === 'true';
 let _mouseDown = false;  // track mouse button for fly-towards-look movement
+let _lastFrameTime = 0;  // for deltaTime computation
+let _tweenCancelled = false;  // track if we've cancelled tweens this key-press
 
 // ── HUD DOM references (cached at init) ──
 let _$camHud, _$compassFov, _$compassNeedle, _$altFill, _$altValue, _$camSpeed;
@@ -159,7 +162,7 @@ function initHudInteractions() {
   }
 
   // Restore saved position
-  const savedPos = localStorage.getItem(KEYS.CAM_HUD_POS);
+  const savedPos = storage.getItem(KEYS.CAM_HUD_POS);
   if (savedPos) {
     try {
       const { right, bottom } = JSON.parse(savedPos);
@@ -175,7 +178,7 @@ function initHudInteractions() {
       e.stopPropagation();
       _camHudPinned = !_camHudPinned;
       _$camHud.classList.toggle('pinned', _camHudPinned);
-      localStorage.setItem(KEYS.CAM_HUD_PINNED, _camHudPinned);
+      storage.setItem(KEYS.CAM_HUD_PINNED, _camHudPinned);
       if (_camHudPinned) {
         _camHudVisible = true;
         _$camHud.classList.add('visible');
@@ -219,7 +222,7 @@ function initHudInteractions() {
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
     // Persist position
-    localStorage.setItem(KEYS.CAM_HUD_POS, JSON.stringify({
+    storage.setItem(KEYS.CAM_HUD_POS, JSON.stringify({
       right: parseFloat(_$camHud.style.right) || 24,
       bottom: parseFloat(_$camHud.style.bottom) || 70,
     }));
@@ -338,11 +341,23 @@ export function updateCameraMovement() {
   const controls = _graph.controls();
   if (!cam || !controls) return;
 
+  // DeltaTime: normalize to 60fps so constants stay the same
+  const now = performance.now();
+  const rawDt = _lastFrameTime ? (now - _lastFrameTime) : 16.667;
+  _lastFrameTime = now;
+  const dt = Math.min(rawDt, 50) / 16.667;  // 1.0 at 60fps, 2.0 at 30fps, capped ~3x
+
   // Build desired movement direction from key states
   _camMoveDir.set(0, 0, 0);
   const anyKey = _camKeys.w || _camKeys.a || _camKeys.s || _camKeys.d || _camKeys.q || _camKeys.e || _camKeys.space;
 
   if (anyKey) {
+    // Cancel any active camera TWEEN animation to prevent fighting
+    if (!_tweenCancelled) {
+      TWEEN.removeAll();
+      _tweenCancelled = true;
+    }
+
     cam.getWorldDirection(_camForward);
 
     if (_mouseDown) {
@@ -370,15 +385,15 @@ export function updateCameraMovement() {
 
     const speed = CAM_BASE_SPEED * (_camKeys.shift ? CAM_BOOST_MULT : 1);
 
-    // Scale speed by distance from target -- move faster when zoomed out
+    // Scale speed by distance from target -- sqrt curve, gentler at close range
     const distToTarget = cam.position.distanceTo(controls.target);
-    const distScale = Math.max(0.5, Math.min(4.0, distToTarget / 300));
+    const distScale = Math.max(0.7, Math.min(4.0, Math.sqrt(distToTarget / 100)));
 
-    _camMoveDir.multiplyScalar(speed * distScale);
+    _camMoveDir.multiplyScalar(speed * distScale * dt);
 
     // Vertical speed is independent
     if (_camKeys.e || _camKeys.q || _camKeys.space) {
-      const hSpeed = CAM_HEIGHT_SPEED * (_camKeys.shift ? CAM_BOOST_MULT : 1) * distScale;
+      const hSpeed = CAM_HEIGHT_SPEED * (_camKeys.shift ? CAM_BOOST_MULT : 1) * distScale * dt;
       const hDir = (_camKeys.e || _camKeys.space ? 1 : 0) + (_camKeys.q ? -1 : 0);
       _camMoveDir.y = hDir * hSpeed;
     }
@@ -387,11 +402,13 @@ export function updateCameraMovement() {
     showCamHud();
   } else {
     _camMoving = false;
+    _tweenCancelled = false;
   }
 
-  // Smooth acceleration/deceleration
+  // Smooth acceleration/deceleration (frame-rate independent)
   const smoothing = anyKey ? CAM_ACCEL : CAM_DECEL;
-  _camVelocity.lerp(_camMoveDir, smoothing);
+  const dtSmoothing = 1 - Math.pow(1 - smoothing, dt);
+  _camVelocity.lerp(_camMoveDir, dtSmoothing);
 
   // Apply movement to both camera and orbit target
   if (_camVelocity.lengthSq() > 0.001) {
@@ -454,6 +471,7 @@ function bindKeyListeners() {
     _camKeys.w = _camKeys.a = _camKeys.s = _camKeys.d = false;
     _camKeys.q = _camKeys.e = _camKeys.shift = _camKeys.space = false;
     _mouseDown = false;
+    _lastFrameTime = 0;  // avoid deltaTime spike on refocus
   }
 
   function onMouseDown(e) { if (e.button === 0 || e.button === 2) _mouseDown = true; }

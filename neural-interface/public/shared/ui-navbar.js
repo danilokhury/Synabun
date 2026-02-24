@@ -8,6 +8,7 @@ import { state, emit, on } from './state.js';
 import { getVariant } from './registry.js';
 import { KEYS } from './constants.js';
 import { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig } from './ui-settings.js';
+import { registerAction } from './ui-keybinds.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -74,6 +75,8 @@ export function initNavbar() {
       vizBtn.classList.toggle('active', enabled);
       if (searchWrapper) searchWrapper.classList.toggle('viz-hidden', !enabled);
     });
+
+    registerAction('toggle-focus-mode', () => vizBtn.click());
   }
 
   // ── Fullscreen button ──

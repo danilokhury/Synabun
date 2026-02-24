@@ -59,8 +59,9 @@ export function initTooltip() {
   }
 
   function show(el) {
-    const text = el.getAttribute('data-tooltip');
+    let text = el.getAttribute('data-tooltip');
     if (!text) return;
+    if (text.length > 200) text = text.slice(0, 200) + '\u2026';
     clearTimeout(hideTimer);
     tip.querySelector('.ui-tooltip-text').textContent = text;
     currentTarget = el;
@@ -89,7 +90,7 @@ export function initTooltip() {
       hide();
       show(el);
     } else {
-      showTimer = setTimeout(() => show(el), 300);
+      showTimer = setTimeout(() => show(el), 120);
     }
   });
 

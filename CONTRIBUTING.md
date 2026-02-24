@@ -134,7 +134,7 @@ npx vitest run scenarios # Scenario/cost tests only
 
 1. **MCP tools:** Restart Claude Code, run `/mcp` to verify all 11 tools are listed, then use `remember`, `recall`, etc.
 2. **Neural Interface:** Open `http://localhost:3344`, verify the 3D graph renders, test search, category management, trash, sync, and memory editing.
-3. **Hooks:** Start a new Claude Code session and verify the category tree and 4 directives appear in the system context.
+3. **Hooks:** Start a new Claude Code session and verify the category tree and 5 directives appear in the system context.
 4. **Skills:** Run `/synabun` to access the command hub, test all menu options (Brainstorm Ideas, Audit Memories, Memory Health, Search Memories).
 
 If you add a new MCP tool, register it in `mcp-server/src/index.ts` and verify it appears in Claude Code's tool list via `/mcp`.

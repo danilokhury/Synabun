@@ -8,7 +8,9 @@
 
 import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
-import { createTerminalSession, deleteTerminalSession } from './api.js';
+import { storage } from './storage.js';
+import { createTerminalSession, deleteTerminalSession, fetchTerminalSessions } from './api.js';
+import { registerAction } from './ui-keybinds.js';
 
 const $ = (id) => document.getElementById(id);
 const CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini']);
@@ -21,9 +23,9 @@ const SVG_GEMINI = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.61
 const SVG_SHELL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>';
 
 const PROFILES = [
-  { id: 'claude-code', label: 'Claude Code', svg: SVG_CLAUDE, color: '#6eb5ff' },
+  { id: 'claude-code', label: 'Claude Code', svg: SVG_CLAUDE, color: '#D4A27F' },
   { id: 'codex',       label: 'Codex CLI',   svg: SVG_OPENAI, color: '#74c7a5' },
-  { id: 'gemini',      label: 'Gemini CLI',  svg: SVG_GEMINI, color: '#f4b860' },
+  { id: 'gemini',      label: 'Gemini CLI',  svg: SVG_GEMINI, color: '#669DF6' },
   { id: 'shell',       label: 'Shell',       svg: SVG_SHELL,  color: '#aaaaaa' },
 ];
 
@@ -76,9 +78,42 @@ let _panelPinned = false;   // whether the main panel is pinned (prevent close/h
 let _detached = false;
 let _floatDrag = null; // { startX, startY, startL, startT }
 let _detachedTabs = new Map(); // sessionId → { el, drag, resize }
+let _peekDock = null;          // bottom peek dock element (shown when panel hidden)
 
 const DEFAULT_HEIGHT = 320;
 const MIN_HEIGHT = 120;
+
+// ── Session registry (persists across page refresh) ──
+
+function saveSessionRegistry() {
+  const registry = _sessions.map(s => ({
+    id: s.id,
+    profile: s.profile,
+    label: s.label,
+    pinned: s.pinned,
+  }));
+  storage.setItem(KEYS.TERMINAL_SESSIONS, JSON.stringify(registry));
+}
+
+function loadSessionRegistry() {
+  try {
+    return JSON.parse(storage.getItem(KEYS.TERMINAL_SESSIONS) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function clearSessionRegistry() {
+  storage.removeItem(KEYS.TERMINAL_SESSIONS);
+}
+
+/** Persist current terminal layout for page-refresh restore */
+function saveTerminalLayout() {
+  try {
+    const snap = getTerminalSnapshot();
+    storage.setItem(KEYS.TERMINAL_SESSIONS + '-layout', JSON.stringify(snap));
+  } catch {}
+}
 
 // ── Project picker for CLI sessions ──
 
@@ -213,16 +248,10 @@ function ensurePanel() {
     <div class="term-header">
       <div class="term-tab-bar" id="term-tab-bar"></div>
       <div class="term-actions">
-        <button class="term-action-btn" id="term-new-btn" title="New terminal">
+        <button class="term-action-btn" id="term-new-btn" data-tooltip="New terminal">
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
-        <button class="term-action-btn" id="term-pin-btn" title="Pin terminal panel (prevent close)">
-          <svg viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1h1V3H7v3h1a1 1 0 0 1 1 1z"/></svg>
-        </button>
-        <button class="term-action-btn" id="term-detach-btn" title="Detach / dock terminal">
-          <svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
-        </button>
-        <button class="term-action-btn" id="term-close-btn" title="Close terminal panel">
+        <button class="term-action-btn" id="term-close-btn" data-tooltip="Close terminal panel">
           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
@@ -259,41 +288,15 @@ function ensurePanel() {
     flyout.appendChild(item);
   });
 
-  // Wire resize handle (docked) + float drag/resize (detached)
+  // Wire resize handle (docked only — panel detach removed, only tabs float)
   initResizeHandle();
-  initFloatDrag();
-
-  // Restore detached state from localStorage
-  if (localStorage.getItem(KEYS.TERMINAL_DETACHED) === '1') {
-    // Defer so panel dimensions are established
-    requestAnimationFrame(() => detachPanel());
-  }
 
   // Wire close button
   $('term-close-btn').addEventListener('click', () => hidePanel());
 
-  // Wire detach/attach button
-  $('term-detach-btn').addEventListener('click', () => {
-    if (_detached) attachPanel(); else detachPanel();
-  });
-
   // Wire new button — spawns a new shell session
   $('term-new-btn').addEventListener('click', () => {
     openSession('shell');
-  });
-
-  // Wire pin button — toggle pinned state
-  $('term-pin-btn').addEventListener('click', () => {
-    _panelPinned = !_panelPinned;
-    const btn = $('term-pin-btn');
-    btn.classList.toggle('active', _panelPinned);
-    btn.title = _panelPinned ? 'Unpin terminal panel' : 'Pin terminal panel (prevent close)';
-    _panel.classList.toggle('panel-pinned', _panelPinned);
-    if (_detached && _panelPinned) {
-      _panel.style.zIndex = '10002';
-    } else if (_detached) {
-      _panel.style.zIndex = '';
-    }
   });
 
   // Close flyout on outside click
@@ -367,6 +370,7 @@ function ensurePanel() {
       const val = input.value.trim();
       if (val) session.label = val;
       renderTabBar();
+      saveSessionRegistry();
     };
     input.addEventListener('blur', commit);
     input.addEventListener('keydown', (ev) => {
@@ -480,32 +484,16 @@ function toggleSearchBar(show) {
 
 function showPanel() {
   ensurePanel();
+  hidePeekDock();
 
   _panel.classList.remove('hidden');
 
-  if (!_detached) {
-    const saved = parseInt(localStorage.getItem(KEYS.TERMINAL_HEIGHT), 10);
-    const h = (saved > MIN_HEIGHT) ? saved : DEFAULT_HEIGHT;
-    _panel.style.height = h + 'px';
-    document.documentElement.style.setProperty('--terminal-height', h + 'px');
-  } else if (_detached && _panel) {
-    // Off-screen recovery: if detached panel is outside viewport, recenter it
-    const r = _panel.getBoundingClientRect();
-    const isOffScreen = r.right < 20 || r.bottom < 20 || r.left > window.innerWidth - 20 || r.top > window.innerHeight - 20;
-    if (isOffScreen) {
-      const w = Math.min(800, window.innerWidth * 0.6);
-      const h = Math.min(500, window.innerHeight * 0.5);
-      const nl = (window.innerWidth - w) / 2;
-      const nt = (window.innerHeight - h) / 2;
-      _panel.style.left = nl + 'px';
-      _panel.style.top = nt + 'px';
-      _panel.style.width = w + 'px';
-      _panel.style.height = h + 'px';
-      saveFloatPos();
-    }
-  }
+  const saved = parseInt(storage.getItem(KEYS.TERMINAL_HEIGHT), 10);
+  const h = (saved > MIN_HEIGHT) ? saved : DEFAULT_HEIGHT;
+  _panel.style.height = h + 'px';
+  document.documentElement.style.setProperty('--terminal-height', h + 'px');
 
-  localStorage.setItem(KEYS.TERMINAL_OPEN, '1');
+  storage.setItem(KEYS.TERMINAL_OPEN, '1');
 
   // Sync menu toggle
   const toggle = $('menu-terminal-toggle');
@@ -521,10 +509,13 @@ function hidePanel() {
   if (!_panel || _panelPinned) return;
   _panel.classList.add('hidden');
   document.documentElement.style.setProperty('--terminal-height', '0px');
-  localStorage.setItem(KEYS.TERMINAL_OPEN, '0');
+  storage.setItem(KEYS.TERMINAL_OPEN, '0');
 
   const toggle = $('menu-terminal-toggle');
   if (toggle) toggle.classList.remove('active');
+
+  // Show peek dock if sessions exist
+  if (_sessions.length > 0) showPeekDock();
 }
 
 function togglePanel() {
@@ -551,7 +542,7 @@ function detachPanel() {
 
   // Load saved float position or compute default (centered, 60% width)
   let pos;
-  try { pos = JSON.parse(localStorage.getItem(KEYS.TERMINAL_FLOAT_POS)); } catch {}
+  try { pos = JSON.parse(storage.getItem(KEYS.TERMINAL_FLOAT_POS)); } catch {}
   if (!pos) {
     const w = Math.min(800, window.innerWidth * 0.6);
     const h = Math.min(500, dockedH);
@@ -578,8 +569,9 @@ function detachPanel() {
     btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/></svg>';
   }
 
-  localStorage.setItem(KEYS.TERMINAL_DETACHED, '1');
+  storage.setItem(KEYS.TERMINAL_DETACHED, '1');
   saveFloatPos();
+  saveTerminalLayout();
 
   // Refit terminals
   requestAnimationFrame(() => _sessions.forEach(s => { try { s.fitAddon?.fit(); } catch {} }));
@@ -594,7 +586,7 @@ function attachPanel() {
   _panel.style.top = '';
   _panel.style.width = '';
   // Restore docked height
-  const saved = parseInt(localStorage.getItem(KEYS.TERMINAL_HEIGHT), 10);
+  const saved = parseInt(storage.getItem(KEYS.TERMINAL_HEIGHT), 10);
   const h = (saved > MIN_HEIGHT) ? saved : DEFAULT_HEIGHT;
   _panel.style.height = h + 'px';
   document.documentElement.style.setProperty('--terminal-height', h + 'px');
@@ -605,7 +597,8 @@ function attachPanel() {
     btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>';
   }
 
-  localStorage.setItem(KEYS.TERMINAL_DETACHED, '0');
+  storage.setItem(KEYS.TERMINAL_DETACHED, '0');
+  saveTerminalLayout();
 
   requestAnimationFrame(() => _sessions.forEach(s => { try { s.fitAddon?.fit(); } catch {} }));
 }
@@ -613,15 +606,17 @@ function attachPanel() {
 function saveFloatPos() {
   if (!_panel || !_detached) return;
   const r = _panel.getBoundingClientRect();
-  localStorage.setItem(KEYS.TERMINAL_FLOAT_POS, JSON.stringify({
+  storage.setItem(KEYS.TERMINAL_FLOAT_POS, JSON.stringify({
     left: r.left, top: r.top, width: r.width, height: r.height,
   }));
+  saveTerminalLayout();
 }
 
 function initFloatDrag() {
   // Header drag for floating mode
   document.addEventListener('mousedown', (e) => {
     if (!_detached || !_panel) return;
+    if (_panelPinned) return;
     const header = e.target.closest('.term-header');
     if (!header || !_panel.contains(header)) return;
     // Don't drag if clicking a button, tab close, input, flyout
@@ -631,7 +626,7 @@ function initFloatDrag() {
     const rect = _panel.getBoundingClientRect();
     _floatDrag = { startX: e.clientX, startY: e.clientY, startL: rect.left, startT: rect.top };
     _panel.classList.add('float-dragging');
-    document.body.style.cursor = 'grabbing';
+    document.body.style.cursor = 'move';
     document.body.style.userSelect = 'none';
   });
 
@@ -639,8 +634,15 @@ function initFloatDrag() {
     if (!_floatDrag) return;
     const dx = e.clientX - _floatDrag.startX;
     const dy = e.clientY - _floatDrag.startY;
-    _panel.style.left = (_floatDrag.startL + dx) + 'px';
-    _panel.style.top = (_floatDrag.startT + dy) + 'px';
+    let finalL = _floatDrag.startL + dx;
+    let finalT = _floatDrag.startT + dy;
+    if (state.gridSnap) {
+      const gs = state.gridSize || 20;
+      finalL = Math.round(finalL / gs) * gs;
+      finalT = Math.round(finalT / gs) * gs;
+    }
+    _panel.style.left = finalL + 'px';
+    _panel.style.top = finalT + 'px';
   });
 
   document.addEventListener('mouseup', () => {
@@ -657,7 +659,7 @@ function initFloatDrag() {
 }
 
 function initFloatResize() {
-  const EDGE = 6; // px edge hit zone
+  const EDGE = 10; // px edge hit zone
   let resizing = null;
 
   function getEdge(e) {
@@ -685,6 +687,7 @@ function initFloatResize() {
 
   document.addEventListener('mousedown', (e) => {
     if (!_detached || !_panel || _floatDrag) return;
+    if (_panelPinned) return;
     const dir = getEdge(e);
     if (!dir) return;
     e.preventDefault();
@@ -708,6 +711,14 @@ function initFloatResize() {
     if (dir.includes('w')) { nw = Math.max(MIN_W, w - dx); nl = l + w - nw; }
     if (dir.includes('s')) nh = Math.max(MIN_H, h + dy);
     if (dir.includes('n')) { nh = Math.max(MIN_H, h - dy); nt = t + h - nh; }
+
+    if (state.gridSnap) {
+      const gs = state.gridSize || 20;
+      nl = Math.round(nl / gs) * gs;
+      nt = Math.round(nt / gs) * gs;
+      nw = Math.round(nw / gs) * gs;
+      nh = Math.round(nh / gs) * gs;
+    }
 
     _panel.style.left = nl + 'px';
     _panel.style.top = nt + 'px';
@@ -752,7 +763,7 @@ function initResizeHandle() {
       document.removeEventListener('mouseup', onUp);
       handle.classList.remove('active');
       const h = parseInt(_panel.style.height, 10);
-      localStorage.setItem(KEYS.TERMINAL_HEIGHT, String(h));
+      storage.setItem(KEYS.TERMINAL_HEIGHT, String(h));
       // Refit all terminals
       _sessions.forEach(s => { try { s.fitAddon?.fit(); } catch {} });
     };
@@ -867,6 +878,14 @@ async function openSession(profile, cwd) {
       toggleSearchBar(false);
       return false;
     }
+    // Escape → blur terminal (give focus back to page)
+    if (e.key === 'Escape' && e.type === 'keydown') {
+      term.blur();
+      const textarea = viewport.querySelector('.xterm-helper-textarea');
+      if (textarea) textarea.blur();
+      document.activeElement?.blur();
+      return false;
+    }
     return true; // let xterm handle everything else
   });
 
@@ -887,7 +906,7 @@ async function openSession(profile, cwd) {
   ws.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'output') term.write(msg.data);
+      if (msg.type === 'output' || msg.type === 'replay') term.write(msg.data);
       if (msg.type === 'exit') markSessionDead(sessionId);
       if (msg.type === 'error') {
         term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
@@ -956,6 +975,180 @@ async function openSession(profile, cwd) {
   showPanel();
   renderTabBar();
   switchToSession(_activeIdx);
+  saveSessionRegistry();
+}
+
+/** Reconnect to an existing server-side PTY session (no new PTY created) */
+async function reconnectSession(sessionId, profile, options = {}) {
+  await loadXterm();
+  ensurePanel();
+
+  const term = new _Terminal({
+    theme: XTERM_THEME,
+    fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
+    fontSize: 13,
+    lineHeight: 1.3,
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    scrollback: 5000,
+    smoothScrollDuration: 0,
+    overviewRuler: false,
+    allowProposedApi: true,
+  });
+
+  const fitAddon = new _FitAddon();
+  term.loadAddon(fitAddon);
+  term.loadAddon(new _WebLinksAddon());
+
+  const viewport = document.createElement('div');
+  viewport.className = 'term-viewport';
+  viewport.dataset.sessionId = sessionId;
+  $('term-container').appendChild(viewport);
+
+  term.open(viewport);
+
+  // Block xterm's built-in paste handler (same double-paste fix)
+  const xtermTextarea = viewport.querySelector('.xterm-helper-textarea');
+  if (xtermTextarea) {
+    xtermTextarea.addEventListener('paste', (e) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }, true);
+  }
+
+  const searchAddon = new _SearchAddon();
+  term.loadAddon(searchAddon);
+
+  if (_Unicode11Addon) {
+    term.loadAddon(new _Unicode11Addon());
+    term.unicode.activeVersion = '11';
+  }
+
+  let renderer = null;
+  if (_WebglAddon) {
+    try {
+      const webgl = new _WebglAddon();
+      webgl.onContextLoss(() => { webgl.dispose(); });
+      term.loadAddon(webgl);
+      renderer = 'webgl';
+    } catch {
+      if (_CanvasAddon) {
+        try { term.loadAddon(new _CanvasAddon()); renderer = 'canvas'; } catch {}
+      }
+    }
+  } else if (_CanvasAddon) {
+    try { term.loadAddon(new _CanvasAddon()); renderer = 'canvas'; } catch {}
+  }
+
+  // Connect WebSocket to EXISTING session — server replays buffered output
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
+
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+      if (e.type === 'keydown') {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      }
+      return false;
+    }
+    if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
+      if (e.type === 'keydown') handlePaste(ws, term);
+      return false;
+    }
+    if (e.ctrlKey && !e.shiftKey && e.key === 'f' && e.type === 'keydown') {
+      toggleSearchBar(true);
+      return false;
+    }
+    if (e.ctrlKey && e.shiftKey && e.key === 'F' && e.type === 'keydown') {
+      toggleSearchBar(false);
+      return false;
+    }
+    if (e.key === 'Escape' && e.type === 'keydown') {
+      term.blur();
+      const textarea = viewport.querySelector('.xterm-helper-textarea');
+      if (textarea) textarea.blur();
+      document.activeElement?.blur();
+      return false;
+    }
+    return true;
+  });
+
+  term.onSelectionChange(() => {
+    const sel = term.getSelection();
+    if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+  });
+
+  ws.onopen = () => {
+    fitAddon.fit();
+    ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'output' || msg.type === 'replay') term.write(msg.data);
+      if (msg.type === 'exit') markSessionDead(sessionId);
+      if (msg.type === 'error') {
+        if (msg.message === 'Session not found') {
+          markSessionDead(sessionId);
+          return;
+        }
+        term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
+      }
+      if (msg.type === 'image_saved' && msg.path) {
+        navigator.clipboard.writeText(msg.path).catch(() => {});
+        showTermToast(`Image saved — path copied to clipboard`);
+      }
+      if (msg.type === 'memory_saved' && msg.path) {
+        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Memory dropped — ${msg.path.split(/[\\/]/).pop()}`);
+      }
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    const s = _sessions.find(s => s.id === sessionId);
+    if (s && !s.dead) markSessionDead(sessionId);
+  };
+
+  term.onData((data) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input', data }));
+    }
+  });
+
+  const ro = new ResizeObserver(() => {
+    try {
+      fitAddon.fit();
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+    } catch {}
+  });
+  ro.observe(viewport);
+
+  initImagePaste(viewport, ws, term);
+  initContextMenu(viewport, term, ws);
+  initMemoryDrop(viewport, ws, term);
+
+  const profileDef = PROFILES.find(p => p.id === profile);
+  const session = {
+    id: sessionId,
+    profile,
+    label: options.label || (profileDef?.label || profile),
+    term, fitAddon, searchAddon, ws, viewport, ro,
+    renderer,
+    dead: false,
+    pinned: options.pinned || false,
+  };
+  _sessions.push(session);
+  _activeIdx = _sessions.length - 1;
+
+  showPanel();
+  renderTabBar();
+  switchToSession(_activeIdx);
+  saveSessionRegistry();
 }
 
 function switchToSession(idx) {
@@ -1023,6 +1216,34 @@ async function closeSession(idx) {
   }
 
   renderTabBar();
+  saveSessionRegistry();
+}
+
+/** Disconnect all sessions client-side WITHOUT killing server PTY.
+ *  Used before workspace switch or before reconnecting to a different set. */
+export function disconnectAllSessions() {
+  // Remove all detached tab floating windows
+  for (const [, tabState] of _detachedTabs) {
+    tabState.el.remove();
+  }
+  _detachedTabs.clear();
+
+  // Dispose all sessions — WS close triggers server grace timer, PTY stays alive
+  for (const session of _sessions) {
+    session.ro.disconnect();
+    session.ws.close();
+    session.term.dispose();
+    session.viewport.remove();
+  }
+  _sessions = [];
+  _activeIdx = -1;
+
+  // Hide panel and peek dock
+  if (_panel && !_panel.classList.contains('hidden')) {
+    _panel.classList.add('hidden');
+    document.documentElement.style.setProperty('--terminal-height', '0px');
+  }
+  hidePeekDock();
 }
 
 function markSessionDead(sessionId) {
@@ -1282,20 +1503,27 @@ function detachTab(idx) {
   win.dataset.sessionId = session.id;
 
   const prof = PROFILES.find(p => p.id === session.profile);
-  const SVG_PIN = '<svg viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1h1V3H7v3h1a1 1 0 0 1 1 1z"/></svg>';
-  const SVG_RENAME = '<svg viewBox="0 0 24 24"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
 
   win.innerHTML = `
     <div class="term-float-tab-header">
       <span class="term-float-tab-icon">${prof?.svg || SVG_SHELL}</span>
       <span class="term-float-tab-title">${session.label}</span>
       <div class="term-float-tab-actions">
-        <button class="term-float-tab-btn rename-btn" title="Rename">${SVG_RENAME}</button>
-        <button class="term-float-tab-btn pin-btn" title="Pin on top">${SVG_PIN}</button>
-        <button class="term-float-tab-btn dock-btn" title="Dock back to panel">
+        <button class="term-float-tab-btn rename-btn" data-tooltip="Rename">
+          <svg viewBox="0 0 24 24"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+        </button>
+        <button class="term-float-tab-btn pin-btn" data-tooltip="Pin on top">
+          <svg viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1h1V3H7v3h1a1 1 0 0 1 1 1z"/></svg>
+        </button>
+        <button class="term-float-tab-btn minimize-btn" data-tooltip="Minimize">
+          <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button class="term-float-tab-btn dock-btn" data-tooltip="Dock to panel">
           <svg viewBox="0 0 24 24"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/></svg>
         </button>
-        <button class="term-float-tab-btn close-btn" title="Close session">&times;</button>
+        <button class="term-float-tab-btn close-btn" data-tooltip="Close session">
+          <svg viewBox="0 0 24 24"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>
+        </button>
       </div>
     </div>
     <div class="term-float-tab-body"></div>
@@ -1318,11 +1546,14 @@ function detachTab(idx) {
   session.viewport.style.display = '';
 
   // Wire dock-back button
-  win.querySelector('.dock-btn').addEventListener('click', () => attachTab(session.id));
+  win.querySelector('.dock-btn').addEventListener('click', (e) => { e.stopPropagation(); attachTab(session.id); });
 
-  // Wire close button (pinned tabs ignore close)
-  win.querySelector('.close-btn').addEventListener('click', () => {
-    if (session.pinned) return;
+  // Wire minimize button
+  win.querySelector('.minimize-btn').addEventListener('click', (e) => { e.stopPropagation(); minimizeTab(session.id); });
+
+  // Wire close button
+  win.querySelector('.close-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
     attachTab(session.id);
     const newIdx = _sessions.indexOf(session);
     if (newIdx >= 0) closeSession(newIdx);
@@ -1330,48 +1561,39 @@ function detachTab(idx) {
 
   // Wire pin button — toggle pinned + always-on-top
   const pinBtnEl = win.querySelector('.pin-btn');
-  pinBtnEl.addEventListener('click', () => {
+  pinBtnEl.addEventListener('click', (e) => {
+    e.stopPropagation();
     session.pinned = !session.pinned;
     win.classList.toggle('pinned', session.pinned);
-    pinBtnEl.title = session.pinned ? 'Unpin' : 'Pin on top';
+    pinBtnEl.setAttribute('data-tooltip', session.pinned ? 'Unpin' : 'Pin on top');
     if (session.pinned) {
       win.style.zIndex = '10002';
     } else {
       win.style.zIndex = '';
     }
-    // Update close button visibility
-    const closeEl = win.querySelector('.close-btn');
-    if (closeEl) closeEl.style.display = session.pinned ? 'none' : '';
+    saveSessionRegistry();
   });
 
   // Wire rename button — inline edit on title
-  win.querySelector('.rename-btn').addEventListener('click', () => {
+  win.querySelector('.rename-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
     const titleEl = win.querySelector('.term-float-tab-title');
     if (!titleEl || titleEl.contentEditable === 'true') return;
-
     titleEl.contentEditable = 'true';
     titleEl.classList.add('editing');
     titleEl.focus();
-
-    // Select all text
     const range = document.createRange();
     range.selectNodeContents(titleEl);
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-
     const commit = () => {
       titleEl.contentEditable = 'false';
       titleEl.classList.remove('editing');
       const val = titleEl.textContent.trim();
-      if (val) {
-        session.label = val;
-        renderTabBar(); // sync tab bar label
-      } else {
-        titleEl.textContent = session.label;
-      }
+      if (val) { session.label = val; renderTabBar(); saveSessionRegistry(); }
+      else { titleEl.textContent = session.label; }
     };
-
     titleEl.addEventListener('blur', commit, { once: true });
     titleEl.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') { ev.preventDefault(); titleEl.blur(); }
@@ -1399,6 +1621,7 @@ function detachTab(idx) {
   }
 
   renderTabBar();
+  saveTerminalLayout();
 
   // Refit terminal in new container
   requestAnimationFrame(() => { try { session.fitAddon?.fit(); } catch {} });
@@ -1407,6 +1630,14 @@ function detachTab(idx) {
 function attachTab(sessionId) {
   const tabState = _detachedTabs.get(sessionId);
   if (!tabState) return;
+
+  // Clean up minimize pill if minimized
+  if (tabState.minimized && tabState.pill) {
+    tabState.pill.remove();
+    tabState.pill = null;
+    tabState.minimized = false;
+  }
+  tabState.el.style.display = '';
 
   const session = _sessions.find(s => s.id === sessionId);
   if (!session) { tabState.el.remove(); _detachedTabs.delete(sessionId); return; }
@@ -1427,8 +1658,150 @@ function attachTab(sessionId) {
   if (idx >= 0) switchToSession(idx);
 
   renderTabBar();
+  saveTerminalLayout();
   requestAnimationFrame(() => { try { session.fitAddon?.fit(); } catch {} });
 }
+
+// ── Minimize / Restore floating tabs ──
+
+function minimizeTab(sessionId) {
+  const tabState = _detachedTabs.get(sessionId);
+  if (!tabState || tabState.minimized) return;
+  const session = _sessions.find(s => s.id === sessionId);
+  if (!session) return;
+
+  // Save position before animating
+  const r = tabState.el.getBoundingClientRect();
+  tabState.savedRect = { left: r.left, top: r.top, width: r.width, height: r.height };
+  tabState.minimized = true;
+
+  // Create pill in tray first (need its position for animation target)
+  const tray = document.getElementById('term-minimized-tray');
+  if (!tray) { tabState.el.style.display = 'none'; return; }
+  const prof = PROFILES.find(p => p.id === session.profile);
+  const pill = document.createElement('div');
+  pill.className = 'term-minimized-pill';
+  pill.setAttribute('data-session-id', sessionId);
+  pill.innerHTML = `
+    <span class="term-minimized-pill-icon">${prof?.svg || SVG_SHELL}</span>
+    <span class="term-minimized-pill-label">${session.label}</span>
+    <button class="term-minimized-pill-close" data-tooltip="Close">&times;</button>
+  `;
+  pill.querySelector('.term-minimized-pill-close').addEventListener('click', (e) => {
+    e.stopPropagation();
+    restoreTab(sessionId);
+    attachTab(sessionId);
+    const idx = _sessions.indexOf(session);
+    if (idx >= 0) closeSession(idx);
+  });
+  pill.addEventListener('click', () => restoreTab(sessionId));
+  pill.style.opacity = '0';
+  tray.appendChild(pill);
+  tabState.pill = pill;
+
+  // Genie minimize animation — shrink toward pill position
+  const el = tabState.el;
+  const pillRect = pill.getBoundingClientRect();
+  const targetX = pillRect.left + pillRect.width / 2;
+  const targetY = pillRect.top + pillRect.height / 2;
+  const srcCX = r.left + r.width / 2;
+  const srcCY = r.top + r.height / 2;
+  const dx = targetX - srcCX;
+  const dy = targetY - srcCY;
+
+  el.style.transition = 'none';
+  el.style.transformOrigin = 'center center';
+  el.style.overflow = 'hidden';
+
+  requestAnimationFrame(() => {
+    el.style.transition = 'transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease';
+    el.style.transform = `translate(${dx}px, ${dy}px) scale(0.05)`;
+    el.style.opacity = '0';
+  });
+
+  const onEnd = () => {
+    el.removeEventListener('transitionend', onEnd);
+    el.style.display = 'none';
+    el.style.transition = '';
+    el.style.transform = '';
+    el.style.opacity = '';
+    pill.style.opacity = '';
+    pill.style.animation = 'pill-pop-in 0.2s ease-out';
+  };
+  el.addEventListener('transitionend', onEnd, { once: true });
+  // Fallback in case transitionend doesn't fire
+  setTimeout(() => {
+    if (el.style.display !== 'none') onEnd();
+  }, 450);
+
+  saveTerminalLayout();
+}
+
+function restoreTab(sessionId) {
+  const tabState = _detachedTabs.get(sessionId);
+  if (!tabState || !tabState.minimized) return;
+
+  tabState.minimized = false;
+  const el = tabState.el;
+  const saved = tabState.savedRect;
+
+  // Get pill position for animation start point
+  let startDX = 0, startDY = 0;
+  if (tabState.pill && saved) {
+    const pillRect = tabState.pill.getBoundingClientRect();
+    const pillCX = pillRect.left + pillRect.width / 2;
+    const pillCY = pillRect.top + pillRect.height / 2;
+    const savedCX = saved.left + saved.width / 2;
+    const savedCY = saved.top + saved.height / 2;
+    startDX = pillCX - savedCX;
+    startDY = pillCY - savedCY;
+  }
+
+  // Remove pill
+  if (tabState.pill) {
+    tabState.pill.remove();
+    tabState.pill = null;
+  }
+
+  // Restore saved position
+  if (saved) {
+    el.style.left = saved.left + 'px';
+    el.style.top = saved.top + 'px';
+    el.style.width = saved.width + 'px';
+    el.style.height = saved.height + 'px';
+  }
+
+  // Genie restore animation — expand from pill position
+  el.style.transition = 'none';
+  el.style.transformOrigin = 'center center';
+  el.style.transform = `translate(${startDX}px, ${startDY}px) scale(0.05)`;
+  el.style.opacity = '0';
+  el.style.display = '';
+
+  requestAnimationFrame(() => {
+    el.style.transition = 'transform 0.35s cubic-bezier(0.2, 0, 0.2, 1), opacity 0.2s ease';
+    el.style.transform = 'translate(0,0) scale(1)';
+    el.style.opacity = '1';
+  });
+
+  const onEnd = () => {
+    el.removeEventListener('transitionend', onEnd);
+    el.style.transition = '';
+    el.style.transform = '';
+    el.style.opacity = '';
+    // Refit terminal after animation
+    const session = _sessions.find(s => s.id === sessionId);
+    if (session) requestAnimationFrame(() => { try { session.fitAddon?.fit(); } catch {} });
+  };
+  el.addEventListener('transitionend', onEnd, { once: true });
+  setTimeout(() => {
+    if (el.style.transform) onEnd();
+  }, 450);
+
+  saveTerminalLayout();
+}
+
+const DRAG_CURSOR_ACTIVE = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22'%3E%3Cpath d='M11 2l3 3.5h-2v4.5h4.5V8L20 11l-3.5 3v-2H12v4.5h2L11 20l-3-3.5h2v-4.5H5.5V14L2 11l3.5-3v2H10V5.5H8z' fill='%234FC3F7' stroke='rgba(0,0,0,0.35)' stroke-width='0.6'/%3E%3C/svg%3E") 11 11, move`;
 
 function initTabFloatDrag(win, sessionId) {
   let drag = null;
@@ -1436,18 +1809,28 @@ function initTabFloatDrag(win, sessionId) {
   win.addEventListener('mousedown', (e) => {
     const header = e.target.closest('.term-float-tab-header');
     if (!header || e.target.closest('button')) return;
+    const session = _sessions.find(s => s.id === sessionId);
+    if (session?.pinned) return;
     e.preventDefault();
+    e.stopPropagation(); // prevent resize document handler from also firing
     const r = win.getBoundingClientRect();
     drag = { startX: e.clientX, startY: e.clientY, startL: r.left, startT: r.top };
     win.classList.add('float-dragging');
-    document.body.style.cursor = 'grabbing';
+    document.body.style.cursor = DRAG_CURSOR_ACTIVE;
     document.body.style.userSelect = 'none';
   });
 
   document.addEventListener('mousemove', (e) => {
     if (!drag) return;
-    win.style.left = (drag.startL + e.clientX - drag.startX) + 'px';
-    win.style.top = (drag.startT + e.clientY - drag.startY) + 'px';
+    let finalL = drag.startL + e.clientX - drag.startX;
+    let finalT = drag.startT + e.clientY - drag.startY;
+    if (state.gridSnap) {
+      const gs = state.gridSize || 20;
+      finalL = Math.round(finalL / gs) * gs;
+      finalT = Math.round(finalT / gs) * gs;
+    }
+    win.style.left = finalL + 'px';
+    win.style.top = finalT + 'px';
   });
 
   document.addEventListener('mouseup', () => {
@@ -1467,8 +1850,10 @@ function initTabFloatResize(win, sessionId) {
     const r = win.getBoundingClientRect();
     const x = e.clientX, y = e.clientY;
     if (x < r.left - 2 || x > r.right + 2 || y < r.top - 2 || y > r.bottom + 2) return null;
+    // Narrower top edge (3px) so it doesn't fight with header drag
+    const TOP_EDGE = 3;
     let dir = '';
-    if (y - r.top < EDGE) dir += 'n';
+    if (y - r.top < TOP_EDGE) dir += 'n';
     else if (r.bottom - y < EDGE) dir += 's';
     if (x - r.left < EDGE) dir += 'w';
     else if (r.right - x < EDGE) dir += 'e';
@@ -1489,6 +1874,8 @@ function initTabFloatResize(win, sessionId) {
   document.addEventListener('mousedown', (e) => {
     const dir = getEdge(e);
     if (!dir) return;
+    const session = _sessions.find(s => s.id === sessionId);
+    if (session?.pinned) return;
     e.preventDefault();
     const r = win.getBoundingClientRect();
     resizing = { dir, startX: e.clientX, startY: e.clientY, l: r.left, t: r.top, w: r.width, h: r.height };
@@ -1505,6 +1892,13 @@ function initTabFloatResize(win, sessionId) {
     if (dir.includes('w')) { nw = Math.max(MIN_W, w - dx); nl = l + w - nw; }
     if (dir.includes('s')) nh = Math.max(MIN_H, h + dy);
     if (dir.includes('n')) { nh = Math.max(MIN_H, h - dy); nt = t + h - nh; }
+    if (state.gridSnap) {
+      const gs = state.gridSize || 20;
+      nl = Math.round(nl / gs) * gs;
+      nt = Math.round(nt / gs) * gs;
+      nw = Math.round(nw / gs) * gs;
+      nh = Math.round(nh / gs) * gs;
+    }
     win.style.left = nl + 'px';
     win.style.top = nt + 'px';
     win.style.width = nw + 'px';
@@ -1522,6 +1916,57 @@ function initTabFloatResize(win, sessionId) {
   });
 }
 
+// ── Peek dock (bottom indicator when panel hidden) ──
+
+function ensurePeekDock() {
+  if (_peekDock) return;
+  const dock = document.createElement('div');
+  dock.id = 'term-peek-dock';
+  dock.innerHTML = `
+    <span class="peek-pull"><svg viewBox="0 0 16 16" fill="none"><path d="M4 10l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+    <div class="peek-tabs"></div>
+    <span class="peek-count"></span>
+  `;
+  dock.addEventListener('click', () => {
+    if (_sessions.length > 0) showPanel();
+  });
+  document.body.appendChild(dock);
+  _peekDock = dock;
+}
+
+function renderPeekDock() {
+  if (!_peekDock) return;
+  const tabs = _peekDock.querySelector('.peek-tabs');
+  const count = _peekDock.querySelector('.peek-count');
+
+  tabs.innerHTML = _sessions.map((s, i) => {
+    const prof = PROFILES.find(p => p.id === s.profile);
+    const active = i === _activeIdx;
+    return `<span class="peek-tab${active ? ' active' : ''}">
+      <span class="peek-tab-icon">${prof?.svg || SVG_SHELL}</span>
+      <span class="peek-tab-label">${s.label}</span>
+    </span>`;
+  }).join('');
+
+  count.textContent = _sessions.length > 0 ? `${_sessions.length} session${_sessions.length > 1 ? 's' : ''}` : '';
+}
+
+function showPeekDock() {
+  if (_sessions.length === 0) { hidePeekDock(); return; }
+  ensurePeekDock();
+  renderPeekDock();
+  // Force reflow before adding visible class for transition
+  void _peekDock.offsetHeight;
+  _peekDock.classList.add('visible');
+  document.documentElement.style.setProperty('--peek-dock-height', '28px');
+}
+
+function hidePeekDock() {
+  if (!_peekDock) return;
+  _peekDock.classList.remove('visible');
+  document.documentElement.style.setProperty('--peek-dock-height', '0px');
+}
+
 // ── Tab bar rendering ──
 
 function renderTabBar() {
@@ -1536,16 +1981,19 @@ function renderTabBar() {
     return `<button class="term-tab${active ? ' active' : ''}${dead ? ' dead' : ''}${isDetached ? ' detached' : ''}" data-idx="${i}">
       <span class="term-tab-icon">${prof?.svg || SVG_SHELL}</span>
       <span class="term-tab-label">${s.label}${dead ? ' (exited)' : ''}</span>
-      ${!isDetached && !dead ? `<span class="term-tab-detach" data-idx="${i}" title="Detach tab"><svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M21 3l-7 7"/><rect x="3" y="11" width="10" height="10" rx="1"/></svg></span>` : ''}
+      ${!isDetached && !dead ? `<span class="term-tab-detach" data-idx="${i}" data-tooltip="Detach tab"><svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M21 3l-7 7"/><rect x="3" y="11" width="10" height="10" rx="1"/></svg></span>` : ''}
       ${isDetached ? `<span class="term-tab-dock" data-idx="${i}" title="Dock back"><svg viewBox="0 0 24 24"><path d="M4 14h6v6"/><path d="M3 21l7-7"/></svg></span>` : ''}
       <span class="term-tab-close" data-idx="${i}">&times;</span>
     </button>`;
   }).join('');
+
+  // Keep peek dock in sync if it's showing
+  if (_peekDock?.classList.contains('visible')) renderPeekDock();
 }
 
 // ── Public API ──
 
-export function initTerminal() {
+export async function initTerminal() {
   on('terminal:open', (data) => {
     const profile = data?.profile || 'shell';
     openSessionWithPicker(profile);
@@ -1555,101 +2003,186 @@ export function initTerminal() {
 
   on('terminal:close', () => hidePanel());
 
-  // Restore open state from localStorage
-  const wasOpen = localStorage.getItem(KEYS.TERMINAL_OPEN);
-  // Don't auto-restore sessions (ephemeral), but if panel was open, we note it
-  // User must explicitly open a new session after page load
+  // Register CLI launch keybind actions (open as detached floating tab)
+  registerAction('launch-claude', () => launchDetached('claude-code'));
+  registerAction('launch-codex',  () => launchDetached('codex'));
+  registerAction('launch-gemini', () => launchDetached('gemini'));
+
+  // ── Auto-reconnect to surviving sessions on page load ──
+  const registry = loadSessionRegistry();
+  if (registry.length > 0) {
+    let liveSessions = [];
+    try {
+      const data = await fetchTerminalSessions();
+      liveSessions = data.sessions || [];
+    } catch {}
+    const liveIds = new Set(liveSessions.map(s => s.id));
+
+    // Reconnect to sessions that are still alive on server
+    const toReconnect = registry.filter(r => liveIds.has(r.id));
+    if (toReconnect.length > 0) {
+      for (const saved of toReconnect) {
+        await reconnectSession(saved.id, saved.profile, {
+          label: saved.label,
+          pinned: saved.pinned,
+        });
+      }
+
+      // Restore layout from last saved terminal layout
+      try {
+        const layoutJson = storage.getItem(KEYS.TERMINAL_SESSIONS + '-layout');
+        if (layoutJson) {
+          applyTerminalLayout(JSON.parse(layoutJson));
+        }
+      } catch {}
+    }
+
+    // Clean up dead sessions from registry
+    if (toReconnect.length !== registry.length) {
+      saveSessionRegistry();
+    }
+  }
+
+  // Show peek dock if sessions exist but panel is hidden
+  if (_sessions.length > 0 && (!_panel || _panel.classList.contains('hidden'))) {
+    showPeekDock();
+  }
 }
 
 export function openTerminalPanel(profile) {
   emit('terminal:open', { profile });
 }
 
+/** Open a CLI session and immediately detach it as a floating window */
+async function launchDetached(profile) {
+  const cwd = await pickProject(profile);
+  if (cwd === undefined) return; // cancelled
+  await openSession(profile, cwd);
+  // Detach the session we just created (it's always the last one)
+  const idx = _sessions.length - 1;
+  if (idx >= 0) detachTab(idx);
+}
+
 /** Snapshot terminal state for workspace save */
 export function getTerminalSnapshot() {
-  const floatPos = _detached && _panel ? (() => {
-    const r = _panel.getBoundingClientRect();
-    return { left: r.left, top: r.top, width: r.width, height: r.height };
-  })() : null;
-
   return {
-    detached: _detached,
-    floatPos,
-    dockedHeight: parseInt(localStorage.getItem(KEYS.TERMINAL_HEIGHT), 10) || DEFAULT_HEIGHT,
+    detached: false,
+    floatPos: null,
+    dockedHeight: parseInt(storage.getItem(KEYS.TERMINAL_HEIGHT), 10) || DEFAULT_HEIGHT,
     visible: _panel ? !_panel.classList.contains('hidden') : false,
+    // Session metadata for reconnection on workspace load
+    sessions: _sessions.map(s => ({
+      id: s.id,
+      profile: s.profile,
+      label: s.label,
+      pinned: s.pinned,
+      isDetached: _detachedTabs.has(s.id),
+    })),
     detachedTabs: [..._detachedTabs.entries()].map(([sid, dt]) => {
-      const r = dt.el.getBoundingClientRect();
+      const r = dt.minimized && dt.savedRect ? dt.savedRect : dt.el.getBoundingClientRect();
       const session = _sessions.find(s => s.id === sid);
       return {
+        sessionId: sid,
         sessionIdx: _sessions.findIndex(s => s.id === sid),
         left: r.left, top: r.top, width: r.width, height: r.height,
         pinned: session?.pinned || false,
         label: session?.label || '',
+        minimized: dt.minimized || false,
       };
     }),
   };
 }
 
-/** Restore terminal state from workspace */
-export function restoreTerminalSnapshot(snap) {
+/** Apply only layout (detach/dock, positions) without reconnection */
+function applyTerminalLayout(snap) {
   if (!snap) return;
 
-  // Restore detached/docked state
-  if (snap.detached && !_detached) {
-    if (snap.floatPos) {
-      localStorage.setItem(KEYS.TERMINAL_FLOAT_POS, JSON.stringify(snap.floatPos));
-    }
-    detachPanel();
-  } else if (!snap.detached && _detached) {
-    attachPanel();
-  }
+  // Panel detach removed — only individual tabs can float.
+  // If an old snapshot says detached, force-dock it.
+  if (_detached) attachPanel();
 
-  // Restore docked height
-  if (!snap.detached && snap.dockedHeight) {
-    localStorage.setItem(KEYS.TERMINAL_HEIGHT, String(snap.dockedHeight));
+  if (snap.dockedHeight) {
+    storage.setItem(KEYS.TERMINAL_HEIGHT, String(snap.dockedHeight));
     if (_panel && !_panel.classList.contains('hidden')) {
       _panel.style.height = snap.dockedHeight + 'px';
       document.documentElement.style.setProperty('--terminal-height', snap.dockedHeight + 'px');
     }
   }
 
-  // Restore detached tab positions, pin state, and labels
   if (snap.detachedTabs) {
     for (const dt of snap.detachedTabs) {
-      if (dt.sessionIdx >= 0 && dt.sessionIdx < _sessions.length) {
-        const session = _sessions[dt.sessionIdx];
-        if (!_detachedTabs.has(session.id)) {
-          detachTab(dt.sessionIdx);
+      let session;
+      if (dt.sessionId) {
+        session = _sessions.find(s => s.id === dt.sessionId);
+      } else if (dt.sessionIdx >= 0 && dt.sessionIdx < _sessions.length) {
+        session = _sessions[dt.sessionIdx];
+      }
+      if (!session) continue;
+
+      const idx = _sessions.indexOf(session);
+      if (!_detachedTabs.has(session.id)) {
+        detachTab(idx);
+      }
+      const tabState = _detachedTabs.get(session.id);
+      if (tabState) {
+        tabState.el.style.left = dt.left + 'px';
+        tabState.el.style.top = dt.top + 'px';
+        tabState.el.style.width = dt.width + 'px';
+        tabState.el.style.height = dt.height + 'px';
+
+        if (dt.pinned) {
+          session.pinned = true;
+          tabState.el.classList.add('pinned');
+          tabState.el.style.zIndex = '10002';
+          const closeEl = tabState.el.querySelector('.close-btn');
+          if (closeEl) closeEl.style.display = 'none';
+          const pinEl = tabState.el.querySelector('.pin-btn');
+          if (pinEl) pinEl.title = 'Unpin';
         }
-        const tabState = _detachedTabs.get(session.id);
-        if (tabState) {
-          tabState.el.style.left = dt.left + 'px';
-          tabState.el.style.top = dt.top + 'px';
-          tabState.el.style.width = dt.width + 'px';
-          tabState.el.style.height = dt.height + 'px';
 
-          // Restore pin state
-          if (dt.pinned) {
-            session.pinned = true;
-            tabState.el.classList.add('pinned');
-            tabState.el.style.zIndex = '10002';
-            const closeEl = tabState.el.querySelector('.close-btn');
-            if (closeEl) closeEl.style.display = 'none';
-            const pinEl = tabState.el.querySelector('.pin-btn');
-            if (pinEl) pinEl.title = 'Unpin';
-          }
+        if (dt.label) {
+          session.label = dt.label;
+          const titleEl = tabState.el.querySelector('.term-float-tab-title');
+          if (titleEl) titleEl.textContent = dt.label;
+        }
 
-          // Restore custom label
-          if (dt.label) {
-            session.label = dt.label;
-            const titleEl = tabState.el.querySelector('.term-float-tab-title');
-            if (titleEl) titleEl.textContent = dt.label;
-          }
+        if (dt.minimized) {
+          minimizeTab(session.id);
         }
       }
     }
   }
 
-  // Refit all after layout changes
   requestAnimationFrame(() => _sessions.forEach(s => { try { s.fitAddon?.fit(); } catch {} }));
+}
+
+/** Restore terminal state from workspace — reconnects to live sessions */
+export async function restoreTerminalSnapshot(snap) {
+  if (!snap) return;
+
+  // New format: snap.sessions contains session IDs for reconnection
+  if (snap.sessions && snap.sessions.length > 0) {
+    let liveSessions = [];
+    try {
+      const data = await fetchTerminalSessions();
+      liveSessions = data.sessions || [];
+    } catch {}
+    const liveIds = new Set(liveSessions.map(s => s.id));
+
+    // Disconnect current sessions without killing server PTY
+    disconnectAllSessions();
+
+    // Reconnect to each saved session that's still alive on server
+    for (const saved of snap.sessions) {
+      if (liveIds.has(saved.id)) {
+        await reconnectSession(saved.id, saved.profile, {
+          label: saved.label,
+          pinned: saved.pinned,
+        });
+      }
+    }
+  }
+
+  // Apply layout (detach/dock, positions, pin state)
+  applyTerminalLayout(snap);
 }

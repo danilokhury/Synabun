@@ -6,6 +6,7 @@
 
 import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
+import { storage } from './storage.js';
 import { catColor } from './colors.js';
 
 const $ = (id) => document.getElementById(id);
@@ -18,14 +19,14 @@ const $ = (id) => document.getElementById(id);
  */
 export function loadBookmarks() {
   try {
-    return JSON.parse(localStorage.getItem(KEYS.BOOKMARKS) || '[]');
+    return JSON.parse(storage.getItem(KEYS.BOOKMARKS) || '[]');
   } catch {
     return [];
   }
 }
 
 function saveBookmarks(arr) {
-  localStorage.setItem(KEYS.BOOKMARKS, JSON.stringify(arr));
+  storage.setItem(KEYS.BOOKMARKS, JSON.stringify(arr));
   updateBookmarkCount();
 }
 

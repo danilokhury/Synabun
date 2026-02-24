@@ -5,10 +5,12 @@
 // Registers the 2D variant, imports all shared & variant modules,
 // wires event listeners, and boots the application.
 
+// ── Storage (self-hydrating — importing it populates the cache) ──
+import { storage } from '../../shared/storage.js';
+
 // ── Shared foundation ──
 import { state, emit, on } from '../../shared/state.js';
 import { registerVariant, registerMenuItem, registerHelpSection } from '../../shared/registry.js';
-// fetchCategories (raw API) no longer needed — loadCategories populates state
 
 import { injectSharedHTML } from '../../shared/html-shell.js';
 import { KEYS } from '../../shared/constants.js';
@@ -35,19 +37,19 @@ import { initExplorer } from '../../shared/ui-explorer.js';
 import { initSkillsStudio } from '../../shared/ui-skills.js';
 import { initTerminal } from '../../shared/ui-terminal.js';
 import { initWorkspaces } from '../../shared/ui-workspaces.js';
+import { initKeybinds, registerAction, getDisplayKey } from '../../shared/ui-keybinds.js';
 
 // ── 2D variant modules ──
-import { gfx } from './gfx.js';
+import { gfx, saveGfxConfig } from './gfx.js';
 import './settings-gfx.js'; // side-effect: self-registers Graphics tab
-import { initBackground, drawBackground, animateBackground, stopBackground } from './background.js';
-import { initHulls, drawHulls, toggleHulls, isHullsVisible } from './hulls.js';
-import { initMinimap, drawMinimap, toggleMinimap, isMinimapVisible } from './minimap.js';
+import { stopBackground } from './background.js';
+import { initMinimap, drawMinimap, toggleMinimap, isMinimapVisible, forceHideMinimap, restoreMinimap } from './minimap.js';
 import { initLasso } from './lasso.js';
 import { initContextMenu, hideContextMenu } from './context-menu.js';
 import {
   initGraph, getGraph, applyGraphData,
   preloadCategoryLogos, scheduleGraphRemoval, cancelScheduledRemoval,
-  refreshGraph, reheatSimulation,
+  refreshGraph, reheatSimulation, getAllCards,
 } from './graph.js';
 
 
@@ -57,7 +59,7 @@ import {
 
 registerVariant({
   variant: '2d',
-  capabilities: ['hulls', 'minimap', 'lasso', 'context-menu'],
+  capabilities: ['minimap', 'lasso', 'context-menu', 'orbital-layout'],
 });
 
 
@@ -69,12 +71,18 @@ registerMenuItem({
   menu: 'view',
   order: 25,
   type: 'toggle',
-  id: 'menu-hulls',
-  label: 'Hulls',
+  id: 'menu-region-glow',
+  label: 'Region Glow',
   init: (el) => {
+    el.classList.toggle('active', gfx.regionGlowOpacity > 0);
     el.addEventListener('click', () => {
-      toggleHulls();
-      el.classList.toggle('active', isHullsVisible());
+      if (gfx.regionGlowOpacity > 0) {
+        gfx.regionGlowOpacity = 0;
+      } else {
+        gfx.regionGlowOpacity = 0.05;
+      }
+      saveGfxConfig(gfx);
+      el.classList.toggle('active', gfx.regionGlowOpacity > 0);
     });
   },
 });
@@ -85,11 +93,20 @@ registerMenuItem({
   type: 'toggle',
   id: 'menu-minimap',
   label: 'Minimap',
+  shortcut: 'M',
   init: (el) => {
-    el.addEventListener('click', () => {
+    // Set initial active state (minimap starts visible)
+    el.classList.add('active');
+
+    const doToggle = () => {
       toggleMinimap();
       el.classList.toggle('active', isMinimapVisible());
-    });
+    };
+
+    el.addEventListener('click', doToggle);
+
+    // Register keybind action so the central dispatcher can trigger it
+    registerAction('toggle-minimap', doToggle);
   },
 });
 
@@ -101,14 +118,17 @@ registerMenuItem({
 registerHelpSection({
   order: 50,
   html: `
-    <h4>2D Controls</h4>
+    <h4>2D Canvas Controls</h4>
     <div class="help-key-row"><span class="help-key">Mouse Drag</span> Pan the canvas</div>
     <div class="help-key-row"><span class="help-key">Scroll</span> Zoom in/out</div>
-    <div class="help-key-row"><span class="help-key">Click Node</span> Select node</div>
-    <div class="help-key-row"><span class="help-key">Double-Click Node</span> Unpin node</div>
-    <div class="help-key-row"><span class="help-key">Double-Click BG</span> Zoom to fit</div>
-    <div class="help-key-row"><span class="help-key">Right-Click Node</span> Context menu</div>
+    <div class="help-key-row"><span class="help-key">Click Card</span> Select &amp; open detail</div>
+    <div class="help-key-row"><span class="help-key">Click Category</span> Zoom to category</div>
+    <div class="help-key-row"><span class="help-key">Double-Click Card</span> Unpin card</div>
+    <div class="help-key-row"><span class="help-key">Double-Click BG</span> Zoom to fit all</div>
+    <div class="help-key-row"><span class="help-key">Right-Click Card</span> Context menu</div>
     <div class="help-key-row"><span class="help-key">Shift + Drag</span> Lasso select</div>
+    <div class="help-key-row"><span class="help-key">Drag Card</span> Move &amp; pin card</div>
+    <div class="help-key-row"><span class="help-key">Drag Category</span> Move entire group</div>
   `,
 });
 
@@ -128,8 +148,11 @@ injectSharedHTML();
 // When shared UI emits graph:navigate, center on node
 on('graph:navigate', ({ node, zoom }) => {
   const g = getGraph();
-  if (node && g) {
-    g.centerAt(node.x, node.y, 500);
+  if (!node || !g) return;
+  const cards = getAllCards();
+  const card = cards.find(c => c.node.id === node.id);
+  if (card) {
+    g.centerAt(card.x, card.y, 500);
     if (zoom === 'close') g.zoom(4, 500);
   }
 });
@@ -153,30 +176,34 @@ on('categories-changed', () => {
 
 // Search apply/clear
 on('search:apply', () => {
-  applyGraphData();
+  // No layout recompute needed — just re-renders with dimming
 });
 
 on('search:clear', () => {
-  applyGraphData();
+  // No layout recompute needed
 });
 
-// Link mode changes
+// Link mode changes — just triggers re-render (no API call needed)
 on('link-mode-changed', () => {
-  const g = getGraph();
-  if (g) g.linkVisibility(g.linkVisibility()); // force re-evaluate
+  // Render loop picks up state.linkMode automatically
 });
 
 on('link-type-changed', () => {
-  const g = getGraph();
-  if (g) g.linkVisibility(g.linkVisibility());
+  // Render loop picks up state.linkTypeFilter automatically
 });
 
-// Node selection — center camera
+// Node selection — center camera on selected card + open detail card
 on('node-selected', (node) => {
+  if (!node) return;
   const g = getGraph();
-  if (node && g) {
-    g.centerAt(node.x, node.y, 500);
+  if (g) {
+    const cards = getAllCards();
+    const card = cards.find(c => c.node.id === node.id);
+    if (card) {
+      g.centerAt(card.x, card.y, 500);
+    }
   }
+  openMemoryCard(node);
 });
 
 // Graph refresh
@@ -195,12 +222,7 @@ on('category:cancel-removal', () => {
 
 // Layout commands
 on('layout:reset', () => {
-  const g = getGraph();
-  if (g) {
-    // Clear saved positions and reheat
-    try { localStorage.removeItem(KEYS.NODE_POS_2D); } catch {}
-    reheatSimulation();
-  }
+  reheatSimulation(); // clears saved positions + recomputes layout
 });
 
 on('layout:frame', () => {
@@ -218,9 +240,8 @@ on('context-menu-hide', () => {
   hideContextMenu();
 });
 
-// Render frame post — draw overlays
+// Render frame post — draw minimap
 on('render-frame-post', () => {
-  if (isHullsVisible()) drawHulls();
   if (isMinimapVisible()) drawMinimap();
 });
 
@@ -232,7 +253,10 @@ on('render-frame-post', () => {
 setDetailCallbacks({
   navigateToNode: (node) => {
     const g = getGraph();
-    if (g && node) g.centerAt(node.x, node.y, 500);
+    if (!g || !node) return;
+    const cards = getAllCards();
+    const card = cards.find(c => c.node.id === node.id);
+    if (card) g.centerAt(card.x, card.y, 500);
   },
   refreshGraph: () => applyGraphData(),
   scheduleRemoval: () => scheduleGraphRemoval(),
@@ -285,7 +309,7 @@ async function boot() {
     // Build category sidebar
     buildCategorySidebar(presentCats);
 
-    // Init the 2D graph (skip if visualization is disabled)
+    // Init the 2D canvas renderer (skip if visualization is disabled)
     const container = document.getElementById('graph-container');
     const vizEnabled = loadIfaceConfig().visualizationEnabled !== false;
     let g = null;
@@ -293,26 +317,26 @@ async function boot() {
     if (vizEnabled && !getGraph()) {
       g = initGraph(container, {
         onRenderFramePost: () => {
-          if (isHullsVisible()) drawHulls();
           if (isMinimapVisible()) drawMinimap();
         },
       });
 
       // Init overlays
-      initBackground();
-      initHulls(g);
       initMinimap(g);
       initLasso(g);
       initContextMenu(g);
     }
 
+    // Apply data to compute layout and start rendering
+    applyGraphData();
+
     // Update stats
     updateStats();
 
-    // Signal data is ready (populates dynamic menu items like link types)
+    // Signal data is ready
     emit('data-loaded', data);
 
-    // Restore previously open memory cards (persisted positions)
+    // Restore previously open memory cards
     restoreOpenCards();
 
     // Handle view-switch handoff
@@ -324,7 +348,11 @@ async function boot() {
         state.selectedNodeId = switchNodeId;
         openMemoryCard(node);
         setTimeout(() => {
-          if (g) g.centerAt(node.x, node.y, 500);
+          if (g) {
+            const cards = getAllCards();
+            const card = cards.find(c => c.node.id === switchNodeId);
+            if (card) g.centerAt(card.x, card.y, 500);
+          }
         }, 600);
       }
     }
@@ -335,7 +363,7 @@ async function boot() {
     // Fade out loading
     hideLoading(400);
 
-    // Mark boot complete — viz:toggle handler can now respond to user toggles
+    // Mark boot complete
     _bootComplete = true;
 
   } catch (err) {
@@ -355,6 +383,7 @@ async function boot() {
 // 8. INIT ALL SHARED UI SYSTEMS
 // ═══════════════════════════════════════════
 
+initKeybinds();
 initTooltip();
 initPanelSystem();
 initPinToggle();
@@ -393,7 +422,6 @@ window.addEventListener('resize', () => {
 });
 
 // Visualization toggle — pause/resume 2D rendering
-// Guard: ignore viz:toggle events emitted during boot (from restoreInterfaceConfig).
 let _bootComplete = false;
 on('viz:toggle', (enabled) => {
   if (!_bootComplete) return;
@@ -403,19 +431,26 @@ on('viz:toggle', (enabled) => {
       const container = document.getElementById('graph-container');
       const g = initGraph(container, {
         onRenderFramePost: () => {
-          if (isHullsVisible()) drawHulls();
           if (isMinimapVisible()) drawMinimap();
         },
       });
-      initBackground();
-      initHulls(g);
       initMinimap(g);
       initLasso(g);
       initContextMenu(g);
       applyGraphData();
     }
+    // Show the main canvas (it's position:fixed, not affected by container opacity)
+    const mainCanvas = document.getElementById('canvas-main');
+    if (mainCanvas) mainCanvas.classList.remove('viz-hidden-2d');
+    // Restore minimap to user's preference
+    restoreMinimap();
   } else {
     stopBackground();
+    // Hide the main canvas when entering focus mode
+    const mainCanvas = document.getElementById('canvas-main');
+    if (mainCanvas) mainCanvas.classList.add('viz-hidden-2d');
+    // Always hide minimap in focus mode
+    forceHideMinimap();
   }
 });
 
@@ -433,7 +468,7 @@ on('workspace:get-scene', (callback) => {
 
 on('workspace:restore-scene', ({ nodePositions }) => {
   if (nodePositions && Object.keys(nodePositions).length > 0) {
-    localStorage.setItem(KEYS.NODE_POS_2D, JSON.stringify(nodePositions));
+    storage.setItem(KEYS.NODE_POS_2D, JSON.stringify(nodePositions));
   }
   applyGraphData();
 });

@@ -9,6 +9,8 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/z4CSmB7qwU"><img src="https://img.shields.io/discord/1234567890?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Discord" /></a>
+  <a href="https://x.com/SynabunAI"><img src="https://img.shields.io/badge/Follow-%40SynabunAI-000000?logo=x&logoColor=white" alt="X / Twitter" /></a>
   <img src="https://img.shields.io/badge/License-Apache_2.0-blue" alt="Apache 2.0 License" />
   <img src="https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodedotjs&logoColor=white" alt="Node.js 18+" />
   <img src="https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
@@ -36,6 +38,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - **Category Logos** — upload custom logos for parent categories, rendered on sun nodes in the 3D visualization
 - **Backup & Restore** — create and restore Qdrant snapshots per connection via the Neural Interface
 - **Claude Code Hooks** — 5 lifecycle hooks automate memory recall, storage, and session indexing
+- **User Learning** — autonomous observation of user communication patterns, preferences, and behavioral singularity across sessions
 - **Claude Code `/synabun` Command** — single slash command hub with interactive menu for brainstorming, auditing, health checks, and memory search
 
 ## Table of Contents
@@ -575,8 +578,8 @@ SynaBun ships with 5 [Claude Code hooks](https://docs.anthropic.com/en/docs/agen
 
 | Hook | Event | Purpose |
 |------|-------|---------|
-| `session-start.mjs` | `SessionStart` | Injects category tree, project detection, behavioral rules, and 4 binding directives |
-| `prompt-submit.mjs` | `UserPromptSubmit` | Multi-tier recall trigger system — nudges AI to check memory before responding |
+| `session-start.mjs` | `SessionStart` | Injects category tree, project detection, behavioral rules, and 5 binding directives (incl. user learning) |
+| `prompt-submit.mjs` | `UserPromptSubmit` | Multi-tier recall trigger system with user learning nudges — nudges AI to check memory before responding |
 | `pre-compact.mjs` | `PreCompact` | Captures session transcript before context compaction for conversation indexing |
 | `stop.mjs` | `Stop` | Enforces memory storage — blocks response if session isn't indexed or edits aren't remembered |
 | `post-remember.mjs` | `PostToolUse` | Tracks edit count and clears enforcement flags when memories are stored |
@@ -744,7 +747,7 @@ Synabun/
 │   └── openclaw-logo-text.png      # OpenClaw bridge logo
 ├── data/                           # Runtime data directory
 │   ├── claude-code-projects.json   # Tracked project paths with hook status
-│   ├── hook-features.json          # Hook feature flags (e.g., conversationMemory)
+│   ├── hook-features.json          # Hook feature flags (conversationMemory, greeting, userLearning)
 │   ├── mcp-api-key.json            # API key for HTTP MCP transport
 │   ├── pending-compact/            # PreCompact enforcement flags (per session)
 │   ├── pending-remember/           # Edit tracking flags (per session)

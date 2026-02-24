@@ -10,7 +10,7 @@ export const state = {
   // ── Data (loaded from API) ──
   allNodes: [],
   allLinks: [],
-  categoryMetadata: {},    // { name: { description, color, parent, is_parent, logo_url } }
+  categoryMetadata: {},    // { name: { description, color, parent, is_parent, logo } }
   allCategoryNames: [],    // ordered list of category names from server
   categoryDescriptions: {},// { name: description }
 

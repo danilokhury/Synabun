@@ -5,6 +5,9 @@
 // Registers the 3D variant, imports all shared & variant modules,
 // wires event listeners, and boots the application.
 
+// ── Storage (self-hydrating — importing it populates the cache) ──
+import { storage } from '../../shared/storage.js';
+
 // ── Shared foundation ──
 import { state, emit, on } from '../../shared/state.js';
 import { registerVariant, registerMenuItem, registerHelpSection } from '../../shared/registry.js';
@@ -34,6 +37,7 @@ import { initExplorer } from '../../shared/ui-explorer.js';
 import { initSkillsStudio } from '../../shared/ui-skills.js';
 import { initTerminal } from '../../shared/ui-terminal.js';
 import { initWorkspaces } from '../../shared/ui-workspaces.js';
+import { initKeybinds } from '../../shared/ui-keybinds.js';
 
 // ── 3D variant modules ──
 import { gfx } from './gfx.js';
@@ -173,10 +177,11 @@ on('link-type-changed', (filter) => {
   setLinkTypeFilter(filter);
 });
 
-// Node selection — zoom camera
+// Node selection — zoom camera + open detail card
 on('node-selected', (node) => {
   if (node) {
     animateCameraToNode(node, { zoom: 'close' });
+    openMemoryCard(node);
   }
 });
 
@@ -347,6 +352,7 @@ async function boot() {
 // 8. INIT ALL SHARED UI SYSTEMS
 // ═══════════════════════════════════════════
 
+initKeybinds();  // async — loads keybinds from server, installs central dispatcher
 initTooltip();
 initPanelSystem();
 initPinToggle();
@@ -426,7 +432,7 @@ on('workspace:get-scene', (callback) => {
 
 on('workspace:restore-scene', ({ nodePositions, camera }) => {
   if (nodePositions && Object.keys(nodePositions).length > 0) {
-    localStorage.setItem(KEYS.NODE_POS_3D, JSON.stringify(nodePositions));
+    storage.setItem(KEYS.NODE_POS_3D, JSON.stringify(nodePositions));
   }
   if (camera) restoreCameraState(camera, 1500);
   applyGraphData();

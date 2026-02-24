@@ -716,7 +716,7 @@
   },
 
   "tooltip": {
-    "toggleViz": "Toggle Visualization (V)",
+    "toggleViz": "Focus Mode (V)",
     "fullscreen": "Fullscreen (F11)",
     "toggleExplorer": "Toggle Explorer (F)"
   },

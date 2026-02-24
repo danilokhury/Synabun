@@ -20,8 +20,8 @@
       "description": "Knowledge about the SynaBun memory system itself — architecture, MCP server, neural interface, hooks, integrations",
       "created_at": "2026-02-15T17:22:26.448Z",
       "is_parent": true,
-      "logo": "/category-logos/synabun.png",
-      "color": "#ffc000"
+      "color": "#ffc000",
+      "logo": "/logo-synabun.png"
     },
     {
       "name": "learning",
@@ -143,6 +143,19 @@
       "description": "Bug fixes and known issues specific to SynaBun — MCP server, neural interface, hooks, memory system",
       "created_at": "2026-02-22T06:48:57.907Z",
       "parent": "synabun"
+    },
+    {
+      "name": "user-profile",
+      "description": "Knowledge about the user as a person — communication style, preferences, behavioral patterns, and interaction singularity",
+      "created_at": "2026-02-23T18:57:47.747Z",
+      "is_parent": true,
+      "color": "#ffffff"
+    },
+    {
+      "name": "communication-style",
+      "description": "How the user communicates: tone, formality, verbosity, language patterns, emoji usage, text quirks",
+      "created_at": "2026-02-23T18:57:51.144Z",
+      "parent": "user-profile"
     }
   ]
 }

@@ -4,6 +4,26 @@ All notable changes to SynaBun will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-02-23
+
+### Added
+
+**Claude Code Hooks**
+- **User Learning (Directive 5)** — autonomous observation of user communication patterns, preferences, and behavioral singularity across sessions. Stored in `user-profile/communication-style` category with `project: "global"`.
+- **Priority 7: User Learning Nudge** in `prompt-submit.mjs` — quiet-only, one-time nudge after N interactions (configurable). Only fires when no higher-priority trigger matched.
+- **Step D in Directive 1** — optional `recall` of `user-profile` memories at session start for immediate adaptation.
+- `userLearning` and `userLearningThreshold` feature flags in `hook-features.json`.
+- `PUT /api/claude-code/hook-features/config` endpoint — set non-boolean config values (thresholds, etc.)
+
+**Neural Interface**
+- User Learning toggle and threshold input in Settings > Connections > Features panel
+
+**Categories**
+- `user-profile` parent category — knowledge about the user as a person
+- `communication-style` child category — tone, formality, verbosity, language patterns, text quirks
+
+---
+
 ## [1.1.0] - 2026-02-20
 
 ### Added

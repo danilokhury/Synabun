@@ -80,4 +80,7 @@ synabun (parent)
   ├── hooks           — Claude Code lifecycle hooks, installation
   ├── setup           — Installation, Docker, embedding providers
   └── development     — Code style, project structure, security, types
+
+user-profile (parent)
+  └── communication-style — Tone, formality, verbosity, language patterns, text quirks
 ```

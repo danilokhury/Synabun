@@ -12,60 +12,55 @@ import { emit } from '../../shared/state.js';
 // SLIDER DEFINITIONS
 // ═══════════════════════════════════════════
 
-/**
- * Each entry defines a range slider for the graphics settings tab.
- *   key        — property name on the gfx config object
- *   label      — human-readable label
- *   min/max    — range bounds
- *   step       — increment size
- *   format     — how to display the current value
- */
 const SLIDERS = [
-  { key: 'linkOpacity',        label: 'Link Opacity',                  min: 0,   max: 1,   step: 0.01, format: v => v.toFixed(2) },
-  { key: 'nodeSizeMultiplier', label: 'Node Size Multiplier',          min: 0.5, max: 3,   step: 0.1,  format: v => v.toFixed(1) },
-  { key: 'labelThreshold',     label: 'Label Threshold (importance \u2265)', min: 1,   max: 10,  step: 1,    format: v => String(v) },
-  { key: 'hullOpacity',        label: 'Hull Opacity',                  min: 0,   max: 0.5, step: 0.01, format: v => v.toFixed(2) },
+  { key: 'parentOrbitRadius', label: 'Parent Orbit Radius',   min: 300, max: 1200, step: 50,   format: v => String(v) },
+  { key: 'childOrbitGap',     label: 'Child Orbit Gap',       min: 100, max: 500,  step: 25,   format: v => String(v) },
+  { key: 'cardGap',           label: 'Card Spacing',          min: 5,   max: 40,   step: 5,    format: v => String(v) },
+  { key: 'cardOpacity',       label: 'Card Opacity',          min: 0.3, max: 1,    step: 0.05, format: v => v.toFixed(2) },
+  { key: 'regionGlowOpacity', label: 'Region Glow',           min: 0,   max: 0.2,  step: 0.01, format: v => v.toFixed(2) },
+  { key: 'linkOpacity',       label: 'Link Opacity',          min: 0,   max: 1,    step: 0.01, format: v => v.toFixed(2) },
+];
+
+const CHECKBOXES = [
+  { key: 'bgBreathingEnabled', label: 'Breathing animation' },
+  { key: 'bgLogoVisible',      label: 'Logo watermark' },
 ];
 
 // ═══════════════════════════════════════════
 // BUILD TAB HTML
 // ═══════════════════════════════════════════
 
-/**
- * Build the Graphics settings tab content.
- * Returns an HTML string to be injected into #settings-content.
- * @returns {string}
- */
 function buildGraphicsTab() {
-  let html = '';
-
   // Range sliders
-  for (const s of SLIDERS) {
-    html += `
-      <div class="settings-group">
-        <label>${s.label}: <span data-val="${s.key}">${s.format(gfx[s.key])}</span></label>
-        <input type="range" data-key="${s.key}" min="${s.min}" max="${s.max}" step="${s.step}" value="${gfx[s.key]}" style="width:100%">
-      </div>`;
-  }
+  const sliderRows = SLIDERS.map(s => `
+    <div class="gfx-row">
+      <span class="gfx-label">${s.label}</span>
+      <input type="range" data-key="${s.key}" min="${s.min}" max="${s.max}" step="${s.step}" value="${gfx[s.key]}">
+      <span class="gfx-val" data-val="${s.key}">${s.format(gfx[s.key])}</span>
+    </div>`).join('');
 
-  // Checkbox: background dot grid
-  html += `
-      <div class="settings-group">
-        <label><input type="checkbox" data-key="bgDotGrid" ${gfx.bgDotGrid ? 'checked' : ''}> Show background dot grid</label>
-      </div>`;
+  // Checkboxes
+  const checkboxRows = CHECKBOXES.map(cb => `
+    <div class="gfx-row">
+      <label class="gfx-label" style="min-width:0;display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" data-key="${cb.key}" ${gfx[cb.key] ? 'checked' : ''}> ${cb.label}
+      </label>
+    </div>`).join('');
 
-  return html;
+  return `
+    <div class="iface-section">
+      ${sliderRows}
+    </div>
+    <div class="iface-section">
+      ${checkboxRows}
+    </div>
+  `;
 }
 
 // ═══════════════════════════════════════════
 // WIRE UP AFTER RENDER
 // ═══════════════════════════════════════════
 
-/**
- * Attach event listeners to the sliders and checkboxes after the
- * settings tab HTML has been injected into the DOM.
- * @param {HTMLElement} container  The #settings-content element
- */
 function initGraphicsTab(container) {
   // Range sliders
   container.querySelectorAll('input[type="range"]').forEach(input => {

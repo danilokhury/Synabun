@@ -6,6 +6,7 @@
 
 import { registerSettingsTab } from '../../shared/registry.js';
 import { state, emit, on } from '../../shared/state.js';
+import { storage } from '../../shared/storage.js';
 import {
   gfx,
   GFX_DEFAULTS,
@@ -166,7 +167,7 @@ function initGraphicsTab(container) {
       saveGfxConfig(gfx);
 
       // Clear preset selection when manually tweaking
-      localStorage.removeItem('neural-gfx-preset');
+      storage.removeItem('neural-gfx-preset');
       container.querySelectorAll('.gfx-preset-card[data-preset]').forEach(c => c.classList.remove('active'));
 
       // Live-apply visual changes
@@ -181,8 +182,8 @@ function initGraphicsTab(container) {
   if (resetBtn) {
     resetBtn.addEventListener('click', () => {
       Object.assign(gfx, GFX_DEFAULTS);
-      localStorage.removeItem('neural-gfx-config');
-      localStorage.removeItem('neural-gfx-preset');
+      storage.removeItem('neural-gfx-config');
+      storage.removeItem('neural-gfx-preset');
 
       container.querySelectorAll('input[type="range"][data-key]').forEach(input => {
         const key = input.dataset.key;

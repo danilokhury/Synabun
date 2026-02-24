@@ -7,6 +7,7 @@
 import { state, emit, on } from './state.js';
 import { getMenuItems } from './registry.js';
 import { openHelp } from './ui-help.js';
+import { registerAction } from './ui-keybinds.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -170,16 +171,8 @@ function wireViewMenu() {
     if (catItem) catItem.classList.remove('active');
   });
 
-  // Keyboard shortcut: C to toggle categories
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'c' || e.key === 'C') {
-      const active = document.activeElement?.tagName;
-      if (active === 'INPUT' || active === 'TEXTAREA') return;
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
-      e.preventDefault();
-      if (catItem) catItem.click();
-    }
-  });
+  // Keyboard shortcut: toggle categories (via central keybinds)
+  registerAction('toggle-categories', () => { if (catItem) catItem.click(); });
 
   // Help
   const helpItem = $('menu-help');
@@ -242,16 +235,8 @@ function wireSkillsMenu() {
     });
   }
 
-  // Keyboard shortcut: K to open Skills Studio
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'k' || e.key === 'K') {
-      const active = document.activeElement?.tagName;
-      if (active === 'INPUT' || active === 'TEXTAREA') return;
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
-      e.preventDefault();
-      emit('skills:open');
-    }
-  });
+  // Keyboard shortcut: open Skills Studio (via central keybinds)
+  registerAction('open-skills', () => emit('skills:open'));
 }
 
 // ── Terminal Menu ──
@@ -269,26 +254,9 @@ function wireTerminalMenu() {
     if (el) el.addEventListener('click', () => { closeAll(); handler(); });
   });
 
-  // Keyboard shortcut: T to toggle terminal
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 't' || e.key === 'T') {
-      const active = document.activeElement?.tagName;
-      if (active === 'INPUT' || active === 'TEXTAREA') return;
-      // Don't trigger when typing in xterm.js
-      if (document.activeElement?.closest('.term-viewport')) return;
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
-      e.preventDefault();
-      emit('terminal:toggle');
-    }
-  });
-
-  // Ctrl+` shortcut (VS Code convention)
-  document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === '`') {
-      e.preventDefault();
-      emit('terminal:toggle');
-    }
-  });
+  // Keyboard shortcuts: toggle terminal (via central keybinds)
+  registerAction('toggle-terminal', () => emit('terminal:toggle'));
+  registerAction('toggle-terminal-alt', () => emit('terminal:toggle'));
 }
 
 // ── Variant menu items injection ──

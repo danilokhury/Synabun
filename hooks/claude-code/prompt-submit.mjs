@@ -202,6 +202,12 @@ const NUDGE = {
     `If any of those apply, call \`recall\` with an ENGLISH query that captures their intent (SynaBun memories are stored in English).`,
     `If it's a trivial or direct command, skip recall.`,
   ].join(' '),
+
+  userLearning: [
+    `SynaBun User Learning: You've had several exchanges this session. Briefly reflect — have you noticed any patterns in how the user communicates, what they prefer, or how they work?`,
+    `If you've observed something meaningful that isn't already stored, call \`recall\` with category \`user-profile\` to check, then \`remember\` if it's genuinely new.`,
+    `Max 1-2 observations. Skip if nothing stands out.`,
+  ].join(' '),
 };
 
 // ============================================================
@@ -397,6 +403,29 @@ async function main() {
       },
     }));
     return;
+  }
+
+  // --- Priority 7: User Learning nudge (quiet-only, one-time per session) ---
+  const userLearningEnabled = features.userLearning !== false;
+  if (userLearningEnabled && sessionId) {
+    const userLearningThreshold = features.userLearningThreshold || 8;
+    const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+    if (existsSync(flagPath)) {
+      try {
+        const flag = JSON.parse(readFileSync(flagPath, 'utf-8'));
+        if ((flag.messageCount || 0) >= userLearningThreshold && !flag.userLearningNudged) {
+          flag.userLearningNudged = true;
+          writeFileSync(flagPath, JSON.stringify(flag));
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'UserPromptSubmit',
+              additionalContext: NUDGE.userLearning,
+            },
+          }));
+          return;
+        }
+      } catch { /* ignore */ }
+    }
   }
 
   // No triggers matched — no nudge

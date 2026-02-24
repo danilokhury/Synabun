@@ -19,6 +19,7 @@
 
 import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
+import { storage } from './storage.js';
 import { getVariant } from './registry.js';
 import {
   getOpenCardsSnapshot,
@@ -41,14 +42,22 @@ let _isOpen = false;
 
 function getWorkspaces() {
   try {
-    return JSON.parse(localStorage.getItem(KEYS.WORKSPACES) || '[]');
+    return JSON.parse(storage.getItem(KEYS.WORKSPACES) || '[]');
   } catch {
     return [];
   }
 }
 
 function saveWorkspacesToStorage(list) {
-  localStorage.setItem(KEYS.WORKSPACES, JSON.stringify(list));
+  storage.setItem(KEYS.WORKSPACES, JSON.stringify(list));
+}
+
+function _readStoredPositions(key) {
+  try {
+    return JSON.parse(storage.getItem(key) || '{}');
+  } catch {
+    return {};
+  }
 }
 
 function getActiveId() {
@@ -78,33 +87,48 @@ function saveWorkspace(name) {
   if (!name || !name.trim()) return;
   name = name.trim();
 
+  const currentVariant = getVariant() || '3d';
+
   // Request scene data from the active variant
   emit('workspace:get-scene', (sceneData) => {
     const { nodePositions, camera } = sceneData || {};
 
     const cards = getOpenCardsSnapshot();
     const terminal = getTerminalSnapshot();
+
+    // Check if updating an existing workspace — preserve other variant's positions
+    const list = getWorkspaces();
+    const existingIdx = list.findIndex(w => w.name === name);
+    const existing = existingIdx >= 0 ? list[existingIdx] : null;
+
+    // Store positions per-variant so 2D and 3D layouts are independent.
+    // Active variant: captured from scene. Inactive variant: preserved from
+    // existing workspace, or read from persistent storage for new workspaces.
+    const pos2d = currentVariant === '2d'
+      ? (nodePositions || {})
+      : (existing?.nodePositions2d || _readStoredPositions(KEYS.NODE_POS_2D));
+    const pos3d = currentVariant === '3d'
+      ? (nodePositions || {})
+      : (existing?.nodePositions3d || _readStoredPositions(KEYS.NODE_POS_3D));
+
     const workspace = {
       id: String(Date.now()),
       name,
       created: new Date().toISOString(),
       updated: new Date().toISOString(),
-      variant: getVariant() || '3d',
+      variant: currentVariant,
       cards,
       terminal,
-      nodePositions: nodePositions || {},
-      camera: camera || null,
+      nodePositions2d: pos2d,
+      nodePositions3d: pos3d,
+      camera: currentVariant === '3d' ? (camera || null) : (existing?.camera || null),
       activeCategories: [...state.activeCategories],
       selectedNodeId: state.selectedNodeId,
     };
 
-    const list = getWorkspaces();
-
-    // Check if name already exists — update it
-    const existingIdx = list.findIndex(w => w.name === name);
     if (existingIdx >= 0) {
-      workspace.id = list[existingIdx].id;
-      workspace.created = list[existingIdx].created;
+      workspace.id = existing.id;
+      workspace.created = existing.created;
       list[existingIdx] = workspace;
     } else {
       list.unshift(workspace);
@@ -130,12 +154,27 @@ function loadWorkspace(workspace) {
   // Close all current cards
   closeAllCards();
 
+  const currentVariant = getVariant() || '3d';
+
+  // Pick positions for the active variant only.
+  // Legacy workspaces have a single nodePositions — use workspace.variant to assign.
+  let positions;
+  if (currentVariant === '2d') {
+    positions = workspace.nodePositions2d
+      || (workspace.variant === '2d' ? workspace.nodePositions : null)
+      || {};
+  } else {
+    positions = workspace.nodePositions3d
+      || (workspace.variant === '3d' ? workspace.nodePositions : null)
+      || {};
+  }
+
   // Wait for close animation, then restore
   setTimeout(() => {
-    // Restore scene (node positions + camera)
+    // Restore scene — only positions matching the active variant
     emit('workspace:restore-scene', {
-      nodePositions: workspace.nodePositions || {},
-      camera: workspace.camera || null,
+      nodePositions: positions,
+      camera: currentVariant === '3d' ? (workspace.camera || null) : null,
     });
 
     // Restore active categories
@@ -164,7 +203,7 @@ function loadWorkspace(workspace) {
     // Restore selection
     if (workspace.selectedNodeId) {
       state.selectedNodeId = workspace.selectedNodeId;
-      localStorage.setItem(KEYS.SELECTED_NODE, workspace.selectedNodeId);
+      storage.setItem(KEYS.SELECTED_NODE, workspace.selectedNodeId);
     }
 
     // Restore terminal state (position, detached/docked, floating tab positions)
@@ -182,6 +221,99 @@ function loadWorkspace(workspace) {
 
 
 // ═══════════════════════════════════════════
+// CORE — CLEAR WORKSPACE (with confirmation)
+// ═══════════════════════════════════════════
+
+function performClear() {
+  closeAllCards();
+  setActiveId(null);
+  updateIndicator();
+  emit('layout:reset');
+}
+
+function showClearDialog() {
+  closeDropdown();
+
+  // Build overlay + modal using the tag-delete pattern
+  const overlay = document.createElement('div');
+  overlay.className = 'tag-delete-overlay';
+
+  const autoName = 'Layout ' + new Date().toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+
+  overlay.innerHTML = `
+    <div class="tag-delete-modal" style="min-width:300px;">
+      <div class="tag-delete-modal-title">Clear workspace?</div>
+      <div style="color:var(--t-muted);font-size:12px;margin-bottom:14px;">
+        This will close all cards and reset the layout.
+      </div>
+      <div class="ws-clear-save-row">
+        <input type="text" id="ws-clear-name" placeholder="${autoName}" autocomplete="off" spellcheck="false">
+        <button id="ws-clear-save-btn" class="ws-clear-action save" title="Save current layout, then clear">Save &amp; Clear</button>
+      </div>
+      <div class="tag-delete-modal-actions" style="margin-top:10px;">
+        <button id="ws-clear-discard" class="ws-clear-action discard">Clear without saving</button>
+        <button id="ws-clear-cancel" class="ws-clear-action cancel">Cancel</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  const nameInput = overlay.querySelector('#ws-clear-name');
+  const saveBtn = overlay.querySelector('#ws-clear-save-btn');
+  const discardBtn = overlay.querySelector('#ws-clear-discard');
+  const cancelBtn = overlay.querySelector('#ws-clear-cancel');
+
+  const dismiss = () => {
+    overlay.style.opacity = '0';
+    setTimeout(() => overlay.remove(), 150);
+  };
+
+  // Save & Clear
+  saveBtn.addEventListener('click', () => {
+    const name = (nameInput.value.trim()) || autoName;
+    saveWorkspace(name);
+    // Small delay so save completes before clearing
+    setTimeout(() => {
+      performClear();
+      dismiss();
+    }, 100);
+  });
+
+  // Clear without saving
+  discardBtn.addEventListener('click', () => {
+    performClear();
+    dismiss();
+  });
+
+  // Cancel
+  cancelBtn.addEventListener('click', dismiss);
+
+  // Overlay click = cancel
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) dismiss();
+  });
+
+  // Keyboard
+  const onKey = (e) => {
+    if (e.key === 'Escape') {
+      dismiss();
+      document.removeEventListener('keydown', onKey);
+    } else if (e.key === 'Enter' && document.activeElement === nameInput) {
+      e.preventDefault();
+      saveBtn.click();
+    }
+  };
+  document.addEventListener('keydown', onKey);
+
+  // Focus the name input
+  requestAnimationFrame(() => nameInput.focus());
+}
+
+
+// ═══════════════════════════════════════════
 // CORE — DELETE / RENAME
 // ═══════════════════════════════════════════
 
@@ -193,6 +325,51 @@ function deleteWorkspace(id) {
     updateIndicator();
   }
   renderList();
+}
+
+function confirmDeleteWorkspace(id, name) {
+  const overlay = document.createElement('div');
+  overlay.className = 'tag-delete-overlay';
+
+  overlay.innerHTML = `
+    <div class="tag-delete-modal" style="min-width:280px;">
+      <div class="tag-delete-modal-title">Delete workspace?</div>
+      <div style="color:var(--t-bright);font-size:13px;font-weight:600;margin-bottom:6px;">${name}</div>
+      <div style="color:var(--t-muted);font-size:12px;margin-bottom:16px;">
+        This cannot be undone.
+      </div>
+      <div class="tag-delete-modal-actions">
+        <button class="ws-clear-action discard" id="ws-confirm-delete">Delete</button>
+        <button class="ws-clear-action" id="ws-confirm-cancel">Cancel</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  const deleteBtn = overlay.querySelector('#ws-confirm-delete');
+  const cancelBtn = overlay.querySelector('#ws-confirm-cancel');
+
+  const dismiss = () => {
+    overlay.style.opacity = '0';
+    setTimeout(() => overlay.remove(), 150);
+  };
+
+  deleteBtn.addEventListener('click', () => {
+    dismiss();
+    deleteWorkspace(id);
+  });
+
+  cancelBtn.addEventListener('click', dismiss);
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) dismiss();
+  });
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { dismiss(); document.removeEventListener('keydown', onKey); }
+  };
+  document.addEventListener('keydown', onKey);
 }
 
 function renameWorkspace(id, newName) {
@@ -322,7 +499,7 @@ function renderList() {
     // Delete button
     row.querySelector('.ws-row-delete').addEventListener('click', (e) => {
       e.stopPropagation();
-      deleteWorkspace(ws.id);
+      confirmDeleteWorkspace(ws.id, ws.name);
     });
 
     listEl.appendChild(row);
@@ -406,6 +583,15 @@ export function initWorkspaces() {
     });
   }
 
+  // Clear workspace (with confirmation dialog)
+  const clearBtn = $('ws-clear-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showClearDialog();
+    });
+  }
+
   // Save workspace
   if (saveBtn) {
     saveBtn.addEventListener('click', (e) => {
@@ -472,7 +658,7 @@ export function initWorkspaces() {
   // Grid snap toggle
   const gridBtn = $('ws-grid-toggle');
   if (gridBtn) {
-    const saved = localStorage.getItem(KEYS.GRID_SNAP);
+    const saved = storage.getItem(KEYS.GRID_SNAP);
     if (saved === 'true') {
       state.gridSnap = true;
       gridBtn.classList.add('active');
@@ -483,7 +669,7 @@ export function initWorkspaces() {
       state.gridSnap = !state.gridSnap;
       gridBtn.classList.toggle('active', state.gridSnap);
       document.body.classList.toggle('grid-active', state.gridSnap);
-      localStorage.setItem(KEYS.GRID_SNAP, state.gridSnap);
+      storage.setItem(KEYS.GRID_SNAP, state.gridSnap);
     });
   }
 

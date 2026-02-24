@@ -12,17 +12,11 @@ import { openMemoryCard } from './ui-detail.js';
 import { truncate } from './utils.js';
 import { scheduleGraphRemoval, cancelScheduledRemoval, buildCategorySidebar, openColorPicker, editCategoryUI, deleteCategoryUI } from './ui-sidebar.js';
 import { updateCategory as apiUpdateCategory } from './api.js';
-import { KEYS as SHARED_KEYS } from './constants.js';
+import { KEYS } from './constants.js';
+import { registerAction } from './ui-keybinds.js';
+import { storage } from './storage.js';
 
 const $ = (id) => document.getElementById(id);
-
-// ─── localStorage keys ─────────────────
-const KEYS = {
-  COLLAPSED: 'neural-explorer-collapsed',
-  SORT: 'neural-explorer-sort',
-  VISIBLE: 'neural-explorer-visible',
-  WIDTH: 'neural-explorer-width',
-};
 
 // ─── Local state ────────────────────────
 let _sortMode = 'newest';   // 'newest' | 'oldest' | 'alpha'
@@ -127,47 +121,47 @@ function showCategoryContextMenu(btnEl, item, isParent, eyeState) {
 
 function loadPersistedState() {
   try {
-    const raw = localStorage.getItem(KEYS.COLLAPSED);
+    const raw = storage.getItem(KEYS.EXPLORER_COLLAPSED);
     if (raw) _collapsed = new Set(JSON.parse(raw));
   } catch {}
   try {
-    const s = localStorage.getItem(KEYS.SORT);
+    const s = storage.getItem(KEYS.EXPLORER_SORT);
     if (s && ['newest', 'oldest', 'alpha'].includes(s)) _sortMode = s;
   } catch {}
   try {
-    const v = localStorage.getItem(KEYS.VISIBLE);
+    const v = storage.getItem(KEYS.EXPLORER_VISIBLE);
     if (v === 'true') _visible = true;
   } catch {}
   try {
-    const w = parseInt(localStorage.getItem(KEYS.WIDTH), 10);
+    const w = parseInt(storage.getItem(KEYS.EXPLORER_WIDTH), 10);
     if (w >= MIN_WIDTH && w <= MAX_WIDTH) _width = w;
   } catch {}
 }
 
 function saveCollapsed() {
-  try { localStorage.setItem(KEYS.COLLAPSED, JSON.stringify([..._collapsed])); } catch {}
+  try { storage.setItem(KEYS.EXPLORER_COLLAPSED, JSON.stringify([..._collapsed])); } catch {}
 }
 
 function saveSort() {
-  try { localStorage.setItem(KEYS.SORT, _sortMode); } catch {}
+  try { storage.setItem(KEYS.EXPLORER_SORT, _sortMode); } catch {}
 }
 
 function saveVisible() {
-  try { localStorage.setItem(KEYS.VISIBLE, String(_visible)); } catch {}
+  try { storage.setItem(KEYS.EXPLORER_VISIBLE, String(_visible)); } catch {}
 }
 
 function saveWidth() {
-  try { localStorage.setItem(KEYS.WIDTH, String(_width)); } catch {}
+  try { storage.setItem(KEYS.EXPLORER_WIDTH, String(_width)); } catch {}
 }
 
 // ─── Explorer category order persistence ──
 function getExplorerCatOrder() {
-  try { return JSON.parse(localStorage.getItem(SHARED_KEYS.EXPLORER_CAT_ORDER) || '{}'); }
+  try { return JSON.parse(storage.getItem(KEYS.EXPLORER_CAT_ORDER) || '{}'); }
   catch { return {}; }
 }
 
 function saveExplorerCatOrder(order) {
-  try { localStorage.setItem(SHARED_KEYS.EXPLORER_CAT_ORDER, JSON.stringify(order)); }
+  try { storage.setItem(KEYS.EXPLORER_CAT_ORDER, JSON.stringify(order)); }
   catch {}
 }
 
@@ -470,7 +464,8 @@ function renderTreeItem(item, depth) {
   const label = document.createElement('span');
   label.className = 'explorer-label';
   label.textContent = item.name;
-  label.title = item.meta?.description || item.name;
+  label.setAttribute('data-tooltip', item.meta?.description || item.name);
+  label.setAttribute('data-tooltip-pos', 'right');
   row.appendChild(label);
 
   // Badge (count)
@@ -590,7 +585,8 @@ function renderMemoryItem(node, depth) {
   label.className = 'explorer-label';
   const preview = getMemoryLabel(node);
   label.textContent = truncate(preview, 60);
-  label.title = preview;
+  row.setAttribute('data-tooltip', preview);
+  row.setAttribute('data-tooltip-pos', 'right');
   row.appendChild(label);
 
   // Importance indicator
@@ -599,7 +595,8 @@ function renderMemoryItem(node, depth) {
     imp.className = 'explorer-importance';
     const val = node.payload.importance;
     imp.textContent = '\u25CF'.repeat(Math.min(val, 10));
-    imp.title = `Importance: ${val}/10`;
+    imp.setAttribute('data-tooltip', `Importance: ${val}/10`);
+    imp.setAttribute('data-tooltip-pos', 'right');
     if (val >= 8) imp.classList.add('explorer-importance--high');
     row.appendChild(imp);
   }
@@ -1256,16 +1253,8 @@ export function initExplorer() {
   // Right-edge resize
   initResizeHandle();
 
-  // Keyboard shortcut: F to toggle
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'f' || e.key === 'F') {
-      const inInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
-      if (inInput) return;
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
-      e.preventDefault();
-      toggleExplorer();
-    }
-  });
+  // Keyboard shortcut: toggle explorer (via central keybinds)
+  registerAction('toggle-explorer', () => toggleExplorer());
 
   // ── Event bus listeners ──
 

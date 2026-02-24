@@ -4,6 +4,8 @@
 // exposes t() / tp() for all modules.
 // ═══════════════════════════════════════════
 
+import { storage } from './storage.js';
+
 let _messages = {};
 let _locale = 'en';
 let _ready = false;
@@ -94,7 +96,7 @@ export function isReady() {
  */
 function detectLocale() {
   // 1. Explicit user preference
-  const saved = localStorage.getItem('synabun-locale');
+  const saved = storage.getItem('synabun-locale');
   if (saved && SUPPORTED_LOCALES.includes(saved)) return saved;
   // 2. Browser language
   const browser = (navigator.language || 'en').slice(0, 2).toLowerCase();
@@ -140,6 +142,6 @@ export async function initI18n(locale) {
  */
 export function setLocale(locale) {
   if (!SUPPORTED_LOCALES.includes(locale)) return;
-  localStorage.setItem('synabun-locale', locale);
+  storage.setItem('synabun-locale', locale);
   window.location.reload();
 }
