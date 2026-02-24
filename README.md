@@ -9,6 +9,9 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/z4CSmB7qwU"><img src="https://img.shields.io/discord/1234567890?logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Discord" /></a>
+  <a href="https://x.com/SynabunAI"><img src="https://img.shields.io/badge/Follow-%40SynabunAI-000000?logo=x&logoColor=white" alt="X / Twitter" /></a>
+  <img src="https://img.shields.io/badge/License-Apache_2.0-blue" alt="Apache 2.0 License" />
   <img src="https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodedotjs&logoColor=white" alt="Node.js 18+" />
   <img src="https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/Docker-Qdrant-2496ED?logo=docker&logoColor=white" alt="Docker" />
@@ -29,6 +32,14 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - **Neural Interface** — interactive 3D force-directed graph visualization at `localhost:3344`
 - **10+ Embedding Providers** — OpenAI, Google Gemini, Ollama, Mistral, Cohere, and more via OpenAI-compatible API
 - **Onboarding Wizard** — guided setup through the Neural Interface UI
+- **Trash & Restore** — soft-delete with full restore capability; trash management via Neural Interface
+- **Memory Sync** — SHA-256 file hash tracking detects when related source files change, flagging stale memories
+- **OpenClaw Bridge** — read-only integration overlays OpenClaw workspace memories as ephemeral nodes in the 3D graph
+- **Category Logos** — upload custom logos for parent categories, rendered on sun nodes in the 3D visualization
+- **Backup & Restore** — create and restore Qdrant snapshots per connection via the Neural Interface
+- **Claude Code Hooks** — 5 lifecycle hooks automate memory recall, storage, and session indexing
+- **User Learning** — autonomous observation of user communication patterns, preferences, and behavioral singularity across sessions
+- **Claude Code `/synabun` Command** — single slash command hub with interactive menu for brainstorming, auditing, health checks, and memory search
 
 ## Table of Contents
 
@@ -43,6 +54,8 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - [Configuration](#configuration)
 - [Embedding Providers](#embedding-providers)
 - [Embedding Model Migration](#embedding-model-migration)
+- [Claude Code Hooks](#claude-code-hooks)
+- [Claude Code `/synabun` Command](#claude-code-synabun-command)
 - [CLAUDE.md Integration](#claudemd-integration)
 - [Multi-Project Support](#multi-project-support)
 - [Docker Management](#docker-management)
@@ -50,6 +63,21 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - [Troubleshooting](#troubleshooting)
 - [Cost](#cost)
 - [File Structure](#file-structure)
+- [License](#license)
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| **[README](./README.md)** | Quick start, architecture, configuration |
+| **[Usage Guide](./docs/usage-guide.md)** | Detailed usage patterns, tool quirks, best practices |
+| **[API Reference](./docs/api-reference.md)** | Neural Interface REST API (55+ endpoints) |
+| **[Hooks Guide](./docs/hooks.md)** | Claude Code hooks: 5 lifecycle hooks for memory automation |
+| **[Contributing](./CONTRIBUTING.md)** | Bug reports, feature requests, and forking guide |
+| **[Security](./SECURITY.md)** | Security model and vulnerability reporting |
+| **[Changelog](./CHANGELOG.md)** | Version history |
+
+**Contributions:** We welcome [bug reports and feature requests](https://github.com/danilokhury/Synabun/issues). Pull requests are not accepted. See [CONTRIBUTING.md](./CONTRIBUTING.md) for details.
 
 ## Quick Start
 
@@ -136,12 +164,7 @@ claude mcp add SynaBun -s user \
 
 ### 4. Verify
 
-Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 9 tools listed.
-<<<<<<< HEAD
-
-</details>
-=======
->>>>>>> 680a18cdc06026d9864584a0764f25dc05635e24
+Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 11 tools listed.
 
 </details>
 
@@ -152,8 +175,8 @@ The `.mcp.json` path must match the platform where **Claude Code is running**:
 
 | Platform | Path format | Example |
 |----------|-------------|---------|
-| **Windows** | Forward slashes | `J:/Sites/Apps/Synabun/mcp-server/run.mjs` |
-| **WSL** | Linux mount paths | `/mnt/j/Sites/Apps/Synabun/mcp-server/run.mjs` |
+| **Windows** | Forward slashes | `C:/Users/me/Synabun/mcp-server/run.mjs` |
+| **WSL** | Linux mount paths | `/mnt/c/Users/me/Synabun/mcp-server/run.mjs` |
 | **Linux/macOS** | Native paths | `/home/user/Apps/Synabun/mcp-server/run.mjs` |
 
 **Common pitfall:** If Claude Code runs on Windows but you use a WSL-style path like `/mnt/j/...`, Node.js will resolve it to `J:\mnt\j\...` (prepending the drive letter), which doesn't exist. Always use Windows-native paths when Claude Code runs on Windows.
@@ -172,16 +195,17 @@ The `.mcp.json` path must match the platform where **Claude Code is running**:
 ```
 AI Assistant (any project)
     │
-    │  MCP Protocol (stdio)
+    │  MCP Protocol (stdio or HTTP)
     │
-┌───┴──────────────────┐
-│   SynaBun MCP Server │  Node.js + TypeScript
-│                      │
-│  9 tools: remember,  │
-│  recall, forget,     │
-│  reflect, memories,  │
-│  category_*          │
-└───┬────────┬─────────┘
+┌───┴──────────────────────┐
+│   SynaBun MCP Server     │  Node.js + TypeScript
+│                          │
+│  11 tools: remember,     │
+│  recall, forget, restore,│
+│  reflect, memories, sync,│
+│  category_create/update/ │
+│  delete/list             │
+└───┬────────┬─────────────┘
     │        │
     │        │  OpenAI-compatible API
     │        │  (text-embedding-3-small, 1536 dims)
@@ -190,12 +214,12 @@ AI Assistant (any project)
     │
     │  Qdrant REST API
     ▼
-┌──────────────────────┐
-│   Docker: Qdrant     │  Vector database
-│   localhost:6333     │
-│   Collection:        │
-│   claude_memory      │
-└──────────────────────┘
+┌──────────────────────────┐
+│   Docker: Qdrant         │  Vector database
+│   localhost:6333         │  (multi-instance supported)
+│   Collection:            │
+│   claude_memory          │
+└──────────────────────────┘
 ```
 
 ## MCP Tools
@@ -205,8 +229,10 @@ AI Assistant (any project)
 | `remember` | Store a new memory | `content`, `category`, `project`, `tags`, `importance`, `subcategory` |
 | `recall` | Semantic search across memories | `query`, `category`, `project`, `tags`, `limit`, `min_importance` |
 | `reflect` | Update an existing memory | `memory_id` (full UUID), `content`, `importance`, `tags`, `category` |
-| `forget` | Delete a memory by ID | `memory_id` |
+| `forget` | Soft-delete a memory (moves to trash) | `memory_id` |
+| `restore` | Restore a trashed memory | `memory_id` |
 | `memories` | List recent memories or get stats | `action` (recent, stats, by-category, by-project) |
+| `sync` | Detect stale memories via file hash comparison | `project` (optional filter) |
 | `category_create` | Create a new category | `name`, `description`, `parent`, `color` |
 | `category_update` | Update a category | `name`, `new_name`, `description`, `parent`, `color` |
 | `category_delete` | Delete a category | `name`, `reassign_to`, `reassign_children_to` |
@@ -228,11 +254,18 @@ Then open **http://localhost:3344**
 - Interactive force-directed graph — memories as nodes, relationships as edges
 - Click nodes to inspect, edit, or delete memories
 - Semantic search bar (press `/` to focus)
-- Category sidebar with filtering
+- Category sidebar with filtering, hierarchy editing, and custom logos
 - Drag nodes to pin them in 3D space
+- Trash management — view, restore, or permanently purge deleted memories
+- Memory Sync — detect stale memories whose source files have changed (SHA-256 hash comparison)
+- Backup & Restore — create and restore Qdrant snapshots per connection
+- Multi-connection switching — manage multiple Qdrant instances at runtime
+- OpenClaw Bridge — overlay OpenClaw workspace memories as read-only ephemeral nodes
+- Graphics quality presets (Low, Medium, High, Ultra)
 - Onboarding wizard for first-time setup
+- Category export — download all memories in a category as Markdown
 
-The Neural Interface also serves as the admin panel for category management — create, edit, and delete categories with a visual editor.
+The Neural Interface also serves as the admin panel for category management, hook installation, skill management, and MCP registration — all from a single web UI.
 
 ## Usage
 
@@ -285,17 +318,31 @@ reflect({
 })
 ```
 
-### Deleting memories
+### Deleting and restoring memories
 
 ```javascript
+// Soft-delete (moves to trash)
 forget({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
+
+// Undo — restore from trash
+restore({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
 ```
 
-For detailed usage patterns and best practices, see [USAGE.md](./USAGE.md).
+### Detecting stale memories
+
+```javascript
+// Check which memories have outdated file references
+sync({ project: "my-project" })
+// Returns: list of memories whose related_files have changed since last update
+```
+
+The `sync` tool compares SHA-256 hashes of files referenced in `related_files` against stored checksums. Use it to find memories that may need updating after code changes.
+
+For detailed usage patterns and best practices, see the [Usage Guide](./docs/usage-guide.md).
 
 ## Memory Categories
 
-Categories are fully user-defined in `mcp-server/data/custom-categories.json`. There are no hardcoded defaults. Manage them via MCP tools or the [Neural Interface](#neural-interface).
+Categories are fully user-defined, stored per-connection in `mcp-server/data/custom-categories-{connId}.json`. There are no hardcoded defaults. Manage them via MCP tools or the [Neural Interface](#neural-interface).
 
 ### How Claude Decides Where to Store Memories
 
@@ -337,9 +384,9 @@ Descriptions should be **prescriptive rules**, not vague labels:
 Parent categories group related children into visual clusters. They affect how Claude sees the hierarchy:
 
 ```
-[criticalpixel] (parent) — All CriticalPixel memories go here
-  bug-fixes = Bug fixes, root cause analysis, error resolutions for CP code
-  databases = Database schemas, queries, migrations, Supabase config
+[my-project] (parent) — All memories for my-project go here
+  bug-fixes = Bug fixes, root cause analysis, error resolutions
+  databases = Database schemas, queries, migrations, config
 deals = ONLY deal/pricing memories: store imports, price comparisons...
 memory-system = MCP server architecture, Qdrant config, embedding pipeline...
 ```
@@ -402,26 +449,66 @@ Every time a memory is returned by `recall`, its `accessed_at` timestamp and `ac
 
 ### Environment variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `QDRANT_MEMORY_URL` | `http://localhost:6333` | Qdrant REST API URL |
-| `QDRANT_MEMORY_API_KEY` | `claude-memory-local-key` | Qdrant API key |
-| `QDRANT_MEMORY_COLLECTION` | `claude_memory` | Collection name |
-| `OPENAI_EMBEDDING_API_KEY` | — | **Required.** API key for embedding provider |
-| `EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | Base URL for OpenAI-compatible embedding API |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
-| `EMBEDDING_DIMENSIONS` | `1536` | Vector dimensions |
-| `NEURAL_PORT` | `3344` | Neural Interface server port |
-
-Set these in the `.env` file at the project root, or pass them via the `.mcp.json` env block.
-
-### Changing the API key
-
-Edit `.env`, then restart the Docker container and update the Claude MCP registration to match:
+SynaBun uses a **namespaced multi-instance** configuration format that supports multiple Qdrant and embedding provider connections simultaneously:
 
 ```env
-QDRANT_MEMORY_API_KEY=your-new-key
+# Active instances (selects which connection to use)
+QDRANT_ACTIVE=memory_main
+EMBEDDING_ACTIVE=openai_main
+
+# Qdrant connection (namespaced: QDRANT__<id>__<FIELD>)
+QDRANT__memory_main__PORT=6333
+QDRANT__memory_main__GRPC_PORT=6334
+QDRANT__memory_main__API_KEY=your-api-key
+QDRANT__memory_main__COLLECTION=claude_memory
+QDRANT__memory_main__LABEL=Memory Main
+
+# Embedding provider (namespaced: EMBEDDING__<id>__<FIELD>)
+EMBEDDING__openai_main__API_KEY=sk-your-api-key
+EMBEDDING__openai_main__BASE_URL=https://api.openai.com/v1
+EMBEDDING__openai_main__MODEL=text-embedding-3-small
+EMBEDDING__openai_main__DIMENSIONS=1536
+EMBEDDING__openai_main__LABEL=OpenAI Main
+
+# General
+NEURAL_PORT=3344
+SETUP_COMPLETE=true
 ```
+
+| Variable Pattern | Description |
+|-----------------|-------------|
+| `QDRANT_ACTIVE` | ID of the active Qdrant connection |
+| `QDRANT__<id>__PORT` | Qdrant REST port (default: 6333) |
+| `QDRANT__<id>__API_KEY` | Qdrant API key |
+| `QDRANT__<id>__COLLECTION` | Collection name (default: claude_memory) |
+| `QDRANT__<id>__URL` | Full URL (for remote instances, overrides PORT) |
+| `EMBEDDING_ACTIVE` | ID of the active embedding provider |
+| `EMBEDDING__<id>__API_KEY` | **Required.** Embedding provider API key |
+| `EMBEDDING__<id>__BASE_URL` | Base URL for OpenAI-compatible API |
+| `EMBEDDING__<id>__MODEL` | Embedding model name |
+| `EMBEDDING__<id>__DIMENSIONS` | Vector dimensions |
+| `NEURAL_PORT` | Neural Interface server port (default: 3344) |
+
+Set these in the `.env` file at the project root. The onboarding wizard generates this file automatically.
+
+<details>
+<summary><strong>Legacy flat format (still supported)</strong></summary>
+
+For backward compatibility, the old flat variable names are still recognized as a fallback:
+
+```env
+QDRANT_MEMORY_URL=http://localhost:6333
+QDRANT_MEMORY_API_KEY=claude-memory-local-key
+QDRANT_MEMORY_COLLECTION=claude_memory
+OPENAI_EMBEDDING_API_KEY=sk-your-api-key
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_DIMENSIONS=1536
+```
+
+Resolution order: namespaced keys → scanned `QDRANT__*__API_KEY` → legacy flat keys.
+
+</details>
 
 ## Embedding Providers
 
@@ -487,6 +574,47 @@ Since SynaBun stores the original text in every memory payload, you can re-embed
 
 **Recommendation:** Choose your embedding model during initial setup and stick with it.
 
+## Claude Code Hooks
+
+SynaBun ships with 5 [Claude Code hooks](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/hooks) that automate memory usage across the entire coding session lifecycle.
+
+| Hook | Event | Purpose |
+|------|-------|---------|
+| `session-start.mjs` | `SessionStart` | Injects category tree, project detection, behavioral rules, and 5 binding directives (incl. user learning) |
+| `prompt-submit.mjs` | `UserPromptSubmit` | Multi-tier recall trigger system with user learning nudges — nudges AI to check memory before responding |
+| `pre-compact.mjs` | `PreCompact` | Captures session transcript before context compaction for conversation indexing |
+| `stop.mjs` | `Stop` | Enforces memory storage — blocks response if session isn't indexed or edits aren't remembered |
+| `post-remember.mjs` | `PostToolUse` | Tracks edit count and clears enforcement flags when memories are stored |
+
+**Install via Neural Interface:** Settings > Integrations > Enable (global or per-project).
+
+For detailed hook documentation, customization options, and custom hook templates, see the [Hooks Guide](./docs/hooks.md).
+
+## Claude Code `/synabun` Command
+
+SynaBun ships a single [Claude Code skill](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials/custom-slash-commands) — `/synabun` — that serves as the entry point for all memory-powered capabilities. Type `/synabun` in Claude Code and an interactive menu appears:
+
+| Option | What it does |
+|--------|-------------|
+| **Brainstorm Ideas** | Cross-pollinate memories to spark creative ideas. Uses multi-round recall with 5 query strategies (direct, adjacent, problem-space, solution-space, cross-domain) and synthesizes ideas traced back to specific memories. |
+| **Audit Memories** | Validate stored memories against the current codebase. Runs 6 phases: landscape survey, checksum pre-scan, bulk retrieval, parallel semantic verification, interactive classification (STALE/INVALID/VALID/UNVERIFIABLE), and audit report. |
+| **Memory Health** | Quick stats overview and staleness check — total count, category distribution, stale file references. |
+| **Search Memories** | Find something specific across your entire memory bank using semantic search. |
+
+**Usage:**
+```
+/synabun
+```
+
+> **Note:** `/synabun` is the only slash command you need. All capabilities are accessible from its interactive menu — you don't need to invoke individual skills directly.
+
+**Install:** Copy the skill to your global skills directory:
+
+```bash
+# The skill lives at:
+~/.claude/skills/synabun/SKILL.md
+```
+
 ## CLAUDE.md Integration
 
 Add this to any project's `CLAUDE.md` to instruct Claude to use memory automatically:
@@ -498,7 +626,7 @@ Add this to any project's `CLAUDE.md` to instruct Claude to use memory automatic
 ## Persistent Memory
 
 You have persistent vector memory via the `SynaBun` MCP server tools:
-remember, recall, forget, reflect, memories.
+remember, recall, forget, restore, reflect, memories, sync, category_create/update/delete/list.
 
 ### Auto-Recall (do this automatically)
 - At session start: recall context about the current project
@@ -514,9 +642,9 @@ remember, recall, forget, reflect, memories.
 - Session-ending context: remember ongoing work as conversation
 
 ### Memory Tool Quirks
-- When using `remember`, omit `tags` and `importance` params (they cause type errors via XML serialization). Use `reflect` after to set them.
-- The `reflect` tool's ID parameter is `memory_id` (not `id`).
-- `reflect` requires the FULL UUID, not the shortened ID shown in tool output. Use `recall` first to get the full UUID.
+- `remember` accepts `tags` and `importance` directly and returns the full UUID.
+- `forget` is a soft delete — use `restore` to undo.
+- The `reflect` tool's ID parameter is `memory_id` (not `id`). It requires the FULL UUID format.
 - Make memory MCP calls sequentially, not in parallel — one failure cascades to all sibling calls in the batch.
 ```
 
@@ -539,9 +667,13 @@ docker compose logs -f      # View logs
 docker compose restart      # Restart
 ```
 
-Data persists in a Docker volume (`qdrant-storage`). This survives container restarts and rebuilds.
+Data persists in a Docker volume (`synabun-qdrant-data`). This survives container restarts and rebuilds.
 
 The Qdrant dashboard is available at **http://localhost:6333/dashboard**.
+
+### Multi-instance support
+
+The `docker-compose.yml` manages the default Qdrant instance only. Additional instances can be created via the Neural Interface (Settings > Connections > New), which uses `docker run` to spin up independent Qdrant containers on separate ports. Each connection is tracked in `.env` with namespaced variables.
 
 ### Rebuilding after code changes
 
@@ -556,22 +688,16 @@ No need to restart Claude Code — the MCP server is spawned fresh on each sessi
 
 ### 1. `reflect` requires full UUID
 
-The `remember` tool returns a shortened ID (e.g., `[8f7cab3b]`), but `reflect` requires the **full UUID**.
+`remember` returns the full UUID in its output. Use it directly with `reflect`:
 
 ```
 reflect({ memory_id: "8f7cab3b" })                                    // Bad Request
 reflect({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })        // Works
 ```
 
-**Fix:** Use `recall` to get the full UUID before calling `reflect`.
+For existing memories, use `recall` to get the full UUID.
 
-### 2. Parameter type limitations (AI-specific)
-
-Some AI assistants using XML-based tool calling may serialize all parameters as strings, causing validation errors for array/number parameters.
-
-**Workaround:** Omit `tags` and `importance` from `remember` calls, then use `reflect` immediately after to set them.
-
-### 3. Parallel tool call failures
+### 2. Parallel tool call failures
 
 When making parallel MCP tool calls, if one fails, all sibling calls in that batch may fail. Make memory calls sequentially.
 
@@ -589,8 +715,8 @@ When making parallel MCP tool calls, if one fails, all sibling calls in that bat
 | Node resolves path to `J:\mnt\j\...` | WSL path used with Windows Claude Code | Use Windows paths (`J:/...`) |
 | `fetch failed` / connection refused | Qdrant not reachable | Check container is running, port 6333 open |
 | WSL can't reach `localhost:6333` | Docker container on Windows host | Try `host.docker.internal:6333` |
-| `remember` fails with type errors | `tags`/`importance` passed as strings | Omit these params, use `reflect` after |
-| `reflect` returns "Bad Request" | Using shortened ID | Use `recall` to get full UUID first |
+| `remember` fails with type errors | Rare — older MCP SDK serialization | Update MCP SDK, or use `reflect` as fallback |
+| `reflect` returns "Bad Request" | Using shortened ID | Use full UUID from `remember` output or `recall` |
 | "Sibling tool call errored" | Parallel MCP call batch failure | Make memory calls sequentially |
 
 </details>
@@ -608,44 +734,105 @@ Cost is negligible even with heavy usage. Local providers (Ollama, LM Studio) ar
 
 ```
 Synabun/
-├── docker-compose.yml              # Qdrant container definition
-├── .env                            # API key config (generated by setup wizard)
+├── LICENSE                         # Apache 2.0 License
+├── LICENSE-COMMERCIAL.md           # Commercial licensing (Open Core model)
+├── CONTRIBUTING.md                 # Bug reports, feature requests, and forking guide
+├── CHANGELOG.md                    # Version history
+├── SECURITY.md                     # Security policy
+├── .env.example                    # Example environment configuration
+├── .env                            # API key config (generated by setup wizard, gitignored)
+├── docker-compose.yml              # Qdrant container definition (default instance only)
+├── setup.js                        # One-command setup & launch script
 ├── README.md                       # This file
-├── USAGE.md                        # Detailed usage patterns & best practices
-├── CLAUDE.md                       # Claude Code project instructions
+├── CLAUDE.md                       # Claude Code project instructions (gitignored)
 ├── public/
-│   └── synabun.png                 # Logo
+│   ├── synabun.png                 # Logo
+│   └── openclaw-logo-text.png      # OpenClaw bridge logo
+├── data/                           # Runtime data directory
+│   ├── claude-code-projects.json   # Tracked project paths with hook status
+│   ├── hook-features.json          # Hook feature flags (conversationMemory, greeting, userLearning)
+│   ├── mcp-api-key.json            # API key for HTTP MCP transport
+│   ├── pending-compact/            # PreCompact enforcement flags (per session)
+│   ├── pending-remember/           # Edit tracking flags (per session)
+│   └── precompact/                 # Session transcript cache (pre-compaction)
+├── docs/
+│   ├── usage-guide.md              # Detailed usage patterns & best practices
+│   ├── api-reference.md            # Neural Interface REST API reference
+│   └── hooks.md                    # Claude Code hook system documentation
+├── skills/
+│   └── synabun/
+│       ├── SKILL.md                # /synabun command hub (entry point)
+│       └── modules/
+│           ├── idea.md             # Brainstorm Ideas module
+│           └── audit.md            # Audit Memories module
+├── hooks/
+│   └── claude-code/
+│       ├── session-start.mjs       # SessionStart — category tree, directives, project detection
+│       ├── prompt-submit.mjs       # UserPromptSubmit — multi-tier recall triggers
+│       ├── pre-compact.mjs         # PreCompact — transcript capture before compaction
+│       ├── stop.mjs                # Stop — enforces memory storage before session end
+│       └── post-remember.mjs       # PostToolUse — edit tracking, flag clearing
+├── memory-seed/                    # Bootstrap seed data for new installations
+│   ├── README.md
+│   ├── architecture/               # 5 architecture overview memories
+│   ├── mcp-tools/                  # 7 tool documentation memories
+│   ├── neural-interface/           # 5 UI/API documentation memories
+│   ├── hooks/                      # 4 hook documentation memories
+│   ├── setup/                      # 3 setup/onboarding memories
+│   └── development/                # 4 development guide memories
+├── .tests/                         # Vitest test suite
+│   ├── vitest.config.ts
+│   ├── unit/                       # Tool-level unit tests (6 files)
+│   ├── scenarios/                  # Usage pattern + cost benchmark tests (5 files)
+│   ├── mocks/                      # Qdrant/OpenAI mocks
+│   └── utils/                      # Test utilities (cost tracking, token counting)
 ├── neural-interface/               # 3D visualization UI (http://localhost:3344)
-│   ├── server.js                   # Express API — memory proxy, category CRUD
+│   ├── server.js                   # Express API — 55+ endpoints
 │   ├── package.json
 │   └── public/
-│       ├── index.html              # Three.js force-directed graph
+│       ├── index.html              # Three.js force-directed 3D graph
+│       ├── index2d.html            # 2D canvas visualization variant
 │       ├── onboarding.html         # Setup wizard
-│       └── synabun.png             # Logo
+│       └── shared/                 # Shared CSS/JS assets
 └── mcp-server/                     # MCP server (Node.js + TypeScript)
     ├── package.json
     ├── tsconfig.json
     ├── run.mjs                     # Entry wrapper (sets cwd, imports dist/)
     ├── data/
-    │   └── custom-categories.json  # Category definitions (single source of truth)
-    ├── dist/                       # Compiled JS (generated by npm run build)
+    │   ├── custom-categories-*.json # Per-connection category definitions
+    │   └── display-settings.json    # MCP response display config
+    ├── dist/                        # Compiled JS (generated by npm run build)
     └── src/
-        ├── index.ts                # Tool registration + schema refresh
-        ├── config.ts               # Environment config, project detection
-        ├── types.ts                # MemoryPayload interface
-        ├── tui.ts                  # Terminal UI for interactive management
+        ├── index.ts                 # Tool registration + schema refresh (11 tools)
+        ├── config.ts                # Namespaced env config, project detection
+        ├── types.ts                 # MemoryPayload interface (incl. file_checksums)
+        ├── http.ts                  # HTTP MCP transport
+        ├── tui.ts                   # Terminal UI for interactive management
         ├── services/
-        │   ├── qdrant.ts           # Qdrant client, collection management
-        │   ├── embeddings.ts       # Embedding generation
-        │   └── categories.ts       # Category CRUD, hierarchy, descriptions
+        │   ├── qdrant.ts            # Qdrant client, collection management
+        │   ├── embeddings.ts        # Embedding generation
+        │   ├── categories.ts        # Category CRUD, hierarchy, descriptions
+        │   └── file-checksums.ts    # SHA-256 hashing for sync tool
         └── tools/
-            ├── remember.ts         # Store a memory
-            ├── recall.ts           # Semantic search with time decay
-            ├── forget.ts           # Delete a memory
-            ├── reflect.ts          # Update a memory
-            ├── memories.ts         # List and stats
-            ├── category-create.ts  # Create category (triggers schema refresh)
-            ├── category-update.ts  # Edit category (triggers schema refresh)
-            ├── category-delete.ts  # Delete category (triggers schema refresh)
-            └── category-list.ts    # List categories with hierarchy
+            ├── remember.ts          # Store a memory
+            ├── recall.ts            # Semantic search with time decay
+            ├── forget.ts            # Soft-delete (moves to trash)
+            ├── restore.ts           # Restore from trash
+            ├── reflect.ts           # Update a memory
+            ├── memories.ts          # List and stats
+            ├── sync.ts              # Stale memory detection via file hashes
+            ├── category-create.ts   # Create category (triggers schema refresh)
+            ├── category-update.ts   # Edit category (triggers schema refresh)
+            ├── category-delete.ts   # Delete category (triggers schema refresh)
+            └── category-list.ts     # List categories with hierarchy
 ```
+
+## License
+
+Licensed under the [Apache License, Version 2.0](./LICENSE).
+
+You are free to use, modify, and distribute SynaBun under Apache 2.0. Premium features and enterprise extensions may be offered under a separate commercial license. See [LICENSE-COMMERCIAL.md](./LICENSE-COMMERCIAL.md) for details.
+
+## Trademark Notice
+
+"SynaBun" is a trademark of its authors. The license does not grant permission to use the SynaBun name, trademarks, service marks, or branding. If you fork this project, you must use a different name for your derivative work.

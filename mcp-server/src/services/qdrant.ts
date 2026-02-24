@@ -1,23 +1,53 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { config } from '../config.js';
+import { config, getActiveConnection, getActiveCollection } from '../config.js';
 import { getAllCategories } from './categories.js';
 import type { MemoryPayload, MemoryStats } from '../types.js';
 
 let client: QdrantClient | null = null;
+let currentUrl: string = '';
+let currentApiKey: string = '';
 
+// Well-known UUID for the system metadata point (categories, etc.)
+export const CATEGORIES_POINT_ID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * Returns a QdrantClient for the currently active connection.
+ * Recreates the client if the URL or API key has changed (i.e., user switched instances).
+ */
 export function getQdrantClient(): QdrantClient {
-  if (!client) {
+  const conn = getActiveConnection();
+  if (!client || conn.url !== currentUrl || conn.apiKey !== currentApiKey) {
     client = new QdrantClient({
-      url: config.qdrant.url,
-      apiKey: config.qdrant.apiKey,
+      url: conn.url,
+      apiKey: conn.apiKey,
     });
+    currentUrl = conn.url;
+    currentApiKey = conn.apiKey;
   }
   return client;
 }
 
+/**
+ * Merges filters to exclude system metadata and trashed memories from query results.
+ * Applied to scroll, count, and search operations.
+ * Uses is_empty (matches missing, null, and empty) since existing memories lack the trashed_at field.
+ */
+function excludeSystemMetadata(filter?: Record<string, unknown>): Record<string, unknown> {
+  const systemExclusion = { key: '_type', match: { value: 'system_metadata' } };
+  const notTrashed = { is_empty: { key: 'trashed_at' } };
+  if (!filter) {
+    return { must_not: [systemExclusion], must: [notTrashed] };
+  }
+  const mustNot = (filter.must_not as unknown[] || []).slice();
+  mustNot.push(systemExclusion);
+  const must = (filter.must as unknown[] || []).slice();
+  must.push(notTrashed);
+  return { ...filter, must_not: mustNot, must };
+}
+
 export async function ensureCollection(): Promise<void> {
   const qdrant = getQdrantClient();
-  const collectionName = config.qdrant.collection;
+  const collectionName = getActiveCollection();
 
   try {
     const exists = await qdrant.collectionExists(collectionName);
@@ -37,7 +67,7 @@ export async function ensureCollection(): Promise<void> {
   });
 
   // Create payload indexes for efficient filtering
-  const keywordFields = ['category', 'project', 'tags', 'subcategory', 'source', 'created_at'];
+  const keywordFields = ['category', 'project', 'tags', 'subcategory', 'source', 'created_at', '_type', 'trashed_at'];
   const integerFields = ['importance', 'access_count'];
   const textFields = ['content'];
 
@@ -69,7 +99,7 @@ export async function upsertMemory(
   payload: MemoryPayload
 ): Promise<void> {
   const qdrant = getQdrantClient();
-  await qdrant.upsert(config.qdrant.collection, {
+  await qdrant.upsert(getActiveCollection(), {
     points: [{ id, vector, payload: payload as unknown as Record<string, unknown> }],
   });
 }
@@ -81,25 +111,37 @@ export async function searchMemories(
   scoreThreshold?: number
 ) {
   const qdrant = getQdrantClient();
-  return qdrant.search(config.qdrant.collection, {
+  return qdrant.search(getActiveCollection(), {
     vector,
     limit,
     with_payload: true,
     score_threshold: scoreThreshold ?? 0.3,
-    filter: filter as never,
+    filter: excludeSystemMetadata(filter) as never,
   });
 }
 
 export async function deleteMemory(id: string): Promise<void> {
   const qdrant = getQdrantClient();
-  await qdrant.delete(config.qdrant.collection, {
+  await qdrant.delete(getActiveCollection(), {
     points: [id],
+  });
+}
+
+export async function softDeleteMemory(id: string): Promise<void> {
+  await updatePayload(id, { trashed_at: new Date().toISOString() } as Partial<MemoryPayload>);
+}
+
+export async function restoreMemory(id: string): Promise<void> {
+  const qdrant = getQdrantClient();
+  await qdrant.setPayload(getActiveCollection(), {
+    points: [id],
+    payload: { trashed_at: null },
   });
 }
 
 export async function getMemory(id: string) {
   const qdrant = getQdrantClient();
-  const results = await qdrant.retrieve(config.qdrant.collection, {
+  const results = await qdrant.retrieve(getActiveCollection(), {
     ids: [id],
     with_payload: true,
     with_vector: false,
@@ -112,7 +154,7 @@ export async function updatePayload(
   payload: Partial<MemoryPayload>
 ): Promise<void> {
   const qdrant = getQdrantClient();
-  await qdrant.setPayload(config.qdrant.collection, {
+  await qdrant.setPayload(getActiveCollection(), {
     points: [id],
     payload,
   });
@@ -124,7 +166,7 @@ export async function updateVector(
   payload: MemoryPayload
 ): Promise<void> {
   const qdrant = getQdrantClient();
-  await qdrant.upsert(config.qdrant.collection, {
+  await qdrant.upsert(getActiveCollection(), {
     points: [{ id, vector, payload: payload as unknown as Record<string, unknown> }],
   });
 }
@@ -134,7 +176,7 @@ export async function updatePayloadByFilter(
   payload: Partial<MemoryPayload>
 ): Promise<void> {
   const qdrant = getQdrantClient();
-  await qdrant.setPayload(config.qdrant.collection, {
+  await qdrant.setPayload(getActiveCollection(), {
     filter: filter as never,
     payload,
   });
@@ -146,8 +188,8 @@ export async function scrollMemories(
   offset?: string
 ) {
   const qdrant = getQdrantClient();
-  return qdrant.scroll(config.qdrant.collection, {
-    filter: filter as never,
+  return qdrant.scroll(getActiveCollection(), {
+    filter: excludeSystemMetadata(filter) as never,
     limit,
     with_payload: true,
     offset: offset ?? undefined,
@@ -156,8 +198,8 @@ export async function scrollMemories(
 
 export async function countMemories(filter?: Record<string, unknown>): Promise<number> {
   const qdrant = getQdrantClient();
-  const result = await qdrant.count(config.qdrant.collection, {
-    filter: filter as never,
+  const result = await qdrant.count(getActiveCollection(), {
+    filter: excludeSystemMetadata(filter) as never,
     exact: true,
   });
   return result.count;
@@ -190,4 +232,52 @@ export async function getMemoryStats(): Promise<MemoryStats> {
   }
 
   return { total, by_category, by_project, oldest, newest };
+}
+
+// --- System metadata (categories stored in Qdrant) ---
+
+interface StoredCategory {
+  name: string;
+  description: string;
+  created_at: string;
+  parent?: string;
+  color?: string;
+  is_parent?: boolean;
+}
+
+export async function getCategoriesFromQdrant(): Promise<StoredCategory[] | null> {
+  try {
+    const qdrant = getQdrantClient();
+    const results = await qdrant.retrieve(getActiveCollection(), {
+      ids: [CATEGORIES_POINT_ID],
+      with_payload: true,
+      with_vector: false,
+    });
+    if (results.length > 0) {
+      const payload = results[0].payload as Record<string, unknown>;
+      if (payload?._type === 'system_metadata' && Array.isArray(payload.categories)) {
+        return payload.categories as StoredCategory[];
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveCategoriesToQdrant(categories: StoredCategory[]): Promise<void> {
+  const qdrant = getQdrantClient();
+  const zeroVector = new Array(config.openai.dimensions).fill(0);
+  await qdrant.upsert(getActiveCollection(), {
+    points: [{
+      id: CATEGORIES_POINT_ID,
+      vector: zeroVector,
+      payload: {
+        _type: 'system_metadata',
+        metadata_key: 'categories',
+        categories,
+        updated_at: new Date().toISOString(),
+      },
+    }],
+  });
 }
