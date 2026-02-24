@@ -29,6 +29,12 @@ export const categoryCreateSchema = {
     .describe(
       'Optional color hex code for visual grouping. Example: "#3b82f6" (blue). If omitted, auto-assigns from palette.'
     ),
+  is_parent: z
+    .boolean()
+    .optional()
+    .describe(
+      'Set to true to make this a parent/cluster category that groups child categories under it. Parent categories are top-level organizational branches.'
+    ),
 };
 
 export const categoryCreateDescription =
@@ -39,6 +45,7 @@ export async function handleCategoryCreate(args: {
   description: string;
   parent?: string;
   color?: string;
+  is_parent?: boolean;
 }) {
   const nameCheck = validateCategoryName(args.name);
   if (!nameCheck.valid) {
@@ -60,11 +67,12 @@ export async function handleCategoryCreate(args: {
     };
   }
 
-  addCategory(args.name, args.description.trim(), args.parent, args.color);
+  addCategory(args.name, args.description.trim(), args.parent, args.color, args.is_parent);
   refreshCategorySchemas();
 
   const all = getAllCategories();
   let msg = `Created category "${args.name}" (${args.description.trim()})`;
+  if (args.is_parent) msg += ` as a parent category`;
   if (args.parent) msg += ` under "${args.parent}" cluster`;
   if (args.color) msg += ` with color ${args.color}`;
   msg += `.\n\nAll categories (${all.length}): ${all.join(', ')}`;

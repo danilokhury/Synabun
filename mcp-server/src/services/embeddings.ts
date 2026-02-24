@@ -1,27 +1,32 @@
 import OpenAI from 'openai';
-import { config } from '../config.js';
+import { getActiveEmbeddingConfig } from '../config.js';
 
 let client: OpenAI | null = null;
+let lastApiKey = '';
 
 function getClient(): OpenAI {
-  if (!client) {
-    if (!config.openai.apiKey) {
+  const embConfig = getActiveEmbeddingConfig();
+  // Recreate client if API key changed (supports runtime provider switching)
+  if (!client || embConfig.apiKey !== lastApiKey) {
+    if (!embConfig.apiKey) {
       throw new Error(
-        'OPENAI_EMBEDDING_API_KEY or OPENAI_API_KEY environment variable is required'
+        'No embedding API key configured. Set EMBEDDING__<id>__API_KEY or OPENAI_EMBEDDING_API_KEY in .env'
       );
     }
-    client = new OpenAI({ apiKey: config.openai.apiKey, baseURL: config.openai.baseUrl });
+    client = new OpenAI({ apiKey: embConfig.apiKey, baseURL: embConfig.baseUrl });
+    lastApiKey = embConfig.apiKey;
   }
   return client;
 }
 
 export async function generateEmbedding(text: string): Promise<number[]> {
   const openai = getClient();
+  const embConfig = getActiveEmbeddingConfig();
 
   const response = await openai.embeddings.create({
-    model: config.openai.model,
+    model: embConfig.model,
     input: text,
-    dimensions: config.openai.dimensions,
+    dimensions: embConfig.dimensions,
   });
 
   return response.data[0].embedding;

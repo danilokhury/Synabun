@@ -1,9 +1,11 @@
-# Memory MCP Server - Usage Guide
+# SynaBun - Usage Guide
 
-Detailed usage patterns, workflows, and troubleshooting for the Memory MCP Server.
+Detailed usage patterns, workflows, and troubleshooting for SynaBun's MCP tools.
+
+For installation and setup, see the [README](../README.md).
 
 ## Table of Contents
-- [Basic Workflows](#basic-workflows)
+- [Basic Workflows](#basic-workflows) (store, search, update, delete, restore, sync, audit)
 - [Advanced Patterns](#advanced-patterns)
 - [Tool-Specific Quirks](#tool-specific-quirks)
 - [Best Practices](#best-practices)
@@ -35,7 +37,7 @@ Due to parameter serialization limitations in some AI tools, use this two-step a
 remember({
   content: "Redis TTL for price cache is 1 hour, set in orchestratorSingleton.ts",
   category: "project",
-  project: "criticalpixel"
+  project: "my-project"
 })
 
 // Step 2: Get the full UUID
@@ -74,7 +76,7 @@ recall({
 // Project-specific
 recall({
   query: "authentication flow",
-  project: "criticalpixel",
+  project: "my-project",
   tags: ["auth", "security"]
 })
 ```
@@ -101,9 +103,43 @@ reflect({
 // Get the UUID first
 recall({ query: "obsolete feature", limit: 1 })
 
-// Then delete
+// Soft-delete (moves to trash — can be restored)
 forget({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
 ```
+
+### Restoring deleted memories
+
+```javascript
+// Undo a forget — restore from trash
+restore({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
+```
+
+`forget` is a soft delete that sets a `trashed_at` timestamp. The memory remains in Qdrant but is excluded from search results. Use `restore` to undo, or permanently purge from the Neural Interface (Settings > Trash > Purge All).
+
+### Detecting stale memories
+
+```javascript
+// Check which memories reference files that have changed
+sync({ project: "my-project" })
+```
+
+The `sync` tool compares SHA-256 hashes of files listed in `related_files` against stored checksums. Returns a list of memories that may be outdated. Useful after code refactors or large changes.
+
+**Workflow:**
+1. Run `sync` to find stale memories
+2. Review each stale memory
+3. Either `reflect` to update the content, or `forget` if no longer relevant
+4. Re-run `sync` to confirm all memories are current
+
+### Memory audit via `/synabun`
+
+The `/synabun` command hub includes an **Audit Memories** option that automates the stale memory detection workflow:
+
+```
+/synabun    # Select "Audit Memories" from the interactive menu
+```
+
+The audit runs 6 phases: landscape survey → checksum pre-scan → bulk retrieval → parallel semantic verification → interactive classification → audit report. See [README: Claude Code `/synabun` Command](../README.md#claude-code-synabun-command) for details.
 
 ---
 
@@ -152,7 +188,7 @@ Document important decisions with their rationale:
 
 ```javascript
 remember({
-  content: "Decision: Use single Qdrant collection for all projects instead of per-project collections. Reasoning: Enables cross-project knowledge sharing, simpler maintenance, project-based filtering via payload. Trade-off: Slightly slower queries (mitigated by indexes). Decided: 2026-02-10",
+  content: "Decision: Use single Qdrant collection for all projects instead of per-project collections. Reasoning: Enables cross-project knowledge sharing, simpler maintenance, project-based filtering via payload. Trade-off: Slightly slower queries (mitigated by indexes).",
   category: "project",
   subcategory: "architecture",
   importance: 9,
@@ -174,13 +210,38 @@ remember({
 })
 ```
 
+### Brainstorming via `/synabun`
+
+The `/synabun` command hub includes a **Brainstorm Ideas** option that uses multi-round recall. Instead of a single `recall`, it executes 5 rounds with different query strategies (direct, adjacent, problem-space, solution-space, cross-domain) and synthesizes connections between disparate memories.
+
+```
+/synabun    # Select "Brainstorm Ideas" from the interactive menu
+```
+
+The brainstorming generates 3-5 concrete ideas, each traced back to specific memories that inspired it. See the [README](../README.md#claude-code-synabun-command) for full details.
+
+You can also build your own multi-round recall workflows:
+
+```javascript
+// Round 1: Direct search
+recall({ query: "WebSocket implementation", limit: 5 })
+
+// Round 2: Adjacent concepts (based on Round 1 results)
+recall({ query: "real-time pub/sub event-driven", limit: 5 })
+
+// Round 3: Cross-domain surprise
+recall({ query: "synchronization patterns", category: "deals", limit: 5 })
+
+// Synthesize connections across rounds
+```
+
 ---
 
 ## Tool-Specific Quirks
 
 ### `remember` tool
 
-**✓ Works:**
+**Works:**
 ```javascript
 remember({
   content: "Content here",
@@ -190,36 +251,35 @@ remember({
 })
 ```
 
-**✗ May fail (AI-specific):**
+**Full example with all fields:**
 ```javascript
 remember({
   content: "Content here",
   category: "project",
-  importance: 7,  // May fail with "Expected number, received string"
-  tags: ["tag1", "tag2"]  // May fail with "Expected array, received string"
+  importance: 7,
+  tags: ["tag1", "tag2"]
 })
+// Returns: Remembered [full-uuid-here] (project/myproject, importance: 7): "Content here"
 ```
 
-**Reason:** Some AI tools (like Claude Code) serialize all parameters as strings due to XML-based tool calling, causing type validation errors.
-
-**Workaround:** Use `reflect` after `remember` to set importance and tags.
+`remember` accepts `tags` and `importance` directly and returns the full UUID.
 
 ---
 
 ### `reflect` tool
 
-**Critical requirement:** Must use the **full UUID**, not the shortened ID.
+**Critical requirement:** Must use the **full UUID**, not a shortened ID.
 
-**✗ Wrong:**
+**Wrong:**
 ```javascript
 reflect({
-  memory_id: "8f7cab3b",  // Shortened ID from remember output
+  memory_id: "8f7cab3b",  // Shortened ID — will fail
   importance: 7
 })
 // Returns: Bad Request
 ```
 
-**✓ Correct:**
+**Correct:**
 ```javascript
 // Step 1: Get full UUID via recall
 recall({ query: "relevant search", limit: 1 })
@@ -233,7 +293,7 @@ reflect({
 // Returns: Updated [8f7cab3b]: importance -> 7
 ```
 
-**Why:** The `remember` tool output shows a shortened ID for display purposes (`[8f7cab3b]`), but the internal memory ID is a full UUID. The `reflect` tool validates the UUID format and rejects shortened IDs.
+**Why:** The `remember` tool now returns the full UUID in its output (`[8f7cab3b-644e-4cea-8662-de0ca695bdf2]`). Use this directly. The `reflect` tool validates the UUID format and rejects shortened IDs.
 
 **Parameter name:** Use `memory_id`, not `id` or `uuid`.
 
@@ -254,7 +314,7 @@ recall({
   query: "authentication bug with JWT tokens",
   category: "learning",
   subcategory: "bug-fix",
-  project: "criticalpixel",
+  project: "my-project",
   min_importance: 7,
   limit: 5
 })
@@ -262,9 +322,9 @@ recall({
 
 ---
 
-### `forget` tool
+### `forget` and `restore` tools
 
-**Important:** Deletion is permanent and immediate. There's no undo.
+`forget` performs a **soft delete** — it sets a `trashed_at` timestamp on the memory. The memory remains in Qdrant but is excluded from `recall` search results.
 
 **Best practice:** Always verify the memory content before deletion:
 
@@ -274,9 +334,30 @@ recall({ query: "obsolete feature", limit: 3 })
 
 // Step 2: Confirm which one to delete (read the content)
 
-// Step 3: Delete by full UUID
+// Step 3: Soft-delete by full UUID
 forget({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
+
+// Step 4 (if needed): Undo the deletion
+restore({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
 ```
+
+**Permanent deletion:** To permanently remove trashed memories, use the Neural Interface (Trash panel > Purge All) or call `DELETE /api/trash/purge`.
+
+---
+
+### `sync` tool
+
+Detects memories whose `related_files` have changed since the memory was last updated. Uses SHA-256 content hashing.
+
+```javascript
+// Check all memories
+sync()
+
+// Check memories for a specific project
+sync({ project: "my-project" })
+```
+
+Returns a list of stale memories with details about which files changed. Use this after code refactors to identify memories that need updating.
 
 ---
 
@@ -301,7 +382,7 @@ forget({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
 
 4. **by-project** - Filter by project
    ```javascript
-   memories({ action: "by-project", project: "criticalpixel", limit: 20 })
+   memories({ action: "by-project", project: "my-project", limit: 20 })
    ```
 
 ---
@@ -310,13 +391,13 @@ forget({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
 
 ### 1. Always call memory tools sequentially
 
-**✗ Wrong (parallel calls):**
+**Wrong (parallel calls):**
 ```javascript
 // If one fails, all fail with "Sibling tool call errored"
 [remember(...), remember(...), remember(...)]
 ```
 
-**✓ Correct (sequential calls):**
+**Correct (sequential calls):**
 ```javascript
 remember(...)  // Wait for completion
 remember(...)  // Then next
@@ -340,7 +421,7 @@ remember({
   category: "learning",
   related_files: [
     "src/lib/cache/redis-client.ts",
-    "src/lib/services/orchestratorSingleton.ts"
+    "src/lib/services/orchestrator.ts"
   ]
 })
 ```
@@ -351,9 +432,9 @@ This enables file-based search and better context.
 
 Categories are broad (`project`, `learning`, `knowledge`). Subcategories add specificity:
 
-- `project` → `architecture`, `deployment`, `config`
-- `learning` → `bug-fix`, `api-quirk`, `performance`
-- `knowledge` → `competitor-intel`, `best-practice`, `tooling`
+- `project` -> `architecture`, `deployment`, `config`
+- `learning` -> `bug-fix`, `api-quirk`, `performance`
+- `knowledge` -> `best-practice`, `tooling`, `pattern`
 
 ### 5. Recall before making decisions
 
@@ -372,31 +453,34 @@ recall({ query: "similar bug with caching", category: "learning", limit: 3 })
 
 **Cause:** Using shortened memory ID instead of full UUID.
 
-**Solution:**
+**Solution:** `remember` now returns the full UUID. Use it directly:
 ```javascript
-// 1. Search to get full UUID
-recall({ query: "relevant search", limit: 1 })
-// Look for: [8f7cab3b-644e-4cea-8662-de0ca695bdf2]
-
-// 2. Use full UUID in reflect
+// remember returns: Remembered [8f7cab3b-644e-4cea-8662-de0ca695bdf2] (...)
+// Use the full UUID with reflect:
 reflect({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2", ... })
+
+// For existing memories, use recall to get the full UUID:
+recall({ query: "relevant search", limit: 1 })
 ```
 
 ---
 
 ### Problem: `remember` fails with "Expected array, received string"
 
-**Cause:** AI tool serializing array/number parameters as strings.
+**Cause:** AI tool serializing array/number parameters as strings (rare — mostly resolved in modern MCP SDK).
 
-**Solution:** Use two-step approach:
+**Solution:** `remember` now uses `z.coerce.number()` for importance and standard array validation for tags. Pass them directly:
 ```javascript
-// Step 1: Create without tags/importance
-remember({ content: "...", category: "project" })
-
-// Step 2: Add metadata via reflect
-recall({ query: "...", limit: 1 })  // Get UUID
-reflect({ memory_id: "uuid-here", importance: 7, tags: ["tag1", "tag2"] })
+remember({
+  content: "...",
+  category: "project",
+  importance: 7,
+  tags: ["tag1", "tag2"]
+})
+// Returns full UUID — no need for recall+reflect
 ```
+
+If your MCP client still fails, use `reflect` as a fallback to set these fields after `remember`.
 
 ---
 
@@ -434,46 +518,18 @@ memories({ action: "by-project", project: "myproject", limit: 20 })
 **Symptoms:** `fetch failed`, `connection refused`, `ECONNREFUSED`
 
 **Checklist:**
-1. Is Qdrant container running? `docker ps | grep claude-memory`
+1. Is Qdrant container running? `docker ps | grep synabun-qdrant`
 2. Start if not: `docker compose up -d`
 3. Check logs: `docker compose logs -f`
-4. Test connection: `curl -H "api-key: claude-memory-local-key" http://localhost:6333/collections`
+4. Test connection: `curl -H "api-key: YOUR_KEY" http://localhost:6333/collections`
 
 ---
 
 ## AI Integration Patterns
 
-### For Claude Code (claude.ai/code)
+### For Claude Code
 
-Add to your project's `CLAUDE.md`:
-
-```markdown
-## Persistent Memory
-
-You have persistent vector memory via the `memory` MCP server tools:
-remember, recall, forget, reflect, memories.
-
-### Auto-Recall (do this automatically)
-- At session start: recall context about the current project
-- When user mentions a specific topic: recall what you know
-- Before architecture decisions: recall past decisions
-- When debugging: recall past similar bugs
-
-### Auto-Remember (do this automatically)
-- After fixing a hard bug: remember the solution (importance 7+)
-- After architecture decisions: remember the decision and why (importance 8+)
-- When user says "remember this": importance 8+
-- API quirks or gotchas discovered: remember as learning
-- Session-ending context: remember ongoing work as conversation
-
-### Memory Tool Quirks
-- When using `remember`, omit `tags` and `importance` params (they cause type errors via XML serialization). Use `reflect` after to set them.
-- The `reflect` tool's ID parameter is `memory_id` (not `id`).
-- **CRITICAL:** `reflect` requires the FULL UUID (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`), not the shortened ID shown in tool output. Use `recall` first to get the full UUID.
-- Make memory MCP calls sequentially, not in parallel — one failure cascades to all sibling calls in the batch.
-```
-
----
+Add to your project's `CLAUDE.md` (see the [README](../README.md#claudemd-integration) for a ready-to-use template).
 
 ### For Cursor AI
 
@@ -481,26 +537,24 @@ Add to `.cursorrules`:
 
 ```
 Memory MCP Tools Available:
-- remember: Store knowledge (content, category, project)
+- remember: Store knowledge (content, category, project, tags, importance)
 - recall: Semantic search (query, limit, filters)
-- reflect: Update memory (requires full UUID from recall)
+- reflect: Update existing memory (requires full UUID)
 - forget: Delete memory (requires full UUID)
 - memories: List/stats (recent, by-category, by-project)
 
 Usage:
 - Use recall at session start to load context
-- Use remember for: bug fixes (importance 7+), architecture decisions (8+), ongoing work (6)
-- Always use recall to get full UUID before calling reflect
+- Use remember with tags + importance for: bug fixes (7+), architecture decisions (8+), ongoing work (6)
+- remember returns full UUID. Use reflect only to update existing memories.
 - Call tools sequentially, not in parallel
 ```
 
----
-
 ### For other MCP clients
 
-1. **Test parameter serialization:** Try passing arrays and numbers to `remember`. If it fails, use the two-step `remember` → `reflect` workflow.
+1. **Test parameter serialization:** Try passing arrays and numbers to `remember`. Modern MCP SDKs handle this correctly. If your client still fails, use `reflect` as a fallback.
 
-2. **UUID handling:** Check if your tool shows shortened IDs. If yes, always use `recall` to get the full UUID before calling `reflect`.
+2. **UUID handling:** `remember` now returns the full UUID. Use it directly with `reflect` if needed. For existing memories, use `recall` to get the full UUID.
 
 3. **Error handling:** If you see "Sibling tool call errored", make calls sequentially.
 
@@ -546,7 +600,7 @@ recall({
 
 // Store the plan
 remember({
-  content: "Feature plan: Real-time notifications. Tech: WebSocket via Socket.io. Fallback: Server-sent events. Redis pub/sub for multi-instance support. Implementation timeline: 2 weeks. See: docs/features/realtime-notifications.md",
+  content: "Feature plan: Real-time notifications. Tech: WebSocket via Socket.io. Fallback: Server-sent events. Redis pub/sub for multi-instance support.",
   category: "idea",
   subcategory: "feature-plan",
   importance: 7
@@ -559,14 +613,14 @@ remember({
 
 ```javascript
 // Get project overview
-memories({ action: "by-project", project: "criticalpixel", limit: 50 })
+memories({ action: "by-project", project: "my-project", limit: 50 })
 
 // Get architecture decisions
 recall({
   query: "architecture database cache",
   category: "project",
   subcategory: "architecture",
-  project: "criticalpixel",
+  project: "my-project",
   limit: 10
 })
 
@@ -574,22 +628,58 @@ recall({
 recall({
   query: "gotcha bug issue problem",
   category: "learning",
-  project: "criticalpixel",
+  project: "my-project",
   limit: 10
 })
 ```
 
 ---
 
+### Use case: Brainstorming with memory
+
+```javascript
+// Step 1: Survey the landscape
+category_list({ format: "tree" })
+memories({ action: "stats" })
+
+// Step 2: Multi-round recall with different angles
+// Round 1 - Direct: the topic
+recall({ query: "notification system real-time", limit: 5 })
+
+// Round 2 - Adjacent: themes from Round 1
+recall({ query: "WebSocket Redis pub/sub event streaming", limit: 5 })
+
+// Round 3 - Problem-space: known issues
+recall({ query: "notification bugs latency race condition", limit: 5 })
+
+// Round 4 - Solution-space: past approaches
+recall({ query: "caching architecture optimization pattern", limit: 5 })
+
+// Round 5 - Cross-domain: unrelated category
+recall({ query: "real-time updates", category: "deals", limit: 5 })
+
+// Step 3: Synthesize ideas from connections across rounds
+// Step 4: Save the best ideas
+remember({
+  content: "Idea: Reuse the price update WebSocket infrastructure for forum notifications. The deals system already handles real-time price pushes via Redis pub/sub — extend it to forum events.",
+  category: "ideas",
+  project: "my-project"
+})
+```
+
+The **Brainstorm Ideas** option in `/synabun` automates this entire workflow. See the [README](../README.md#claude-code-synabun-command).
+
+---
+
 ## AI-Agnostic Best Practices
 
-These rules apply to **all AI assistants** using this Memory MCP server:
+These rules apply to **all AI assistants** using SynaBun:
 
 ### 1. Always format memory content in Markdown
 
 When storing memories, format the `content` field using Markdown for readability and structure:
 
-**✓ Good - Markdown formatted:**
+**Good - Markdown formatted:**
 ```javascript
 remember({
   content: `## Bug Fix: Qdrant Batch Upsert Limit
@@ -610,7 +700,7 @@ remember({
 })
 ```
 
-**✗ Bad - Plain text:**
+**Bad - Plain text:**
 ```javascript
 remember({
   content: "Bug fix: Qdrant batch upsert fails when batch size exceeds 500 points. Solution: split into chunks of 100. Fixed in services/qdrant.ts",
@@ -635,7 +725,7 @@ remember({
 
 ### 2. Use full UUIDs with `reflect`
 
-Always use `recall` to get the full UUID before calling `reflect`. Never use shortened IDs.
+`remember` returns the full UUID directly. Use it with `reflect` when needed. For existing memories, use `recall` to get the full UUID. Never use shortened IDs.
 
 ---
 
@@ -645,9 +735,9 @@ Never make parallel memory tool calls. Always wait for one to complete before ca
 
 ---
 
-### 4. Test parameter serialization
+### 4. Pass all fields to `remember` directly
 
-Test if your AI client can pass arrays/numbers correctly to `remember`. If not, use the two-step `remember` → `reflect` workflow.
+`remember` accepts `tags`, `importance`, and all other fields directly. No need for a separate `reflect` call. If your MCP client has serialization issues with arrays/numbers, use `reflect` as a fallback.
 
 ---
 
@@ -665,10 +755,10 @@ Store memories proactively:
 
 **Golden rules:**
 1. **Format memory content in Markdown** for readability and structure
-2. Use `recall` to get full UUIDs before calling `reflect`
+2. Pass `tags` and `importance` directly to `remember` — it returns the full UUID
 3. Call memory tools sequentially, never in parallel
 4. Use importance 8+ for critical knowledge
 5. Add `related_files` for code-related memories
 6. Check existing memories before implementing (recall first)
 
-For installation and setup, see [README.md](./README.md).
+For installation and setup, see the [README](../README.md).

@@ -5,6 +5,7 @@ import { upsertMemory } from '../services/qdrant.js';
 import { buildCategoryDescription, validateCategory } from '../services/categories.js';
 import type { MemoryPayload, MemorySource } from '../types.js';
 import { detectProject } from '../config.js';
+import { computeChecksums } from '../services/file-checksums.js';
 
 export function buildRememberSchema() {
   return {
@@ -20,14 +21,14 @@ export function buildRememberSchema() {
     .string()
     .optional()
     .describe(
-      'Project this belongs to (e.g. "criticalpixel"). Defaults to auto-detected from working directory.'
+      'Project this belongs to (e.g. "my-project"). Defaults to auto-detected from working directory.'
     ),
   tags: z
     .array(z.string())
     .optional()
     .describe('Tags for categorization (e.g. ["redis", "cache", "pricing"])'),
   importance: z
-    .number()
+    .coerce.number()
     .min(1)
     .max(10)
     .optional()
@@ -100,6 +101,7 @@ export async function handleRemember(args: {
     accessed_at: now,
     access_count: 0,
     related_files,
+    file_checksums: related_files?.length ? computeChecksums(related_files) : undefined,
   };
 
   const vector = await generateEmbedding(content);
@@ -109,7 +111,7 @@ export async function handleRemember(args: {
     content: [
       {
         type: 'text' as const,
-        text: `Remembered [${id.slice(0, 8)}] (${category}/${project}, importance: ${importance}): "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`,
+        text: `Remembered [${id}] (${category}/${project}, importance: ${importance}): "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`,
       },
     ],
   };

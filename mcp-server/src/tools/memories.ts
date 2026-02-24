@@ -21,7 +21,7 @@ export function buildMemoriesSchema() {
       .optional()
       .describe('Filter by project (for by-project action).'),
     limit: z
-      .number()
+      .coerce.number()
       .min(1)
       .max(50)
       .optional()
@@ -103,6 +103,7 @@ export async function handleMemories(args: {
       id: p.id as string,
       payload: p.payload as unknown as MemoryPayload,
     }))
+    .filter((m) => m.payload?.content && m.payload?.created_at)
     .sort((a, b) => b.payload.created_at.localeCompare(a.payload.created_at));
 
   if (sorted.length === 0) {

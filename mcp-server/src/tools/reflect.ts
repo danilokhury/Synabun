@@ -3,6 +3,7 @@ import { getMemory, updatePayload, updateVector } from '../services/qdrant.js';
 import { generateEmbedding } from '../services/embeddings.js';
 import { buildCategoryDescription, validateCategory } from '../services/categories.js';
 import type { MemoryPayload } from '../types.js';
+import { computeChecksums } from '../services/file-checksums.js';
 
 export function buildReflectSchema() {
   return {
@@ -13,7 +14,7 @@ export function buildReflectSchema() {
       .describe(
         'Updated content. If provided, the embedding vector is regenerated.'
       ),
-    importance: z.number().min(1).max(10).optional().describe('Updated importance score.'),
+    importance: z.coerce.number().min(1).max(10).optional().describe('Updated importance score.'),
     tags: z
       .array(z.string())
       .optional()
@@ -65,7 +66,7 @@ export async function handleReflect(args: {
       content: [
         {
           type: 'text' as const,
-          text: `Invalid memory_id format. Expected full UUID (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), got: ${memoryId}\n\nThe 'remember' tool returns a shortened ID for display, but 'reflect' requires the full UUID. Use 'recall' to get the full UUID first.`,
+          text: `Invalid memory_id format. Expected full UUID (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), got: ${memoryId}\n\nUse the full UUID returned by 'remember', or call 'recall' to find the full UUID of an existing memory.`,
         },
       ],
     };
@@ -135,6 +136,12 @@ export async function handleReflect(args: {
     return {
       content: [{ type: 'text' as const, text: 'No changes specified.' }],
     };
+  }
+
+  // Recompute file checksums whenever the memory is updated
+  const finalFiles = (updates.related_files ?? payload.related_files);
+  if (finalFiles?.length) {
+    updates.file_checksums = computeChecksums(finalFiles);
   }
 
   if (args.content) {
