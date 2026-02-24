@@ -2979,14 +2979,6 @@ app.get('/api/setup/check-deps', async (req, res) => {
     deps.push({ id: 'docker', name: 'Docker', ok: false, warn: true, version: null, detail: 'Not found (optional if using Qdrant Cloud)', url: 'https://docs.docker.com/get-docker/' });
   }
 
-  // Git
-  try {
-    const { stdout } = await execAsync('git --version', { timeout: 5000 });
-    const ver = stdout.trim().match(/git version ([\d.]+)/)?.[1] || stdout.trim();
-    deps.push({ id: 'git', name: 'Git', ok: true, version: ver, detail: `v${ver}`, url: 'https://git-scm.com/downloads' });
-  } catch {
-    deps.push({ id: 'git', name: 'Git', ok: false, warn: true, version: null, detail: 'Not found (optional)', url: 'https://git-scm.com/downloads' });
-  }
 
   res.json({ deps });
 });
