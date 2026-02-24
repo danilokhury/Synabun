@@ -1,11 +1,14 @@
+# This compose file handles the initial/default Qdrant instance only.
+# Additional instances are created via `docker run` (see /api/connections/docker-new).
+# Port and API key are injected at runtime from the active connection config.
 services:
   qdrant-memory:
     image: qdrant/qdrant:latest
-    container_name: claude-memory
+    container_name: synabun-qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant-storage:/qdrant/storage
     environment:
@@ -14,4 +17,4 @@ services:
 
 volumes:
   qdrant-storage:
-    name: claude-memory-data
+    name: synabun-qdrant-data

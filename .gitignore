@@ -1,4 +1,10 @@
 /.env
 /CLAUDE.md
+/connections.json
+/data/
+.claude/
 node_modules/
 mcp-server/dist/
+mcp-server/data/*
+!mcp-server/data/custom-categories-default.json
+neural-interface/_*
