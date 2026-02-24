@@ -1,0 +1,21 @@
+SynaBun
+Copyright 2025-2026 The SynaBun Authors
+
+This product includes software developed at or by third parties,
+licensed under the Apache License 2.0:
+
+  - Qdrant JavaScript Client (@qdrant/js-client-rest)
+    Copyright 2021-2023 Qdrant Solutions GmbH
+    https://github.com/qdrant/js-client-rest
+
+  - OpenAI Node.js SDK (openai)
+    Copyright 2025 OpenAI
+    https://github.com/openai/openai-node
+
+  - TypeScript
+    Copyright 2012-2024 Microsoft Corporation
+    https://github.com/microsoft/TypeScript
+
+This product also includes software licensed under the MIT License
+and BSD-2-Clause License. See THIRD-PARTY-LICENSES.md for a complete
+listing of all third-party software and their respective licenses.
