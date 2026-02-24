@@ -6,6 +6,7 @@
 import { state, emit } from './state.js';
 import { searchMemories } from './api.js';
 import { t, tp } from './i18n.js';
+import { registerAction } from './ui-keybinds.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -139,13 +140,6 @@ export function initSearch() {
     });
   }
 
-  // ── Global "/" shortcut to focus search ──
-  document.addEventListener('keydown', (e) => {
-    const inInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
-    if (inInput) return;
-    if (e.key === '/') {
-      e.preventDefault();
-      $searchInput.focus();
-    }
-  });
+  // Global focus-search shortcut (via central keybinds)
+  registerAction('focus-search', () => $searchInput.focus());
 }

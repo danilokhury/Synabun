@@ -4,17 +4,25 @@
 // ═══════════════════════════════════════════
 
 import { getHelpSections } from './registry.js';
+import { registerAction, getDisplayKey } from './ui-keybinds.js';
 
 // Shared help sections that appear in all variants
-const SHARED_HELP_SECTIONS = [
+// Keyboard section uses dynamic keys from central keybinds system
+function getSharedHelpSections() {
+  return [
   {
     order: 10,
     html: `<div class="help-section">
       <div class="help-section-title">Keyboard</div>
-      <div class="help-row"><div class="help-keys"><span class="help-key">/</span></div><span class="help-desc">Focus search</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('focus-search')}</span></div><span class="help-desc">Focus search</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">Esc</span></div><span class="help-desc">Close panel / clear search</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-categories')}</span></div><span class="help-desc">Toggle categories</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-terminal')}</span></div><span class="help-desc">Toggle terminal</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('open-skills')}</span></div><span class="help-desc">Open Skills Studio</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-explorer')}</span></div><span class="help-desc">Toggle explorer</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-focus-mode')}</span></div><span class="help-desc">Toggle Focus Mode</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-help')}</span></div><span class="help-desc">Toggle this help</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">Enter</span></div><span class="help-desc">Save layout (when naming)</span></div>
-      <div class="help-row"><div class="help-keys"><span class="help-key">?</span></div><span class="help-desc">Toggle this help</span></div>
     </div>`
   },
   {
@@ -44,11 +52,11 @@ const SHARED_HELP_SECTIONS = [
       <div class="help-row"><div class="help-keys"><span class="help-key">Click</span><span class="help-key">Category</span></div><span class="help-desc">Toggle category visibility</span></div>
     </div>`
   }
-];
+]; }
 
 function buildHelpContent() {
   const variantSections = getHelpSections();
-  const allSections = [...SHARED_HELP_SECTIONS, ...variantSections];
+  const allSections = [...getSharedHelpSections(), ...variantSections];
   allSections.sort((a, b) => a.order - b.order);
   return allSections.map(s => s.html).join('');
 }
@@ -78,15 +86,10 @@ export function initHelp() {
     });
   }
 
-  // Global "?" shortcut to toggle help
-  document.addEventListener('keydown', (e) => {
-    const inInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
-    if (inInput) return;
-    if (e.key === '?') {
-      e.preventDefault();
-      const overlay = document.getElementById('help-overlay');
-      if (overlay?.classList.contains('open')) closeHelp();
-      else openHelp();
-    }
+  // Global toggle-help shortcut (via central keybinds)
+  registerAction('toggle-help', () => {
+    const overlay = document.getElementById('help-overlay');
+    if (overlay?.classList.contains('open')) closeHelp();
+    else openHelp();
   });
 }

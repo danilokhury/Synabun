@@ -47,12 +47,14 @@ export const GFX_PRESETS = {
   },
 };
 
+import { storage } from '../../shared/storage.js';
+
 const STORAGE_KEY = 'neural-gfx-config';
 const PRESET_KEY = 'neural-gfx-preset';
 
 export function loadGfxConfig() {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    const saved = JSON.parse(storage.getItem(STORAGE_KEY) || '{}');
     return { ...GFX_DEFAULTS, ...saved };
   } catch { return { ...GFX_DEFAULTS }; }
 }
@@ -62,15 +64,15 @@ export function saveGfxConfig(cfg) {
   for (const k in cfg) {
     if (cfg[k] !== GFX_DEFAULTS[k]) diff[k] = cfg[k];
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(diff));
+  storage.setItem(STORAGE_KEY, JSON.stringify(diff));
 }
 
 export function getActivePreset() {
-  return localStorage.getItem(PRESET_KEY) || null;
+  return storage.getItem(PRESET_KEY) || null;
 }
 
 export function setActivePreset(key) {
-  localStorage.setItem(PRESET_KEY, key);
+  storage.setItem(PRESET_KEY, key);
 }
 
 export function applyGfxPreset(presetKey, gfx, graph, applyBgTheme) {

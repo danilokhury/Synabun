@@ -77,6 +77,7 @@ The Neural Interface is the HTTP server that bridges the SynaBun web UI, MCP ser
   - [DELETE /api/claude-code/mcp](#delete-apiclaude-codemcp)
   - [GET /api/claude-code/hook-features](#get-apiclaude-codehook-features)
   - [PUT /api/claude-code/hook-features](#put-apiclaude-codehook-features)
+  - [PUT /api/claude-code/hook-features/config](#put-apiclaude-codehook-featuresconfig)
   - [GET /api/claude-code/ruleset](#get-apiclaude-coderuleset)
 - [Setup Endpoints (Extended)](#setup-endpoints-extended)
   - [POST /api/setup/start-docker-desktop](#post-apisetupstart-docker-desktop)
@@ -1965,17 +1966,41 @@ Returns hook feature flags from `data/hook-features.json`.
 **Response**
 
 ```json
-{ "conversationMemory": true }
+{
+  "ok": true,
+  "features": {
+    "conversationMemory": true,
+    "greeting": true,
+    "userLearning": true,
+    "userLearningThreshold": 8
+  }
+}
 ```
 
 ### PUT /api/claude-code/hook-features
 
-Toggles a single feature flag.
+Toggles a single boolean feature flag.
 
 **Request Body**
 
 ```json
-{ "feature": "conversationMemory", "enabled": false }
+{ "feature": "userLearning", "enabled": false }
+```
+
+### PUT /api/claude-code/hook-features/config
+
+Sets a configuration value (number, string, or boolean). Use this for non-boolean settings like thresholds.
+
+**Request Body**
+
+```json
+{ "key": "userLearningThreshold", "value": 10 }
+```
+
+**Response**
+
+```json
+{ "ok": true, "features": { "conversationMemory": true, "greeting": true, "userLearning": true, "userLearningThreshold": 10 } }
 ```
 
 ### GET /api/claude-code/ruleset

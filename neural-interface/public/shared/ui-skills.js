@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════
 
 import { emit, on } from './state.js';
+import { storage } from './storage.js';
 import {
   fetchSkillsLibrary, fetchSkillsArtifact, saveSkillsArtifact,
   fetchSkillsSubFile, saveSkillsSubFile, createSkillsSubFile, deleteSkillsSubFile,
@@ -31,6 +32,7 @@ let _editorDirty = false;
 let _wizardStep = 0;
 let _wizardData = {};
 let _previewMode = false;   // false = raw editor, true = rendered preview
+let _wizPreviewMode = false; // wizard step 4 preview mode
 let _focusMode = false;     // darkens backdrop fully
 
 // ── Tab system ──
@@ -42,9 +44,9 @@ let _activeTabIdx = 0;
 // ── Constants ──
 const PANEL_KEY = 'neural-panel-skills-studio';
 const TYPE_ICONS = {
-  skill: `<svg viewBox="0 0 16 16" width="14" height="14"><polygon points="8.7 1.3 2 9.3 8 9.3 7.3 14.7 14 6.7 8 6.7 8.7 1.3" fill="currentColor"/></svg>`,
-  command: `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 11.5 7 8 3 4.5"/><line x1="8.5" y1="12" x2="13" y2="12"/></svg>`,
-  agent: `<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="5.5" r="3" fill="currentColor"/><path d="M2.5 14.5c0-3 2.5-5 5.5-5s5.5 2 5.5 5" fill="currentColor"/></svg>`,
+  skill: `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v2M8 12v2M2 8h2M12 8h2M4.2 4.2l1.4 1.4M10.4 10.4l1.4 1.4M11.8 4.2l-1.4 1.4M5.6 10.4l-1.4 1.4"/><circle cx="8" cy="8" r="2.5"/></svg>`,
+  command: `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 11 7 8 3 5"/><line x1="9" y1="12" x2="13" y2="12"/></svg>`,
+  agent: `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="10" height="8" rx="2"/><line x1="6" y1="6" x2="6" y2="6.01"/><line x1="10" y1="6" x2="10" y2="6.01"/><path d="M6 14v-3M10 14v-3"/><path d="M1 7h2M13 7h2"/></svg>`,
 };
 const TYPE_LABELS = { skill: 'Skill', command: 'Command', agent: 'Agent' };
 const SCOPE_LABELS = { global: 'Global', project: 'Project', bundled: 'Bundled' };
@@ -239,7 +241,7 @@ async function openPanel() {
   // Backdrop
   _backdrop = document.createElement('div');
   _backdrop.className = 'ss-backdrop';
-  _backdrop.addEventListener('click', () => closePanel());
+  // No close-on-backdrop-click — panel stays open until explicitly closed
   document.body.appendChild(_backdrop);
 
   // Panel
@@ -251,7 +253,7 @@ async function openPanel() {
 
   // Restore position
   try {
-    const saved = JSON.parse(localStorage.getItem(PANEL_KEY));
+    const saved = JSON.parse(storage.getItem(PANEL_KEY));
     if (saved) {
       if (saved.x != null) _panel.style.left = saved.x + 'px';
       if (saved.y != null) _panel.style.top = saved.y + 'px';
@@ -279,7 +281,7 @@ function closePanel() {
   // Save position
   try {
     const rect = _panel.getBoundingClientRect();
-    localStorage.setItem(PANEL_KEY, JSON.stringify({
+    storage.setItem(PANEL_KEY, JSON.stringify({
       x: Math.round(rect.left), y: Math.round(rect.top),
       w: Math.round(rect.width), h: Math.round(rect.height),
     }));
@@ -507,6 +509,7 @@ async function switchToEditor(artifact) {
 function switchToWizard() {
   _view = 'wizard';
   _wizardStep = 0;
+  _wizPreviewMode = false;
   _wizardData = { type: 'skill', scope: 'global', template: 'blank', name: '', description: '', projectPath: '' };
   renderView();
 }
@@ -1213,62 +1216,41 @@ function buildFileDialogHTML(dirs, selectedDir, newFolderMode = false) {
   return `
     <div class="ss-fd-backdrop"></div>
     <div class="ss-file-dialog">
-      <div class="ss-fd-header">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-        </svg>
-        <span>Add File</span>
-      </div>
-
       <div class="ss-fd-body">
-        <div class="ss-fd-section-label">Location</div>
-        <div class="ss-fd-dirs">
-          ${tree.map(d => `
-            <div class="ss-fd-dir${d.path === selectedDir ? ' selected' : ''}" data-path="${esc(d.path)}" style="padding-left:${d.depth * 16 + 8}px">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                ${d.path === selectedDir
-                  ? '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" fill="var(--accent-blue)" stroke="var(--accent-blue)" opacity="0.7"/>'
-                  : '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'}
-              </svg>
-              <span>${esc(d.name)}</span>
+        ${dirs.length > 1 ? `
+          <div class="ss-fd-section-label">in</div>
+          <div class="ss-fd-dirs">
+            ${tree.map(d => `
+              <div class="ss-fd-dir${d.path === selectedDir ? ' selected' : ''}" data-path="${esc(d.path)}" style="padding-left:${d.depth * 14 + 8}px">
+                <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 13.5H2a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h4l1.5 2H14a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1z"/></svg>
+                <span>${esc(d.name)}</span>
+              </div>
+            `).join('')}
+          </div>
+          ${newFolderMode ? `
+            <div class="ss-fd-new-folder">
+              <input type="text" class="ss-input ss-fd-input" id="ss-fd-new-folder-name" placeholder="folder-name" spellcheck="false">
+              <button class="ss-fd-btn ss-fd-btn--ok" id="ss-fd-new-folder-ok">Add</button>
+              <button class="ss-fd-btn ss-fd-btn--cancel" id="ss-fd-new-folder-cancel">&times;</button>
             </div>
-          `).join('')}
+          ` : `
+            <button class="ss-fd-new-folder-trigger" id="ss-fd-new-folder-btn">+ Folder</button>
+          `}
+        ` : ''}
+
+        <div class="ss-fd-inline-create">
+          <div class="ss-fd-filename-row">
+            <span class="ss-fd-path-prefix">${esc(pathPreview)}</span>
+            <input type="text" class="ss-input ss-fd-input ss-fd-filename-input" id="ss-fd-filename" placeholder="filename.md" spellcheck="false" autocomplete="off">
+          </div>
+          <button class="ss-fd-create-btn" id="ss-fd-create">Create</button>
         </div>
 
-        ${newFolderMode ? `
-          <div class="ss-fd-new-folder">
-            <input type="text" class="ss-input ss-fd-input" id="ss-fd-new-folder-name" placeholder="folder-name" spellcheck="false">
-            <button class="ss-fd-btn ss-fd-btn--ok" id="ss-fd-new-folder-ok">Add</button>
-            <button class="ss-fd-btn ss-fd-btn--cancel" id="ss-fd-new-folder-cancel">&times;</button>
-          </div>
-        ` : `
-          <button class="ss-fd-new-folder-trigger" id="ss-fd-new-folder-btn">+ Folder</button>
-        `}
+        <div class="ss-fd-or">or</div>
 
-        <div class="ss-fd-divider"></div>
-
-        <div class="ss-fd-action-group">
-          <div class="ss-fd-action">
-            <div class="ss-fd-action-label">Create New</div>
-            <div class="ss-fd-filename-row">
-              <span class="ss-fd-path-prefix">${esc(pathPreview)}</span>
-              <input type="text" class="ss-input ss-fd-input ss-fd-filename-input" id="ss-fd-filename" placeholder="my-file.md" spellcheck="false" autocomplete="off">
-            </div>
-            <button class="ss-fd-action-btn ss-fd-create-btn" id="ss-fd-create">Create</button>
-          </div>
-
-          <div class="ss-fd-action">
-            <div class="ss-fd-action-label">Or Upload</div>
-            <button class="ss-fd-upload-btn" id="ss-fd-upload-btn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-              <span>Choose File</span>
-            </button>
-            <input type="file" id="ss-fd-upload-input" style="display:none">
-          </div>
+        <div class="ss-fd-inline-upload">
+          <button class="ss-fd-upload-link" id="ss-fd-upload-btn">Upload from computer</button>
+          <input type="file" id="ss-fd-upload-input" style="display:none">
         </div>
       </div>
 
@@ -1575,7 +1557,7 @@ async function loadMermaid() {
     const mod = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
     mod.default.initialize({ startOnLoad: false, theme: 'dark', themeVariables: {
       darkMode: true, background: 'transparent', primaryColor: '#1e3a5f',
-      primaryTextColor: '#e0e0e0', lineColor: '#4a90d9', secondaryColor: '#2a2a4a',
+      primaryTextColor: '#e0e0e0', lineColor: '#94a3b8', secondaryColor: '#2a2a4a',
     }});
     window.__mermaid = mod.default;
     _mermaidLoaded = true;
@@ -1646,6 +1628,625 @@ const AGENT_TEMPLATES = {
     gen: (n) => `---\nname: ${n}\ndescription: >\n  Use this agent for ${n} research tasks.\ntools: Read, Grep, Glob, WebFetch, WebSearch\n---\n\nYou are a research agent specializing in ${n}.\n\n## Approach\n\n1. Search the codebase for relevant context\n2. Search the web for current best practices\n3. Synthesize findings into actionable insights\n4. Return a concise summary\n` },
 };
 
+// ═══════════════════════════════════════════
+// PRESET / SNIPPET SYSTEM
+// ═══════════════════════════════════════════
+
+const PRESETS_KEY = 'neural-skills-custom-presets';
+const PRESETS_PANEL_KEY = 'neural-skills-presets-open';
+const PRESETS_COLLAPSED_KEY = 'neural-skills-preset-collapsed';
+
+const PRESET_CATEGORIES = {
+  structural: { label: 'Structural', desc: 'Section building blocks' },
+  frontmatter: { label: 'Frontmatter', desc: 'YAML configuration snippets' },
+  patterns: { label: 'Patterns', desc: 'Complete reusable flows' },
+  custom: { label: 'Custom', desc: 'Your saved presets' },
+};
+
+const BUILTIN_PRESETS = [
+  // ── Structural ──
+  { id: 'structural-role', name: 'Role / Persona', description: 'Define who the AI should be',
+    category: 'structural', types: ['skill', 'agent'],
+    snippet: '## Role\n\nYou are a [specialization] expert. Your role is to [primary responsibility].\n\n### Personality\n- Tone: [professional / casual / technical]\n- Verbosity: [concise / detailed]\n- Focus: [accuracy / speed / creativity]\n',
+    educationalNote: 'The Role section is the most impactful part of your prompt. It sets expectations for tone, expertise level, and behavioral boundaries.' },
+
+  { id: 'structural-steps', name: 'Step-by-Step', description: 'Numbered workflow steps',
+    category: 'structural', types: ['skill', 'command'],
+    snippet: '## Steps\n\n1. **Gather**: Collect necessary information\n2. **Analyze**: Process and understand the input\n3. **Execute**: Perform the main task\n4. **Verify**: Check results for correctness\n5. **Report**: Present findings to the user\n',
+    educationalNote: 'Numbered steps give the AI a clear execution order. Each step should be a distinct, verifiable action.' },
+
+  { id: 'structural-constraints', name: 'Constraints', description: 'Rules and boundaries',
+    category: 'structural', types: [],
+    snippet: '## Constraints\n\n- **NEVER** modify files outside the project directory\n- **NEVER** delete files without explicit user confirmation\n- **ALWAYS** explain your reasoning before making changes\n- **ALWAYS** check for existing patterns before creating new ones\n- Prefer editing existing files over creating new ones\n',
+    educationalNote: 'Constraints prevent the AI from taking unwanted actions. Use NEVER/ALWAYS for hard rules, softer language for preferences.' },
+
+  { id: 'structural-output', name: 'Output Format', description: 'Structure the response format',
+    category: 'structural', types: [],
+    snippet: '## Output Format\n\nReturn results as:\n\n```\n## Summary\n[1-2 sentence overview]\n\n## Findings\n- [Finding 1]\n- [Finding 2]\n\n## Recommendations\n1. [Action item]\n```\n',
+    educationalNote: 'Defining output format ensures consistent, parseable responses. Use markdown templates so the AI knows exactly what structure to follow.' },
+
+  { id: 'structural-examples', name: 'Examples', description: 'Show expected behavior with examples',
+    category: 'structural', types: ['skill', 'agent'],
+    snippet: '<example>\nContext: [Describe the situation]\nuser: "[Example user message]"\nassistant: "[Expected AI response]"\n</example>\n\n<example>\nContext: [Different situation]\nuser: "[Another example]"\nassistant: "[Expected response for this case]"\n</example>\n',
+    educationalNote: 'Examples are the most powerful teaching tool. The AI pattern-matches from examples to understand your intent better than abstract rules.' },
+
+  { id: 'structural-context', name: 'Context Gathering', description: 'Gather info before acting',
+    category: 'structural', types: ['skill', 'command'],
+    snippet: '## Step 1: Gather Context\n\nBefore proceeding, collect the necessary context:\n\n1. Read the relevant files using `Read` or `Glob`\n2. Search for existing patterns with `Grep`\n3. Check for related configuration\n4. Understand the current state before making changes\n\n**Do not skip this step.** Acting without context leads to errors.\n',
+    educationalNote: 'Context gathering prevents the AI from making assumptions. It forces a research-first approach that produces better results.' },
+
+  { id: 'structural-error', name: 'Error Handling', description: 'What to do when things fail',
+    category: 'structural', types: ['skill', 'command'],
+    snippet: '## Error Handling\n\nIf an error occurs:\n1. Report the error clearly to the user\n2. Explain what was attempted and why it failed\n3. Suggest concrete next steps or alternatives\n4. Do NOT retry the same action without changes\n5. Do NOT silently ignore errors\n',
+    educationalNote: 'Error handling instructions prevent the AI from getting stuck in retry loops or silently failing.' },
+
+  { id: 'structural-guard', name: 'Guard Rails', description: 'Safety boundaries for agents',
+    category: 'structural', types: ['agent'],
+    snippet: '## Guard Rails\n\n- Never modify files outside the specified scope\n- Always confirm destructive operations with the user\n- Stop and report if encountering unexpected state\n- Maximum 3 retries on any failing operation\n- If blocked, report the blocker — do not force through\n',
+    educationalNote: 'Guard rails are critical for agents that run autonomously. They prevent runaway behavior and destructive mistakes.' },
+
+  // ── Frontmatter ──
+  { id: 'fm-tools-readonly', name: 'Read-Only Tools', description: 'Safe exploration tools only',
+    category: 'frontmatter', types: ['skill', 'agent'],
+    snippet: 'allowed-tools:\n  - Read\n  - Grep\n  - Glob\n',
+    educationalNote: 'Read-only tools make your skill safe. The AI can explore the codebase but cannot modify any files.' },
+
+  { id: 'fm-tools-full', name: 'Full Tool Access', description: 'All tools enabled',
+    category: 'frontmatter', types: ['skill', 'agent'],
+    snippet: 'allowed-tools:\n  - Read\n  - Write\n  - Edit\n  - Bash\n  - Grep\n  - Glob\n  - WebFetch\n  - WebSearch\n  - Task\n  - NotebookEdit\n',
+    educationalNote: 'Full tool access gives maximum capability but less safety. Use this for trusted, well-tested skills.' },
+
+  { id: 'fm-tools-web', name: 'Web Access', description: 'Internet research tools',
+    category: 'frontmatter', types: ['skill', 'agent'],
+    snippet: 'allowed-tools:\n  - WebFetch\n  - WebSearch\n',
+    educationalNote: 'Web tools let the AI search the internet and fetch URLs. Useful for research, documentation lookup, and staying current.' },
+
+  { id: 'fm-tools-task', name: 'Task Delegation', description: 'Sub-agent delegation',
+    category: 'frontmatter', types: ['skill'],
+    snippet: 'allowed-tools:\n  - Task\n  - Read\n  - Grep\n  - Glob\n# Delegates complex subtasks to specialized sub-agents\n',
+    educationalNote: 'The Task tool lets your skill spawn sub-agents for parallel or specialized work. Great for orchestrator skills.' },
+
+  { id: 'fm-model', name: 'Model Selection', description: 'Choose which Claude model to use',
+    category: 'frontmatter', types: ['agent'],
+    snippet: 'model: sonnet  # Options: haiku (fast/cheap), sonnet (balanced), opus (most capable)\n',
+    educationalNote: 'Agents can specify which model to use. Haiku is fast and cheap, Sonnet is balanced, Opus is the most capable.' },
+
+  { id: 'fm-trigger', name: 'Trigger Pattern', description: 'When the skill should activate',
+    category: 'frontmatter', types: ['skill'],
+    snippet: 'description: >\n  This skill handles [task type].\n  Triggers on: "[keyword1]", "[keyword2]", "[keyword3]".\n',
+    educationalNote: 'The description field tells Claude when to auto-detect and invoke your skill. List specific trigger phrases for reliable activation.' },
+
+  { id: 'fm-args', name: 'Argument Hint', description: 'Show expected arguments',
+    category: 'frontmatter', types: ['skill', 'command'],
+    snippet: 'argument-hint: "[target] [--option]"\n',
+    educationalNote: 'The argument hint shows users what to type after the slash command. Use brackets for required args, flags for options.' },
+
+  // ── Patterns ──
+  { id: 'pattern-analyze', name: 'Analysis Pattern', description: 'Analyze-then-report flow',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Analysis Workflow\n\n### Step 1: Identify Target\nParse `$ARGUMENTS` to determine what to analyze.\nIf no target specified, ask the user.\n\n### Step 2: Gather Data\n- Read the target files\n- Search for related patterns with `Grep`\n- Note dependencies and connections\n\n### Step 3: Analyze\n- Check for common issues and anti-patterns\n- Evaluate code quality and consistency\n- Identify improvement opportunities\n\n### Step 4: Report\nPresent findings as:\n- **Issues**: Problems that need fixing\n- **Warnings**: Potential concerns\n- **Suggestions**: Optional improvements\n',
+    educationalNote: 'The analysis pattern is one of the most useful flows. It follows a gather-analyze-report cycle that works for any review task.' },
+
+  { id: 'pattern-transform', name: 'Transform Pattern', description: 'Read-transform-write pipeline',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Transform Pipeline\n\n### Step 1: Read Source\nRead the input file(s) specified in `$ARGUMENTS`.\n\n### Step 2: Validate\nCheck that the input is in the expected format.\nIf not, report the issue and stop.\n\n### Step 3: Transform\nApply the transformation:\n- [Describe transformation logic]\n- Preserve formatting and style conventions\n- Handle edge cases gracefully\n\n### Step 4: Write Output\nWrite the transformed result.\nReport what changed and why.\n',
+    educationalNote: 'Transform patterns are perfect for code generation, format conversion, and automated refactoring tasks.' },
+
+  { id: 'pattern-interactive', name: 'Interactive Menu', description: 'Argument routing with menu fallback',
+    category: 'patterns', types: ['skill'],
+    snippet: '## Routing\n\nRead `$ARGUMENTS`.\n\n**If arguments provided**, route to the matching subcommand below.\n**If blank**, present this menu to the user:\n\n| Command | Description |\n|---------|-------------|\n| `action1` | Does the first thing |\n| `action2` | Does the second thing |\n| `help` | Shows this menu |\n\nUse `AskUserQuestion` to let them pick.\n\n### action1\n[Instructions for action 1]\n\n### action2\n[Instructions for action 2]\n',
+    educationalNote: 'Interactive menus make skills user-friendly. When no arguments are given, show a menu instead of failing.' },
+
+  { id: 'pattern-progressive', name: 'Progressive Loading', description: 'Load reference files on demand',
+    category: 'patterns', types: ['skill'],
+    snippet: '## References\n\nThis skill uses progressive loading. Detailed docs live in sub-files:\n\n- `$SKILL_DIR/references/guide.md` — Complete usage guide\n- `$SKILL_DIR/references/examples.md` — Code examples\n- `$SKILL_DIR/references/api.md` — API reference\n\n## Instructions\n\n1. Read `$ARGUMENTS` to understand the request\n2. If you need detailed information, use `Read` tool on the reference files above\n3. Do NOT load all references upfront — only load what you need\n4. Follow the instructions from the loaded reference\n',
+    educationalNote: 'Progressive loading keeps your main SKILL.md small and fast. Sub-files are loaded on demand via $SKILL_DIR, saving context window space.' },
+
+  { id: 'pattern-review', name: 'Code Review', description: 'Multi-file review with structured findings',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Code Review\n\n### Step 1: Scope\nDetermine files to review from `$ARGUMENTS`.\nIf a directory, find relevant files with `Glob`.\n\n### Step 2: Review Each File\nFor each file, check:\n- [ ] Code correctness and logic errors\n- [ ] Security vulnerabilities (injection, XSS, etc.)\n- [ ] Performance concerns\n- [ ] Style consistency with existing codebase\n- [ ] Missing error handling\n\n### Step 3: Summary\nPresent a severity-ranked list:\n- **Critical**: Must fix before merge\n- **Warning**: Should fix soon\n- **Info**: Nice to have improvements\n',
+    educationalNote: 'Code review patterns work great as reusable skills. The checklist format ensures consistent, thorough reviews.' },
+
+  { id: 'pattern-crud', name: 'CRUD Operations', description: 'Create/read/update/delete router',
+    category: 'patterns', types: ['skill'],
+    snippet: '## Subcommands\n\nRoute based on `$ARGUMENTS`:\n\n### create [name]\nCreate a new [resource]:\n1. Validate the name\n2. Check for duplicates\n3. Generate from template\n4. Write to disk\n5. Report success\n\n### list\nList all [resources]:\n1. Scan the directory\n2. Parse metadata\n3. Display as formatted table\n\n### update [name]\nModify an existing [resource]:\n1. Read current state\n2. Apply changes\n3. Validate result\n4. Write back\n\n### delete [name]\nRemove a [resource]:\n1. Confirm with user\n2. Delete file(s)\n3. Clean up references\n',
+    educationalNote: 'CRUD patterns are great for skills that manage collections of things — presets, templates, configurations, etc.' },
+
+  // ── More Structural ──
+  { id: 'structural-variables', name: 'Variables Reference', description: 'All available runtime variables',
+    category: 'structural', types: ['skill', 'command'],
+    snippet: '## Variables\n\n- `$ARGUMENTS` — User input after the slash command\n- `$SKILL_DIR` — Absolute path to this skill\'s directory\n- Dynamic injection: `!`git branch --show-current`` runs at load time\n',
+    educationalNote: '$ARGUMENTS contains everything the user typed after /command-name. $SKILL_DIR is the absolute path to the skill folder, useful for loading sub-files.' },
+
+  { id: 'structural-validation', name: 'Input Validation', description: 'Validate arguments before processing',
+    category: 'structural', types: ['skill', 'command'],
+    snippet: '## Input Validation\n\nBefore proceeding, validate `$ARGUMENTS`:\n\n1. If empty — show usage help and ask for input\n2. If it looks like a file path — verify the file exists with `Read`\n3. If it looks like a URL — validate format\n4. If invalid — explain what\'s expected and give examples\n\n**Never proceed with invalid input.** Always validate first.\n',
+    educationalNote: 'Input validation prevents confusing errors downstream. Always check $ARGUMENTS before acting on them.' },
+
+  { id: 'structural-askuser', name: 'Interactive Questions', description: 'Use AskUserQuestion for choices',
+    category: 'structural', types: ['skill', 'command'],
+    snippet: '## User Interaction\n\nUse `AskUserQuestion` to present choices:\n\n- Provide 2-4 clear options with descriptions\n- Include a recommended option marked with "(Recommended)"\n- Set `multiSelect: true` if multiple choices are valid\n- Users can always type "Other" for custom input\n\nExample: Ask which approach to take before making changes.\n',
+    educationalNote: 'AskUserQuestion creates a proper selection UI instead of asking open-ended questions. It supports single/multi-select with descriptions.' },
+
+  { id: 'structural-todowrite', name: 'Progress Tracking', description: 'Track work with TodoWrite',
+    category: 'structural', types: ['skill', 'command'],
+    snippet: '## Task Tracking\n\nFor multi-step tasks, use `TodoWrite` to track progress:\n\n1. Create a todo list with all planned steps\n2. Mark each task `in_progress` before starting (only ONE at a time)\n3. Mark `completed` immediately after finishing each task\n4. Add new tasks if discovered during work\n\nThis keeps the user informed and ensures nothing is missed.\n',
+    educationalNote: 'TodoWrite creates a visible progress tracker. Users can see which steps are done, in progress, and pending.' },
+
+  { id: 'structural-scope', name: 'Scope Definition', description: 'Define what is and isn\'t in scope',
+    category: 'structural', types: ['skill', 'agent'],
+    snippet: '## Scope\n\n### In Scope\n- [List what this skill/agent handles]\n- [Specific files, directories, or domains]\n- [Types of requests to accept]\n\n### Out of Scope\n- [What to refuse or redirect]\n- [Adjacent tasks that belong to other tools]\n- [Explicitly excluded scenarios]\n\nIf a request is out of scope, explain why and suggest the right tool.\n',
+    educationalNote: 'Scope definition prevents scope creep. The AI knows exactly what to handle and what to decline.' },
+
+  { id: 'structural-dynamic-context', name: 'Dynamic Context', description: 'Inject live data at load time',
+    category: 'structural', types: ['skill', 'command'],
+    snippet: '## Current Context\n\n- **Branch**: !`git branch --show-current`\n- **Status**: !`git status --short | head -20`\n- **Last commit**: !`git log -1 --oneline`\n- **Working directory**: !`pwd`\n',
+    educationalNote: 'Backtick-bang syntax (!`command`) runs shell commands when the skill loads. The output is injected as static text into the prompt.' },
+
+  { id: 'structural-reporting', name: 'Report Template', description: 'Structured findings report',
+    category: 'structural', types: [],
+    snippet: '## Report\n\nPresent findings using this structure:\n\n### Summary\n[1-2 sentence overview of what was found]\n\n### Critical Issues\n- [file:line] Issue description — **Impact**: [what breaks]\n\n### Warnings\n- [file:line] Warning description — **Risk**: [potential problem]\n\n### Recommendations\n1. [Highest priority action]\n2. [Second priority action]\n\n### Stats\n- Files analyzed: [N]\n- Issues found: [N critical, N warnings]\n',
+    educationalNote: 'Structured reports make findings actionable. The severity-ranked format helps users prioritize fixes.' },
+
+  { id: 'structural-confirmation', name: 'Confirmation Gate', description: 'Ask before destructive actions',
+    category: 'structural', types: ['skill', 'command'],
+    snippet: '## Confirmation Required\n\nBefore executing any destructive action:\n\n1. **Show exactly** what will be modified/deleted\n2. **List affected files** with specific changes\n3. **Ask for confirmation** using `AskUserQuestion`\n4. Only proceed after explicit "Yes" confirmation\n5. If user says "No" — explain alternatives\n\n**NEVER** skip confirmation for: file deletion, bulk edits, git operations, or data modifications.\n',
+    educationalNote: 'Confirmation gates prevent accidental destructive actions. Always show what will happen before doing it.' },
+
+  { id: 'structural-retry', name: 'Retry Logic', description: 'Handle failures with retries',
+    category: 'structural', types: ['skill', 'agent'],
+    snippet: '## Retry Strategy\n\nWhen an operation fails:\n\n1. **First failure**: Report the error, analyze the cause\n2. **Adjust approach**: Try a different method or fix the root cause\n3. **Second attempt**: Retry with the adjusted approach\n4. **If still failing**: Stop, report what was tried, and ask for help\n\n**Maximum 2 retries.** Do NOT brute-force or repeat the same action.\nDo NOT silently swallow errors.\n',
+    educationalNote: 'Retry logic prevents infinite loops. The key is to change approach between retries, not just repeat the same thing.' },
+
+  { id: 'structural-phased', name: 'Multi-Phase Workflow', description: 'Large task broken into phases',
+    category: 'structural', types: ['skill'],
+    snippet: '## Phase 1: Discovery\nGather requirements. Read relevant files. Ask clarifying questions.\n\n## Phase 2: Analysis\nAnalyze the codebase. Identify patterns, dependencies, and constraints.\n\n## Phase 3: Planning\nDesign the approach. Present plan to user for approval.\n\n## Phase 4: Implementation\nExecute the plan. Track progress with `TodoWrite`.\n\n## Phase 5: Verification\nRun tests. Check for regressions. Validate the output.\n\n## Phase 6: Summary\nReport what was done, what changed, and any follow-up items.\n',
+    educationalNote: 'Multi-phase workflows are the most robust pattern for complex tasks. Each phase has a clear goal and exit criteria.' },
+
+  // ── More Frontmatter ──
+  { id: 'fm-tools-filemod', name: 'File Modification Tools', description: 'Read + Write + Edit combo',
+    category: 'frontmatter', types: ['skill', 'agent'],
+    snippet: 'allowed-tools:\n  - Read\n  - Write\n  - Edit\n  - Glob\n  - Grep\n',
+    educationalNote: 'File modification tools let the AI read, create, and edit files. No Bash access keeps it safer than full tool access.' },
+
+  { id: 'fm-tools-git', name: 'Git Operations', description: 'Bash restricted to git commands',
+    category: 'frontmatter', types: ['skill'],
+    snippet: 'allowed-tools:\n  - Read\n  - Grep\n  - Glob\n  - Bash\n# Note: Instruct the skill to only use Bash for git operations\n',
+    educationalNote: 'For git-focused skills, include Bash but instruct the skill to only use it for git commands. Explicit instructions in the body reinforce the restriction.' },
+
+  { id: 'fm-tools-analysis', name: 'Analysis Tools', description: 'Read + search tools for review',
+    category: 'frontmatter', types: ['skill', 'agent'],
+    snippet: 'allowed-tools:\n  - Read\n  - Grep\n  - Glob\n  - WebSearch\n',
+    educationalNote: 'Analysis tools are read-only with web search. Perfect for review, audit, and research skills that should never modify files.' },
+
+  { id: 'fm-disable-auto', name: 'User-Only Invocation', description: 'Disable auto-detection',
+    category: 'frontmatter', types: ['skill'],
+    snippet: 'disable-model-invocation: true\n# Only triggered by user typing /skill-name, never auto-detected\n',
+    educationalNote: 'disable-model-invocation prevents Claude from auto-invoking the skill. The user must explicitly type the slash command.' },
+
+  { id: 'fm-fork-context', name: 'Forked Context', description: 'Run skill in isolated subagent',
+    category: 'frontmatter', types: ['skill'],
+    snippet: 'context: fork\nagent: Explore\n# Runs in an isolated subagent context to avoid polluting the main conversation\n',
+    educationalNote: 'context: fork runs the skill in a separate subagent. Useful for heavy research that would clutter the main context window.' },
+
+  { id: 'fm-agent-fast', name: 'Fast Agent (Haiku)', description: 'Quick, cheap agent for simple tasks',
+    category: 'frontmatter', types: ['agent'],
+    snippet: 'model: haiku\ntools: Read, Grep, Glob\n# Fast and cheap — ideal for simple checks, linting, quick lookups\n',
+    educationalNote: 'Haiku agents are fast and cheap. Use them for simple, repetitive checks where speed matters more than deep reasoning.' },
+
+  { id: 'fm-agent-balanced', name: 'Balanced Agent (Sonnet)', description: 'Default agent for most tasks',
+    category: 'frontmatter', types: ['agent'],
+    snippet: 'model: sonnet\ntools: Read, Write, Edit, Bash, Grep, Glob\n# Balanced cost/capability — the recommended default for most agents\n',
+    educationalNote: 'Sonnet is the recommended default for agents. Good balance of capability and cost for analysis, coding, and research tasks.' },
+
+  { id: 'fm-agent-powerful', name: 'Powerful Agent (Opus)', description: 'Maximum capability agent',
+    category: 'frontmatter', types: ['agent'],
+    snippet: 'model: opus\ntools: Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch, Task\n# Most capable — use for complex architecture, migrations, and critical decisions\n',
+    educationalNote: 'Opus agents are the most capable but expensive. Reserve for complex architecture decisions, large migrations, and critical analysis.' },
+
+  { id: 'fm-trigger-multi', name: 'Multiple Triggers', description: 'Rich trigger phrase list',
+    category: 'frontmatter', types: ['skill'],
+    snippet: 'description: >\n  Use this skill when the user asks about [topic].\n  Triggers on: "[phrase1]", "[phrase2]", "[phrase3]",\n  "[phrase4]", "[phrase5]".\n  Also triggers when discussing [related-topic] or\n  mentioning [specific-term].\n',
+    educationalNote: 'More trigger phrases = more reliable auto-detection. List 5+ phrases covering different ways users might ask for this skill.' },
+
+  // ── More Patterns ──
+  { id: 'pattern-parallel-agents', name: 'Parallel Agents', description: 'Spawn multiple specialized agents',
+    category: 'patterns', types: ['skill'],
+    snippet: '## Parallel Analysis\n\nSpawn 3 specialized agents simultaneously using the `Task` tool:\n\n### Agent 1: [Specialist A]\nFocus on [aspect A]. Report findings.\n\n### Agent 2: [Specialist B]\nFocus on [aspect B]. Report findings.\n\n### Agent 3: [Specialist C]\nFocus on [aspect C]. Report findings.\n\n## Synthesis\n\nAfter all agents return, synthesize their findings:\n1. Identify overlapping concerns\n2. Resolve conflicting recommendations\n3. Present unified action plan\n',
+    educationalNote: 'Parallel agents run simultaneously, dramatically speeding up multi-faceted analysis. Each agent gets its own context window.' },
+
+  { id: 'pattern-memory-recall', name: 'Memory-Powered', description: 'Recall context before acting',
+    category: 'patterns', types: ['skill'],
+    snippet: '## Step 1: Recall Context\n\nBefore doing anything, search memory for relevant context:\n\n1. `recall` with query about the current topic\n2. `recall` with category filter for related decisions\n3. Check for past bugs, patterns, or architecture decisions\n\n## Step 2: Act with Context\n\nUse the recalled context to inform your approach.\nAvoid repeating past mistakes or contradicting past decisions.\n\n## Step 3: Remember Results\n\nAfter completing the task:\n1. `remember` what was done, why, and how\n2. Include related_files, appropriate importance, and 3-5 tags\n3. One task = one memory (do not batch)\n',
+    educationalNote: 'Memory-powered skills use SynaBun recall/remember to build on past work. They get smarter over time as context accumulates.' },
+
+  { id: 'pattern-test-gen', name: 'Test Generation', description: 'Generate tests for code',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Test Generation\n\n### Step 1: Analyze Target\nRead the target file(s) from `$ARGUMENTS`.\nIdentify:\n- Public functions and their signatures\n- Edge cases and boundary conditions\n- Dependencies that need mocking\n- Existing test patterns in the project\n\n### Step 2: Generate Tests\nFor each function:\n- Happy path test (expected input → expected output)\n- Edge case tests (empty, null, boundary values)\n- Error case tests (invalid input, failures)\n- Integration test if it calls external services\n\n### Step 3: Verify\nRun the tests with `Bash`. Fix any failures.\nEnsure all tests pass before reporting.\n',
+    educationalNote: 'Test generation skills are incredibly useful. They analyze code structure and generate comprehensive test suites following existing project patterns.' },
+
+  { id: 'pattern-security', name: 'Security Review', description: 'Security-focused code analysis',
+    category: 'patterns', types: ['skill', 'agent'],
+    snippet: '## Security Review\n\n### Check for OWASP Top 10:\n- [ ] **Injection**: SQL, command, XSS, template injection\n- [ ] **Broken Auth**: Hardcoded secrets, weak tokens, missing MFA\n- [ ] **Sensitive Data**: Exposed API keys, PII in logs, unencrypted storage\n- [ ] **XXE/SSRF**: External entity processing, server-side request forgery\n- [ ] **Broken Access**: Missing authorization checks, IDOR vulnerabilities\n- [ ] **Misconfig**: Debug mode on, default credentials, verbose errors\n- [ ] **Dependency Vulns**: Outdated packages with known CVEs\n\n### Report Format\nFor each finding:\n- **Severity**: Critical / High / Medium / Low\n- **Location**: file:line\n- **Description**: What the vulnerability is\n- **Remediation**: How to fix it\n- **Confidence**: percentage (only report >= 80%)\n',
+    educationalNote: 'Security review agents should filter by confidence (>= 80%) to avoid false positives. The OWASP checklist ensures comprehensive coverage.' },
+
+  { id: 'pattern-refactor', name: 'Refactoring', description: 'Safe code refactoring workflow',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Refactoring Workflow\n\n### Step 1: Understand Current State\n- Read the target code thoroughly\n- Map all callers and dependencies with `Grep`\n- Identify the refactoring goal\n\n### Step 2: Plan Changes\nPresent the refactoring plan to the user:\n- What will change and why\n- What will NOT change\n- Risks and mitigation\n\n### Step 3: Execute (after approval)\n- Make changes incrementally\n- Update all call sites\n- Preserve existing behavior exactly\n\n### Step 4: Verify\n- Run existing tests\n- Check for type errors\n- Verify no regressions\n',
+    educationalNote: 'Refactoring skills should always plan before executing, update all call sites, and verify with tests. Never change behavior during refactoring.' },
+
+  { id: 'pattern-migration', name: 'Migration', description: 'Database or API migration flow',
+    category: 'patterns', types: ['skill'],
+    snippet: '## Migration Plan\n\n### Step 1: Audit Current State\n- Catalog all usages of the old API/schema\n- Count affected files with `Grep`\n- Identify breaking changes\n\n### Step 2: Create Migration\n- Write migration script (up + down)\n- Handle data transformation\n- Add rollback capability\n\n### Step 3: Update Code\n- Replace old API calls with new ones\n- Update types and interfaces\n- Update tests\n\n### Step 4: Verify\n- Run migration in dry-run mode\n- Run full test suite\n- Check for orphaned references\n\n### Rollback Plan\nIf migration fails:\n1. Run the down migration\n2. Restore from backup\n3. Report what went wrong\n',
+    educationalNote: 'Migration skills need rollback plans. Always write both up and down migrations, and verify with dry-run before executing.' },
+
+  { id: 'pattern-documentation', name: 'Documentation Generator', description: 'Auto-generate docs from code',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Documentation Generation\n\n### Step 1: Scan\nIdentify documentation targets:\n- Public APIs and their parameters\n- Configuration options\n- Architecture patterns\n- Setup/installation steps\n\n### Step 2: Analyze\nFor each target:\n- Read the source code\n- Extract function signatures, types, and comments\n- Identify usage examples from tests\n- Note dependencies and prerequisites\n\n### Step 3: Generate\nWrite documentation following project conventions:\n- Clear description of purpose\n- Parameters with types and defaults\n- Usage examples (from real code when possible)\n- Related functions/components\n',
+    educationalNote: 'Documentation generators are more useful when they pull real examples from tests and existing code rather than inventing hypothetical ones.' },
+
+  { id: 'pattern-debug', name: 'Debugging', description: 'Systematic debugging workflow',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Debugging Workflow\n\n### Step 1: Reproduce\nUnderstand the bug from `$ARGUMENTS`.\n- What is the expected behavior?\n- What is the actual behavior?\n- What are the reproduction steps?\n\n### Step 2: Investigate\n- Search for the error message with `Grep`\n- Read the relevant source files\n- Trace the execution path\n- Check recent git changes: `git log --oneline -10`\n\n### Step 3: Identify Root Cause\n- Form a hypothesis\n- Verify by reading the code path\n- Check for off-by-one, null checks, async issues, race conditions\n\n### Step 4: Fix\n- Make the minimal change that fixes the root cause\n- Do NOT refactor surrounding code\n- Add a comment if the fix is non-obvious\n\n### Step 5: Verify\n- Run tests\n- Confirm the original reproduction steps no longer fail\n',
+    educationalNote: 'Debugging skills follow a systematic approach: reproduce, investigate, hypothesize, fix, verify. The key is finding root cause, not just symptoms.' },
+
+  { id: 'pattern-git-workflow', name: 'Git Workflow', description: 'Branch, commit, PR workflow',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Git Workflow\n\n### Step 1: Branch\n- Create feature branch: `git checkout -b feature/[name]`\n- Verify clean working tree\n\n### Step 2: Make Changes\n- Implement the feature/fix\n- Stage specific files (avoid `git add .`)\n\n### Step 3: Commit\n- Write clear commit message (why, not what)\n- Follow existing commit style from `git log`\n- Never skip pre-commit hooks\n\n### Step 4: Push & PR\n- Push with `-u` flag: `git push -u origin feature/[name]`\n- Create PR with `gh pr create`\n- Include summary, test plan, and checklist\n\n**Safety**: Never force-push to main. Never amend published commits.\n',
+    educationalNote: 'Git workflow skills should always follow safety practices: specific file staging, meaningful commits, never force-push to main.' },
+
+  { id: 'pattern-api-client', name: 'API Client', description: 'HTTP API interaction pattern',
+    category: 'patterns', types: ['skill'],
+    snippet: '## API Integration\n\n### Configuration\n- Base URL: [endpoint]\n- Auth: Bearer token from environment variable\n- Rate limit: [N] requests per [time]\n\n### Request Pattern\n1. Build the request URL and headers\n2. Validate parameters before sending\n3. Use `WebFetch` to make the request\n4. Parse the JSON response\n5. Handle errors (4xx, 5xx, network)\n\n### Error Handling\n- 401: Token expired — report to user\n- 429: Rate limited — wait and retry once\n- 500: Server error — report and don\'t retry\n- Network error: Report connectivity issue\n',
+    educationalNote: 'API client skills should always handle auth, rate limits, and errors gracefully. Never hardcode secrets — use environment variables.' },
+
+  { id: 'pattern-scaffold', name: 'Scaffolding / Generator', description: 'Generate files from templates',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Scaffolding\n\nGenerate project files from the input `$ARGUMENTS`:\n\n### Step 1: Parse Input\nExtract: name, type, options from arguments.\n\n### Step 2: Check Conventions\n- Read existing files to match project style\n- Check naming conventions (kebab-case, PascalCase, etc.)\n- Identify import patterns and directory structure\n\n### Step 3: Generate Files\nFor each file to create:\n1. Verify the directory exists\n2. Check for conflicts (don\'t overwrite)\n3. Write the file using project conventions\n4. Add necessary imports/exports\n\n### Step 4: Report\nList all created files and any manual steps needed.\n',
+    educationalNote: 'Scaffolding skills should always check existing conventions before generating. The generated code should look like a human wrote it following project style.' },
+
+  { id: 'pattern-lint-fix', name: 'Lint & Fix', description: 'Find and auto-fix code issues',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Lint & Fix\n\n### Step 1: Identify Issues\nRun the project linter:\n- `npm run lint` or equivalent\n- Parse the output for file:line:message\n- Group issues by severity and type\n\n### Step 2: Auto-Fix\nFor each fixable issue:\n- Read the file\n- Apply the fix using `Edit`\n- Verify the fix doesn\'t break other code\n\n### Step 3: Report Unfixable\nFor issues requiring human judgment:\n- List them with file:line references\n- Explain why auto-fix wasn\'t applied\n- Suggest the recommended fix\n\n### Step 4: Re-Run\nRun the linter again to confirm all auto-fixes are clean.\n',
+    educationalNote: 'Lint-fix skills should always re-run the linter after fixing to confirm no regressions. Some issues need human judgment — report those separately.' },
+
+  { id: 'pattern-perf-audit', name: 'Performance Audit', description: 'Identify performance bottlenecks',
+    category: 'patterns', types: ['skill', 'agent'],
+    snippet: '## Performance Audit\n\n### Check for Common Issues:\n- [ ] **N+1 queries**: Loop with individual DB calls\n- [ ] **Missing indexes**: Queries on unindexed columns\n- [ ] **Unnecessary re-renders**: React components re-rendering without prop changes\n- [ ] **Large bundles**: Importing entire libraries for single functions\n- [ ] **Uncached data**: Repeated expensive computations\n- [ ] **Memory leaks**: Event listeners not cleaned up, growing arrays\n- [ ] **Synchronous blocking**: Long-running sync operations on main thread\n\n### For Each Finding:\n- **Impact**: Estimated performance gain from fixing\n- **Location**: file:line\n- **Fix**: Specific code change needed\n- **Priority**: High (user-facing) / Medium / Low\n',
+    educationalNote: 'Performance audits should quantify impact when possible. Prioritize user-facing performance (page load, API response time) over theoretical improvements.' },
+
+  { id: 'pattern-config-wizard', name: 'Configuration Wizard', description: 'Interactive setup with questions',
+    category: 'patterns', types: ['skill'],
+    snippet: '## Configuration Wizard\n\nGuide the user through setup step by step:\n\n### Step 1: Detect Current State\nCheck what\'s already configured:\n- Read existing config files\n- Check for environment variables\n- Identify missing pieces\n\n### Step 2: Ask Questions\nFor each missing configuration:\n- Use `AskUserQuestion` with clear options\n- Provide recommended defaults\n- Explain what each option does\n\n### Step 3: Generate Config\nBased on answers:\n- Create/update config files\n- Set environment variables\n- Generate any needed boilerplate\n\n### Step 4: Validate\n- Verify the configuration works\n- Run a health check if applicable\n- Report success and next steps\n',
+    educationalNote: 'Configuration wizards detect existing state first, then only ask about missing pieces. Always provide recommended defaults.' },
+
+  { id: 'pattern-changelog', name: 'Changelog Generator', description: 'Generate changelog from git history',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Changelog Generation\n\n### Step 1: Get Commits\nRead git history since last tag/release:\n- `git log --oneline [last-tag]..HEAD`\n- Parse commit messages for type (feat, fix, refactor, etc.)\n\n### Step 2: Categorize\nGroup commits by type:\n- **Features**: New functionality\n- **Bug Fixes**: Corrections to existing behavior\n- **Breaking Changes**: Incompatible changes\n- **Other**: Refactors, docs, chores\n\n### Step 3: Format\nGenerate markdown changelog:\n```\n## [version] - YYYY-MM-DD\n\n### Features\n- Description (commit hash)\n\n### Bug Fixes\n- Description (commit hash)\n```\n',
+    educationalNote: 'Changelog generators work best when the project follows conventional commit format (feat:, fix:, etc.). They parse git history automatically.' },
+
+  { id: 'pattern-search-replace', name: 'Search & Replace', description: 'Project-wide find and replace',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Project-Wide Search & Replace\n\n### Step 1: Find All Occurrences\nUse `Grep` to find every occurrence of the target:\n- Search with regex for variations (imports, usages, references)\n- Count total occurrences and affected files\n- Present the full list to the user\n\n### Step 2: Confirm\nShow the replacement plan:\n- **Find**: `[old pattern]`\n- **Replace**: `[new pattern]`\n- **Files affected**: [N]\n- **Occurrences**: [N]\n\nAsk for confirmation before proceeding.\n\n### Step 3: Replace\nFor each file:\n- Read the file\n- Apply the replacement using `Edit`\n- Verify the replacement is correct\n\n### Step 4: Verify\n- Run `Grep` again to confirm zero remaining occurrences\n- Run tests to check for regressions\n',
+    educationalNote: 'Search & replace skills should always show the full scope before executing. Regex helps catch variations (imports, type refs, comments).' },
+
+  { id: 'pattern-dependency', name: 'Dependency Check', description: 'Audit and update dependencies',
+    category: 'patterns', types: ['skill', 'command'],
+    snippet: '## Dependency Audit\n\n### Step 1: Scan\n- Read package.json (or equivalent)\n- Check for outdated packages\n- Identify security vulnerabilities\n\n### Step 2: Analyze\nFor each outdated/vulnerable dependency:\n- Check the changelog for breaking changes\n- Assess update risk (major vs minor vs patch)\n- Check if the project uses affected APIs\n\n### Step 3: Recommend\nPresent update plan:\n- **Safe updates** (patch/minor, no breaking changes)\n- **Risky updates** (major, has breaking changes)\n- **Do not update** (known incompatibilities)\n\n### Step 4: Update (with approval)\n- Apply safe updates first\n- Run tests after each group\n- Report any failures\n',
+    educationalNote: 'Dependency audits should always check changelogs for breaking changes before updating. Group updates by risk level.' },
+];
+
+function loadCustomPresets() {
+  try {
+    return JSON.parse(storage.getItem(PRESETS_KEY) || '[]');
+  } catch { return []; }
+}
+
+function saveCustomPresets(arr) {
+  storage.setItem(PRESETS_KEY, JSON.stringify(arr));
+}
+
+function getPresetsForType(type) {
+  const builtIn = BUILTIN_PRESETS.filter(p => p.types.length === 0 || p.types.includes(type));
+  const custom = loadCustomPresets();
+  return { builtIn, custom };
+}
+
+function isPresetPanelOpen() {
+  return storage.getItem(PRESETS_PANEL_KEY) !== 'false'; // default open
+}
+
+function getPresetCollapsed() {
+  try { return JSON.parse(storage.getItem(PRESETS_COLLAPSED_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+// ═══════════════════════════════════════════
+// PRESET PANEL RENDERING
+// ═══════════════════════════════════════════
+
+function renderPresetPanel() {
+  const panel = $('ss-preset-panel');
+  if (!panel) return;
+
+  const type = _wizardData.type;
+  const { builtIn, custom } = getPresetsForType(type);
+  const collapsed = getPresetCollapsed();
+
+  const groups = {
+    structural: builtIn.filter(p => p.category === 'structural'),
+    frontmatter: builtIn.filter(p => p.category === 'frontmatter'),
+    patterns: builtIn.filter(p => p.category === 'patterns'),
+    custom: custom,
+  };
+
+  panel.innerHTML = Object.entries(groups).map(([catKey, presets]) => {
+    const cat = PRESET_CATEGORIES[catKey];
+    const isCollapsed = collapsed[catKey] === true;
+    const isCustom = catKey === 'custom';
+
+    return `
+      <div class="ss-preset-category${isCollapsed ? ' collapsed' : ''}">
+        <div class="ss-preset-cat-hdr" data-cat="${catKey}">
+          <span class="ss-preset-chevron">${isCollapsed ? '\u25B6' : '\u25BC'}</span>
+          <span class="ss-preset-cat-name">${cat.label}</span>
+          <span class="ss-preset-cat-count">${presets.length}</span>
+          ${isCustom ? `
+            <div class="ss-preset-custom-actions">
+              <button class="ss-preset-act-btn ss-preset-act-add" data-action="add" data-tooltip="New preset"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+              <button class="ss-preset-act-btn ss-preset-act-import" data-action="import" data-tooltip="Import presets"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="19"/></svg></button>
+              <button class="ss-preset-act-btn ss-preset-act-export" data-action="export" data-tooltip="Export presets"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="7 14 12 19 17 14"/><line x1="12" y1="19" x2="12" y2="5"/></svg></button>
+            </div>
+          ` : ''}
+        </div>
+        <div class="ss-preset-cat-body">
+          ${isCustom ? '<div id="ss-preset-custom-form"></div>' : ''}
+          ${presets.map(p => renderPresetCard(p, isCustom)).join('')}
+          ${presets.length === 0 && !isCustom ? '<div class="ss-preset-empty">No presets for this type</div>' : ''}
+          ${presets.length === 0 && isCustom ? '<div class="ss-preset-empty">Click + to create a preset</div>' : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  wirePresetPanel(panel);
+}
+
+function renderPresetCard(preset, isCustom) {
+  return `
+    <div class="ss-preset-card" draggable="true" data-preset-id="${preset.id}"
+         data-tooltip="${esc(preset.educationalNote || preset.description || '')}" data-tooltip-pos="right">
+      <div class="ss-preset-card-name">${esc(preset.name)}</div>
+      ${preset.description ? `<div class="ss-preset-card-desc">${esc(preset.description)}</div>` : ''}
+      ${isCustom ? `
+        <div class="ss-preset-card-actions">
+          <button class="ss-preset-edit-btn" data-id="${preset.id}" data-tooltip="Edit">&#9998;</button>
+          <button class="ss-preset-del-btn" data-id="${preset.id}" data-tooltip="Delete">&times;</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function wirePresetPanel(panel) {
+  // Accordion toggle
+  panel.querySelectorAll('.ss-preset-cat-hdr').forEach(hdr => {
+    hdr.addEventListener('click', (e) => {
+      if (e.target.closest('.ss-preset-act-btn') || e.target.closest('.ss-preset-custom-actions')) return; // don't toggle on action buttons
+      const cat = hdr.dataset.cat;
+      const section = hdr.closest('.ss-preset-category');
+      section.classList.toggle('collapsed');
+      const collapsed = getPresetCollapsed();
+      collapsed[cat] = section.classList.contains('collapsed');
+      storage.setItem(PRESETS_COLLAPSED_KEY, JSON.stringify(collapsed));
+      hdr.querySelector('.ss-preset-chevron').textContent = collapsed[cat] ? '\u25B6' : '\u25BC';
+    });
+  });
+
+  // Custom action buttons
+  panel.querySelectorAll('.ss-preset-act-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const action = btn.dataset.action;
+      if (action === 'add') showCustomPresetForm();
+      else if (action === 'import') importCustomPresets();
+      else if (action === 'export') exportCustomPresets();
+    });
+  });
+
+  // Edit/delete custom preset
+  panel.querySelectorAll('.ss-preset-edit-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      const customs = loadCustomPresets();
+      const preset = customs.find(p => p.id === id);
+      if (preset) showCustomPresetForm(preset);
+    });
+  });
+  panel.querySelectorAll('.ss-preset-del-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      if (!confirm('Delete this preset?')) return;
+      const customs = loadCustomPresets().filter(p => p.id !== id);
+      saveCustomPresets(customs);
+      renderPresetPanel();
+      toast('Preset deleted', 'info');
+    });
+  });
+
+  // Drag-and-drop on preset cards
+  panel.querySelectorAll('.ss-preset-card').forEach(card => {
+    const presetId = card.dataset.presetId;
+    const preset = findPresetById(presetId);
+    if (!preset) return;
+
+    card.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', preset.snippet);
+      e.dataTransfer.setData('application/x-synabun-preset', JSON.stringify({
+        id: preset.id, name: preset.name, snippet: preset.snippet
+      }));
+      e.dataTransfer.effectAllowed = 'copy';
+      const ghost = document.createElement('div');
+      ghost.className = 'ss-preset-drag-ghost';
+      ghost.textContent = preset.name;
+      document.body.appendChild(ghost);
+      e.dataTransfer.setDragImage(ghost, 0, 0);
+      requestAnimationFrame(() => ghost.remove());
+      card.classList.add('dragging');
+    });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+
+    // Click to insert
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.ss-preset-edit-btn, .ss-preset-del-btn')) return;
+      insertPresetSnippet(preset.snippet);
+      card.classList.add('ss-preset-inserted');
+      setTimeout(() => card.classList.remove('ss-preset-inserted'), 600);
+    });
+  });
+}
+
+function findPresetById(id) {
+  const builtIn = BUILTIN_PRESETS.find(p => p.id === id);
+  if (builtIn) return builtIn;
+  return loadCustomPresets().find(p => p.id === id);
+}
+
+function insertPresetSnippet(snippet) {
+  const editor = $('ss-wiz-content');
+  if (!editor) return;
+
+  // Switch to raw mode if in preview
+  if (_wizPreviewMode) {
+    _panel?.querySelector('.ss-view-toggle-btn[data-mode="raw"]')?.click();
+  }
+
+  const pos = editor.selectionStart;
+  const before = editor.value.substring(0, pos);
+  const after = editor.value.substring(editor.selectionEnd);
+  const pad = before.length > 0 && !before.endsWith('\n\n')
+    ? (before.endsWith('\n') ? '\n' : '\n\n') : '';
+  const trail = after.length > 0 && !after.startsWith('\n') ? '\n' : '';
+
+  editor.value = before + pad + snippet + trail + after;
+  const newPos = before.length + pad.length + snippet.length;
+  editor.selectionStart = editor.selectionEnd = newPos;
+  editor.focus();
+}
+
+function togglePresetPanel() {
+  const panel = $('ss-preset-panel');
+  const btn = $('ss-preset-toggle');
+  if (!panel || !btn) return;
+  const isOpen = !panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', isOpen);
+  btn.classList.toggle('active', !isOpen);
+  storage.setItem(PRESETS_PANEL_KEY, !isOpen ? 'true' : 'false');
+}
+
+// ── Custom preset CRUD ──
+
+function showCustomPresetForm(existing = null) {
+  const container = $('ss-preset-custom-form');
+  if (!container) return;
+  const editor = $('ss-wiz-content');
+  const selection = editor ? editor.value.substring(editor.selectionStart, editor.selectionEnd) : '';
+
+  container.innerHTML = `
+    <div class="ss-preset-form">
+      <input class="ss-input ss-preset-form-name" id="ss-pf-name" placeholder="Preset name" value="${esc(existing?.name || '')}">
+      <input class="ss-input ss-preset-form-desc" id="ss-pf-desc" placeholder="Description (optional)" value="${esc(existing?.description || '')}">
+      <textarea class="ss-preset-form-snippet" id="ss-pf-snippet" placeholder="Snippet content">${esc(existing?.snippet || selection)}</textarea>
+      <div class="ss-preset-form-actions">
+        <button class="ss-header-btn" id="ss-pf-cancel">Cancel</button>
+        <button class="ss-header-btn ss-save-btn" id="ss-pf-save">${existing ? 'Update' : 'Save'}</button>
+      </div>
+    </div>
+  `;
+
+  $('ss-pf-cancel')?.addEventListener('click', () => { container.innerHTML = ''; });
+  $('ss-pf-save')?.addEventListener('click', () => {
+    const name = $('ss-pf-name')?.value.trim();
+    const desc = $('ss-pf-desc')?.value.trim();
+    const snippet = $('ss-pf-snippet')?.value;
+    if (!name) { toast('Name is required', 'error'); return; }
+    if (!snippet) { toast('Snippet content is required', 'error'); return; }
+
+    const customs = loadCustomPresets();
+    if (existing) {
+      const idx = customs.findIndex(p => p.id === existing.id);
+      if (idx >= 0) customs[idx] = { ...customs[idx], name, description: desc, snippet };
+    } else {
+      customs.push({
+        id: 'custom-' + Date.now(),
+        name, description: desc, snippet,
+        category: 'custom', types: [],
+      });
+    }
+    saveCustomPresets(customs);
+    renderPresetPanel();
+    toast(existing ? 'Preset updated' : 'Preset saved', 'info');
+  });
+
+  // Scroll to form and focus
+  container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  $('ss-pf-name')?.focus();
+}
+
+// ── Import / Export ──
+
+function exportCustomPresets() {
+  const customs = loadCustomPresets();
+  if (customs.length === 0) { toast('No custom presets to export', 'error'); return; }
+  const bundle = {
+    format: 'synabun-presets-v1',
+    exportedAt: new Date().toISOString(),
+    presets: customs,
+  };
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `skill-presets-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast(`Exported ${customs.length} preset(s)`, 'info');
+}
+
+function importCustomPresets() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.addEventListener('change', async () => {
+    const file = input.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const bundle = JSON.parse(text);
+      if (bundle.format !== 'synabun-presets-v1' || !Array.isArray(bundle.presets)) {
+        toast('Invalid preset bundle format', 'error'); return;
+      }
+      const customs = loadCustomPresets();
+      const existingIds = new Set(customs.map(p => p.id));
+      let imported = 0, skipped = 0;
+      for (const p of bundle.presets) {
+        if (!p.name || !p.snippet) { skipped++; continue; }
+        if (existingIds.has(p.id)) { skipped++; continue; }
+        customs.push({ ...p, category: 'custom', id: p.id || ('custom-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)) });
+        imported++;
+      }
+      saveCustomPresets(customs);
+      renderPresetPanel();
+      toast(`Imported ${imported} preset(s)${skipped > 0 ? `, skipped ${skipped}` : ''}`, 'info');
+    } catch (err) {
+      toast('Import failed: ' + err.message, 'error');
+    }
+  });
+  input.click();
+}
+
 function renderWizard() {
   const main = $('ss-main');
   if (!main) return;
@@ -1668,7 +2269,7 @@ function renderWizard() {
 
   renderWizardStep();
 
-  $('ss-wiz-prev')?.addEventListener('click', () => { _wizardStep--; renderWizard(); });
+  $('ss-wiz-prev')?.addEventListener('click', () => { collectWizardData(); _wizardStep--; renderWizard(); });
   $('ss-wiz-next')?.addEventListener('click', () => {
     if (collectWizardData()) { _wizardStep++; renderWizard(); }
   });
@@ -1688,7 +2289,7 @@ function renderWizardStep() {
       <h3>What do you want to create?</h3>
       <div class="ss-type-cards">
         <div class="ss-type-card${d.type === 'skill' ? ' selected' : ''}" data-type="skill">
-          <div class="ss-type-card-icon skill"><svg viewBox="0 0 24 24" width="28" height="28"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"/></svg></div>
+          <div class="ss-type-card-icon skill"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="4"/></svg></div>
           <div class="ss-type-card-name">Skill</div>
           <div class="ss-type-card-desc">Auto-detected by Claude or invoked via /name. Supports sub-files for references and examples.</div>
         </div>
@@ -1698,7 +2299,7 @@ function renderWizardStep() {
           <div class="ss-type-card-desc">User-invoked via /name. Simple single-file format. Project-scoped.</div>
         </div>
         <div class="ss-type-card${d.type === 'agent' ? ' selected' : ''}" data-type="agent">
-          <div class="ss-type-card-icon agent"><svg viewBox="0 0 24 24" width="28" height="28"><circle cx="12" cy="8" r="4" fill="currentColor"/><path d="M4 21c0-4 3.5-7 8-7s8 3 8 7" fill="currentColor"/></svg></div>
+          <div class="ss-type-card-icon agent"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="12" rx="3"/><line x1="9" y1="9" x2="9" y2="9.01" stroke-width="2"/><line x1="15" y1="9" x2="15" y2="9.01" stroke-width="2"/><path d="M8 20v-4M16 20v-4"/><path d="M1 10h3M20 10h3"/></svg></div>
           <div class="ss-type-card-name">Agent</div>
           <div class="ss-type-card-desc">Specialized subagent delegated via the Task tool. Runs in its own context window.</div>
         </div>
@@ -1771,16 +2372,203 @@ function renderWizardStep() {
       });
     });
   } else if (_wizardStep === 3) {
-    // Content preview
+    // Content editor with preset side panel
     const templates = d.type === 'skill' ? SKILL_TEMPLATES : d.type === 'command' ? COMMAND_TEMPLATES : AGENT_TEMPLATES;
     const tpl = templates[d.template] || templates.blank;
-    const content = tpl.gen(d.name || `my-${d.type}`);
+    const content = d.rawContent || tpl.gen(d.name || `my-${d.type}`);
+    const panelOpen = isPresetPanelOpen();
     container.innerHTML = `
-      <h3>Review & Edit</h3>
-      <p class="ss-wizard-hint">Edit the generated content below before creating.</p>
-      <textarea class="ss-md-editor ss-wizard-editor" id="ss-wiz-content" spellcheck="false">${esc(content)}</textarea>
+      <div class="ss-wiz-step4-hdr">
+        <h3>Review & Edit</h3>
+        <button class="ss-preset-toggle${panelOpen ? ' active' : ''}" id="ss-preset-toggle">Presets</button>
+      </div>
+      <p class="ss-wizard-hint">Edit the generated content below. Click or drag presets to insert snippets.</p>
+      <div class="ss-wiz-step4-body">
+        <div class="ss-wiz-editor-wrap">
+          <div class="ss-md-toolbar" id="ss-wiz-toolbar">
+            <button class="ss-md-tool" data-cmd="heading" data-tooltip="Heading (Ctrl+H)"><svg viewBox="0 0 24 24"><path d="M4 4v16M20 4v16M4 12h16"/></svg></button>
+            <button class="ss-md-tool" data-cmd="bold" data-tooltip="Bold (Ctrl+B)"><b style="font-size:13px">B</b></button>
+            <button class="ss-md-tool" data-cmd="italic" data-tooltip="Italic (Ctrl+I)"><i style="font-size:13px">I</i></button>
+            <button class="ss-md-tool" data-cmd="strikethrough" data-tooltip="Strikethrough"><s style="font-size:12px">S</s></button>
+            <div class="ss-md-toolbar-sep"></div>
+            <button class="ss-md-tool" data-cmd="ul" data-tooltip="Bullet list"><svg viewBox="0 0 24 24"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="5" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="5" cy="18" r="1.5" fill="currentColor" stroke="none"/></svg></button>
+            <button class="ss-md-tool" data-cmd="ol" data-tooltip="Numbered list"><svg viewBox="0 0 24 24"><line x1="10" y1="6" x2="20" y2="6"/><line x1="10" y1="12" x2="20" y2="12"/><line x1="10" y1="18" x2="20" y2="18"/><text x="4" y="8" font-size="7" fill="currentColor" stroke="none" font-weight="600">1</text><text x="4" y="14" font-size="7" fill="currentColor" stroke="none" font-weight="600">2</text><text x="4" y="20" font-size="7" fill="currentColor" stroke="none" font-weight="600">3</text></svg></button>
+            <button class="ss-md-tool" data-cmd="quote" data-tooltip="Blockquote"><svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h12"/><rect x="1" y="5" width="2" height="14" rx="1" fill="currentColor" stroke="none" opacity="0.4"/></svg></button>
+            <div class="ss-md-toolbar-sep"></div>
+            <button class="ss-md-tool" data-cmd="code" data-tooltip="Inline code"><svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button>
+            <button class="ss-md-tool" data-cmd="codeblock" data-tooltip="Code block"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="9 8 5 12 9 16" stroke-width="1.5"/><polyline points="15 8 19 12 15 16" stroke-width="1.5"/></svg></button>
+            <button class="ss-md-tool" data-cmd="link" data-tooltip="Link (Ctrl+K)"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>
+            <button class="ss-md-tool" data-cmd="hr" data-tooltip="Horizontal rule">&mdash;</button>
+            <div class="ss-view-toggle">
+              <button class="ss-view-toggle-btn${_wizPreviewMode ? '' : ' active'}" data-mode="raw">Raw</button>
+              <button class="ss-view-toggle-btn${_wizPreviewMode ? ' active' : ''}" data-mode="preview">Preview</button>
+            </div>
+          </div>
+          <textarea class="ss-md-editor ss-wizard-editor${_wizPreviewMode ? ' ss-hidden' : ''}" id="ss-wiz-content" spellcheck="false" autocorrect="off" autocapitalize="off">${esc(content)}</textarea>
+          <div class="ss-md-preview ss-wizard-preview${_wizPreviewMode ? ' visible' : ''}" id="ss-wiz-preview">${_wizPreviewMode ? renderMarkdown(content) : ''}</div>
+        </div>
+        <div class="ss-preset-panel${panelOpen ? '' : ' hidden'}" id="ss-preset-panel"></div>
+      </div>
     `;
+    wireWizardEditor();
+    renderPresetPanel();
+    $('ss-preset-toggle')?.addEventListener('click', togglePresetPanel);
   }
+}
+
+function wireWizardEditor() {
+  const edId = 'ss-wiz-content';
+  const editor = $(edId);
+  const toolbar = $('ss-wiz-toolbar');
+  if (!editor || !toolbar) return;
+
+  // Helper: get editor element (for md* functions)
+  const getEd = () => $(edId);
+
+  // Tab key support (indentation)
+  editor.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = editor.selectionStart;
+      const end = editor.selectionEnd;
+      editor.value = editor.value.substring(0, start) + '  ' + editor.value.substring(end);
+      editor.selectionStart = editor.selectionEnd = start + 2;
+    }
+  });
+
+  // Toolbar click handlers
+  toolbar.querySelectorAll('.ss-md-tool[data-cmd]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const ed = getEd();
+      if (!ed) return;
+      const cmd = btn.dataset.cmd;
+      switch (cmd) {
+        case 'bold':          wizMdWrap(ed, '**', '**'); break;
+        case 'italic':        wizMdWrap(ed, '*', '*'); break;
+        case 'strikethrough': wizMdWrap(ed, '~~', '~~'); break;
+        case 'code':          wizMdWrap(ed, '`', '`'); break;
+        case 'codeblock':     wizMdWrapBlock(ed, '```\n', '\n```'); break;
+        case 'heading':       wizMdPrefix(ed, '## '); break;
+        case 'ul':            wizMdPrefix(ed, '- '); break;
+        case 'ol':            wizMdPrefix(ed, '1. '); break;
+        case 'quote':         wizMdPrefix(ed, '> '); break;
+        case 'link':          wizMdLink(ed); break;
+        case 'hr':            wizMdInsert(ed, '\n---\n'); break;
+      }
+    });
+  });
+
+  // Ctrl+B/I/K/H shortcuts
+  editor.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.metaKey) {
+      const ed = getEd();
+      if (!ed) return;
+      if (e.key === 'b') { e.preventDefault(); wizMdWrap(ed, '**', '**'); }
+      else if (e.key === 'i') { e.preventDefault(); wizMdWrap(ed, '*', '*'); }
+      else if (e.key === 'k') { e.preventDefault(); wizMdLink(ed); }
+      else if (e.key === 'h') { e.preventDefault(); wizMdPrefix(ed, '## '); }
+    }
+  });
+
+  // Preview/Raw toggle
+  toolbar.querySelectorAll('.ss-view-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.mode;
+      _wizPreviewMode = mode === 'preview';
+      toolbar.querySelectorAll('.ss-view-toggle-btn').forEach(b => b.classList.toggle('active', b === btn));
+      const ed = getEd();
+      const prev = $('ss-wiz-preview');
+      if (ed) ed.classList.toggle('ss-hidden', _wizPreviewMode);
+      if (prev) {
+        prev.classList.toggle('visible', _wizPreviewMode);
+        if (_wizPreviewMode) {
+          prev.innerHTML = renderMarkdown(ed?.value || '');
+        }
+      }
+      // Hide formatting tools in preview mode
+      toolbar.querySelectorAll('.ss-md-tool').forEach(t => t.style.visibility = _wizPreviewMode ? 'hidden' : '');
+    });
+  });
+
+  // Drag-and-drop target on textarea
+  editor.addEventListener('dragover', (e) => {
+    if (e.dataTransfer.types.includes('application/x-synabun-preset') ||
+        e.dataTransfer.types.includes('text/plain')) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      editor.classList.add('ss-drop-target');
+    }
+  });
+  editor.addEventListener('dragleave', (e) => {
+    if (!editor.contains(e.relatedTarget)) {
+      editor.classList.remove('ss-drop-target');
+    }
+  });
+  editor.addEventListener('drop', (e) => {
+    e.preventDefault();
+    editor.classList.remove('ss-drop-target');
+    const presetData = e.dataTransfer.getData('application/x-synabun-preset');
+    const snippet = presetData
+      ? JSON.parse(presetData).snippet
+      : e.dataTransfer.getData('text/plain');
+    if (!snippet) return;
+    insertPresetSnippet(snippet);
+  });
+}
+
+// ── Wizard markdown helpers (operate on passed editor element) ──
+
+function wizMdWrap(ed, before, after) {
+  const start = ed.selectionStart, end = ed.selectionEnd;
+  const sel = ed.value.substring(start, end);
+  const text = sel || 'text';
+  const replacement = before + text + after;
+  ed.setRangeText(replacement, start, end, 'select');
+  ed.selectionStart = start + before.length;
+  ed.selectionEnd = start + before.length + text.length;
+  ed.focus();
+}
+
+function wizMdWrapBlock(ed, before, after) {
+  const start = ed.selectionStart, end = ed.selectionEnd;
+  const sel = ed.value.substring(start, end);
+  const text = sel || 'code here';
+  const needNewlineBefore = start > 0 && ed.value[start - 1] !== '\n' ? '\n' : '';
+  const needNewlineAfter = end < ed.value.length && ed.value[end] !== '\n' ? '\n' : '';
+  const replacement = needNewlineBefore + before + text + after + needNewlineAfter;
+  ed.setRangeText(replacement, start, end, 'select');
+  ed.focus();
+}
+
+function wizMdPrefix(ed, prefix) {
+  const start = ed.selectionStart, end = ed.selectionEnd;
+  const before = ed.value.substring(0, start);
+  const lineStart = before.lastIndexOf('\n') + 1;
+  const sel = ed.value.substring(lineStart, end);
+  const lines = sel.split('\n');
+  const prefixed = lines.map(line => {
+    if (line.startsWith(prefix)) return line.substring(prefix.length);
+    return prefix + line.replace(/^(#{1,6}\s|[-*]\s|\d+\.\s|>\s)/, '');
+  }).join('\n');
+  ed.setRangeText(prefixed, lineStart, end, 'select');
+  ed.focus();
+}
+
+function wizMdLink(ed) {
+  const start = ed.selectionStart, end = ed.selectionEnd;
+  const sel = ed.value.substring(start, end);
+  const text = sel || 'link text';
+  const replacement = `[${text}](url)`;
+  ed.setRangeText(replacement, start, end, 'select');
+  ed.selectionStart = start + text.length + 3;
+  ed.selectionEnd = start + text.length + 6;
+  ed.focus();
+}
+
+function wizMdInsert(ed, text) {
+  const pos = ed.selectionStart;
+  ed.setRangeText(text, pos, ed.selectionEnd, 'end');
+  ed.focus();
 }
 
 function collectWizardData() {

@@ -9,6 +9,8 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
+    "adm-zip": "^0.5.16",
+    "archiver": "^7.0.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "node-pty": "^1.1.0",

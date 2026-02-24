@@ -2,11 +2,12 @@
 // SynaBun Neural Interface — Layout Presets
 // Toolbar dropdown for saving / loading / applying node layout presets.
 // Supports both built-in generative layouts (registered by each variant)
-// and user-saved presets stored in localStorage.
+// and user-saved presets stored via server-backed storage.
 // ═══════════════════════════════════════════
 
 import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
+import { storage } from './storage.js';
 import { getVariant } from './registry.js';
 
 const $ = (id) => document.getElementById(id);
@@ -36,14 +37,14 @@ function storageKey() {
  */
 function getUserPresets() {
   try {
-    return JSON.parse(localStorage.getItem(storageKey()) || (getVariant() === '2d' ? '{}' : '[]'));
+    return JSON.parse(storage.getItem(storageKey()) || (getVariant() === '2d' ? '{}' : '[]'));
   } catch {
     return getVariant() === '2d' ? {} : [];
   }
 }
 
 function saveUserPresets(data) {
-  localStorage.setItem(storageKey(), JSON.stringify(data));
+  storage.setItem(storageKey(), JSON.stringify(data));
 }
 
 // ── Built-in preset registration ──

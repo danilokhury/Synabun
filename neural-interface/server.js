@@ -5,13 +5,15 @@ import { basename, dirname, extname, join, resolve } from 'path';
 import { config as dotenvConfig } from 'dotenv';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, renameSync, cpSync, appendFileSync } from 'fs';
 import { randomBytes, createHash } from 'crypto';
-import { exec, spawn } from 'child_process';
+import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { Readable } from 'stream';
 import { createConnection as netConnect } from 'net';
 import { WebSocketServer } from 'ws';
 import os from 'node:os';
 import pty from 'node-pty';
+import archiver from 'archiver';
+import AdmZip from 'adm-zip';
 
 const execAsync = promisify(exec);
 
@@ -1677,6 +1679,116 @@ app.put('/api/display-settings', (req, res) => {
   }
 });
 
+// --- Keybinds Persistence ---
+
+const KEYBINDS_PATH = resolve(__dirname, '..', 'data', 'keybinds.json');
+
+function loadKeybinds() {
+  try { return JSON.parse(readFileSync(KEYBINDS_PATH, 'utf-8')); }
+  catch { return null; }
+}
+
+function saveKeybinds(data) {
+  const dir = resolve(KEYBINDS_PATH, '..');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  data._version = data._version || 1;
+  data._updated = new Date().toISOString();
+  writeFileSync(KEYBINDS_PATH, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+}
+
+app.get('/api/keybinds', (req, res) => {
+  try {
+    res.json(loadKeybinds() || {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/keybinds', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'Body must be a JSON object' });
+    }
+    saveKeybinds(req.body);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('PUT /api/keybinds error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- UI State Persistence (replaces browser localStorage) ---
+
+const UI_STATE_PATH = resolve(__dirname, '..', 'data', 'ui-state.json');
+
+function loadUiState() {
+  try {
+    return JSON.parse(readFileSync(UI_STATE_PATH, 'utf-8'));
+  } catch {
+    return { _version: 1, _updated: new Date().toISOString() };
+  }
+}
+
+function saveUiState(data) {
+  const dir = resolve(UI_STATE_PATH, '..');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  data._updated = new Date().toISOString();
+  writeFileSync(UI_STATE_PATH, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+}
+
+// Shared merge logic for PATCH and POST (sendBeacon)
+function mergeUiState(updates) {
+  const current = loadUiState();
+  for (const [key, value] of Object.entries(updates)) {
+    if (key.startsWith('_')) continue; // protect metadata keys
+    if (value === null) {
+      delete current[key];
+    } else {
+      current[key] = value;
+    }
+  }
+  saveUiState(current);
+  return current;
+}
+
+// GET /api/ui-state — Full state dump (boot hydration)
+app.get('/api/ui-state', (req, res) => {
+  try {
+    res.json(loadUiState());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/ui-state — Partial key update (debounced writes from client)
+app.patch('/api/ui-state', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'Body must be a JSON object' });
+    }
+    mergeUiState(req.body);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('PATCH /api/ui-state error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/ui-state — Same as PATCH (needed for navigator.sendBeacon on page unload)
+app.post('/api/ui-state', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'Body must be a JSON object' });
+    }
+    mergeUiState(req.body);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST /api/ui-state error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // --- Connection Management Routes (multi-instance Qdrant) ---
 // All connection/bridge config is stored in .env (single source of truth).
 // Functions: loadQdrantConnections(), saveQdrantConnection(), removeQdrantConnection(),
@@ -2326,6 +2438,322 @@ app.post('/api/connections/restore-standalone', express.raw({ type: 'application
 });
 
 // ═══════════════════════════════════════════
+// FULL SYSTEM BACKUP & RESTORE
+// ═══════════════════════════════════════════
+
+// GET /api/system/backup — Download full system backup as ZIP
+app.get('/api/system/backup', async (req, res) => {
+  try {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const prefix = `synabun-backup-${timestamp}`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${prefix}.zip"`);
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.on('error', (err) => {
+      console.error('Backup archive error:', err.message);
+      if (!res.headersSent) res.status(500).json({ error: err.message });
+    });
+    archive.pipe(res);
+
+    const manifest = {
+      version: 1,
+      created: new Date().toISOString(),
+      hostname: os.hostname(),
+      connections: {},
+      unreachableConnections: [],
+      files: [],
+      checksums: {},
+    };
+
+    // Helper: add a file to archive + manifest
+    const addFile = (archivePath, diskPath) => {
+      if (existsSync(diskPath)) {
+        const content = readFileSync(diskPath);
+        archive.append(content, { name: `${prefix}/${archivePath}` });
+        manifest.files.push(archivePath);
+        manifest.checksums[archivePath] = 'sha256:' + createHash('sha256').update(content).digest('hex');
+      }
+    };
+
+    // Helper: add all JSON files from a directory
+    const addJsonDir = (archiveDir, diskDir) => {
+      if (existsSync(diskDir)) {
+        for (const f of readdirSync(diskDir)) {
+          if (f.endsWith('.json')) {
+            addFile(`${archiveDir}/${f}`, resolve(diskDir, f));
+          }
+        }
+      }
+    };
+
+    // 1. .env
+    addFile('env.bak', ENV_PATH);
+
+    // 2. data/ directory
+    const dataDir = resolve(PROJECT_ROOT, 'data');
+    for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
+                      'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json']) {
+      addFile(`data/${f}`, resolve(dataDir, f));
+    }
+    addJsonDir('data/pending-remember', resolve(dataDir, 'pending-remember'));
+    addJsonDir('data/pending-compact', resolve(dataDir, 'pending-compact'));
+
+    // 3. mcp-server/data/
+    if (existsSync(CATEGORIES_DATA_DIR)) {
+      for (const f of readdirSync(CATEGORIES_DATA_DIR)) {
+        if (f.endsWith('.json')) {
+          addFile(`mcp-data/${f}`, resolve(CATEGORIES_DATA_DIR, f));
+        }
+      }
+    }
+
+    // 4. Qdrant snapshots — one per reachable connection
+    const connData = loadQdrantConnections();
+    for (const [id, conn] of Object.entries(connData.connections)) {
+      try {
+        const baseUrl = conn.url || `http://localhost:${conn.port || 6333}`;
+        const headers = { 'api-key': conn.apiKey };
+
+        // Health check
+        const healthRes = await fetch(`${baseUrl}/healthz`, {
+          headers, signal: AbortSignal.timeout(5000),
+        });
+        if (!healthRes.ok) throw new Error('unreachable');
+
+        // Get point count
+        let pointCount = 0;
+        try {
+          const infoRes = await fetch(`${baseUrl}/collections/${conn.collection}`, {
+            headers, signal: AbortSignal.timeout(5000),
+          });
+          if (infoRes.ok) {
+            const info = await infoRes.json();
+            pointCount = info?.result?.points_count ?? 0;
+          }
+        } catch { /* non-critical */ }
+
+        // Create snapshot
+        const snapRes = await fetch(`${baseUrl}/collections/${conn.collection}/snapshots`, {
+          method: 'POST', headers, signal: AbortSignal.timeout(120000),
+        });
+        if (!snapRes.ok) throw new Error('snapshot creation failed');
+        const snapData = await snapRes.json();
+        const snapName = snapData.result?.name;
+        if (!snapName) throw new Error('no snapshot name returned');
+
+        // Download snapshot
+        const dlRes = await fetch(`${baseUrl}/collections/${conn.collection}/snapshots/${snapName}`, {
+          headers, signal: AbortSignal.timeout(300000),
+        });
+        if (!dlRes.ok) throw new Error('snapshot download failed');
+
+        const snapBuffer = Buffer.from(await dlRes.arrayBuffer());
+        const archiveName = `snapshots/${id}.snapshot`;
+        archive.append(snapBuffer, { name: `${prefix}/${archiveName}` });
+
+        manifest.connections[id] = {
+          collection: conn.collection,
+          label: conn.label,
+          snapshotFile: archiveName,
+          snapshotSizeBytes: snapBuffer.length,
+          pointCount,
+        };
+
+        // Cleanup: delete snapshot from Qdrant (fire-and-forget)
+        fetch(`${baseUrl}/collections/${conn.collection}/snapshots/${snapName}`, {
+          method: 'DELETE', headers, signal: AbortSignal.timeout(10000),
+        }).catch(() => {});
+
+      } catch (err) {
+        console.warn(`  Backup: skipping connection "${id}": ${err.message}`);
+        manifest.unreachableConnections.push(id);
+      }
+    }
+
+    // 5. Write manifest last (references all files)
+    archive.append(JSON.stringify(manifest, null, 2), { name: `${prefix}/manifest.json` });
+
+    await archive.finalize();
+  } catch (err) {
+    console.error('GET /api/system/backup error:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/system/restore/preview — Read manifest from uploaded ZIP without applying
+app.post('/api/system/restore/preview',
+  express.raw({ type: ['application/zip', 'application/x-zip-compressed', 'application/octet-stream'], limit: '1gb' }),
+  async (req, res) => {
+  try {
+    if (!req.body || req.body.length === 0) {
+      return res.status(400).json({ error: 'No data received' });
+    }
+    const zip = new AdmZip(req.body);
+    const manifestEntry = zip.getEntries().find(e => e.entryName.endsWith('/manifest.json'));
+    if (!manifestEntry) {
+      return res.status(400).json({ error: 'Invalid backup: manifest.json not found' });
+    }
+    const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
+    res.json({ ok: true, manifest });
+  } catch (err) {
+    console.error('POST /api/system/restore/preview error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/system/restore — Apply a full system backup from uploaded ZIP
+app.post('/api/system/restore',
+  express.raw({ type: ['application/zip', 'application/x-zip-compressed', 'application/octet-stream'], limit: '1gb' }),
+  async (req, res) => {
+  try {
+    if (!req.body || req.body.length === 0) {
+      return res.status(400).json({ error: 'No backup data received' });
+    }
+
+    const mode = req.query.mode || 'full';
+
+    const zip = new AdmZip(req.body);
+    const entries = zip.getEntries();
+
+    // Find and validate manifest
+    const manifestEntry = entries.find(e => e.entryName.endsWith('/manifest.json'));
+    if (!manifestEntry) {
+      return res.status(400).json({ error: 'Invalid backup: manifest.json not found' });
+    }
+    const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
+    if (manifest.version !== 1) {
+      return res.status(400).json({ error: `Unsupported backup version: ${manifest.version}` });
+    }
+
+    const prefix = manifestEntry.entryName.replace('/manifest.json', '');
+    const results = { files: [], snapshots: [], errors: [] };
+
+    // Restore config files
+    if (mode === 'full' || mode === 'config-only') {
+      // .env
+      const envEntry = entries.find(e => e.entryName === `${prefix}/env.bak`);
+      if (envEntry) {
+        writeFileSync(ENV_PATH, envEntry.getData());
+        results.files.push('.env');
+      }
+
+      // data/ files
+      const dataDir = resolve(PROJECT_ROOT, 'data');
+      mkdirSync(dataDir, { recursive: true });
+      for (const subdir of ['pending-remember', 'pending-compact']) {
+        mkdirSync(resolve(dataDir, subdir), { recursive: true });
+      }
+
+      // mcp-server/data/
+      mkdirSync(CATEGORIES_DATA_DIR, { recursive: true });
+
+      for (const entry of entries) {
+        if (entry.isDirectory) continue;
+        const rel = entry.entryName.replace(`${prefix}/`, '');
+
+        if (rel.startsWith('data/') && rel !== 'data/') {
+          const target = resolve(PROJECT_ROOT, rel);
+          const dir = dirname(target);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(target, entry.getData());
+          results.files.push(rel);
+        }
+
+        if (rel.startsWith('mcp-data/') && rel !== 'mcp-data/') {
+          const filename = rel.replace('mcp-data/', '');
+          writeFileSync(resolve(CATEGORIES_DATA_DIR, filename), entry.getData());
+          results.files.push(rel);
+        }
+      }
+    }
+
+    // Restore Qdrant snapshots
+    if (mode === 'full' || mode === 'snapshots-only') {
+      // Reload connections (may have changed from .env restore above)
+      const connData = loadQdrantConnections();
+
+      for (const [connId, snapInfo] of Object.entries(manifest.connections || {})) {
+        const snapshotEntry = entries.find(e =>
+          e.entryName === `${prefix}/${snapInfo.snapshotFile}`
+        );
+        if (!snapshotEntry) {
+          results.errors.push(`Snapshot for "${connId}" not found in ZIP`);
+          continue;
+        }
+
+        const conn = connData.connections[connId];
+        if (!conn) {
+          results.errors.push(`Connection "${connId}" (${snapInfo.collection}) not found in current config — skipped`);
+          continue;
+        }
+
+        try {
+          const baseUrl = conn.url || `http://localhost:${conn.port || 6333}`;
+          const form = new FormData();
+          form.append('snapshot', new Blob([snapshotEntry.getData()]), 'restore.snapshot');
+
+          const uploadRes = await fetch(
+            `${baseUrl}/collections/${conn.collection}/snapshots/upload?priority=snapshot`,
+            {
+              method: 'POST',
+              headers: { 'api-key': conn.apiKey },
+              body: form,
+              signal: AbortSignal.timeout(300000),
+            }
+          );
+
+          if (!uploadRes.ok) {
+            const text = await uploadRes.text();
+            throw new Error(text);
+          }
+
+          results.snapshots.push({
+            id: connId,
+            collection: snapInfo.collection,
+            pointCount: snapInfo.pointCount,
+          });
+        } catch (err) {
+          results.errors.push(`Failed to restore "${connId}": ${err.message}`);
+        }
+      }
+    }
+
+    res.json({ ok: true, message: 'Backup restored successfully', results });
+  } catch (err) {
+    console.error('POST /api/system/restore error:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/browse-directory — List directories at a given path for folder picker UI
+app.get('/api/browse-directory', (req, res) => {
+  try {
+    let dir = req.query.path || '';
+    // Default to common roots on Windows / Unix
+    if (!dir) {
+      const home = process.env.USERPROFILE || process.env.HOME || '/';
+      dir = home;
+    }
+    dir = resolve(dir);
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+      return res.status(400).json({ error: 'Not a valid directory' });
+    }
+    const entries = readdirSync(dir, { withFileTypes: true });
+    const dirs = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+      .map(e => e.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    // Parent directory (unless at root)
+    const parent = resolve(dir, '..');
+    res.json({ ok: true, current: dir, parent: parent !== dir ? parent : null, directories: dirs });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════
 // BRIDGE ENDPOINTS
 // ═══════════════════════════════════════════
 
@@ -2481,8 +2909,8 @@ app.get('/api/setup/check-deps', async (req, res) => {
   res.json({ deps });
 });
 
-// GET /api/setup/status — Check what's configured
-app.get('/api/setup/status', async (req, res) => {
+// GET /api/setup/onboarding — Check what's configured (onboarding wizard)
+app.get('/api/setup/onboarding', async (req, res) => {
   try {
     const vars = parseEnvFile(ENV_PATH);
     const setupComplete = vars.SETUP_COMPLETE === 'true';
@@ -2515,7 +2943,7 @@ app.get('/api/setup/status', async (req, res) => {
       platform: process.platform,
     });
   } catch (err) {
-    console.error('GET /api/setup/status error:', err.message);
+    console.error('GET /api/setup/onboarding error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3375,6 +3803,25 @@ app.put('/api/claude-code/hook-features', (req, res) => {
   }
 });
 
+// PUT /api/claude-code/hook-features/config — set any config value (number, string, boolean)
+app.put('/api/claude-code/hook-features/config', (req, res) => {
+  try {
+    const { key, value } = req.body;
+    if (!key || typeof key !== 'string') {
+      return res.status(400).json({ error: 'key (string) is required.' });
+    }
+    if (value === undefined) {
+      return res.status(400).json({ error: 'value is required.' });
+    }
+    const features = loadHookFeatures();
+    features[key] = value;
+    saveHookFeatures(features);
+    res.json({ ok: true, features });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Greeting Config (read/write greeting-config.json for the greeting hook) ──
 
 const GREETING_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'greeting-config.json');
@@ -3436,12 +3883,14 @@ app.get('/api/claude-code/ruleset', (req, res) => {
     const MARKERS = {
       claude:  { start: '## Memory Ruleset', end: '## Condensed Rulesets' },
       cursor:  { start: '### Cursor',  end: '### Generic' },
-      generic: { start: '### Generic', end: '\n---' },
+      generic: { start: '### Generic', end: '### Gemini' },
+      gemini:  { start: '### Gemini',  end: '### Codex' },
+      codex:   { start: '### Codex',   end: '\n---' },
     };
 
     const marker = MARKERS[format];
     if (!marker) {
-      return res.status(400).json({ error: `Invalid format: ${format}. Use claude, cursor, or generic.` });
+      return res.status(400).json({ error: `Invalid format: ${format}. Use claude, cursor, generic, gemini, or codex.` });
     }
 
     const startIdx = content.indexOf(marker.start);
@@ -3463,7 +3912,7 @@ app.get('/api/claude-code/ruleset', (req, res) => {
       output = ruleset;
     } else {
       // Remove the marker heading line, return just the content
-      output = ruleset.replace(/^### (Cursor|Generic)\s*\n?/, '').trim();
+      output = ruleset.replace(/^### (Cursor|Generic|Gemini|Codex)\s*\n?/, '').replace(/^```\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
     }
 
     res.json({ ok: true, ruleset: output, format });
@@ -3523,6 +3972,175 @@ app.delete('/api/claude-code/mcp', (req, res) => {
       writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
     }
     res.json({ ok: true, message: 'SynaBun MCP removed from Claude.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════
+// Multi-Provider MCP Setup (Gemini, Codex)
+// ═══════════════════════════════════════════
+
+// ── Minimal TOML helpers (for Codex config.toml) ──
+
+function tomlHasSection(content, section) {
+  return new RegExp(`^\\[${section.replace(/\./g, '\\.')}\\]`, 'm').test(content);
+}
+
+function tomlUpsertSection(content, section, kvPairs) {
+  const lines = Object.entries(kvPairs).map(([k, v]) => `${k} = ${JSON.stringify(v)}`);
+  const block = `[${section}]\n${lines.join('\n')}`;
+  const re = new RegExp(`^\\[${section.replace(/\./g, '\\.')}\\][\\s\\S]*?(?=\\n\\[|$)`, 'm');
+  if (re.test(content)) return content.replace(re, block);
+  return (content.trim() ? content.trim() + '\n\n' : '') + block + '\n';
+}
+
+function tomlRemoveSection(content, section) {
+  const re = new RegExp(`\\n?^\\[${section.replace(/\./g, '\\.')}\\][\\s\\S]*?(?=\\n\\[|$)`, 'm');
+  return content.replace(re, '').trim() + (content.trim() ? '\n' : '');
+}
+
+// ── Shared MCP path helpers ──
+
+function getMcpPaths() {
+  const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'preload.js').replace(/\\/g, '/');
+  const envPath = resolve(PROJECT_ROOT, '.env').replace(/\\/g, '/');
+  return { mcpIndexPath, envPath };
+}
+
+function getHomePath() {
+  return process.env.USERPROFILE || process.env.HOME || '';
+}
+
+// ── Gemini MCP endpoints ──
+
+app.get('/api/setup/gemini/mcp', (req, res) => {
+  try {
+    const settingsPath = join(getHomePath(), '.gemini', 'settings.json');
+    if (!existsSync(settingsPath)) return res.json({ ok: true, connected: false });
+    const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    const connected = !!(data.mcpServers && data.mcpServers.SynaBun);
+    res.json({ ok: true, connected });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/setup/gemini/mcp', (req, res) => {
+  try {
+    const dir = join(getHomePath(), '.gemini');
+    const settingsPath = join(dir, 'settings.json');
+    const { mcpIndexPath, envPath } = getMcpPaths();
+    mkdirSync(dir, { recursive: true });
+    let data = {};
+    try { data = JSON.parse(readFileSync(settingsPath, 'utf-8')); } catch {}
+    if (!data.mcpServers) data.mcpServers = {};
+    data.mcpServers.SynaBun = {
+      command: 'node',
+      args: [mcpIndexPath],
+      env: { DOTENV_PATH: envPath },
+    };
+    writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    res.json({ ok: true, message: 'SynaBun MCP registered in Gemini CLI. Restart Gemini to connect.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/setup/gemini/mcp', (req, res) => {
+  try {
+    const settingsPath = join(getHomePath(), '.gemini', 'settings.json');
+    if (!existsSync(settingsPath)) return res.json({ ok: true });
+    const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    if (data.mcpServers && data.mcpServers.SynaBun) {
+      delete data.mcpServers.SynaBun;
+      if (Object.keys(data.mcpServers).length === 0) delete data.mcpServers;
+      writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    }
+    res.json({ ok: true, message: 'SynaBun MCP removed from Gemini CLI.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Codex MCP endpoints ──
+
+app.get('/api/setup/codex/mcp', (req, res) => {
+  try {
+    const configPath = join(getHomePath(), '.codex', 'config.toml');
+    if (!existsSync(configPath)) return res.json({ ok: true, connected: false });
+    const content = readFileSync(configPath, 'utf-8');
+    const connected = tomlHasSection(content, 'mcp_servers.SynaBun');
+    res.json({ ok: true, connected });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/setup/codex/mcp', (req, res) => {
+  try {
+    const dir = join(getHomePath(), '.codex');
+    const configPath = join(dir, 'config.toml');
+    const { mcpIndexPath, envPath } = getMcpPaths();
+    mkdirSync(dir, { recursive: true });
+    let content = '';
+    try { content = readFileSync(configPath, 'utf-8'); } catch {}
+    content = tomlUpsertSection(content, 'mcp_servers.SynaBun', {
+      command: 'node',
+      args: [mcpIndexPath],
+      env: { DOTENV_PATH: envPath },
+    });
+    writeFileSync(configPath, content, 'utf-8');
+    res.json({ ok: true, message: 'SynaBun MCP registered in Codex CLI. Restart Codex to connect.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/setup/codex/mcp', (req, res) => {
+  try {
+    const configPath = join(getHomePath(), '.codex', 'config.toml');
+    if (!existsSync(configPath)) return res.json({ ok: true });
+    let content = readFileSync(configPath, 'utf-8');
+    content = tomlRemoveSection(content, 'mcp_servers.SynaBun');
+    writeFileSync(configPath, content, 'utf-8');
+    res.json({ ok: true, message: 'SynaBun MCP removed from Codex CLI.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Combined setup status ──
+
+app.get('/api/setup/status', (req, res) => {
+  try {
+    const home = getHomePath();
+    const { mcpIndexPath, envPath } = getMcpPaths();
+
+    // Claude
+    let claude = { connected: false };
+    try {
+      const cj = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8'));
+      claude.connected = !!(cj.mcpServers && cj.mcpServers.SynaBun);
+    } catch {}
+    claude.cliCommand = `claude mcp add SynaBun -s user -e DOTENV_PATH="${envPath}" -- node "${mcpIndexPath}"`;
+
+    // Gemini
+    let gemini = { connected: false };
+    try {
+      const gj = JSON.parse(readFileSync(join(home, '.gemini', 'settings.json'), 'utf-8'));
+      gemini.connected = !!(gj.mcpServers && gj.mcpServers.SynaBun);
+    } catch {}
+
+    // Codex
+    let codex = { connected: false };
+    try {
+      const ct = readFileSync(join(home, '.codex', 'config.toml'), 'utf-8');
+      codex.connected = tomlHasSection(ct, 'mcp_servers.SynaBun');
+    } catch {}
+    codex.cliCommand = `codex --full-auto mcp add -- node "${mcpIndexPath}"`;
+
+    res.json({ ok: true, claude, gemini, codex, paths: { mcpIndexPath, envPath } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4687,37 +5305,63 @@ try {
 // TERMINAL — PTY Session Manager
 // ═══════════════════════════════════════════
 
-const terminalSessions = new Map(); // sessionId → { pty, clients, profile, cwd }
+const terminalSessions = new Map(); // sessionId → { pty, clients, profile, cwd, createdAt, outputBuffer, graceTimer }
 
 const IS_WIN = process.platform === 'win32';
 const DEFAULT_SHELL = IS_WIN ? (process.env.COMSPEC || 'cmd.exe') : (process.env.SHELL || '/bin/bash');
+const TERMINAL_BUFFER_MAX_BYTES = 100 * 1024; // 100KB ring buffer per session
+const TERMINAL_GRACE_PERIOD_MS = 30 * 60 * 1000; // 30 min before orphaned PTY is killed
 
-const TERMINAL_PROFILES = {
-  'claude-code': {
-    shell: DEFAULT_SHELL,
-    args: IS_WIN ? ['/k', 'claude'] : ['-c', 'claude; exec $SHELL'],
-    env: { FORCE_COLOR: '1', TERM: 'xterm-256color' },
-  },
-  'codex': {
-    shell: DEFAULT_SHELL,
-    args: IS_WIN ? ['/k', 'codex'] : ['-c', 'codex; exec $SHELL'],
-    env: { FORCE_COLOR: '1', TERM: 'xterm-256color' },
-  },
-  'gemini': {
-    shell: DEFAULT_SHELL,
-    args: IS_WIN ? ['/k', 'gemini'] : ['-c', 'gemini; exec $SHELL'],
-    env: { FORCE_COLOR: '1', TERM: 'xterm-256color' },
-  },
-  'shell': {
-    shell: DEFAULT_SHELL,
-    args: [],
-    env: {},
-  },
+// ── CLI Config (custom CLI paths for terminal profiles) ──
+
+const CLI_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'cli-config.json');
+
+const CLI_DEFAULTS = {
+  'claude-code': { command: 'claude' },
+  'codex':       { command: 'codex' },
+  'gemini':      { command: 'gemini' },
 };
+
+function loadCliConfig() {
+  try {
+    if (!existsSync(CLI_CONFIG_PATH)) return { ...CLI_DEFAULTS };
+    const raw = JSON.parse(readFileSync(CLI_CONFIG_PATH, 'utf-8'));
+    return { ...CLI_DEFAULTS, ...raw };
+  } catch { return { ...CLI_DEFAULTS }; }
+}
+
+function saveCliConfig(config) {
+  const dir = dirname(CLI_CONFIG_PATH);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(CLI_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+const SHELL_PROFILE = { shell: DEFAULT_SHELL, args: [], env: {} };
+
+/**
+ * Build terminal profile config dynamically from cli-config.json.
+ * Re-reads config each call so changes take effect without restart.
+ */
+function getTerminalProfile(profileId) {
+  if (profileId === 'shell') return SHELL_PROFILE;
+
+  const config = loadCliConfig();
+  const entry = config[profileId];
+  if (!entry || !entry.command) return SHELL_PROFILE;
+
+  const cmd = entry.command.trim();
+  if (!cmd) return SHELL_PROFILE;
+
+  return {
+    shell: DEFAULT_SHELL,
+    args: IS_WIN ? ['/k', cmd] : ['-c', `${cmd}; exec $SHELL`],
+    env: { FORCE_COLOR: '1', TERM: 'xterm-256color' },
+  };
+}
 
 function createTerminalSession(profile, cols, rows, cwd) {
   const sessionId = randomBytes(16).toString('hex');
-  const profileCfg = TERMINAL_PROFILES[profile] || TERMINAL_PROFILES['shell'];
+  const profileCfg = getTerminalProfile(profile);
 
   const ptyProcess = pty.spawn(profileCfg.shell, profileCfg.args, {
     name: 'xterm-256color',
@@ -4728,10 +5372,23 @@ function createTerminalSession(profile, cols, rows, cwd) {
     useConpty: IS_WIN,
   });
 
-  const session = { pty: ptyProcess, clients: new Set(), profile, cwd };
+  const session = {
+    pty: ptyProcess, clients: new Set(), profile, cwd,
+    createdAt: Date.now(),
+    outputBuffer: [],      // ring buffer of output strings
+    outputBufferBytes: 0,  // running byte count
+    graceTimer: null,      // setTimeout handle for orphan cleanup
+  };
   terminalSessions.set(sessionId, session);
 
   ptyProcess.onData((data) => {
+    // Append to ring buffer for replay on reconnect
+    session.outputBuffer.push(data);
+    session.outputBufferBytes += data.length;
+    while (session.outputBufferBytes > TERMINAL_BUFFER_MAX_BYTES && session.outputBuffer.length > 1) {
+      session.outputBufferBytes -= session.outputBuffer.shift().length;
+    }
+
     const msg = JSON.stringify({ type: 'output', data });
     session.clients.forEach(ws => {
       if (ws.readyState === 1) ws.send(msg);
@@ -4739,6 +5396,9 @@ function createTerminalSession(profile, cols, rows, cwd) {
   });
 
   ptyProcess.onExit(({ exitCode }) => {
+    // Clear grace timer if set
+    if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null; }
+
     const msg = JSON.stringify({ type: 'exit', exitCode });
     session.clients.forEach(ws => {
       if (ws.readyState === 1) ws.send(msg);
@@ -4759,6 +5419,8 @@ app.get('/api/terminal/sessions', (req, res) => {
   const sessions = [...terminalSessions.entries()].map(([id, s]) => ({
     id,
     profile: s.profile,
+    cwd: s.cwd,
+    createdAt: s.createdAt,
     clients: s.clients.size,
   }));
   res.json({ sessions });
@@ -4787,13 +5449,67 @@ app.delete('/api/terminal/sessions/:id', (req, res) => {
 });
 
 app.get('/api/terminal/profiles', (req, res) => {
-  const profiles = Object.entries(TERMINAL_PROFILES).map(([id, cfg]) => ({
-    id,
-    shell: cfg.shell,
-    args: cfg.args,
-  }));
+  const profileIds = ['claude-code', 'codex', 'gemini', 'shell'];
+  const profiles = profileIds.map(id => {
+    const p = getTerminalProfile(id);
+    return { id, shell: p.shell, args: p.args };
+  });
   const projects = loadHookProjects().map(p => ({ path: p.path, label: p.label || basename(p.path) }));
   res.json({ profiles, projects });
+});
+
+// ── CLI Config REST ──
+
+app.get('/api/cli/config', (req, res) => {
+  try {
+    res.json({ ok: true, config: loadCliConfig() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put('/api/cli/config', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ ok: false, error: 'Body must be a JSON object' });
+    }
+    const config = loadCliConfig();
+    for (const [key, val] of Object.entries(req.body)) {
+      if (CLI_DEFAULTS[key] && val && typeof val === 'object') {
+        const command = (val.command || '').trim();
+        config[key] = { command: command || CLI_DEFAULTS[key].command };
+      }
+    }
+    saveCliConfig(config);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/cli/detect/:profileId', (req, res) => {
+  try {
+    const { profileId } = req.params;
+    const defaults = { 'claude-code': 'claude', 'codex': 'codex', 'gemini': 'gemini' };
+    const cmdName = defaults[profileId];
+    if (!cmdName) return res.status(400).json({ ok: false, error: 'Unknown profile' });
+
+    const detectCmd = IS_WIN ? `where ${cmdName}` : `which ${cmdName}`;
+    try {
+      const result = execSync(detectCmd, {
+        encoding: 'utf-8',
+        timeout: 5000,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+      const foundPath = result.split(/\r?\n/)[0].trim();
+      res.json({ ok: true, found: true, path: foundPath });
+    } catch {
+      res.json({ ok: true, found: false, path: null });
+    }
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // --- Start ---
@@ -4875,6 +5591,15 @@ wss.on('connection', (ws, req) => {
 
   session.clients.add(ws);
 
+  // Cancel grace timer — a client reconnected
+  if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null; }
+
+  // Replay buffered output so reconnecting clients see prior content
+  if (session.outputBuffer.length > 0) {
+    const replay = session.outputBuffer.join('');
+    ws.send(JSON.stringify({ type: 'replay', data: replay }));
+  }
+
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
@@ -4913,5 +5638,15 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     session.clients.delete(ws);
+    // Start grace timer when no clients remain — PTY stays alive for reconnection
+    if (session.clients.size === 0 && terminalSessions.has(sessionId)) {
+      session.graceTimer = setTimeout(() => {
+        if (session.clients.size === 0 && terminalSessions.has(sessionId)) {
+          try { session.pty.kill(); } catch {}
+          if (session.tempFiles) session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
+          terminalSessions.delete(sessionId);
+        }
+      }, TERMINAL_GRACE_PERIOD_MS);
+    }
   });
 });

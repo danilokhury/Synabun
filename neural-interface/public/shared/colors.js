@@ -7,18 +7,19 @@
 // No variant-specific dependencies.
 
 import { COLOR_PALETTE, KEYS } from './constants.js';
+import { storage } from './storage.js';
 import { state } from './state.js';
 
 /**
  * Resolve the display color for a category.
- * Priority: localStorage override > backend metadata color > palette index > hash fallback.
+ * Priority: storage override > backend metadata color > palette index > hash fallback.
  * @param {string} category  Category name
  * @returns {string} Hex color string
  */
 export function catColor(category) {
-  // 1. User override from localStorage (highest priority)
+  // 1. User override from storage (highest priority)
   try {
-    const overrides = JSON.parse(localStorage.getItem(KEYS.CATEGORY_COLORS) || '{}');
+    const overrides = JSON.parse(storage.getItem(KEYS.CATEGORY_COLORS) || '{}');
     if (overrides[category]) return overrides[category];
   } catch {}
   // 2. Backend color from category metadata

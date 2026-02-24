@@ -9,6 +9,7 @@
 import { state, emit, on } from './state.js';
 import { updateMemory, deleteMemory } from './api.js';
 import { KEYS } from './constants.js';
+import { storage } from './storage.js';
 import { catColor } from './colors.js';
 import { truncate, formatMemoryContent, exportMemoryAsMarkdown } from './utils.js';
 import { t } from './i18n.js';
@@ -42,12 +43,12 @@ export function setDetailCallbacks(cbs) {
 // ═══════════════════════════════════════════
 
 function getBookmarks() {
-  try { return JSON.parse(localStorage.getItem(KEYS.BOOKMARKS) || '[]'); }
+  try { return JSON.parse(storage.getItem(KEYS.BOOKMARKS) || '[]'); }
   catch { return []; }
 }
 
 function saveBookmarks(arr) {
-  localStorage.setItem(KEYS.BOOKMARKS, JSON.stringify(arr));
+  storage.setItem(KEYS.BOOKMARKS, JSON.stringify(arr));
 }
 
 function isBookmarked(nodeId) {
@@ -496,7 +497,7 @@ function getNextCardPosition() {
   const count = _openCards.size;
   const offset = count * 30;
   return {
-    left: Math.min(window.innerWidth - 500, 200 + (offset % 300)) + 'px',
+    left: Math.min(window.innerWidth - 540, 200 + (offset % 300)) + 'px',
     top: Math.min(window.innerHeight - 300, 80 + (offset % 200)) + 'px',
   };
 }
@@ -516,7 +517,7 @@ function persistOpenCards() {
     height: c.el.style.height,
     isCompact: c.isCompact,
   }));
-  localStorage.setItem(KEYS.OPEN_CARDS, JSON.stringify(data));
+  storage.setItem(KEYS.OPEN_CARDS, JSON.stringify(data));
 }
 
 /** Return a snapshot of all open cards for workspace saving. */
@@ -537,7 +538,7 @@ export function getOpenCardCount() {
 }
 
 export function restoreOpenCards() {
-  const raw = localStorage.getItem(KEYS.OPEN_CARDS);
+  const raw = storage.getItem(KEYS.OPEN_CARDS);
   if (!raw) return;
   try {
     const saved = JSON.parse(raw);
@@ -564,7 +565,7 @@ export function openMemoryCard(node, savedPosition) {
     const existing = _openCards.get(node.id);
     bringToFront(existing.el);
     state.selectedNodeId = node.id;
-    localStorage.setItem(KEYS.SELECTED_NODE, node.id);
+    storage.setItem(KEYS.SELECTED_NODE, node.id);
     return;
   }
 
@@ -835,33 +836,124 @@ export function openMemoryCard(node, savedPosition) {
     isCompact: false,
     isEditing: false,
     savedExpanded: null,
+    _animating: false,
   };
 
   compactBtn.addEventListener('click', () => {
-    const isCompact = card.classList.toggle('compact');
-    cardState.isCompact = isCompact;
-    compactBtn.innerHTML = isCompact ? expandIcon : shrinkIcon;
-    compactBtn.dataset.tooltip = isCompact ? 'Expand' : 'Compact';
-    if (isCompact) {
-      cardState.savedExpanded = {
-        width: card.style.width,
-        height: card.style.height,
-        maxHeight: card.style.maxHeight,
+    if (cardState._animating) return;
+    cardState._animating = true;
+
+    const goingCompact = !cardState.isCompact;
+    compactBtn.innerHTML = goingCompact ? expandIcon : shrinkIcon;
+    compactBtn.dataset.tooltip = goingCompact ? 'Expand' : 'Compact';
+
+    if (goingCompact) {
+      // ── EXPAND → COMPACT (FLIP) ──
+      const startRect = card.getBoundingClientRect();
+
+      // Freeze at current size, disable transitions, apply compact layout
+      card.classList.add('no-transition');
+      card.classList.add('compact');
+      card.style.width = startRect.width + 'px';
+      card.style.height = startRect.height + 'px';
+      card.style.maxHeight = 'none';
+      if (body) { body.classList.add('drag-handle'); body.dataset.drag = panelId; }
+      void card.offsetHeight; // force reflow
+
+      // Measure compact target
+      card.style.width = '';
+      card.style.height = '';
+      void card.offsetHeight;
+      const endRect = card.getBoundingClientRect();
+
+      // Reset to start dimensions
+      card.style.width = startRect.width + 'px';
+      card.style.height = startRect.height + 'px';
+      void card.offsetHeight;
+
+      // Re-enable transitions and animate to compact
+      card.classList.remove('no-transition');
+      requestAnimationFrame(() => {
+        card.style.width = endRect.width + 'px';
+        card.style.height = endRect.height + 'px';
+      });
+
+      const onEnd = (e) => {
+        if (e.propertyName !== 'width' && e.propertyName !== 'height') return;
+        card.removeEventListener('transitionend', onEnd);
+        card.style.width = '';
+        card.style.height = '';
+        card.style.maxHeight = '';
+        cardState.isCompact = true;
+        cardState._animating = false;
+        persistOpenCards();
       };
+      card.addEventListener('transitionend', onEnd);
+
+      // Safety timeout in case transitionend doesn't fire
+      setTimeout(() => {
+        if (cardState._animating) {
+          card.style.width = '';
+          card.style.height = '';
+          card.style.maxHeight = '';
+          cardState.isCompact = true;
+          cardState._animating = false;
+          persistOpenCards();
+        }
+      }, 300);
+
+    } else {
+      // ── COMPACT → EXPAND (FLIP) ──
+      const startRect = card.getBoundingClientRect();
+
+      // Disable transitions, remove compact, let CSS default take over
+      card.classList.add('no-transition');
+      card.classList.remove('compact');
       card.style.width = '';
       card.style.height = '';
       card.style.maxHeight = '';
-      if (body) { body.classList.add('drag-handle'); body.dataset.drag = panelId; }
-    } else {
       if (body) { body.classList.remove('drag-handle'); delete body.dataset.drag; }
-      if (cardState.savedExpanded) {
-        if (cardState.savedExpanded.width) card.style.width = cardState.savedExpanded.width;
-        if (cardState.savedExpanded.height) card.style.height = cardState.savedExpanded.height;
-        if (cardState.savedExpanded.maxHeight) card.style.maxHeight = cardState.savedExpanded.maxHeight;
-        cardState.savedExpanded = null;
-      }
+      void card.offsetHeight;
+
+      // Measure natural expanded size (CSS default: 520px width, auto height)
+      const endRect = card.getBoundingClientRect();
+
+      // Reset to compact starting dimensions
+      card.style.width = startRect.width + 'px';
+      card.style.height = startRect.height + 'px';
+      void card.offsetHeight;
+
+      // Re-enable transitions and animate to expanded
+      card.classList.remove('no-transition');
+      requestAnimationFrame(() => {
+        card.style.width = endRect.width + 'px';
+        card.style.height = endRect.height + 'px';
+      });
+
+      const onEnd = (e) => {
+        if (e.propertyName !== 'width' && e.propertyName !== 'height') return;
+        card.removeEventListener('transitionend', onEnd);
+        card.style.width = '';
+        card.style.height = '';
+        card.style.maxHeight = '';
+        cardState.isCompact = false;
+        cardState._animating = false;
+        persistOpenCards();
+      };
+      card.addEventListener('transitionend', onEnd);
+
+      // Safety timeout
+      setTimeout(() => {
+        if (cardState._animating) {
+          card.style.width = '';
+          card.style.height = '';
+          card.style.maxHeight = '';
+          cardState.isCompact = false;
+          cardState._animating = false;
+          persistOpenCards();
+        }
+      }, 300);
     }
-    persistOpenCards();
   });
 
   // Apply saved compact state
@@ -878,7 +970,7 @@ export function openMemoryCard(node, savedPosition) {
 
   // ── Pin: restore saved pin state ──
   const pinKey = 'neural-pinned-' + panelId;
-  if (localStorage.getItem(pinKey) === 'true') {
+  if (storage.getItem(pinKey) === 'true') {
     card.classList.add('locked');
     const pinBtn = card.querySelector('.pin-btn');
     if (pinBtn) pinBtn.classList.add('pinned');
@@ -893,7 +985,7 @@ export function openMemoryCard(node, savedPosition) {
   requestAnimationFrame(() => card.classList.add('open'));
 
   state.selectedNodeId = node.id;
-  localStorage.setItem(KEYS.SELECTED_NODE, node.id);
+  storage.setItem(KEYS.SELECTED_NODE, node.id);
   emit('detail:opened', { nodeId: node.id });
   persistOpenCards();
 }
@@ -929,10 +1021,10 @@ export function closeMemoryCard(memoryId) {
     if (_openCards.size > 0) {
       const lastKey = [..._openCards.keys()].pop();
       state.selectedNodeId = lastKey;
-      localStorage.setItem(KEYS.SELECTED_NODE, lastKey);
+      storage.setItem(KEYS.SELECTED_NODE, lastKey);
     } else {
       state.selectedNodeId = null;
-      localStorage.removeItem(KEYS.SELECTED_NODE);
+      storage.removeItem(KEYS.SELECTED_NODE);
     }
   }
 
@@ -972,5 +1064,10 @@ export function initDetailPanel() {
 
   on('detail:close', () => {
     closeAllCards();
+  });
+
+  // Persist open card positions after resize/drag
+  on('detail:layout-changed', () => {
+    persistOpenCards();
   });
 }

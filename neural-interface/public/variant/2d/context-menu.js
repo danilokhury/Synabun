@@ -1,18 +1,18 @@
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — 2D Context Menu
-// Right-click on a node shows a context menu with actions.
-// Right-click on background hides the menu.
+// Right-click on a card shows a context menu with actions.
+// Listens for 'node-context-menu' events from graph.js.
 // Element: #context-menu
 // ═══════════════════════════════════════════
 
 import { state, emit, on } from '../../shared/state.js';
+import { getAllCards } from './graph.js';
 
 const $ = (id) => document.getElementById(id);
 
 // ── Private state ──
 let _contextMenuNode = null;
 let _contextMenu = null;
-let _graph = null;
 
 // ═══════════════════════════════════════════
 // INIT
@@ -20,16 +20,9 @@ let _graph = null;
 
 /**
  * Initialize the context menu system.
- * Sets up click handlers on the #context-menu element and a
- * document-level click listener to close on outside click.
- *
- * Actions emit events so the variant's main code can handle
- * domain-specific operations (showDetailPanel, enterEditMode, etc.).
- *
- * @param {object} graphInstance  The force-graph 2D instance
+ * @param {object} _graphInstance  Unused — kept for API compatibility
  */
-export function initContextMenu(graphInstance) {
-  _graph = graphInstance;
+export function initContextMenu(_graphInstance) {
   _contextMenu = $('context-menu');
   if (!_contextMenu) return;
 
@@ -38,6 +31,11 @@ export function initContextMenu(graphInstance) {
 
   // ── Close on outside click ──
   document.addEventListener('click', _onDocumentClick);
+
+  // ── Listen for context menu events from the graph renderer ──
+  on('node-context-menu', ({ node, event }) => {
+    showContextMenu(node, event);
+  });
 }
 
 // ═══════════════════════════════════════════
@@ -46,22 +44,24 @@ export function initContextMenu(graphInstance) {
 
 /**
  * Show the context menu at the given screen coordinates for a node.
- * Skips anchor/tag nodes.
  * @param {object} node   The graph node object
  * @param {MouseEvent} event  The triggering mouse event (for coordinates)
  */
 export function showContextMenu(node, event) {
   if (!_contextMenu) return;
-  if (node.payload._isAnchor || node.payload._isTag) return;
 
   _contextMenuNode = node;
   _contextMenu.style.left = event.clientX + 'px';
   _contextMenu.style.top = event.clientY + 'px';
-  _contextMenu.classList.add('visible');
+  _contextMenu.classList.add('open');
 
-  // Update pin text
+  // Update pin text based on card pinned state
   const pinItem = _contextMenu.querySelector('[data-action="pin"]');
-  if (pinItem) pinItem.textContent = node.fx != null ? 'Unpin' : 'Pin';
+  if (pinItem) {
+    const cards = getAllCards();
+    const card = cards.find(c => c.node.id === node.id);
+    pinItem.textContent = (card && card.pinned) ? 'Unpin' : 'Pin';
+  }
 }
 
 /**
@@ -69,7 +69,7 @@ export function showContextMenu(node, event) {
  */
 export function hideContextMenu() {
   if (!_contextMenu) return;
-  _contextMenu.classList.remove('visible');
+  _contextMenu.classList.remove('open');
   _contextMenuNode = null;
 }
 
@@ -77,10 +77,6 @@ export function hideContextMenu() {
 // EVENT HANDLERS
 // ═══════════════════════════════════════════
 
-/**
- * Handle clicks on context menu items.
- * Emits events for each action so the variant handles side effects.
- */
 function _onMenuClick(e) {
   const action = e.target.closest('.ctx-item')?.dataset.action;
   if (!action || !_contextMenuNode) return;
@@ -97,17 +93,15 @@ function _onMenuClick(e) {
     case 'move':
       emit('context-menu:move', { node });
       break;
-    case 'pin':
-      if (node.fx != null) {
-        node.fx = undefined;
-        node.fy = undefined;
-        if (_graph) _graph.d3ReheatSimulation();
-      } else {
-        node.fx = node.x;
-        node.fy = node.y;
+    case 'pin': {
+      const cards = getAllCards();
+      const card = cards.find(c => c.node.id === node.id);
+      if (card) {
+        card.pinned = !card.pinned;
+        emit('context-menu:pin', { node, pinned: card.pinned });
       }
-      emit('context-menu:pin', { node, pinned: node.fx != null });
       break;
+    }
     case 'focus':
       emit('context-menu:focus', { node });
       break;
@@ -120,9 +114,6 @@ function _onMenuClick(e) {
   }
 }
 
-/**
- * Close context menu when clicking outside of it.
- */
 function _onDocumentClick(e) {
   if (_contextMenu && !_contextMenu.contains(e.target)) {
     hideContextMenu();
@@ -133,18 +124,10 @@ function _onDocumentClick(e) {
 // UTILITIES
 // ═══════════════════════════════════════════
 
-/**
- * Update the graph instance reference (e.g. after graph rebuild).
- * @param {object} graphInstance
- */
-export function setGraph(graphInstance) {
-  _graph = graphInstance;
+export function setGraph(_graphInstance) {
+  // No-op — context menu is event-driven
 }
 
-/**
- * Get the currently tracked context menu node.
- * @returns {object|null}
- */
 export function getContextMenuNode() {
   return _contextMenuNode;
 }

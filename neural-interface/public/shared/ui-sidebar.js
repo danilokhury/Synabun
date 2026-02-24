@@ -17,6 +17,7 @@
 
 import { state, emit, on } from './state.js';
 import { KEYS, COLOR_PALETTE } from './constants.js';
+import { storage } from './storage.js';
 import { normalizeNodes } from './utils.js';
 import { catColor, upgradeSelect } from './colors.js';
 import {
@@ -108,12 +109,12 @@ function cancelScheduledRemoval() {
 // ─── Saved category order ────────────────────────────────────────
 
 function getCategoryOrder() {
-  try { return JSON.parse(localStorage.getItem(KEYS.CATEGORY_ORDER) || '[]'); }
+  try { return JSON.parse(storage.getItem(KEYS.CATEGORY_ORDER) || '[]'); }
   catch { return []; }
 }
 
 function saveCategoryOrder(order) {
-  localStorage.setItem(KEYS.CATEGORY_ORDER, JSON.stringify(order));
+  storage.setItem(KEYS.CATEGORY_ORDER, JSON.stringify(order));
 }
 
 // ─── Color picker ────────────────────────────────────────────────
@@ -149,7 +150,7 @@ function openColorPicker(cat, chipEl) {
   picker.appendChild(row);
 
   // Reset to default button
-  const overrides = JSON.parse(localStorage.getItem(KEYS.CATEGORY_COLORS) || '{}');
+  const overrides = JSON.parse(storage.getItem(KEYS.CATEGORY_COLORS) || '{}');
   if (overrides[cat]) {
     const resetBtn = document.createElement('button');
     resetBtn.className = 'color-edit-reset';
@@ -177,13 +178,13 @@ function openColorPicker(cat, chipEl) {
 }
 
 function applyCategoryColor(cat, color) {
-  const overrides = JSON.parse(localStorage.getItem(KEYS.CATEGORY_COLORS) || '{}');
+  const overrides = JSON.parse(storage.getItem(KEYS.CATEGORY_COLORS) || '{}');
   if (color === null) {
     delete overrides[cat];
   } else {
     overrides[cat] = color;
   }
-  localStorage.setItem(KEYS.CATEGORY_COLORS, JSON.stringify(overrides));
+  storage.setItem(KEYS.CATEGORY_COLORS, JSON.stringify(overrides));
 
   // Rebuild sidebar to reflect new color on the dot
   const presentCats = new Set(state.allNodes.map(n => n.payload.category));
@@ -211,8 +212,8 @@ function openDescEditor(cat, chipEl) {
     <label>Description for "${cat}"</label>
     <textarea class="desc-textarea">${currentDesc}</textarea>
     <div class="category-desc-actions">
-      <button class="desc-cancel-btn">Cancel</button>
-      <button class="desc-save-btn">Save</button>
+      <button class="action-btn action-btn--ghost desc-cancel-btn">Cancel</button>
+      <button class="action-btn action-btn--primary desc-save-btn">Save</button>
     </div>
   `;
 
@@ -394,9 +395,9 @@ async function createCategoryAction(name, description, color, parent, isParent) 
 
   // Save chosen color
   if (color) {
-    const overrides = JSON.parse(localStorage.getItem(KEYS.CATEGORY_COLORS) || '{}');
+    const overrides = JSON.parse(storage.getItem(KEYS.CATEGORY_COLORS) || '{}');
     overrides[name] = color;
-    localStorage.setItem(KEYS.CATEGORY_COLORS, JSON.stringify(overrides));
+    storage.setItem(KEYS.CATEGORY_COLORS, JSON.stringify(overrides));
   }
 
   // Add to active set & rebuild
@@ -495,8 +496,8 @@ async function editCategoryUI(name) {
       </div>
 
       <div class="ecm-footer">
-        <button class="ecm-btn ecm-btn--ghost cat-modal-cancel">Cancel</button>
-        <button class="ecm-btn ecm-btn--save cat-modal-confirm">Save</button>
+        <button class="action-btn action-btn--ghost cat-modal-cancel">Cancel</button>
+        <button class="action-btn action-btn--primary cat-modal-confirm">Save</button>
       </div>
     </div>
   `;
@@ -654,7 +655,7 @@ async function editCategoryUI(name) {
 
       // Update localStorage colors
       try {
-        const overrides = JSON.parse(localStorage.getItem(KEYS.CATEGORY_COLORS) || '{}');
+        const overrides = JSON.parse(storage.getItem(KEYS.CATEGORY_COLORS) || '{}');
         if (newColor !== currentColor) {
           overrides[newName || name] = newColor;
         }
@@ -662,7 +663,7 @@ async function editCategoryUI(name) {
           overrides[newName] = overrides[name];
           delete overrides[name];
         }
-        localStorage.setItem(KEYS.CATEGORY_COLORS, JSON.stringify(overrides));
+        storage.setItem(KEYS.CATEGORY_COLORS, JSON.stringify(overrides));
       } catch {}
 
       // If renamed, update activeCategories
@@ -934,9 +935,9 @@ async function deleteCategoryAction(name, reassignTo, reassignChildrenTo, option
 
     // Remove color override
     try {
-      const overrides = JSON.parse(localStorage.getItem(KEYS.CATEGORY_COLORS) || '{}');
+      const overrides = JSON.parse(storage.getItem(KEYS.CATEGORY_COLORS) || '{}');
       delete overrides[name];
-      localStorage.setItem(KEYS.CATEGORY_COLORS, JSON.stringify(overrides));
+      storage.setItem(KEYS.CATEGORY_COLORS, JSON.stringify(overrides));
     } catch {}
     state.activeCategories.delete(name);
 
@@ -1765,7 +1766,12 @@ function initSidebarToggle() {
   function setCategoriesVisible(show) {
     catSidebar.style.display = show ? '' : 'none';
     if (catToggleBtn) catToggleBtn.classList.toggle('active', show);
+    storage.setItem(KEYS.CATEGORIES_VISIBLE, show ? '1' : '0');
   }
+
+  // Restore saved state (default: visible)
+  const saved = storage.getItem(KEYS.CATEGORIES_VISIBLE);
+  if (saved === '0') setCategoriesVisible(false);
 
   if (catToggleBtn) {
     catToggleBtn.addEventListener('click', () => {

@@ -190,6 +190,19 @@ export async function saveDisplaySettings(payload) {
   });
 }
 
+// ─── Keybinds ────────────────────────────
+
+export async function fetchKeybinds() {
+  return jsonFetch('/api/keybinds');
+}
+
+export async function saveKeybindsToServer(payload) {
+  return jsonFetch('/api/keybinds', {
+    method: 'PUT',
+    ...jsonBody(payload),
+  });
+}
+
 // ─── Connections ─────────────────────────
 
 export async function fetchConnections() {
@@ -265,6 +278,50 @@ export async function restoreStandalone(params, snapshotBuffer) {
     headers: { 'Content-Type': 'application/octet-stream' },
     body: snapshotBuffer,
   });
+}
+
+// ─── Full System Backup & Restore ────────
+
+export async function systemBackup() {
+  const res = await fetch('/api/system/backup');
+  if (!res.ok) {
+    let errMsg = 'Backup failed';
+    try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('content-disposition') || '';
+  const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+  const filename = filenameMatch ? filenameMatch[1] : 'synabun-backup.zip';
+  return { blob, filename };
+}
+
+export async function systemRestorePreview(zipBuffer) {
+  const res = await fetch('/api/system/restore/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/zip' },
+    body: zipBuffer,
+  });
+  if (!res.ok) {
+    let errMsg = 'Preview failed';
+    try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+  return res.json();
+}
+
+export async function systemRestore(zipBuffer, mode = 'full') {
+  const res = await fetch(`/api/system/restore?mode=${encodeURIComponent(mode)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/zip' },
+    body: zipBuffer,
+  });
+  if (!res.ok) {
+    let errMsg = 'Restore failed';
+    try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+  return res.json();
 }
 
 export async function dockerNewConnection(payload) {
@@ -528,7 +585,7 @@ export async function checkSetupDeps() {
 }
 
 export async function fetchSetupStatus() {
-  return jsonFetch('/api/setup/status');
+  return jsonFetch('/api/setup/onboarding');
 }
 
 export async function saveSetupConfig(payload) {

@@ -9,6 +9,7 @@
 import { state, emit, on } from './state.js';
 import { getSettingsTabs } from './registry.js';
 import { escapeHtml } from './utils.js';
+import { storage } from './storage.js';
 
 // ── SVG icon constants ──
 
@@ -19,12 +20,22 @@ const eyeClosed = '<svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 
 const TAB_ICONS = {
   server: '<svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1"/><circle cx="6" cy="18" r="1"/></svg>',
   hooks: '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+  terminal: '<svg viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
   collections: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>',
   projects: '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
   memory: '<svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"/><line x1="9" y1="21" x2="15" y2="21"/><line x1="10" y1="24" x2="14" y2="24"/></svg>',
   interface: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="9" y1="9" x2="21" y2="9"/></svg>',
   graphics: '<svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+  setup: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
 };
+
+// ── Shared icon constants ──
+
+const COPY_ICON = '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const CHEVRON_ICON = '<svg class="cc-section-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>';
+const ANTHROPIC_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z" fill="currentColor"/></svg>';
+const GEMINI_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="currentColor"/></svg>';
+const OPENAI_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z" fill="currentColor"/></svg>';
 
 // ── Toast helper ──
 
@@ -90,10 +101,10 @@ const IFACE_SLIDERS = {
 
 export function loadIfaceConfig() {
   try {
-    const raw = localStorage.getItem('neural-interface-config');
+    const raw = storage.getItem('neural-interface-config');
     if (raw) return { ...IFACE_DEFAULTS, ...JSON.parse(raw) };
     // Migrate legacy ui-scale if present
-    const legacyScale = localStorage.getItem('neural-ui-scale');
+    const legacyScale = storage.getItem('neural-ui-scale');
     if (legacyScale) {
       const cfg = { ...IFACE_DEFAULTS, scale: parseFloat(legacyScale) || 1 };
       saveIfaceConfig(cfg);
@@ -104,12 +115,12 @@ export function loadIfaceConfig() {
 }
 
 export function saveIfaceConfig(cfg) {
-  localStorage.setItem('neural-interface-config', JSON.stringify(cfg));
+  storage.setItem('neural-interface-config', JSON.stringify(cfg));
   // Keep legacy key in sync for backwards compat
-  localStorage.setItem('neural-ui-scale', cfg.scale);
+  storage.setItem('neural-ui-scale', cfg.scale);
 }
 
-export function applyIfaceConfig(cfg) {
+export function applyIfaceConfig(cfg, { instant = false } = {}) {
   const r = document.documentElement.style;
   r.setProperty('--ui-scale', cfg.scale);
   r.setProperty('--glass-opacity', cfg.glassOpacity);
@@ -124,25 +135,58 @@ export function applyIfaceConfig(cfg) {
   r.setProperty('--accent-saturation', cfg.accentSaturation + '%');
   r.setProperty('--accent-lightness', cfg.accentLightness + '%');
 
-  // Visualization toggle — crossfade graph vs static background
+  // Focus Mode — scale+blur transition with staggered controls
   const vizEnabled = cfg.visualizationEnabled !== false;
   const graphContainer = document.getElementById('graph-container');
   const staticBg = document.getElementById('static-bg');
-  if (graphContainer) graphContainer.classList.toggle('viz-hidden', !vizEnabled);
-  if (staticBg) staticBg.classList.toggle('visible', !vizEnabled);
-  // 2D-specific canvases
-  for (const id of ['bg-canvas', 'hull-canvas', 'lasso-canvas']) {
-    const el = document.getElementById(id);
-    if (el) {
-      el.style.opacity = vizEnabled ? '' : '0';
-      el.style.pointerEvents = vizEnabled ? '' : 'none';
-      el.style.transition = 'opacity 0.45s ease';
+
+  if (!vizEnabled) {
+    // ENTERING FOCUS MODE
+    // Hide controls + 2D canvases
+    for (const id of ['controls-panel', 'stats-bar']) {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('viz-hidden');
     }
-  }
-  // Hide graph-dependent overlays when visualization is off
-  for (const id of ['controls-panel', 'stats-bar']) {
-    const el = document.getElementById(id);
-    if (el) el.classList.toggle('viz-hidden', !vizEnabled);
+    for (const id of ['bg-canvas', 'hull-canvas', 'lasso-canvas']) {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('viz-hidden-2d');
+    }
+    if (instant) {
+      // Page load — apply immediately without animation
+      if (graphContainer) graphContainer.classList.add('focus-active');
+      if (staticBg) staticBg.classList.add('visible');
+    } else {
+      // User toggle — stagger: controls fade first, then iris closes
+      setTimeout(() => {
+        if (graphContainer) graphContainer.classList.add('focus-active');
+        if (staticBg) staticBg.classList.add('visible');
+      }, 100);
+    }
+  } else {
+    // EXITING FOCUS MODE
+    // Iris open the graph + close focus bg
+    if (graphContainer) graphContainer.classList.remove('focus-active');
+    if (staticBg) staticBg.classList.remove('visible');
+    // 2D canvases
+    for (const id of ['bg-canvas', 'hull-canvas', 'lasso-canvas']) {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('viz-hidden-2d');
+    }
+    if (instant) {
+      // Page load — show controls immediately
+      for (const id of ['controls-panel', 'stats-bar']) {
+        const el = document.getElementById(id);
+        if (el) el.classList.remove('viz-hidden');
+      }
+    } else {
+      // User toggle — delay controls until iris starts opening
+      setTimeout(() => {
+        for (const id of ['controls-panel', 'stats-bar']) {
+          const el = document.getElementById(id);
+          if (el) el.classList.remove('viz-hidden');
+        }
+      }, 200);
+    }
   }
   // Notify variants to pause/resume rendering
   emit('viz:toggle', vizEnabled);
@@ -150,12 +194,20 @@ export function applyIfaceConfig(cfg) {
 
 /** Call on page load to restore saved interface config */
 export function restoreInterfaceConfig() {
-  applyIfaceConfig(loadIfaceConfig());
+  // Suppress transitions during initial load to prevent flash
+  document.documentElement.classList.add('no-transition');
+  applyIfaceConfig(loadIfaceConfig(), { instant: true });
+  // Re-enable transitions after a frame
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      document.documentElement.classList.remove('no-transition');
+    });
+  });
 }
 
 // ── Shared tab order (variant tabs injected by order) ──
 
-const SHARED_TAB_IDS = ['server', 'hooks', 'collections', 'projects', 'memory', 'interface'];
+const SHARED_TAB_IDS = ['server', 'hooks', 'terminal', 'setup', 'collections', 'projects', 'memory', 'interface'];
 
 // ═══════════════════════════════════════════
 // TAB HTML BUILDERS
@@ -165,8 +217,8 @@ function buildNavHTML(variantTabs) {
   let html = '';
   // Shared tabs
   for (const id of SHARED_TAB_IDS) {
-    const label = id === 'hooks' ? 'Connections' : id === 'collections' ? 'Collections'
-      : id.charAt(0).toUpperCase() + id.slice(1);
+    const label = id === 'server' ? 'General' : id === 'hooks' ? 'Connections' : id === 'collections' ? 'Memory'
+      : id === 'terminal' ? 'Terminal' : id.charAt(0).toUpperCase() + id.slice(1);
     html += `<button class="settings-nav-item${id === 'server' ? ' active' : ''}" data-tab="${id}">
       ${TAB_ICONS[id] || ''}
       ${label}
@@ -222,6 +274,227 @@ function buildServerTab(settings, qdrantOk) {
           <button class="settings-btn-cancel" id="stg-cancel">Cancel</button>
           <button class="settings-btn-save" id="stg-save">Save</button>
         </div>
+
+        <div style="margin:20px 0 16px;border-top:1px solid var(--s-medium)"></div>
+        <div class="gfx-group-title">System Backup & Restore</div>
+        <div class="settings-hint" style="margin-bottom:12px">
+          Create a full backup of all SynaBun data including .env config, data files,
+          category definitions, and Qdrant collection snapshots.
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="conn-add-btn" id="sys-backup-btn" style="margin:0;flex:0 0 auto">
+            <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Download Full Backup
+          </button>
+          <button class="conn-add-btn" id="sys-restore-btn" style="margin:0;flex:0 0 auto">
+            <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            Restore from Backup
+          </button>
+          <input type="file" id="sys-restore-file" accept=".zip" style="display:none">
+        </div>
+        <div id="sys-backup-status" style="display:none;margin-top:10px;font-size:12px;align-items:center;gap:8px">
+          <div class="wiz-status-dot spin" id="sys-backup-dot"></div>
+          <span id="sys-backup-text"></span>
+        </div>
+      </div>`;
+}
+
+function buildSetupTab(setupStatus) {
+  const claudeConnected = setupStatus.claude?.connected || false;
+  const geminiConnected = setupStatus.gemini?.connected || false;
+  const codexConnected = setupStatus.codex?.connected || false;
+
+  const statusBadge = (on) => `<span class="setup-status-badge ${on ? 'active' : 'inactive'}">${on ? 'Connected' : 'Off'}</span>`;
+
+  return `
+      <div class="settings-tab-body" data-tab="setup">
+
+        <!-- CLAUDE (Anthropic) -->
+        <div class="iface-section collapsed" data-collapsible id="setup-claude">
+          <div class="gfx-group-title">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${CHEVRON_ICON}
+              ${ANTHROPIC_ICON}
+              <span>Claude</span>
+              ${statusBadge(claudeConnected)}
+            </span>
+          </div>
+          <div class="cc-section-body">
+            <div class="cc-integration-item${claudeConnected ? ' enabled' : ''}" id="setup-claude-mcp-row">
+              <div class="cc-integration-info">
+                <div class="cc-integration-label">SynaBun MCP</div>
+                <div class="cc-integration-path" id="setup-claude-mcp-status">${claudeConnected ? 'Registered in ~/.claude.json' : 'Not connected'}</div>
+              </div>
+              <button class="cc-toggle${claudeConnected ? ' on' : ''}" id="setup-claude-mcp-toggle"></button>
+            </div>
+            <button class="cc-copy-btn" id="setup-claude-cli-copy" style="margin-top:4px">${COPY_ICON} Copy CLI Command</button>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">CLAUDE.md Ruleset</div>
+              <div class="cc-ruleset-preview" id="setup-claude-ruleset-preview">Loading...</div>
+              <button class="cc-copy-btn" id="setup-claude-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
+              <div class="setup-hint">Paste into your project's <code>CLAUDE.md</code></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- GEMINI (Google) -->
+        <div class="iface-section collapsed" data-collapsible id="setup-gemini">
+          <div class="gfx-group-title">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${CHEVRON_ICON}
+              ${GEMINI_ICON}
+              <span>Gemini</span>
+              ${statusBadge(geminiConnected)}
+            </span>
+          </div>
+          <div class="cc-section-body">
+            <div class="cc-integration-item${geminiConnected ? ' enabled' : ''}" id="setup-gemini-mcp-row">
+              <div class="cc-integration-info">
+                <div class="cc-integration-label">SynaBun MCP</div>
+                <div class="cc-integration-path" id="setup-gemini-mcp-status">${geminiConnected ? 'Registered in ~/.gemini/settings.json' : 'Not connected'}</div>
+              </div>
+              <button class="cc-toggle${geminiConnected ? ' on' : ''}" id="setup-gemini-mcp-toggle"></button>
+            </div>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.gemini/settings.json)</span></div>
+              <div class="cc-ruleset-preview" id="setup-gemini-config-preview" style="max-height:120px">Loading...</div>
+              <button class="cc-copy-btn" id="setup-gemini-config-copy" style="margin-top:4px">${COPY_ICON} Copy JSON Config</button>
+            </div>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">GEMINI.md Ruleset</div>
+              <div class="cc-ruleset-preview" id="setup-gemini-ruleset-preview">Loading...</div>
+              <button class="cc-copy-btn" id="setup-gemini-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
+              <div class="setup-hint">Paste into your project's <code>GEMINI.md</code></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CODEX (OpenAI) -->
+        <div class="iface-section collapsed" data-collapsible id="setup-codex">
+          <div class="gfx-group-title">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${CHEVRON_ICON}
+              ${OPENAI_ICON}
+              <span>Codex</span>
+              ${statusBadge(codexConnected)}
+            </span>
+          </div>
+          <div class="cc-section-body">
+            <div class="cc-integration-item${codexConnected ? ' enabled' : ''}" id="setup-codex-mcp-row">
+              <div class="cc-integration-info">
+                <div class="cc-integration-label">SynaBun MCP</div>
+                <div class="cc-integration-path" id="setup-codex-mcp-status">${codexConnected ? 'Registered in ~/.codex/config.toml' : 'Not connected'}</div>
+              </div>
+              <button class="cc-toggle${codexConnected ? ' on' : ''}" id="setup-codex-mcp-toggle"></button>
+            </div>
+            <button class="cc-copy-btn" id="setup-codex-cli-copy" style="margin-top:4px">${COPY_ICON} Copy CLI Command</button>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.codex/config.toml)</span></div>
+              <div class="cc-ruleset-preview" id="setup-codex-config-preview" style="max-height:120px">Loading...</div>
+              <button class="cc-copy-btn" id="setup-codex-config-copy" style="margin-top:4px">${COPY_ICON} Copy TOML Config</button>
+            </div>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">AGENTS.md Ruleset</div>
+              <div class="cc-ruleset-preview" id="setup-codex-ruleset-preview">Loading...</div>
+              <button class="cc-copy-btn" id="setup-codex-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
+              <div class="setup-hint">Paste into your project's <code>AGENTS.md</code></div>
+            </div>
+          </div>
+        </div>
+
+      </div>`;
+}
+
+function buildTerminalTab(cliConfig) {
+  const chevron = CHEVRON_ICON;
+  const cliProfiles = [
+    { id: 'claude-code', label: 'Claude Code', icon: ANTHROPIC_ICON, color: '#D4A27F', default: 'claude' },
+    { id: 'codex',       label: 'Codex CLI',   icon: OPENAI_ICON,   color: '#74c7a5', default: 'codex' },
+    { id: 'gemini',      label: 'Gemini CLI',  icon: GEMINI_ICON,   color: '#669DF6', default: 'gemini' },
+  ];
+
+  return `
+      <div class="settings-tab-body" data-tab="terminal">
+
+        <!-- CLI EXECUTABLE PATHS -->
+        <div class="iface-section" id="cc-cli-paths">
+          <div class="gfx-group-title">CLI Executable Paths</div>
+          <div class="cc-hint" style="margin-bottom:12px">
+            Configure the command used to launch each CLI from the terminal.<br>
+            Use a bare name for PATH lookup, a full path for custom installs, or prefix with <code style="font-size:10px;background:rgba(255,255,255,0.06);padding:1px 4px;border-radius:3px">wsl</code> for WSL.
+          </div>
+          ${cliProfiles.map(p => {
+            const current = (cliConfig && cliConfig[p.id]?.command) || p.default;
+            const isDefault = current === p.default;
+            return `
+            <div class="cli-path-row" data-cli-profile="${p.id}">
+              <div class="cli-path-icon" style="color:${p.color}">${p.icon}</div>
+              <div class="cli-path-field">
+                <label class="cli-path-label">${p.label}</label>
+                <div class="cli-path-input-row">
+                  <input type="text" class="cli-path-input"
+                         id="cli-path-${p.id}"
+                         value="${escapeHtml(current)}"
+                         placeholder="${p.default}"
+                         spellcheck="false" autocomplete="off">
+                  <button class="cli-detect-btn" data-cli-detect="${p.id}" data-tooltip="Auto-detect path">
+                    <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2">
+                      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                  </button>
+                  <span class="cli-path-status${isDefault ? '' : ' custom'}" id="cli-status-${p.id}">
+                    ${isDefault ? 'default' : 'custom'}
+                  </span>
+                </div>
+              </div>
+            </div>`;
+          }).join('')}
+          <button class="conn-add-btn" id="cli-paths-save"
+                  style="width:100%;margin-top:12px;font-size:12px;padding:7px 10px;border-style:solid;background:rgba(79,195,247,0.08);border-color:rgba(79,195,247,0.25);color:rgba(79,195,247,0.9)">
+            Save CLI Paths
+          </button>
+        </div>
+
+        <!-- EXAMPLES -->
+        <div class="iface-section">
+          <div class="gfx-group-title">Examples</div>
+          <div style="font-size:11px;color:var(--t-secondary);line-height:1.7">
+            <div style="display:flex;gap:8px;align-items:baseline">
+              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">claude</code>
+              <span style="color:var(--t-dim)">Default — uses system PATH</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
+              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">C:\\Users\\me\\.npm\\claude</code>
+              <span style="color:var(--t-dim)">Custom Windows path</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
+              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">/opt/homebrew/bin/claude</code>
+              <span style="color:var(--t-dim)">Custom Unix path</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
+              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">wsl claude</code>
+              <span style="color:var(--t-dim)">Run via WSL on Windows</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
+              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">wsl -d Ubuntu gemini</code>
+              <span style="color:var(--t-dim)">Specific WSL distro</span>
+            </div>
+          </div>
+        </div>
+
       </div>`;
 }
 
@@ -282,6 +555,8 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
   const hf = ccIntegrations.hookFeatures || {};
   const cmOn = hf.conversationMemory !== false;
   const grOn = hf.greeting === true;
+  const ulOn = hf.userLearning !== false;
+  const ulThreshold = hf.userLearningThreshold || 8;
 
   const hookRows = [
     { key: 'SessionStart', on: ssOn, label: 'SessionStart', desc: 'Runs once when a new session begins' },
@@ -316,36 +591,62 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
 
   const remindersHTML = (firstCfg.reminders || []).map(buildReminderRow).join('');
 
-  const copyIcon = '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-  const chevron = '<svg class="cc-section-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>';
+  const copyIcon = COPY_ICON;
+  const chevron = CHEVRON_ICON;
+  const anthropicIcon = ANTHROPIC_ICON;
+  const geminiIcon = GEMINI_ICON;
+  const openaiIcon = OPENAI_ICON;
 
-  // Provider badge helper — generates Anthropic compatibility badge
-  const anthropicIcon = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z" fill="currentColor"/></svg>';
+  // Provider badge helper — generates compatibility badges for all AI providers
   const providerBadge = (compat) => {
-    const items = [
+    const anthropicItems = [
       { label: 'Claude Code CLI', on: compat.cli !== false },
       { label: 'Claude Code VSCode', on: compat.vscode !== false },
       { label: 'Claude Web', on: !!compat.web, note: compat.webNote },
       { label: 'Claude Cowork', on: !!compat.cowork },
     ];
-    const onCount = items.filter(i => i.on).length;
+    const geminiItems = [
+      { label: 'Gemini CLI', on: false },
+      { label: 'Gemini Code Assist', on: false },
+      { label: 'Gemini Web', on: false },
+    ];
+    const openaiItems = [
+      { label: 'Codex CLI', on: false },
+      { label: 'Cursor', on: false },
+      { label: 'ChatGPT Web', on: false },
+    ];
+    const anthropicOn = anthropicItems.filter(i => i.on).length;
+
+    const buildPopup = (icon, title, items, untested) => {
+      const onCount = items.filter(i => i.on).length;
+      return `<div class="cc-compat-popup">
+        <div class="cc-compat-header">
+          ${icon}
+          <span>${title}</span>
+          <span class="cc-compat-count">${onCount}/${items.length}</span>
+        </div>
+        <div class="cc-compat-grid">
+          ${items.map(i => `<div class="cc-compat-row ${i.on ? 'on' : 'off'}">
+            <span class="cc-compat-dot${untested ? ' untested' : ''}"></span>
+            <span class="cc-compat-name">${i.label}</span>
+            ${i.note ? `<span class="cc-compat-note">${i.note}</span>` : ''}
+          </div>`).join('')}
+        </div>
+      </div>`;
+    };
+
     return `<div class="cc-provider-badges" onclick="event.stopPropagation()">
       <div class="cc-provider-badge" data-provider="anthropic" tabindex="0">
         ${anthropicIcon}
-        <div class="cc-compat-popup">
-          <div class="cc-compat-header">
-            ${anthropicIcon}
-            <span>Claude Compatibility</span>
-            <span class="cc-compat-count">${onCount}/${items.length}</span>
-          </div>
-          <div class="cc-compat-grid">
-            ${items.map(i => `<div class="cc-compat-row ${i.on ? 'on' : 'off'}">
-              <span class="cc-compat-dot"></span>
-              <span class="cc-compat-name">${i.label}</span>
-              ${i.note ? `<span class="cc-compat-note">${i.note}</span>` : ''}
-            </div>`).join('')}
-          </div>
-        </div>
+        ${buildPopup(anthropicIcon, 'Claude Compatibility', anthropicItems, false)}
+      </div>
+      <div class="cc-provider-badge" data-provider="google" tabindex="0">
+        ${geminiIcon}
+        ${buildPopup(geminiIcon, 'Gemini Compatibility', geminiItems, true)}
+      </div>
+      <div class="cc-provider-badge" data-provider="openai" tabindex="0">
+        ${openaiIcon}
+        ${buildPopup(openaiIcon, 'OpenAI Compatibility', openaiItems, true)}
       </div>
     </div>`;
   };
@@ -357,7 +658,10 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
         <div class="iface-section collapsed" data-collapsible id="cc-greeting-config">
           <div class="gfx-group-title" style="justify-content:space-between">
             <span style="display:flex;align-items:center;gap:6px">${chevron} Greeting</span>
-            <span style="display:flex;align-items:center;gap:8px" onclick="event.stopPropagation()">
+            ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
+          </div>
+          <div class="cc-section-body" id="cc-greeting-body" style="display:${grOn ? 'block' : 'none'}">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
               <div class="cc-dropdown" id="cc-greeting-project-dropdown">
                 <button class="cc-dropdown-trigger" type="button">
                   <span class="cc-dropdown-value" id="cc-greeting-project-label">${firstKey === 'global' ? 'Global (Default)' : escapeHtml((gc.projects[firstKey] || {}).label || firstKey)}</span>
@@ -371,11 +675,8 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
                 </div>
                 <input type="hidden" id="cc-greeting-project" value="${firstKey}">
               </div>
-              ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
               <button class="cc-toggle${grOn ? ' on' : ''}" data-cc-feature="greeting"></button>
-            </span>
-          </div>
-          <div class="cc-section-body" id="cc-greeting-body" style="display:${grOn ? 'block' : 'none'}">
+            </div>
             <div class="cc-greeting-field">
               <label class="cc-greeting-label">Template</label>
               <textarea class="cc-greeting-textarea" id="cc-greeting-template" placeholder="{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.">${escapeHtml(firstCfg.greetingTemplate || '')}</textarea>
@@ -462,35 +763,23 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
                 </div>
                 <button class="cc-toggle${cmOn ? ' on' : ''}" data-cc-feature="conversationMemory"></button>
               </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 4. SETUP -->
-        <div class="iface-section collapsed" data-collapsible>
-          <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Setup</span>
-            ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-integration-item${(ccIntegrations.mcp || {}).connected ? ' enabled' : ''}" id="cc-mcp-row">
-              <div class="cc-integration-info">
-                <div class="cc-integration-label">SynaBun MCP</div>
-                <div class="cc-integration-path">${(ccIntegrations.mcp || {}).connected ? 'Registered in ~/.claude.json' : 'Not connected'}</div>
+              <div class="cc-integration-item${ulOn ? ' enabled' : ''}" data-feature="userLearning">
+                <div class="cc-integration-info">
+                  <div class="cc-integration-label">User Learning</div>
+                  <div class="cc-integration-path">Observe communication patterns, preferences, and behavioral singularity</div>
+                  <div class="cc-ul-threshold" id="cc-ul-threshold" style="display:${ulOn ? 'flex' : 'none'};align-items:center;gap:6px;margin-top:5px">
+                    <span style="font-size:10px;color:var(--t-dim);white-space:nowrap">Reflect every</span>
+                    <input type="number" id="cc-ul-threshold-input" min="3" max="30" value="${ulThreshold}" style="width:40px;padding:2px 4px;font-size:10px;background:rgba(255,255,255,0.04);border:1px solid var(--b-subtle);border-radius:4px;color:var(--t-bright);text-align:center;font-family:inherit">
+                    <span style="font-size:10px;color:var(--t-dim)">interactions</span>
+                  </div>
+                </div>
+                <button class="cc-toggle${ulOn ? ' on' : ''}" data-cc-feature="userLearning"></button>
               </div>
-              <button class="cc-toggle${(ccIntegrations.mcp || {}).connected ? ' on' : ''}" id="cc-mcp-toggle"></button>
-            </div>
-            <button class="cc-copy-btn" id="cc-mcp-copy" style="margin-top:4px">${copyIcon} Copy CLI Command</button>
-
-            <div style="margin-top:10px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">CLAUDE.md Ruleset</div>
-              <div class="cc-ruleset-preview" id="cc-ruleset-preview">Loading...</div>
-              <button class="cc-copy-btn" id="cc-ruleset-copy" style="margin-top:4px">${copyIcon} Copy Ruleset</button>
             </div>
           </div>
         </div>
 
-        <!-- 5. EXTERNAL ACCESS -->
+        <!-- 4. EXTERNAL ACCESS -->
         <div class="iface-section collapsed" data-collapsible>
           <div class="gfx-group-title" style="justify-content:space-between">
             <span style="display:flex;align-items:center;gap:6px">${chevron} External Access</span>
@@ -614,37 +903,48 @@ function buildProjectsTab(ccIntegrations) {
 function buildMemoryTab() {
   return `
       <div class="settings-tab-body" data-tab="memory">
-        <div class="gfx-group-title">Recall detail</div>
-        <div class="settings-hint" style="margin-bottom:10px">How much content is shown when memories are recalled.</div>
-        <div class="gfx-presets" id="recall-presets">
-          <div class="gfx-preset-card" data-recall-preset="150">
-            <span class="gfx-preset-name">Brief</span>
-            <span class="gfx-preset-desc">Short snippets</span>
-          </div>
-          <div class="gfx-preset-card" data-recall-preset="500">
-            <span class="gfx-preset-name">Summary</span>
-            <span class="gfx-preset-desc">Key details</span>
-          </div>
-          <div class="gfx-preset-card active" data-recall-preset="0">
-            <span class="gfx-preset-name">Full</span>
-            <span class="gfx-preset-desc">Everything</span>
-          </div>
-        </div>
-        <div class="gfx-row" style="margin-top:14px">
-          <span class="gfx-label">Limit</span>
-          <input type="range" id="recall-slider" min="100" max="2100" step="50" value="2100">
-          <span class="gfx-val" id="recall-slider-val">No limit</span>
-        </div>
-        <div class="recall-preview-box" id="recall-preview"></div>
-        <div class="settings-hint" style="margin-top:10px">Shorter responses use less context. Takes effect on next recall.</div>
 
-        <div class="gfx-group-title" style="margin-top:22px">Memory Sync</div>
-        <div class="settings-hint" style="margin-bottom:10px">Detect memories whose related files have changed since last update.</div>
-        <button class="sync-check-btn" id="sync-check-btn" style="margin-top:12px">
-          <span class="btn-label">Check for stale memories</span>
-          <span class="spinner"></span>
-        </button>
-        <div class="sync-results" id="sync-results"></div>
+        <div class="iface-section">
+          <div class="gfx-group-title">Recall Token Budget</div>
+          <div class="settings-hint" style="margin-bottom:6px">Control how much of each memory is injected into the AI context window. Lower values save tokens and reduce cost per recall.</div>
+          <div class="gfx-presets" id="recall-presets">
+            <div class="gfx-preset-card" data-recall-preset="150">
+              <span class="gfx-preset-name">Brief</span>
+              <span class="gfx-preset-desc">~40 tokens per memory</span>
+            </div>
+            <div class="gfx-preset-card" data-recall-preset="500">
+              <span class="gfx-preset-name">Summary</span>
+              <span class="gfx-preset-desc">~130 tokens per memory</span>
+            </div>
+            <div class="gfx-preset-card active" data-recall-preset="0">
+              <span class="gfx-preset-name">Full</span>
+              <span class="gfx-preset-desc">No truncation</span>
+            </div>
+          </div>
+          <div class="gfx-row" style="margin-top:14px">
+            <span class="gfx-label">Limit</span>
+            <input type="range" id="recall-slider" min="100" max="2100" step="50" value="2100">
+            <span class="gfx-val" id="recall-slider-val">No limit</span>
+          </div>
+          <div class="recall-preview-box" id="recall-preview"></div>
+          <div class="recall-tips">
+            <div class="recall-tips-title">When to use each level</div>
+            <div class="recall-tip"><span class="recall-tip-tag brief">Brief</span> Routine coding &mdash; quick lookups, bug fixes, simple tasks</div>
+            <div class="recall-tip"><span class="recall-tip-tag summary">Summary</span> General development &mdash; feature work, refactoring, reviews</div>
+            <div class="recall-tip"><span class="recall-tip-tag full">Full</span> Planning &amp; brainstorming &mdash; architecture decisions, deep context needed</div>
+          </div>
+        </div>
+
+        <div class="iface-section">
+          <div class="gfx-group-title">Memory Sync</div>
+          <div class="settings-hint" style="margin-bottom:10px">Scan for memories whose related files have changed since they were last stored. Stale memories may contain outdated information about renamed functions, moved files, or changed APIs.</div>
+          <button class="sync-check-btn" id="sync-check-btn">
+            <span class="btn-label">Check for stale memories</span>
+            <span class="spinner"></span>
+          </button>
+          <div class="sync-results" id="sync-results"></div>
+        </div>
+
       </div>`;
 }
 
@@ -730,10 +1030,10 @@ function buildInterfaceTab() {
           <div class="gfx-group-title">Visualization</div>
           <label class="iface-toggle-row">
             <input type="checkbox" id="iface-viz-toggle" ${cfg.visualizationEnabled !== false ? 'checked' : ''}>
-            <span>Enable graph visualization</span>
+            <span>Graph visualization</span>
           </label>
           <div style="margin-top:4px;opacity:0.5;font-size:11px;color:var(--t-secondary);">
-            Disable to reduce GPU usage. Shows a static background with logo instead.
+            Press V to toggle Focus Mode. Pauses GPU rendering and shows a calm background.
           </div>
         </div>
 
@@ -775,9 +1075,11 @@ export async function openSettingsModal() {
   let mcpKeyInfo = { hasKey: false };
   let _bridgeResult = null;
   let greetingConfig = { defaults: {}, projects: {}, global: {} };
+  let setupStatus = { claude: {}, gemini: {}, codex: {}, paths: {} };
+  let cliConfig = {};
 
   try {
-    const [settingsRes, statsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes] = await Promise.allSettled([
+    const [settingsRes, statsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes] = await Promise.allSettled([
       fetch('/api/settings').then(r => r.json()),
       fetch('/api/stats').then(r => r.json()),
       fetch('/api/connections').then(r => r.json()),
@@ -787,6 +1089,8 @@ export async function openSettingsModal() {
       fetch('/api/mcp-key').then(r => r.json()),
       fetch('/api/bridges/openclaw').then(r => r.json()),
       fetch('/api/greeting/config').then(r => r.json()),
+      fetch('/api/setup/status').then(r => r.json()),
+      fetch('/api/cli/config').then(r => r.json()),
     ]);
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
     if (statsRes.status === 'fulfilled' && statsRes.value.status) qdrantOk = true;
@@ -797,6 +1101,8 @@ export async function openSettingsModal() {
     if (keyRes.status === 'fulfilled' && keyRes.value.ok) mcpKeyInfo = keyRes.value;
     if (bridgeRes.status === 'fulfilled' && bridgeRes.value.ok) _bridgeResult = bridgeRes.value;
     if (greetRes.status === 'fulfilled' && greetRes.value.ok) greetingConfig = greetRes.value.config;
+    if (setupRes.status === 'fulfilled' && setupRes.value.ok) setupStatus = setupRes.value;
+    if (cliRes.status === 'fulfilled' && cliRes.value.ok) cliConfig = cliRes.value.config;
   } catch {}
   let openclawBridge = _bridgeResult || { enabled: false };
 
@@ -813,15 +1119,16 @@ export async function openSettingsModal() {
   overlay.className = 'settings-panel glass resizable';
   overlay.id = 'settings-panel';
 
-  const savedPanel = JSON.parse(localStorage.getItem('neural-panel-settings-panel') || 'null');
+  const navbarH = 48; // title-bar height (padding + content)
+  const savedPanel = JSON.parse(storage.getItem('neural-panel-settings-panel') || 'null');
   if (savedPanel) {
     if (savedPanel.left && savedPanel.left !== 'auto') overlay.style.left = savedPanel.left;
-    if (savedPanel.top) overlay.style.top = savedPanel.top;
+    if (savedPanel.top) overlay.style.top = Math.max(navbarH, parseInt(savedPanel.top, 10) || 0) + 'px';
     if (savedPanel.width) overlay.style.width = savedPanel.width;
     if (savedPanel.height) overlay.style.height = savedPanel.height;
   } else {
     overlay.style.left = Math.max(20, (window.innerWidth - 620) / 2) + 'px';
-    overlay.style.top = Math.max(20, (window.innerHeight - 600) / 2) + 'px';
+    overlay.style.top = Math.max(navbarH, (window.innerHeight - 600) / 2) + 'px';
   }
 
   // ── Build variant tab bodies ──
@@ -842,7 +1149,6 @@ export async function openSettingsModal() {
     <div class="resize-handle resize-handle-br" data-resize="br"></div>
     <div class="settings-panel-header drag-handle" data-drag="settings-panel">
       <h3>Settings</h3>
-      <button class="settings-panel-pin pin-btn" id="stg-pin" data-pin="settings-panel" data-tooltip="Pin"><svg viewBox="0 0 24 24"><path d="M9 4v4.5L7.5 10H6v2h4v7l2 1 2-1v-7h4v-2h-1.5L15 8.5V4H9z" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
       <button class="settings-panel-close" id="stg-close" data-tooltip="Close">&times;</button>
     </div>
     <div class="settings-panel-body">
@@ -852,6 +1158,8 @@ export async function openSettingsModal() {
       <div class="settings-content">
         ${buildServerTab(settings, qdrantOk)}
         ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig)}
+        ${buildTerminalTab(cliConfig)}
+        ${buildSetupTab(setupStatus)}
         ${buildCollectionsTab(connections)}
         ${buildProjectsTab(ccIntegrations)}
         ${buildMemoryTab()}
@@ -865,7 +1173,7 @@ export async function openSettingsModal() {
 
   // ── Close helper ──
   const close = () => {
-    localStorage.setItem('neural-panel-settings-panel', JSON.stringify({
+    storage.setItem('neural-panel-settings-panel', JSON.stringify({
       left: overlay.style.left || null,
       top: overlay.style.top || null,
       width: overlay.style.width || null,
@@ -874,21 +1182,6 @@ export async function openSettingsModal() {
     overlay.remove();
     backdrop.remove();
   };
-
-  // ── Pin handler ──
-  const pinBtn = overlay.querySelector('#stg-pin');
-  const pinKey = 'neural-pinned-settings-panel';
-  if (localStorage.getItem(pinKey) === 'true') {
-    overlay.classList.add('locked');
-    pinBtn.classList.add('pinned');
-    backdrop.style.display = 'none';
-  }
-  pinBtn.addEventListener('click', () => {
-    const isPinned = overlay.classList.toggle('locked');
-    pinBtn.classList.toggle('pinned', isPinned);
-    localStorage.setItem(pinKey, isPinned);
-    backdrop.style.display = isPinned ? 'none' : '';
-  });
 
   // ── Nav switching ──
   overlay.querySelectorAll('.settings-nav-item').forEach(nav => {
@@ -1051,6 +1344,200 @@ export async function openSettingsModal() {
       saveBtn.disabled = false;
     }
   });
+
+  // ── System Backup & Restore handlers ──
+
+  const backupBtn = overlay.querySelector('#sys-backup-btn');
+  const restoreBtn = overlay.querySelector('#sys-restore-btn');
+  const restoreFileInput = overlay.querySelector('#sys-restore-file');
+
+  if (backupBtn) {
+    backupBtn.addEventListener('click', async () => {
+      const statusEl = overlay.querySelector('#sys-backup-status');
+      const statusDot = overlay.querySelector('#sys-backup-dot');
+      const statusText = overlay.querySelector('#sys-backup-text');
+
+      backupBtn.disabled = true;
+      const origHTML = backupBtn.innerHTML;
+      backupBtn.textContent = 'Creating backup...';
+      statusEl.style.display = 'flex';
+      statusDot.className = 'wiz-status-dot spin';
+      statusText.textContent = 'Collecting files and creating Qdrant snapshots...';
+
+      try {
+        const res = await fetch('/api/system/backup');
+        if (!res.ok) {
+          let errMsg = 'Backup failed';
+          try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
+          throw new Error(errMsg);
+        }
+        const blob = await res.blob();
+        const disposition = res.headers.get('content-disposition') || '';
+        const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+        const filename = filenameMatch ? filenameMatch[1] : 'synabun-backup.zip';
+
+        // Trigger download
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+
+        statusDot.className = 'wiz-status-dot green';
+        statusText.textContent = `Backup saved: ${filename} (${(blob.size / 1024 / 1024).toFixed(1)} MB)`;
+      } catch (err) {
+        statusDot.className = 'wiz-status-dot red';
+        statusText.textContent = 'Backup failed: ' + err.message;
+      } finally {
+        backupBtn.disabled = false;
+        backupBtn.innerHTML = origHTML;
+      }
+    });
+  }
+
+  if (restoreBtn && restoreFileInput) {
+    restoreBtn.addEventListener('click', () => restoreFileInput.click());
+
+    restoreFileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      e.target.value = '';
+
+      const statusEl = overlay.querySelector('#sys-backup-status');
+      const statusDot = overlay.querySelector('#sys-backup-dot');
+      const statusText = overlay.querySelector('#sys-backup-text');
+
+      statusEl.style.display = 'flex';
+      statusDot.className = 'wiz-status-dot spin';
+      statusText.textContent = 'Reading backup file...';
+
+      try {
+        const buffer = await file.arrayBuffer();
+
+        // Preview first
+        statusText.textContent = 'Validating backup...';
+        const previewRes = await fetch('/api/system/restore/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/zip' },
+          body: buffer,
+        });
+        if (!previewRes.ok) {
+          let errMsg = 'Invalid backup';
+          try { const body = await previewRes.json(); errMsg = body.error || errMsg; } catch {}
+          throw new Error(errMsg);
+        }
+        const { manifest: m } = await previewRes.json();
+
+        statusEl.style.display = 'none';
+
+        // Build confirmation modal
+        const connList = Object.entries(m.connections || {})
+          .map(([id, c]) => `<li><strong>${escapeHtml(c.label)}</strong> (${escapeHtml(c.collection)}) — ${c.pointCount} memories</li>`)
+          .join('');
+        const unreachList = (m.unreachableConnections || [])
+          .map(id => `<li style="color:var(--t-muted)">${escapeHtml(id)} (was unreachable at backup time)</li>`)
+          .join('');
+        const fileCount = (m.files || []).length;
+
+        const confirmOverlay = document.createElement('div');
+        confirmOverlay.className = 'tag-delete-overlay';
+        confirmOverlay.style.zIndex = '10001';
+        confirmOverlay.innerHTML = `
+          <div class="tag-delete-modal settings-modal" style="max-width:500px;text-align:left">
+            <h3 style="margin-bottom:4px">Restore Full Backup</h3>
+            <p style="font-size:11px;color:var(--t-muted);margin-bottom:12px">
+              Created: ${new Date(m.created).toLocaleString()} on ${escapeHtml(m.hostname || 'unknown')}
+            </p>
+            <div style="font-size:12px;margin-bottom:8px">
+              <strong>${fileCount}</strong> config files
+            </div>
+            ${connList ? `<div style="font-size:12px;margin-bottom:8px">
+              <strong>Qdrant snapshots:</strong>
+              <ul style="margin:4px 0 0 16px;padding:0">${connList}</ul>
+            </div>` : ''}
+            ${unreachList ? `<div style="font-size:11px;color:var(--t-muted);margin-bottom:8px">
+              <strong>Skipped at backup time:</strong>
+              <ul style="margin:4px 0 0 16px;padding:0">${unreachList}</ul>
+            </div>` : ''}
+            <p style="font-size:11px;color:var(--accent-dim);margin-bottom:12px">
+              This will overwrite your current .env, data files, and Qdrant collections.
+              This action cannot be undone.
+            </p>
+            <div class="settings-field" style="margin-bottom:14px">
+              <label style="font-size:11px">Restore mode</label>
+              <select id="sys-restore-mode" style="font-size:12px;padding:4px 8px;background:var(--s-dark);border:1px solid var(--s-medium);color:var(--t-primary);border-radius:4px">
+                <option value="full">Full (config + snapshots)</option>
+                <option value="config-only">Config files only</option>
+                <option value="snapshots-only">Qdrant snapshots only</option>
+              </select>
+            </div>
+            <div class="tag-delete-modal-actions">
+              <button class="action-btn action-btn--ghost" id="sys-restore-cancel">Cancel</button>
+              <button class="action-btn action-btn--danger" id="sys-restore-confirm"
+                style="background:var(--accent-blue-bg);border-color:var(--accent-blue-border);color:var(--accent-blue)">
+                Restore
+              </button>
+            </div>
+            <div id="sys-restore-progress" style="display:none;margin-top:10px;font-size:12px;align-items:center;gap:8px">
+              <div class="wiz-status-dot spin" id="sys-restore-dot"></div>
+              <span id="sys-restore-text"></span>
+            </div>
+          </div>`;
+        document.body.appendChild(confirmOverlay);
+
+        confirmOverlay.querySelector('#sys-restore-cancel').addEventListener('click', () => confirmOverlay.remove());
+        confirmOverlay.addEventListener('click', (ev) => {
+          if (ev.target === confirmOverlay) confirmOverlay.remove();
+        });
+
+        confirmOverlay.querySelector('#sys-restore-confirm').addEventListener('click', async () => {
+          const confirmBtn = confirmOverlay.querySelector('#sys-restore-confirm');
+          const progressEl = confirmOverlay.querySelector('#sys-restore-progress');
+          const progressDot = confirmOverlay.querySelector('#sys-restore-dot');
+          const progressText = confirmOverlay.querySelector('#sys-restore-text');
+          const mode = confirmOverlay.querySelector('#sys-restore-mode').value;
+
+          confirmBtn.textContent = 'Restoring...';
+          confirmBtn.disabled = true;
+          progressEl.style.display = 'flex';
+          progressDot.className = 'wiz-status-dot spin';
+          progressText.textContent = 'Applying backup...';
+
+          try {
+            const restoreRes = await fetch(`/api/system/restore?mode=${encodeURIComponent(mode)}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/zip' },
+              body: buffer,
+            });
+            if (!restoreRes.ok) {
+              let errMsg = 'Restore failed';
+              try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
+              throw new Error(errMsg);
+            }
+            const result = await restoreRes.json();
+
+            progressDot.className = 'wiz-status-dot green';
+            const snapCount = result.results?.snapshots?.length || 0;
+            const restoredFileCount = result.results?.files?.length || 0;
+            const errCount = result.results?.errors?.length || 0;
+            progressText.textContent = `Done! ${restoredFileCount} files, ${snapCount} snapshots restored.`
+              + (errCount ? ` ${errCount} errors.` : '');
+            confirmBtn.textContent = 'Done';
+
+            setTimeout(() => { confirmOverlay.remove(); location.reload(); }, 2500);
+          } catch (err) {
+            progressDot.className = 'wiz-status-dot red';
+            progressText.textContent = err.message;
+            confirmBtn.textContent = 'Restore';
+            confirmBtn.disabled = false;
+          }
+        });
+      } catch (err) {
+        statusDot.className = 'wiz-status-dot red';
+        statusText.textContent = 'Invalid backup: ' + err.message;
+      }
+    });
+  }
 
   // ══════════════════════════════════════
   // Memory tab: Recall response size
@@ -1402,13 +1889,90 @@ export async function openSettingsModal() {
     });
   });
 
-  // Collapsible iface-section headers (Connections tab)
-  overlay.querySelectorAll('.iface-section[data-collapsible] .gfx-group-title').forEach(title => {
-    title.addEventListener('click', (e) => {
-      if (e.target.closest('select, input, button')) return;
-      title.closest('.iface-section').classList.toggle('collapsed');
+  // Collapsible iface-section cards (Connections tab) — click anywhere on the card
+  overlay.querySelectorAll('.iface-section[data-collapsible]').forEach(section => {
+    section.addEventListener('click', (e) => {
+      if (e.target.closest('select, input, button, textarea, a, .cc-section-body')) return;
+      section.classList.toggle('collapsed');
     });
   });
+
+  // ── CLI Paths handlers ──
+  {
+    const cliSaveBtn = overlay.querySelector('#cli-paths-save');
+    const cliDefaults = { 'claude-code': 'claude', 'codex': 'codex', 'gemini': 'gemini' };
+
+    // Detect buttons
+    overlay.querySelectorAll('.cli-detect-btn[data-cli-detect]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const profileId = btn.dataset.cliDetect;
+        const input = overlay.querySelector(`#cli-path-${profileId}`);
+        const status = overlay.querySelector(`#cli-status-${profileId}`);
+        btn.style.opacity = '0.5'; btn.style.pointerEvents = 'none';
+        try {
+          const res = await fetch(`/api/cli/detect/${encodeURIComponent(profileId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+          });
+          const data = await res.json();
+          if (data.ok && data.found && data.path) {
+            input.value = data.path;
+            status.textContent = 'detected';
+            status.className = 'cli-path-status detected';
+            showCCToast(`Found: ${data.path}`);
+          } else {
+            status.textContent = 'not found';
+            status.className = 'cli-path-status not-found';
+            showCCToast('CLI not found in PATH');
+          }
+        } catch (err) {
+          showCCToast('Detection failed: ' + err.message);
+        } finally {
+          btn.style.opacity = ''; btn.style.pointerEvents = '';
+        }
+      });
+    });
+
+    // Save button
+    if (cliSaveBtn) {
+      cliSaveBtn.addEventListener('click', async () => {
+        const body = {};
+        ['claude-code', 'codex', 'gemini'].forEach(id => {
+          const input = overlay.querySelector(`#cli-path-${id}`);
+          if (input) body[id] = { command: input.value.trim() };
+        });
+        cliSaveBtn.style.opacity = '0.5'; cliSaveBtn.style.pointerEvents = 'none';
+        try {
+          const res = await fetch('/api/cli/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json();
+          if (data.ok) {
+            ['claude-code', 'codex', 'gemini'].forEach(id => {
+              const input = overlay.querySelector(`#cli-path-${id}`);
+              const status = overlay.querySelector(`#cli-status-${id}`);
+              const val = input?.value?.trim() || '';
+              const isDefault = !val || val === cliDefaults[id];
+              if (status) {
+                status.textContent = isDefault ? 'default' : 'custom';
+                status.className = `cli-path-status${isDefault ? '' : ' custom'}`;
+              }
+            });
+            showCCToast('CLI paths saved');
+          } else {
+            alert(data.error || 'Failed to save');
+          }
+        } catch (err) {
+          alert('Failed: ' + err.message);
+        } finally {
+          cliSaveBtn.style.opacity = ''; cliSaveBtn.style.pointerEvents = '';
+        }
+      });
+    }
+  }
 
   function updateGlobalHookBadge() {
     const hooksSection = overlay.querySelector('.iface-section[data-cc-target="global"]');
@@ -1471,12 +2035,35 @@ export async function openSettingsModal() {
             const gcBody = overlay.querySelector('#cc-greeting-body');
             if (gcBody) gcBody.style.display = !isOn ? 'block' : 'none';
           }
+          // Show/hide user learning threshold when feature is toggled
+          if (feature === 'userLearning') {
+            const ulThreshold = overlay.querySelector('#cc-ul-threshold');
+            if (ulThreshold) ulThreshold.style.display = !isOn ? 'flex' : 'none';
+          }
         }
         else { alert(data.error || 'Failed to toggle feature'); }
       } catch (err) { alert('Failed: ' + err.message); }
       finally { toggle.style.opacity = ''; toggle.style.pointerEvents = ''; }
     });
   });
+
+  // ── User Learning threshold handler ──
+  {
+    const ulInput = overlay.querySelector('#cc-ul-threshold-input');
+    if (ulInput) {
+      let ulDebounce;
+      ulInput.addEventListener('input', () => {
+        clearTimeout(ulDebounce);
+        ulDebounce = setTimeout(async () => {
+          const val = Math.max(3, Math.min(30, parseInt(ulInput.value) || 8));
+          ulInput.value = val;
+          try {
+            await fetch('/api/claude-code/hook-features/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'userLearningThreshold', value: val }) });
+          } catch { /* silent */ }
+        }, 600);
+      });
+    }
+  }
 
   // ── Greeting editor handlers ──
   {
@@ -1705,50 +2292,115 @@ export async function openSettingsModal() {
     });
   });
 
-  // MCP toggle
-  const mcpToggle = overlay.querySelector('#cc-mcp-toggle');
-  if (mcpToggle) {
-    mcpToggle.addEventListener('click', async () => {
-      const isOn = mcpToggle.classList.contains('on');
-      try {
-        mcpToggle.style.opacity = '0.4'; mcpToggle.style.pointerEvents = 'none';
-        const res = await fetch('/api/claude-code/mcp', { method: isOn ? 'DELETE' : 'POST' });
-        const data = await res.json();
-        if (data.ok) { const nowOn = !isOn; mcpToggle.classList.toggle('on'); const row = overlay.querySelector('#cc-mcp-row'); if (row) { row.classList.toggle('enabled', nowOn); const path = row.querySelector('.cc-integration-path'); if (path) path.textContent = nowOn ? 'Registered in ~/.claude.json' : 'Not connected'; } }
-        else { alert(data.error || 'Failed'); }
-      } catch (err) { alert('Failed: ' + err.message); }
-      finally { mcpToggle.style.opacity = ''; mcpToggle.style.pointerEvents = ''; }
-    });
-  }
+  // ── Setup tab: per-provider MCP toggles, CLI copy, config copy, rulesets ──
+  {
+    const checkIcon = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg>';
+    const copyBtnIcon = COPY_ICON;
 
-  // Copy CLI command
-  const mcpCopy = overlay.querySelector('#cc-mcp-copy');
-  if (mcpCopy) {
-    mcpCopy.addEventListener('click', () => {
-      const cmd = ccIntegrations.mcp?.cliCommand || ''; if (!cmd) { alert('CLI command not available'); return; }
-      navigator.clipboard.writeText(cmd);
-      mcpCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
-      setTimeout(() => { mcpCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy CLI Command'; }, 2000);
-    });
-  }
+    // Helper: wire a MCP toggle for any provider
+    function wireSetupMcpToggle(provider, apiPath, configLabel) {
+      const toggle = overlay.querySelector(`#setup-${provider}-mcp-toggle`);
+      if (!toggle) return;
+      toggle.addEventListener('click', async () => {
+        const isOn = toggle.classList.contains('on');
+        try {
+          toggle.style.opacity = '0.4'; toggle.style.pointerEvents = 'none';
+          const res = await fetch(apiPath, { method: isOn ? 'DELETE' : 'POST' });
+          const data = await res.json();
+          if (data.ok) {
+            const nowOn = !isOn;
+            toggle.classList.toggle('on');
+            const row = overlay.querySelector(`#setup-${provider}-mcp-row`);
+            if (row) row.classList.toggle('enabled', nowOn);
+            const status = overlay.querySelector(`#setup-${provider}-mcp-status`);
+            if (status) status.textContent = nowOn ? `Registered in ${configLabel}` : 'Not connected';
+            const badge = overlay.querySelector(`#setup-${provider} .setup-status-badge`);
+            if (badge) { badge.className = `setup-status-badge ${nowOn ? 'active' : 'inactive'}`; badge.textContent = nowOn ? 'Connected' : 'Off'; }
+          } else { alert(data.error || 'Failed'); }
+        } catch (err) { alert('Failed: ' + err.message); }
+        finally { toggle.style.opacity = ''; toggle.style.pointerEvents = ''; }
+      });
+    }
 
-  // Ruleset preview + copy
-  const rulesetPreview = overlay.querySelector('#cc-ruleset-preview');
-  const rulesetCopy = overlay.querySelector('#cc-ruleset-copy');
-  let cachedRuleset = '';
-  if (rulesetPreview) {
-    fetch('/api/claude-code/ruleset').then(r => r.json()).then(data => {
-      if (data.ok && data.ruleset) { cachedRuleset = data.ruleset; const lines = data.ruleset.split('\n'); rulesetPreview.textContent = lines.slice(0, 20).join('\n') + (lines.length > 20 ? '\n...' : ''); }
-      else { rulesetPreview.textContent = 'Could not load ruleset.'; }
-    }).catch(() => { rulesetPreview.textContent = 'Failed to load.'; });
-  }
-  if (rulesetCopy) {
-    rulesetCopy.addEventListener('click', () => {
-      if (!cachedRuleset) { alert('Ruleset not loaded yet'); return; }
-      navigator.clipboard.writeText(cachedRuleset);
-      rulesetCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
-      setTimeout(() => { rulesetCopy.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy SynaBun\'s CLAUDE.md Ruleset'; }, 2000);
-    });
+    // Helper: wire a copy button
+    function wireCopyBtn(id, getText, originalLabel) {
+      const btn = overlay.querySelector(`#${id}`);
+      if (!btn) return;
+      btn.addEventListener('click', () => {
+        const text = getText();
+        if (!text) { alert('Content not available'); return; }
+        navigator.clipboard.writeText(text);
+        btn.innerHTML = `${checkIcon} Copied!`;
+        setTimeout(() => { btn.innerHTML = `${copyBtnIcon} ${originalLabel}`; }, 2000);
+      });
+    }
+
+    // Helper: load a ruleset preview
+    function wireRulesetPreview(provider, format) {
+      const preview = overlay.querySelector(`#setup-${provider}-ruleset-preview`);
+      if (!preview) return;
+      let cached = '';
+      fetch(`/api/claude-code/ruleset?format=${format}`).then(r => r.json()).then(data => {
+        if (data.ok && data.ruleset) {
+          cached = data.ruleset;
+          const lines = data.ruleset.split('\n');
+          preview.textContent = lines.slice(0, 20).join('\n') + (lines.length > 20 ? '\n...' : '');
+        } else { preview.textContent = 'Could not load ruleset.'; }
+      }).catch(() => { preview.textContent = 'Failed to load.'; });
+
+      // Wire copy
+      wireCopyBtn(`setup-${provider}-ruleset-copy`, () => cached, 'Copy Ruleset');
+    }
+
+    // ── Claude ──
+    wireSetupMcpToggle('claude', '/api/claude-code/mcp', '~/.claude.json');
+    wireCopyBtn('setup-claude-cli-copy', () => setupStatus.claude?.cliCommand || ccIntegrations.mcp?.cliCommand || '', 'Copy CLI Command');
+    wireRulesetPreview('claude', 'claude');
+
+    // ── Gemini ──
+    wireSetupMcpToggle('gemini', '/api/setup/gemini/mcp', '~/.gemini/settings.json');
+    // Config preview
+    {
+      const preview = overlay.querySelector('#setup-gemini-config-preview');
+      let cachedConfig = '';
+      if (preview) {
+        fetch('/api/setup/gemini/mcp').then(r => r.json()).then(data => {
+          if (data.ok && data.config) {
+            cachedConfig = JSON.stringify(data.config, null, 2);
+            preview.textContent = cachedConfig;
+          } else if (data.ok) {
+            cachedConfig = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/dist/preload.js'], env: { DOTENV_PATH: setupStatus.paths?.envPath || '<path-to>/synabun/.env' } } } }, null, 2);
+            preview.textContent = cachedConfig;
+          } else { preview.textContent = 'Could not load config.'; }
+        }).catch(() => { preview.textContent = 'Failed to load.'; });
+      }
+      wireCopyBtn('setup-gemini-config-copy', () => cachedConfig, 'Copy JSON Config');
+    }
+    wireRulesetPreview('gemini', 'gemini');
+
+    // ── Codex ──
+    wireSetupMcpToggle('codex', '/api/setup/codex/mcp', '~/.codex/config.toml');
+    wireCopyBtn('setup-codex-cli-copy', () => setupStatus.codex?.cliCommand || '', 'Copy CLI Command');
+    // Config preview
+    {
+      const preview = overlay.querySelector('#setup-codex-config-preview');
+      let cachedConfig = '';
+      if (preview) {
+        fetch('/api/setup/codex/mcp').then(r => r.json()).then(data => {
+          if (data.ok && data.toml) {
+            cachedConfig = data.toml;
+            preview.textContent = cachedConfig;
+          } else if (data.ok) {
+            const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/dist/preload.js';
+            const ep = setupStatus.paths?.envPath || '<path-to>/synabun/.env';
+            cachedConfig = `[mcp_servers.SynaBun]\ncommand = "node"\nargs = ["${mp}"]\n\n[mcp_servers.SynaBun.env]\nDOTENV_PATH = "${ep}"`;
+            preview.textContent = cachedConfig;
+          } else { preview.textContent = 'Could not load config.'; }
+        }).catch(() => { preview.textContent = 'Failed to load.'; });
+      }
+      wireCopyBtn('setup-codex-config-copy', () => cachedConfig, 'Copy TOML Config');
+    }
+    wireRulesetPreview('codex', 'codex');
   }
 
   // ── Tunnel toggle ──
@@ -1898,15 +2550,86 @@ export async function openSettingsModal() {
     const addOverlay = document.createElement('div');
     addOverlay.className = 'tag-delete-overlay'; addOverlay.style.zIndex = '10001';
     addOverlay.innerHTML = `
-      <div class="tag-delete-modal settings-modal" style="max-width:420px">
+      <div class="tag-delete-modal settings-modal" style="max-width:480px">
         <h3><svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:var(--accent-blue);stroke-width:2;fill:none"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Project</h3>
-        <div class="settings-field"><label>Project Path</label><input type="text" id="cc-proj-path" placeholder="J:/Sites/MyProject" autocomplete="off" spellcheck="false" style="font-family:'JetBrains Mono',monospace;font-size:12px"></div>
+        <div class="settings-field"><label>Project Path</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="text" id="cc-proj-path" placeholder="J:/Sites/MyProject" autocomplete="off" spellcheck="false" style="font-family:'JetBrains Mono',monospace;font-size:12px;flex:1">
+            <button id="cc-proj-browse" style="flex:0 0 auto;padding:5px 10px;background:var(--s-medium);border:1px solid var(--s-light);border-radius:4px;color:var(--t-primary);cursor:pointer;font-size:12px;display:flex;align-items:center;gap:4px" title="Browse folders">
+              <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              Browse
+            </button>
+          </div>
+        </div>
+        <div id="cc-proj-browser" style="display:none;margin:-4px 0 12px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
         <div class="settings-field"><label>Label <span style="color:var(--t-muted);font-weight:normal">(optional)</span></label><input type="text" id="cc-proj-label" placeholder="My Project" autocomplete="off" spellcheck="false"></div>
         <div class="cc-hint">The hook will be added to <code style="font-size:12px;background:var(--s-medium);padding:2px 5px;border-radius:4px">.claude/settings.json</code> inside this directory.</div>
         <div class="settings-actions" style="margin-top:12px"><button class="settings-btn-cancel" id="cc-proj-cancel">Cancel</button><button class="settings-btn-save" id="cc-proj-save">Add &amp; Enable</button></div>
       </div>`;
     document.body.appendChild(addOverlay);
     const closeAdd = () => addOverlay.remove();
+
+    // Folder browser
+    const browseBtn = addOverlay.querySelector('#cc-proj-browse');
+    const browserEl = addOverlay.querySelector('#cc-proj-browser');
+    const pathInput = addOverlay.querySelector('#cc-proj-path');
+
+    async function loadDir(dirPath) {
+      browserEl.style.display = 'block';
+      browserEl.innerHTML = '<div style="padding:10px;color:var(--t-muted);font-size:12px">Loading...</div>';
+      try {
+        const qs = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
+        const res = await fetch(`/api/browse-directory${qs}`);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error);
+
+        let html = '<div style="padding:6px 10px;font-size:11px;color:var(--t-muted);border-bottom:1px solid var(--s-medium);display:flex;align-items:center;justify-content:space-between">'
+          + `<span style="font-family:'JetBrains Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(data.current)}</span>`
+          + '<button id="cc-browse-select" style="flex:0 0 auto;padding:3px 10px;background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);border-radius:4px;cursor:pointer;font-size:11px">Select</button>'
+          + '</div>';
+        html += '<div style="padding:4px 0">';
+        if (data.parent) {
+          html += `<div class="cc-browse-item" data-path="${escapeHtml(data.parent)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t-muted)">`
+            + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><polyline points="15 18 9 12 15 6"/></svg>'
+            + '.. (parent)</div>';
+        }
+        for (const d of data.directories) {
+          html += `<div class="cc-browse-item" data-path="${escapeHtml(data.current + '/' + d)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px">`
+            + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+            + escapeHtml(d) + '</div>';
+        }
+        if (data.directories.length === 0 && !data.parent) {
+          html += '<div style="padding:8px 10px;color:var(--t-muted);font-size:12px">No subdirectories</div>';
+        }
+        html += '</div>';
+        browserEl.innerHTML = html;
+
+        // Select current directory
+        browserEl.querySelector('#cc-browse-select').addEventListener('click', () => {
+          pathInput.value = data.current.replace(/\\/g, '/');
+          browserEl.style.display = 'none';
+        });
+
+        // Navigate into subdirectory
+        browserEl.querySelectorAll('.cc-browse-item').forEach(item => {
+          item.addEventListener('mouseenter', () => item.style.background = 'var(--s-medium)');
+          item.addEventListener('mouseleave', () => item.style.background = '');
+          item.addEventListener('click', () => loadDir(item.dataset.path));
+        });
+      } catch (err) {
+        browserEl.innerHTML = `<div style="padding:10px;color:var(--accent-dim);font-size:12px">Error: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    browseBtn.addEventListener('click', () => {
+      if (browserEl.style.display === 'block') {
+        browserEl.style.display = 'none';
+        return;
+      }
+      const current = pathInput.value.trim();
+      loadDir(current || '');
+    });
+
     addOverlay.querySelector('#cc-proj-cancel').addEventListener('click', closeAdd);
     addOverlay.addEventListener('click', e => { if (e.target === addOverlay) closeAdd(); });
     addOverlay.querySelector('#cc-proj-save').addEventListener('click', async () => {
@@ -2085,6 +2808,7 @@ export async function openSettingsModal() {
 
         </div>
         <div class="conn-wizard-nav">
+          <button class="wiz-nav-btn" id="wiz-cancel">Cancel</button>
           <button class="wiz-nav-btn" id="wiz-back" disabled>&larr; Back</button>
           <div class="wiz-dots" id="wiz-dots">
             ${Array.from({length: TOTAL_STEPS}, (_, i) => `<div class="wiz-dot${i === 0 ? ' active' : ''}"></div>`).join('')}
@@ -2102,6 +2826,12 @@ export async function openSettingsModal() {
     const $next = wiz.querySelector('#wiz-next');
 
     const closeWiz = () => wiz.remove();
+
+    // Cancel button + backdrop click to close
+    wiz.querySelector('#wiz-cancel').addEventListener('click', closeWiz);
+    wiz.addEventListener('click', (e) => {
+      if (e.target === wiz) closeWiz();
+    });
 
     function resizeViewport(stepIdx) {
       const step = $steps[stepIdx];

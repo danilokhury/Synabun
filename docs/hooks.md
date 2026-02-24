@@ -26,8 +26,8 @@ SynaBun provides 5 hooks that work together to create a complete memory automati
 
 | Hook | Event | Timeout | Purpose |
 |------|-------|---------|---------|
-| `session-start.mjs` | `SessionStart` | 5s | Injects category tree, project detection, 4 binding directives, and compaction recovery |
-| `prompt-submit.mjs` | `UserPromptSubmit` | 3s | Multi-tier recall trigger system with non-English detection |
+| `session-start.mjs` | `SessionStart` | 5s | Injects category tree, project detection, 5 binding directives, and compaction recovery |
+| `prompt-submit.mjs` | `UserPromptSubmit` | 3s | Multi-tier recall trigger system with non-English detection and user learning nudges |
 | `pre-compact.mjs` | `PreCompact` | 10s | Captures session transcript before context compaction |
 | `stop.mjs` | `Stop` | 3s | Enforces memory storage — blocks if session isn't indexed or edits aren't remembered |
 | `post-remember.mjs` | `PostToolUse` | 3s | Tracks edit count and clears enforcement flags when memories are stored |
@@ -57,11 +57,12 @@ Fires once at the start of every Claude Code session. Reads the category tree fr
    - Step 2: If no child fits, `category_create` a new child under the matching parent
    - Step 3: If no parent fits, `category_create` a new parent + child
    - Step 4: If uncertain, `AskUserQuestion` with 2-3 options
-3. **4 binding directives:**
-   - **Directive 1: Session Start Recall** — two `recall` calls (conversations + ongoing work) before greeting
+3. **5 binding directives:**
+   - **Directive 1: Session Start Recall** — two `recall` calls (conversations + ongoing work) before greeting, plus optional user-profile recall (Step D)
    - **Directive 2: Auto-Remember** — mandatory memory storage after every discrete task
    - **Directive 3: Recall Before Decisions** — check memory before architecture/design choices
    - **Directive 4: Compaction Auto-Store** — index the session when compaction is detected
+   - **Directive 5: User Learning** — autonomously observes user communication patterns (tone, verbosity, preferences, text quirks) and stores observations in `user-profile/communication-style` category
 4. **Project detection** — Auto-detects the current project from the working directory
 5. **Project scoping rules** — When to use project-specific vs. global vs. shared
 6. **Tool usage notes** — Sequential calls, full UUID requirement, importance scale, `forget`/`restore` behavior
@@ -105,6 +106,7 @@ Fires on every user message. Implements a multi-tier priority system that analyz
 | 4 | Tier 3: Consider-recall | Generic patterns — requires 2+ matches to trigger |
 | 5 | Non-English detection | Unicode ratio >40% triggers recall (international users) |
 | 6 | Latin non-English | Catch-all for Latin-script non-English text |
+| 7 | User learning nudge | Quiet-only, one-time nudge after N interactions; fires only when no higher priority matched. Controlled by `userLearning` and `userLearningThreshold` feature flags |
 
 **Recall trigger categories (Tiers 1-3):**
 
@@ -254,18 +256,30 @@ Hook behavior can be toggled via `data/hook-features.json`:
 
 ```json
 {
-  "conversationMemory": true
+  "conversationMemory": true,
+  "greeting": true,
+  "userLearning": true,
+  "userLearningThreshold": 8
 }
 ```
 
 | Flag | Default | Effect |
 |------|---------|--------|
 | `conversationMemory` | `true` | When `false`, disables conversation indexing (Directive 4) in SessionStart and Stop hooks |
+| `greeting` | `true` | When `false`, disables the greeting directive at session start |
+| `userLearning` | `true` | When `false`, disables Directive 5 (user observation) in SessionStart and Priority 7 nudge in PromptSubmit |
+| `userLearningThreshold` | `8` | Number of interactions before the user learning nudge fires (configurable 3-30) |
 
-Toggle via the Neural Interface: Settings > Hooks > Feature Flags, or via API:
+Toggle boolean flags via the Neural Interface: Settings > Connections > Features, or via API:
 ```
 PUT /api/claude-code/hook-features
 { "feature": "conversationMemory", "enabled": false }
+```
+
+Set numeric/config values:
+```
+PUT /api/claude-code/hook-features/config
+{ "key": "userLearningThreshold", "value": 10 }
 ```
 
 ---
