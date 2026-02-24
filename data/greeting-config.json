@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "defaults": {
+    "showTimeGreeting": true,
+    "showReminders": true,
+    "showLastSession": false,
+    "greetingTemplate": "{time_greeting}! Working on **{project_label}** today (`{branch}` branch). {date}.",
+    "reminderPrefix": "Remember to start these services:"
+  },
+  "projects": {
+    "criticalpixel": {
+      "label": "CriticalPixel",
+      "greetingTemplate": "{time_greeting}! Welcome back to **{project_label}** (`{branch}` branch). {date}.",
+      "showReminders": true,
+      "showLastSession": true,
+      "reminders": [
+        { "label": "Local dev server", "command": "node J:\\Sites\\CriticalPixel\\.000Settings\\server.js" },
+        { "label": "SynaBun Neural Interface", "command": "node J:\\Sites\\Apps\\Synabun\\neural-interface\\server.js" },
+        { "label": "Deploy SOCKS proxy", "command": "ssh -D 1080 -C -N deploy" },
+        { "label": "Coolify SOCKS proxy", "command": "ssh -D 1081 -C -N coolify" }
+      ]
+    }
+  },
+  "global": {
+    "label": "Global",
+    "greetingTemplate": "{time_greeting}! Starting a new session. {date}.",
+    "showReminders": false,
+    "showLastSession": false,
+    "reminders": []
+  }
+}
