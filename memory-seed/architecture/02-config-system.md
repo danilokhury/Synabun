@@ -35,7 +35,7 @@ Configuration is managed in `mcp-server/src/config.ts` with two layers:
 
 ## Project Detection
 
-- `PROJECT_MAP` object maps directory keywords to project names (e.g., `criticalpixel` → `criticalpixel`)
+- `PROJECT_MAP` object maps directory keywords to project names (e.g., `my-app` → `my-app`)
 - `detectProject(cwd)`: lowercases path, checks against `PROJECT_MAP` keys, falls back to directory basename (sanitized to lowercase kebab-case)
 - Default project: `"global"` if no match
 - Same `PROJECT_MAP` must be kept in sync between `config.ts` and `hooks/claude-code/session-start.mjs`

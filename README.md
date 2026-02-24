@@ -77,7 +77,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 | **[Security](./SECURITY.md)** | Security model and vulnerability reporting |
 | **[Changelog](./CHANGELOG.md)** | Version history |
 
-**Contributions:** We welcome [bug reports and feature requests](https://github.com/ZaphreBR/synabun/issues). Pull requests are not accepted. See [CONTRIBUTING.md](./CONTRIBUTING.md) for details.
+**Contributions:** We welcome [bug reports and feature requests](https://github.com/danilokhury/Synabun/issues). Pull requests are not accepted. See [CONTRIBUTING.md](./CONTRIBUTING.md) for details.
 
 ## Quick Start
 
@@ -175,8 +175,8 @@ The `.mcp.json` path must match the platform where **Claude Code is running**:
 
 | Platform | Path format | Example |
 |----------|-------------|---------|
-| **Windows** | Forward slashes | `J:/Sites/Apps/Synabun/mcp-server/run.mjs` |
-| **WSL** | Linux mount paths | `/mnt/j/Sites/Apps/Synabun/mcp-server/run.mjs` |
+| **Windows** | Forward slashes | `C:/Users/me/Synabun/mcp-server/run.mjs` |
+| **WSL** | Linux mount paths | `/mnt/c/Users/me/Synabun/mcp-server/run.mjs` |
 | **Linux/macOS** | Native paths | `/home/user/Apps/Synabun/mcp-server/run.mjs` |
 
 **Common pitfall:** If Claude Code runs on Windows but you use a WSL-style path like `/mnt/j/...`, Node.js will resolve it to `J:\mnt\j\...` (prepending the drive letter), which doesn't exist. Always use Windows-native paths when Claude Code runs on Windows.
@@ -384,9 +384,9 @@ Descriptions should be **prescriptive rules**, not vague labels:
 Parent categories group related children into visual clusters. They affect how Claude sees the hierarchy:
 
 ```
-[criticalpixel] (parent) — All CriticalPixel memories go here
-  bug-fixes = Bug fixes, root cause analysis, error resolutions for CP code
-  databases = Database schemas, queries, migrations, Supabase config
+[my-project] (parent) — All memories for my-project go here
+  bug-fixes = Bug fixes, root cause analysis, error resolutions
+  databases = Database schemas, queries, migrations, config
 deals = ONLY deal/pricing memories: store imports, price comparisons...
 memory-system = MCP server architecture, Qdrant config, embedding pipeline...
 ```

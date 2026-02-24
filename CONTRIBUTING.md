@@ -2,7 +2,7 @@
 
 ## How to Contribute
 
-SynaBun is open-source software maintained by a single author. We welcome bug reports, feature requests, and discussions through [GitHub Issues](https://github.com/ZaphreBR/synabun/issues), but **we do not accept pull requests**.
+SynaBun is open-source software maintained by a single author. We welcome bug reports, feature requests, and discussions through [GitHub Issues](https://github.com/danilokhury/Synabun/issues), but **we do not accept pull requests**.
 
 You are free to fork and modify SynaBun under the [Apache 2.0 license](./LICENSE).
 

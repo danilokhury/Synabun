@@ -4,6 +4,28 @@ All notable changes to SynaBun will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2026.02.24] - 2026-02-24
+
+### Changed
+
+**Distribution Sanitization**
+- Standardized all GitHub URLs to `github.com/danilokhury/Synabun` (from `ZaphreBR/synabun`)
+- Emptied `PROJECT_MAP` in `config.ts` and `session-start.mjs` with commented usage examples
+- Genericized all hardcoded personal paths (`J:\Sites\...`, `C:\Users\danil\...`) across docs, tests, and source files
+- Replaced all `criticalpixel`/`ellacred` project references with generic examples (`my-project`, `test-project`)
+- Reset `custom-categories-default.json` to empty defaults
+
+### Removed
+- 7 dev utility files (`neural-interface/_*.cjs`, `_*.py`, `_*.json`, `_*.txt`)
+- 8 user-specific data files from `mcp-server/data/` (personal category configs, display settings)
+- `.claude/settings.local.json` (user-specific IDE config)
+- `criticalpixel.png` from category logos
+
+### Fixed
+- `.gitignore` negation pattern: changed `mcp-server/data/` to `mcp-server/data/*` so the `!custom-categories-default.json` exception works correctly
+
+---
+
 ## [1.3.0] - 2026-02-24
 
 ### Changed

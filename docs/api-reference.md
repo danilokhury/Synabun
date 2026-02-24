@@ -395,22 +395,22 @@ No parameters.
     {
       "name": "learning",
       "description": "Lessons learned and gotchas",
-      "parent": "criticalpixel",
+      "parent": "my-project",
       "color": "#4a9eff",
       "is_parent": false,
       "created_at": "ISO 8601 string"
     }
   ],
   "tree": {
-    "criticalpixel": {
-      "name": "criticalpixel",
-      "description": "Parent category for CriticalPixel",
+    "my-project": {
+      "name": "my-project",
+      "description": "Parent category for My Project",
       "is_parent": true,
       "children": [
         {
           "name": "learning",
           "description": "Lessons learned",
-          "parent": "criticalpixel"
+          "parent": "my-project"
         }
       ]
     }
@@ -419,7 +419,7 @@ No parameters.
     {
       "name": "learning",
       "description": "Lessons learned",
-      "parent": "criticalpixel",
+      "parent": "my-project",
       "color": "#4a9eff"
     }
   ]
@@ -469,7 +469,7 @@ Creates a new category. Optionally nests it under a parent and assigns a color.
 ```json
 {
   "categories": [ /* full updated category list */ ],
-  "message": "Created \"learning\" under \"criticalpixel\" with color #4a9eff"
+  "message": "Created \"learning\" under \"my-project\" with color #4a9eff"
 }
 ```
 
@@ -536,7 +536,7 @@ If the category does not exist in the JSON file but exists in memories, it is au
 ```json
 {
   "categories": [ /* full updated category list */ ],
-  "message": "Updated \"old-name\" -> \"new-name\": description updated, parent: criticalpixel, color: #4a9eff"
+  "message": "Updated \"old-name\" -> \"new-name\": description updated, parent: my-project, color: #4a9eff"
 }
 ```
 
@@ -1486,8 +1486,8 @@ No parameters.
   },
   "projects": [
     {
-      "path": "J:\\Sites\\CriticalPixel",
-      "label": "CriticalPixel",
+      "path": "/home/user/my-project",
+      "label": "My Project",
       "installed": true,
       "settingsExists": true
     }
@@ -1548,7 +1548,7 @@ or
 ```json
 {
   "ok": true,
-  "message": "Hook enabled for CriticalPixel."
+  "message": "Hook enabled for My Project."
 }
 ```
 
@@ -1574,7 +1574,7 @@ curl -X POST http://localhost:3344/api/claude-code/integrations \
 ```bash
 curl -X POST http://localhost:3344/api/claude-code/integrations \
   -H "Content-Type: application/json" \
-  -d '{"target": "project", "projectPath": "J:\\Sites\\CriticalPixel", "label": "CriticalPixel"}'
+  -d '{"target": "project", "projectPath": "/home/user/my-project", "label": "My Project"}'
 ```
 
 ---
@@ -1611,7 +1611,7 @@ or
 ```json
 {
   "ok": true,
-  "message": "Hook removed from CriticalPixel."
+  "message": "Hook removed from My Project."
 }
 ```
 

@@ -71,8 +71,9 @@ function getCategoriesPath() {
 // --- Project detection (mirrors mcp-server/src/config.ts) ---
 
 const PROJECT_MAP = {
-  criticalpixel: 'criticalpixel',
-  ellacred: 'ellacred',
+  // Add your project keywords here. Example:
+  // 'my-app': 'my-app',
+  // 'client-site': 'client-project',
 };
 
 function detectProject(cwd) {

@@ -369,7 +369,7 @@ Add the following to your `.claude/settings.json` file:
 
 **Per-project** (`<project>/.claude/settings.json`): Same structure, but scoped to that project only.
 
-Replace `/path/to/Synabun` with your actual SynaBun installation path. On Windows, use forward slashes (e.g., `J:/Sites/Apps/Synabun`).
+Replace `/path/to/Synabun` with your actual SynaBun installation path. On Windows, use forward slashes (e.g., `C:/Users/me/Synabun`).
 
 ---
 
@@ -513,8 +513,9 @@ The SessionStart hook auto-detects the current project from the working director
 ```javascript
 // hooks/claude-code/session-start.mjs (line 33)
 const PROJECT_MAP = {
-  criticalpixel: 'criticalpixel',
-  ellacred: 'ellacred',
+  // Add your project keywords here. Example:
+  // 'my-app': 'my-app',
+  // 'client-site': 'client-project',
 };
 ```
 
