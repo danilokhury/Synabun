@@ -663,7 +663,7 @@ recall({ query: "real-time updates", category: "deals", limit: 5 })
 remember({
   content: "Idea: Reuse the price update WebSocket infrastructure for forum notifications. The deals system already handles real-time price pushes via Redis pub/sub — extend it to forum events.",
   category: "ideas",
-  project: "criticalpixel"
+  project: "my-project"
 })
 ```
 

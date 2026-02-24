@@ -21,7 +21,7 @@ export function buildRememberSchema() {
     .string()
     .optional()
     .describe(
-      'Project this belongs to (e.g. "criticalpixel"). Defaults to auto-detected from working directory.'
+      'Project this belongs to (e.g. "my-project"). Defaults to auto-detected from working directory.'
     ),
   tags: z
     .array(z.string())

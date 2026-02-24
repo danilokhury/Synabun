@@ -125,8 +125,9 @@ export function getActiveEmbeddingConfig(): EmbeddingConfig {
 // --- Project Detection ---
 
 const PROJECT_MAP: Record<string, string> = {
-  criticalpixel: 'criticalpixel',
-  ellacred: 'ellacred',
+  // Add your project keywords here. Example:
+  // 'my-app': 'my-app',
+  // 'client-site': 'client-project',
 };
 
 export function detectProject(cwd?: string): string {

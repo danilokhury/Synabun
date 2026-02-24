@@ -26,7 +26,7 @@ Premium features, enterprise support, and commercial extensions are available se
 For commercial licensing inquiries, contact:
 
 - **Email:** chat@synabun.ai
-- **GitHub:** [github.com/ZaphreBR/synabun/issues](https://github.com/ZaphreBR/synabun/issues)
+- **GitHub:** [github.com/danilokhury/Synabun/issues](https://github.com/danilokhury/Synabun/issues)
 
 ## Trademark
 

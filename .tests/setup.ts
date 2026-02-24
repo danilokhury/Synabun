@@ -205,14 +205,14 @@ vi.mock('../mcp-server/src/services/qdrant.js', () => {
     getMemoryStats: vi.fn(async () => {
       trackCall('count', { type: 'total' });
       // Simulate N category counts
-      const cats = ['architecture', 'bug-fixes', 'learning', 'conversations', 'criticalpixel', 'synabun'];
+      const cats = ['architecture', 'bug-fixes', 'learning', 'conversations', 'test-project', 'synabun'];
       for (const cat of cats) {
         trackCall('count', { type: 'category', category: cat });
       }
       trackCall('scroll', { type: 'projectBreakdown', limit: 1000 });
       return {
         total: 42,
-        by_category: { architecture: 15, 'bug-fixes': 10, learning: 8, conversations: 5, criticalpixel: 2, synabun: 2 },
+        by_category: { architecture: 15, 'bug-fixes': 10, learning: 8, conversations: 5, 'test-project': 2, synabun: 2 },
         by_project: { 'test-project': 30, global: 12 },
         oldest: '2025-01-01T00:00:00.000Z',
         newest: now,
@@ -228,10 +228,10 @@ vi.mock('../mcp-server/src/services/qdrant.js', () => {
 vi.mock('../mcp-server/src/services/categories.js', () => {
   const MOCK_CATEGORIES = [
     { name: 'architecture', description: 'System architecture', parent: 'synabun', color: '#3b82f6' },
-    { name: 'bug-fixes', description: 'Bug fixes', parent: 'criticalpixel', color: '#ef4444' },
+    { name: 'bug-fixes', description: 'Bug fixes', parent: 'test-project', color: '#ef4444' },
     { name: 'learning', description: 'Learning notes', color: '#22c55e' },
     { name: 'conversations', description: 'Session logs', is_parent: true, color: '#8b5cf6' },
-    { name: 'criticalpixel', description: 'CriticalPixel project', is_parent: true, color: '#f97316' },
+    { name: 'test-project', description: 'Test project', is_parent: true, color: '#f97316' },
     { name: 'synabun', description: 'SynaBun project', is_parent: true, color: '#06b6d4' },
   ];
   const NAMES = MOCK_CATEGORIES.map(c => c.name);

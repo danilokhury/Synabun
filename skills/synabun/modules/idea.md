@@ -124,7 +124,7 @@ If the user says yes:
 2. If not, call `category_create` with:
    - `name`: "ideas"
    - `description`: "Brainstormed features, experiments, and creative explorations"
-   - `parent`: the current project's parent category (e.g., "criticalpixel") — or no parent if no project match
+   - `parent`: the current project's parent category (e.g., "my-project") — or no parent if no project match
 3. For each idea the user wants saved, call `remember` with:
    - `content`: The full idea text (title + concept + reasoning chain + next steps)
    - `category`: "ideas"

@@ -1,17 +1,4 @@
 {
   "version": 1,
-  "categories": [
-    {
-      "name": "design",
-      "description": "UI design, logos, branding, SVG assets, visual identity",
-      "created_at": "2026-02-20T04:13:57.924Z",
-      "is_parent": true
-    },
-    {
-      "name": "logo",
-      "description": "Logo creation, iteration, and branding assets",
-      "created_at": "2026-02-20T04:14:04.014Z",
-      "parent": "design"
-    }
-  ]
+  "categories": []
 }
