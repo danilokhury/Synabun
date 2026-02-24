@@ -230,7 +230,7 @@ function main() {
   console.log(`  ${c.cyan}║${c.reset}   ${c.dim}Persistent Vector Memory${c.reset}       ${c.cyan}║${c.reset}`);
   console.log(`  ${c.cyan}║${c.reset}                                   ${c.cyan}║${c.reset}`);
   console.log(`  ${c.cyan}╚═══════════════════════════════════╝${c.reset}`);
-  console.log(`           ${c.dim}synabun.com${c.reset}`);
+  console.log(`           ${c.dim}synabun.ai${c.reset}`);
   console.log('');
 
   // Prerequisites
