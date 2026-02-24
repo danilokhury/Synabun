@@ -27,6 +27,7 @@ let _selectedContent = null; // loaded content of selected artifact
 let _filterType = 'all';
 let _filterScope = 'all';
 let _searchQuery = '';
+let _fetchSeq = 0;         // fetch sequence counter — guards against race conditions
 let _view = 'library';     // 'library' | 'editor' | 'wizard'
 let _editorDirty = false;
 let _wizardStep = 0;
@@ -97,6 +98,7 @@ function renderTabBar() {
 function switchTab(idx) {
   if (idx === _activeTabIdx || idx < 0 || idx >= _tabs.length) return;
   storeActiveTabContent();
+  captureMetadataIntoContent();
 
   const prevTab = activeTab();
   _activeTabIdx = idx;
@@ -149,10 +151,24 @@ function storeActiveTabContent() {
   const editor = $('ss-content-editor');
   if (!editor) return;
   const tab = _tabs[_activeTabIdx];
-  if (tab) {
-    tab.content = editor.value;
-    tab.dirty = tab.content !== tab.originalContent;
-  }
+  if (!tab) return;
+  tab.content = editor.value;
+  // Only ADD dirtiness, never clear it — dirty is cleared explicitly by save/discard
+  if (tab.content !== tab.originalContent) tab.dirty = true;
+}
+
+/** Merge metadata form values into tab content for the active main tab.
+ *  Called before saving and before switching away from a tab. */
+function captureMetadataIntoContent() {
+  const tab = _tabs[_activeTabIdx];
+  if (!tab || tab.path !== null) return; // only for main tabs
+  const meta = collectMetadataFromForm();
+  if (!meta) return;
+  const editor = $('ss-content-editor');
+  const raw = editor ? editor.value : tab.content;
+  tab.content = mergeMetadataIntoContent(raw, meta);
+  if (editor) editor.value = tab.content;
+  if (tab.content !== tab.originalContent) tab.dirty = true;
 }
 
 function loadActiveTabContent() {
@@ -458,6 +474,7 @@ async function switchToEditor(artifact) {
   const existingIdx = _tabs.findIndex(t => t.artifactId === artifact.id && t.path === null);
   if (existingIdx >= 0) {
     storeActiveTabContent();
+    captureMetadataIntoContent();
     _activeTabIdx = existingIdx;
     _selected = _tabs[existingIdx].artifact;
     _selectedContent = _tabs[existingIdx].artifactContent;
@@ -468,30 +485,55 @@ async function switchToEditor(artifact) {
     return;
   }
 
-  // Save current tab content before adding new tab
-  if (_tabs.length > 0) storeActiveTabContent();
+  // Save current tab content before switching
+  if (_tabs.length > 0) {
+    storeActiveTabContent();
+    captureMetadataIntoContent();
+  }
+
+  // Reuse the active main tab if it's clean (not dirty, not a sub-file).
+  // This prevents unbounded tab accumulation — only dirty or sub-file tabs persist.
+  const curTab = activeTab();
+  const reuseIdx = (curTab.path === null && !curTab.dirty && _tabs.length > 0)
+    ? _activeTabIdx : -1;
+
+  // Guard against race conditions: if user clicks quickly, only the latest wins
+  const seq = ++_fetchSeq;
 
   _view = 'editor';
+  _selected = artifact;   // optimistically set for sidebar highlight
   renderLibrary();
   const main = $('ss-main');
   if (main) main.innerHTML = '<div class="ss-loading">Loading...</div>';
   try {
     const id = encodeId(artifact.id);
     const data = await fetchSkillsArtifact(id);
+    // Stale fetch — user already clicked something else
+    if (seq !== _fetchSeq) return;
+
     _selected = artifact;
     _selectedContent = data;
 
-    // Create a new tab for this artifact's main file
-    _tabs.push({
+    const tabObj = {
       id: `main:${artifact.id}`, artifactId: artifact.id,
       artifact: artifact, artifactContent: data,
       label: artifact.name, path: null,
       content: data.rawContent || '', originalContent: data.rawContent || '', dirty: false,
-    });
-    _activeTabIdx = _tabs.length - 1;
+    };
+
+    if (reuseIdx >= 0 && reuseIdx < _tabs.length) {
+      // Replace the clean main tab in-place
+      _tabs[reuseIdx] = tabObj;
+      _activeTabIdx = reuseIdx;
+    } else {
+      _tabs.push(tabObj);
+      _activeTabIdx = _tabs.length - 1;
+    }
     _previewMode = false;
     renderEditor();
+    renderLibrary();
   } catch (err) {
+    if (seq !== _fetchSeq) return;
     console.error('Failed to load artifact', err);
     toast('Failed to load artifact', 'error');
     // If we have other tabs, stay on them
@@ -500,6 +542,7 @@ async function switchToEditor(artifact) {
       _selected = tab.artifact;
       _selectedContent = tab.artifactContent;
       renderEditor();
+      renderLibrary();
     } else {
       switchToLibrary();
     }
@@ -932,7 +975,12 @@ function wireEditor() {
     if (!confirm(`Discard changes to "${tab.label}"?`)) return;
     tab.content = tab.originalContent;
     tab.dirty = false;
-    loadActiveTabContent();
+    if (tab.path === null) {
+      // Main tab — re-render editor to reset metadata form fields too
+      renderEditor();
+    } else {
+      loadActiveTabContent();
+    }
     renderTabBar();
     updateDirtyState();
   });
@@ -1301,6 +1349,118 @@ function wireToolsDropdown() {
   // Clean up when panel is destroyed (captured via MutationObserver is overkill — just leave it)
 }
 
+// ── Metadata ↔ Frontmatter helpers ──
+
+/** Collect all metadata form values into an object matching frontmatter keys */
+function collectMetadataFromForm() {
+  if (!_selected) return null;
+  const meta = {};
+  const type = _selected.type; // skill | command | agent
+
+  // Name (skill + agent)
+  const nameEl = $('ss-f-name');
+  if (nameEl) meta.name = nameEl.value.trim();
+
+  // Description (all types)
+  const descEl = $('ss-f-desc');
+  if (descEl) meta.description = descEl.value.trim();
+
+  if (type === 'skill') {
+    // Argument hint
+    const argEl = $('ss-f-arghint');
+    if (argEl && argEl.value.trim()) meta['argument-hint'] = argEl.value.trim();
+
+    // Allowed tools — read from chip list DOM
+    const toolsList = $('ss-tools-list');
+    if (toolsList) {
+      const tools = [...toolsList.querySelectorAll('.ss-chip')].map(chip => {
+        const xBtn = chip.querySelector('.ss-chip-x');
+        return xBtn ? xBtn.dataset.tool : chip.textContent.replace('\u00d7', '').trim();
+      }).filter(Boolean);
+      if (tools.length > 0) meta['allowed-tools'] = tools;
+    }
+
+    // Options checkboxes
+    const uiEl = $('ss-f-user-invocable');
+    if (uiEl) meta['user-invocable'] = uiEl.checked;
+    const dmEl = $('ss-f-disable-model');
+    if (dmEl && dmEl.checked) meta['disable-model-invocation'] = true;
+  }
+
+  if (type === 'agent') {
+    // Model
+    const modelEl = $('ss-f-model');
+    if (modelEl && modelEl.value) meta.model = modelEl.value;
+    // Tools (comma-separated string)
+    const toolsEl = $('ss-f-agent-tools');
+    if (toolsEl && toolsEl.value.trim()) meta.tools = toolsEl.value.trim();
+    // Max turns
+    const maxEl = $('ss-f-max-turns');
+    if (maxEl && maxEl.value) meta.maxTurns = parseInt(maxEl.value, 10) || 0;
+    // Color
+    const colorEl = $('ss-f-color');
+    if (colorEl && colorEl.value.trim()) meta.color = colorEl.value.trim();
+  }
+
+  return meta;
+}
+
+/** Serialize a metadata object to a YAML frontmatter string (with ---) */
+function buildFrontmatterYaml(meta) {
+  if (!meta || Object.keys(meta).length === 0) return '';
+  const lines = ['---'];
+  for (const [key, val] of Object.entries(meta)) {
+    if (val === undefined || val === null || val === '') continue;
+    if (Array.isArray(val)) {
+      // YAML list
+      if (val.length === 0) continue;
+      lines.push(`${key}:`);
+      for (const item of val) lines.push(`  - ${item}`);
+    } else if (typeof val === 'boolean') {
+      lines.push(`${key}: ${val}`);
+    } else if (typeof val === 'number') {
+      lines.push(`${key}: ${val}`);
+    } else if (typeof val === 'string' && (val.includes('\n') || (key === 'description' && val.length > 80))) {
+      // Multi-line or long description → block scalar
+      lines.push(`${key}: >`);
+      // Wrap long single-line text into ~78-char lines for readability
+      const raw = val.replace(/\r\n/g, '\n');
+      if (!raw.includes('\n')) {
+        const words = raw.split(' ');
+        let line = '';
+        for (const w of words) {
+          if (line && (line.length + 1 + w.length) > 78) {
+            lines.push(`  ${line}`);
+            line = w;
+          } else {
+            line = line ? line + ' ' + w : w;
+          }
+        }
+        if (line) lines.push(`  ${line}`);
+      } else {
+        for (const l of raw.split('\n')) lines.push(`  ${l}`);
+      }
+    } else if (typeof val === 'string' && (val.includes(':') || val.includes('#') || val.includes('"'))) {
+      // Strings with special chars → quoted
+      lines.push(`${key}: "${val.replace(/"/g, '\\"')}"`);
+    } else {
+      lines.push(`${key}: ${val}`);
+    }
+  }
+  lines.push('---');
+  return lines.join('\n');
+}
+
+/** Replace or insert frontmatter in raw content using collected form metadata */
+function mergeMetadataIntoContent(rawContent, meta) {
+  if (!meta) return rawContent;
+  const yaml = buildFrontmatterYaml(meta);
+  if (!yaml) return rawContent;
+  // Strip existing frontmatter from body
+  const body = rawContent.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
+  return yaml + '\n' + body;
+}
+
 function setDirty() {
   // Delegate to tab-based dirty tracking
   storeActiveTabContent();
@@ -1312,6 +1472,7 @@ async function saveCurrentArtifact() {
   if (!tab.artifact || !tab.artifactContent) return;
 
   storeActiveTabContent();
+  captureMetadataIntoContent();
   const id = encodeId(tab.artifactId);
 
   try {
@@ -1319,6 +1480,17 @@ async function saveCurrentArtifact() {
       await saveSkillsArtifact(id, tab.content);
       tab.originalContent = tab.content;
       tab.dirty = false;
+      // Sync the textarea with the merged content (metadata may have changed it)
+      const editor = $('ss-content-editor');
+      if (editor) editor.value = tab.content;
+      // Refresh tab.artifactContent so re-renders show correct metadata
+      try {
+        const freshData = await fetchSkillsArtifact(id);
+        tab.artifactContent = freshData;
+        _selectedContent = freshData;
+        // Also update the artifact reference from the library if available
+        _tabs.forEach(t => { if (t.artifactId === tab.artifactId) t.artifactContent = freshData; });
+      } catch { /* non-critical — stale artifactContent is cosmetic only */ }
       toast('Saved', 'info');
       await loadLibrary();
     } else {

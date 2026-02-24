@@ -17,10 +17,11 @@ related_files:
 - `.env`: Environment variables (gitignored — contains API keys)
 - `.env.example`: Template with placeholder values
 - `connections.json`: Multi-Qdrant connection registry (gitignored — contains API keys)
-- `LICENSE`: Apache License 2.0 (trademark protection via Section 6)
+- `LICENSE`: Apache License 2.0
+- `LICENSE-COMMERCIAL.md`: Commercial licensing (Open Core model)
 - `README.md`: Main documentation (~680 lines)
 - `CLAUDE.md`: AI assistant instructions template (gitignored — customized per install)
-- `CONTRIBUTING.md`: Developer guide
+- `CONTRIBUTING.md`: Bug reports, feature requests, and forking guide (no PRs accepted)
 - `CHANGELOG.md`: Version history
 - `SECURITY.md`: Security policy
 

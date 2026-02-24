@@ -1,7 +1,13 @@
 {
   "name": "synabun",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "description": "Persistent vector memory for AI assistants",
+  "license": "Apache-2.0",
+  "author": "The SynaBun Authors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZaphreBR/synabun.git"
+  },
   "type": "module",
   "scripts": {
     "start": "node setup.js",

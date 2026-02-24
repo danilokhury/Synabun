@@ -78,6 +78,7 @@ let _panelPinned = false;   // whether the main panel is pinned (prevent close/h
 let _detached = false;
 let _floatDrag = null; // { startX, startY, startL, startT }
 let _detachedTabs = new Map(); // sessionId → { el, drag, resize }
+let _floatZCounter = 10000;    // z-index counter for floating tab focus-to-front
 let _peekDock = null;          // bottom peek dock element (shown when panel hidden)
 
 const DEFAULT_HEIGHT = 320;
@@ -334,10 +335,7 @@ function ensurePanel() {
       const session = _sessions[idx];
       // If tab is detached, focus its floating window instead
       if (session && _detachedTabs.has(session.id)) {
-        const tabState = _detachedTabs.get(session.id);
-        tabState.el.style.zIndex = '10001';
-        // Reset others
-        _detachedTabs.forEach((ts, sid) => { if (sid !== session.id) ts.el.style.zIndex = ''; });
+        bringTabToFront(session.id);
         session.term.focus();
         return;
       }
@@ -466,6 +464,17 @@ function toggleSearchBar(show) {
   _searchBarVisible = show;
   bar.classList.toggle('open', show);
 
+  // Refit terminal after search bar changes the available height.
+  // Double rAF ensures the browser has completed flex layout recalculation
+  // before xterm measures its container for the new row count.
+  const session = _sessions[_activeIdx];
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (session?.fitAddon) {
+      try { session.fitAddon.fit(); } catch {}
+    }
+    if (session?.term) session.term.scrollToBottom();
+  }));
+
   if (show) {
     const input = $('term-search-input');
     if (input) {
@@ -474,7 +483,6 @@ function toggleSearchBar(show) {
     }
   } else {
     // Clear highlights and refocus terminal
-    const session = _sessions[_activeIdx];
     if (session?.searchAddon) session.searchAddon.clearDecorations();
     if (session?.term) session.term.focus();
   }
@@ -854,6 +862,15 @@ async function openSession(profile, cwd) {
 
   // ── Keyboard shortcuts (after ws is declared) ──
   term.attachCustomKeyEventHandler((e) => {
+    // Ctrl+C → copy if text selected, otherwise pass through as SIGINT
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      const sel = term.getSelection();
+      if (sel) {
+        if (e.type === 'keydown') navigator.clipboard.writeText(sel).catch(() => {});
+        return false; // block — copied text
+      }
+      return true; // no selection — let xterm send \x03 (SIGINT)
+    }
     // Ctrl+Shift+C → copy selection (block all event types)
     if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
       if (e.type === 'keydown') {
@@ -1045,6 +1062,15 @@ async function reconnectSession(sessionId, profile, options = {}) {
   const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
 
   term.attachCustomKeyEventHandler((e) => {
+    // Ctrl+C → copy if text selected, otherwise pass through as SIGINT
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      const sel = term.getSelection();
+      if (sel) {
+        if (e.type === 'keydown') navigator.clipboard.writeText(sel).catch(() => {});
+        return false;
+      }
+      return true;
+    }
     if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
       if (e.type === 'keydown') {
         const sel = term.getSelection();
@@ -1493,6 +1519,16 @@ function formatMemoryForCLI(node) {
 
 // ── Per-tab detach (floating tab windows) ──
 
+function bringTabToFront(sessionId) {
+  const tabState = _detachedTabs.get(sessionId);
+  if (!tabState) return;
+  const session = _sessions.find(s => s.id === sessionId);
+  // Pinned tabs stay at 10002
+  if (session?.pinned) return;
+  _floatZCounter++;
+  tabState.el.style.zIndex = _floatZCounter;
+}
+
 function detachTab(idx) {
   const session = _sessions[idx];
   if (!session || _detachedTabs.has(session.id)) return;
@@ -1604,6 +1640,9 @@ function detachTab(idx) {
   // Store in map
   const tabState = { el: win };
   _detachedTabs.set(session.id, tabState);
+
+  // Click anywhere on floating window → bring to front
+  win.addEventListener('mousedown', () => bringTabToFront(session.id));
 
   // Header drag
   initTabFloatDrag(win, session.id);

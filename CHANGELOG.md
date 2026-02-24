@@ -4,6 +4,24 @@ All notable changes to SynaBun will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-02-24
+
+### Changed
+
+**Contributions**
+- Pull requests are no longer accepted — the repository is maintained solely by the SynaBun authors
+- `CONTRIBUTING.md` rewritten to reflect issues-only contribution model while retaining development setup documentation for forkers
+- Added `.github/PULL_REQUEST_TEMPLATE.md` explaining the no-PR policy
+- Added `.github/ISSUE_TEMPLATE/bug_report.md` and `.github/ISSUE_TEMPLATE/feature_request.md` for structured issue reporting
+
+**Licensing**
+- Added `LICENSE-COMMERCIAL.md` documenting the Open Core model — Apache 2.0 core with premium features available under commercial license
+- Added `license`, `repository`, and `author` fields to root `package.json`
+- Updated README License and Trademark Notice sections
+- Bumped version to 1.3.0
+
+---
+
 ## [1.2.0] - 2026-02-23
 
 ### Added

@@ -1465,7 +1465,7 @@ export async function openSettingsModal() {
             </p>
             <div class="settings-field" style="margin-bottom:14px">
               <label style="font-size:11px">Restore mode</label>
-              <select id="sys-restore-mode" style="font-size:12px;padding:4px 8px;background:var(--s-dark);border:1px solid var(--s-medium);color:var(--t-primary);border-radius:4px">
+              <select id="sys-restore-mode" class="modal-select" style="margin-bottom:0">
                 <option value="full">Full (config + snapshots)</option>
                 <option value="config-only">Config files only</option>
                 <option value="snapshots-only">Qdrant snapshots only</option>
@@ -1501,25 +1501,105 @@ export async function openSettingsModal() {
           confirmBtn.disabled = true;
           progressEl.style.display = 'flex';
           progressDot.className = 'wiz-status-dot spin';
-          progressText.textContent = 'Applying backup...';
+
+          const hasSnapshots = Object.keys(m.connections || {}).length > 0;
+          const needsSnapshots = (mode === 'full' || mode === 'snapshots-only') && hasSnapshots;
 
           try {
-            const restoreRes = await fetch(`/api/system/restore?mode=${encodeURIComponent(mode)}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/zip' },
-              body: buffer,
-            });
-            if (!restoreRes.ok) {
-              let errMsg = 'Restore failed';
-              try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
-              throw new Error(errMsg);
+            let restoredFileCount = 0;
+            let snapCount = 0;
+            let errCount = 0;
+
+            if (mode === 'full' && needsSnapshots) {
+              // Phase 1: Restore config files first
+              progressText.textContent = 'Restoring config files...';
+              const configRes = await fetch('/api/system/restore?mode=config-only', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/zip' },
+                body: buffer,
+              });
+              if (!configRes.ok) {
+                let errMsg = 'Config restore failed';
+                try { const body = await configRes.json(); errMsg = body.error || errMsg; } catch {}
+                throw new Error(errMsg);
+              }
+              const configResult = await configRes.json();
+              restoredFileCount = configResult.results?.files?.length || 0;
+
+              // Phase 2: Ensure Qdrant is running
+              progressText.textContent = 'Starting Qdrant...';
+              const healthRes = await fetch('/api/health/start', { method: 'POST' });
+              const healthData = await healthRes.json();
+              if (!healthData.ok) {
+                throw new Error('Failed to start Qdrant: ' + (healthData.error || 'unknown'));
+              }
+              if (!healthData.ready) {
+                throw new Error('Qdrant started but is not responding. Try again.');
+              }
+
+              // Phase 3: Restore snapshots
+              progressText.textContent = 'Restoring memory snapshots...';
+              const snapRes = await fetch('/api/system/restore?mode=snapshots-only', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/zip' },
+                body: buffer,
+              });
+              if (!snapRes.ok) {
+                let errMsg = 'Snapshot restore failed';
+                try { const body = await snapRes.json(); errMsg = body.error || errMsg; } catch {}
+                throw new Error(errMsg);
+              }
+              const snapResult = await snapRes.json();
+              snapCount = snapResult.results?.snapshots?.length || 0;
+              errCount = snapResult.results?.errors?.length || 0;
+
+            } else if (mode === 'snapshots-only' && needsSnapshots) {
+              // Ensure Qdrant is running before snapshot restore
+              progressText.textContent = 'Starting Qdrant...';
+              const healthRes = await fetch('/api/health/start', { method: 'POST' });
+              const healthData = await healthRes.json();
+              if (!healthData.ok) {
+                throw new Error('Failed to start Qdrant: ' + (healthData.error || 'unknown'));
+              }
+              if (!healthData.ready) {
+                throw new Error('Qdrant started but is not responding. Try again.');
+              }
+
+              progressText.textContent = 'Restoring memory snapshots...';
+              const restoreRes = await fetch('/api/system/restore?mode=snapshots-only', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/zip' },
+                body: buffer,
+              });
+              if (!restoreRes.ok) {
+                let errMsg = 'Restore failed';
+                try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
+                throw new Error(errMsg);
+              }
+              const result = await restoreRes.json();
+              snapCount = result.results?.snapshots?.length || 0;
+              errCount = result.results?.errors?.length || 0;
+
+            } else {
+              // Config-only or no snapshots — single call is fine
+              progressText.textContent = 'Applying backup...';
+              const restoreRes = await fetch(`/api/system/restore?mode=${encodeURIComponent(mode)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/zip' },
+                body: buffer,
+              });
+              if (!restoreRes.ok) {
+                let errMsg = 'Restore failed';
+                try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
+                throw new Error(errMsg);
+              }
+              const result = await restoreRes.json();
+              restoredFileCount = result.results?.files?.length || 0;
+              snapCount = result.results?.snapshots?.length || 0;
+              errCount = result.results?.errors?.length || 0;
             }
-            const result = await restoreRes.json();
 
             progressDot.className = 'wiz-status-dot green';
-            const snapCount = result.results?.snapshots?.length || 0;
-            const restoredFileCount = result.results?.files?.length || 0;
-            const errCount = result.results?.errors?.length || 0;
             progressText.textContent = `Done! ${restoredFileCount} files, ${snapCount} snapshots restored.`
               + (errCount ? ` ${errCount} errors.` : '');
             confirmBtn.textContent = 'Done';

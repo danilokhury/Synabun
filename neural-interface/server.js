@@ -2488,6 +2488,27 @@ app.get('/api/system/backup', async (req, res) => {
       }
     };
 
+    // Helper: recursively add an entire directory tree
+    const addDirRecursive = (archiveDir, diskDir) => {
+      if (!existsSync(diskDir)) return;
+      for (const entry of readdirSync(diskDir, { withFileTypes: true })) {
+        const diskPath = join(diskDir, entry.name);
+        const archivePath = `${archiveDir}/${entry.name}`;
+        if (entry.isDirectory() || entry.isSymbolicLink()) {
+          try {
+            const stat = statSync(diskPath);
+            if (stat.isDirectory()) {
+              addDirRecursive(archivePath, diskPath);
+              continue;
+            }
+          } catch { continue; }
+        }
+        if (entry.isFile()) {
+          addFile(archivePath, diskPath);
+        }
+      }
+    };
+
     // 1. .env
     addFile('env.bak', ENV_PATH);
 
@@ -2509,7 +2530,35 @@ app.get('/api/system/backup', async (req, res) => {
       }
     }
 
-    // 4. Qdrant snapshots — one per reachable connection
+    // 4. Global skills (~/.claude/skills/) — full directory tree per skill
+    const globalSkillsDir = getGlobalSkillsDir();
+    if (existsSync(globalSkillsDir)) {
+      for (const entry of readdirSync(globalSkillsDir, { withFileTypes: true })) {
+        if (!isDirEntry(entry)) continue;
+        const skillDir = join(globalSkillsDir, entry.name);
+        addDirRecursive(`global-skills/${entry.name}`, skillDir);
+      }
+    }
+
+    // 5. Global agents (~/.claude/agents/) — flat .md files
+    const globalAgentsDir = getGlobalAgentsDir();
+    if (existsSync(globalAgentsDir)) {
+      for (const entry of readdirSync(globalAgentsDir, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        addFile(`global-agents/${entry.name}`, join(globalAgentsDir, entry.name));
+      }
+    }
+
+    // 6. Bundled SynaBun skills (PROJECT_ROOT/skills/) — full directory tree
+    if (existsSync(SKILLS_SOURCE_DIR)) {
+      for (const entry of readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true })) {
+        if (!isDirEntry(entry)) continue;
+        const skillDir = join(SKILLS_SOURCE_DIR, entry.name);
+        addDirRecursive(`bundled-skills/${entry.name}`, skillDir);
+      }
+    }
+
+    // 7. Qdrant snapshots — one per reachable connection
     const connData = loadQdrantConnections();
     for (const [id, conn] of Object.entries(connData.connections)) {
       try {
@@ -2572,7 +2621,7 @@ app.get('/api/system/backup', async (req, res) => {
       }
     }
 
-    // 5. Write manifest last (references all files)
+    // 8. Write manifest last (references all files)
     archive.append(JSON.stringify(manifest, null, 2), { name: `${prefix}/manifest.json` });
 
     await archive.finalize();
@@ -2666,12 +2715,45 @@ app.post('/api/system/restore',
           writeFileSync(resolve(CATEGORIES_DATA_DIR, filename), entry.getData());
           results.files.push(rel);
         }
+
+        // Global skills → ~/.claude/skills/
+        if (rel.startsWith('global-skills/') && rel !== 'global-skills/') {
+          const subPath = rel.replace('global-skills/', '');
+          const target = join(getGlobalSkillsDir(), subPath);
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, entry.getData());
+          results.files.push(rel);
+        }
+
+        // Global agents → ~/.claude/agents/
+        if (rel.startsWith('global-agents/') && rel !== 'global-agents/') {
+          const subPath = rel.replace('global-agents/', '');
+          const target = join(getGlobalAgentsDir(), subPath);
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, entry.getData());
+          results.files.push(rel);
+        }
+
+        // Bundled SynaBun skills → PROJECT_ROOT/skills/
+        if (rel.startsWith('bundled-skills/') && rel !== 'bundled-skills/') {
+          const subPath = rel.replace('bundled-skills/', '');
+          const target = resolve(SKILLS_SOURCE_DIR, subPath);
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, entry.getData());
+          results.files.push(rel);
+        }
       }
+    }
+
+    // Reload server config after config files are restored (so globals like QDRANT_URL are fresh)
+    if (mode === 'full' || mode === 'config-only') {
+      reloadConfig();
     }
 
     // Restore Qdrant snapshots
     if (mode === 'full' || mode === 'snapshots-only') {
       // Reload connections (may have changed from .env restore above)
+      reloadConfig();
       const connData = loadQdrantConnections();
 
       for (const [connId, snapInfo] of Object.entries(manifest.connections || {})) {

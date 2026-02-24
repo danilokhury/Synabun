@@ -1,6 +1,6 @@
 ---
 category: development
-tags: [contributing, code-style, testing, pull-requests, es-modules, typescript]
+tags: [contributing, code-style, testing, es-modules, typescript]
 importance: 7
 project: synabun
 source: self-discovered
@@ -46,10 +46,10 @@ related_files:
 | Setup wizard | `neural-interface/public/onboarding.html` |
 | Claude Code hooks | `hooks/claude-code/` |
 
-## PR Requirements
+## Contributions
 
-Describe the change, update relevant docs (README MCP tools table, `docs/api-reference.md` for new endpoints, `.env.example` for new env vars, `docs/hooks.md` for hook changes). Test manually before submitting.
+Pull requests are not accepted. Bug reports and feature requests are welcome via GitHub Issues. Users are free to fork and modify under Apache 2.0, but must use a different name for their fork.
 
 ## Trademark
 
-"SynaBun" is trademarked — forks must use a different name. Apache 2.0 Section 6 protects the brand.
+"SynaBun" is trademarked — forks must use a different name. The license does not grant trademark rights.

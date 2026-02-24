@@ -445,9 +445,15 @@ export function updateCameraMovement() {
  * Returns a cleanup function that removes all listeners.
  */
 function bindKeyListeners() {
+  function isEditing() {
+    const el = document.activeElement;
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+  }
+
   function onKeyDown(e) {
-    const inInput = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
-    if (inInput) return;
+    if (isEditing()) return;
 
     const k = e.key.toLowerCase();
     if (k === 'w' || k === 'a' || k === 's' || k === 'd' || k === 'q' || k === 'e') {
@@ -459,6 +465,7 @@ function bindKeyListeners() {
   }
 
   function onKeyUp(e) {
+    if (isEditing()) return;
     const k = e.key.toLowerCase();
     if (k === 'w' || k === 'a' || k === 's' || k === 'd' || k === 'q' || k === 'e') {
       _camKeys[k] = false;
