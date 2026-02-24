@@ -1,0 +1,19 @@
+{
+  "name": "synabun",
+  "version": "2026.02.24",
+  "description": "Persistent vector memory for AI assistants",
+  "license": "Apache-2.0",
+  "author": "The SynaBun Authors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danilokhury/Synabun.git"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node setup.js",
+    "stop": "docker compose down"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

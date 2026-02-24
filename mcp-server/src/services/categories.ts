@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { config } from '../config.js';
+import { config, getActiveConnectionId } from '../config.js';
+import { getCategoriesFromQdrant, saveCategoriesToQdrant } from './qdrant.js';
 
 interface CustomCategory {
   name: string;
@@ -19,6 +20,9 @@ interface CustomCategoriesFile {
 const NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
 const MIN_LENGTH = 2;
 const MAX_LENGTH = 30;
+
+// Callback to notify when categories change externally
+let onExternalChangeCallback: (() => void) | null = null;
 
 // Rich color palette for category visualization (36 distinct colors)
 const COLOR_PALETTE = [
@@ -72,13 +76,66 @@ const COLOR_PALETTE = [
 ];
 
 let cachedCategories: CustomCategory[] | null = null;
+let fileWatcher: fs.FSWatcher | null = null;
+let watchedFilePath: string | null = null;
 
 export function invalidateCategoryCache(): void {
   cachedCategories = null;
 }
 
+export function setOnExternalChange(callback: () => void): void {
+  onExternalChangeCallback = callback;
+}
+
+/**
+ * Start watching the per-connection categories cache file.
+ * Re-entrant: if the active connection changed, stops the old watcher and starts a new one.
+ */
+export function startWatchingCategories(): void {
+  const filePath = getCategoriesPath();
+
+  // If already watching the correct file, do nothing
+  if (fileWatcher && watchedFilePath === filePath) return;
+
+  // Stop old watcher if switching files
+  stopWatchingCategories();
+
+  // Ensure the per-connection cache file exists — start empty (Qdrant is source of truth)
+  if (!fs.existsSync(filePath)) {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    saveCategoriesToDisk([]);
+  }
+
+  fileWatcher = fs.watch(filePath, (eventType) => {
+    if (eventType === 'change') {
+      // Invalidate cache and notify
+      invalidateCategoryCache();
+      if (onExternalChangeCallback) {
+        onExternalChangeCallback();
+      }
+    }
+  });
+  watchedFilePath = filePath;
+}
+
+export function stopWatchingCategories(): void {
+  if (fileWatcher) {
+    fileWatcher.close();
+    fileWatcher = null;
+  }
+  watchedFilePath = null;
+}
+
+/**
+ * Returns the per-connection categories cache file path.
+ * Format: custom-categories-{connectionId}.json
+ */
 function getCategoriesPath(): string {
-  return path.join(config.dataDir, 'custom-categories.json');
+  const connectionId = getActiveConnectionId();
+  return path.join(config.dataDir, `custom-categories-${connectionId}.json`);
 }
 
 function loadCategoriesFromDisk(): CustomCategory[] {
@@ -103,6 +160,56 @@ function saveCategoriesToDisk(categories: CustomCategory[]): void {
   }
   const data: CustomCategoriesFile = { version: 1, categories };
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+
+  // Fire-and-forget write-through to Qdrant (source of truth)
+  saveCategoriesToQdrant(categories).catch((err) => {
+    console.error('Failed to sync categories to Qdrant:', err instanceof Error ? err.message : err);
+  });
+}
+
+/**
+ * Initialize the local category cache for the active connection.
+ * If the per-connection cache file doesn't exist, tries to load from Qdrant first,
+ * then falls back to the old global file, then starts empty.
+ */
+export async function initCategoryCache(): Promise<void> {
+  const filePath = getCategoriesPath();
+
+  if (fs.existsSync(filePath)) {
+    // Cache file exists, just load it
+    invalidateCategoryCache();
+    return;
+  }
+
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  // Try loading from Qdrant (source of truth)
+  const qdrantCategories = await getCategoriesFromQdrant();
+  if (qdrantCategories) {
+    const data: CustomCategoriesFile = { version: 1, categories: qdrantCategories };
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    invalidateCategoryCache();
+    return;
+  }
+
+  // Qdrant empty — start with empty categories for this collection
+  const data: CustomCategoriesFile = { version: 1, categories: [] };
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+
+  invalidateCategoryCache();
+}
+
+/**
+ * Call after a connection switch to re-point the file watcher
+ * at the new connection's category file and sync from Qdrant if needed.
+ */
+export async function switchCategoryConnection(): Promise<void> {
+  invalidateCategoryCache();
+  await initCategoryCache();
+  startWatchingCategories(); // Will detect different path and re-watch
 }
 
 export function getCategories(): CustomCategory[] {

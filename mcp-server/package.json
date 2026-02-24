@@ -6,7 +6,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:http": "node dist/preload-http.js",
     "dev": "tsx src/index.ts",
+    "dev:http": "tsx src/preload-http.ts",
     "tui": "node dist/tui.js",
     "tui:dev": "tsx src/tui.ts"
   },
@@ -15,11 +17,13 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@qdrant/js-client-rest": "^1.13.0",
     "chalk": "^5.6.2",
+    "express": "^4.21.0",
     "openai": "^4.77.0",
     "uuid": "^11.1.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/node": "^22.12.0",
     "@types/uuid": "^10.0.0",
     "tsx": "^4.19.0",
