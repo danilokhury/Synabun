@@ -4,6 +4,86 @@ All notable changes to SynaBun will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-02-24
+
+### Added
+
+**Embedded Browser (Playwright CDP)**
+- Browser tab in the terminal panel — powered by `playwright-core`, renders live via CDP screencast frames on canvas
+- Stealth fingerprint cloning — auto-captures User-Agent, Accept-Language, Client Hints, screen dimensions, device pixel ratio, and timezone from the real browser and applies them to the headless Chromium instance
+- CDP stealth injections — `navigator.webdriver=false`, fake plugins array, patched Permissions API, `chrome.runtime` stub, Playwright marker cleanup
+- Claude Code bridge — `GET /api/browser/sessions/:id/claude-connect` returns ready-to-use MCP config with `--cdp-url` for Playwright MCP to control the same browser instance
+- Navigation controls — address bar with back/forward/reload buttons, URL input, mouse and keyboard event forwarding from canvas to browser
+- Browser session reconnection — sessions survive page refresh with 5-minute grace period
+- Browser REST API — `POST/GET/DELETE /api/browser/sessions`, navigation endpoints, screenshot, CDP WebSocket endpoint
+- WebSocket screencast — `/ws/browser/:id` for real-time JPEG frame streaming and input forwarding
+
+**Granular Browser Configuration (Settings > Setup > Browser)**
+- 11 collapsible sub-sections exposing every Playwright context option:
+  - Executable — Chrome/Chromium path (auto-detect), headless mode, channel selector, slowMo, timeout, navigation timeout, extra Chromium launch flags
+  - Viewport & Display — viewport/screen width+height, deviceScaleFactor, isMobile, hasTouch
+  - Identity & Headers — userAgent, Accept-Language, locale, timezoneId, extra HTTP headers (JSON), stealth fingerprint toggle
+  - Geolocation — enable toggle with latitude, longitude, accuracy
+  - Permissions — 15 permission checkboxes (geolocation, camera, microphone, clipboard, MIDI, sensors, notifications, etc.)
+  - Network & Proxy — offline mode, proxy server/bypass/auth, HTTP credentials
+  - Appearance — colorScheme, reducedMotion, forcedColors
+  - Scripting & Security — JavaScript enabled, ignore HTTPS errors, bypass CSP, accept downloads, strict selectors, service workers
+  - Storage & Cookies — persist toggle, storage file path, clear on startup
+  - Recording — video (directory, resolution), HAR (path, content policy, mode, URL filter)
+  - Screencast — format (JPEG/PNG), quality slider, max resolution, frame skip
+- Save/Reset buttons with config persistence to `data/browser-config.json`
+- All saved options applied to `chromium.launch()` and `browser.newContext()` on session creation
+
+**Cookie & Storage State Persistence**
+- Optional save/restore of cookies, localStorage, and sessionStorage between browser sessions
+- `context.storageState()` called on session close when persistence is enabled
+- Storage state restored from file on new session creation
+- Configurable via Settings > Setup > Browser > Storage & Cookies
+
+**CLI Terminal**
+- Detachable floating terminal — individual tabs can be detached into free-floating, draggable, resizable windows
+- Per-tab floating window controls — pin (always-on-top), dock-back, close
+- Pin button on main panel header — prevents accidental close
+- Peek dock — thin 28px bar at bottom shows miniature session pills when terminal panel is hidden
+- 4 xterm addons — SearchAddon, WebglAddon, CanvasAddon, Unicode11Addon (from esm.sh CDN with graceful fallback)
+- GPU rendering — WebGL renderer with Canvas fallback, automatic context loss recovery
+- Keyboard shortcuts — Ctrl+Shift+C copy, Ctrl+V paste, Ctrl+F search, Ctrl+Shift+F close search
+- Copy-on-select — auto-copy selection to clipboard
+- Image paste — paste images from clipboard into terminal (saved as temp file, path written to stdin)
+- Right-click context menu — Copy, Paste, Select All, Clear, Find
+- Inline search bar — Ctrl+F with prev/next navigation and match highlighting
+- CLI launch keybinds — `1`/`2`/`3` to launch Claude/Codex/Gemini (configurable in keybind editor)
+- Workspace terminal state — terminal panel position, sessions, and floating tab positions saved/restored per workspace
+
+**Settings**
+- Multi-provider Setup tab — dedicated collapsible sections for Claude, Gemini, and Codex with MCP toggles, config previews, CLI copy, and ruleset previews
+- Gemini MCP registration — `POST/DELETE /api/setup/gemini/mcp` writes `~/.gemini/settings.json`
+- Codex MCP registration — `POST/DELETE /api/setup/codex/mcp` writes `~/.codex/config.toml` via TOML helpers
+- GEMINI.md and AGENTS.md ruleset preview and copy alongside existing CLAUDE.md
+- Terminal tab — CLI executable path configuration with auto-detect for Claude, Codex, Gemini
+
+**UI / UX**
+- Settings modal extracted into `ui-settings.js` ES module (~2400 lines from monolithic index.html)
+- Connections tab redesign — 7 collapsible sections (Hooks, Features, Greeting, Setup, External Access, Bridges, Skills)
+- Memory Explorer docked sidebar — converted from floating overlay to viewport-splitting sidebar with resize handle
+- Skills Studio — full skill editor with tab system, custom dropdown, focus mode, welcome screen with SynaBun logo, type icons (SVG), filter pills, stats cards
+- 3D/2D view toggle pill in title bar with session handoff via sessionStorage
+- Brand color corrections — Claude=#D4A27F, Gemini=#669DF6, Codex=#74c7a5
+- Keybind editor restyled — dark background, keycap-style buttons, CLI brand icons
+
+### Fixed
+
+- Browser tab zoom/blur on minimize+restore — ResizeObserver now guards against sub-100px dimensions, `visibilitychange` listener re-sends correct size on restore, canvas buffer only resets when frame dimensions actually change
+- Flyout clipped by overflow:hidden — changed from `position: absolute` to `position: fixed` with dynamic positioning
+- Floating tab header invisible — increased background opacity and button contrast
+- Scrollbar hidden by canvas z-index — added `z-index: 10 !important` to `.xterm-viewport`
+- Pin button SVG invisible — added stroke alongside fill for open path segments
+- Terminal scroll lag — disabled xterm smooth scrolling (60ms → 0)
+- Floating tab resize corners too small — increased edge hit zone from 6px to 10px
+- Off-screen panel recovery — auto-recenter detached panels that were dragged beyond viewport bounds
+
+---
+
 ## [1.3.0] - 2026-02-24
 
 ### Changed

@@ -9,7 +9,7 @@
 import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
-import { createTerminalSession, deleteTerminalSession, fetchTerminalSessions } from './api.js';
+import { createTerminalSession, deleteTerminalSession, fetchTerminalSessions, fetchTerminalFiles, fetchTerminalBranches, checkoutTerminalBranch, createBrowserSession, deleteBrowserSession, fetchBrowserSessions } from './api.js';
 import { registerAction } from './ui-keybinds.js';
 
 const $ = (id) => document.getElementById(id);
@@ -21,12 +21,16 @@ const SVG_CLAUDE = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.709
 const SVG_OPENAI = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z"/></svg>';
 const SVG_GEMINI = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"/></svg>';
 const SVG_SHELL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>';
+const SVG_GIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>';
+
+const SVG_BROWSER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
 
 const PROFILES = [
-  { id: 'claude-code', label: 'Claude Code', svg: SVG_CLAUDE, color: '#D4A27F' },
-  { id: 'codex',       label: 'Codex CLI',   svg: SVG_OPENAI, color: '#74c7a5' },
-  { id: 'gemini',      label: 'Gemini CLI',  svg: SVG_GEMINI, color: '#669DF6' },
-  { id: 'shell',       label: 'Shell',       svg: SVG_SHELL,  color: '#aaaaaa' },
+  { id: 'claude-code', label: 'Claude Code', svg: SVG_CLAUDE,  color: '#D4A27F' },
+  { id: 'codex',       label: 'Codex CLI',   svg: SVG_OPENAI,  color: '#74c7a5' },
+  { id: 'gemini',      label: 'Gemini CLI',  svg: SVG_GEMINI,  color: '#669DF6' },
+  { id: 'shell',       label: 'Shell',       svg: SVG_SHELL,   color: '#aaaaaa' },
+  { id: 'browser',     label: 'Browser',     svg: SVG_BROWSER, color: '#4fc3f7' },
 ];
 
 // ── xterm.js theme (matches Neural Interface dark glassmorphism) ──
@@ -73,6 +77,7 @@ let _Unicode11Addon = null;
 
 let _searchBarVisible = false;
 let _contextMenu = null;
+let _ctxMenuHandler = null; // current context menu click handler (prevents stacking)
 let _cachedProjects = null; // [{ path, label }]
 let _panelPinned = false;   // whether the main panel is pinned (prevent close/hide)
 let _detached = false;
@@ -80,6 +85,9 @@ let _floatDrag = null; // { startX, startY, startL, startT }
 let _detachedTabs = new Map(); // sessionId → { el, drag, resize }
 let _floatZCounter = 10000;    // z-index counter for floating tab focus-to-front
 let _peekDock = null;          // bottom peek dock element (shown when panel hidden)
+let _closingIds = new Set();   // session IDs currently being closed (prevents re-entry)
+let _opening = false;          // true while openSession/openBrowserSession is in progress
+let _restoringLayout = false;  // true during reconnect+layout restore (suppresses layout saves)
 
 const DEFAULT_HEIGHT = 320;
 const MIN_HEIGHT = 120;
@@ -87,12 +95,14 @@ const MIN_HEIGHT = 120;
 // ── Session registry (persists across page refresh) ──
 
 function saveSessionRegistry() {
-  const registry = _sessions.map(s => ({
-    id: s.id,
-    profile: s.profile,
-    label: s.label,
-    pinned: s.pinned,
-  }));
+  const registry = _sessions
+    .filter(s => !s._gitOutput) // exclude local-only git output tab
+    .map(s => ({
+      id: s.id,
+      profile: s.profile,
+      label: s.label,
+      pinned: s.pinned,
+    }));
   storage.setItem(KEYS.TERMINAL_SESSIONS, JSON.stringify(registry));
 }
 
@@ -110,6 +120,7 @@ function clearSessionRegistry() {
 
 /** Persist current terminal layout for page-refresh restore */
 function saveTerminalLayout() {
+  if (_restoringLayout) return; // don't overwrite saved layout during reconnect
   try {
     const snap = getTerminalSnapshot();
     storage.setItem(KEYS.TERMINAL_SESSIONS + '-layout', JSON.stringify(snap));
@@ -168,6 +179,21 @@ function pickProject(profile) {
       list.appendChild(item);
     });
 
+    // Custom path option with inline text input
+    const customItem = document.createElement('div');
+    customItem.className = 'term-picker-item term-picker-custom';
+    customItem.innerHTML = `<span class="term-picker-item-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></span><input class="term-picker-custom-input" type="text" placeholder="Type a directory path..." spellcheck="false" />`;
+    const customInput = customItem.querySelector('input');
+    customInput.addEventListener('keydown', (ev) => {
+      ev.stopPropagation(); // don't let Escape close modal while typing
+      if (ev.key === 'Enter') {
+        const val = customInput.value.trim();
+        if (val) { overlay.remove(); resolve(val); }
+      }
+      if (ev.key === 'Escape') { customInput.value = ''; customInput.blur(); }
+    });
+    list.appendChild(customItem);
+
     modal.appendChild(title);
     modal.appendChild(list);
     overlay.appendChild(modal);
@@ -184,6 +210,10 @@ function pickProject(profile) {
 
 /** Open a CLI or shell session, showing project picker for CLI profiles */
 async function openSessionWithPicker(profile) {
+  if (profile === 'browser') {
+    openBrowserSession();
+    return;
+  }
   if (CLI_PROFILES.has(profile)) {
     const cwd = await pickProject(profile);
     if (cwd === undefined) return; // cancelled
@@ -249,6 +279,9 @@ function ensurePanel() {
     <div class="term-header">
       <div class="term-tab-bar" id="term-tab-bar"></div>
       <div class="term-actions">
+        <button class="term-action-btn" id="term-files-btn" data-tooltip="Toggle file tree">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        </button>
         <button class="term-action-btn" id="term-new-btn" data-tooltip="New terminal">
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
@@ -264,7 +297,10 @@ function ensurePanel() {
       <button class="term-search-nav" id="term-search-next" title="Next match">&#9660;</button>
       <button class="term-search-nav" id="term-search-close" title="Close">&times;</button>
     </div>
-    <div class="term-container" id="term-container"></div>
+    <div class="term-body-row">
+      <div class="term-file-sidebar" id="term-file-sidebar"></div>
+      <div class="term-container" id="term-container"></div>
+    </div>
     <div class="term-profile-flyout" id="term-profile-flyout"></div>
   `;
 
@@ -292,12 +328,15 @@ function ensurePanel() {
   // Wire resize handle (docked only — panel detach removed, only tabs float)
   initResizeHandle();
 
+  // Wire file tree toggle
+  $('term-files-btn').addEventListener('click', () => toggleDockedFileTree());
+
   // Wire close button
   $('term-close-btn').addEventListener('click', () => hidePanel());
 
-  // Wire new button — spawns a new shell session
+  // Wire new button — toggle profile picker flyout
   $('term-new-btn').addEventListener('click', () => {
-    openSession('shell');
+    toggleFlyout();
   });
 
   // Close flyout on outside click
@@ -336,7 +375,8 @@ function ensurePanel() {
       // If tab is detached, focus its floating window instead
       if (session && _detachedTabs.has(session.id)) {
         bringTabToFront(session.id);
-        session.term.focus();
+        if (session._isBrowser) session._browserCanvas?.focus();
+        else session.term?.focus();
         return;
       }
       switchToSession(idx);
@@ -396,7 +436,7 @@ function ensurePanel() {
     const session = _sessions[_activeIdx];
     if (!node || !session || session.dead || session.ws.readyState !== WebSocket.OPEN) return;
     sendMemoryDrop(node, session.ws);
-    session.term.focus();
+    session.term?.focus();
   });
 
   // Wire search bar
@@ -446,6 +486,15 @@ function toggleFlyout() {
   if (!flyout) return;
   _flyoutOpen = !_flyoutOpen;
   flyout.classList.toggle('open', _flyoutOpen);
+  // Position flyout above the "+" button (fixed positioning, avoids overflow clip)
+  if (_flyoutOpen) {
+    const btn = $('term-new-btn');
+    if (btn) {
+      const r = btn.getBoundingClientRect();
+      flyout.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+      flyout.style.right = (window.innerWidth - r.right) + 'px';
+    }
+  }
 }
 
 function closeFlyout() {
@@ -522,8 +571,8 @@ function hidePanel() {
   const toggle = $('menu-terminal-toggle');
   if (toggle) toggle.classList.remove('active');
 
-  // Show peek dock if sessions exist
-  if (_sessions.length > 0) showPeekDock();
+  // Always show peek dock when panel is hidden
+  showPeekDock();
 }
 
 function togglePanel() {
@@ -784,6 +833,9 @@ function initResizeHandle() {
 // ── Session lifecycle ──
 
 async function openSession(profile, cwd) {
+  if (_opening) return;
+  _opening = true;
+  try {
   await loadXterm();
   ensurePanel();
 
@@ -862,6 +914,13 @@ async function openSession(profile, cwd) {
 
   // ── Keyboard shortcuts (after ws is declared) ──
   term.attachCustomKeyEventHandler((e) => {
+    // Ctrl+Enter → insert newline (don't submit)
+    if (e.ctrlKey && e.key === 'Enter') {
+      if (e.type === 'keydown' && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', data: '\n' }));
+      }
+      return false;
+    }
     // Ctrl+C → copy if text selected, otherwise pass through as SIGINT
     if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       const sel = term.getSelection();
@@ -887,12 +946,16 @@ async function openSession(profile, cwd) {
     }
     // Ctrl+F → open search bar
     if (e.ctrlKey && !e.shiftKey && e.key === 'f' && e.type === 'keydown') {
-      toggleSearchBar(true);
+      const sess = _sessions.find(s => s.viewport === viewport);
+      if (sess && _detachedTabs.has(sess.id)) toggleFloatSearchBar(sess);
+      else toggleSearchBar(true);
       return false;
     }
     // Ctrl+Shift+F → close search bar
     if (e.ctrlKey && e.shiftKey && e.key === 'F' && e.type === 'keydown') {
-      toggleSearchBar(false);
+      const sess = _sessions.find(s => s.viewport === viewport);
+      if (sess && _detachedTabs.has(sess.id)) toggleFloatSearchBar(sess);
+      else toggleSearchBar(false);
       return false;
     }
     // Escape → blur terminal (give focus back to page)
@@ -980,6 +1043,7 @@ async function openSession(profile, cwd) {
   const session = {
     id: sessionId,
     profile,
+    cwd: cwd || null,
     label: cwdLabel ? `${profileDef?.label || profile} · ${cwdLabel}` : (profileDef?.label || profile),
     term, fitAddon, searchAddon, ws, viewport, ro,
     renderer,
@@ -989,10 +1053,413 @@ async function openSession(profile, cwd) {
   _sessions.push(session);
   _activeIdx = _sessions.length - 1;
 
-  showPanel();
+  // Start with panel collapsed — show peek dock so user can open when ready
+  ensurePanel();
+  if (_panel.classList.contains('hidden')) {
+    showPeekDock();
+  }
   renderTabBar();
   switchToSession(_activeIdx);
   saveSessionRegistry();
+  } finally { _opening = false; }
+}
+
+// ═══════════════════════════════════════════
+// BROWSER TAB — CDP screencast in a tab
+// ═══════════════════════════════════════════
+
+/**
+ * Open a browser tab. Creates a server-side Playwright browser session,
+ * connects via WebSocket for CDP screencast frames, and renders them
+ * onto a canvas with an address bar overlay.
+ */
+async function openBrowserSession(url) {
+  if (_opening) return;
+  _opening = true;
+  try {
+  ensurePanel();
+
+  const startUrl = url || 'https://www.google.com';
+  // Collect the real browser's fingerprint to clone into the headless instance
+  const fingerprint = {
+    screenWidth: window.screen.width,
+    screenHeight: window.screen.height,
+    deviceScaleFactor: window.devicePixelRatio || 1,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
+  const { sessionId } = await createBrowserSession(startUrl, null, null, fingerprint);
+
+  // Build browser viewport: address bar + canvas
+  const viewport = document.createElement('div');
+  viewport.className = 'term-viewport browser-viewport';
+  viewport.dataset.sessionId = sessionId;
+
+  const navbar = document.createElement('div');
+  navbar.className = 'browser-navbar';
+
+  navbar.innerHTML = `
+    <button class="browser-nav-btn browser-back-btn" data-tooltip="Back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <button class="browser-nav-btn browser-fwd-btn" data-tooltip="Forward">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+    <button class="browser-nav-btn browser-reload-btn" data-tooltip="Reload">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+    </button>
+    <div class="browser-url-bar">
+      <input type="text" class="browser-url-input" value="${startUrl.replace(/"/g, '&quot;')}" spellcheck="false" autocomplete="off">
+    </div>
+    <span class="browser-title-label"></span>
+  `;
+  viewport.appendChild(navbar);
+
+  const canvasWrap = document.createElement('div');
+  canvasWrap.className = 'browser-canvas-wrap';
+  const canvas = document.createElement('canvas');
+  canvas.className = 'browser-canvas';
+  canvas.width = 1280;
+  canvas.height = 800;
+  canvasWrap.appendChild(canvas);
+  viewport.appendChild(canvasWrap);
+
+  $('term-container').appendChild(viewport);
+
+  const ctx = canvas.getContext('2d');
+
+  // Connect WebSocket for screencast
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/browser/${sessionId}`);
+
+  const urlInput = navbar.querySelector('.browser-url-input');
+  const titleLabel = navbar.querySelector('.browser-title-label');
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'frame' && msg.data) {
+        // Render base64 JPEG frame onto canvas
+        const img = new Image();
+        img.onload = () => {
+          // Only resize canvas buffer when frame dimensions change (avoids clearing)
+          if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+          }
+          ctx.drawImage(img, 0, 0);
+        };
+        img.src = 'data:image/jpeg;base64,' + msg.data;
+      } else if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
+        if (msg.url) {
+          urlInput.value = msg.url;
+          // Update session metadata
+          const sess = _sessions.find(s => s.id === sessionId);
+          if (sess) sess._browserUrl = msg.url;
+        }
+        if (msg.title) {
+          titleLabel.textContent = msg.title;
+          const sess = _sessions.find(s => s.id === sessionId);
+          if (sess) {
+            sess._browserTitle = msg.title;
+            sess.label = msg.title.length > 30 ? msg.title.slice(0, 30) + '…' : msg.title;
+            renderTabBar();
+            // Update floating tab title if detached
+            const dt = _detachedTabs.get(sessionId);
+            if (dt) {
+              const titleEl = dt.el.querySelector('.term-float-tab-title');
+              if (titleEl) titleEl.textContent = sess.label;
+            }
+          }
+        }
+      } else if (msg.type === 'error') {
+        console.warn('Browser session error:', msg.message);
+      }
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    const sess = _sessions.find(s => s.id === sessionId);
+    if (sess && !sess.dead) {
+      // Browser sessions can't be recovered — auto-close instead of leaving dead tab
+      const idx = _sessions.indexOf(sess);
+      if (idx >= 0) closeSession(idx);
+    }
+  };
+
+  // ── Nav button handlers ──
+  navbar.querySelector('.browser-back-btn').addEventListener('click', () => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'back' }));
+  });
+  navbar.querySelector('.browser-fwd-btn').addEventListener('click', () => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'forward' }));
+  });
+  navbar.querySelector('.browser-reload-btn').addEventListener('click', () => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'reload' }));
+  });
+
+  // Navigate on Enter in URL bar
+  urlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      let navUrl = urlInput.value.trim();
+      if (navUrl && !navUrl.match(/^https?:\/\//)) navUrl = 'https://' + navUrl;
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'navigate', url: navUrl }));
+      }
+    }
+  });
+
+  // ── Forward mouse events from canvas to browser ──
+  function canvasCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+  }
+
+  canvas.addEventListener('click', (e) => {
+    const { x, y } = canvasCoords(e);
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'click', x, y }));
+  });
+  canvas.addEventListener('dblclick', (e) => {
+    const { x, y } = canvasCoords(e);
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'dblclick', x, y }));
+  });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY }));
+    }
+  }, { passive: false });
+
+  // Forward keyboard events when canvas is focused
+  canvas.tabIndex = 0;
+  canvas.addEventListener('keydown', (e) => {
+    e.preventDefault();
+    if (ws.readyState === WebSocket.OPEN) {
+      // For printable single characters, use keypress (type text)
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        ws.send(JSON.stringify({ type: 'keypress', text: e.key }));
+      } else {
+        ws.send(JSON.stringify({ type: 'keydown', key: e.key }));
+      }
+    }
+  });
+  canvas.addEventListener('keyup', (e) => {
+    e.preventDefault();
+    if (e.key.length > 1 && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'keyup', key: e.key }));
+    }
+  });
+
+  // ── Resize observer → resize browser viewport to match container ──
+  // Track last good dimensions to avoid sending tiny sizes on minimize
+  let _lastGoodWidth = 1280, _lastGoodHeight = 800;
+
+  function sendBrowserResize() {
+    const rect = canvasWrap.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    // Skip tiny dimensions (window minimized or hidden)
+    if (w < 100 || h < 100) return;
+    // Skip if dimensions haven't actually changed
+    if (w === _lastGoodWidth && h === _lastGoodHeight) return;
+    _lastGoodWidth = w;
+    _lastGoodHeight = h;
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', width: w, height: h }));
+    }
+  }
+
+  const ro = new ResizeObserver(() => sendBrowserResize());
+  ro.observe(canvasWrap);
+
+  // Re-send proper dimensions when window is restored from minimize
+  const _visibilityHandler = () => {
+    if (!document.hidden) {
+      // Small delay to let the layout settle after restore
+      setTimeout(() => sendBrowserResize(), 150);
+    }
+  };
+  document.addEventListener('visibilitychange', _visibilityHandler);
+
+  // Register session
+  const session = {
+    id: sessionId,
+    profile: 'browser',
+    cwd: null,
+    label: 'Browser',
+    term: null,         // no xterm for browser tabs
+    fitAddon: null,
+    searchAddon: null,
+    ws,
+    viewport,
+    ro,
+    renderer: null,
+    dead: false,
+    pinned: false,
+    _isBrowser: true,   // flag for tab-type-specific logic
+    _browserUrl: startUrl,
+    _browserTitle: '',
+    _browserCanvas: canvas,
+    _browserCtx: ctx,
+    _visibilityHandler,
+  };
+  _sessions.push(session);
+  _activeIdx = _sessions.length - 1;
+
+  ensurePanel();
+  if (_panel.classList.contains('hidden')) {
+    showPeekDock();
+  }
+  renderTabBar();
+  switchToSession(_activeIdx);
+
+  // Auto-detach browser tabs into floating windows
+  detachTab(_activeIdx);
+
+  saveSessionRegistry();
+  } finally { _opening = false; }
+}
+
+/** Reconnect to an existing server-side browser session (no new browser launched) */
+async function reconnectBrowserSession(sessionId, liveData, saved) {
+  ensurePanel();
+
+  const viewport = document.createElement('div');
+  viewport.className = 'term-viewport browser-viewport';
+  viewport.dataset.sessionId = sessionId;
+
+  const currentUrl = liveData?.url || saved?.label || 'about:blank';
+
+  const navbar = document.createElement('div');
+  navbar.className = 'browser-navbar';
+  navbar.innerHTML = `
+    <button class="browser-nav-btn browser-back-btn" data-tooltip="Back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <button class="browser-nav-btn browser-fwd-btn" data-tooltip="Forward">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+    <button class="browser-nav-btn browser-reload-btn" data-tooltip="Reload">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+    </button>
+    <div class="browser-url-bar">
+      <input type="text" class="browser-url-input" value="${currentUrl.replace(/"/g, '&quot;')}" spellcheck="false" autocomplete="off">
+    </div>
+    <span class="browser-title-label">${liveData?.title || ''}</span>
+  `;
+  viewport.appendChild(navbar);
+
+  const canvasWrap = document.createElement('div');
+  canvasWrap.className = 'browser-canvas-wrap';
+  const canvas = document.createElement('canvas');
+  canvas.className = 'browser-canvas';
+  canvas.width = 1280;
+  canvas.height = 800;
+  canvasWrap.appendChild(canvas);
+  viewport.appendChild(canvasWrap);
+
+  $('term-container').appendChild(viewport);
+
+  const ctx = canvas.getContext('2d');
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/browser/${sessionId}`);
+
+  const urlInput = navbar.querySelector('.browser-url-input');
+  const titleLabel = navbar.querySelector('.browser-title-label');
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'frame' && msg.data) {
+        const img = new Image();
+        img.onload = () => {
+          if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+            canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+          }
+          ctx.drawImage(img, 0, 0);
+        };
+        img.src = 'data:image/jpeg;base64,' + msg.data;
+      } else if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
+        if (msg.url) { urlInput.value = msg.url; const sess = _sessions.find(s => s.id === sessionId); if (sess) sess._browserUrl = msg.url; }
+        if (msg.title) {
+          titleLabel.textContent = msg.title;
+          const sess = _sessions.find(s => s.id === sessionId);
+          if (sess) { sess._browserTitle = msg.title; sess.label = msg.title.length > 30 ? msg.title.slice(0, 30) + '…' : msg.title; renderTabBar(); }
+        }
+      }
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    const sess = _sessions.find(s => s.id === sessionId);
+    if (sess && !sess.dead) {
+      const idx = _sessions.indexOf(sess);
+      if (idx >= 0) closeSession(idx);
+    }
+  };
+
+  // Nav buttons
+  navbar.querySelector('.browser-back-btn').addEventListener('click', () => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'back' })); });
+  navbar.querySelector('.browser-fwd-btn').addEventListener('click', () => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'forward' })); });
+  navbar.querySelector('.browser-reload-btn').addEventListener('click', () => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'reload' })); });
+  urlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      let navUrl = urlInput.value.trim();
+      if (navUrl && !navUrl.match(/^https?:\/\//)) navUrl = 'https://' + navUrl;
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'navigate', url: navUrl }));
+    }
+  });
+
+  // Mouse/keyboard forwarding
+  function canvasCoords(e) { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left) * (canvas.width / r.width), y: (e.clientY - r.top) * (canvas.height / r.height) }; }
+  canvas.addEventListener('click', (e) => { const c = canvasCoords(e); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'click', ...c })); });
+  canvas.addEventListener('dblclick', (e) => { const c = canvasCoords(e); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'dblclick', ...c })); });
+  canvas.addEventListener('wheel', (e) => { e.preventDefault(); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY })); }, { passive: false });
+  canvas.tabIndex = 0;
+  canvas.addEventListener('keydown', (e) => { e.preventDefault(); if (ws.readyState === WebSocket.OPEN) { if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) ws.send(JSON.stringify({ type: 'keypress', text: e.key })); else ws.send(JSON.stringify({ type: 'keydown', key: e.key })); } });
+  canvas.addEventListener('keyup', (e) => { e.preventDefault(); if (e.key.length > 1 && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'keyup', key: e.key })); });
+
+  let _lastGoodW2 = 1280, _lastGoodH2 = 800;
+  function sendReconnResize() {
+    const rect = canvasWrap.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    if (w < 100 || h < 100) return;
+    if (w === _lastGoodW2 && h === _lastGoodH2) return;
+    _lastGoodW2 = w; _lastGoodH2 = h;
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', width: w, height: h }));
+    }
+  }
+  const ro = new ResizeObserver(() => sendReconnResize());
+  ro.observe(canvasWrap);
+  const _visibilityHandler = () => { if (!document.hidden) setTimeout(() => sendReconnResize(), 150); };
+  document.addEventListener('visibilitychange', _visibilityHandler);
+
+  const session = {
+    id: sessionId, profile: 'browser', cwd: null,
+    label: saved?.label || liveData?.title || 'Browser',
+    term: null, fitAddon: null, searchAddon: null,
+    ws, viewport, ro, renderer: null,
+    dead: false, pinned: saved?.pinned || false,
+    _isBrowser: true, _browserUrl: currentUrl, _browserTitle: liveData?.title || '',
+    _browserCanvas: canvas, _browserCtx: ctx, _visibilityHandler,
+  };
+  _sessions.push(session);
+  _activeIdx = _sessions.length - 1;
+
+  ensurePanel();
+  if (_panel.classList.contains('hidden')) {
+    showPeekDock();
+  }
+  renderTabBar();
+  switchToSession(_activeIdx);
+
+  // Auto-detach browser tabs into floating windows
+  detachTab(_activeIdx);
 }
 
 /** Reconnect to an existing server-side PTY session (no new PTY created) */
@@ -1062,6 +1529,13 @@ async function reconnectSession(sessionId, profile, options = {}) {
   const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
 
   term.attachCustomKeyEventHandler((e) => {
+    // Ctrl+Enter → insert newline (don't submit)
+    if (e.ctrlKey && e.key === 'Enter') {
+      if (e.type === 'keydown' && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'input', data: '\n' }));
+      }
+      return false;
+    }
     // Ctrl+C → copy if text selected, otherwise pass through as SIGINT
     if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       const sel = term.getSelection();
@@ -1083,11 +1557,15 @@ async function reconnectSession(sessionId, profile, options = {}) {
       return false;
     }
     if (e.ctrlKey && !e.shiftKey && e.key === 'f' && e.type === 'keydown') {
-      toggleSearchBar(true);
+      const sess = _sessions.find(s => s.viewport === viewport);
+      if (sess && _detachedTabs.has(sess.id)) toggleFloatSearchBar(sess);
+      else toggleSearchBar(true);
       return false;
     }
     if (e.ctrlKey && e.shiftKey && e.key === 'F' && e.type === 'keydown') {
-      toggleSearchBar(false);
+      const sess = _sessions.find(s => s.viewport === viewport);
+      if (sess && _detachedTabs.has(sess.id)) toggleFloatSearchBar(sess);
+      else toggleSearchBar(false);
       return false;
     }
     if (e.key === 'Escape' && e.type === 'keydown') {
@@ -1162,6 +1640,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
   const session = {
     id: sessionId,
     profile,
+    cwd: options.cwd || null,
     label: options.label || (profileDef?.label || profile),
     term, fitAddon, searchAddon, ws, viewport, ro,
     renderer,
@@ -1171,7 +1650,10 @@ async function reconnectSession(sessionId, profile, options = {}) {
   _sessions.push(session);
   _activeIdx = _sessions.length - 1;
 
-  showPanel();
+  ensurePanel();
+  if (_panel.classList.contains('hidden')) {
+    showPeekDock();
+  }
   renderTabBar();
   switchToSession(_activeIdx);
   saveSessionRegistry();
@@ -1181,14 +1663,26 @@ function switchToSession(idx) {
   if (idx < 0 || idx >= _sessions.length) return;
   _activeIdx = idx;
 
+  // Close docked file tree on tab switch
+  const sidebar = $('term-file-sidebar');
+  if (sidebar?.classList.contains('open')) {
+    sidebar.classList.remove('open');
+    sidebar.innerHTML = '';
+  }
+
   _sessions.forEach((s, i) => {
     // Don't touch viewports of detached tabs — they live in floating windows
     if (_detachedTabs.has(s.id)) return;
     s.viewport.style.display = i === idx ? '' : 'none';
     if (i === idx) {
       requestAnimationFrame(() => {
-        try { s.fitAddon.fit(); } catch {}
-        s.term.focus();
+        if (s._isBrowser) {
+          // Focus canvas for keyboard input
+          s._browserCanvas?.focus();
+        } else {
+          try { s.fitAddon.fit(); } catch {}
+          s.term.focus();
+        }
       });
     }
   });
@@ -1200,23 +1694,37 @@ async function closeSession(idx) {
   if (idx < 0 || idx >= _sessions.length) return;
   const session = _sessions[idx];
 
-  // Clean up detached tab window if any
+  // Guard: prevent re-entry (ws.onclose fires when we call ws.close() below)
+  if (_closingIds.has(session.id)) return;
+  _closingIds.add(session.id);
+
+  // Clean up detached tab window + minimized pill if any
   const tabState = _detachedTabs.get(session.id);
   if (tabState) {
     tabState.el.remove();
+    if (tabState.pill) tabState.pill.remove();
     _detachedTabs.delete(session.id);
   }
 
-  // Cleanup
-  session.ro.disconnect();
-  session.ws.close();
-  session.term.dispose();
+  // Cleanup — mark dead first to prevent ws.onclose from re-entering
+  session.dead = true;
+  if (session.ro) session.ro.disconnect();
+  if (session.ws) session.ws.close();
+  if (session.term) session.term.dispose();
+  if (session._visibilityHandler) document.removeEventListener('visibilitychange', session._visibilityHandler);
   session.viewport.remove();
 
-  // Kill server-side PTY
-  try { await deleteTerminalSession(session.id); } catch {}
+  // Kill server-side session
+  if (session._isBrowser) {
+    try { await deleteBrowserSession(session.id); } catch {}
+  } else if (!session._gitOutput) {
+    try { await deleteTerminalSession(session.id); } catch {}
+  }
 
-  _sessions.splice(idx, 1);
+  // Re-lookup index after await — array may have shifted
+  const currentIdx = _sessions.indexOf(session);
+  if (currentIdx < 0) { _closingIds.delete(session.id); return; } // already removed
+  _sessions.splice(currentIdx, 1);
 
   // Count docked sessions (not detached)
   const dockedSessions = _sessions.filter(s => !_detachedTabs.has(s.id));
@@ -1230,7 +1738,7 @@ async function closeSession(idx) {
     _activeIdx = -1;
     hidePanel();
   } else {
-    _activeIdx = Math.min(idx, _sessions.length - 1);
+    _activeIdx = Math.min(currentIdx, _sessions.length - 1);
     const nextDocked = _sessions.findIndex((s, i) => i >= _activeIdx && !_detachedTabs.has(s.id));
     if (nextDocked >= 0) {
       switchToSession(nextDocked);
@@ -1243,6 +1751,7 @@ async function closeSession(idx) {
 
   renderTabBar();
   saveSessionRegistry();
+  _closingIds.delete(session.id);
 }
 
 /** Disconnect all sessions client-side WITHOUT killing server PTY.
@@ -1255,21 +1764,23 @@ export function disconnectAllSessions() {
   _detachedTabs.clear();
 
   // Dispose all sessions — WS close triggers server grace timer, PTY stays alive
+  // Mark dead first to prevent ws.onclose handlers from re-entering closeSession
   for (const session of _sessions) {
+    session.dead = true;
     session.ro.disconnect();
     session.ws.close();
-    session.term.dispose();
+    if (session.term) session.term.dispose();
     session.viewport.remove();
   }
   _sessions = [];
   _activeIdx = -1;
 
-  // Hide panel and peek dock
+  // Hide panel, keep peek dock visible
   if (_panel && !_panel.classList.contains('hidden')) {
     _panel.classList.add('hidden');
     document.documentElement.style.setProperty('--terminal-height', '0px');
   }
-  hidePeekDock();
+  showPeekDock();
 }
 
 function markSessionDead(sessionId) {
@@ -1300,9 +1811,13 @@ function ensureContextMenu() {
   document.body.appendChild(menu);
   _contextMenu = menu;
 
-  // Close on outside click
+  // Close on outside click and clean up stale handler
   document.addEventListener('click', () => {
     menu.classList.remove('open');
+    if (_ctxMenuHandler) {
+      menu.removeEventListener('click', _ctxMenuHandler);
+      _ctxMenuHandler = null;
+    }
   });
 
   return menu;
@@ -1318,7 +1833,12 @@ function initContextMenu(viewport, term, ws) {
     menu.style.top = e.clientY + 'px';
     menu.classList.add('open');
 
-    // Unbind previous handler to avoid stacking
+    // Find session for this viewport
+    const session = _sessions.find(s => s.viewport === viewport);
+
+    // Remove previous handler to avoid stacking (multiple right-clicks without clicking an item)
+    if (_ctxMenuHandler) menu.removeEventListener('click', _ctxMenuHandler);
+
     const handler = (evt) => {
       const item = evt.target.closest('.term-ctx-item');
       if (!item) return;
@@ -1344,16 +1864,90 @@ function initContextMenu(viewport, term, ws) {
           term.clear();
           break;
         case 'find':
-          toggleSearchBar(true);
+          if (session && _detachedTabs.has(session.id)) {
+            toggleFloatSearchBar(session);
+          } else {
+            toggleSearchBar(true);
+          }
           break;
       }
 
       menu.classList.remove('open');
       menu.removeEventListener('click', handler);
+      _ctxMenuHandler = null;
     };
 
+    _ctxMenuHandler = handler;
     menu.addEventListener('click', handler);
   });
+}
+
+/** Toggle an inline search bar inside a floating terminal window */
+function toggleFloatSearchBar(session) {
+  if (!session?.searchAddon) return;
+  const tabState = _detachedTabs.get(session.id);
+  if (!tabState) return;
+
+  const win = tabState.el;
+  let bar = win.querySelector('.float-search-bar');
+
+  if (bar) {
+    // Toggle off
+    bar.remove();
+    session.searchAddon.clearDecorations();
+    session.term?.focus();
+    return;
+  }
+
+  // Create search bar
+  bar = document.createElement('div');
+  bar.className = 'float-search-bar';
+  bar.innerHTML = `
+    <input type="text" class="float-search-input" placeholder="Find..." spellcheck="false" autocomplete="off">
+    <span class="float-search-count"></span>
+    <button class="float-search-nav" title="Previous">&#9650;</button>
+    <button class="float-search-nav" title="Next">&#9660;</button>
+    <button class="float-search-nav float-search-close" title="Close">&times;</button>
+  `;
+
+  // Insert after header, before body
+  const header = win.querySelector('.term-float-tab-header');
+  header.after(bar);
+
+  const input = bar.querySelector('.float-search-input');
+  const btns = bar.querySelectorAll('.float-search-nav');
+
+  input.addEventListener('input', () => {
+    if (input.value) session.searchAddon.findNext(input.value, { incremental: true });
+  });
+
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) session.searchAddon.findPrevious(input.value);
+      else session.searchAddon.findNext(input.value);
+    }
+    if (e.key === 'Escape') {
+      bar.remove();
+      session.searchAddon.clearDecorations();
+      session.term?.focus();
+    }
+  });
+
+  // Prev button
+  btns[0].addEventListener('click', (e) => { e.stopPropagation(); session.searchAddon.findPrevious(input.value); });
+  // Next button
+  btns[1].addEventListener('click', (e) => { e.stopPropagation(); session.searchAddon.findNext(input.value); });
+  // Close button
+  btns[2].addEventListener('click', (e) => {
+    e.stopPropagation();
+    bar.remove();
+    session.searchAddon.clearDecorations();
+    session.term?.focus();
+  });
+
+  input.focus();
 }
 
 // ── Toast notification (shown outside the terminal stream) ──
@@ -1545,6 +2139,9 @@ function detachTab(idx) {
       <span class="term-float-tab-icon">${prof?.svg || SVG_SHELL}</span>
       <span class="term-float-tab-title">${session.label}</span>
       <div class="term-float-tab-actions">
+        <button class="term-float-tab-btn files-btn" data-tooltip="Toggle file tree">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        </button>
         <button class="term-float-tab-btn rename-btn" data-tooltip="Rename">
           <svg viewBox="0 0 24 24"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
         </button>
@@ -1562,7 +2159,9 @@ function detachTab(idx) {
         </button>
       </div>
     </div>
-    <div class="term-float-tab-body"></div>
+    <div class="term-float-tab-body">
+      <div class="term-file-sidebar"></div>
+    </div>
   `;
 
   // Default position: offset from center based on how many are already detached
@@ -1581,18 +2180,24 @@ function detachTab(idx) {
   body.appendChild(session.viewport);
   session.viewport.style.display = '';
 
+  // Wire file tree toggle
+  win.querySelector('.files-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const sidebar = win.querySelector('.term-file-sidebar');
+    toggleFileTree(sidebar, session);
+  });
+
   // Wire dock-back button
   win.querySelector('.dock-btn').addEventListener('click', (e) => { e.stopPropagation(); attachTab(session.id); });
 
   // Wire minimize button
   win.querySelector('.minimize-btn').addEventListener('click', (e) => { e.stopPropagation(); minimizeTab(session.id); });
 
-  // Wire close button
+  // Wire close button — close directly without docking back (closeSession handles detached cleanup)
   win.querySelector('.close-btn').addEventListener('click', (e) => {
     e.stopPropagation();
-    attachTab(session.id);
-    const newIdx = _sessions.indexOf(session);
-    if (newIdx >= 0) closeSession(newIdx);
+    const idx = _sessions.indexOf(session);
+    if (idx >= 0) closeSession(idx);
   });
 
   // Wire pin button — toggle pinned + always-on-top
@@ -1641,6 +2246,18 @@ function detachTab(idx) {
   const tabState = { el: win };
   _detachedTabs.set(session.id, tabState);
 
+  // Ctrl+C fallback for floating window — covers cases where xterm textarea loses focus
+  win.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+      const sel = session.term?.getSelection();
+      if (sel) {
+        navigator.clipboard.writeText(sel).catch(() => {});
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }
+  });
+
   // Click anywhere on floating window → bring to front
   win.addEventListener('mousedown', () => bringTabToFront(session.id));
 
@@ -1649,13 +2266,15 @@ function detachTab(idx) {
   // Edge resize
   initTabFloatResize(win, session.id);
 
-  // If this was the active tab in main panel, switch to another
+  // If this was the active tab in main panel, switch to another docked tab
   if (idx === _activeIdx) {
     const nextDocked = _sessions.findIndex((s, i) => i !== idx && !_detachedTabs.has(s.id));
     if (nextDocked >= 0) {
       switchToSession(nextDocked);
     } else {
+      // No docked sessions remain — hide main panel
       _activeIdx = -1;
+      if (_panel && !_panel.classList.contains('hidden')) hidePanel();
     }
   }
 
@@ -1728,8 +2347,6 @@ function minimizeTab(sessionId) {
   `;
   pill.querySelector('.term-minimized-pill-close').addEventListener('click', (e) => {
     e.stopPropagation();
-    restoreTab(sessionId);
-    attachTab(sessionId);
     const idx = _sessions.indexOf(session);
     if (idx >= 0) closeSession(idx);
   });
@@ -1991,7 +2608,6 @@ function renderPeekDock() {
 }
 
 function showPeekDock() {
-  if (_sessions.length === 0) { hidePeekDock(); return; }
   ensurePeekDock();
   renderPeekDock();
   // Force reflow before adding visible class for transition
@@ -2018,9 +2634,9 @@ function renderTabBar() {
     const dead = s.dead;
     const isDetached = _detachedTabs.has(s.id);
     return `<button class="term-tab${active ? ' active' : ''}${dead ? ' dead' : ''}${isDetached ? ' detached' : ''}" data-idx="${i}">
-      <span class="term-tab-icon">${prof?.svg || SVG_SHELL}</span>
+      <span class="term-tab-icon">${s._gitOutput ? SVG_GIT : (prof?.svg || SVG_SHELL)}</span>
       <span class="term-tab-label">${s.label}${dead ? ' (exited)' : ''}</span>
-      ${!isDetached && !dead ? `<span class="term-tab-detach" data-idx="${i}" data-tooltip="Detach tab"><svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M21 3l-7 7"/><rect x="3" y="11" width="10" height="10" rx="1"/></svg></span>` : ''}
+      ${!isDetached && !dead && !s._gitOutput ? `<span class="term-tab-detach" data-idx="${i}" data-tooltip="Detach tab"><svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M21 3l-7 7"/><rect x="3" y="11" width="10" height="10" rx="1"/></svg></span>` : ''}
       ${isDetached ? `<span class="term-tab-dock" data-idx="${i}" title="Dock back"><svg viewBox="0 0 24 24"><path d="M4 14h6v6"/><path d="M3 21l7-7"/></svg></span>` : ''}
       <span class="term-tab-close" data-idx="${i}">&times;</span>
     </button>`;
@@ -2042,29 +2658,53 @@ export async function initTerminal() {
 
   on('terminal:close', () => hidePanel());
 
+  on('browser:open', (data) => openBrowserSession(data?.url));
+
   // Register CLI launch keybind actions (open as detached floating tab)
   registerAction('launch-claude', () => launchDetached('claude-code'));
   registerAction('launch-codex',  () => launchDetached('codex'));
   registerAction('launch-gemini', () => launchDetached('gemini'));
+  registerAction('launch-browser', () => openBrowserSession());
 
   // ── Auto-reconnect to surviving sessions on page load ──
   const registry = loadSessionRegistry();
   if (registry.length > 0) {
+    // Fetch live terminal sessions
     let liveSessions = [];
     try {
       const data = await fetchTerminalSessions();
       liveSessions = data.sessions || [];
     } catch {}
-    const liveIds = new Set(liveSessions.map(s => s.id));
+    const liveMap = new Map(liveSessions.map(s => [s.id, s]));
+
+    // Fetch live browser sessions
+    let liveBrowserSessions = [];
+    try {
+      const data = await fetchBrowserSessions();
+      liveBrowserSessions = data.sessions || [];
+    } catch {}
+    const liveBrowserMap = new Map(liveBrowserSessions.map(s => [s.id, s]));
+
+    const liveIds = new Set([...liveMap.keys(), ...liveBrowserMap.keys()]);
 
     // Reconnect to sessions that are still alive on server
     const toReconnect = registry.filter(r => liveIds.has(r.id));
     if (toReconnect.length > 0) {
+      // Suppress layout saves during reconnect — reconnectBrowserSession auto-detaches
+      // which would overwrite saved layout with default sizes
+      _restoringLayout = true;
       for (const saved of toReconnect) {
-        await reconnectSession(saved.id, saved.profile, {
-          label: saved.label,
-          pinned: saved.pinned,
-        });
+        if (saved.profile === 'browser' && liveBrowserMap.has(saved.id)) {
+          // Reconnect browser session — re-create client-side viewport
+          await reconnectBrowserSession(saved.id, liveBrowserMap.get(saved.id), saved);
+        } else {
+          const live = liveMap.get(saved.id);
+          await reconnectSession(saved.id, saved.profile, {
+            label: saved.label,
+            pinned: saved.pinned,
+            cwd: live?.cwd || null,
+          });
+        }
       }
 
       // Restore layout from last saved terminal layout
@@ -2074,6 +2714,7 @@ export async function initTerminal() {
           applyTerminalLayout(JSON.parse(layoutJson));
         }
       } catch {}
+      _restoringLayout = false;
     }
 
     // Clean up dead sessions from registry
@@ -2082,8 +2723,8 @@ export async function initTerminal() {
     }
   }
 
-  // Show peek dock if sessions exist but panel is hidden
-  if (_sessions.length > 0 && (!_panel || _panel.classList.contains('hidden'))) {
+  // Always show peek dock when panel is not open
+  if (!_panel || _panel.classList.contains('hidden')) {
     showPeekDock();
   }
 }
@@ -2120,10 +2761,13 @@ export function getTerminalSnapshot() {
     detachedTabs: [..._detachedTabs.entries()].map(([sid, dt]) => {
       const r = dt.minimized && dt.savedRect ? dt.savedRect : dt.el.getBoundingClientRect();
       const session = _sessions.find(s => s.id === sid);
+      // Skip saving if dimensions are invalid (element hidden/transitioning)
+      const w = r.width > 50 ? r.width : 700;
+      const h = r.height > 50 ? r.height : 420;
       return {
         sessionId: sid,
         sessionIdx: _sessions.findIndex(s => s.id === sid),
-        left: r.left, top: r.top, width: r.width, height: r.height,
+        left: r.left, top: r.top, width: w, height: h,
         pinned: session?.pinned || false,
         label: session?.label || '',
         minimized: dt.minimized || false,
@@ -2164,10 +2808,19 @@ function applyTerminalLayout(snap) {
       }
       const tabState = _detachedTabs.get(session.id);
       if (tabState) {
-        tabState.el.style.left = dt.left + 'px';
-        tabState.el.style.top = dt.top + 'px';
-        tabState.el.style.width = dt.width + 'px';
-        tabState.el.style.height = dt.height + 'px';
+        // Validate saved dimensions — enforce minimums and keep on screen
+        const minW = 280, minH = 160;
+        const w = Math.max(minW, dt.width || minW);
+        const h = Math.max(minH, dt.height || minH);
+        const maxL = window.innerWidth - 80;
+        const maxT = window.innerHeight - 40;
+        const l = Math.max(0, Math.min(dt.left || 0, maxL));
+        const t = Math.max(0, Math.min(dt.top || 0, maxT));
+
+        tabState.el.style.left = l + 'px';
+        tabState.el.style.top = t + 'px';
+        tabState.el.style.width = w + 'px';
+        tabState.el.style.height = h + 'px';
 
         if (dt.pinned) {
           session.pinned = true;
@@ -2192,7 +2845,10 @@ function applyTerminalLayout(snap) {
     }
   }
 
-  requestAnimationFrame(() => _sessions.forEach(s => { try { s.fitAddon?.fit(); } catch {} }));
+  // Double-rAF ensures DOM layout is settled before refitting terminals
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    _sessions.forEach(s => { try { s.fitAddon?.fit(); } catch {} });
+  }));
 }
 
 /** Restore terminal state from workspace — reconnects to live sessions */
@@ -2206,7 +2862,8 @@ export async function restoreTerminalSnapshot(snap) {
       const data = await fetchTerminalSessions();
       liveSessions = data.sessions || [];
     } catch {}
-    const liveIds = new Set(liveSessions.map(s => s.id));
+    const liveMap = new Map(liveSessions.map(s => [s.id, s]));
+    const liveIds = new Set(liveMap.keys());
 
     // Disconnect current sessions without killing server PTY
     disconnectAllSessions();
@@ -2214,9 +2871,11 @@ export async function restoreTerminalSnapshot(snap) {
     // Reconnect to each saved session that's still alive on server
     for (const saved of snap.sessions) {
       if (liveIds.has(saved.id)) {
+        const live = liveMap.get(saved.id);
         await reconnectSession(saved.id, saved.profile, {
           label: saved.label,
           pinned: saved.pinned,
+          cwd: live?.cwd || null,
         });
       }
     }
@@ -2224,4 +2883,518 @@ export async function restoreTerminalSnapshot(snap) {
 
   // Apply layout (detach/dock, positions, pin state)
   applyTerminalLayout(snap);
+}
+
+// ══════════════════════════════════════════
+// File Tree Sidebar
+// ══════════════════════════════════════════
+
+const SVG_DIR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+const SVG_DIR_OPEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>';
+const SVG_FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>';
+const SVG_CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+
+/** Toggle file tree for the docked terminal panel */
+function toggleDockedFileTree() {
+  const sidebar = $('term-file-sidebar');
+  if (!sidebar) return;
+  const session = _sessions[_activeIdx];
+  toggleFileTree(sidebar, session);
+}
+
+/** Toggle file tree visibility and load contents */
+async function toggleFileTree(sidebar, session) {
+  if (!sidebar) return;
+
+  const isOpen = sidebar.classList.contains('open');
+  if (isOpen) {
+    sidebar.classList.remove('open');
+    sidebar.innerHTML = '';
+    refitActiveSession(session);
+    return;
+  }
+
+  if (!session?.cwd) {
+    sidebar.innerHTML = '<div class="ft-empty">No working directory</div>';
+    sidebar.classList.add('open');
+    refitActiveSession(session);
+    return;
+  }
+
+  sidebar.classList.add('open');
+  sidebar.innerHTML = '<div class="ft-loading">Loading...</div>';
+  initSidebarResize(sidebar, session);
+  refitActiveSession(session);
+
+  try {
+    const data = await fetchTerminalFiles(session.cwd);
+    sidebar.innerHTML = '';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'ft-header';
+    const dirName = session.cwd.split(/[\\/]/).pop() || session.cwd;
+
+    // Branch (clickable if git)
+    const branchHtml = data.branch
+      ? `<button class="ft-branch" data-tooltip="Switch branch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg><span class="ft-branch-name">${data.branch}</span></button>`
+      : '';
+    header.innerHTML = `<span class="ft-header-label" data-tooltip="Click to change path" title="${session.cwd}">${dirName}</span>${branchHtml}`;
+
+    // Wire header label click → inline path editor
+    header.querySelector('.ft-header-label').addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPathEditor(sidebar, session, header);
+    });
+
+    // Wire branch picker
+    const branchBtn = header.querySelector('.ft-branch');
+    if (branchBtn) {
+      branchBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openBranchPicker(sidebar, session, branchBtn);
+      });
+    }
+
+    sidebar.appendChild(header);
+
+    // Search filter
+    const search = document.createElement('div');
+    search.className = 'ft-search';
+    search.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="ft-search-input" type="text" placeholder="Filter files..." spellcheck="false" />`;
+    sidebar.appendChild(search);
+
+    // Tree container
+    const tree = document.createElement('div');
+    tree.className = 'ft-tree';
+    sidebar.appendChild(tree);
+
+    // Store original items for restoring after search
+    const originalItems = data.items;
+
+    const searchInput = search.querySelector('.ft-search-input');
+    let searchTimer = null;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      const q = searchInput.value.trim();
+      if (!q) {
+        // Restore original tree
+        tree.innerHTML = '';
+        renderFileItems(tree, originalItems, session.cwd, 0, session);
+        return;
+      }
+      searchTimer = setTimeout(async () => {
+        tree.innerHTML = '<div class="ft-row ft-loading-row">Searching...</div>';
+        try {
+          const results = await fetchTerminalFiles(session.cwd, q);
+          tree.innerHTML = '';
+          if (!results.items.length) {
+            tree.innerHTML = '<div class="ft-row ft-empty-row">No matches</div>';
+            return;
+          }
+          renderSearchResults(tree, results.items, session);
+        } catch {
+          tree.innerHTML = '<div class="ft-row ft-empty-row">Search failed</div>';
+        }
+      }, 200);
+    });
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        searchInput.value = '';
+        tree.innerHTML = '';
+        renderFileItems(tree, originalItems, session.cwd, 0, session);
+        searchInput.blur();
+      }
+      e.stopPropagation();
+    });
+
+    renderFileItems(tree, originalItems, session.cwd, 0, session);
+  } catch (err) {
+    sidebar.innerHTML = `<div class="ft-empty">Error: ${err.message}</div>`;
+  }
+}
+
+const GIT_STATUS_LABEL = {
+  modified: 'M', staged: 'S', added: 'A', deleted: 'D',
+  renamed: 'R', untracked: 'U', conflict: '!', mixed: 'M',
+};
+
+/** Render file items into a container */
+function renderFileItems(container, items, parentPath, depth, session) {
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = `ft-row${item.type === 'dir' ? ' ft-dir' : ' ft-file'}`;
+    if (item.git) row.classList.add(`ft-git-${item.git}`);
+    row.style.paddingLeft = (8 + depth * 14) + 'px';
+
+    const fullPath = parentPath.replace(/[\\/]$/, '') + '/' + item.name;
+    const gitBadge = item.git ? `<span class="ft-git-badge" data-tooltip="${item.git}">${GIT_STATUS_LABEL[item.git] || '?'}</span>` : '';
+
+    if (item.type === 'dir') {
+      row.innerHTML = `<span class="ft-chevron">${SVG_CHEVRON}</span><span class="ft-icon">${SVG_DIR}</span><span class="ft-name">${item.name}</span>${gitBadge}`;
+      row.dataset.path = fullPath;
+      row.dataset.expanded = 'false';
+
+      row.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const expanded = row.dataset.expanded === 'true';
+
+        if (expanded) {
+          // Collapse — remove child container
+          row.dataset.expanded = 'false';
+          row.classList.remove('expanded');
+          row.querySelector('.ft-icon').innerHTML = SVG_DIR;
+          const children = row.nextElementSibling;
+          if (children?.classList.contains('ft-children')) children.remove();
+        } else {
+          // Expand — fetch and render children
+          row.dataset.expanded = 'true';
+          row.classList.add('expanded');
+          row.querySelector('.ft-icon').innerHTML = SVG_DIR_OPEN;
+
+          let childContainer = row.nextElementSibling;
+          if (!childContainer?.classList.contains('ft-children')) {
+            childContainer = document.createElement('div');
+            childContainer.className = 'ft-children';
+            row.after(childContainer);
+          }
+
+          childContainer.innerHTML = '<div class="ft-row ft-loading-row" style="padding-left:' + (8 + (depth + 1) * 14) + 'px">...</div>';
+
+          try {
+            const data = await fetchTerminalFiles(fullPath);
+            childContainer.innerHTML = '';
+            if (data.items.length === 0) {
+              childContainer.innerHTML = '<div class="ft-row ft-empty-row" style="padding-left:' + (8 + (depth + 1) * 14) + 'px">(empty)</div>';
+            } else {
+              renderFileItems(childContainer, data.items, fullPath, depth + 1, session);
+            }
+          } catch {
+            childContainer.innerHTML = '<div class="ft-row ft-empty-row" style="padding-left:' + (8 + (depth + 1) * 14) + 'px">Error</div>';
+          }
+        }
+      });
+    } else {
+      row.innerHTML = `<span class="ft-chevron-spacer"></span><span class="ft-icon">${SVG_FILE}</span><span class="ft-name">${item.name}</span>${gitBadge}`;
+      row.dataset.path = fullPath;
+
+      // Click file → type path into terminal
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Find the session's websocket and send the file path
+        const ws = session?.ws;
+        if (ws?.readyState === WebSocket.OPEN) {
+          // Quote path if it has spaces
+          const pathStr = fullPath.includes(' ') ? `"${fullPath}"` : fullPath;
+          ws.send(JSON.stringify({ type: 'input', data: pathStr }));
+        }
+      });
+    }
+
+    container.appendChild(row);
+  }
+}
+
+/** Render flat search results (relative paths from server recursive search) */
+function renderSearchResults(container, items, session) {
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = `ft-row ft-search-result${item.type === 'dir' ? ' ft-dir' : ' ft-file'}`;
+    row.style.paddingLeft = '8px';
+
+    const icon = item.type === 'dir' ? SVG_DIR : SVG_FILE;
+    // Show relative path — highlight the filename part
+    const parts = item.name.split('/');
+    const fileName = parts.pop();
+    const dirPath = parts.length ? `<span class="ft-search-path">${parts.join('/')}/</span>` : '';
+
+    row.innerHTML = `<span class="ft-icon">${icon}</span>${dirPath}<span class="ft-name">${fileName}</span>`;
+
+    const fullPath = session.cwd.replace(/[\\/]$/, '') + '/' + item.name;
+    row.dataset.path = fullPath;
+
+    if (item.type !== 'dir') {
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const ws = session?.ws;
+        if (ws?.readyState === WebSocket.OPEN) {
+          const pathStr = fullPath.includes(' ') ? `"${fullPath}"` : fullPath;
+          ws.send(JSON.stringify({ type: 'input', data: pathStr }));
+        }
+      });
+    }
+
+    container.appendChild(row);
+  }
+}
+
+/** Open branch picker dropdown below the branch button */
+async function openBranchPicker(sidebar, session, anchorEl) {
+  // Remove existing dropdown if any
+  sidebar.querySelector('.ft-branch-dropdown')?.remove();
+
+  const dropdown = document.createElement('div');
+  dropdown.className = 'ft-branch-dropdown glass';
+  dropdown.innerHTML = '<div class="ft-branch-loading">Loading branches...</div>';
+
+  // Position below the header
+  const header = sidebar.querySelector('.ft-header');
+  if (header) header.after(dropdown);
+  else sidebar.prepend(dropdown);
+
+  try {
+    const data = await fetchTerminalBranches(session.cwd);
+    dropdown.innerHTML = '';
+
+    if (!data.branches.length) {
+      dropdown.innerHTML = '<div class="ft-branch-loading">No branches found</div>';
+      return;
+    }
+
+    for (const branch of data.branches) {
+      const item = document.createElement('button');
+      item.className = `ft-branch-item${branch === data.current ? ' current' : ''}`;
+      item.innerHTML = `<span class="ft-branch-item-name">${branch}</span>${branch === data.current ? '<span class="ft-branch-item-check">&#10003;</span>' : ''}`;
+
+      item.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (branch === data.current) {
+          dropdown.remove();
+          return;
+        }
+
+        // Show loading state
+        item.classList.add('switching');
+        item.innerHTML = `<span class="ft-branch-item-name">${branch}</span><span class="ft-branch-item-check">...</span>`;
+
+        try {
+          const result = await checkoutTerminalBranch(session.cwd, branch);
+
+          // Update branch display
+          const branchNameEl = sidebar.querySelector('.ft-branch-name');
+          if (branchNameEl) branchNameEl.textContent = result.branch || branch;
+
+          dropdown.remove();
+          writeGitOutput('success', result.output || `Switched to branch '${branch}'`);
+
+          // Refresh file tree to show new branch's status
+          const tree = sidebar.querySelector('.ft-tree');
+          if (tree) {
+            tree.innerHTML = '<div class="ft-loading">Refreshing...</div>';
+            try {
+              const freshData = await fetchTerminalFiles(session.cwd);
+              tree.innerHTML = '';
+              renderFileItems(tree, freshData.items, session.cwd, 0, session);
+            } catch {}
+          }
+        } catch (err) {
+          item.classList.remove('switching');
+          item.innerHTML = `<span class="ft-branch-item-name">${branch}</span><span class="ft-branch-item-check" style="color:#ff5252">!</span>`;
+          writeGitOutput('error', err.message || 'Checkout failed');
+        }
+      });
+
+      dropdown.appendChild(item);
+    }
+  } catch {
+    dropdown.innerHTML = '<div class="ft-branch-loading">Failed to load branches</div>';
+  }
+
+  // Close on outside click
+  const closeHandler = (e) => {
+    if (!dropdown.contains(e.target) && e.target !== anchorEl && !anchorEl.contains(e.target)) {
+      dropdown.remove();
+      document.removeEventListener('click', closeHandler);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', closeHandler), 0);
+}
+
+/** Refit terminal after sidebar toggle */
+/** Switch the sidebar to a new working directory */
+async function switchSidebarCwd(sidebar, session, newCwd) {
+  if (!newCwd) return;
+  // Normalize comparison (case-insensitive on Windows, trim trailing slashes)
+  const norm = p => p.replace(/[\\/]+$/, '').toLowerCase();
+  if (norm(newCwd) === norm(session.cwd || '')) return;
+
+  // cd in terminal
+  if (session.ws?.readyState === WebSocket.OPEN) {
+    session.ws.send(JSON.stringify({ type: 'input', data: `cd "${newCwd}"\r` }));
+  }
+  // Update session
+  session.cwd = newCwd;
+  const cwdLabel = newCwd.split(/[\\/]/).pop() || '';
+  const profileDef = PROFILES.find(p => p.id === session.profile);
+  session.label = cwdLabel ? `${profileDef?.label || session.profile} · ${cwdLabel}` : session.label;
+  renderTabBar();
+  saveSessionRegistry();
+
+  // Close and reopen to rebuild with new cwd
+  sidebar.classList.remove('open');
+  sidebar.innerHTML = '';
+  await toggleFileTree(sidebar, session);
+}
+
+/** Open inline path editor replacing the header label */
+function openPathEditor(sidebar, session, header) {
+  // Don't open if already editing
+  if (header.querySelector('.ft-path-input')) return;
+
+  const label = header.querySelector('.ft-header-label');
+  const originalText = label.textContent;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'ft-path-input';
+  input.value = session.cwd || '';
+  input.placeholder = 'Enter directory path...';
+  input.spellcheck = false;
+
+  label.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const commit = async () => {
+    const val = input.value.trim();
+    if (val && val !== session.cwd) {
+      // Restore label first with new name
+      const newLabel = document.createElement('span');
+      newLabel.className = 'ft-header-label';
+      newLabel.dataset.tooltip = 'Click to change path';
+      newLabel.title = val;
+      newLabel.textContent = val.split(/[\\/]/).pop() || val;
+      input.replaceWith(newLabel);
+
+      // Wire click again on the new label
+      newLabel.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openPathEditor(sidebar, session, header);
+      });
+
+      await switchSidebarCwd(sidebar, session, val);
+    } else {
+      // Restore original label
+      const newLabel = document.createElement('span');
+      newLabel.className = 'ft-header-label';
+      newLabel.dataset.tooltip = 'Click to change path';
+      newLabel.title = session.cwd || '';
+      newLabel.textContent = originalText;
+      input.replaceWith(newLabel);
+      newLabel.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openPathEditor(sidebar, session, header);
+      });
+    }
+  };
+
+  input.addEventListener('blur', commit, { once: true });
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { input.value = session.cwd || ''; input.blur(); }
+  });
+}
+
+/** Get or create a local-only "Git" terminal tab for git output */
+function getGitOutputTab() {
+  // Reuse existing git output tab
+  const existing = _sessions.find(s => s._gitOutput);
+  if (existing) return existing;
+
+  // Create a local-only xterm (no PTY, no WebSocket)
+  const term = new _Terminal({
+    theme: XTERM_THEME,
+    fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
+    fontSize: 13,
+    lineHeight: 1.3,
+    cursorBlink: false,
+    cursorStyle: 'bar',
+    scrollback: 2000,
+    disableStdin: true,
+  });
+
+  const fitAddon = new _FitAddon();
+  term.loadAddon(fitAddon);
+
+  const viewport = document.createElement('div');
+  viewport.className = 'term-viewport';
+  viewport.dataset.sessionId = 'git-output';
+  $('term-container').appendChild(viewport);
+
+  term.open(viewport);
+
+  const session = {
+    id: 'git-output',
+    profile: 'shell',
+    cwd: null,
+    label: 'Git',
+    term, fitAddon, searchAddon: null, ws: null, viewport, ro: null,
+    renderer: null,
+    dead: false,
+    pinned: false,
+    _gitOutput: true,
+  };
+  _sessions.push(session);
+  renderTabBar();
+  return session;
+}
+
+/** Write git output to a dedicated Git tab in the parent terminal */
+function writeGitOutput(type, message) {
+  const gitTab = getGitOutputTab();
+  if (!gitTab?.term) return;
+
+  const color = type === 'error' ? '\x1b[31m' : '\x1b[32m';
+  const prefix = type === 'error' ? 'git error' : 'git';
+  const ts = new Date().toLocaleTimeString();
+  gitTab.term.write(`\x1b[2m${ts}\x1b[0m ${color}[${prefix}]\x1b[0m ${message.replace(/\n/g, '\r\n')}\r\n`);
+
+  // Switch to the git tab
+  const idx = _sessions.indexOf(gitTab);
+  if (idx >= 0) switchToSession(idx);
+}
+
+/** Add a draggable resize handle to the sidebar's right edge */
+function initSidebarResize(sidebar, session) {
+  // Don't double-add
+  if (sidebar.querySelector('.ft-resize-handle')) return;
+
+  const handle = document.createElement('div');
+  handle.className = 'ft-resize-handle';
+  sidebar.appendChild(handle);
+
+  let startX = 0;
+  let startW = 0;
+
+  const onMove = (e) => {
+    const dx = e.clientX - startX;
+    const newW = Math.max(140, Math.min(500, startW + dx));
+    sidebar.style.width = newW + 'px';
+  };
+
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    sidebar.classList.remove('resizing');
+    // Refit terminal to account for new sidebar width
+    refitActiveSession(session);
+  };
+
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    startX = e.clientX;
+    startW = sidebar.offsetWidth;
+    sidebar.classList.add('resizing');
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+function refitActiveSession(session) {
+  requestAnimationFrame(() => {
+    if (session?.fitAddon) {
+      try { session.fitAddon.fit(); } catch {}
+    }
+  });
 }

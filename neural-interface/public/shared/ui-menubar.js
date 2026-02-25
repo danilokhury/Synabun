@@ -239,7 +239,7 @@ function wireSkillsMenu() {
   registerAction('open-skills', () => emit('skills:open'));
 }
 
-// ── Terminal Menu ──
+// ── Apps Menu (formerly Terminal) ──
 
 function wireTerminalMenu() {
   const items = {
@@ -247,6 +247,7 @@ function wireTerminalMenu() {
     'menu-terminal-codex':   () => emit('terminal:open', { profile: 'codex' }),
     'menu-terminal-gemini':  () => emit('terminal:open', { profile: 'gemini' }),
     'menu-terminal-shell':   () => emit('terminal:open', { profile: 'shell' }),
+    'menu-terminal-browser': () => emit('browser:open'),
     'menu-terminal-toggle':  () => emit('terminal:toggle'),
   };
   Object.entries(items).forEach(([id, handler]) => {

@@ -65,10 +65,11 @@ export const DEFAULT_KEYBINDS = {
   'toggle-explorer':     'f',
   'toggle-focus-mode':   'v',
   'toggle-minimap':      'm',
-  'open-keybinds':       null,
+  'open-keybinds':       'n',
   'launch-claude':       '1',
   'launch-codex':        '2',
   'launch-gemini':       '3',
+  'launch-browser':      'b',
 };
 
 /** Display metadata for each rebindable action. */
@@ -83,7 +84,8 @@ export const KEYBIND_META = {
   'toggle-focus-mode':   { label: 'Toggle Focus Mode',     group: 'Navigation' },
   'toggle-minimap':      { label: 'Toggle Minimap',        group: 'View' },
   'open-keybinds':       { label: 'Open Keybinds',         group: 'Settings' },
-  'launch-claude':       { label: 'Claude Code',           group: 'Launch CLI', icon: 'claude' },
-  'launch-codex':        { label: 'Codex CLI',             group: 'Launch CLI', icon: 'codex' },
-  'launch-gemini':       { label: 'Gemini CLI',            group: 'Launch CLI', icon: 'gemini' },
+  'launch-claude':       { label: 'Claude Code',           group: 'Launch App', icon: 'claude' },
+  'launch-codex':        { label: 'Codex CLI',             group: 'Launch App', icon: 'codex' },
+  'launch-gemini':       { label: 'Gemini CLI',            group: 'Launch App', icon: 'gemini' },
+  'launch-browser':      { label: 'Browser',               group: 'Launch App', icon: 'browser' },
 };

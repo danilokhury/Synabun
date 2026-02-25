@@ -578,6 +578,74 @@ export async function deleteTerminalSession(sessionId) {
   });
 }
 
+export async function fetchTerminalFiles(dirPath, search) {
+  let url = `/api/terminal/files?path=${encodeURIComponent(dirPath)}`;
+  if (search) url += `&search=${encodeURIComponent(search)}`;
+  return jsonFetch(url);
+}
+
+export async function fetchTerminalBranches(dirPath) {
+  return jsonFetch(`/api/terminal/branches?path=${encodeURIComponent(dirPath)}`);
+}
+
+export async function checkoutTerminalBranch(dirPath, branch) {
+  return jsonFetch('/api/terminal/checkout', {
+    method: 'POST',
+    ...jsonBody({ path: dirPath, branch }),
+  });
+}
+
+// ─── Browser Sessions ────────────────────
+
+export async function fetchBrowserSessions() {
+  return jsonFetch('/api/browser/sessions');
+}
+
+export async function createBrowserSession(url, width, height, fingerprint) {
+  return jsonFetch('/api/browser/sessions', {
+    method: 'POST',
+    ...jsonBody({ url, width, height, ...fingerprint }),
+  });
+}
+
+export async function deleteBrowserSession(sessionId) {
+  return jsonFetch(`/api/browser/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function navigateBrowser(sessionId, url) {
+  return jsonFetch(`/api/browser/sessions/${encodeURIComponent(sessionId)}/navigate`, {
+    method: 'POST',
+    ...jsonBody({ url }),
+  });
+}
+
+export async function browserBack(sessionId) {
+  return jsonFetch(`/api/browser/sessions/${encodeURIComponent(sessionId)}/back`, {
+    method: 'POST',
+    ...jsonBody({}),
+  });
+}
+
+export async function browserForward(sessionId) {
+  return jsonFetch(`/api/browser/sessions/${encodeURIComponent(sessionId)}/forward`, {
+    method: 'POST',
+    ...jsonBody({}),
+  });
+}
+
+export async function browserReload(sessionId) {
+  return jsonFetch(`/api/browser/sessions/${encodeURIComponent(sessionId)}/reload`, {
+    method: 'POST',
+    ...jsonBody({}),
+  });
+}
+
+export async function fetchBrowserCdp(sessionId) {
+  return jsonFetch(`/api/browser/sessions/${encodeURIComponent(sessionId)}/cdp`);
+}
+
 // ─── Setup (Onboarding) ─────────────────
 
 export async function checkSetupDeps() {
