@@ -14,6 +14,7 @@ import { categoryDeleteSchema, categoryDeleteDescription, handleCategoryDelete }
 import { categoryUpdateSchema, categoryUpdateDescription, handleCategoryUpdate } from './tools/category-update.js';
 import { categoryListSchema, categoryListDescription, handleCategoryList } from './tools/category-list.js';
 import { syncSchema, syncDescription, handleSync } from './tools/sync.js';
+import { registerBrowserTools } from './tools/browser.js';
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, switchCategoryConnection, initCategoryCache } from './services/categories.js';
 
 // Register all tools on a given McpServer instance.
@@ -30,6 +31,7 @@ export function registerTools(server: McpServer) {
   server.tool('category_delete', categoryDeleteDescription, categoryDeleteSchema, handleCategoryDelete);
   server.tool('category_list', categoryListDescription, categoryListSchema, handleCategoryList);
   server.tool('sync', syncDescription, syncSchema, handleSync);
+  registerBrowserTools(server);
   return { rememberTool, recallTool, reflectTool, memoriesTool };
 }
 

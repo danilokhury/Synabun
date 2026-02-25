@@ -36,6 +36,7 @@ const CHEVRON_ICON = '<svg class="cc-section-chevron" viewBox="0 0 24 24"><polyl
 const ANTHROPIC_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z" fill="currentColor"/></svg>';
 const GEMINI_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="currentColor"/></svg>';
 const OPENAI_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z" fill="currentColor"/></svg>';
+const BROWSER_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><ellipse cx="12" cy="12" rx="4" ry="10" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="2" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 7h15M4.5 17h15" fill="none" stroke="currentColor" stroke-width="1"/></svg>';
 
 // ── Toast helper ──
 
@@ -412,6 +413,420 @@ function buildSetupTab(setupStatus) {
               <button class="cc-copy-btn" id="setup-codex-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
               <div class="setup-hint">Paste into your project's <code>AGENTS.md</code></div>
             </div>
+          </div>
+        </div>
+
+        <!-- BROWSER (Playwright) -->
+        <div class="iface-section collapsed" data-collapsible id="setup-browser">
+          <div class="gfx-group-title">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${CHEVRON_ICON}
+              ${BROWSER_ICON}
+              <span>Browser</span>
+              <span class="setup-status-badge inactive" id="setup-browser-badge">Playwright</span>
+            </span>
+          </div>
+          <div class="cc-section-body">
+
+            <!-- ════ QUICK SETUP (always visible, no collapsible) ════ -->
+            <div class="bc-card" id="bcg-executable">
+              <div class="bc-card-row">
+                <label class="bc-lbl">Chrome Path</label>
+                <div class="browser-cfg-input-row">
+                  <input type="text" class="browser-cfg-input" id="bc-executablePath" placeholder="Auto-detect" spellcheck="false" autocomplete="off">
+                  <button class="cli-detect-btn" id="bc-detect-executable" data-tooltip="Detect">
+                    <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  </button>
+                </div>
+                <div class="browser-cfg-hint" id="bc-detected-path"></div>
+              </div>
+              <div class="bc-card-row">
+                <label class="bc-lbl">Mode</label>
+                <div class="bc-inline-group">
+                  <input type="hidden" id="bc-headless" value="true">
+                  <div class="cc-dropdown bc-dropdown" data-for="bc-headless">
+                    <button class="cc-dropdown-trigger" type="button">
+                      <span class="cc-dropdown-value">Headless</span>
+                      <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <div class="cc-dropdown-menu">
+                      <div class="cc-dropdown-item active" data-value="true">Headless</div>
+                      <div class="cc-dropdown-item" data-value="new">New Headless</div>
+                      <div class="cc-dropdown-item" data-value="false">Headed</div>
+                    </div>
+                  </div>
+                  <input type="hidden" id="bc-channel" value="">
+                  <div class="cc-dropdown bc-dropdown" data-for="bc-channel">
+                    <button class="cc-dropdown-trigger" type="button">
+                      <span class="cc-dropdown-value">Default channel</span>
+                      <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <div class="cc-dropdown-menu">
+                      <div class="cc-dropdown-item active" data-value="">Default channel</div>
+                      <div class="cc-dropdown-item" data-value="chrome">Chrome</div>
+                      <div class="cc-dropdown-item" data-value="chrome-beta">Chrome Beta</div>
+                      <div class="cc-dropdown-item" data-value="chrome-dev">Chrome Dev</div>
+                      <div class="cc-dropdown-item" data-value="chrome-canary">Chrome Canary</div>
+                      <div class="cc-dropdown-item" data-value="msedge">MS Edge</div>
+                      <div class="cc-dropdown-item" data-value="msedge-beta">MS Edge Beta</div>
+                      <div class="cc-dropdown-item" data-value="msedge-dev">MS Edge Dev</div>
+                      <div class="cc-dropdown-item" data-value="msedge-canary">MS Edge Canary</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="bc-card-row">
+                <label class="bc-lbl">Viewport</label>
+                <div class="bc-inline-group">
+                  <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-viewportWidth" value="1280" min="320" max="7680" step="1" data-tooltip="Width">
+                  <span class="bc-x">&times;</span>
+                  <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-viewportHeight" value="800" min="200" max="4320" step="1" data-tooltip="Height">
+                  <span class="bc-sep"></span>
+                  <input type="number" class="browser-cfg-input" id="bc-deviceScaleFactor" value="1" min="0.5" max="5" step="0.25" style="width:52px;flex:none" data-tooltip="DPR">
+                  <span class="bc-unit">DPR</span>
+                </div>
+              </div>
+              <div class="bc-card-row">
+                <label class="bc-lbl">Screencast</label>
+                <div class="bc-inline-group">
+                  <input type="hidden" id="bc-screencastFormat" value="jpeg">
+                  <div class="cc-dropdown bc-dropdown" data-for="bc-screencastFormat" style="width:72px;flex:none">
+                    <button class="cc-dropdown-trigger" type="button">
+                      <span class="cc-dropdown-value">JPEG</span>
+                      <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <div class="cc-dropdown-menu">
+                      <div class="cc-dropdown-item active" data-value="jpeg">JPEG</div>
+                      <div class="cc-dropdown-item" data-value="png">PNG</div>
+                    </div>
+                  </div>
+                  <input type="range" class="browser-cfg-range" id="bc-screencastQuality" value="60" min="10" max="100" step="5" style="flex:1;min-width:60px">
+                  <span class="browser-cfg-range-val" id="bc-screencastQuality-val">60%</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ════ PROFILE ════ -->
+            <div class="bc-card bc-card-accent">
+              <div class="bc-card-header">Profile &amp; Storage</div>
+              <div class="bc-card-row">
+                <label class="bc-lbl">User Data Dir</label>
+                <input type="text" class="browser-cfg-input" id="bc-userDataDir" placeholder="Empty = clean sandbox" spellcheck="false" autocomplete="off">
+              </div>
+              <div class="bc-protip">
+                <strong>Pro tip:</strong> Create a dedicated Chrome profile for SynaBun: Chrome &rarr; profile icon &rarr; <em>Add</em> &rarr; name it "SynaBun". Then paste the path from <code>chrome://version</code> &rarr; "Profile Path". Use the <strong>parent folder</strong> (User Data), not the subfolder. Chrome must be fully closed.
+              </div>
+              <div class="bc-card-row">
+                <label class="bc-lbl">Persist State</label>
+                <div class="bc-inline-group">
+                  <button class="cc-toggle" id="bc-persistStorage"></button>
+                  <span class="bc-hint-inline">Save cookies &amp; localStorage between sessions</span>
+                </div>
+              </div>
+              <div class="bc-card-row" id="bc-storagePath-row">
+                <label class="bc-lbl">Storage File</label>
+                <input type="text" class="browser-cfg-input" id="bc-storageStatePath" placeholder="data/browser-storage.json" spellcheck="false" disabled>
+              </div>
+              <div class="bc-card-row">
+                <label class="bc-lbl">Clear on Start</label>
+                <div class="bc-inline-group">
+                  <button class="cc-toggle" id="bc-clearStorageOnStart"></button>
+                </div>
+              </div>
+            </div>
+
+            <!-- ════ IDENTITY & STEALTH ════ -->
+            <div class="browser-cfg-group" id="bcg-identity">
+              <div class="browser-cfg-group-title" data-collapsible-sub>
+                <svg class="browser-cfg-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                Identity &amp; Stealth
+              </div>
+              <div class="browser-cfg-group-body">
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Stealth Fingerprint</label>
+                  <div class="bc-inline-group">
+                    <button class="cc-toggle on" id="bc-stealthFingerprint"></button>
+                    <span class="bc-hint-inline">webdriver=false, fake plugins, language cloning</span>
+                  </div>
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">User Agent</label>
+                  <input type="text" class="browser-cfg-input" id="bc-userAgent" placeholder="Auto-clone from real browser" spellcheck="false">
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Locale</label>
+                  <div class="bc-inline-group">
+                    <input type="text" class="browser-cfg-input" id="bc-acceptLanguage" placeholder="en-US,en;q=0.9" spellcheck="false" style="flex:1">
+                    <input type="text" class="browser-cfg-input" id="bc-locale" placeholder="en-US" spellcheck="false" style="width:80px;flex:none">
+                    <input type="text" class="browser-cfg-input" id="bc-timezoneId" placeholder="America/New_York" spellcheck="false" style="flex:1">
+                  </div>
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Extra Headers</label>
+                  <textarea class="browser-cfg-textarea" id="bc-extraHTTPHeaders" rows="2" placeholder='{"X-Custom": "value"}' spellcheck="false"></textarea>
+                </div>
+              </div>
+            </div>
+
+            <!-- ════ DISPLAY ════ -->
+            <div class="browser-cfg-group" id="bcg-viewport">
+              <div class="browser-cfg-group-title" data-collapsible-sub>
+                <svg class="browser-cfg-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                Display &amp; Emulation
+              </div>
+              <div class="browser-cfg-group-body">
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Screen Size</label>
+                  <div class="bc-inline-group">
+                    <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-screenWidth" value="1920" min="320" max="7680" step="1">
+                    <span class="bc-x">&times;</span>
+                    <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-screenHeight" value="1080" min="200" max="4320" step="1">
+                  </div>
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Emulation</label>
+                  <div class="bc-inline-group">
+                    <button class="cc-toggle" id="bc-isMobile"></button>
+                    <span class="bc-hint-inline">Mobile</span>
+                    <span class="bc-sep"></span>
+                    <button class="cc-toggle" id="bc-hasTouch"></button>
+                    <span class="bc-hint-inline">Touch</span>
+                  </div>
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Appearance</label>
+                  <div class="bc-inline-group">
+                    <input type="hidden" id="bc-colorScheme" value="">
+                    <div class="cc-dropdown bc-dropdown" data-for="bc-colorScheme">
+                      <button class="cc-dropdown-trigger" type="button">
+                        <span class="cc-dropdown-value">Color: auto</span>
+                        <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                      </button>
+                      <div class="cc-dropdown-menu">
+                        <div class="cc-dropdown-item active" data-value="">Color: auto</div>
+                        <div class="cc-dropdown-item" data-value="light">Light</div>
+                        <div class="cc-dropdown-item" data-value="dark">Dark</div>
+                        <div class="cc-dropdown-item" data-value="no-preference">No pref</div>
+                      </div>
+                    </div>
+                    <input type="hidden" id="bc-reducedMotion" value="">
+                    <div class="cc-dropdown bc-dropdown" data-for="bc-reducedMotion">
+                      <button class="cc-dropdown-trigger" type="button">
+                        <span class="cc-dropdown-value">Motion: auto</span>
+                        <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                      </button>
+                      <div class="cc-dropdown-menu">
+                        <div class="cc-dropdown-item active" data-value="">Motion: auto</div>
+                        <div class="cc-dropdown-item" data-value="reduce">Reduce</div>
+                        <div class="cc-dropdown-item" data-value="no-preference">No pref</div>
+                      </div>
+                    </div>
+                    <input type="hidden" id="bc-forcedColors" value="">
+                    <div class="cc-dropdown bc-dropdown" data-for="bc-forcedColors">
+                      <button class="cc-dropdown-trigger" type="button">
+                        <span class="cc-dropdown-value">Colors: auto</span>
+                        <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                      </button>
+                      <div class="cc-dropdown-menu">
+                        <div class="cc-dropdown-item active" data-value="">Colors: auto</div>
+                        <div class="cc-dropdown-item" data-value="active">Forced</div>
+                        <div class="cc-dropdown-item" data-value="none">None</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ════ ADVANCED ════ -->
+            <div class="browser-cfg-group" id="bcg-advanced">
+              <div class="browser-cfg-group-title" data-collapsible-sub>
+                <svg class="browser-cfg-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                Advanced
+              </div>
+              <div class="browser-cfg-group-body">
+                <!-- Timeouts & Launch -->
+                <div class="bc-adv-section">Timeouts &amp; Launch</div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Timeouts</label>
+                  <div class="bc-inline-group">
+                    <input type="number" class="browser-cfg-input" id="bc-timeout" value="30000" min="0" max="300000" step="1000" style="width:80px;flex:none">
+                    <span class="bc-unit">action</span>
+                    <input type="number" class="browser-cfg-input" id="bc-navigationTimeout" value="30000" min="0" max="300000" step="1000" style="width:80px;flex:none">
+                    <span class="bc-unit">nav</span>
+                    <input type="number" class="browser-cfg-input" id="bc-slowMo" value="0" min="0" max="10000" step="50" style="width:64px;flex:none">
+                    <span class="bc-unit">slow</span>
+                  </div>
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Extra Args</label>
+                  <input type="text" class="browser-cfg-input" id="bc-extraArgs" placeholder="--flag1 --flag2=value" spellcheck="false">
+                </div>
+
+                <!-- Screencast (advanced) -->
+                <div class="bc-adv-section">Screencast</div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Resolution</label>
+                  <div class="bc-inline-group">
+                    <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-screencastMaxWidth" value="1280" min="320" max="3840" step="1">
+                    <span class="bc-x">&times;</span>
+                    <input type="number" class="browser-cfg-input browser-cfg-input-sm" id="bc-screencastMaxHeight" value="800" min="200" max="2160" step="1">
+                    <span class="bc-sep"></span>
+                    <span class="bc-unit">every</span>
+                    <input type="number" class="browser-cfg-input" id="bc-screencastEveryNthFrame" value="1" min="1" max="30" step="1" style="width:44px;flex:none">
+                    <span class="bc-unit">frame</span>
+                  </div>
+                </div>
+
+                <!-- Security -->
+                <div class="bc-adv-section">Security</div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Flags</label>
+                  <div class="bc-inline-group bc-toggle-row">
+                    <div class="bc-toggle-item"><button class="cc-toggle on" id="bc-javaScriptEnabled"></button><span>JS</span></div>
+                    <div class="bc-toggle-item"><button class="cc-toggle" id="bc-ignoreHTTPSErrors"></button><span>Skip HTTPS</span></div>
+                    <div class="bc-toggle-item"><button class="cc-toggle" id="bc-bypassCSP"></button><span>Bypass CSP</span></div>
+                    <div class="bc-toggle-item"><button class="cc-toggle on" id="bc-acceptDownloads"></button><span>Downloads</span></div>
+                    <div class="bc-toggle-item"><button class="cc-toggle on" id="bc-strictSelectors"></button><span>Strict</span></div>
+                  </div>
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Workers</label>
+                  <input type="hidden" id="bc-serviceWorkers" value="allow">
+                  <div class="cc-dropdown bc-dropdown" data-for="bc-serviceWorkers">
+                    <button class="cc-dropdown-trigger" type="button">
+                      <span class="cc-dropdown-value">Allow</span>
+                      <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                    <div class="cc-dropdown-menu">
+                      <div class="cc-dropdown-item active" data-value="allow">Allow</div>
+                      <div class="cc-dropdown-item" data-value="block">Block</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Geolocation -->
+                <div class="bc-adv-section">Geolocation</div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Override</label>
+                  <div class="bc-inline-group">
+                    <button class="cc-toggle" id="bc-geoEnabled"></button>
+                    <input type="number" class="browser-cfg-input" id="bc-geoLatitude" value="0" min="-90" max="90" step="0.0001" disabled style="width:80px;flex:none" placeholder="lat">
+                    <input type="number" class="browser-cfg-input" id="bc-geoLongitude" value="0" min="-180" max="180" step="0.0001" disabled style="width:80px;flex:none" placeholder="lng">
+                    <input type="number" class="browser-cfg-input" id="bc-geoAccuracy" value="100" min="0" max="100000" step="1" disabled style="width:64px;flex:none" placeholder="acc">
+                  </div>
+                </div>
+
+                <!-- Permissions -->
+                <div class="bc-adv-section">Permissions</div>
+                <div class="browser-cfg-checkbox-grid">
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-geolocation"> Geolocation</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-midi"> MIDI</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-midi-sysex"> MIDI SysEx</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-notifications"> Notifications</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-camera"> Camera</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-microphone"> Microphone</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-background-sync"> Bg Sync</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-ambient-light-sensor"> Light</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-accelerometer"> Accel</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-gyroscope"> Gyro</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-magnetometer"> Magnet</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-clipboard-read"> Clipboard R</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-clipboard-write"> Clipboard W</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-payment-handler"> Payment</label>
+                  <label class="browser-cfg-checkbox"><input type="checkbox" id="bc-perm-storage-access"> Storage</label>
+                </div>
+
+                <!-- Network & Proxy -->
+                <div class="bc-adv-section">Network &amp; Proxy</div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Offline</label>
+                  <div class="bc-inline-group">
+                    <button class="cc-toggle" id="bc-offline"></button>
+                  </div>
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Proxy</label>
+                  <div class="bc-inline-group">
+                    <input type="text" class="browser-cfg-input" id="bc-proxyServer" placeholder="http://host:port" spellcheck="false" style="flex:2">
+                    <input type="text" class="browser-cfg-input" id="bc-proxyBypass" placeholder="bypass" spellcheck="false" style="flex:1">
+                  </div>
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Proxy Auth</label>
+                  <div class="bc-inline-group">
+                    <input type="text" class="browser-cfg-input" id="bc-proxyUsername" placeholder="user" spellcheck="false" autocomplete="off">
+                    <input type="password" class="browser-cfg-input" id="bc-proxyPassword" placeholder="pass" autocomplete="off">
+                  </div>
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">HTTP Auth</label>
+                  <div class="bc-inline-group">
+                    <input type="text" class="browser-cfg-input" id="bc-httpCredUser" placeholder="user" spellcheck="false" autocomplete="off">
+                    <input type="password" class="browser-cfg-input" id="bc-httpCredPass" placeholder="pass" autocomplete="off">
+                  </div>
+                </div>
+
+                <!-- Recording -->
+                <div class="bc-adv-section">Recording</div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">Video</label>
+                  <div class="bc-inline-group">
+                    <button class="cc-toggle" id="bc-recordVideo"></button>
+                    <input type="text" class="browser-cfg-input" id="bc-recordVideoDir" placeholder="data/videos" spellcheck="false" disabled style="flex:1">
+                    <input type="number" class="browser-cfg-input" id="bc-recordVideoWidth" value="1280" min="320" max="3840" step="1" disabled style="width:64px;flex:none">
+                    <span class="bc-x">&times;</span>
+                    <input type="number" class="browser-cfg-input" id="bc-recordVideoHeight" value="720" min="200" max="2160" step="1" disabled style="width:64px;flex:none">
+                  </div>
+                </div>
+                <div class="bc-card-row">
+                  <label class="bc-lbl">HAR</label>
+                  <div class="bc-inline-group">
+                    <button class="cc-toggle" id="bc-recordHar"></button>
+                    <input type="text" class="browser-cfg-input" id="bc-recordHarPath" placeholder="data/network.har" spellcheck="false" disabled style="flex:1">
+                  </div>
+                </div>
+                <div id="bc-recordHar-fields">
+                  <div class="bc-card-row">
+                    <label class="bc-lbl"></label>
+                    <div class="bc-inline-group">
+                      <input type="hidden" id="bc-recordHarContent" value="embed" disabled>
+                      <div class="cc-dropdown bc-dropdown disabled" data-for="bc-recordHarContent">
+                        <button class="cc-dropdown-trigger" type="button" disabled>
+                          <span class="cc-dropdown-value">Content: Embed</span>
+                          <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                        </button>
+                        <div class="cc-dropdown-menu">
+                          <div class="cc-dropdown-item active" data-value="embed">Content: Embed</div>
+                          <div class="cc-dropdown-item" data-value="attach">Attach</div>
+                          <div class="cc-dropdown-item" data-value="omit">Omit</div>
+                        </div>
+                      </div>
+                      <input type="hidden" id="bc-recordHarMode" value="full" disabled>
+                      <div class="cc-dropdown bc-dropdown disabled" data-for="bc-recordHarMode">
+                        <button class="cc-dropdown-trigger" type="button" disabled>
+                          <span class="cc-dropdown-value">Mode: Full</span>
+                          <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                        </button>
+                        <div class="cc-dropdown-menu">
+                          <div class="cc-dropdown-item active" data-value="full">Mode: Full</div>
+                          <div class="cc-dropdown-item" data-value="minimal">Minimal</div>
+                        </div>
+                      </div>
+                      <input type="text" class="browser-cfg-input" id="bc-recordHarUrlFilter" placeholder="URL filter glob" spellcheck="false" disabled style="flex:1">
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ════ ACTIONS ════ -->
+            <div class="bc-actions">
+              <button class="bc-action-btn bc-action-save" id="bc-save-all">Save</button>
+              <button class="bc-action-btn bc-action-reset" id="bc-reset-all">Reset</button>
+            </div>
+            <div class="bc-status-row"><span class="browser-cfg-hint" id="bc-save-status"></span></div>
+
           </div>
         </div>
 
@@ -2481,6 +2896,498 @@ export async function openSettingsModal() {
       wireCopyBtn('setup-codex-config-copy', () => cachedConfig, 'Copy TOML Config');
     }
     wireRulesetPreview('codex', 'codex');
+  }
+
+  // ── Browser config (Setup tab) ──
+  {
+    // Sub-group collapsing
+    overlay.querySelectorAll('.browser-cfg-group-title[data-collapsible-sub]').forEach(title => {
+      title.addEventListener('click', () => {
+        title.closest('.browser-cfg-group').classList.toggle('expanded');
+      });
+    });
+
+    // Helper: get/set toggle state
+    const bcToggle = (id) => overlay.querySelector(`#${id}`);
+    const isToggleOn = (id) => bcToggle(id)?.classList.contains('on') || false;
+    const setToggle = (id, on) => { const t = bcToggle(id); if (t) { t.classList.toggle('on', on); } };
+
+    // Wire toggle clicks
+    const toggleIds = [
+      'bc-isMobile', 'bc-hasTouch', 'bc-stealthFingerprint', 'bc-geoEnabled',
+      'bc-offline', 'bc-javaScriptEnabled', 'bc-ignoreHTTPSErrors', 'bc-bypassCSP',
+      'bc-acceptDownloads', 'bc-strictSelectors', 'bc-persistStorage',
+      'bc-clearStorageOnStart', 'bc-recordVideo', 'bc-recordHar',
+    ];
+    toggleIds.forEach(id => {
+      const el = overlay.querySelector(`#${id}`);
+      if (el) el.addEventListener('click', () => el.classList.toggle('on'));
+    });
+
+    // Wire all bc-dropdown custom selects
+    overlay.querySelectorAll('.bc-dropdown').forEach(dd => {
+      const trigger = dd.querySelector('.cc-dropdown-trigger');
+      const menu = dd.querySelector('.cc-dropdown-menu');
+      const label = dd.querySelector('.cc-dropdown-value');
+      const hiddenId = dd.dataset.for;
+      const hidden = hiddenId ? overlay.querySelector(`#${hiddenId}`) : null;
+      if (!trigger || !menu) return;
+
+      trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (dd.classList.contains('disabled')) return;
+        // Close other open dropdowns first
+        overlay.querySelectorAll('.bc-dropdown.open').forEach(other => {
+          if (other !== dd) other.classList.remove('open');
+        });
+        dd.classList.toggle('open');
+      });
+
+      menu.querySelectorAll('.cc-dropdown-item').forEach(item => {
+        item.addEventListener('click', () => {
+          const val = item.dataset.value;
+          if (hidden) hidden.value = val;
+          if (label) label.textContent = item.textContent;
+          menu.querySelectorAll('.cc-dropdown-item').forEach(i => i.classList.remove('active'));
+          item.classList.add('active');
+          dd.classList.remove('open');
+        });
+      });
+    });
+
+    // Close dropdowns on outside click
+    document.addEventListener('click', (e) => {
+      overlay.querySelectorAll('.bc-dropdown.open').forEach(dd => {
+        if (!dd.contains(e.target)) dd.classList.remove('open');
+      });
+    });
+
+    // Sync dropdown display from hidden input value (for applyBrowserConfig)
+    function syncBcDropdowns() {
+      overlay.querySelectorAll('.bc-dropdown').forEach(dd => {
+        const hiddenId = dd.dataset.for;
+        const hidden = hiddenId ? overlay.querySelector(`#${hiddenId}`) : null;
+        if (!hidden) return;
+        const val = hidden.value;
+        const label = dd.querySelector('.cc-dropdown-value');
+        const menu = dd.querySelector('.cc-dropdown-menu');
+        if (!menu) return;
+        menu.querySelectorAll('.cc-dropdown-item').forEach(item => {
+          const isMatch = item.dataset.value === val;
+          item.classList.toggle('active', isMatch);
+          if (isMatch && label) label.textContent = item.textContent;
+        });
+        // Sync disabled state
+        dd.classList.toggle('disabled', !!hidden.disabled);
+        const trigger = dd.querySelector('.cc-dropdown-trigger');
+        if (trigger) trigger.disabled = !!hidden.disabled;
+      });
+    }
+
+    // Geo toggle → enable/disable geo fields
+    const geoToggle = bcToggle('bc-geoEnabled');
+    if (geoToggle) {
+      geoToggle.addEventListener('click', () => {
+        const on = isToggleOn('bc-geoEnabled');
+        ['bc-geoLatitude', 'bc-geoLongitude', 'bc-geoAccuracy'].forEach(id => {
+          const inp = overlay.querySelector(`#${id}`);
+          if (inp) inp.disabled = !on;
+        });
+      });
+    }
+
+    // Persist storage toggle → enable/disable storage path
+    const persistToggle = bcToggle('bc-persistStorage');
+    if (persistToggle) {
+      persistToggle.addEventListener('click', () => {
+        const on = isToggleOn('bc-persistStorage');
+        const inp = overlay.querySelector('#bc-storageStatePath');
+        if (inp) inp.disabled = !on;
+      });
+    }
+
+    // Record video toggle → enable/disable video fields
+    const vidToggle = bcToggle('bc-recordVideo');
+    if (vidToggle) {
+      vidToggle.addEventListener('click', () => {
+        const on = isToggleOn('bc-recordVideo');
+        ['bc-recordVideoDir', 'bc-recordVideoWidth', 'bc-recordVideoHeight'].forEach(id => {
+          const inp = overlay.querySelector(`#${id}`);
+          if (inp) inp.disabled = !on;
+        });
+      });
+    }
+
+    // Record HAR toggle → enable/disable HAR fields + dropdowns
+    const harToggle = bcToggle('bc-recordHar');
+    if (harToggle) {
+      harToggle.addEventListener('click', () => {
+        const on = isToggleOn('bc-recordHar');
+        ['bc-recordHarPath', 'bc-recordHarContent', 'bc-recordHarMode', 'bc-recordHarUrlFilter'].forEach(id => {
+          const inp = overlay.querySelector(`#${id}`);
+          if (inp) inp.disabled = !on;
+          // Also toggle dropdown container
+          const dd = overlay.querySelector(`.bc-dropdown[data-for="${id}"]`);
+          if (dd) {
+            dd.classList.toggle('disabled', !on);
+            const trigger = dd.querySelector('.cc-dropdown-trigger');
+            if (trigger) trigger.disabled = !on;
+          }
+        });
+      });
+    }
+
+    // Screencast quality range → value display
+    const scRange = overlay.querySelector('#bc-screencastQuality');
+    const scVal = overlay.querySelector('#bc-screencastQuality-val');
+    if (scRange && scVal) {
+      scRange.addEventListener('input', () => { scVal.textContent = scRange.value; });
+    }
+
+    // Auto-detect executable
+    const detectBtn = overlay.querySelector('#bc-detect-executable');
+    if (detectBtn) {
+      detectBtn.addEventListener('click', async () => {
+        detectBtn.style.opacity = '0.4'; detectBtn.style.pointerEvents = 'none';
+        try {
+          const res = await fetch('/api/browser/config');
+          const data = await res.json();
+          const hint = overlay.querySelector('#bc-detected-path');
+          if (data.detectedPath) {
+            if (hint) hint.textContent = `Detected: ${data.detectedPath}`;
+            const inp = overlay.querySelector('#bc-executablePath');
+            if (inp && !inp.value.trim()) inp.value = data.detectedPath;
+          } else {
+            if (hint) hint.textContent = 'No Chrome/Chromium found — Playwright will use its bundled browser';
+          }
+        } catch (err) {
+          const hint = overlay.querySelector('#bc-detected-path');
+          if (hint) hint.textContent = 'Detection failed: ' + err.message;
+        } finally { detectBtn.style.opacity = ''; detectBtn.style.pointerEvents = ''; }
+      });
+    }
+
+    // Collect all config from the form
+    function collectBrowserConfig() {
+      const val = (id) => (overlay.querySelector(`#${id}`)?.value || '').trim();
+      const num = (id, def) => { const v = parseInt(val(id), 10); return isNaN(v) ? def : v; };
+      const numF = (id, def) => { const v = parseFloat(val(id)); return isNaN(v) ? def : v; };
+
+      // Permissions
+      const permissions = [];
+      overlay.querySelectorAll('.browser-cfg-checkbox-grid input[type="checkbox"]').forEach(cb => {
+        if (cb.checked) permissions.push(cb.id.replace('bc-perm-', ''));
+      });
+
+      const config = {
+        // Executable
+        executablePath: val('bc-executablePath') || null,
+        userDataDir: val('bc-userDataDir') || null,
+        headless: val('bc-headless') === 'false' ? false : val('bc-headless') === 'new' ? 'new' : true,
+        channel: val('bc-channel') || null,
+        slowMo: num('bc-slowMo', 0),
+        timeout: num('bc-timeout', 30000),
+        navigationTimeout: num('bc-navigationTimeout', 30000),
+        extraArgs: val('bc-extraArgs') || null,
+
+        // Viewport & Display
+        viewport: {
+          width: num('bc-viewportWidth', 1280),
+          height: num('bc-viewportHeight', 800),
+        },
+        screen: {
+          width: num('bc-screenWidth', 1920),
+          height: num('bc-screenHeight', 1080),
+        },
+        deviceScaleFactor: numF('bc-deviceScaleFactor', 1),
+        isMobile: isToggleOn('bc-isMobile'),
+        hasTouch: isToggleOn('bc-hasTouch'),
+
+        // Identity & Headers
+        userAgent: val('bc-userAgent') || null,
+        acceptLanguage: val('bc-acceptLanguage') || null,
+        locale: val('bc-locale') || null,
+        timezoneId: val('bc-timezoneId') || null,
+        extraHTTPHeaders: (() => {
+          try { const v = val('bc-extraHTTPHeaders'); return v ? JSON.parse(v) : null; }
+          catch { return null; }
+        })(),
+        stealthFingerprint: isToggleOn('bc-stealthFingerprint'),
+
+        // Geolocation
+        geolocation: isToggleOn('bc-geoEnabled') ? {
+          latitude: numF('bc-geoLatitude', 0),
+          longitude: numF('bc-geoLongitude', 0),
+          accuracy: numF('bc-geoAccuracy', 100),
+        } : null,
+
+        // Permissions
+        permissions: permissions.length ? permissions : null,
+
+        // Network & Proxy
+        offline: isToggleOn('bc-offline'),
+        proxy: val('bc-proxyServer') ? {
+          server: val('bc-proxyServer'),
+          bypass: val('bc-proxyBypass') || undefined,
+          username: val('bc-proxyUsername') || undefined,
+          password: val('bc-proxyPassword') || undefined,
+        } : null,
+        httpCredentials: val('bc-httpCredUser') ? {
+          username: val('bc-httpCredUser'),
+          password: val('bc-httpCredPass'),
+        } : null,
+
+        // Appearance
+        colorScheme: val('bc-colorScheme') || null,
+        reducedMotion: val('bc-reducedMotion') || null,
+        forcedColors: val('bc-forcedColors') || null,
+
+        // Scripting & Security
+        javaScriptEnabled: isToggleOn('bc-javaScriptEnabled'),
+        ignoreHTTPSErrors: isToggleOn('bc-ignoreHTTPSErrors'),
+        bypassCSP: isToggleOn('bc-bypassCSP'),
+        acceptDownloads: isToggleOn('bc-acceptDownloads'),
+        strictSelectors: isToggleOn('bc-strictSelectors'),
+        serviceWorkers: val('bc-serviceWorkers') || 'allow',
+
+        // Storage / Cookies
+        persistStorage: isToggleOn('bc-persistStorage'),
+        storageStatePath: val('bc-storageStatePath') || 'data/browser-storage.json',
+        clearStorageOnStart: isToggleOn('bc-clearStorageOnStart'),
+
+        // Recording
+        recordVideo: isToggleOn('bc-recordVideo') ? {
+          dir: val('bc-recordVideoDir') || 'data/videos',
+          size: {
+            width: num('bc-recordVideoWidth', 1280),
+            height: num('bc-recordVideoHeight', 720),
+          },
+        } : null,
+        recordHar: isToggleOn('bc-recordHar') ? {
+          path: val('bc-recordHarPath') || 'data/network.har',
+          content: val('bc-recordHarContent') || 'embed',
+          mode: val('bc-recordHarMode') || 'full',
+          urlFilter: val('bc-recordHarUrlFilter') || undefined,
+        } : null,
+
+        // Screencast
+        screencast: {
+          format: val('bc-screencastFormat') || 'jpeg',
+          quality: num('bc-screencastQuality', 60),
+          maxWidth: num('bc-screencastMaxWidth', 1280),
+          maxHeight: num('bc-screencastMaxHeight', 800),
+          everyNthFrame: num('bc-screencastEveryNthFrame', 1),
+        },
+      };
+
+      return config;
+    }
+
+    // Apply config values to form controls
+    function applyBrowserConfig(cfg) {
+      if (!cfg || typeof cfg !== 'object') return;
+      const setVal = (id, v) => { const el = overlay.querySelector(`#${id}`); if (el && v != null) el.value = v; };
+
+      // Executable
+      setVal('bc-executablePath', cfg.executablePath);
+      setVal('bc-userDataDir', cfg.userDataDir || '');
+      setVal('bc-headless', String(cfg.headless ?? 'true'));
+      setVal('bc-channel', cfg.channel || '');
+      setVal('bc-slowMo', cfg.slowMo ?? 0);
+      setVal('bc-timeout', cfg.timeout ?? 30000);
+      setVal('bc-navigationTimeout', cfg.navigationTimeout ?? 30000);
+      setVal('bc-extraArgs', cfg.extraArgs || '');
+
+      // Viewport & Display
+      if (cfg.viewport) {
+        setVal('bc-viewportWidth', cfg.viewport.width);
+        setVal('bc-viewportHeight', cfg.viewport.height);
+      }
+      if (cfg.screen) {
+        setVal('bc-screenWidth', cfg.screen.width);
+        setVal('bc-screenHeight', cfg.screen.height);
+      }
+      setVal('bc-deviceScaleFactor', cfg.deviceScaleFactor ?? 1);
+      setToggle('bc-isMobile', !!cfg.isMobile);
+      setToggle('bc-hasTouch', !!cfg.hasTouch);
+
+      // Identity
+      setVal('bc-userAgent', cfg.userAgent || '');
+      setVal('bc-acceptLanguage', cfg.acceptLanguage || '');
+      setVal('bc-locale', cfg.locale || '');
+      setVal('bc-timezoneId', cfg.timezoneId || '');
+      if (cfg.extraHTTPHeaders) {
+        setVal('bc-extraHTTPHeaders', JSON.stringify(cfg.extraHTTPHeaders, null, 2));
+      }
+      setToggle('bc-stealthFingerprint', cfg.stealthFingerprint !== false);
+
+      // Geolocation
+      setToggle('bc-geoEnabled', !!cfg.geolocation);
+      if (cfg.geolocation) {
+        setVal('bc-geoLatitude', cfg.geolocation.latitude);
+        setVal('bc-geoLongitude', cfg.geolocation.longitude);
+        setVal('bc-geoAccuracy', cfg.geolocation.accuracy);
+        ['bc-geoLatitude', 'bc-geoLongitude', 'bc-geoAccuracy'].forEach(id => {
+          const inp = overlay.querySelector(`#${id}`);
+          if (inp) inp.disabled = false;
+        });
+      }
+
+      // Permissions
+      if (cfg.permissions) {
+        cfg.permissions.forEach(p => {
+          const cb = overlay.querySelector(`#bc-perm-${p}`);
+          if (cb) cb.checked = true;
+        });
+      }
+
+      // Network
+      setToggle('bc-offline', !!cfg.offline);
+      if (cfg.proxy) {
+        setVal('bc-proxyServer', cfg.proxy.server);
+        setVal('bc-proxyBypass', cfg.proxy.bypass);
+        setVal('bc-proxyUsername', cfg.proxy.username);
+        setVal('bc-proxyPassword', cfg.proxy.password);
+      }
+      if (cfg.httpCredentials) {
+        setVal('bc-httpCredUser', cfg.httpCredentials.username);
+        setVal('bc-httpCredPass', cfg.httpCredentials.password);
+      }
+
+      // Appearance
+      setVal('bc-colorScheme', cfg.colorScheme || '');
+      setVal('bc-reducedMotion', cfg.reducedMotion || '');
+      setVal('bc-forcedColors', cfg.forcedColors || '');
+
+      // Scripting & Security
+      setToggle('bc-javaScriptEnabled', cfg.javaScriptEnabled !== false);
+      setToggle('bc-ignoreHTTPSErrors', !!cfg.ignoreHTTPSErrors);
+      setToggle('bc-bypassCSP', !!cfg.bypassCSP);
+      setToggle('bc-acceptDownloads', cfg.acceptDownloads !== false);
+      setToggle('bc-strictSelectors', cfg.strictSelectors !== false);
+      setVal('bc-serviceWorkers', cfg.serviceWorkers || 'allow');
+
+      // Storage
+      setToggle('bc-persistStorage', !!cfg.persistStorage);
+      setVal('bc-storageStatePath', cfg.storageStatePath || 'data/browser-storage.json');
+      if (cfg.persistStorage) {
+        const inp = overlay.querySelector('#bc-storageStatePath');
+        if (inp) inp.disabled = false;
+      }
+      setToggle('bc-clearStorageOnStart', !!cfg.clearStorageOnStart);
+
+      // Recording — video
+      const hasVideo = !!cfg.recordVideo;
+      setToggle('bc-recordVideo', hasVideo);
+      if (hasVideo) {
+        setVal('bc-recordVideoDir', cfg.recordVideo.dir);
+        if (cfg.recordVideo.size) {
+          setVal('bc-recordVideoWidth', cfg.recordVideo.size.width);
+          setVal('bc-recordVideoHeight', cfg.recordVideo.size.height);
+        }
+        ['bc-recordVideoDir', 'bc-recordVideoWidth', 'bc-recordVideoHeight'].forEach(id => {
+          const inp = overlay.querySelector(`#${id}`);
+          if (inp) inp.disabled = false;
+        });
+      }
+      // Recording — HAR
+      const hasHar = !!cfg.recordHar;
+      setToggle('bc-recordHar', hasHar);
+      if (hasHar) {
+        setVal('bc-recordHarPath', cfg.recordHar.path);
+        setVal('bc-recordHarContent', cfg.recordHar.content || 'embed');
+        setVal('bc-recordHarMode', cfg.recordHar.mode || 'full');
+        setVal('bc-recordHarUrlFilter', cfg.recordHar.urlFilter || '');
+        ['bc-recordHarPath', 'bc-recordHarContent', 'bc-recordHarMode', 'bc-recordHarUrlFilter'].forEach(id => {
+          const inp = overlay.querySelector(`#${id}`);
+          if (inp) inp.disabled = false;
+        });
+      }
+
+      // Screencast
+      if (cfg.screencast) {
+        setVal('bc-screencastFormat', cfg.screencast.format || 'jpeg');
+        setVal('bc-screencastQuality', cfg.screencast.quality ?? 60);
+        if (scVal) scVal.textContent = cfg.screencast.quality ?? 60;
+        setVal('bc-screencastMaxWidth', cfg.screencast.maxWidth ?? 1280);
+        setVal('bc-screencastMaxHeight', cfg.screencast.maxHeight ?? 800);
+        setVal('bc-screencastEveryNthFrame', cfg.screencast.everyNthFrame ?? 1);
+      }
+    }
+
+    // Load config on open
+    fetch('/api/browser/config').then(r => r.json()).then(data => {
+      if (data.config) { applyBrowserConfig(data.config); syncBcDropdowns(); }
+      // Show detected path
+      const hint = overlay.querySelector('#bc-detected-path');
+      if (hint && data.detectedPath) hint.textContent = `Detected: ${data.detectedPath}`;
+    }).catch(() => {});
+
+    // Save button
+    const saveBtn = overlay.querySelector('#bc-save-all');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', async () => {
+        const config = collectBrowserConfig();
+        saveBtn.style.opacity = '0.5'; saveBtn.style.pointerEvents = 'none';
+        const status = overlay.querySelector('#bc-save-status');
+        try {
+          const res = await fetch('/api/browser/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config),
+          });
+          const data = await res.json();
+          if (data.ok) {
+            if (status) { status.textContent = 'Configuration saved'; status.style.color = '#4ade80'; }
+            showCCToast('Browser configuration saved');
+          } else {
+            if (status) { status.textContent = 'Save failed: ' + (data.error || 'Unknown error'); status.style.color = '#f87171'; }
+          }
+        } catch (err) {
+          if (status) { status.textContent = 'Save failed: ' + err.message; status.style.color = '#f87171'; }
+        } finally {
+          saveBtn.style.opacity = ''; saveBtn.style.pointerEvents = '';
+          setTimeout(() => { if (status) { status.textContent = ''; } }, 4000);
+        }
+      });
+    }
+
+    // Reset button
+    const resetBtn = overlay.querySelector('#bc-reset-all');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        const defaults = {
+          executablePath: null, headless: true, channel: null, slowMo: 0,
+          timeout: 30000, navigationTimeout: 30000, extraArgs: null,
+          viewport: { width: 1280, height: 800 }, screen: { width: 1920, height: 1080 },
+          deviceScaleFactor: 1, isMobile: false, hasTouch: false,
+          userAgent: null, acceptLanguage: null, locale: null, timezoneId: null,
+          extraHTTPHeaders: null, stealthFingerprint: true,
+          geolocation: null, permissions: null,
+          offline: false, proxy: null, httpCredentials: null,
+          colorScheme: null, reducedMotion: null, forcedColors: null,
+          javaScriptEnabled: true, ignoreHTTPSErrors: false, bypassCSP: false,
+          acceptDownloads: true, strictSelectors: true, serviceWorkers: 'allow',
+          persistStorage: false, storageStatePath: 'data/browser-storage.json', clearStorageOnStart: false,
+          recordVideo: null, recordHar: null,
+          screencast: { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 },
+        };
+        applyBrowserConfig(defaults);
+        // Reset disabled states
+        ['bc-geoLatitude', 'bc-geoLongitude', 'bc-geoAccuracy', 'bc-storageStatePath',
+         'bc-recordVideoDir', 'bc-recordVideoWidth', 'bc-recordVideoHeight',
+         'bc-recordHarPath', 'bc-recordHarContent', 'bc-recordHarMode', 'bc-recordHarUrlFilter'].forEach(id => {
+          const inp = overlay.querySelector(`#${id}`);
+          if (inp) inp.disabled = true;
+        });
+        syncBcDropdowns();
+        // Uncheck all permission checkboxes
+        overlay.querySelectorAll('.browser-cfg-checkbox-grid input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+        const status = overlay.querySelector('#bc-save-status');
+        if (status) { status.textContent = 'Reset to defaults (not saved yet)'; status.style.color = 'var(--t-faint)'; }
+        setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+      });
+    }
   }
 
   // ── Tunnel toggle ──

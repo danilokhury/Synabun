@@ -5,7 +5,7 @@ import { basename, dirname, extname, join, resolve } from 'path';
 import { config as dotenvConfig } from 'dotenv';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, renameSync, cpSync, appendFileSync } from 'fs';
 import { randomBytes, createHash } from 'crypto';
-import { exec, execSync, spawn } from 'child_process';
+import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
 import { Readable } from 'stream';
 import { createConnection as netConnect } from 'net';
@@ -14,6 +14,7 @@ import os from 'node:os';
 import pty from 'node-pty';
 import archiver from 'archiver';
 import AdmZip from 'adm-zip';
+import { chromium } from 'playwright-core';
 
 const execAsync = promisify(exec);
 
@@ -5532,6 +5533,201 @@ app.get('/api/terminal/profiles', (req, res) => {
   res.json({ profiles, projects });
 });
 
+// ── Terminal file tree ──
+
+/** Try to get git status for a directory. Returns { branch, statuses } or null. */
+function getGitInfo(dir) {
+  try {
+    // Check if inside a git work tree
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+
+    // Get branch name
+    let branch = '';
+    try {
+      branch = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+      if (!branch) {
+        // Detached HEAD — get short SHA
+        branch = execSync('git rev-parse --short HEAD', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+      }
+    } catch {}
+
+    // Get status for this directory (porcelain v1: XY <path>)
+    const raw = execSync('git status --porcelain -u .', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString();
+    const statuses = new Map(); // name → status code
+
+    for (const line of raw.split('\n')) {
+      if (!line || line.length < 4) continue;
+      const xy = line.substring(0, 2); // index + worktree status
+      let filePath = line.substring(3);
+      // Handle renames: "R  old -> new"
+      const arrowIdx = filePath.indexOf(' -> ');
+      if (arrowIdx !== -1) filePath = filePath.substring(arrowIdx + 4);
+
+      // Get the immediate child name relative to this directory
+      const sep = filePath.indexOf('/');
+      const childName = sep === -1 ? filePath : filePath.substring(0, sep);
+
+      // Map XY to a simplified status
+      let status;
+      const x = xy[0], y = xy[1];
+      if (xy === '??') status = 'untracked';
+      else if (xy === '!!') continue; // ignored
+      else if (x === 'U' || y === 'U' || xy === 'DD' || xy === 'AA') status = 'conflict';
+      else if (x === 'A') status = 'added';
+      else if (x === 'D' || y === 'D') status = 'deleted';
+      else if (x === 'R') status = 'renamed';
+      else if (x !== ' ' && y !== ' ') status = 'mixed'; // staged + unstaged changes
+      else if (x !== ' ') status = 'staged';
+      else if (y !== ' ') status = 'modified';
+      else continue;
+
+      // For directories: escalate priority (conflict > modified > staged > added > untracked)
+      const existing = statuses.get(childName);
+      if (!existing || gitStatusPriority(status) > gitStatusPriority(existing)) {
+        statuses.set(childName, status);
+      }
+    }
+
+    return { branch, statuses };
+  } catch {
+    return null;
+  }
+}
+
+const GIT_STATUS_PRIORITY = { untracked: 1, added: 2, renamed: 2, staged: 3, modified: 4, mixed: 5, deleted: 5, conflict: 6 };
+function gitStatusPriority(s) { return GIT_STATUS_PRIORITY[s] || 0; }
+
+app.get('/api/terminal/files', (req, res) => {
+  const dir = req.query.path;
+  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+  const search = (req.query.search || '').trim().toLowerCase();
+
+  // Recursive search mode — return flat list of matching files
+  if (search) {
+    const SKIP = new Set(['.git', 'node_modules', '__pycache__', '.next', '.cache', 'dist', 'build', '.turbo']);
+    const MAX_RESULTS = 80;
+    const results = [];
+
+    function walk(current, rel) {
+      if (results.length >= MAX_RESULTS) return;
+      let entries;
+      try { entries = readdirSync(current, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (results.length >= MAX_RESULTS) return;
+        if (e.name.startsWith('.') && SKIP.has(e.name)) continue;
+        if (SKIP.has(e.name)) continue;
+        const childRel = rel ? rel + '/' + e.name : e.name;
+        if (e.isDirectory()) {
+          if (e.name.toLowerCase().includes(search)) {
+            results.push({ name: childRel, type: 'dir' });
+          }
+          walk(resolve(current, e.name), childRel);
+        } else {
+          if (e.name.toLowerCase().includes(search)) {
+            results.push({ name: childRel, type: 'file' });
+          }
+        }
+      }
+    }
+
+    try {
+      walk(dir, '');
+      res.json({ path: dir, items: results, branch: null, search: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+    return;
+  }
+
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    const items = [];
+    for (const e of entries) {
+      // Skip hidden/system files
+      if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === '__pycache__') continue;
+      items.push({ name: e.name, type: e.isDirectory() ? 'dir' : 'file' });
+    }
+    // Sort: directories first, then alphabetical
+    items.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+
+    // Try git — gracefully ignored if unavailable
+    const git = getGitInfo(dir);
+    if (git) {
+      for (const item of items) {
+        const s = git.statuses.get(item.name);
+        if (s) item.git = s;
+      }
+    }
+
+    res.json({ path: dir, items, branch: git?.branch || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/terminal/branches', (req, res) => {
+  const dir = req.query.path;
+  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+  } catch {
+    return res.json({ branches: [], current: null });
+  }
+
+  try {
+    // Current branch
+    let current = '';
+    try {
+      current = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+    } catch {}
+
+    // All local branches
+    const raw = execSync('git branch --format="%(refname:short)"', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+    const branches = raw ? raw.split('\n').map(b => b.trim()).filter(Boolean) : [];
+
+    res.json({ branches, current });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/terminal/checkout', (req, res) => {
+  const { path: dir, branch } = req.body;
+  if (!dir || !branch) return res.status(400).json({ error: 'path and branch required' });
+
+  // Validate branch name — only allow safe characters (letters, digits, /, -, _, .)
+  if (!/^[\w.\-/]+$/.test(branch)) {
+    return res.status(400).json({ error: 'Invalid branch name' });
+  }
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+  } catch {
+    return res.status(400).json({ error: 'Not a git repository' });
+  }
+
+  // Use spawnSync to avoid shell injection — branch passed as argument, not interpolated
+  // No '--' separator — that would make git treat the branch name as a file pathspec
+  const result = spawnSync('git', ['checkout', branch], { cwd: dir, stdio: 'pipe', timeout: 10000 });
+
+  if (result.status !== 0) {
+    const stderr = result.stderr?.toString?.()?.trim() || 'Checkout failed';
+    return res.status(500).json({ error: stderr });
+  }
+
+  // Return confirmed branch name + git's own output
+  let current = '';
+  try {
+    current = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+  } catch {}
+  const output = result.stderr?.toString?.()?.trim() || `Switched to branch '${current}'`;
+  res.json({ ok: true, branch: current, output });
+});
+
 // ── CLI Config REST ──
 
 app.get('/api/cli/config', (req, res) => {
@@ -5586,6 +5782,812 @@ app.post('/api/cli/detect/:profileId', (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════
+// BROWSER — Playwright-core CDP Manager
+// ═══════════════════════════════════════════
+//
+// Manages headless/headed Chromium instances via playwright-core.
+// Streams viewport via CDP Page.screencastFrame over WebSocket.
+// Exposes CDP endpoint so Claude Code's Playwright MCP can connect.
+
+const browserSessions = new Map(); // sessionId → { browser, context, page, clients, cdpSession, screencastActive, ... }
+const BROWSER_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 min before orphaned browser is killed
+
+// ── Browser config ──
+
+const BROWSER_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'browser-config.json');
+
+function loadBrowserConfig() {
+  try {
+    if (!existsSync(BROWSER_CONFIG_PATH)) return {};
+    return JSON.parse(readFileSync(BROWSER_CONFIG_PATH, 'utf-8'));
+  } catch { return {}; }
+}
+
+function saveBrowserConfig(config) {
+  const dir = dirname(BROWSER_CONFIG_PATH);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(BROWSER_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+/**
+ * Find a usable Chromium/Chrome executable.
+ * Priority: user-configured path > common system locations > playwright bundled.
+ */
+function findBrowserExecutable() {
+  const config = loadBrowserConfig();
+  if (config.executablePath && existsSync(config.executablePath)) {
+    return config.executablePath;
+  }
+
+  // Common Chrome/Chromium locations
+  const candidates = IS_WIN ? [
+    join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    join(process.env['ProgramFiles'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    join(process.env['ProgramFiles(x86)'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    join(process.env.LOCALAPPDATA || '', 'Chromium', 'Application', 'chrome.exe'),
+  ] : [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  ];
+
+  for (const p of candidates) {
+    if (p && existsSync(p)) return p;
+  }
+
+  return null; // Will let playwright-core try its default
+}
+
+/**
+ * Launch a browser session. Returns sessionId + CDP WebSocket URL.
+ * Merges saved browser-config.json with per-session overrides, clones
+ * the real browser's fingerprint from Neural Interface request headers.
+ */
+async function createBrowserSession(options = {}) {
+  const sessionId = randomBytes(16).toString('hex');
+  const savedCfg = loadBrowserConfig();
+  const execPath = findBrowserExecutable();
+
+  // Merge: saved config is base, per-session options override
+  const vpW = options.width || savedCfg.viewport?.width || 1280;
+  const vpH = options.height || savedCfg.viewport?.height || 800;
+
+  // ── Stealth args: strip all headless indicators ──
+  const stealthArgs = [
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-popup-blocking',
+    `--window-size=${vpW},${vpH}`,
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=AutomationControlled',
+    '--disable-infobars',
+    '--disable-dev-shm-usage',
+    '--no-sandbox',
+    '--use-gl=swiftshader',
+    '--enable-webgl',
+  ];
+
+  // ── Resolve userDataDir ──
+  // Chrome refuses --remote-debugging-pipe with its own default User Data directory.
+  // If the user specified Chrome's default dir, redirect to a safe SynaBun-managed directory.
+  // NEVER junction/symlink to the real profile — Playwright modifies profile data on launch.
+  let userDataDir = savedCfg.userDataDir || null;
+  if (userDataDir) {
+    const normalized = userDataDir.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+    const chromeDefaults = [
+      (process.env.LOCALAPPDATA || '').replace(/\\/g, '/').toLowerCase() + '/google/chrome/user data',
+      (process.env['ProgramFiles'] || '').replace(/\\/g, '/').toLowerCase() + '/google/chrome/user data',
+    ].filter(Boolean);
+    const isDefaultDir = chromeDefaults.some(d => normalized === d || normalized === d + '/default');
+    if (isDefaultDir) {
+      const safeDir = resolve(PROJECT_ROOT, 'data', 'chrome-profile');
+      console.warn(`[browser] Chrome's default User Data dir cannot be used with remote debugging.`);
+      console.warn(`[browser] Using SynaBun-managed profile: ${safeDir}`);
+      if (!existsSync(safeDir)) mkdirSync(safeDir, { recursive: true });
+      userDataDir = safeDir;
+    }
+  }
+
+  // Only disable extensions when NOT using a user profile (they'd want their extensions)
+  if (!userDataDir) {
+    stealthArgs.push('--disable-extensions');
+  }
+
+  // Append user's extra launch args from config
+  if (savedCfg.extraArgs) {
+    const extra = savedCfg.extraArgs.split(/\s+/).filter(Boolean);
+    stealthArgs.push(...extra);
+  }
+
+  const headlessVal = savedCfg.headless === false ? false : savedCfg.headless === 'new' ? 'new' : true;
+  console.log(`[browser] headless=${headlessVal} (config value: ${JSON.stringify(savedCfg.headless)}, type: ${typeof savedCfg.headless})`);
+  const launchOpts = { headless: headlessVal, args: stealthArgs };
+  if (execPath) launchOpts.executablePath = execPath;
+  if (savedCfg.channel) launchOpts.channel = savedCfg.channel;
+  if (savedCfg.slowMo) launchOpts.slowMo = savedCfg.slowMo;
+  if (savedCfg.timeout) launchOpts.timeout = savedCfg.timeout;
+
+  // Proxy at browser level
+  if (savedCfg.proxy?.server) {
+    launchOpts.proxy = {
+      server: savedCfg.proxy.server,
+      ...(savedCfg.proxy.bypass ? { bypass: savedCfg.proxy.bypass } : {}),
+      ...(savedCfg.proxy.username ? { username: savedCfg.proxy.username } : {}),
+      ...(savedCfg.proxy.password ? { password: savedCfg.proxy.password } : {}),
+    };
+  }
+
+  // ── Clone real browser fingerprint ──
+  const realHeaders = options._realHeaders || {};
+  const realUA = realHeaders['user-agent'] || '';
+  const userAgent = savedCfg.userAgent || options.userAgent || realUA || undefined;
+  const cfgAcceptLang = savedCfg.acceptLanguage || null;
+  const acceptLanguage = cfgAcceptLang || realHeaders['accept-language'] || 'en-US,en;q=0.9';
+  const locale = savedCfg.locale || acceptLanguage.split(',')[0].split(';')[0] || 'en-US';
+
+  // Build context options from saved config
+  const contextOpts = {
+    viewport: { width: vpW, height: vpH },
+    userAgent,
+    locale,
+    timezoneId: savedCfg.timezoneId || options.timezone || undefined,
+    screen: savedCfg.screen || { width: options.screenWidth || 1920, height: options.screenHeight || 1080 },
+    deviceScaleFactor: savedCfg.deviceScaleFactor || options.deviceScaleFactor || 1,
+    isMobile: savedCfg.isMobile || false,
+    hasTouch: savedCfg.hasTouch || false,
+    javaScriptEnabled: savedCfg.javaScriptEnabled !== false,
+    ignoreHTTPSErrors: savedCfg.ignoreHTTPSErrors || false,
+    bypassCSP: savedCfg.bypassCSP || false,
+    acceptDownloads: savedCfg.acceptDownloads !== false,
+    strictSelectors: savedCfg.strictSelectors !== false,
+    serviceWorkers: savedCfg.serviceWorkers || 'allow',
+    offline: savedCfg.offline || false,
+    // Extra HTTP headers: merge config + cloned headers
+    extraHTTPHeaders: {
+      'Accept-Language': acceptLanguage,
+      ...(realHeaders['sec-ch-ua'] ? { 'Sec-CH-UA': realHeaders['sec-ch-ua'] } : {}),
+      ...(realHeaders['sec-ch-ua-mobile'] ? { 'Sec-CH-UA-Mobile': realHeaders['sec-ch-ua-mobile'] } : {}),
+      ...(realHeaders['sec-ch-ua-platform'] ? { 'Sec-CH-UA-Platform': realHeaders['sec-ch-ua-platform'] } : {}),
+      ...(savedCfg.extraHTTPHeaders || {}),
+    },
+  };
+
+  // Appearance
+  if (savedCfg.colorScheme) contextOpts.colorScheme = savedCfg.colorScheme;
+  if (savedCfg.reducedMotion) contextOpts.reducedMotion = savedCfg.reducedMotion;
+  if (savedCfg.forcedColors) contextOpts.forcedColors = savedCfg.forcedColors;
+
+  // Geolocation
+  if (savedCfg.geolocation) contextOpts.geolocation = savedCfg.geolocation;
+
+  // Permissions
+  if (savedCfg.permissions?.length) contextOpts.permissions = savedCfg.permissions;
+
+  // HTTP credentials
+  if (savedCfg.httpCredentials?.username) contextOpts.httpCredentials = savedCfg.httpCredentials;
+
+  // Navigation timeout
+  if (savedCfg.navigationTimeout) contextOpts.navigationTimeout = savedCfg.navigationTimeout;
+
+  // Recording: video
+  if (savedCfg.recordVideo?.dir) contextOpts.recordVideo = savedCfg.recordVideo;
+
+  // Recording: HAR
+  if (savedCfg.recordHar?.path) contextOpts.recordHar = savedCfg.recordHar;
+
+  // Storage state: restore if persist is enabled and file exists (not needed for persistent context)
+  const STORAGE_STATE_PATH = resolve(PROJECT_ROOT, savedCfg.storageStatePath || 'data/browser-storage.json');
+  if (!userDataDir && savedCfg.persistStorage && !savedCfg.clearStorageOnStart && existsSync(STORAGE_STATE_PATH)) {
+    try {
+      contextOpts.storageState = STORAGE_STATE_PATH;
+    } catch (e) {
+      console.warn('Failed to load storage state:', e.message);
+    }
+  }
+
+  let browser, context, page;
+  let _isPersistent = false;
+
+  if (userDataDir) {
+    // ── Persistent context: uses a Chrome profile directory ──
+    // launchPersistentContext returns a BrowserContext directly — no separate browser.newContext()
+    _isPersistent = true;
+
+    // Check if Chrome is already running — it enforces single-instance per profile
+    // If Chrome is running with the same profile (even via junction), the new process
+    // will delegate to the existing one and exit, causing immediate session close.
+    if (IS_WIN) {
+      try {
+        const tasklist = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', { encoding: 'utf8', timeout: 3000 });
+        if (tasklist.includes('chrome.exe')) {
+          console.warn('[browser] WARNING: Chrome is currently running!');
+          console.warn('[browser] Chrome enforces single-instance per profile. The browser will likely');
+          console.warn('[browser] close immediately. Close ALL Chrome windows and background processes first.');
+          console.warn('[browser] Tip: Check system tray for Chrome running in background.');
+        }
+      } catch {}
+    }
+
+    console.log(`[browser] Launching persistent context at: ${userDataDir}`);
+    try {
+      // Selectively remove Playwright defaults that block profile features.
+      // Can't use ignoreDefaultArgs:true — Playwright needs its internal flags for CDP.
+      context = await chromium.launchPersistentContext(userDataDir, {
+        ...launchOpts,
+        ...contextOpts,
+        ignoreDefaultArgs: [
+          '--disable-extensions',
+          '--disable-component-extensions-with-background-pages',
+          '--disable-default-apps',
+          '--enable-automation',
+          '--disable-sync',
+          '--password-store=basic',
+          '--use-mock-keychain',
+        ],
+      });
+    } catch (err) {
+      const msg = err.message || '';
+      if (msg.includes('non-default data directory') || msg.includes('user-data-dir')) {
+        throw new Error(`Chrome refuses to use this profile directory for remote debugging. Try a different path (not Chrome's default User Data dir). Original error: ${msg}`);
+      }
+      if (msg.includes('already in use') || msg.includes('lock')) {
+        throw new Error(`Chrome profile is locked — close all Chrome windows using this profile and try again. Original error: ${msg}`);
+      }
+      throw err;
+    }
+    browser = context; // persistent context IS the top-level object (no parent browser)
+
+    // Verify the browser is still alive — Chrome's singleton lock may cause it to exit
+    // immediately after launch if another Chrome instance is using the same profile.
+    // Wait a moment to detect this before proceeding.
+    await new Promise(r => setTimeout(r, 500));
+    let contextAlive = true;
+    try {
+      // Try to access pages — if Chrome exited, this will throw or return empty
+      const testPages = context.pages();
+      if (testPages.length === 0) contextAlive = false;
+    } catch { contextAlive = false; }
+
+    if (!contextAlive) {
+      throw new Error('Browser closed immediately after launch — Chrome is likely already running with this profile. Close ALL Chrome windows and background processes (check system tray), then try again.');
+    }
+
+    // Close any restored tabs from previous Chrome session, then open a fresh page
+    const existingPages = context.pages();
+    page = await context.newPage();
+    for (const p of existingPages) {
+      await p.close().catch(() => {});
+    }
+  } else {
+    // ── Standard: clean sandboxed browser ──
+    browser = await chromium.launch(launchOpts);
+    context = await browser.newContext(contextOpts);
+    page = await context.newPage();
+  }
+
+  // ── CDP stealth injections (if enabled) ──
+  const doStealth = savedCfg.stealthFingerprint !== false;
+  if (doStealth) {
+    const cdpStealth = await page.context().newCDPSession(page);
+    try {
+      await cdpStealth.send('Page.addScriptToEvaluateOnNewDocument', {
+        source: `
+          Object.defineProperty(navigator, 'webdriver', { get: () => false });
+          Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+              { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+            ],
+          });
+          Object.defineProperty(navigator, 'languages', {
+            get: () => ${JSON.stringify(acceptLanguage.split(',').map(l => l.split(';')[0].trim()))},
+          });
+          const origQuery = window.Permissions.prototype.query;
+          window.Permissions.prototype.query = function(params) {
+            if (params.name === 'notifications') {
+              return Promise.resolve({ state: 'default', onchange: null });
+            }
+            return origQuery.call(this, params);
+          };
+          if (!window.chrome) window.chrome = {};
+          if (!window.chrome.runtime) window.chrome.runtime = { connect: () => {}, sendMessage: () => {} };
+          delete window.cdc_adoQpoasnfa76pfcZLmcfl_;
+          delete window.__playwright;
+        `,
+      });
+    } catch (err) {
+      console.warn('CDP stealth injection warning:', err.message);
+    }
+    await cdpStealth.detach().catch(() => {});
+  }
+
+  // Navigate to initial URL or blank
+  const startUrl = options.url || 'about:blank';
+  await page.goto(startUrl).catch((err) => {
+    console.warn('Initial navigation warning:', err.message);
+  });
+
+  // Wait for page to be ready before attaching CDP
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+
+  // Get CDP session for screencast
+  console.log('[browser] Creating CDP session... persistent:', !!_isPersistent, 'page url:', page.url());
+  let cdpSession;
+  try {
+    cdpSession = await context.newCDPSession(page);
+    console.log('[browser] CDP session created successfully via context');
+  } catch (err) {
+    console.error('[browser] CDP session creation failed:', err.message);
+    throw new Error('Cannot create CDP session for screencast: ' + err.message);
+  }
+
+  const session = {
+    browser,
+    context,
+    page,
+    cdpSession,
+    _isPersistent,
+    clients: new Set(),       // WebSocket connections for screencast
+    screencastActive: false,
+    createdAt: Date.now(),
+    graceTimer: null,
+    currentUrl: startUrl,
+    title: await page.title().catch(() => ''),
+  };
+
+  // Listen for URL changes
+  page.on('framenavigated', async (frame) => {
+    if (frame === page.mainFrame()) {
+      session.currentUrl = page.url();
+      session.title = await page.title().catch(() => '');
+      const msg = JSON.stringify({ type: 'navigated', url: session.currentUrl, title: session.title });
+      session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+    }
+  });
+
+  // Listen for page load
+  page.on('load', async () => {
+    session.title = await page.title().catch(() => '');
+    const msg = JSON.stringify({ type: 'loaded', url: page.url(), title: session.title });
+    session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+  });
+
+  // Handle page close (user closed tab in headed mode, or crash)
+  page.on('close', () => {
+    console.log(`Browser page closed for session ${sessionId}`);
+    session.clients.forEach(ws => {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Page closed' }));
+        ws.close(1000, 'Page closed');
+      }
+    });
+    session.clients.clear();
+  });
+
+  // Handle context close (browser quit)
+  context.on('close', () => {
+    console.log(`Browser context closed for session ${sessionId}`);
+    session.clients.forEach(ws => {
+      if (ws.readyState === 1) ws.close(1000, 'Browser closed');
+    });
+    session.clients.clear();
+    browserSessions.delete(sessionId);
+  });
+
+  browserSessions.set(sessionId, session);
+  return { sessionId, wsEndpoint: _isPersistent ? null : (browser.wsEndpoint?.() || null) };
+}
+
+/**
+ * Start CDP screencast — streams JPEG frames to all connected WebSocket clients.
+ */
+async function startScreencast(session) {
+  if (session.screencastActive) return;
+  session.screencastActive = true;
+
+  console.log('[screencast] Starting screencast, CDP session exists:', !!session.cdpSession, 'persistent:', !!session._isPersistent);
+
+  let frameCount = 0;
+  session.cdpSession.on('Page.screencastFrame', async (params) => {
+    frameCount++;
+    if (frameCount <= 3) console.log(`[screencast] Frame #${frameCount} received (${params.data?.length || 0} chars)`);
+    const msg = JSON.stringify({
+      type: 'frame',
+      data: params.data,               // base64 JPEG
+      metadata: params.metadata,        // { offsetTop, pageScaleFactor, ... }
+      sessionId: params.sessionId,      // CDP ack ID
+    });
+    session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+
+    // Acknowledge frame to keep the stream going
+    try {
+      await session.cdpSession.send('Page.screencastFrameAck', {
+        sessionId: params.sessionId,
+      });
+    } catch {}
+  });
+
+  const scCfg = loadBrowserConfig().screencast || {};
+  try {
+    await session.cdpSession.send('Page.startScreencast', {
+      format: scCfg.format || 'jpeg',
+      quality: scCfg.quality ?? 60,
+      maxWidth: scCfg.maxWidth || 1280,
+      maxHeight: scCfg.maxHeight || 800,
+      everyNthFrame: scCfg.everyNthFrame || 1,
+    });
+    console.log('[screencast] Page.startScreencast sent successfully');
+  } catch (err) {
+    console.error('[screencast] Page.startScreencast FAILED:', err.message);
+    session.screencastActive = false;
+    throw err;
+  }
+}
+
+async function stopScreencast(session) {
+  if (!session.screencastActive) return;
+  session.screencastActive = false;
+  try {
+    await session.cdpSession.send('Page.stopScreencast');
+  } catch {}
+}
+
+/**
+ * Clean up a browser session.
+ */
+async function destroyBrowserSession(sessionId) {
+  const session = browserSessions.get(sessionId);
+  if (!session) return;
+
+  // Save storage state (cookies, localStorage) if persistence is enabled
+  // Skip for persistent contexts — Chrome handles persistence natively via the profile
+  const savedCfg = loadBrowserConfig();
+  if (!session._isPersistent && savedCfg.persistStorage && session.context) {
+    const storagePath = resolve(PROJECT_ROOT, savedCfg.storageStatePath || 'data/browser-storage.json');
+    try {
+      const dir = dirname(storagePath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      await session.context.storageState({ path: storagePath });
+      console.log(`  Storage state saved to ${storagePath}`);
+    } catch (err) {
+      console.warn('Failed to save storage state:', err.message);
+    }
+  }
+
+  if (session.graceTimer) clearTimeout(session.graceTimer);
+  try { await stopScreencast(session); } catch {}
+  if (session._isPersistent) {
+    // Persistent context: close the context which also kills the browser process
+    try { await session.context.close(); } catch {}
+  } else {
+    try { await session.browser.close(); } catch {}
+  }
+  browserSessions.delete(sessionId);
+}
+
+// ── Browser REST endpoints ──
+
+app.get('/api/browser/sessions', (req, res) => {
+  const sessions = [...browserSessions.entries()].map(([id, s]) => ({
+    id,
+    url: s.currentUrl,
+    title: s.title,
+    createdAt: s.createdAt,
+    clients: s.clients.size,
+    persistent: !!s._isPersistent,
+    wsEndpoint: s._isPersistent ? null : (s.browser.wsEndpoint?.() || null),
+  }));
+  res.json({ sessions });
+});
+
+app.post('/api/browser/sessions', async (req, res) => {
+  const { url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone } = req.body;
+  try {
+    // Clone the real browser's headers from this HTTP request
+    const _realHeaders = {
+      'user-agent': req.headers['user-agent'],
+      'accept-language': req.headers['accept-language'],
+      'sec-ch-ua': req.headers['sec-ch-ua'],
+      'sec-ch-ua-mobile': req.headers['sec-ch-ua-mobile'],
+      'sec-ch-ua-platform': req.headers['sec-ch-ua-platform'],
+    };
+    const result = await createBrowserSession({
+      url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, _realHeaders,
+    });
+    res.json({ sessionId: result.sessionId, url: url || 'about:blank', wsEndpoint: result.wsEndpoint });
+  } catch (err) {
+    console.error('Browser session create error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/browser/sessions/:id', async (req, res) => {
+  try {
+    await destroyBrowserSession(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { url } = req.body;
+  try {
+    await session.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/back', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    await session.page.goBack({ timeout: 10000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/forward', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    await session.page.goForward({ timeout: 10000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/reload', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    await session.page.reload({ timeout: 15000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// Screenshot endpoint (for snapshot/debugging)
+app.get('/api/browser/sessions/:id/screenshot', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    const buf = await session.page.screenshot({ type: 'jpeg', quality: 80 });
+    res.set('Content-Type', 'image/jpeg');
+    res.send(buf);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CDP WebSocket endpoint info — for Claude Code's Playwright MCP to connect
+app.get('/api/browser/sessions/:id/cdp', (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    const wsEndpoint = session._isPersistent ? null : (session.browser.wsEndpoint?.() || null);
+    res.json({ ok: true, wsEndpoint, sessionId: req.params.id, persistent: !!session._isPersistent });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// Claude Code connection helper — returns MCP config snippet for connecting to this browser
+app.get('/api/browser/sessions/:id/claude-connect', (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const wsEndpoint = session._isPersistent ? null : (session.browser.wsEndpoint?.() || null);
+  if (!wsEndpoint) return res.json({ ok: false, error: session._isPersistent ? 'Persistent context sessions use SynaBun MCP browser tools instead of CDP endpoint' : 'No CDP endpoint available' });
+  res.json({
+    ok: true,
+    wsEndpoint,
+    mcpConfig: {
+      playwright: {
+        command: 'npx',
+        args: ['@playwright/mcp@latest', `--cdp-url=${wsEndpoint}`],
+      },
+    },
+    instructions: `To connect Claude Code to this browser, add this to your .mcp.json or pass --cdp-url=${wsEndpoint} to the Playwright MCP server.`,
+  });
+});
+
+// ── Selector-based browser interaction endpoints (for MCP tools) ──
+
+app.post('/api/browser/sessions/:id/click', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector, timeout } = req.body;
+  if (!selector) return res.status(400).json({ error: 'selector required' });
+  try {
+    await session.page.locator(selector).click({ timeout: timeout || 5000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/fill', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector, value, timeout } = req.body;
+  if (!selector) return res.status(400).json({ error: 'selector required' });
+  try {
+    await session.page.locator(selector).fill(value ?? '', { timeout: timeout || 5000 });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/type', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector, text, timeout } = req.body;
+  if (!selector) return res.status(400).json({ error: 'selector required' });
+  try {
+    await session.page.locator(selector).pressSequentially(text ?? '', { timeout: timeout || 5000 });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/hover', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector, timeout } = req.body;
+  if (!selector) return res.status(400).json({ error: 'selector required' });
+  try {
+    await session.page.locator(selector).hover({ timeout: timeout || 5000 });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/select', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector, value, timeout } = req.body;
+  if (!selector) return res.status(400).json({ error: 'selector required' });
+  try {
+    await session.page.locator(selector).selectOption(value ?? '', { timeout: timeout || 5000 });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/press', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { key } = req.body;
+  if (!key) return res.status(400).json({ error: 'key required' });
+  try {
+    await session.page.keyboard.press(key);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/evaluate', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { script } = req.body;
+  if (!script) return res.status(400).json({ error: 'script required' });
+  try {
+    const result = await session.page.evaluate(script);
+    res.json({ ok: true, result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/browser/sessions/:id/snapshot', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    const tree = await session.page.accessibility.snapshot();
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title, snapshot: tree });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/wait', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector, state, timeout } = req.body;
+  try {
+    if (selector) {
+      await session.page.locator(selector).waitFor({
+        state: state || 'visible',
+        timeout: timeout || 10000,
+      });
+      res.json({ ok: true, selector, state: state || 'visible' });
+    } else {
+      await session.page.waitForTimeout(timeout || 1000);
+      session.currentUrl = session.page.url();
+      session.title = await session.page.title().catch(() => '');
+      res.json({ ok: true, url: session.currentUrl, title: session.title });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/browser/sessions/:id/content', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    let text = '';
+    try {
+      text = await session.page.innerText('body');
+      if (text.length > 50000) text = text.slice(0, 50000) + '\n... (truncated)';
+    } catch { text = ''; }
+    res.json({ ok: true, url: session.currentUrl, title: session.title, text });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/browser/sessions/:id/screenshot-base64', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    const buf = await session.page.screenshot({ type: 'jpeg', quality: 70 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title, data: buf.toString('base64') });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Browser config endpoint
+app.get('/api/browser/config', (req, res) => {
+  const config = loadBrowserConfig();
+  const detected = findBrowserExecutable();
+  res.json({ config, detectedPath: detected });
+});
+
+app.put('/api/browser/config', (req, res) => {
+  try {
+    // Full replacement — the frontend sends the complete config object
+    saveBrowserConfig(req.body);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Start ---
 // Migrate connections.json → .env if it still exists (one-time)
 migrateConnectionsJsonToEnv();
@@ -5600,7 +6602,8 @@ const httpServer = app.listen(PORT, async () => {
   console.log(`  Qdrant:  ${QDRANT_URL}`);
   console.log(`  Collection: ${COLLECTION}`);
   console.log(`  OpenAI:  ${OPENAI_KEY ? 'configured' : 'MISSING'}`);
-  console.log(`  Terminal: WebSocket on ws://localhost:${PORT}/ws/terminal/*\n`);
+  console.log(`  Terminal: WebSocket on ws://localhost:${PORT}/ws/terminal/*`);
+  console.log(`  Browser:  WebSocket on ws://localhost:${PORT}/ws/browser/*\n`);
 
   // Ensure trashed_at index exists for soft-delete filtering on existing collections
   try {
@@ -5642,18 +6645,25 @@ httpServer.on('upgrade', (req, socket, head) => {
   }
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
-  if (!url.pathname.startsWith('/ws/terminal/')) {
+  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/')) {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+  } else {
     socket.destroy();
-    return;
   }
-
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req);
-  });
 });
 
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // ── Route: Browser session ──
+  if (url.pathname.startsWith('/ws/browser/')) {
+    handleBrowserWebSocket(ws, url);
+    return;
+  }
+
+  // ── Route: Terminal session ──
   const sessionId = url.pathname.replace('/ws/terminal/', '');
   const session = terminalSessions.get(sessionId);
 
@@ -5724,3 +6734,108 @@ wss.on('connection', (ws, req) => {
     }
   });
 });
+
+// ═══════════════════════════════════════════
+// BROWSER — WebSocket Handler
+// ═══════════════════════════════════════════
+
+async function handleBrowserWebSocket(ws, url) {
+  const sessionId = url.pathname.replace('/ws/browser/', '');
+  const session = browserSessions.get(sessionId);
+
+  if (!session) {
+    ws.send(JSON.stringify({ type: 'error', message: 'Browser session not found' }));
+    ws.close();
+    return;
+  }
+
+  console.log('[ws-browser] Client connected for session', sessionId, 'persistent:', !!session._isPersistent, 'clients:', session.clients.size + 1);
+  session.clients.add(ws);
+  if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null; }
+
+  // Send current state
+  ws.send(JSON.stringify({
+    type: 'init',
+    url: session.currentUrl,
+    title: session.title,
+  }));
+
+  // Start screencast if not already running
+  try { await startScreencast(session); } catch (err) {
+    console.error('[ws-browser] Screencast start failed:', err.message);
+    ws.send(JSON.stringify({ type: 'error', message: `Screencast start failed: ${err.message}` }));
+  }
+
+  ws.on('message', async (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+
+      if (msg.type === 'navigate' && msg.url) {
+        try {
+          await session.page.goto(msg.url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          session.currentUrl = session.page.url();
+          session.title = await session.page.title().catch(() => '');
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: err.message }));
+        }
+      } else if (msg.type === 'back') {
+        await session.page.goBack({ timeout: 10000 }).catch(() => {});
+      } else if (msg.type === 'forward') {
+        await session.page.goForward({ timeout: 10000 }).catch(() => {});
+      } else if (msg.type === 'reload') {
+        await session.page.reload({ timeout: 15000 }).catch(() => {});
+      } else if (msg.type === 'click') {
+        // Forward mouse click at coordinates relative to viewport
+        await session.page.mouse.click(msg.x, msg.y, {
+          button: msg.button || 'left',
+        }).catch(() => {});
+      } else if (msg.type === 'dblclick') {
+        await session.page.mouse.dblclick(msg.x, msg.y).catch(() => {});
+      } else if (msg.type === 'mousemove') {
+        await session.page.mouse.move(msg.x, msg.y).catch(() => {});
+      } else if (msg.type === 'mousedown') {
+        await session.page.mouse.down({ button: msg.button || 'left' }).catch(() => {});
+      } else if (msg.type === 'mouseup') {
+        await session.page.mouse.up({ button: msg.button || 'left' }).catch(() => {});
+      } else if (msg.type === 'wheel') {
+        await session.page.mouse.wheel(msg.deltaX || 0, msg.deltaY || 0).catch(() => {});
+      } else if (msg.type === 'keydown') {
+        await session.page.keyboard.down(msg.key).catch(() => {});
+      } else if (msg.type === 'keyup') {
+        await session.page.keyboard.up(msg.key).catch(() => {});
+      } else if (msg.type === 'keypress') {
+        // For typing text characters
+        await session.page.keyboard.type(msg.text || '').catch(() => {});
+      } else if (msg.type === 'resize') {
+        // Resize viewport
+        const w = Math.max(320, Math.min(3840, msg.width || 1280));
+        const h = Math.max(200, Math.min(2160, msg.height || 800));
+        await session.page.setViewportSize({ width: w, height: h }).catch(() => {});
+        // Restart screencast with new dimensions
+        await stopScreencast(session);
+        const scCfg2 = loadBrowserConfig().screencast || {};
+        await session.cdpSession.send('Page.startScreencast', {
+          format: scCfg2.format || 'jpeg',
+          quality: scCfg2.quality ?? 60,
+          maxWidth: w, maxHeight: h,
+          everyNthFrame: scCfg2.everyNthFrame || 1,
+        }).catch(() => {});
+        session.screencastActive = true;
+      }
+    } catch { /* ignore malformed */ }
+  });
+
+  ws.on('close', () => {
+    session.clients.delete(ws);
+    if (session.clients.size === 0 && browserSessions.has(sessionId)) {
+      // Stop screencast when nobody is watching
+      stopScreencast(session).catch(() => {});
+      // Grace period before killing browser
+      session.graceTimer = setTimeout(async () => {
+        if (session.clients.size === 0 && browserSessions.has(sessionId)) {
+          await destroyBrowserSession(sessionId);
+        }
+      }, BROWSER_GRACE_PERIOD_MS);
+    }
+  });
+}

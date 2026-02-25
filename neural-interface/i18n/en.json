@@ -48,7 +48,7 @@
     "view": "View",
     "graph": "Graph",
     "skills": "Skills",
-    "terminal": "Terminal",
+    "apps": "Apps",
     "bookmarks": "Bookmarks",
     "layouts": "Layouts",
     "trash": "Trash",
@@ -77,11 +77,12 @@
       "newSkill": "New Skill...",
       "import": "Import..."
     },
-    "terminal": {
+    "apps": {
       "claudeCode": "Claude Code",
       "codexCli": "Codex CLI",
       "geminiCli": "Gemini CLI",
       "shell": "Shell",
+      "browser": "Browser",
       "showTerminal": "Show Terminal"
     }
   },
