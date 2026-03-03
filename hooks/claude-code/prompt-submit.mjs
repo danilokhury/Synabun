@@ -86,7 +86,7 @@ const TIER2_TRIGGERS = [
   /\bhow (should|do) (we|i) (handle|approach|structure|organize)\b/i,
 
   // Specific technical domains that accumulate knowledge
-  /\b(supabase|redis|upstash|qdrant)\b/i,
+  /\b(supabase|redis|upstash|sqlite)\b/i,
   /\b(auth(entication|orization)?|session handling|jwt|mfa)\b/i,
   /\b(cron job|ranking|price aggregat|deal(s)? (system|pipeline))\b/i,
 ];

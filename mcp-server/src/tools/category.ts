@@ -12,7 +12,7 @@ import {
   getParentCategories,
   getCategoryTree,
 } from '../services/categories.js';
-import { countMemories, updatePayloadByFilter } from '../services/qdrant.js';
+import { countMemories, updatePayloadByFilter } from '../services/sqlite.js';
 import { refreshCategorySchemas } from '../index.js';
 
 export const categorySchema = {

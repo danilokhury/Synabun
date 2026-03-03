@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { getMemory, updatePayload, updateVector } from '../services/qdrant.js';
-import { generateEmbedding } from '../services/embeddings.js';
+import { getMemory, updatePayload, updateVector } from '../services/sqlite.js';
+import { generateEmbedding } from '../services/local-embeddings.js';
 import { validateCategory } from '../services/categories.js';
 import { coerceStringArray } from './utils.js';
 import type { MemoryPayload } from '../types.js';

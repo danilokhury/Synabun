@@ -956,125 +956,21 @@
       <ul class="dep-list" id="depList"></ul>
     </div>
 
-    <!-- Step 2: Qdrant Password -->
+    <!-- Step 2: Memory Name -->
     <div class="step right" data-step="2">
-      <div style="position:relative;display:flex;justify-content:center;align-items:center;">
-        <div class="step-eyes"></div>
-        <span class="mascot-toast" id="mascotToast2"></span>
-      </div>
-      <h2>Qdrant API Key</h2>
-      <p class="subtitle">Secure your local Qdrant instance with a password.</p>
-      <div class="field">
-        <label>API Key</label>
-        <div class="input-row">
-          <input type="password" id="qdrantKey" placeholder="Enter a secure API key..." autocomplete="off">
-          <button class="btn-sm" id="toggleKeyVis" title="Show/hide">Show</button>
-          <button class="btn-sm" id="copyKey" title="Copy to clipboard" style="display:none">Copy</button>
-          <button class="btn-sm" id="genKey">Generate</button>
-        </div>
-        <div class="hint">Minimum 8 characters. This key protects your Qdrant database.</div>
-        <div class="key-backup-notice">
-          <div class="key-backup-icon">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM7.25 5a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM7.25 7.25a.75.75 0 011.5 0v3.5a.75.75 0 01-1.5 0v-3.5z" fill="currentColor"/></svg>
-          </div>
-          <p class="key-backup-text">This key is the only way to access your memories. If lost, your data cannot be recovered.</p>
-        </div>
-        <label class="key-backup-check" id="keyBackupLabel">
-          <span class="key-backup-checkbox-wrap">
-            <input type="checkbox" id="keyBackupConfirm">
-            <span class="key-backup-checkmark">
-              <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 3.5L3.5 6.5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </span>
-          </span>
-          I have saved this API key somewhere safe
-        </label>
-        <div class="error-text" id="keyError"></div>
-      </div>
-    </div>
-
-    <!-- Step 3: Memory Name -->
-    <div class="step right" data-step="3">
       <div class="step-eyes"></div>
       <h2>Memory Name</h2>
-      <p class="subtitle">A display name for your memory collection.</p>
+      <p class="subtitle">A display name for your memory database.</p>
       <div class="field">
         <label>Name</label>
         <input type="text" id="collectionName" value="Claude Memory" placeholder="Claude Memory">
-        <div class="hint">Type any name you like. It will be normalized for Qdrant automatically.</div>
-        <div class="hint" style="margin-top:4px;color:var(--t-muted);font-size:11px" id="collectionPreview"></div>
+        <div class="hint">Type any name you like.</div>
         <div class="error-text" id="collectionError"></div>
       </div>
     </div>
 
-    <!-- Step 4: Embedding Provider -->
-    <div class="step right" data-step="4">
-      <div class="step-eyes"></div>
-      <h2>Embedding Provider</h2>
-      <p class="subtitle">Choose which API generates your memory embeddings.</p>
-      <div class="provider-grid" id="providerGrid"></div>
-      <div class="field">
-        <label>API Key</label>
-        <input type="password" id="embedKey" placeholder="sk-..." autocomplete="off">
-        <div class="hint" id="embedKeyHint"></div>
-      </div>
-      <input type="hidden" id="embedModel">
-      <input type="hidden" id="embedDims">
-    </div>
-
-    <!-- Step 5: Qdrant -->
-    <div class="step right" data-step="5">
-      <div class="step-eyes"></div>
-      <h2>Spin Up Qdrant</h2>
-      <p class="subtitle">Run Qdrant locally via Docker, or connect to a cloud instance or self-hosted VPS.</p>
-      <div class="mode-toggle" id="qdrantModeToggle">
-        <button class="active" data-mode="local">Local (Docker)</button>
-        <button data-mode="cloud">Remote / Cloud</button>
-      </div>
-
-      <!-- Local mode -->
-      <div id="qdrantLocalPanel">
-        <div id="qdrantAdvancedPanel" style="display:none;margin-bottom:16px;">
-          <div style="display:flex;gap:8px;">
-            <div class="field" style="flex:1;margin-bottom:0;">
-              <label>HTTP Port</label>
-              <input type="number" id="qdrantPort" value="6333" min="1024" max="65535" placeholder="6333">
-              <div class="hint">Auto-assigned to next available port</div>
-            </div>
-            <div class="field" style="flex:1;margin-bottom:0;">
-              <label>gRPC Port</label>
-              <input type="number" id="qdrantGrpcPort" value="6334" min="1024" max="65535" placeholder="6334">
-              <div class="hint">Automatically set to HTTP + 1</div>
-            </div>
-          </div>
-        </div>
-        <div id="dockerStatus"></div>
-        <div class="terminal" id="dockerOutput">Waiting to start...</div>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <button class="action-btn" id="dockerBtn" style="flex:1;">Start Qdrant</button>
-          <button type="button" id="qdrantAdvancedBtn" style="background:transparent;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.5);padding:10px 16px;border-radius:8px;cursor:pointer;font-size:13px;white-space:nowrap;transition:all 0.2s;" onmouseover="this.style.borderColor='rgba(255,255,255,0.3)';this.style.color='rgba(255,255,255,0.8)'" onmouseout="this.style.borderColor='rgba(255,255,255,0.15)';this.style.color='rgba(255,255,255,0.5)'">Advanced</button>
-        </div>
-      </div>
-
-      <!-- Cloud / Remote mode -->
-      <div id="qdrantCloudPanel" style="display:none;">
-        <p style="color:rgba(255,255,255,0.4);font-size:13px;margin:0 0 16px;line-height:1.5;">Works with <a href="https://cloud.qdrant.io/" target="_blank" rel="noopener" style="color:var(--accent-dim);text-decoration:none;">Qdrant Cloud &#x2197;</a> or any self-hosted Qdrant instance on your own VPS.</p>
-        <div class="field">
-          <label>Qdrant URL</label>
-          <input type="text" id="cloudQdrantUrl" placeholder="https://xyz-abc.aws.cloud.qdrant.io:6333">
-          <div class="hint">Cloud URL or your VPS address (e.g. http://your-server:6333)</div>
-        </div>
-        <div class="field">
-          <label>API Key</label>
-          <input type="password" id="cloudQdrantKey" placeholder="Enter your Qdrant API key..." autocomplete="off">
-          <div class="hint">The API key configured for your Qdrant instance.</div>
-        </div>
-        <div id="cloudStatus"></div>
-        <button class="action-btn" id="cloudTestBtn">Test Connection</button>
-      </div>
-    </div>
-
-    <!-- Step 6: Build MCP Server -->
-    <div class="step right" data-step="6">
+    <!-- Step 3: Build MCP Server -->
+    <div class="step right" data-step="3">
       <div class="step-eyes"></div>
       <h2>Build MCP Server</h2>
       <p class="subtitle">Compile the TypeScript MCP server to JavaScript.</p>
@@ -1083,8 +979,8 @@
       <button class="action-btn" id="buildBtn">Build</button>
     </div>
 
-    <!-- Step 7: AI Tool Integration -->
-    <div class="step right" data-step="7">
+    <!-- Step 4: AI Tool Integration -->
+    <div class="step right" data-step="4">
       <div style="position:relative;display:flex;justify-content:center;align-items:center;">
         <div class="step-eyes"></div>
         <span class="mascot-toast" id="mascotToast"></span>
@@ -1102,32 +998,13 @@
       </div>
     </div>
 
-    <!-- Step 8: Markdown Instructions -->
-    <div class="step right" data-step="8">
-      <div style="position:relative;display:flex;justify-content:center;align-items:center;">
-        <div class="step-eyes"></div>
-        <span class="mascot-toast" id="mascotToast8"></span>
-      </div>
-      <h2>Memory Instructions</h2>
-      <p class="subtitle">Add these instructions to your project's config file so your AI tool uses memory automatically.</p>
-      <div id="instrFileName" style="font-size:12px;color:var(--t-secondary);margin-bottom:8px;font-family:monospace;"></div>
-      <div class="code-copy-wrap" id="instrCodeWrap">
-        <div class="instructions-preview" id="instrPreview"></div>
-        <span class="code-copy-label">copy</span>
-      </div>
-      <div id="instrCopyHint" style="margin-top:8px;font-size:11px;color:var(--t-muted);"></div>
-    </div>
-
-    <!-- Step 9: Complete -->
-    <div class="step right" data-step="9">
+    <!-- Step 5: Complete -->
+    <div class="step right" data-step="5">
       <div class="step-eyes"></div>
       <h2 style="text-align:center;margin-bottom:12px;">Setup Complete!</h2>
       <ul class="checklist" id="checklist"></ul>
       <div id="restartNotice" style="margin:16px 0 0;padding:12px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.10);border-radius:var(--r-card);font-size:12px;color:var(--t-primary);line-height:1.5;">
         <span style="color:var(--t-bright);font-weight:600;">Restart required</span> — Relaunch <span id="restartToolName" style="color:var(--t-bright);font-weight:500;"></span> for the MCP changes to be picked up.
-      </div>
-      <div style="margin:10px 0 0;padding:12px 14px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.18);border-radius:var(--r-card);font-size:12px;color:var(--t-primary);line-height:1.5;">
-        <span style="color:#ffaa00;font-weight:600;">Backup your API key</span> — Your Qdrant key is the password to your memory server. It's stored in <code style="font-size:11px;background:rgba(255,255,255,0.06);padding:2px 5px;border-radius:3px;">.env</code> — keep a copy somewhere safe.
       </div>
       <div style="text-align:center;margin-top:16px;">
         <button class="action-btn" id="launchBtn" style="font-size:15px;padding:12px 32px;">Launch Neural Interface</button>
@@ -1241,49 +1118,17 @@
 // STATE
 // ═══════════════════════════════════════════
 
-const TOTAL_STEPS = 10;
+const TOTAL_STEPS = 6;
 let currentStep = 0;
 
-// Normalize a friendly display name into a valid Qdrant collection name
-function normalizeCollectionName(displayName) {
-  return displayName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')  // replace non-alphanumeric runs with _
-    .replace(/^_+|_+$/g, '')       // trim leading/trailing underscores
-    .replace(/^(\d)/, 'c_$1')      // prefix if starts with digit
-    .slice(0, 50);
-}
-
 const wizardState = {
-  qdrantApiKey: '',
-  qdrantMode: 'local',   // 'local' or 'cloud'
-  qdrantPort: 6333,
-  qdrantGrpcPort: 6334,
-  qdrantCloudUrl: '',
-  qdrantCloudKey: '',
   collectionName: 'claude_memory',
   collectionDisplayName: 'Claude Memory',
-  selectedProvider: null,
-  embeddingApiKey: '',
-  embeddingBaseUrl: '',
-  embeddingModel: '',
-  embeddingDimensions: 0,
   selectedTool: null,
   projectRoot: '',
-  dockerReady: false,
   buildReady: false,
   mcpWritten: false,
-  instrWritten: false,
 };
-
-const PROVIDERS = [
-  { id: 'openai',    name: 'OpenAI',       url: 'https://api.openai.com/v1',                                   model: 'text-embedding-3-small', dims: 1536, tag: 'Recommended', needsKey: true,  dash: 'https://platform.openai.com/api-keys' },
-  { id: 'gemini',    name: 'Google Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai',     model: 'text-embedding-004',     dims: 768,  tag: 'Free tier',   needsKey: true,  dash: 'https://aistudio.google.com/apikey' },
-  { id: 'qwen',      name: 'Qwen',         url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',      model: 'text-embedding-v4',      dims: 1024, tag: '',            needsKey: true,  dash: 'https://dashscope.console.aliyun.com/' },
-  { id: 'together',  name: 'Together AI',   url: 'https://api.together.xyz/v1',                                 model: 'togethercomputer/m2-bert-80M-8k-retrieval', dims: 768,  tag: '',  needsKey: true,  dash: 'https://api.together.xyz/settings/api-keys' },
-  { id: 'ollama',    name: 'Ollama',        url: 'http://localhost:11434/v1',                                   model: 'nomic-embed-text',       dims: 768,  tag: 'Local',       needsKey: false, dash: 'https://ollama.com/library' },
-  { id: 'lmstudio',  name: 'LM Studio',    url: 'http://localhost:1234/v1',                                    model: '(loaded model)',         dims: 768,  tag: 'Local',       needsKey: false, dash: 'https://lmstudio.ai/' },
-];
 
 const TOOLS = [
   { id: 'claude',   name: 'Claude Code',  instrFile: 'CLAUDE.md' },
@@ -1318,23 +1163,6 @@ function updateDots() {
     d.className = 'dot' + (i === currentStep ? ' active' : i < currentStep ? ' done' : '');
   });
 }
-
-// ═══════════════════════════════════════════
-// COLLECTION NAME LIVE PREVIEW
-// ═══════════════════════════════════════════
-
-const $collInput = document.getElementById('collectionName');
-const $collPreview = document.getElementById('collectionPreview');
-function updateCollectionPreview() {
-  const val = $collInput.value.trim();
-  if (val.length >= 2) {
-    $collPreview.textContent = 'Collection: ' + normalizeCollectionName(val);
-  } else {
-    $collPreview.textContent = '';
-  }
-}
-$collInput.addEventListener('input', updateCollectionPreview);
-updateCollectionPreview();
 
 // ═══════════════════════════════════════════
 // STEP NAVIGATION
@@ -1382,7 +1210,7 @@ function goToStep(n) {
 function updateNav() {
   $prevBtn.disabled = currentStep === 0;
 
-  const labels = ['', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
+  const labels = ['', 'Next', 'Next', 'Next', 'Next', 'Finish'];
   $nextBtn.textContent = (labels[currentStep] || 'Next') + ' \u2192';
 
   if (currentStep === 0 || currentStep === TOTAL_STEPS - 1) {
@@ -1406,15 +1234,6 @@ $nextBtn.addEventListener('click', () => {
 function validateStep(n) {
   switch(n) {
     case 2: {
-      const key = document.getElementById('qdrantKey').value.trim();
-      const err = document.getElementById('keyError');
-      if (key.length < 8) { err.textContent = 'Minimum 8 characters required.'; return false; }
-      if (!document.getElementById('keyBackupConfirm').checked) { err.textContent = 'Please confirm you have saved your API key.'; return false; }
-      err.textContent = '';
-      wizardState.qdrantApiKey = key;
-      return true;
-    }
-    case 3: {
       const displayName = document.getElementById('collectionName').value.trim();
       const err = document.getElementById('collectionError');
       if (displayName.length < 2) {
@@ -1425,27 +1244,12 @@ function validateStep(n) {
         err.textContent = 'Name must be 50 characters or less.';
         return false;
       }
-      const normalized = normalizeCollectionName(displayName);
-      if (normalized.length < 3) {
-        err.textContent = 'Name must contain at least a few letters or numbers.';
-        return false;
-      }
       err.textContent = '';
       wizardState.collectionDisplayName = displayName;
-      wizardState.collectionName = normalized;
+      wizardState.collectionName = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50);
       return true;
     }
     case 4: {
-      if (!wizardState.selectedProvider) return false;
-      const p = PROVIDERS.find(x => x.id === wizardState.selectedProvider);
-      if (p.needsKey && !document.getElementById('embedKey').value.trim()) return false;
-      wizardState.embeddingApiKey = document.getElementById('embedKey').value.trim();
-      wizardState.embeddingModel = document.getElementById('embedModel').value.trim() || p.model;
-      wizardState.embeddingDimensions = parseInt(document.getElementById('embedDims').value, 10) || p.dims;
-      wizardState.embeddingBaseUrl = p.url;
-      return true;
-    }
-    case 7: {
       if (!wizardState.selectedTool) return false;
       return true;
     }
@@ -1461,11 +1265,8 @@ function validateStep(n) {
 async function onStepEnter(n) {
   if (n === 0) startMascot();
   if (n === 1) await onDepsStep();
-  if (n === 5) await onDockerStep();
-  if (n === 6) await onBuildStep();
-  if (n === 7) await onToolStep();
-  if (n === 8) await onInstructionsStep();
-  if (n === 9) await onCompleteStep();
+  if (n === 3) await onBuildStep();
+  if (n === 5) await onCompleteStep();
   // Re-measure after async content loads
   resizeViewport(n);
 }
@@ -1737,10 +1538,8 @@ function renderHappyBun() {}
   }
 
   function showRestoreConfirm(m, buffer) {
-    const connList = Object.entries(m.connections || {})
-      .map(([id, c]) => `<li><strong>${esc(c.label)}</strong> (${esc(c.collection)}) \u2014 ${c.pointCount} memories</li>`)
-      .join('');
     const fileCount = (m.files || []).length;
+    const hasDb = !!(m.database);
 
     $restorePanel.innerHTML = `
       <div style="padding:20px 0;">
@@ -1751,12 +1550,11 @@ function renderHappyBun() {}
         <div style="font-size:12px;color:var(--t-primary);margin-bottom:6px;">
           <strong>${fileCount}</strong> config files
         </div>
-        ${connList ? `<div style="font-size:12px;color:var(--t-primary);margin-bottom:10px;">
-          <strong>Qdrant snapshots:</strong>
-          <ul style="margin:4px 0 0 16px;padding:0">${connList}</ul>
+        ${hasDb ? `<div style="font-size:12px;color:var(--t-primary);margin-bottom:10px;">
+          <strong>Memory database included</strong>
         </div>` : ''}
         <p style="font-size:11px;color:var(--accent-dim);margin-bottom:16px;">
-          This will restore your .env, data files, and Qdrant collections.
+          This will restore your .env, data files, and memory database.
         </p>
         <div style="display:flex;gap:10px;justify-content:center;">
           <button class="nav-btn" id="onboardRestoreCancel">Cancel</button>
@@ -1788,53 +1586,17 @@ function renderHappyBun() {}
       progressEl.style.display = 'flex';
       progressDot.className = 'wiz-status-dot spin';
 
-      const hasSnapshots = Object.keys(m.connections || {}).length > 0;
-
       try {
-        // Phase 1: Restore config files (.env, data/) first
-        progressText.textContent = 'Restoring config files...';
-        const configRes = await fetch('/api/system/restore?mode=config-only', {
+        progressText.textContent = 'Restoring backup...';
+        const restoreRes = await fetch('/api/system/restore', {
           method: 'POST',
           headers: { 'Content-Type': 'application/zip' },
           body: buffer,
         });
-        if (!configRes.ok) {
-          let errMsg = 'Config restore failed';
-          try { const body = await configRes.json(); errMsg = body.error || errMsg; } catch {}
+        if (!restoreRes.ok) {
+          let errMsg = 'Restore failed';
+          try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
           throw new Error(errMsg);
-        }
-
-        // Phase 2: Spin up Qdrant if backup has snapshots to restore
-        if (hasSnapshots) {
-          progressText.textContent = 'Starting Qdrant...';
-          resizeViewport(0);
-
-          const healthRes = await fetch('/api/health/start', { method: 'POST' });
-          const healthData = await healthRes.json();
-          if (!healthData.ok) {
-            throw new Error('Failed to start Qdrant: ' + (healthData.error || 'unknown error'));
-          }
-          if (!healthData.ready) {
-            throw new Error('Qdrant started but is not responding. Try again.');
-          }
-
-          // Phase 3: Restore Qdrant snapshots
-          progressText.textContent = 'Restoring memory snapshots...';
-          resizeViewport(0);
-          const snapRes = await fetch('/api/system/restore?mode=snapshots-only', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/zip' },
-            body: buffer,
-          });
-          if (!snapRes.ok) {
-            let errMsg = 'Snapshot restore failed';
-            try { const body = await snapRes.json(); errMsg = body.error || errMsg; } catch {}
-            throw new Error(errMsg);
-          }
-          const snapResult = await snapRes.json();
-          if (snapResult.results && snapResult.results.errors && snapResult.results.errors.length > 0) {
-            console.warn('Snapshot restore warnings:', snapResult.results.errors);
-          }
         }
 
         progressDot.className = 'wiz-status-dot green';
@@ -1919,86 +1681,6 @@ function renderHappyBun() {}
 })();
 
 // ═══════════════════════════════════════════
-// STEP 2: Qdrant Key
-// ═══════════════════════════════════════════
-
-document.getElementById('toggleKeyVis').addEventListener('click', () => {
-  const inp = document.getElementById('qdrantKey');
-  const btn = document.getElementById('toggleKeyVis');
-  if (inp.type === 'password') { inp.type = 'text'; btn.textContent = 'Hide'; }
-  else { inp.type = 'password'; btn.textContent = 'Show'; }
-});
-
-document.getElementById('genKey').addEventListener('click', () => {
-  const arr = new Uint8Array(24);
-  crypto.getRandomValues(arr);
-  const key = Array.from(arr, b => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
-  document.getElementById('qdrantKey').value = key;
-  document.getElementById('qdrantKey').type = 'text';
-  document.getElementById('toggleKeyVis').textContent = 'Hide';
-  document.getElementById('copyKey').style.display = '';
-});
-
-document.getElementById('copyKey').addEventListener('click', () => {
-  const key = document.getElementById('qdrantKey').value;
-  if (!key) return;
-  navigator.clipboard.writeText(key);
-  const toast = document.getElementById('mascotToast2');
-  if (toast) {
-    toast.textContent = 'Copied to clipboard!';
-    toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), 2000);
-  }
-});
-
-// ═══════════════════════════════════════════
-// STEP 4: Embedding Providers
-// ═══════════════════════════════════════════
-
-const $providerGrid = document.getElementById('providerGrid');
-PROVIDERS.forEach(p => {
-  const card = document.createElement('div');
-  card.className = 'provider-card';
-  card.dataset.id = p.id;
-  card.innerHTML = `
-    <div class="pname">${p.name}</div>
-    <div class="pmodel">${p.model} (${p.dims}d)</div>
-    <a class="plink" href="${p.dash}" target="_blank" rel="noopener">${p.needsKey ? 'Get API key \u2197' : 'Download \u2197'}</a>
-    ${p.tag ? `<div class="ptag">${p.tag}</div>` : ''}
-  `;
-  card.addEventListener('click', (e) => {
-    if (e.target.closest('.plink')) return;
-    selectProvider(p.id);
-  });
-  $providerGrid.appendChild(card);
-});
-
-function selectProvider(id) {
-  const p = PROVIDERS.find(x => x.id === id);
-  if (!p) return;
-  wizardState.selectedProvider = id;
-
-  $providerGrid.querySelectorAll('.provider-card').forEach(c => {
-    c.classList.toggle('selected', c.dataset.id === id);
-  });
-
-  document.getElementById('embedModel').value = p.model;
-  document.getElementById('embedDims').value = p.dims;
-
-  const $key = document.getElementById('embedKey');
-  const $hint = document.getElementById('embedKeyHint');
-  if (p.needsKey) {
-    $key.disabled = false;
-    $key.placeholder = p.id === 'openai' ? 'sk-...' : 'Enter API key...';
-    $hint.innerHTML = `Get a key from <a href="${p.dash}" target="_blank" rel="noopener" style="color:var(--accent-dim);text-decoration:none;">${p.name}'s dashboard \u2197</a>`;
-  } else {
-    $key.disabled = true;
-    $key.value = '';
-    $hint.textContent = 'Not required for local providers.';
-  }
-}
-
-// ═══════════════════════════════════════════
 // STEP 1: Dependencies Check
 // ═══════════════════════════════════════════
 
@@ -2067,243 +1749,22 @@ async function onDepsStep() {
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ═══════════════════════════════════════════
-// STEP 5: Qdrant (Local / Cloud)
+// STEP 3: Build
 // ═══════════════════════════════════════════
 
-// Mode toggle
-document.getElementById('qdrantModeToggle').addEventListener('click', (e) => {
-  const btn = e.target.closest('button');
-  if (!btn) return;
-  const mode = btn.dataset.mode;
-  wizardState.qdrantMode = mode;
-  document.querySelectorAll('#qdrantModeToggle button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
-  document.getElementById('qdrantLocalPanel').style.display = mode === 'local' ? '' : 'none';
-  document.getElementById('qdrantCloudPanel').style.display = mode === 'cloud' ? '' : 'none';
-});
-
-// Auto-sync gRPC port when HTTP port changes
-document.getElementById('qdrantPort').addEventListener('input', (e) => {
-  const p = parseInt(e.target.value, 10);
-  if (!isNaN(p)) document.getElementById('qdrantGrpcPort').value = p + 1;
-});
-
-// Advanced toggle for port fields
-document.getElementById('qdrantAdvancedBtn').addEventListener('click', () => {
-  const panel = document.getElementById('qdrantAdvancedPanel');
-  const btn = document.getElementById('qdrantAdvancedBtn');
-  const visible = panel.style.display !== 'none';
-  panel.style.display = visible ? 'none' : '';
-  btn.textContent = visible ? 'Advanced' : 'Hide Ports';
-  // Let the DOM reflow, then resize the step viewport to fit
-  requestAnimationFrame(() => resizeViewport(currentStep));
-});
-
-// Cloud test button
-document.getElementById('cloudTestBtn').addEventListener('click', async () => {
-  const url = document.getElementById('cloudQdrantUrl').value.trim().replace(/\/+$/, '');
-  const key = document.getElementById('cloudQdrantKey').value.trim();
-  const $status = document.getElementById('cloudStatus');
-  const $btn = document.getElementById('cloudTestBtn');
-
-  if (!url) { $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>URL is required</div>'; return; }
-  if (!key) { $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>API key is required</div>'; return; }
-
-  $btn.disabled = true;
-  $btn.innerHTML = '<div class="spinner"></div> Testing...';
-  $status.innerHTML = '';
-
-  try {
-    const res = await fetch('/api/setup/test-qdrant-cloud', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, apiKey: key }),
-    });
-    const data = await res.json();
-
-    if (data.ok) {
-      wizardState.qdrantCloudUrl = url;
-      wizardState.qdrantCloudKey = key;
-      wizardState.dockerReady = true;
-
-      // Save cloud config to .env so server uses the right URL
-      await saveSteps1to3();
-
-      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Connected to Qdrant Cloud</div>';
-      $btn.textContent = 'Connected';
-      $btn.classList.add('success');
-    } else {
-      throw new Error(data.error || 'Connection failed');
-    }
-  } catch (err) {
-    $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>' + err.message + '</div>';
-    $btn.textContent = 'Test Connection';
-    $btn.disabled = false;
-    $btn.classList.remove('success');
-  }
-});
-
-async function saveSteps1to3() {
-  const payload = {
-    qdrantApiKey: wizardState.qdrantApiKey,
-    collectionName: wizardState.collectionName,
-    collectionDisplayName: wizardState.collectionDisplayName,
-    embeddingApiKey: wizardState.embeddingApiKey,
-    embeddingBaseUrl: wizardState.embeddingBaseUrl,
-    embeddingModel: wizardState.embeddingModel,
-    embeddingDimensions: wizardState.embeddingDimensions,
-  };
-
-  // If cloud mode, also save cloud URL + key
-  if (wizardState.qdrantMode === 'cloud' && wizardState.qdrantCloudUrl) {
-    payload.qdrantUrl = wizardState.qdrantCloudUrl;
-    payload.qdrantApiKey = wizardState.qdrantCloudKey;
-  }
-
-  // If local mode, save custom ports + build the qdrantUrl from them
-  if (wizardState.qdrantMode === 'local') {
-    const port = wizardState.qdrantPort || 6333;
-    const grpcPort = wizardState.qdrantGrpcPort || 6334;
-    payload.qdrantPort = port;
-    payload.qdrantGrpcPort = grpcPort;
-    payload.qdrantUrl = `http://localhost:${port}`;
-  }
-
+async function onBuildStep() {
+  // Save collection name config
   try {
     await fetch('/api/setup/save-config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        collectionName: wizardState.collectionName,
+        collectionDisplayName: wizardState.collectionDisplayName,
+      }),
     });
   } catch {}
-}
 
-async function onDockerStep() {
-  // Auto-suggest next available port if user hasn't manually changed the default
-  const $port = document.getElementById('qdrantPort');
-  const $grpc = document.getElementById('qdrantGrpcPort');
-  try {
-    const suggestRes = await fetch('/api/connections/suggest-port');
-    const suggestData = await suggestRes.json();
-    if (suggestData.port && $port.value === '6333') {
-      $port.value = suggestData.port;
-      $grpc.value = suggestData.grpcPort;
-    }
-  } catch {}
-
-  // Read port inputs into state
-  wizardState.qdrantPort = parseInt($port.value, 10) || 6333;
-  wizardState.qdrantGrpcPort = parseInt($grpc.value, 10) || 6334;
-
-  await saveSteps1to3();
-
-  // If cloud mode, skip Docker check entirely
-  if (wizardState.qdrantMode === 'cloud') return;
-
-  // Local mode: check if Qdrant is already running on the chosen port
-  const $status = document.getElementById('dockerStatus');
-  const $btn = document.getElementById('dockerBtn');
-  const $out = document.getElementById('dockerOutput');
-  const port = wizardState.qdrantPort || 6333;
-
-  try {
-    const res = await fetch(`/api/setup/test-qdrant?port=${port}`);
-    const data = await res.json();
-    if (data.ok) {
-      wizardState.dockerReady = true;
-      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Qdrant detected on port ' + port + '</div>';
-      $out.textContent = `Qdrant detected on localhost:${port}\nCreating collection...`;
-
-      // Create collection
-      const colRes = await fetch('/api/setup/create-collection', { method: 'POST' });
-      const colData = await colRes.json();
-      if (colData.ok) {
-        $out.textContent += '\n' + colData.message;
-      }
-
-      $btn.textContent = 'Start Qdrant';
-      $btn.disabled = false;
-      return;
-    }
-  } catch {}
-
-  $status.innerHTML = '<div class="status-row"><div class="status-dot gray"></div>No Qdrant on port ' + port + '</div>';
-}
-
-document.getElementById('dockerBtn').addEventListener('click', async () => {
-  const $btn = document.getElementById('dockerBtn');
-  const $out = document.getElementById('dockerOutput');
-  const $status = document.getElementById('dockerStatus');
-
-  // Read latest port values and save before starting
-  wizardState.qdrantPort = parseInt(document.getElementById('qdrantPort').value, 10) || 6333;
-  wizardState.qdrantGrpcPort = parseInt(document.getElementById('qdrantGrpcPort').value, 10) || 6334;
-  await saveSteps1to3();
-
-  $btn.disabled = true;
-  $btn.innerHTML = '<div class="spinner"></div> Starting...';
-  $out.textContent = '$ Starting Qdrant container...\n';
-
-  try {
-    const res = await fetch('/api/setup/docker', { method: 'POST' });
-    const data = await res.json();
-
-    if (data.ok) {
-      // Server may have auto-resolved to a free port — sync UI + state
-      if (data.port && data.port !== wizardState.qdrantPort) {
-        const oldPort = wizardState.qdrantPort;
-        wizardState.qdrantPort = data.port;
-        wizardState.qdrantGrpcPort = data.grpcPort || data.port + 1;
-        document.getElementById('qdrantPort').value = data.port;
-        document.getElementById('qdrantGrpcPort').value = wizardState.qdrantGrpcPort;
-        $out.textContent += `Port ${oldPort} was busy — auto-switched to ${data.port}\n`;
-        // Persist the resolved port to .env
-        await saveSteps1to3();
-      }
-
-      $out.textContent += data.output + '\n';
-      if (data.ready) {
-        wizardState.dockerReady = true;
-        $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Qdrant is running on port ' + (data.port || wizardState.qdrantPort) + '</div>';
-        $btn.textContent = 'Running';
-        $btn.classList.add('success');
-
-        // Create collection
-        $out.textContent += '\nCreating collection...';
-        const colRes = await fetch('/api/setup/create-collection', { method: 'POST' });
-        const colData = await colRes.json();
-        if (colData.ok) {
-          $out.textContent += '\n' + colData.message;
-        }
-      } else {
-        $status.innerHTML = '<div class="status-row"><div class="status-dot yellow"></div>Docker started but Qdrant not responding yet</div>';
-        $btn.textContent = 'Retry';
-        $btn.disabled = false;
-      }
-    } else if (data.portConflict) {
-      // Port range exhausted — couldn't auto-find a free port
-      $out.textContent += `\n${data.error}`;
-      $status.innerHTML = `<div class="status-row"><div class="status-dot red"></div>${data.error}</div>`;
-      $btn.textContent = 'Retry';
-      $btn.disabled = false;
-      $btn.classList.remove('success');
-    } else {
-      throw new Error(data.error);
-    }
-  } catch (err) {
-    $out.textContent += '\nError: ' + err.message;
-    $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>Failed to start Docker</div>';
-    $btn.textContent = 'Retry';
-    $btn.disabled = false;
-    $btn.classList.remove('success');
-  }
-  resizeViewport(currentStep);
-});
-
-// ═══════════════════════════════════════════
-// STEP 6: Build
-// ═══════════════════════════════════════════
-
-async function onBuildStep() {
   const $status = document.getElementById('buildStatus');
   const $btn = document.getElementById('buildBtn');
 
@@ -2355,7 +1816,7 @@ document.getElementById('buildBtn').addEventListener('click', async () => {
 });
 
 // ═══════════════════════════════════════════
-// STEP 7: Tool Selection
+// STEP 4: Tool Selection
 // ═══════════════════════════════════════════
 
 const $toolGrid = document.getElementById('toolGrid');
@@ -2419,8 +1880,6 @@ function selectTool(id) {
   resizeViewport(currentStep);
 }
 
-async function onToolStep() {}
-
 function showMascotToast(msg, duration = 2000) {
   const toast = document.getElementById('mascotToast');
   if (!toast) return;
@@ -2441,61 +1900,7 @@ document.getElementById('mcpCodeWrap').addEventListener('click', () => {
 });
 
 // ═══════════════════════════════════════════
-// STEP 8: Instructions
-// ═══════════════════════════════════════════
-
-// Cache for live rulesets fetched from the API (single source of truth: CLAUDE.md)
-const _rulesetCache = {};
-
-async function fetchRuleset(format) {
-  if (_rulesetCache[format]) return _rulesetCache[format];
-  try {
-    const res = await fetch(`/api/claude-code/ruleset?format=${format}`);
-    const data = await res.json();
-    if (data.ok && data.ruleset) {
-      _rulesetCache[format] = data.ruleset;
-      return data.ruleset;
-    }
-  } catch {}
-  return null;
-}
-
-// Map tool ID to API format param
-const TOOL_FORMAT = { claude: 'claude', cursor: 'cursor' };
-
-function getInstructionsContent() {
-  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
-  const format = TOOL_FORMAT[tool.id] || 'generic';
-  return _rulesetCache[format] || 'Failed to load ruleset. Please check that the Neural Interface server is running.';
-}
-
-async function onInstructionsStep() {
-  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
-  document.getElementById('instrFileName').textContent = 'Paste into: ' + tool.instrFile;
-  document.getElementById('instrPreview').textContent = 'Loading ruleset...';
-  const format = TOOL_FORMAT[tool.id] || 'generic';
-  await fetchRuleset(format);
-  document.getElementById('instrPreview').textContent = getInstructionsContent();
-  document.getElementById('instrCopyHint').textContent =
-    tool.id === 'claude' ? 'Paste this into your project\'s CLAUDE.md file.' :
-    tool.id === 'cursor' ? 'Paste this into your project\'s .cursorrules file.' :
-    tool.id === 'windsurf' ? 'Paste this into your project\'s .windsurfrules file.' :
-    'Paste this into your project\'s instructions file (AGENTS.md or equivalent).';
-}
-
-document.getElementById('instrCodeWrap').addEventListener('click', () => {
-  navigator.clipboard.writeText(getInstructionsContent());
-  wizardState.instrWritten = true;
-  const label = document.querySelector('#instrCodeWrap .code-copy-label');
-  label.textContent = 'copied!';
-  label.style.opacity = '1';
-  const toast = document.getElementById('mascotToast8');
-  if (toast) { toast.textContent = 'Copied to clipboard!'; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2000); }
-  setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
-});
-
-// ═══════════════════════════════════════════
-// STEP 9: Complete
+// STEP 5: Complete
 // ═══════════════════════════════════════════
 
 async function onCompleteStep() {
@@ -2504,15 +1909,10 @@ async function onCompleteStep() {
   const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
   document.getElementById('restartToolName').textContent = tool.name;
 
-  const isCloud = wizardState.qdrantMode === 'cloud';
   const items = [
-    { label: isCloud ? 'Qdrant Cloud connected' : 'Qdrant API key configured', done: isCloud ? !!wizardState.qdrantCloudUrl : !!wizardState.qdrantApiKey },
     { label: 'Memory name set', done: !!wizardState.collectionName },
-    { label: 'Embedding provider configured', done: !!wizardState.selectedProvider },
-    { label: isCloud ? 'Qdrant Cloud reachable' : 'Qdrant Docker container running', done: wizardState.dockerReady },
     { label: 'MCP server built', done: wizardState.buildReady },
     { label: 'MCP config copied', done: wizardState.mcpWritten },
-    { label: 'Instructions copied', done: wizardState.instrWritten },
   ];
 
   const $list = document.getElementById('checklist');

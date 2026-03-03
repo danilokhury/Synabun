@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getEmbeddingCalls, getQdrantCalls, getQdrantCallsByMethod } from '../mocks/trackers.js';
+import { getEmbeddingCalls, getDbCalls, getDbCallsByMethod } from '../mocks/trackers.js';
 import { countTokens, QUERY_SIZES, tokensToUSD } from '../utils/token-counter.js';
 
 // recall.ts reads display-settings.json via node:fs — mock it
@@ -19,7 +19,7 @@ vi.mock('node:fs', async (importOriginal) => {
 const { handleRecall } = await import('../../mcp-server/src/tools/recall.js');
 
 describe('recall — token usage', () => {
-  it('makes exactly 1 OpenAI embedding call on the query string', async () => {
+  it('makes exactly 1 embedding call on the query string', async () => {
     const query = 'architecture decisions about caching';
     await handleRecall({ query });
     expect(getEmbeddingCalls()).toHaveLength(1);
@@ -28,7 +28,7 @@ describe('recall — token usage', () => {
 
   it('passes limit * 2 to searchMemories', async () => {
     await handleRecall({ query: 'test query', limit: 5 });
-    const searches = getQdrantCallsByMethod('search');
+    const searches = getDbCallsByMethod('search');
     expect(searches).toHaveLength(1);
     expect((searches[0].params as Record<string, unknown>).limit).toBe(10); // 5 * 2
   });
@@ -36,7 +36,7 @@ describe('recall — token usage', () => {
   it('fires N async setPayload calls for access tracking', async () => {
     await handleRecall({ query: 'test', limit: 3 });
     await new Promise(resolve => setTimeout(resolve, 50));
-    const setPayloads = getQdrantCallsByMethod('setPayload');
+    const setPayloads = getDbCallsByMethod('setPayload');
     expect(setPayloads.length).toBeGreaterThan(0);
     expect(setPayloads.length).toBeLessThanOrEqual(3);
   });
@@ -45,8 +45,8 @@ describe('recall — token usage', () => {
     const limit = 5;
     await handleRecall({ query: 'test', limit });
     await new Promise(resolve => setTimeout(resolve, 50));
-    expect(getQdrantCallsByMethod('search')).toHaveLength(1);
-    expect(getQdrantCallsByMethod('setPayload').length).toBeLessThanOrEqual(limit);
+    expect(getDbCallsByMethod('search')).toHaveLength(1);
+    expect(getDbCallsByMethod('setPayload').length).toBeLessThanOrEqual(limit);
   });
 
   it('token cost scales with query length', () => {
@@ -66,7 +66,7 @@ describe('recall — token usage', () => {
     }
   });
 
-  it('OpenAI calls constant regardless of limit (always 1)', async () => {
+  it('Embedding calls constant regardless of limit (always 1)', async () => {
     for (const limit of [1, 5, 10, 20]) {
       await handleRecall({ query: 'test', limit });
     }

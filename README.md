@@ -5,15 +5,15 @@
 <h1 align="center">SynaBun</h1>
 
 <p align="center">
-  Persistent vector memory for AI assistants — powered by Qdrant and OpenAI embeddings.
+  Persistent vector memory for AI assistants — powered by SQLite and local embeddings.
 </p>
 
 <p align="center">
   <a href="https://discord.gg/x6yWqE9GZP"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
   <a href="https://x.com/SynabunAI"><img src="https://img.shields.io/badge/Follow-%40SynabunAI-000000?logo=x&logoColor=white" alt="X / Twitter" /></a>
-  <img src="https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodedotjs&logoColor=white" alt="Node.js 18+" />
+  <img src="https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white" alt="Node.js 22+" />
   <img src="https://img.shields.io/badge/MCP-Protocol-8B5CF6" alt="MCP Protocol" />
-  <img src="https://img.shields.io/badge/Qdrant-Vector_DB-DC382D?logo=qdrant" alt="Qdrant" />
+  <img src="https://img.shields.io/badge/SQLite-Database-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@
 
 ---
 
-Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and retain knowledge across sessions through semantic vector search. Memories are stored in a single Qdrant collection with payload-based filtering — no fragmented search across databases.
+Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and retain knowledge across sessions through semantic vector search. Memories are stored in a local SQLite database with built-in vector search — no external services, no API keys, no Docker.
 
 ## Features
 
@@ -31,13 +31,13 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - **Smart Relevance** — time decay (90-day half-life), project boost (1.2x), and access frequency scoring
 - **User-Defined Categories** — hierarchical categories with prescriptive routing descriptions; dynamic schema refresh without server restart
 - **Neural Interface** — interactive 3D force-directed graph visualization at `localhost:3344`
-- **10+ Embedding Providers** — OpenAI, Google Gemini, Ollama, Mistral, Cohere, and more via OpenAI-compatible API
+- **Local Embeddings** — built-in Transformers.js (`all-MiniLM-L6-v2`, 384 dims) — no API key or internet needed after first run
 - **Onboarding Wizard** — guided setup through the Neural Interface UI
 - **Trash & Restore** — soft-delete with full restore capability; trash management via Neural Interface
 - **Memory Sync** — SHA-256 file hash tracking detects when related source files change, flagging stale memories
 - **OpenClaw Bridge** — read-only integration overlays OpenClaw workspace memories as ephemeral nodes in the 3D graph
 - **Category Logos** — upload custom logos for parent categories, rendered on sun nodes in the 3D visualization
-- **Backup & Restore** — create and restore Qdrant snapshots per connection via the Neural Interface
+- **Backup & Restore** — export and import SQLite database snapshots via the Neural Interface
 - **Claude Code Hooks** — 5 lifecycle hooks automate memory recall, storage, and session indexing
 - **User Learning** — autonomous observation of user communication patterns, preferences, and behavioral singularity across sessions
 - **Claude Code `/synabun` Command** — single slash command hub with interactive menu for brainstorming, auditing, health checks, and memory search
@@ -53,13 +53,10 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - [Importance Scale](#importance-scale)
 - [How It Works](#how-it-works)
 - [Configuration](#configuration)
-- [Embedding Providers](#embedding-providers)
-- [Embedding Model Migration](#embedding-model-migration)
 - [Claude Code Hooks](#claude-code-hooks)
 - [Claude Code `/synabun` Command](#claude-code-synabun-command)
 - [CLAUDE.md Integration](#claudemd-integration)
 - [Multi-Project Support](#multi-project-support)
-- [Docker Management](#docker-management)
 - [Known Limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
 - [Cost](#cost)
@@ -85,9 +82,9 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 
 ### Prerequisites
 
-- Docker (Docker Desktop on Windows/macOS, or Docker Engine on Linux)
-- Node.js 18+
-- An embedding API key (OpenAI, Google Gemini, or any OpenAI-compatible provider)
+- Node.js 22.5+ (for built-in `node:sqlite`)
+
+No Docker, no API keys, no external services required.
 
 ### One-Command Setup
 
@@ -97,32 +94,18 @@ npm start
 ```
 
 This will:
-1. Check prerequisites (Node.js, Docker)
+1. Check prerequisites (Node.js 22.5+)
 2. Install all dependencies
 3. Build the MCP server
-4. Launch the Neural Interface
-5. Open the onboarding wizard in your browser
-
-The onboarding wizard guides you through:
-- Qdrant API key generation
-- Embedding provider selection
-- Docker/Qdrant startup
-- AI tool integration (`.mcp.json`)
-- CLAUDE.md memory instructions
+4. Create the SQLite database (`data/memory.db`)
+5. Download the embedding model (~23MB, cached permanently)
+6. Launch the Neural Interface
+7. Open the onboarding wizard in your browser
 
 <details>
 <summary><strong>Manual setup (advanced)</strong></summary>
 
-### 1. Start Qdrant
-
-```bash
-cd /path/to/Synabun
-docker compose up -d
-```
-
-Verify: `curl -H "api-key: claude-memory-local-key" http://localhost:6333/collections`
-
-### 2. Build the MCP server
+### 1. Build the MCP server
 
 ```bash
 cd mcp-server
@@ -132,7 +115,7 @@ npm run build
 
 > **Note:** Always use `npm run build` (not `npx tsc`) — npx can install an unrelated `tsc` package instead of using the local TypeScript compiler.
 
-### 3. Register with your AI tool
+### 2. Register with your AI tool
 
 Add to your project's `.mcp.json`:
 
@@ -141,13 +124,7 @@ Add to your project's `.mcp.json`:
   "mcpServers": {
     "SynaBun": {
       "command": "node",
-      "args": ["/path/to/Synabun/mcp-server/run.mjs"],
-      "env": {
-        "QDRANT_MEMORY_URL": "http://localhost:6333",
-        "QDRANT_MEMORY_API_KEY": "claude-memory-local-key",
-        "QDRANT_MEMORY_COLLECTION": "claude_memory",
-        "OPENAI_EMBEDDING_API_KEY": "<your-openai-key>"
-      }
+      "args": ["/path/to/Synabun/mcp-server/run.mjs"]
     }
   }
 }
@@ -157,14 +134,12 @@ Or register globally for all projects:
 
 ```bash
 claude mcp add SynaBun -s user \
-  -e QDRANT_MEMORY_URL=http://localhost:6333 \
-  -e QDRANT_MEMORY_API_KEY=claude-memory-local-key \
-  -e QDRANT_MEMORY_COLLECTION=claude_memory \
-  -e OPENAI_EMBEDDING_API_KEY=<your-openai-key> \
   -- node "/path/to/Synabun/mcp-server/run.mjs"
 ```
 
-### 4. Verify
+No environment variables needed — SQLite and local embeddings work out of the box.
+
+### 3. Verify
 
 Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 11 tools listed.
 
@@ -183,13 +158,6 @@ The `.mcp.json` path must match the platform where **Claude Code is running**:
 
 **Common pitfall:** If Claude Code runs on Windows but you use a WSL-style path like `/mnt/j/...`, Node.js will resolve it to `J:\mnt\j\...` (prepending the drive letter), which doesn't exist. Always use Windows-native paths when Claude Code runs on Windows.
 
-**Docker startup (Windows):** If `docker` is not recognized, Docker Desktop may not be in your PATH. Either restart your terminal after installing Docker Desktop, or call it directly:
-```powershell
-& "C:\Program Files\Docker\Docker\resources\bin\docker.exe" compose up -d
-```
-
-**WSL networking:** If the Docker container runs on Windows (Docker Desktop) and WSL can't reach `localhost:6333`, try `host.docker.internal:6333` or check WSL 2 networking settings.
-
 </details>
 
 ## Architecture
@@ -200,29 +168,23 @@ AI Assistant (any project)
     │  MCP Protocol (stdio or HTTP)
     │
 ┌───┴──────────────────────┐
-│   SynaBun MCP Server     │  Node.js + TypeScript
+│   SynaBun MCP Server     │  Node.js 22.5+ / TypeScript
 │                          │
 │  11 tools: remember,     │
 │  recall, forget, restore,│
 │  reflect, memories, sync,│
 │  category_create/update/ │
 │  delete/list             │
-└───┬────────┬─────────────┘
-    │        │
-    │        │  OpenAI-compatible API
-    │        │  (text-embedding-3-small, 1536 dims)
-    │        ▼
-    │   [Embedding Provider]
-    │
-    │  Qdrant REST API
-    ▼
-┌──────────────────────────┐
-│   Docker: Qdrant         │  Vector database
-│   localhost:6333         │  (multi-instance supported)
-│   Collection:            │
-│   claude_memory          │
+│                          │
+│  Transformers.js         │  Local embeddings
+│  all-MiniLM-L6-v2        │  (384 dims, ~23MB model)
+│                          │
+│  node:sqlite             │  Built-in SQLite
+│  data/memory.db          │  (vectors as Float32 BLOBs)
 └──────────────────────────┘
 ```
+
+Everything runs in a single Node.js process — no external services, no Docker, no API keys.
 
 ## MCP Tools
 
@@ -260,8 +222,7 @@ Then open **http://localhost:3344**
 - Drag nodes to pin them in 3D space
 - Trash management — view, restore, or permanently purge deleted memories
 - Memory Sync — detect stale memories whose source files have changed (SHA-256 hash comparison)
-- Backup & Restore — create and restore Qdrant snapshots per connection
-- Multi-connection switching — manage multiple Qdrant instances at runtime
+- Backup & Restore — export and import database snapshots
 - OpenClaw Bridge — overlay OpenClaw workspace memories as read-only ephemeral nodes
 - Graphics quality presets (Low, Medium, High, Ultra)
 - Onboarding wizard for first-time setup
@@ -390,7 +351,7 @@ Parent categories group related children into visual clusters. They affect how C
   bug-fixes = Bug fixes, root cause analysis, error resolutions for CP code
   databases = Database schemas, queries, migrations, Supabase config
 deals = ONLY deal/pricing memories: store imports, price comparisons...
-memory-system = MCP server architecture, Qdrant config, embedding pipeline...
+memory-system = MCP server architecture, SQLite config, embedding pipeline...
 ```
 
 Create parents via MCP tools:
@@ -429,19 +390,19 @@ Memories with importance **8+** are immune to time-based relevance decay.
 
 ### Embedding and storage
 
-When `remember` is called, the content text is sent to the embedding provider (default: OpenAI `text-embedding-3-small`) which returns a 1536-dimensional vector. This vector, along with the payload (content, category, tags, timestamps, etc.), is stored as a point in the Qdrant `claude_memory` collection.
+When `remember` is called, the content text is embedded locally via Transformers.js (`all-MiniLM-L6-v2`) which returns a 384-dimensional normalized vector. This vector (stored as a Float32Array BLOB), along with the payload (content, category, tags, timestamps, etc.), is inserted into the SQLite `memories` table.
 
 ### Semantic search
 
-When `recall` is called, the query is embedded the same way, then Qdrant performs cosine similarity search. Results are re-ranked with:
+When `recall` is called, the query is embedded the same way, then cosine similarity is computed in JavaScript against all stored vectors. Results are re-ranked with:
 
 - **Time decay** — 90-day half-life (older memories score lower, unless importance >= 8)
 - **Project boost** — memories from the current project get a 1.2x score multiplier
 - **Access boost** — frequently recalled memories get a small relevance increase
 
-### Payload indexes
+### SQLite schema
 
-The collection has keyword indexes on `category`, `project`, `tags`, `subcategory`, `source`, `created_at`, and integer indexes on `importance` and `access_count`. This makes filtered searches fast even with thousands of memories.
+The database stores memories, session chunks, and trash in a single `memory.db` file. Columns are indexed on `category`, `project`, `importance`, and `created_at` for fast filtered queries.
 
 ### Access tracking
 
@@ -451,130 +412,37 @@ Every time a memory is returned by `recall`, its `accessed_at` timestamp and `ac
 
 ### Environment variables
 
-SynaBun uses a **namespaced multi-instance** configuration format that supports multiple Qdrant and embedding provider connections simultaneously:
+SynaBun works with zero configuration by default. All settings are optional:
 
 ```env
-# Active instances (selects which connection to use)
-QDRANT_ACTIVE=memory_main
-EMBEDDING_ACTIVE=openai_main
-
-# Qdrant connection (namespaced: QDRANT__<id>__<FIELD>)
-QDRANT__memory_main__PORT=6333
-QDRANT__memory_main__GRPC_PORT=6334
-QDRANT__memory_main__API_KEY=your-api-key
-QDRANT__memory_main__COLLECTION=claude_memory
-QDRANT__memory_main__LABEL=Memory Main
-
-# Embedding provider (namespaced: EMBEDDING__<id>__<FIELD>)
-EMBEDDING__openai_main__API_KEY=sk-your-api-key
-EMBEDDING__openai_main__BASE_URL=https://api.openai.com/v1
-EMBEDDING__openai_main__MODEL=text-embedding-3-small
-EMBEDDING__openai_main__DIMENSIONS=1536
-EMBEDDING__openai_main__LABEL=OpenAI Main
-
-# General
-NEURAL_PORT=3344
+# Optional overrides
+SQLITE_DB_PATH=/custom/path/to/memory.db   # Default: data/memory.db
+MEMORY_DATA_DIR=/custom/data/dir           # Default: mcp-server/data/
+NEURAL_PORT=3344                           # Neural Interface port (default: 3344)
 SETUP_COMPLETE=true
 ```
 
-| Variable Pattern | Description |
-|-----------------|-------------|
-| `QDRANT_ACTIVE` | ID of the active Qdrant connection |
-| `QDRANT__<id>__PORT` | Qdrant REST port (default: 6333) |
-| `QDRANT__<id>__API_KEY` | Qdrant API key |
-| `QDRANT__<id>__COLLECTION` | Collection name (default: claude_memory) |
-| `QDRANT__<id>__URL` | Full URL (for remote instances, overrides PORT) |
-| `EMBEDDING_ACTIVE` | ID of the active embedding provider |
-| `EMBEDDING__<id>__API_KEY` | **Required.** Embedding provider API key |
-| `EMBEDDING__<id>__BASE_URL` | Base URL for OpenAI-compatible API |
-| `EMBEDDING__<id>__MODEL` | Embedding model name |
-| `EMBEDDING__<id>__DIMENSIONS` | Vector dimensions |
+| Variable | Description |
+|----------|-------------|
+| `SQLITE_DB_PATH` | Path to SQLite database file (default: `data/memory.db`) |
+| `MEMORY_DATA_DIR` | Data directory for runtime files (default: `mcp-server/data/`) |
 | `NEURAL_PORT` | Neural Interface server port (default: 3344) |
 
-Set these in the `.env` file at the project root. The onboarding wizard generates this file automatically.
+Set these in the `.env` file at the project root, or let SynaBun use the defaults.
 
-<details>
-<summary><strong>Legacy flat format (still supported)</strong></summary>
+## Embeddings
 
-For backward compatibility, the old flat variable names are still recognized as a fallback:
+SynaBun uses **local embeddings** via Transformers.js — no API key or internet connection needed (after the initial ~23MB model download).
 
-```env
-QDRANT_MEMORY_URL=http://localhost:6333
-QDRANT_MEMORY_API_KEY=claude-memory-local-key
-QDRANT_MEMORY_COLLECTION=claude_memory
-OPENAI_EMBEDDING_API_KEY=sk-your-api-key
-EMBEDDING_BASE_URL=https://api.openai.com/v1
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_DIMENSIONS=1536
-```
+| Property | Value |
+|----------|-------|
+| **Model** | `Xenova/all-MiniLM-L6-v2` |
+| **Dimensions** | 384 |
+| **Runtime** | ONNX (via `@huggingface/transformers`) |
+| **Cache** | `~/.cache/huggingface/` (permanent, auto-downloaded on first use) |
+| **Cost** | Free |
 
-Resolution order: namespaced keys → scanned `QDRANT__*__API_KEY` → legacy flat keys.
-
-</details>
-
-## Embedding Providers
-
-Any provider with an OpenAI-compatible `/v1/embeddings` endpoint works. Set `EMBEDDING_BASE_URL` and `OPENAI_EMBEDDING_API_KEY` accordingly.
-
-| Provider | Base URL | Models |
-|----------|----------|--------|
-| **OpenAI** (default) | `https://api.openai.com/v1` | text-embedding-3-small, text-embedding-3-large |
-| **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai` | text-embedding-004 |
-| **Qwen / DashScope** | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | text-embedding-v4 |
-| **Together AI** | `https://api.together.xyz/v1` | Various open-source models |
-| **Fireworks AI** | `https://api.fireworks.ai/inference/v1` | nomic-embed, thenlper/gte |
-| **Jina AI** | `https://api.jina.ai/v1` | jina-embeddings-v3 |
-| **Mistral** | `https://api.mistral.ai/v1` | mistral-embed |
-| **Voyage AI** | `https://api.voyageai.com/v1` | voyage-4-large, voyage-3.5-lite |
-| **Cohere** | `https://api.cohere.com/compatibility/v1` | embed-v4.0 |
-| **Cloudflare Workers AI** | `https://api.cloudflare.com/client/v4/accounts/{id}/ai/v1` | @cf/baai/bge-base-en-v1.5 |
-| **Ollama** (local) | `http://localhost:11434/v1` | nomic-embed-text, mxbai-embed-large |
-| **LM Studio** (local) | `http://localhost:1234/v1` | Any loaded GGUF embedding model |
-
-> **Note:** xAI (Grok) has an OpenAI-compatible chat API but does not offer an embedding endpoint.
-
-> **Important:** Switching embedding models after storing memories is a breaking change. See [Embedding Model Migration](#embedding-model-migration).
-
-## Embedding Model Migration
-
-Changing your embedding model — even between models from the **same provider** — is a breaking change. Vectors from different models live in incompatible mathematical spaces.
-
-| Change | Same dimensions? | Compatible? |
-|--------|:---:|:---:|
-| `text-embedding-ada-002` → `text-embedding-3-small` | Yes (both 1536) | **No** |
-| `text-embedding-3-small` → `text-embedding-3-large` | No (1536 vs 3072) | **No** |
-| OpenAI → Ollama `nomic-embed-text` | No (1536 vs 768) | **No** |
-
-**Rule:** Any model swap makes existing memories unsearchable.
-
-<details>
-<summary><strong>Migration procedure</strong></summary>
-
-Since SynaBun stores the original text in every memory payload, you can re-embed everything:
-
-1. **Export all memories** — query Qdrant to get all points with their payloads
-2. **Create a new collection** — with the correct vector dimensions for the new model
-3. **Re-embed each memory** — send the stored `content` text through the new model
-4. **Insert into the new collection** — same payloads, new vectors
-5. **Swap collection name** — update `QDRANT_MEMORY_COLLECTION` in your config
-6. **Delete the old collection** (optional)
-
-**Cost/time:** Re-embedding 1,000 memories with OpenAI costs ~$0.001 and takes a few seconds. With local models (Ollama), it's free but slower depending on hardware.
-
-</details>
-
-<details>
-<summary><strong>Safe changes (no migration needed)</strong></summary>
-
-- Adding new payload fields to memories
-- Adding/editing/deleting categories
-- Changing importance scores, tags, or other metadata
-- Upgrading the MCP server code
-- Adding payload indexes to the collection
-
-</details>
-
-**Recommendation:** Choose your embedding model during initial setup and stick with it.
+The model runs entirely in-process — no external service calls, no API keys, no network dependency after first download.
 
 ## Claude Code Hooks
 
@@ -658,24 +526,17 @@ The `project` field is auto-detected from the working directory name. Memories f
 
 When `recall` is called without a project filter, it searches **all** projects but gives a 1.2x boost to results matching the current project. Cross-project knowledge (like general patterns or tool usage) is still surfaced when relevant.
 
-## Docker Management
+## Database
+
+SynaBun stores all data in a single SQLite file (`data/memory.db`). No external database service needed.
 
 ```bash
-cd /path/to/Synabun
+# Database location
+ls mcp-server/data/memory.db
 
-docker compose up -d        # Start Qdrant
-docker compose down         # Stop Qdrant
-docker compose logs -f      # View logs
-docker compose restart      # Restart
+# Backup (just copy the file)
+cp mcp-server/data/memory.db ~/backups/memory-$(date +%Y%m%d).db
 ```
-
-Data persists in a Docker volume (`synabun-qdrant-data`). This survives container restarts and rebuilds.
-
-The Qdrant dashboard is available at **http://localhost:6333/dashboard**.
-
-### Multi-instance support
-
-The `docker-compose.yml` manages the default Qdrant instance only. Additional instances can be created via the Neural Interface (Settings > Connections > New), which uses `docker run` to spin up independent Qdrant containers on separate ports. Each connection is tracked in `.env` with namespaced variables.
 
 ### Rebuilding after code changes
 
@@ -685,6 +546,17 @@ npm run build
 ```
 
 No need to restart Claude Code — the MCP server is spawned fresh on each session.
+
+### Migrating from Qdrant
+
+If you have an existing Qdrant-based installation, use the migration script:
+
+```bash
+cd mcp-server
+npm run migrate
+```
+
+This reads all memories from your Qdrant instance, re-embeds them with the local model, and inserts them into the new SQLite database.
 
 ## Known Limitations
 
@@ -710,27 +582,20 @@ When making parallel MCP tool calls, if one fails, all sibling calls in that bat
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Failed to reconnect to memory` | Qdrant container not running | `docker compose up -d` |
-| `docker: command not found` (Windows) | Docker Desktop not in PATH | Add Docker to PATH or restart terminal |
 | `Cannot find module '.../dist/index.js'` | TypeScript not compiled | `npm run build` inside `mcp-server/` |
 | `npx tsc` installs wrong package | npm's `tsc` package shadows TypeScript | Use `npm run build` instead |
 | Node resolves path to `J:\mnt\j\...` | WSL path used with Windows Claude Code | Use Windows paths (`J:/...`) |
-| `fetch failed` / connection refused | Qdrant not reachable | Check container is running, port 6333 open |
-| WSL can't reach `localhost:6333` | Docker container on Windows host | Try `host.docker.internal:6333` |
+| `node:sqlite` not found | Node.js version too old | Upgrade to Node.js 22.5+ |
 | `remember` fails with type errors | Rare — older MCP SDK serialization | Update MCP SDK, or use `reflect` as fallback |
 | `reflect` returns "Bad Request" | Using shortened ID | Use full UUID from `remember` output or `recall` |
 | "Sibling tool call errored" | Parallel MCP call batch failure | Make memory calls sequentially |
+| Slow first `remember`/`recall` | Embedding model loading on first use | Normal — model loads once per session (~2-3s) |
 
 </details>
 
 ## Cost
 
-OpenAI `text-embedding-3-small` costs **$0.02 per 1M tokens**. A typical memory is ~50 tokens.
-
-- Storing 1,000 memories: ~$0.001
-- Each `recall` query: ~$0.000001
-
-Cost is negligible even with heavy usage. Local providers (Ollama, LM Studio) are free.
+**Free.** SynaBun uses local embeddings (Transformers.js) and a local SQLite database. No API calls, no cloud services, no usage-based billing.
 
 ## File Structure
 
@@ -743,7 +608,6 @@ Synabun/
 ├── SECURITY.md                     # Security policy
 ├── .env.example                    # Example environment configuration
 ├── .env                            # API key config (generated by setup wizard, gitignored)
-├── docker-compose.yml              # Qdrant container definition (default instance only)
 ├── setup.js                        # One-command setup & launch script
 ├── README.md                       # This file
 ├── CLAUDE.md                       # Claude Code project instructions (gitignored)
@@ -751,6 +615,7 @@ Synabun/
 │   ├── synabun.png                 # Logo
 │   └── openclaw-logo-text.png      # OpenClaw bridge logo
 ├── data/                           # Runtime data directory
+│   ├── memory.db                   # SQLite database (all memories + vectors)
 │   ├── claude-code-projects.json   # Tracked project paths with hook status
 │   ├── hook-features.json          # Hook feature flags (conversationMemory, greeting, userLearning)
 │   ├── mcp-api-key.json            # API key for HTTP MCP transport
@@ -786,8 +651,8 @@ Synabun/
 │   ├── vitest.config.ts
 │   ├── unit/                       # Tool-level unit tests (6 files)
 │   ├── scenarios/                  # Usage pattern + cost benchmark tests (5 files)
-│   ├── mocks/                      # Qdrant/OpenAI mocks
-│   └── utils/                      # Test utilities (cost tracking, token counting)
+│   ├── mocks/                      # SQLite/embedding mocks
+│   └── utils/                      # Test utilities
 ├── neural-interface/               # 3D visualization UI (http://localhost:3344)
 │   ├── server.js                   # Express API — 55+ endpoints
 │   ├── package.json
@@ -811,8 +676,8 @@ Synabun/
         ├── http.ts                  # HTTP MCP transport
         ├── tui.ts                   # Terminal UI for interactive management
         ├── services/
-        │   ├── qdrant.ts            # Qdrant client, collection management
-        │   ├── embeddings.ts        # Embedding generation
+        │   ├── sqlite.ts            # SQLite storage layer (vectors as Float32 BLOBs)
+        │   ├── local-embeddings.ts  # Local embedding generation (Transformers.js)
         │   ├── categories.ts        # Category CRUD, hierarchy, descriptions
         │   └── file-checksums.ts    # SHA-256 hashing for sync tool
         └── tools/

@@ -1,12 +1,12 @@
 ================================================================================
   SYNABUN TOKEN USAGE & COST PROJECTION REPORT
-  Model: text-embedding-3-small | Price: $0.02 / 1M tokens
+  Embeddings: local (Xenova/all-MiniLM-L6-v2) | Storage: SQLite
 ================================================================================
 
 SESSION: light
   Light: 5 remember + 10 recall, 1 session/day
 --------------------------------------------------------------------------------
-  Tool                      | Calls | OpenAI |   Tokens | Qdrant |         Cost
+  Tool                      | Calls |  Embed |   Tokens | DB ops |         Cost
   ----------------------------------------------------------------------------
   remember                  |     5 |      5 |       65 |      5 |  $0.00000130
   recall                    |    10 |     10 |       60 |     60 |  $0.00000120
@@ -18,7 +18,7 @@ SESSION: light
 SESSION: medium
   Medium: 15 remember + 30 recall, 2 sessions/day
 --------------------------------------------------------------------------------
-  Tool                      | Calls | OpenAI |   Tokens | Qdrant |         Cost
+  Tool                      | Calls |  Embed |   Tokens | DB ops |         Cost
   ----------------------------------------------------------------------------
   remember                  |    15 |     15 |     1.3K |     15 |  $0.00002640
   recall                    |    30 |     30 |      540 |    180 |  $0.00001080
@@ -32,7 +32,7 @@ SESSION: medium
 SESSION: heavy
   Heavy: 40 remember + 80 recall, 3 sessions/day
 --------------------------------------------------------------------------------
-  Tool                      | Calls | OpenAI |   Tokens | Qdrant |         Cost
+  Tool                      | Calls |  Embed |   Tokens | DB ops |         Cost
   ----------------------------------------------------------------------------
   remember                  |    40 |     40 |     4.0K |     40 |  $0.00008000
   recall                    |    80 |     80 |     1.4K |    480 |  $0.00002880

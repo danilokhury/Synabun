@@ -37,7 +37,7 @@
     },
     {
       "name": "architecture",
-      "description": "System architecture, components, data flow, config, Qdrant integration, multi-connection support",
+      "description": "System architecture, components, data flow, config, SQLite storage, multi-connection support",
       "created_at": "2026-02-16T03:58:28.685Z",
       "parent": "synabun",
       "color": "#3b82f6"

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getQdrantCallsByMethod, setRetrievePayload } from '../mocks/trackers.js';
-import { getMemory } from '../../mcp-server/src/services/qdrant.js';
+import { getDbCallsByMethod, setRetrievePayload } from '../mocks/trackers.js';
+import { getMemory } from '../../mcp-server/src/services/sqlite.js';
 
 const { handleRestore } = await import('../../mcp-server/src/tools/restore.js');
 
@@ -36,7 +36,7 @@ describe('restore — behavioral tests', () => {
       trashed_at: now,
     });
     await handleRestore({ memory_id: 'test-uuid' });
-    const restores = getQdrantCallsByMethod('setPayload').filter(
+    const restores = getDbCallsByMethod('setPayload').filter(
       (c) => (c.params as Record<string, unknown>).action === 'restore'
     );
     expect(restores).toHaveLength(1);

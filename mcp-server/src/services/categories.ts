@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { config, getActiveConnectionId } from '../config.js';
-import { getCategoriesFromQdrant, saveCategoriesToQdrant } from './qdrant.js';
+import { config } from '../config.js';
+import { getCategoriesFromQdrant, saveCategoriesToQdrant } from './sqlite.js';
 
 interface CustomCategory {
   name: string;
@@ -100,7 +100,7 @@ export function startWatchingCategories(): void {
   // Stop old watcher if switching files
   stopWatchingCategories();
 
-  // Ensure the per-connection cache file exists — start empty (Qdrant is source of truth)
+  // Ensure the cache file exists — start empty (SQLite is source of truth)
   if (!fs.existsSync(filePath)) {
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) {
@@ -130,12 +130,11 @@ export function stopWatchingCategories(): void {
 }
 
 /**
- * Returns the per-connection categories cache file path.
- * Format: custom-categories-{connectionId}.json
+ * Returns the categories cache file path.
+ * Single file since we use one SQLite database (no multi-connection concept).
  */
 function getCategoriesPath(): string {
-  const connectionId = getActiveConnectionId();
-  return path.join(config.dataDir, `custom-categories-${connectionId}.json`);
+  return path.join(config.dataDir, 'custom-categories.json');
 }
 
 function loadCategoriesFromDisk(): CustomCategory[] {
@@ -161,9 +160,9 @@ function saveCategoriesToDisk(categories: CustomCategory[]): void {
   const data: CustomCategoriesFile = { version: 1, categories };
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 
-  // Fire-and-forget write-through to Qdrant (source of truth)
+  // Fire-and-forget write-through to SQLite (source of truth)
   saveCategoriesToQdrant(categories).catch((err) => {
-    console.error('Failed to sync categories to Qdrant:', err instanceof Error ? err.message : err);
+    console.error('Failed to sync categories to SQLite:', err instanceof Error ? err.message : err);
   });
 }
 
@@ -186,16 +185,16 @@ export async function initCategoryCache(): Promise<void> {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // Try loading from Qdrant (source of truth)
-  const qdrantCategories = await getCategoriesFromQdrant();
-  if (qdrantCategories) {
-    const data: CustomCategoriesFile = { version: 1, categories: qdrantCategories };
+  // Try loading from SQLite (source of truth)
+  const dbCategories = await getCategoriesFromQdrant();
+  if (dbCategories) {
+    const data: CustomCategoriesFile = { version: 1, categories: dbCategories };
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
     invalidateCategoryCache();
     return;
   }
 
-  // Qdrant empty — start with empty categories for this collection
+  // Database empty — start with empty categories
   const data: CustomCategoriesFile = { version: 1, categories: [] };
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 

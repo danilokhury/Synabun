@@ -1,6 +1,6 @@
 ---
 category: architecture
-tags: [multi-connection, qdrant, runtime-switching, connections-json]
+tags: [multi-connection, sqlite, runtime-switching, connections-json]
 importance: 8
 project: synabun
 source: self-discovered
@@ -12,7 +12,7 @@ related_files:
 
 # SynaBun Multi-Connection Support
 
-SynaBun supports multiple Qdrant instances with runtime switching.
+SynaBun supports multiple SQLite database files with runtime switching.
 
 ## connections.json Format
 
@@ -22,15 +22,11 @@ SynaBun supports multiple Qdrant instances with runtime switching.
   "connections": {
     "default": {
       "label": "Local Development",
-      "url": "http://localhost:6333",
-      "apiKey": "your-api-key",
-      "collection": "claude_memory"
+      "path": "data/memory.db"
     },
     "production": {
-      "label": "Production Server",
-      "url": "https://qdrant.example.com:6333",
-      "apiKey": "prod-key",
-      "collection": "claude_memory"
+      "label": "Production",
+      "path": "data/production.db"
     }
   }
 }
@@ -40,17 +36,17 @@ SynaBun supports multiple Qdrant instances with runtime switching.
 
 - **MCP server**: `getActiveConnection()` reads `connections.json` on every call — no restart needed
 - **Neural Interface**: `PUT /api/connections/active` switches the active connection, updates runtime vars
-- **Qdrant client**: Singleton detects URL/key changes and recreates client automatically
+- **SQLite client**: Detects database path changes and reconnects automatically
 
 ## Neural Interface Connection Management
 
-- `GET /api/connections`: Lists all connections with LIVE point counts (pings each Qdrant instance)
-- `POST /api/connections`: Add new connection (verifies reachability first)
+- `GET /api/connections`: Lists all connections with LIVE memory counts (queries each SQLite database)
+- `POST /api/connections`: Add new connection (verifies database is accessible first)
 - `PUT /api/connections/active`: Switch active connection
 - `DELETE /api/connections/:id`: Remove connection (prevents deleting the active one)
 
 ## Use Cases
 
-- Separate dev/staging/prod Qdrant instances
-- Per-team or per-project Qdrant databases
-- Qdrant Cloud + local Docker instances side by side
+- Separate dev/staging/prod database files
+- Per-team or per-project databases
+- Multiple database files side by side

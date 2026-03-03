@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { softDeleteMemory, getMemory } from '../services/qdrant.js';
+import { softDeleteMemory, getMemory } from '../services/sqlite.js';
 import type { MemoryPayload } from '../types.js';
 import { invalidateCache } from '../services/neural-interface.js';
 

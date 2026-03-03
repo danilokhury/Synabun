@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════
 //
 // The most complex shared UI module. Builds a floating settings panel with
-// 6 shared tabs (Server, Connections, Collections, Projects, Memory, Interface)
+// 6 shared tabs (General, Setup, Terminal, Database, Recall, Projects, Connections, Interface)
 // plus any variant-registered tabs (e.g. Graphics) injected via the registry.
 
 import { state, emit, on } from './state.js';
@@ -247,7 +247,7 @@ const TAB_META = {
   server:      { label: 'General',     desc: 'API keys & status',       group: 'System' },
   setup:       { label: 'Setup',       desc: 'Claude, Gemini, Codex',   group: 'System' },
   terminal:    { label: 'Terminal',    desc: 'CLI executables',          group: 'System' },
-  collections: { label: 'Collections', desc: 'Qdrant databases',        group: 'Data' },
+  collections: { label: 'Database',    desc: 'SQLite storage',          group: 'Data' },
   memory:      { label: 'Recall',      desc: 'Token budget & sync',     group: 'Data' },
   projects:    { label: 'Projects',    desc: 'Workspace configs',       group: 'Data' },
   hooks:       { label: 'Connections', desc: 'Integrations & bridges',  group: 'Connections' },
@@ -300,12 +300,27 @@ function buildNavHTML(variantTabs, statusMap = {}) {
   return html;
 }
 
-function buildServerTab(settings, qdrantOk) {
+function buildServerTab(settings) {
+  const dbSizeMB = settings.dbSizeBytes ? (settings.dbSizeBytes / 1024 / 1024).toFixed(1) : '0';
   return `
       <div class="settings-tab-body active" data-tab="server">
         <div class="settings-status">
-          <span class="settings-status-dot ${qdrantOk ? 'connected' : 'disconnected'}"></span>
-          Qdrant: ${qdrantOk ? 'Connected' : 'Not connected'}
+          <span class="settings-status-dot ${settings.storage === 'sqlite' ? 'connected' : 'disconnected'}"></span>
+          Storage: ${settings.storage === 'sqlite' ? 'SQLite' : settings.storage || 'Unknown'}
+        </div>
+        <div class="settings-field">
+          <label>Database Path</label>
+          <div class="settings-key-row">
+            <input type="text" value="${settings.dbPath || ''}" readonly style="opacity:0.7;cursor:default" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="settings-hint">${settings.dbExists ? `File exists (${dbSizeMB} MB)` : 'Database not found'}</div>
+        </div>
+        <div class="settings-field">
+          <label>Embedding</label>
+          <div class="settings-key-row">
+            <input type="text" value="${settings.embedding === 'local' ? 'Local' : settings.embedding || 'unknown'} — ${settings.embeddingModel || 'n/a'} (${settings.embeddingDims || '?'}d)" readonly style="opacity:0.7;cursor:default" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="settings-hint">Embeddings are computed locally, no API key required</div>
         </div>
         <div class="settings-field">
           <label>OpenAI API Key</label>
@@ -314,21 +329,6 @@ function buildServerTab(settings, qdrantOk) {
             <button class="settings-toggle-vis" data-target="stg-openai" data-tooltip="Toggle">${eyeClosed}</button>
           </div>
           <div class="settings-hint">${settings.openaiApiKeySet ? 'Key is set' : 'Not configured'} — leave empty to keep current</div>
-        </div>
-        <div class="settings-field">
-          <label>Qdrant URL</label>
-          <div class="settings-key-row">
-            <input type="text" id="stg-qdrant-url" placeholder="${settings.qdrantUrl || 'http://localhost:6333'}" autocomplete="off" spellcheck="false">
-          </div>
-          <div class="settings-hint">Default: http://localhost:6333</div>
-        </div>
-        <div class="settings-field">
-          <label>Qdrant API Key</label>
-          <div class="settings-key-row">
-            <input type="password" id="stg-qdrant-key" placeholder="${settings.qdrantApiKey || 'your-key'}" autocomplete="off" spellcheck="false">
-            <button class="settings-toggle-vis" data-target="stg-qdrant-key" data-tooltip="Toggle">${eyeClosed}</button>
-          </div>
-          <div class="settings-hint">${settings.qdrantApiKeySet ? 'Key is set' : 'Not configured'} — leave empty to keep current</div>
         </div>
         <div class="settings-restart-notice" id="stg-restart-notice">Settings saved. Restart the server for changes to take effect.</div>
         <div class="settings-actions">
@@ -340,7 +340,7 @@ function buildServerTab(settings, qdrantOk) {
         <div class="gfx-group-title">System Backup & Restore</div>
         <div class="settings-hint" style="margin-bottom:12px">
           Create a full backup of all SynaBun data including .env config, data files,
-          category definitions, and Qdrant collection snapshots.
+          category definitions, and memory database.
         </div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
           <button class="conn-add-btn" id="sys-backup-btn" style="margin:0;flex:0 0 auto">
@@ -995,47 +995,27 @@ function buildTerminalTab(cliConfig) {
       </div>`;
 }
 
-function buildCollectionsTab(connections) {
+function buildCollectionsTab(connections, settings) {
+  const conn = connections[0] || {};
+  const dbSizeMB = settings.dbSizeBytes ? (settings.dbSizeBytes / 1024 / 1024).toFixed(1) : '0';
   return `
       <div class="settings-tab-body" data-tab="collections">
-        <div class="gfx-group-title">Memory Collections</div>
+        <div class="gfx-group-title">Memory Database</div>
         <div class="conn-list" id="conn-list">
-          ${connections.length === 0 ? '<div class="conn-empty">No connections configured</div>' :
-            connections.map(c => `
-              <div class="conn-item${c.active ? ' active' : ''}${!c.reachable ? ' unreachable' : ''}" data-conn-id="${c.id}">
-                <div class="conn-item-dot"></div>
-                <div class="conn-item-info">
-                  <div class="conn-item-name">${c.label || c.collection}</div>
-                  <div class="conn-item-meta">${c.collection}</div>
-                </div>
-                ${c.reachable ? `<span class="conn-item-count">${c.points} pts</span>` : ''}
-                ${!c.reachable && /localhost|127\\.0\\.0\\.1/.test(c.url) ? `
-                  <button class="conn-item-start" data-conn-id="${c.id}" data-tooltip="Start Container">
-                    <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                  </button>
-                ` : ''}
-                ${c.reachable ? `
-                  <button class="conn-item-action conn-item-backup" data-conn-id="${c.id}" data-tooltip="Backup">
-                    <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                  </button>
-                  <button class="conn-item-action conn-item-restore" data-conn-id="${c.id}" data-tooltip="Restore">
-                    <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                  </button>
-                ` : ''}
-                <button class="conn-item-delete" data-conn-id="${c.id}" data-conn-label="${c.label || c.collection}" data-tooltip="Remove">
-                  <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-              </div>
-            `).join('')}
+          <div class="conn-item active">
+            <div class="conn-item-dot"></div>
+            <div class="conn-item-info">
+              <div class="conn-item-name">Local SQLite</div>
+              <div class="conn-item-meta">${settings.dbPath || 'memories.db'}</div>
+            </div>
+            <span class="conn-item-count">${conn.points || 0} memories</span>
+          </div>
         </div>
-        <button class="conn-add-btn" id="conn-add-btn">
-          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Add Collection
-        </button>
-        <button class="conn-add-btn" id="conn-restore-standalone" style="margin-top:6px; border-style:solid">
-          <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          Restore from Backup
-        </button>
+        <div style="padding:8px 2px;font-size:12px;color:var(--t-muted);line-height:1.6">
+          <div><strong style="color:var(--t-secondary)">Storage:</strong> SQLite</div>
+          <div><strong style="color:var(--t-secondary)">DB Size:</strong> ${dbSizeMB} MB</div>
+          <div><strong style="color:var(--t-secondary)">Embedding:</strong> ${settings.embeddingModel || 'local'} (${settings.embeddingDims || '?'}d)</div>
+        </div>
       </div>`;
 }
 
@@ -1627,7 +1607,6 @@ export async function openSettingsModal() {
 
   // ── Fetch all data in parallel ──
   let settings = {};
-  let qdrantOk = false;
   let connections = [];
   let ccIntegrations = { global: { installed: false }, projects: [] };
   let ccSkills = [];
@@ -1641,9 +1620,8 @@ export async function openSettingsModal() {
   let toolCategories = [];
 
   try {
-    const [settingsRes, statsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes] = await Promise.allSettled([
+    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes] = await Promise.allSettled([
       fetch('/api/settings').then(r => r.json()),
-      fetch('/api/stats').then(r => r.json()),
       fetch('/api/connections').then(r => r.json()),
       fetch('/api/claude-code/integrations').then(r => r.json()),
       fetch('/api/claude-code/skills').then(r => r.json()),
@@ -1657,7 +1635,6 @@ export async function openSettingsModal() {
       fetch('/api/claude-code/tool-categories').then(r => r.json()),
     ]);
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
-    if (statsRes.status === 'fulfilled' && statsRes.value.status) qdrantOk = true;
     if (connRes.status === 'fulfilled' && connRes.value.connections) connections = connRes.value.connections;
     if (ccRes.status === 'fulfilled' && ccRes.value.ok) ccIntegrations = ccRes.value;
     if (skillsRes.status === 'fulfilled' && skillsRes.value.ok) ccSkills = skillsRes.value.skills || [];
@@ -1717,8 +1694,8 @@ export async function openSettingsModal() {
       <div class="stg-header-left">
         <h3>Settings</h3>
         <span class="stg-status-badge">
-          <span class="stg-status-dot ${qdrantOk ? 'connected' : 'disconnected'}"></span>
-          Qdrant
+          <span class="stg-status-dot ${settings.storage === 'sqlite' ? 'connected' : 'disconnected'}"></span>
+          SQLite
         </span>
       </div>
       <button class="stg-focus-btn" id="stg-focus" data-tooltip="Focus mode">
@@ -1731,16 +1708,16 @@ export async function openSettingsModal() {
     <div class="settings-panel-body">
       <nav class="settings-nav">
         ${buildNavHTML(variantTabs, {
-          server: qdrantOk ? 'connected' : 'disconnected',
+          server: settings.storage === 'sqlite' ? 'connected' : 'disconnected',
           setup: (setupStatus.claude?.installed || setupStatus.gemini?.installed || setupStatus.codex?.installed) ? 'connected' : 'disconnected',
         })}
       </nav>
       <div class="settings-content">
-        ${buildServerTab(settings, qdrantOk)}
+        ${buildServerTab(settings)}
         ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, toolPermissions, toolCategories)}
         ${buildTerminalTab(cliConfig)}
         ${buildSetupTab(setupStatus)}
-        ${buildCollectionsTab(connections)}
+        ${buildCollectionsTab(connections, settings)}
         ${buildProjectsTab(ccIntegrations)}
         ${buildMemoryTab()}
         ${buildInterfaceTab()}
@@ -1906,11 +1883,7 @@ export async function openSettingsModal() {
   overlay.querySelector('#stg-save').addEventListener('click', async () => {
     const body = {};
     const openai = overlay.querySelector('#stg-openai').value.trim();
-    const qdrantUrl = overlay.querySelector('#stg-qdrant-url').value.trim();
-    const qdrantKey = overlay.querySelector('#stg-qdrant-key').value.trim();
     if (openai) body.openaiApiKey = openai;
-    if (qdrantUrl) body.qdrantUrl = qdrantUrl;
-    if (qdrantKey) body.qdrantApiKey = qdrantKey;
     if (Object.keys(body).length === 0) { close(); return; }
     try {
       const saveBtn = overlay.querySelector('#stg-save');
@@ -1956,7 +1929,7 @@ export async function openSettingsModal() {
       backupBtn.textContent = 'Creating backup...';
       statusEl.style.display = 'flex';
       statusDot.className = 'wiz-status-dot spin';
-      statusText.textContent = 'Collecting files and creating Qdrant snapshots...';
+      statusText.textContent = 'Collecting files and creating database backup...';
 
       try {
         const res = await fetch('/api/system/backup');
@@ -2024,47 +1997,26 @@ export async function openSettingsModal() {
 
         statusEl.style.display = 'none';
 
-        // Build confirmation modal
-        const connList = Object.entries(m.connections || {})
-          .map(([id, c]) => `<li><strong>${escapeHtml(c.label)}</strong> (${escapeHtml(c.collection)}) — ${c.pointCount} memories</li>`)
-          .join('');
-        const unreachList = (m.unreachableConnections || [])
-          .map(id => `<li style="color:var(--t-muted)">${escapeHtml(id)} (was unreachable at backup time)</li>`)
-          .join('');
         const fileCount = (m.files || []).length;
+        const hasDb = !!m.database;
 
         const confirmOverlay = document.createElement('div');
         confirmOverlay.className = 'tag-delete-overlay';
         confirmOverlay.style.zIndex = '10001';
         confirmOverlay.innerHTML = `
           <div class="tag-delete-modal settings-modal" style="max-width:500px;text-align:left">
-            <h3 style="margin-bottom:4px">Restore Full Backup</h3>
+            <h3 style="margin-bottom:4px">Restore Backup</h3>
             <p style="font-size:11px;color:var(--t-muted);margin-bottom:12px">
               Created: ${new Date(m.created).toLocaleString()} on ${escapeHtml(m.hostname || 'unknown')}
             </p>
             <div style="font-size:12px;margin-bottom:8px">
               <strong>${fileCount}</strong> config files
+              ${hasDb ? `<br><strong>Database:</strong> memory.db included` : ''}
             </div>
-            ${connList ? `<div style="font-size:12px;margin-bottom:8px">
-              <strong>Qdrant snapshots:</strong>
-              <ul style="margin:4px 0 0 16px;padding:0">${connList}</ul>
-            </div>` : ''}
-            ${unreachList ? `<div style="font-size:11px;color:var(--t-muted);margin-bottom:8px">
-              <strong>Skipped at backup time:</strong>
-              <ul style="margin:4px 0 0 16px;padding:0">${unreachList}</ul>
-            </div>` : ''}
             <p style="font-size:11px;color:var(--accent-dim);margin-bottom:12px">
-              This will overwrite your current .env, data files, and Qdrant collections.
+              This will overwrite your current .env, data files, and memory database.
               This action cannot be undone.
             </p>
-            <div class="settings-field" style="margin-bottom:14px">
-              <label style="font-size:11px">Restore mode</label>
-              <select id="sys-restore-mode" class="modal-select" style="margin-bottom:0">
-                <option value="full">Full (config + snapshots)</option>
-                <option value="config-only">Config files only</option>
-                <option value="snapshots-only">Qdrant snapshots only</option>
-              </select>
-            </div>
             <div class="tag-delete-modal-actions">
               <button class="action-btn action-btn--ghost" id="sys-restore-cancel">Cancel</button>
               <button class="action-btn action-btn--danger" id="sys-restore-confirm"
@@ -2089,113 +2041,29 @@ export async function openSettingsModal() {
           const progressEl = confirmOverlay.querySelector('#sys-restore-progress');
           const progressDot = confirmOverlay.querySelector('#sys-restore-dot');
           const progressText = confirmOverlay.querySelector('#sys-restore-text');
-          const mode = confirmOverlay.querySelector('#sys-restore-mode').value;
 
           confirmBtn.textContent = 'Restoring...';
           confirmBtn.disabled = true;
           progressEl.style.display = 'flex';
           progressDot.className = 'wiz-status-dot spin';
-
-          const hasSnapshots = Object.keys(m.connections || {}).length > 0;
-          const needsSnapshots = (mode === 'full' || mode === 'snapshots-only') && hasSnapshots;
+          progressText.textContent = 'Applying backup...';
 
           try {
-            let restoredFileCount = 0;
-            let snapCount = 0;
-            let errCount = 0;
-
-            if (mode === 'full' && needsSnapshots) {
-              // Phase 1: Restore config files first
-              progressText.textContent = 'Restoring config files...';
-              const configRes = await fetch('/api/system/restore?mode=config-only', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/zip' },
-                body: buffer,
-              });
-              if (!configRes.ok) {
-                let errMsg = 'Config restore failed';
-                try { const body = await configRes.json(); errMsg = body.error || errMsg; } catch {}
-                throw new Error(errMsg);
-              }
-              const configResult = await configRes.json();
-              restoredFileCount = configResult.results?.files?.length || 0;
-
-              // Phase 2: Ensure Qdrant is running
-              progressText.textContent = 'Starting Qdrant...';
-              const healthRes = await fetch('/api/health/start', { method: 'POST' });
-              const healthData = await healthRes.json();
-              if (!healthData.ok) {
-                throw new Error('Failed to start Qdrant: ' + (healthData.error || 'unknown'));
-              }
-              if (!healthData.ready) {
-                throw new Error('Qdrant started but is not responding. Try again.');
-              }
-
-              // Phase 3: Restore snapshots
-              progressText.textContent = 'Restoring memory snapshots...';
-              const snapRes = await fetch('/api/system/restore?mode=snapshots-only', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/zip' },
-                body: buffer,
-              });
-              if (!snapRes.ok) {
-                let errMsg = 'Snapshot restore failed';
-                try { const body = await snapRes.json(); errMsg = body.error || errMsg; } catch {}
-                throw new Error(errMsg);
-              }
-              const snapResult = await snapRes.json();
-              snapCount = snapResult.results?.snapshots?.length || 0;
-              errCount = snapResult.results?.errors?.length || 0;
-
-            } else if (mode === 'snapshots-only' && needsSnapshots) {
-              // Ensure Qdrant is running before snapshot restore
-              progressText.textContent = 'Starting Qdrant...';
-              const healthRes = await fetch('/api/health/start', { method: 'POST' });
-              const healthData = await healthRes.json();
-              if (!healthData.ok) {
-                throw new Error('Failed to start Qdrant: ' + (healthData.error || 'unknown'));
-              }
-              if (!healthData.ready) {
-                throw new Error('Qdrant started but is not responding. Try again.');
-              }
-
-              progressText.textContent = 'Restoring memory snapshots...';
-              const restoreRes = await fetch('/api/system/restore?mode=snapshots-only', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/zip' },
-                body: buffer,
-              });
-              if (!restoreRes.ok) {
-                let errMsg = 'Restore failed';
-                try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
-                throw new Error(errMsg);
-              }
-              const result = await restoreRes.json();
-              snapCount = result.results?.snapshots?.length || 0;
-              errCount = result.results?.errors?.length || 0;
-
-            } else {
-              // Config-only or no snapshots — single call is fine
-              progressText.textContent = 'Applying backup...';
-              const restoreRes = await fetch(`/api/system/restore?mode=${encodeURIComponent(mode)}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/zip' },
-                body: buffer,
-              });
-              if (!restoreRes.ok) {
-                let errMsg = 'Restore failed';
-                try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
-                throw new Error(errMsg);
-              }
-              const result = await restoreRes.json();
-              restoredFileCount = result.results?.files?.length || 0;
-              snapCount = result.results?.snapshots?.length || 0;
-              errCount = result.results?.errors?.length || 0;
+            const restoreRes = await fetch('/api/system/restore?mode=full', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/zip' },
+              body: buffer,
+            });
+            if (!restoreRes.ok) {
+              let errMsg = 'Restore failed';
+              try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
+              throw new Error(errMsg);
             }
+            const result = await restoreRes.json();
+            const restoredFileCount = result.results?.files?.length || 0;
 
             progressDot.className = 'wiz-status-dot green';
-            progressText.textContent = `Done! ${restoredFileCount} files, ${snapCount} snapshots restored.`
-              + (errCount ? ` ${errCount} errors.` : '');
+            progressText.textContent = `Done! ${restoredFileCount} files restored.`;
             confirmBtn.textContent = 'Done';
 
             setTimeout(() => { confirmOverlay.remove(); location.reload(); }, 2500);
@@ -2220,7 +2088,7 @@ export async function openSettingsModal() {
   const recallSliderVal = overlay.querySelector('#recall-slider-val');
   const recallPreview = overlay.querySelector('#recall-preview');
   const recallPresets = overlay.querySelector('#recall-presets');
-  const PREVIEW_TEXT = 'SynaBun is a persistent vector memory system for AI assistants built with three core components: MCP Server (TypeScript/Node.js), Neural Interface (Express.js + Three.js), and Qdrant Vector Database (Docker). It stores memory embeddings in a single collection with cosine distance similarity and supports multiple projects.';
+  const PREVIEW_TEXT = 'SynaBun is a persistent vector memory system for AI assistants built with three core components: MCP Server (TypeScript/Node.js), Neural Interface (Express.js + Three.js), and SQLite with local embeddings. It stores memory vectors in a single database with cosine similarity and supports multiple projects.';
 
   function updateRecallUI(maxChars) {
     recallSlider.value = maxChars === 0 ? 2100 : Math.min(maxChars, 2100);
@@ -2274,199 +2142,6 @@ export async function openSettingsModal() {
   if (syncBtn) {
     syncBtn.addEventListener('click', () => checkSyncStatus());
   }
-
-  // ══════════════════════════════════════
-  // Collections tab handlers
-  // ══════════════════════════════════════
-
-  // Click a connection item to switch to it
-  overlay.querySelectorAll('.conn-item').forEach(item => {
-    item.addEventListener('click', async (e) => {
-      if (e.target.closest('.conn-item-delete') || e.target.closest('.conn-item-action') || e.target.closest('.conn-item-start')) return;
-      const id = item.dataset.connId;
-      if (!id || item.classList.contains('active')) return;
-      if (item.classList.contains('unreachable')) { alert('This connection is offline. Start the container first.'); return; }
-      item.style.opacity = '0.5';
-      item.style.pointerEvents = 'none';
-      try {
-        const res = await fetch('/api/connections/active', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
-        const data = await res.json();
-        if (data.ok) { close(); location.reload(); }
-        else { alert(data.error || 'Failed to switch connection'); item.style.opacity = ''; item.style.pointerEvents = ''; }
-      } catch (err) { alert('Failed to switch: ' + err.message); item.style.opacity = ''; item.style.pointerEvents = ''; }
-    });
-  });
-
-  // Delete a connection
-  overlay.querySelectorAll('.conn-item-delete').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const id = btn.dataset.connId;
-      const label = btn.dataset.connLabel;
-      if (!id) return;
-      if (!confirm(`Remove connection "${label}"?\nThis only removes the config, not the Qdrant data.`)) return;
-      try {
-        const res = await fetch(`/api/connections/${encodeURIComponent(id)}`, { method: 'DELETE' });
-        const data = await res.json();
-        if (data.ok) {
-          const item = btn.closest('.conn-item');
-          item.style.transition = 'opacity 0.2s, transform 0.2s';
-          item.style.opacity = '0';
-          item.style.transform = 'translateX(10px)';
-          setTimeout(() => { item.remove(); if (!overlay.querySelector('.conn-item')) overlay.querySelector('#conn-list').innerHTML = '<div class="conn-empty">No connections configured</div>'; }, 200);
-        } else { alert(data.error || 'Failed to remove connection'); }
-      } catch (err) { alert('Failed to remove: ' + err.message); }
-    });
-  });
-
-  // Start a stopped Docker container
-  overlay.querySelectorAll('.conn-item-start').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const connId = btn.dataset.connId;
-      if (!connId) return;
-      btn.disabled = true;
-      btn.innerHTML = '<svg viewBox="0 0 24 24" style="width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;animation:dep-spin 0.7s linear infinite"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
-      try {
-        const res = await fetch('/api/connections/start-container', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: connId }) });
-        const data = await res.json();
-        if (data.ok) { close(); location.reload(); }
-        else { alert(data.error || 'Failed to start container'); btn.disabled = false; btn.innerHTML = '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>'; }
-      } catch (err) { alert('Failed: ' + err.message); btn.disabled = false; btn.innerHTML = '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>'; }
-    });
-  });
-
-  // Backup a collection
-  overlay.querySelectorAll('.conn-item-backup').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const id = btn.dataset.connId;
-      if (!id || btn.classList.contains('backing-up')) return;
-      btn.classList.add('backing-up');
-      try {
-        const res = await fetch(`/api/connections/${encodeURIComponent(id)}/backup`, { method: 'POST' });
-        if (!res.ok) { const data = await res.json(); throw new Error(data.error || 'Backup failed'); }
-        const blob = await res.blob();
-        const disposition = res.headers.get('content-disposition') || '';
-        const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
-        const filename = filenameMatch ? filenameMatch[1] : `backup-${id}.snapshot`;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-      } catch (err) { alert('Backup failed: ' + err.message); }
-      finally { btn.classList.remove('backing-up'); }
-    });
-  });
-
-  // Restore a collection (upload snapshot)
-  overlay.querySelectorAll('.conn-item-restore').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const id = btn.dataset.connId;
-      if (!id || btn.classList.contains('restoring')) return;
-      const item = btn.closest('.conn-item');
-      const label = item?.querySelector('.conn-item-name')?.textContent || id;
-      const collection = item?.querySelector('.conn-item-meta')?.textContent || '';
-      const fileInput = document.createElement('input');
-      fileInput.type = 'file'; fileInput.accept = '.snapshot'; fileInput.style.display = 'none';
-      document.body.appendChild(fileInput);
-      fileInput.addEventListener('change', () => {
-        const file = fileInput.files[0]; fileInput.remove(); if (!file) return;
-        const confirmOverlay = document.createElement('div');
-        confirmOverlay.className = 'tag-delete-overlay'; confirmOverlay.style.zIndex = '10001';
-        confirmOverlay.innerHTML = `
-          <div class="tag-delete-modal" style="max-width:400px">
-            <div class="tag-delete-modal-title" style="margin-bottom:8px">Restore Collection</div>
-            <p style="font-size:var(--fs-sm);color:var(--t-secondary);margin-bottom:6px">This will replace all data in <strong style="color:var(--t-bright)">${label}</strong> (${collection}) with the snapshot file.</p>
-            <p style="font-size:var(--fs-xs);color:var(--t-muted);margin-bottom:4px">File: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)</p>
-            <p style="font-size:var(--fs-xs);color:var(--accent-dim);margin-bottom:18px">The snapshot must be from the same Qdrant version.</p>
-            <div class="tag-delete-modal-actions">
-              <button class="action-btn action-btn--ghost" id="restore-cancel">Cancel</button>
-              <button class="action-btn action-btn--danger" id="restore-confirm" style="background:var(--accent-blue-bg);border-color:var(--accent-blue-border);color:var(--accent-blue)">Restore</button>
-            </div>
-          </div>`;
-        document.body.appendChild(confirmOverlay);
-        confirmOverlay.querySelector('#restore-cancel').addEventListener('click', () => confirmOverlay.remove());
-        confirmOverlay.addEventListener('click', (ev) => { if (ev.target === confirmOverlay) confirmOverlay.remove(); });
-        confirmOverlay.querySelector('#restore-confirm').addEventListener('click', async () => {
-          const confirmBtn = confirmOverlay.querySelector('#restore-confirm');
-          confirmBtn.textContent = 'Restoring...'; confirmBtn.disabled = true; btn.classList.add('restoring');
-          try {
-            const buffer = await file.arrayBuffer();
-            const res = await fetch(`/api/connections/${encodeURIComponent(id)}/restore`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buffer });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || 'Restore failed');
-            confirmOverlay.remove();
-            try {
-              const connRes = await fetch('/api/connections'); const connData = await connRes.json();
-              if (connData.connections) { const pts = connData.connections.find(c => c.id === id); if (pts) { const countEl = item.querySelector('.conn-item-count'); if (countEl) countEl.textContent = pts.points + ' pts'; } }
-            } catch {}
-          } catch (err) { alert('Restore failed: ' + err.message); confirmOverlay.remove(); }
-          finally { btn.classList.remove('restoring'); }
-        });
-      });
-      fileInput.click();
-    });
-  });
-
-  // Restore from Backup — standalone
-  overlay.querySelector('#conn-restore-standalone').addEventListener('click', () => {
-    const restoreOverlay = document.createElement('div');
-    restoreOverlay.className = 'tag-delete-overlay'; restoreOverlay.style.zIndex = '10001';
-    restoreOverlay.innerHTML = `
-      <div class="tag-delete-modal settings-modal" style="max-width:460px;text-align:left">
-        <h3 style="margin-bottom:4px">Restore from Backup</h3>
-        <p style="font-size:11px;color:var(--t-muted);margin-bottom:18px;line-height:1.5">Upload a .snapshot file to restore a collection. The collection will be created if it doesn't exist, and automatically added to your connections.</p>
-        <div class="settings-field" style="margin-bottom:12px"><label>Qdrant URL</label><input type="text" id="rs-url" placeholder="http://localhost:6333" autocomplete="off" spellcheck="false" style="font-family:'JetBrains Mono',monospace;font-size:12px"></div>
-        <div class="settings-field" style="margin-bottom:12px"><label>API Key</label><input type="text" id="rs-key" placeholder="your-api-key" autocomplete="off" spellcheck="false" style="font-family:'JetBrains Mono',monospace;font-size:12px"></div>
-        <div class="settings-field" style="margin-bottom:12px"><label>Collection Name</label><input type="text" id="rs-collection" placeholder="claude_memory" autocomplete="off" spellcheck="false" style="font-family:'JetBrains Mono',monospace;font-size:12px"><div style="font-size:10px;color:var(--t-muted);margin-top:3px">Lowercase, digits, underscores. Will be created if it doesn't exist.</div></div>
-        <div class="settings-field" style="margin-bottom:12px"><label>Label (optional)</label><input type="text" id="rs-label" placeholder="My Restored Memory" autocomplete="off" spellcheck="false" style="font-size:12px"></div>
-        <div class="settings-field" style="margin-bottom:16px"><label>Snapshot File</label><div style="display:flex;align-items:center;gap:8px"><button class="settings-btn-cancel" id="rs-pick-file" style="font-size:11px;padding:6px 12px">Choose .snapshot file</button><span id="rs-file-name" style="font-size:11px;color:var(--t-muted)">No file selected</span></div><input type="file" id="rs-file-input" accept=".snapshot" style="display:none"></div>
-        <div id="rs-status" style="display:none;margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:8px"><div class="wiz-status-dot spin" id="rs-status-dot"></div><span id="rs-status-text"></span></div>
-        <div class="settings-actions"><button class="settings-btn-cancel" id="rs-cancel">Cancel</button><button class="settings-btn-save" id="rs-restore" disabled>Restore</button></div>
-      </div>`;
-    document.body.appendChild(restoreOverlay);
-    let selectedFile = null;
-    const fileInput = restoreOverlay.querySelector('#rs-file-input');
-    const fileName = restoreOverlay.querySelector('#rs-file-name');
-    const restoreBtn = restoreOverlay.querySelector('#rs-restore');
-    const statusEl = restoreOverlay.querySelector('#rs-status');
-    const statusDot = restoreOverlay.querySelector('#rs-status-dot');
-    const statusText = restoreOverlay.querySelector('#rs-status-text');
-    const closeRestore = () => restoreOverlay.remove();
-    restoreOverlay.querySelector('#rs-cancel').addEventListener('click', closeRestore);
-    restoreOverlay.querySelector('#rs-pick-file').addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', () => {
-      selectedFile = fileInput.files[0] || null;
-      if (selectedFile) { fileName.textContent = selectedFile.name + ' (' + (selectedFile.size / 1024 / 1024).toFixed(1) + ' MB)'; fileName.style.color = 'var(--t-primary)'; }
-      else { fileName.textContent = 'No file selected'; fileName.style.color = 'var(--t-muted)'; }
-      checkReady();
-    });
-    function checkReady() {
-      const url = restoreOverlay.querySelector('#rs-url').value.trim();
-      const key = restoreOverlay.querySelector('#rs-key').value.trim();
-      const col = restoreOverlay.querySelector('#rs-collection').value.trim();
-      restoreBtn.disabled = !url || !key || !col || !selectedFile;
-    }
-    restoreOverlay.querySelectorAll('input[type="text"]').forEach(inp => inp.addEventListener('input', checkReady));
-    restoreBtn.addEventListener('click', async () => {
-      const url = restoreOverlay.querySelector('#rs-url').value.trim();
-      const apiKey = restoreOverlay.querySelector('#rs-key').value.trim();
-      const collection = restoreOverlay.querySelector('#rs-collection').value.trim();
-      const label = restoreOverlay.querySelector('#rs-label').value.trim();
-      if (!url || !apiKey || !collection || !selectedFile) return;
-      restoreBtn.disabled = true; restoreBtn.textContent = 'Restoring...';
-      statusEl.style.display = 'flex'; statusDot.className = 'wiz-status-dot spin'; statusText.textContent = 'Uploading and restoring snapshot...';
-      try {
-        const buffer = await selectedFile.arrayBuffer();
-        const params = new URLSearchParams({ url, apiKey, collection }); if (label) params.set('label', label);
-        const res = await fetch('/api/connections/restore-standalone?' + params.toString(), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: buffer });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Restore failed');
-        statusDot.className = 'wiz-status-dot green'; statusText.textContent = data.message; restoreBtn.textContent = 'Done';
-        setTimeout(() => { closeRestore(); close(); location.reload(); }, 1200);
-      } catch (err) { statusDot.className = 'wiz-status-dot red'; statusText.textContent = err.message; restoreBtn.textContent = 'Restore'; restoreBtn.disabled = false; }
-    });
-  });
 
   // ══════════════════════════════════════
   // OpenClaw Bridge handlers
@@ -4094,508 +3769,6 @@ export async function openSettingsModal() {
         } else { alert(data.error || 'Failed to add project'); saveBtn.textContent = 'Add & Enable'; saveBtn.disabled = false; }
       } catch (err) { alert('Failed: ' + err.message); const saveBtn = addOverlay.querySelector('#cc-proj-save'); saveBtn.textContent = 'Add & Enable'; saveBtn.disabled = false; }
     });
-  });
-
-  // ── Add Collection wizard ──
-  overlay.querySelector('#conn-add-btn').addEventListener('click', () => {
-    function generateApiKey() {
-      const arr = new Uint8Array(16);
-      crypto.getRandomValues(arr);
-      return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-    }
-    function toDockerName(label) {
-      return 'synabun-qdrant-' + label.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-    }
-    function suggestPort() {
-      let max = 6333;
-      connections.forEach(c => {
-        const m = (c.url || '').match(/:(\d+)\/?$/);
-        if (m) max = Math.max(max, parseInt(m[1], 10));
-      });
-      return max + 10 - (max % 10) + 10;
-    }
-
-    const defaultPort = suggestPort();
-    const wizState = {
-      mode: null, label: '', url: '', apiKey: '', collection: '',
-      port: defaultPort, grpcPort: defaultPort + 1,
-      containerName: '', volumeName: '',
-      dockerReady: false, collectionCreated: false,
-    };
-
-    let currentStep = 0;
-    const TOTAL_STEPS = 4;
-
-    const wiz = document.createElement('div');
-    wiz.className = 'conn-wizard-overlay';
-    wiz.innerHTML = `
-      <div class="conn-wizard-panel">
-        <div class="conn-wizard-viewport" id="wiz-viewport">
-
-          <!-- Step 0: Choose Mode -->
-          <div class="conn-wizard-step active" data-wiz-step="0">
-            <h3>New Collection</h3>
-            <div class="wiz-subtitle">How would you like to set up your new memory collection?</div>
-            <div class="wiz-mode-grid">
-              <div class="wiz-mode-card" data-mode="docker">
-                <svg class="wmc-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><line x1="17.5" y1="14" x2="17.5" y2="21"/><line x1="14" y1="17.5" x2="21" y2="17.5"/></svg>
-                <div class="wmc-title">New Docker Instance</div>
-                <div class="wmc-desc">Spin up a fresh Qdrant container on its own port</div>
-              </div>
-              <div class="wiz-mode-card" data-mode="existing">
-                <svg class="wmc-icon" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                <div class="wmc-title">Existing Instance</div>
-                <div class="wmc-desc">Create a new collection on a running Qdrant</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Step 1: Configuration -->
-          <div class="conn-wizard-step right" data-wiz-step="1">
-            <div id="wiz-config-docker" style="display:none">
-              <h3>Configure Container</h3>
-              <div class="wiz-subtitle">Set up your new Qdrant Docker instance.</div>
-              <div class="wiz-field">
-                <label>Label</label>
-                <input type="text" id="wiz-d-label" placeholder="My Project" autocomplete="off" spellcheck="false">
-                <div class="wiz-hint">Friendly name shown in the UI</div>
-                <div class="wiz-error" id="wiz-d-label-err"></div>
-              </div>
-              <div class="wiz-field">
-                <label>Collection Name</label>
-                <input type="text" id="wiz-d-collection" placeholder="my_collection" autocomplete="off" spellcheck="false">
-                <div class="wiz-hint">Lowercase letters, digits, underscores. 3-50 chars.</div>
-                <div class="wiz-error" id="wiz-d-collection-err"></div>
-              </div>
-              <div class="wiz-row">
-                <div class="wiz-field">
-                  <label>HTTP Port</label>
-                  <input type="number" id="wiz-d-port" value="${defaultPort}" min="1024" max="65535">
-                  <div class="wiz-hint">REST API port</div>
-                </div>
-                <div class="wiz-field">
-                  <label>gRPC Port</label>
-                  <input type="number" id="wiz-d-grpc" value="${defaultPort + 1}" min="1024" max="65535">
-                  <div class="wiz-hint">gRPC port</div>
-                </div>
-              </div>
-              <div class="wiz-field">
-                <label>API Key</label>
-                <div class="wiz-input-row">
-                  <input type="text" id="wiz-d-key" value="${generateApiKey()}" autocomplete="off" spellcheck="false">
-                  <button class="wiz-generate-btn" id="wiz-d-gen">Generate</button>
-                </div>
-                <div class="wiz-hint">Secures the Qdrant instance. Min 8 characters.</div>
-                <div class="wiz-error" id="wiz-d-key-err"></div>
-              </div>
-            </div>
-
-            <div id="wiz-config-existing" style="display:none">
-              <h3>Instance Details</h3>
-              <div class="wiz-subtitle">Connect to a running Qdrant instance and create a new collection.</div>
-              <div class="wiz-field">
-                <label>Label</label>
-                <input type="text" id="wiz-e-label" placeholder="My Memory Store" autocomplete="off" spellcheck="false">
-                <div class="wiz-hint">Friendly name shown in the UI</div>
-                <div class="wiz-error" id="wiz-e-label-err"></div>
-              </div>
-              <div class="wiz-field">
-                <label>Qdrant URL</label>
-                <input type="text" id="wiz-e-url" placeholder="http://localhost:6333" autocomplete="off" spellcheck="false">
-                <div class="wiz-hint">The full URL of your Qdrant instance</div>
-                <div class="wiz-error" id="wiz-e-url-err"></div>
-              </div>
-              <div class="wiz-field">
-                <label>API Key</label>
-                <input type="text" id="wiz-e-key" placeholder="your-api-key" autocomplete="off" spellcheck="false">
-                <div class="wiz-error" id="wiz-e-key-err"></div>
-              </div>
-              <div class="wiz-field">
-                <label>Collection Name</label>
-                <input type="text" id="wiz-e-collection" placeholder="my_collection" autocomplete="off" spellcheck="false">
-                <div class="wiz-hint">Will be created if it doesn't exist. Lowercase, digits, underscores.</div>
-                <div class="wiz-error" id="wiz-e-collection-err"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Step 2: Action -->
-          <div class="conn-wizard-step right" data-wiz-step="2">
-            <div id="wiz-action-docker" style="display:none">
-              <h3>Start Container</h3>
-              <div class="wiz-subtitle">Spinning up a new Qdrant instance and creating your collection.</div>
-              <div class="wiz-status" id="wiz-docker-status" style="display:none">
-                <div class="wiz-status-dot spin" id="wiz-docker-dot"></div>
-                <span id="wiz-docker-status-text">Starting container...</span>
-              </div>
-              <div class="wiz-terminal" id="wiz-docker-term">Waiting to start...</div>
-              <button class="wiz-action-btn" id="wiz-docker-btn">Start Container</button>
-            </div>
-
-            <div id="wiz-action-existing" style="display:none">
-              <h3>Create Collection</h3>
-              <div class="wiz-subtitle">Testing connectivity and creating the collection on your Qdrant instance.</div>
-              <div class="wiz-status" id="wiz-existing-status" style="display:none">
-                <div class="wiz-status-dot spin" id="wiz-existing-dot"></div>
-                <span id="wiz-existing-status-text">Connecting...</span>
-              </div>
-              <button class="wiz-action-btn" id="wiz-existing-btn">Test & Create</button>
-            </div>
-          </div>
-
-          <!-- Step 3: Confirm & Save -->
-          <div class="conn-wizard-step right" data-wiz-step="3">
-            <h3>Confirm & Save</h3>
-            <div class="wiz-subtitle">Review your new collection before adding it.</div>
-            <div class="wiz-summary-card" id="wiz-summary"></div>
-            <button class="wiz-action-btn" id="wiz-save-btn">Add Collection</button>
-          </div>
-
-        </div>
-        <div class="conn-wizard-nav">
-          <button class="wiz-nav-btn" id="wiz-cancel">Cancel</button>
-          <button class="wiz-nav-btn" id="wiz-back" disabled>&larr; Back</button>
-          <div class="wiz-dots" id="wiz-dots">
-            ${Array.from({length: TOTAL_STEPS}, (_, i) => `<div class="wiz-dot${i === 0 ? ' active' : ''}"></div>`).join('')}
-          </div>
-          <button class="wiz-nav-btn primary" id="wiz-next">Next &rarr;</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(wiz);
-
-    const $viewport = wiz.querySelector('#wiz-viewport');
-    const $steps = wiz.querySelectorAll('.conn-wizard-step');
-    const $dots = wiz.querySelectorAll('.wiz-dot');
-    const $back = wiz.querySelector('#wiz-back');
-    const $next = wiz.querySelector('#wiz-next');
-
-    const closeWiz = () => wiz.remove();
-
-    // Cancel button + backdrop click to close
-    wiz.querySelector('#wiz-cancel').addEventListener('click', closeWiz);
-    wiz.addEventListener('click', (e) => {
-      if (e.target === wiz) closeWiz();
-    });
-
-    function resizeViewport(stepIdx) {
-      const step = $steps[stepIdx];
-      step.style.position = 'relative';
-      requestAnimationFrame(() => {
-        $viewport.style.height = step.scrollHeight + 'px';
-        setTimeout(() => { step.style.position = ''; }, 400);
-      });
-    }
-
-    function goToStep(n) {
-      if (n < 0 || n >= TOTAL_STEPS) return;
-      $steps.forEach((s, i) => {
-        s.classList.remove('active', 'left', 'right');
-        if (i === n) s.classList.add('active');
-        else if (i < n) s.classList.add('left');
-        else s.classList.add('right');
-      });
-      $dots.forEach((d, i) => {
-        d.classList.remove('active', 'done');
-        if (i === n) d.classList.add('active');
-        else if (i < n) d.classList.add('done');
-      });
-      currentStep = n;
-      $back.disabled = n === 0;
-      updateNextBtn();
-      resizeViewport(n);
-    }
-
-    function updateNextBtn() {
-      if (currentStep === 0) {
-        $next.disabled = !wizState.mode;
-        $next.textContent = 'Next \u2192';
-      } else if (currentStep === 1) {
-        $next.disabled = false;
-        $next.textContent = 'Next \u2192';
-      } else if (currentStep === 2) {
-        $next.disabled = !wizState.collectionCreated;
-        $next.textContent = 'Next \u2192';
-      } else if (currentStep === 3) {
-        $next.style.display = 'none';
-      }
-      if (currentStep < 3) $next.style.display = '';
-    }
-
-    const collectionRe = /^[a-z][a-z0-9_]{2,49}$/;
-
-    function clearErrors() {
-      wiz.querySelectorAll('.wiz-error').forEach(e => { e.textContent = ''; e.classList.remove('visible'); });
-    }
-    function showError(id, msg) {
-      const el = wiz.querySelector('#' + id);
-      if (el) { el.textContent = msg; el.classList.add('visible'); }
-    }
-
-    function validateStep1() {
-      clearErrors();
-      let valid = true;
-      if (wizState.mode === 'docker') {
-        const label = wiz.querySelector('#wiz-d-label').value.trim();
-        const collection = wiz.querySelector('#wiz-d-collection').value.trim();
-        const key = wiz.querySelector('#wiz-d-key').value.trim();
-        const port = parseInt(wiz.querySelector('#wiz-d-port').value, 10);
-        const grpc = parseInt(wiz.querySelector('#wiz-d-grpc').value, 10);
-        if (!label) { showError('wiz-d-label-err', 'Label is required'); valid = false; }
-        if (!collectionRe.test(collection)) { showError('wiz-d-collection-err', 'Must be 3-50 chars: lowercase, digits, underscores'); valid = false; }
-        if (key.length < 8) { showError('wiz-d-key-err', 'Minimum 8 characters'); valid = false; }
-        if (port < 1024 || port > 65535) { valid = false; }
-        if (grpc < 1024 || grpc > 65535 || grpc === port) { valid = false; }
-        if (valid) {
-          wizState.label = label;
-          wizState.collection = collection;
-          wizState.apiKey = key;
-          wizState.port = port;
-          wizState.grpcPort = grpc;
-          wizState.containerName = toDockerName(label);
-          wizState.volumeName = toDockerName(label) + '-data';
-          wizState.url = 'http://localhost:' + port;
-        }
-      } else {
-        const label = wiz.querySelector('#wiz-e-label').value.trim();
-        const url = wiz.querySelector('#wiz-e-url').value.trim();
-        const key = wiz.querySelector('#wiz-e-key').value.trim();
-        const collection = wiz.querySelector('#wiz-e-collection').value.trim();
-        if (!label) { showError('wiz-e-label-err', 'Label is required'); valid = false; }
-        if (!url.startsWith('http://') && !url.startsWith('https://')) { showError('wiz-e-url-err', 'Must start with http:// or https://'); valid = false; }
-        if (!key) { showError('wiz-e-key-err', 'API Key is required'); valid = false; }
-        if (!collectionRe.test(collection)) { showError('wiz-e-collection-err', 'Must be 3-50 chars: lowercase, digits, underscores'); valid = false; }
-        if (valid) {
-          wizState.label = label;
-          wizState.url = url.replace(/\/+$/, '');
-          wizState.apiKey = key;
-          wizState.collection = collection;
-        }
-      }
-      return valid;
-    }
-
-    // Step 0: Mode selection
-    wiz.querySelectorAll('.wiz-mode-card').forEach(card => {
-      card.addEventListener('click', () => {
-        wiz.querySelectorAll('.wiz-mode-card').forEach(c => c.classList.remove('selected'));
-        card.classList.add('selected');
-        wizState.mode = card.dataset.mode;
-        updateNextBtn();
-      });
-    });
-
-    // Step 1: Show correct config panel
-    function showConfigPanel() {
-      const isDocker = wizState.mode === 'docker';
-      wiz.querySelector('#wiz-config-docker').style.display = isDocker ? '' : 'none';
-      wiz.querySelector('#wiz-config-existing').style.display = isDocker ? 'none' : '';
-      wiz.querySelector('#wiz-action-docker').style.display = isDocker ? '' : 'none';
-      wiz.querySelector('#wiz-action-existing').style.display = isDocker ? 'none' : '';
-    }
-
-    wiz.querySelector('#wiz-d-gen').addEventListener('click', () => {
-      wiz.querySelector('#wiz-d-key').value = generateApiKey();
-    });
-
-    wiz.querySelector('#wiz-d-port').addEventListener('input', (e) => {
-      const p = parseInt(e.target.value, 10);
-      if (!isNaN(p)) wiz.querySelector('#wiz-d-grpc').value = p + 1;
-    });
-
-    // Step 2: Docker action
-    wiz.querySelector('#wiz-docker-btn').addEventListener('click', async () => {
-      const btn = wiz.querySelector('#wiz-docker-btn');
-      const term = wiz.querySelector('#wiz-docker-term');
-      const statusEl = wiz.querySelector('#wiz-docker-status');
-      const dot = wiz.querySelector('#wiz-docker-dot');
-      const statusText = wiz.querySelector('#wiz-docker-status-text');
-
-      btn.disabled = true;
-      btn.textContent = 'Starting...';
-      statusEl.style.display = 'flex';
-      dot.className = 'wiz-status-dot spin';
-      statusText.textContent = 'Starting container...';
-      term.textContent = 'Running docker run...\n';
-
-      try {
-        const dockerRes = await fetch('/api/connections/docker-new', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            port: wizState.port, grpcPort: wizState.grpcPort,
-            apiKey: wizState.apiKey, containerName: wizState.containerName,
-            volumeName: wizState.volumeName,
-          }),
-        });
-        const dockerData = await dockerRes.json();
-        if (!dockerRes.ok) throw new Error(dockerData.error || 'Failed to start container');
-        term.textContent += (dockerData.output || 'Container started.') + '\n';
-
-        if (!dockerData.ready) throw new Error('Container started but Qdrant is not responding. Check Docker logs.');
-
-        statusText.textContent = 'Container ready. Creating collection...';
-        term.textContent += 'Qdrant is ready on port ' + wizState.port + '\n';
-
-        const colRes = await fetch('/api/connections/create-collection', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: wizState.url, apiKey: wizState.apiKey, collection: wizState.collection }),
-        });
-        const colData = await colRes.json();
-        if (!colRes.ok) throw new Error(colData.error || 'Failed to create collection');
-
-        term.textContent += colData.message + '\n';
-        dot.className = 'wiz-status-dot green';
-        statusText.textContent = 'Collection ready!';
-        btn.textContent = 'Done';
-        wizState.dockerReady = true;
-        wizState.collectionCreated = true;
-        updateNextBtn();
-      } catch (err) {
-        dot.className = 'wiz-status-dot red';
-        statusText.textContent = err.message;
-        term.textContent += 'ERROR: ' + err.message + '\n';
-        btn.textContent = 'Retry';
-        btn.disabled = false;
-      }
-    });
-
-    // Step 2: Existing action
-    wiz.querySelector('#wiz-existing-btn').addEventListener('click', async () => {
-      const btn = wiz.querySelector('#wiz-existing-btn');
-      const statusEl = wiz.querySelector('#wiz-existing-status');
-      const dot = wiz.querySelector('#wiz-existing-dot');
-      const statusText = wiz.querySelector('#wiz-existing-status-text');
-
-      btn.disabled = true;
-      btn.textContent = 'Creating...';
-      statusEl.style.display = 'flex';
-      dot.className = 'wiz-status-dot spin';
-      statusText.textContent = 'Testing connection & creating collection...';
-
-      try {
-        const res = await fetch('/api/connections/create-collection', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: wizState.url, apiKey: wizState.apiKey, collection: wizState.collection }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to create collection');
-
-        dot.className = 'wiz-status-dot green';
-        statusText.textContent = data.existed ? 'Collection already exists \u2014 ready!' : 'Collection created!';
-        btn.textContent = 'Done';
-        wizState.collectionCreated = true;
-        updateNextBtn();
-      } catch (err) {
-        dot.className = 'wiz-status-dot red';
-        statusText.textContent = err.message;
-        btn.textContent = 'Retry';
-        btn.disabled = false;
-      }
-    });
-
-    // Step 3: Summary & Save
-    function buildSummary() {
-      const summary = wiz.querySelector('#wiz-summary');
-      summary.innerHTML = `
-        <div class="wiz-summary-row"><span class="wsr-label">Label</span><span class="wsr-value">${wizState.label}</span></div>
-        <div class="wiz-summary-row"><span class="wsr-label">URL</span><span class="wsr-value">${wizState.url}</span></div>
-        <div class="wiz-summary-row"><span class="wsr-label">Collection</span><span class="wsr-value">${wizState.collection}</span></div>
-        <div class="wiz-summary-row"><span class="wsr-label">Mode</span><span class="wsr-value">${wizState.mode === 'docker' ? 'New Docker Container' : 'Existing Instance'}</span></div>
-      `;
-    }
-
-    wiz.querySelector('#wiz-save-btn').addEventListener('click', async () => {
-      const btn = wiz.querySelector('#wiz-save-btn');
-      btn.disabled = true;
-      btn.textContent = 'Saving...';
-
-      const id = wizState.label.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-
-      try {
-        const res = await fetch('/api/connections', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id, label: wizState.label, url: wizState.url,
-            apiKey: wizState.apiKey, collection: wizState.collection,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to save connection');
-
-        // Refresh connections list in-place
-        try {
-          const connRes = await fetch('/api/connections');
-          const connData = await connRes.json();
-          if (connData.connections) {
-            const list = overlay.querySelector('#conn-list');
-            const allConns = connData.connections;
-            if (allConns.length === 0) {
-              list.innerHTML = '<div class="conn-empty">No connections configured</div>';
-            } else {
-              list.innerHTML = allConns.map(c => `
-                <div class="conn-item${c.active ? ' active' : ''}${!c.reachable ? ' unreachable' : ''}" data-conn-id="${c.id}">
-                  <div class="conn-item-dot"></div>
-                  <div class="conn-item-info">
-                    <div class="conn-item-name">${c.label || c.collection}</div>
-                    <div class="conn-item-meta">${c.collection}</div>
-                  </div>
-                  ${c.reachable ? `<span class="conn-item-count">${c.points} pts</span>` : ''}
-                  ${!c.reachable && /localhost|127\\.0\\.0\\.1/.test(c.url) ? `
-                    <button class="conn-item-start" data-conn-id="${c.id}" data-tooltip="Start Container">
-                      <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                    </button>
-                  ` : ''}
-                  ${c.reachable ? `
-                    <button class="conn-item-action conn-item-backup" data-conn-id="${c.id}" data-tooltip="Backup">
-                      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    </button>
-                    <button class="conn-item-action conn-item-restore" data-conn-id="${c.id}" data-tooltip="Restore">
-                      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    </button>
-                  ` : ''}
-                  <button class="conn-item-delete" data-conn-id="${c.id}" data-conn-label="${c.label || c.collection}" data-tooltip="Remove">
-                    <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  </button>
-                </div>
-              `).join('');
-            }
-          }
-        } catch {}
-
-        closeWiz();
-      } catch (err) {
-        btn.textContent = 'Add Collection';
-        btn.disabled = false;
-        alert(err.message);
-      }
-    });
-
-    // Navigation
-    $next.addEventListener('click', () => {
-      if (currentStep === 0) {
-        showConfigPanel();
-        goToStep(1);
-      } else if (currentStep === 1) {
-        if (validateStep1()) {
-          wizState.dockerReady = false;
-          wizState.collectionCreated = false;
-          goToStep(2);
-        }
-      } else if (currentStep === 2) {
-        buildSummary();
-        goToStep(3);
-      }
-    });
-
-    $back.addEventListener('click', () => {
-      if (currentStep > 0) goToStep(currentStep - 1);
-    });
-
-    resizeViewport(0);
   });
 
   // ── Variant tabs: call afterRender ──
