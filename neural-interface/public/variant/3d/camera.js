@@ -10,7 +10,7 @@ import { storage } from '../../shared/storage.js';
 import { gfx } from './gfx.js';
 
 // ── Constants ──
-const FLOOR_Y = -200;
+const FLOOR_Y = -500;
 const CEILING_Y = 2500;
 const CAM_BASE_SPEED = 6.0;      // base movement speed per frame
 const CAM_BOOST_MULT = 3.0;      // shift multiplier
@@ -610,7 +610,7 @@ export function restoreCameraState(cameraState, duration = 2000) {
 /**
  * Initialize the full camera system: WASD movement, HUD, orbit constraints, keyboard listeners.
  *
- * @param {object} graph - The ForceGraph3D instance
+ * @param {object} graph - The graph proxy (scene/camera/controls/cameraPosition API)
  * @returns {{ destroy: Function }} Cleanup handle
  */
 export function initCamera(graph) {

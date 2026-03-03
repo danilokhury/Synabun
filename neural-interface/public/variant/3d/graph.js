@@ -1,20 +1,22 @@
 // ═══════════════════════════════════════════
-// SynaBun Neural Interface — 3D Force Graph
+// SynaBun Neural Interface — 3D Graph (Raw Three.js)
 // Core graph initialization, node/link rendering,
 // layout computation, animation loop, interactions
 // ═══════════════════════════════════════════
 //
-// THREE, TWEEN, ForceGraph3D, UnrealBloomPass are globals from CDN imports.
-// This module owns the ForceGraph3D instance and all related Three.js objects.
+// THREE, TWEEN, OrbitControls, EffectComposer, RenderPass, UnrealBloomPass
+// are globals from CDN imports. No ForceGraph3D dependency.
+console.log('[graph.js] LOADED — v4 polished layout + fresnel orbs');
 
 import { state, emit, on } from '../../shared/state.js';
 import { KEYS } from '../../shared/constants.js';
 import { storage } from '../../shared/storage.js';
 import { catColor } from '../../shared/colors.js';
+import { fetchLinks } from '../../shared/api.js';
 import { gfx } from './gfx.js';
 
 // ── Constants ──────────────────────────────
-const FLOOR_Y = -200;
+const FLOOR_Y = -500;
 const PLEXUS_RADIUS = 200;
 const _MULTI_SELECT_BLUE = new THREE.Color(0.4, 0.7, 1.0);
 const _MAX_BATCH_LINKS = 15000;
@@ -38,6 +40,7 @@ const _projScreenMatrix = new THREE.Matrix4();
 let _linkBatch = null;
 let _linkBatchGeo = null;
 let _linkBatchDirty = true;
+let _linkPosDirty = true;  // positions need update (drag, layout change)
 let _batchLinks = [];
 let _visualLinks = [];
 let _nodeById = new Map();
@@ -62,6 +65,7 @@ const _raycaster = new THREE.Raycaster();
 const _mousePlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 const _mouse3D = new THREE.Vector3();
 let _mouse3DValid = false;
+let _mouseMoved = false;
 const _dragDepthVec = new THREE.Vector3();
 
 // Node scale boost when links are off
@@ -69,6 +73,121 @@ let noLinksScaleBoost = 1.0;
 
 // Pointer-over-UI guard
 let _pointerOverUI = false;
+
+// ── Raw Three.js objects (replaces ForceGraph3D) ──
+let _scene    = null;
+let _camera   = null;
+let _renderer = null;
+let _controls = null;
+let _composer = null;
+
+// ── Graph data store (replaces ForceGraph3D's internal data) ──
+let _graphNodes = [];
+let _graphLinks = [];
+
+// ── Anchor/Tag scene objects (memory nodes have ZERO Three.js objects) ──
+const _anchorTagObjects = new Map(); // nodeId → THREE.Group
+let _anchorTagArray = [];            // flat array for fast iteration in animate()
+
+// ── Pointer events state for custom raycasting ──
+let _pointerDownPos = null;
+let _pointerDownTime = 0;
+let _pointerDownNode = null;
+const _dragPlane = new THREE.Plane();
+const _dragHit = new THREE.Vector3();
+
+// ═══════════════════════════════════════════
+// GRAPH PROXY — matches ForceGraph3D API surface
+// so camera.js, background.js, main.js need zero changes
+// ═══════════════════════════════════════════
+
+function _tweenCameraPosition(toPos, toLookAt, durationMs) {
+  if (!_camera || !_controls) return;
+  if (!durationMs || durationMs <= 0) {
+    _camera.position.set(toPos.x, toPos.y, toPos.z);
+    if (toLookAt) {
+      _controls.target.set(toLookAt.x, toLookAt.y, toLookAt.z);
+      _controls.update();
+    }
+    return;
+  }
+  new TWEEN.Tween(_camera.position)
+    .to({ x: toPos.x, y: toPos.y, z: toPos.z }, durationMs)
+    .easing(TWEEN.Easing.Quadratic.Out)
+    .start();
+  if (toLookAt) {
+    new TWEEN.Tween(_controls.target)
+      .to({ x: toLookAt.x, y: toLookAt.y, z: toLookAt.z }, durationMs)
+      .easing(TWEEN.Easing.Quadratic.Out)
+      .onUpdate(() => _controls.update())
+      .start();
+  }
+}
+
+const graphProxy = {
+  scene:    () => _scene,
+  camera:   () => _camera,
+  controls: () => _controls,
+  renderer: () => _renderer,
+  graphData: (data) => {
+    if (data !== undefined) {
+      _graphNodes = data.nodes || [];
+      _graphLinks = data.links || [];
+    } else {
+      return { nodes: _graphNodes, links: _graphLinks };
+    }
+  },
+  cameraPosition: (pos, lookAt, ms) => _tweenCameraPosition(pos, lookAt, ms ?? 0),
+  postProcessingComposer: () => _composer,
+  backgroundColor: (hex) => {
+    if (_renderer) _renderer.setClearColor(new THREE.Color(hex));
+  },
+  d3Force: () => ({ strength: () => ({}) }), // noop — forces are disabled
+};
+
+// ═══════════════════════════════════════════
+// INSTANCED RENDERING — memory nodes
+// ═══════════════════════════════════════════
+const _MAX_MEMORY_NODES = 8000;
+const _NODE_LIMIT_KEY = 'neural-node-limit';
+let _nodeLimit = parseInt(storage.getItem(_NODE_LIMIT_KEY) || '0', 10) || 0; // 0 = no limit
+
+// 3 InstancedMesh for wireframes (one per LOD tier)
+let _wireInstLow  = null;  // importance 1-4
+let _wireInstMed  = null;  // importance 5-7
+let _wireInstHigh = null;  // importance 8+
+
+// 1 Points mesh for glows
+let _glowPoints = null;
+let _glowPointsGeo = null;
+
+// Index management
+let _nodeInstanceMap = new Map(); // nodeId → { tier, index }
+let _tierNodes = [[], [], []];    // [lowNodes, medNodes, highNodes]
+let _glowNodeOrder = [];          // all memory nodes in global index order
+
+// Per-node state (parallel Float32Arrays — static, updated only on dirty)
+const _nodeOpacity     = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeGlowOpacity = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeScale       = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeColorR      = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeColorG      = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeColorB      = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeBaseColorR  = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeBaseColorG  = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeBaseColorB  = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeBaseOpacity = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeImportance  = new Float32Array(_MAX_MEMORY_NODES);
+const _nodeBaseRadius  = new Float32Array(_MAX_MEMORY_NODES);
+
+// Dirty flag — only recompute + upload GPU buffers when state changes
+let _instancesDirty = true;
+
+// Reusable math scratch objects (zero-alloc per frame)
+const _instMatrix    = new THREE.Matrix4();
+const _instPos       = new THREE.Vector3();
+const _instScaleV    = new THREE.Vector3();
+const _identityQuat  = new THREE.Quaternion(); // identity — no rotation
 
 // ═══════════════════════════════════════════
 // SOFT DOT TEXTURE
@@ -87,7 +206,7 @@ function getSoftDotTexture() {
     for (let px = 0; px < size; px++) {
       const dx = (px - c) / c, dy = (py - c) / c;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      const t = Math.max(0, Math.min(1, (0.5 - dist) / (0.5 - 0.15)));
+      const t = Math.max(0, Math.min(1, (0.55 - dist) / (0.55 - 0.1)));
       const alpha = t * t * (3 - 2 * t);
       const idx = (py * size + px) * 4;
       d[idx] = 255; d[idx + 1] = 255; d[idx + 2] = 255;
@@ -100,23 +219,99 @@ function getSoftDotTexture() {
   return _softDotTex;
 }
 
-// ═══════════════════════════════════════════
-// SHARED GEOMETRY POOL (Icosahedron LOD)
-// ═══════════════════════════════════════════
-let _icoGeoLow = null;
-let _icoGeoMed = null;
-let _icoGeoHigh = null;
-function getIcoGeo(importance) {
-  if (importance >= 8) {
-    if (!_icoGeoHigh) _icoGeoHigh = new THREE.IcosahedronGeometry(1, 2);
-    return _icoGeoHigh;
+// ── Shared hitbox material for anchor/tag PlaneGeometry hitboxes (~50-100 total) ──
+let _sharedHitboxMat = null;
+function getHitboxMaterial() {
+  if (!_sharedHitboxMat) {
+    _sharedHitboxMat = new THREE.MeshBasicMaterial({
+      transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide,
+    });
   }
-  if (importance >= 5) {
-    if (!_icoGeoMed) _icoGeoMed = new THREE.IcosahedronGeometry(1, 1);
-    return _icoGeoMed;
-  }
-  if (!_icoGeoLow) _icoGeoLow = new THREE.IcosahedronGeometry(1, 0);
-  return _icoGeoLow;
+  return _sharedHitboxMat;
+}
+
+// ═══════════════════════════════════════════
+// INSTANCED SHADER MATERIALS
+// ═══════════════════════════════════════════
+
+function createWireInstanceMaterial() {
+  return new THREE.ShaderMaterial({
+    wireframe: false,
+    transparent: true,
+    depthWrite: true,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uTime: { value: 0.0 },
+    },
+    vertexShader: `
+      attribute vec3 instanceColor;
+      attribute float instanceOpacity;
+      varying vec3 vColor;
+      varying float vOpacity;
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      void main() {
+        vColor = instanceColor;
+        vOpacity = instanceOpacity;
+        vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        vNormal = normalize(normalMatrix * mat3(instanceMatrix) * normal);
+        vViewPos = mvPosition.xyz;
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      varying vec3 vColor;
+      varying float vOpacity;
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      void main() {
+        if (vOpacity < 0.003) discard;
+        // Fresnel rim glow — brighter at edges, subtler at center
+        float fresnel = 1.0 - abs(dot(normalize(vNormal), normalize(-vViewPos)));
+        fresnel = pow(fresnel, 1.5);
+        float rim = 0.7 + fresnel * 0.3;
+        // Subtle shimmer
+        float shimmer = 1.0 + sin(uTime * 1.5 + vViewPos.x * 0.1) * 0.05;
+        gl_FragColor = vec4(vColor * 2.5 * rim * shimmer, 1.0);
+      }
+    `,
+  });
+}
+
+function createGlowPointsMaterial() {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    uniforms: {
+      uTexture: { value: getSoftDotTexture() },
+    },
+    vertexShader: `
+      attribute vec3 glowColor;
+      attribute float glowOpacity;
+      attribute float glowSize;
+      varying vec3 vColor;
+      varying float vOpacity;
+      void main() {
+        vColor = glowColor;
+        vOpacity = glowOpacity;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = glowSize * (300.0 / -mvPosition.z);
+        gl_PointSize = clamp(gl_PointSize, 1.0, 128.0);
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D uTexture;
+      varying vec3 vColor;
+      varying float vOpacity;
+      void main() {
+        if (vOpacity < 0.003) discard;
+        vec4 texel = texture2D(uTexture, gl_PointCoord);
+        gl_FragColor = vec4(vColor * 2.5, texel.a * vOpacity * 2.5);
+      }
+    `,
+  });
 }
 
 // ═══════════════════════════════════════════
@@ -145,6 +340,170 @@ const _openclawLogo = new Image();
 _openclawLogo.src = '/openclaw-logo-text.png';
 let _openclawLogoReady = false;
 _openclawLogo.onload = () => { _openclawLogoReady = true; };
+
+// ═══════════════════════════════════════════
+// INSTANCED RENDERING — init + index management
+// ═══════════════════════════════════════════
+
+function initInstancedRendering() {
+  const scene = graph.scene();
+
+  // 3 InstancedMesh for wireframes (one per LOD tier)
+  const geoLow  = new THREE.IcosahedronGeometry(1, 0);
+  const geoMed  = new THREE.IcosahedronGeometry(1, 1);
+  const geoHigh = new THREE.IcosahedronGeometry(1, 2);
+
+  _wireInstLow  = new THREE.InstancedMesh(geoLow,  createWireInstanceMaterial(), _MAX_MEMORY_NODES);
+  _wireInstMed  = new THREE.InstancedMesh(geoMed,  createWireInstanceMaterial(), _MAX_MEMORY_NODES);
+  _wireInstHigh = new THREE.InstancedMesh(geoHigh, createWireInstanceMaterial(), _MAX_MEMORY_NODES);
+
+  for (const inst of [_wireInstLow, _wireInstMed, _wireInstHigh]) {
+    inst.count = 0;
+    inst.frustumCulled = false;
+
+    const colorAttr = new THREE.InstancedBufferAttribute(
+      new Float32Array(_MAX_MEMORY_NODES * 3), 3
+    );
+    colorAttr.setUsage(THREE.DynamicDrawUsage);
+    inst.geometry.setAttribute('instanceColor', colorAttr);
+
+    const opacityAttr = new THREE.InstancedBufferAttribute(
+      new Float32Array(_MAX_MEMORY_NODES), 1
+    );
+    opacityAttr.setUsage(THREE.DynamicDrawUsage);
+    inst.geometry.setAttribute('instanceOpacity', opacityAttr);
+
+    scene.add(inst);
+  }
+
+  // 1 Points mesh for glows
+  _glowPointsGeo = new THREE.BufferGeometry();
+
+  const posAttr = new THREE.BufferAttribute(new Float32Array(_MAX_MEMORY_NODES * 3), 3);
+  posAttr.setUsage(THREE.DynamicDrawUsage);
+  _glowPointsGeo.setAttribute('position', posAttr);
+
+  const glowColorAttr = new THREE.BufferAttribute(new Float32Array(_MAX_MEMORY_NODES * 3), 3);
+  glowColorAttr.setUsage(THREE.DynamicDrawUsage);
+  _glowPointsGeo.setAttribute('glowColor', glowColorAttr);
+
+  const glowOpAttr = new THREE.BufferAttribute(new Float32Array(_MAX_MEMORY_NODES), 1);
+  glowOpAttr.setUsage(THREE.DynamicDrawUsage);
+  _glowPointsGeo.setAttribute('glowOpacity', glowOpAttr);
+
+  const glowSizeAttr = new THREE.BufferAttribute(new Float32Array(_MAX_MEMORY_NODES), 1);
+  glowSizeAttr.setUsage(THREE.DynamicDrawUsage);
+  _glowPointsGeo.setAttribute('glowSize', glowSizeAttr);
+
+  _glowPointsGeo.setDrawRange(0, 0);
+
+  _glowPoints = new THREE.Points(_glowPointsGeo, createGlowPointsMaterial());
+  _glowPoints.frustumCulled = false;
+  scene.add(_glowPoints);
+}
+
+function rebuildInstanceMap() {
+  _nodeInstanceMap.clear();
+  _tierNodes[0].length = 0;
+  _tierNodes[1].length = 0;
+  _tierNodes[2].length = 0;
+  _glowNodeOrder.length = 0;
+
+  if (!graph) return;
+  const gd = graph.graphData();
+
+  // First pass: assign nodes to tiers (cap at effective limit to prevent buffer overflow)
+  const effectiveLimit = _nodeLimit > 0 ? Math.min(_nodeLimit, _MAX_MEMORY_NODES) : _MAX_MEMORY_NODES;
+  let memCount = 0;
+  for (let i = 0; i < gd.nodes.length; i++) {
+    const node = gd.nodes[i];
+    if (!node.payload || node.payload._isAnchor || node.payload._isTag) continue;
+    if (memCount >= effectiveLimit) break;
+
+    const importance = node.payload.importance || 5;
+    const tier = importance >= 8 ? 2 : importance >= 5 ? 1 : 0;
+
+    _tierNodes[tier].push(node);
+    _nodeInstanceMap.set(node.id, { tier, index: _tierNodes[tier].length - 1 });
+    memCount++;
+  }
+
+  // Build _glowNodeOrder in tier order (tier 0, then tier 1, then tier 2)
+  // so global indices match Phase 2's globalOffset mapping
+  for (let t = 0; t < 3; t++) {
+    for (let i = 0; i < _tierNodes[t].length; i++) {
+      _glowNodeOrder.push(_tierNodes[t][i]);
+    }
+  }
+
+  // Initialize animation state for each node (now in tier order)
+  for (let gi = 0; gi < _glowNodeOrder.length; gi++) {
+    const node = _glowNodeOrder[gi];
+    const importance = node.payload.importance || 5;
+    const color = catColor(node.payload.category);
+    const hex = new THREE.Color(color);
+    const mutedHex = hex.clone();
+    const radius = 6 + (importance - 1) * 0.8;
+    const baseOpacity = 0.75 + (importance - 1) * 0.03;
+
+    _nodeBaseOpacity[gi] = baseOpacity;
+    _nodeBaseColorR[gi] = mutedHex.r;
+    _nodeBaseColorG[gi] = mutedHex.g;
+    _nodeBaseColorB[gi] = mutedHex.b;
+    _nodeColorR[gi] = mutedHex.r;
+    _nodeColorG[gi] = mutedHex.g;
+    _nodeColorB[gi] = mutedHex.b;
+    _nodeOpacity[gi] = baseOpacity;
+    _nodeGlowOpacity[gi] = baseOpacity * 0.85;
+    _nodeScale[gi] = 1.0;
+    _nodeImportance[gi] = importance;
+    _nodeBaseRadius[gi] = radius;
+  }
+
+  _instancesDirty = true;
+
+  // Set instance counts
+  if (_wireInstLow)  _wireInstLow.count  = _tierNodes[0].length;
+  if (_wireInstMed)  _wireInstMed.count  = _tierNodes[1].length;
+  if (_wireInstHigh) _wireInstHigh.count = _tierNodes[2].length;
+
+  // Set glow draw range
+  if (_glowPointsGeo) _glowPointsGeo.setDrawRange(0, _glowNodeOrder.length);
+}
+
+// GFX preset resets — handle instanced memory nodes + individual anchor/tag nodes
+on('gfx:preset-applied', () => {
+  // Reset instanced memory node opacities to base values
+  for (let gi = 0; gi < _glowNodeOrder.length; gi++) {
+    _nodeOpacity[gi] = _nodeBaseOpacity[gi];
+    _nodeGlowOpacity[gi] = _nodeBaseOpacity[gi] * 0.85;
+  }
+  _instancesDirty = true;
+  // Reset individual anchor/tag nodes
+  for (const [, obj] of _anchorTagObjects) {
+    if (!obj || !obj.userData) continue;
+    const dot = obj.userData.dot;
+    if (dot && dot.material) {
+      dot.material.opacity = obj.userData.baseOpacity || 0.1;
+    }
+  }
+});
+
+// Node limit change — save to storage and rebuild
+on('search:apply', () => { _instancesDirty = true; });
+on('search:clear', () => { _instancesDirty = true; });
+on('categories-changed', () => { _instancesDirty = true; });
+
+on('node-limit-changed', (limit) => {
+  _nodeLimit = limit;
+  storage.setItem(_NODE_LIMIT_KEY, String(limit));
+  if (graph) {
+    rebuildInstanceMap();
+    _instancesDirty = true;
+    emit('graph:refresh');
+  }
+});
+
 
 // ═══════════════════════════════════════════
 // NODE CREATION — Anchor (parent category)
@@ -189,36 +548,60 @@ function createAnchorObject(node) {
   labelCtx.clearRect(0, 0, canvasW, canvasH);
 
   if (useLogo) {
-    labelCtx.globalAlpha = 0.85;
+    labelCtx.globalAlpha = 1.0;
     labelCtx.drawImage(logoImage, PAD, PAD, contentW, contentH);
     labelCtx.globalAlpha = 1.0;
   } else {
     labelCtx.font = '600 36px "Space Grotesk", "Inter", system-ui, sans-serif';
     labelCtx.textAlign = 'center';
     labelCtx.textBaseline = 'middle';
-    labelCtx.fillStyle = 'rgba(255,255,255,0.85)';
+    labelCtx.fillStyle = 'rgba(255,255,255,1.0)';
     labelCtx.fillText(parentName.toUpperCase(), canvasW / 2, canvasH / 2);
   }
 
   const labelTex = new THREE.CanvasTexture(labelCanvas);
-  const labelMat = new THREE.SpriteMaterial({
-    map: labelTex,
-    transparent: true,
-    opacity: 0.85,
-    depthWrite: false,
-  });
-  const label = new THREE.Sprite(labelMat);
+  labelTex.colorSpace = THREE.SRGBColorSpace;
+
+  // Billboard mesh with custom ShaderMaterial — bypasses SpriteMaterial pipeline entirely
   const SCALE = 0.2;
   const labelW = canvasW * SCALE;
   const labelH = canvasH * SCALE;
-  label.scale.set(labelW, labelH, 1);
+  const labelGeo = new THREE.PlaneGeometry(labelW, labelH);
+  const labelShaderMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    fog: false,
+    uniforms: {
+      uTexture: { value: labelTex },
+      uOpacity: { value: 1.0 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D uTexture;
+      uniform float uOpacity;
+      varying vec2 vUv;
+      void main() {
+        vec4 tex = texture2D(uTexture, vUv);
+        if (tex.a < 0.01) discard;
+        gl_FragColor = vec4(tex.rgb * 3.0, tex.a * uOpacity);
+      }
+    `,
+  });
+  const label = new THREE.Mesh(labelGeo, labelShaderMat);
+  label.renderOrder = 999;
   label.position.set(0, 0, 0.5);
   group.add(label);
 
-  // Flat plane hitbox
+  // Flat plane hitbox (shared material)
   const hitGeo = new THREE.PlaneGeometry(labelW, labelH);
-  const hitMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
-  const hitbox = new THREE.Mesh(hitGeo, hitMat);
+  const hitbox = new THREE.Mesh(hitGeo, getHitboxMaterial());
   hitbox.position.set(0, 0, 0.5);
   group.add(hitbox);
 
@@ -233,7 +616,7 @@ function createAnchorObject(node) {
   group.userData.category = parentName;
   group.userData.phase = parentName.length * 0.7;
   group.userData.importance = 10;
-  group.userData.baseOpacity = 0.8;
+  group.userData.baseOpacity = 1.0;
 
   group.userData._currentScale = 0.01;
   group.scale.setScalar(0.01);
@@ -257,9 +640,10 @@ function createTagObject(node) {
     map: getSoftDotTexture(),
     color: hex,
     transparent: true,
-    opacity: 0.35,
+    opacity: 1.0,
     blending: THREE.NormalBlending,
     depthWrite: false,
+    fog: false,
   });
   const dot = new THREE.Sprite(dotMat);
   dot.scale.set(dotSize, dotSize, 1);
@@ -289,21 +673,50 @@ function createTagObject(node) {
   labelCtx.fillText(catName, tagCanvasW / 2, tagCanvasH / 2);
 
   const labelTex = new THREE.CanvasTexture(labelCanvas);
-  const labelMat = new THREE.SpriteMaterial({ map: labelTex, transparent: true, opacity: 0.6, depthWrite: false });
-  const label = new THREE.Sprite(labelMat);
+  labelTex.colorSpace = THREE.SRGBColorSpace;
+
+  // Billboard mesh with custom ShaderMaterial — bypasses SpriteMaterial pipeline
   const TAG_SCALE = 0.15;
   const tagLabelW = tagCanvasW * TAG_SCALE;
   const tagLabelH = tagCanvasH * TAG_SCALE;
-  label.scale.set(tagLabelW, tagLabelH, 1);
+  const tagLabelGeo = new THREE.PlaneGeometry(tagLabelW, tagLabelH);
+  const tagLabelShaderMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    fog: false,
+    uniforms: {
+      uTexture: { value: labelTex },
+      uOpacity: { value: 1.0 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D uTexture;
+      uniform float uOpacity;
+      varying vec2 vUv;
+      void main() {
+        vec4 tex = texture2D(uTexture, vUv);
+        if (tex.a < 0.01) discard;
+        gl_FragColor = vec4(tex.rgb * 3.0, tex.a * uOpacity);
+      }
+    `,
+  });
+  const label = new THREE.Mesh(tagLabelGeo, tagLabelShaderMat);
+  label.renderOrder = 999;
   label.position.set(0, dotSize * 0.8, 0);
   group.add(label);
 
-  // Flat plane hitbox
+  // Flat plane hitbox (shared material)
   const hitW = Math.max(tagLabelW, dotSize);
   const hitH = tagLabelH + dotSize;
   const hitGeo = new THREE.PlaneGeometry(hitW, hitH);
-  const hitMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
-  const hitbox = new THREE.Mesh(hitGeo, hitMat);
+  const hitbox = new THREE.Mesh(hitGeo, getHitboxMaterial());
   hitbox.position.set(0, dotSize * 0.4, 0);
   group.add(hitbox);
 
@@ -318,72 +731,7 @@ function createTagObject(node) {
   group.userData.category = catName;
   group.userData.phase = catName.split('').reduce((a, c) => a + c.charCodeAt(0), 0) * 0.3;
   group.userData.importance = 8;
-  group.userData.baseOpacity = 0.6;
-
-  group.userData._currentScale = 0.01;
-  group.scale.setScalar(0.01);
-
-  return group;
-}
-
-// ═══════════════════════════════════════════
-// NODE CREATION — Memory (wireframe geodesic)
-// ═══════════════════════════════════════════
-function createNodeObject(node) {
-  if (node.payload && node.payload._isAnchor) return createAnchorObject(node);
-  if (node.payload && node.payload._isTag) return createTagObject(node);
-
-  const color = catColor(node.payload.category);
-  const importance = node.payload.importance || 5;
-  const hex = new THREE.Color(color);
-  const radius = 2 + (importance - 1) * 0.33;
-  const baseOpacity = 0.18 + (importance - 1) * 0.022;
-
-  const group = new THREE.Group();
-
-  // Wireframe geodesic sphere
-  const mutedHex = hex.clone().lerp(new THREE.Color(0.35, 0.35, 0.35), 0.35);
-  const wireMat = new THREE.MeshBasicMaterial({
-    color: mutedHex,
-    wireframe: true,
-    transparent: true,
-    opacity: baseOpacity,
-    depthWrite: false,
-  });
-  const wire = new THREE.Mesh(getIcoGeo(importance), wireMat);
-  wire.scale.setScalar(radius);
-  wire.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-  wire.raycast = () => {};
-  group.add(wire);
-
-  // Subtle inner core
-  const glowMat = new THREE.SpriteMaterial({
-    map: getSoftDotTexture(),
-    color: mutedHex,
-    transparent: true,
-    opacity: baseOpacity * 0.35,
-    blending: THREE.NormalBlending,
-    depthWrite: false,
-  });
-  const glow = new THREE.Sprite(glowMat);
-  glow.scale.set(radius * 0.9, radius * 0.9, 1);
-  glow.raycast = () => {};
-  group.add(glow);
-
-  // Hitbox
-  const hitboxGeo = new THREE.SphereGeometry(radius * 1.1, 6, 6);
-  const hitboxMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
-  group.add(new THREE.Mesh(hitboxGeo, hitboxMat));
-
-  group.userData.nodeId = node.id;
-  group.userData.dot = wire;
-  group.userData.glow = glow;
-  group.userData.baseRadius = radius;
-  group.userData.baseOpacity = baseOpacity;
-  group.userData.baseColor = mutedHex.clone();
-  group.userData.category = node.payload.category;
-  group.userData.phase = Math.random() * Math.PI * 2;
-  group.userData.importance = importance;
+  group.userData.baseOpacity = 1.0;
 
   group.userData._currentScale = 0.01;
   group.scale.setScalar(0.01);
@@ -404,6 +752,7 @@ function _initMouseTracking() {
     _mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     _mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     _mouse3DValid = true;
+    _mouseMoved = true;
   });
 
   // Wheel-during-drag: move node along camera→node line of sight.
@@ -439,7 +788,7 @@ function _initMouseTracking() {
     const oy = _dragDepthVec.y * clampedDelta;
     const oz = _dragDepthVec.z * clampedDelta;
 
-    // Accumulate for onNodeDrag (counteracts ForceGraph3D plane snap on next mousemove)
+    // Accumulate for drag (adds depth offset on next drag move)
     _drag.depthOffset.x += ox;
     _drag.depthOffset.y += oy;
     _drag.depthOffset.z += oz;
@@ -451,7 +800,8 @@ function _initMouseTracking() {
     node.y = (node.y || 0) + oy;
     node.z = (node.z || 0) + oz;
     node.fx = node.x; node.fy = node.y; node.fz = node.z;
-    if (node.__threeObj) node.__threeObj.position.set(node.x, node.y, node.z);
+    const nodeObj = _anchorTagObjects.get(node.id);
+    if (nodeObj) nodeObj.position.set(node.x, node.y, node.z);
 
     // Move rigid-body group
     for (const n of gd.nodes) {
@@ -461,12 +811,15 @@ function _initMouseTracking() {
         n.y = (n.y || 0) + oy;
         n.z = (n.z || 0) + oz;
         n.fx = n.x; n.fy = n.y; n.fz = n.z;
-        if (n.__threeObj) n.__threeObj.position.set(n.x, n.y, n.z);
+        const nObj = _anchorTagObjects.get(n.id);
+        if (nObj) nObj.position.set(n.x, n.y, n.z);
       }
     }
 
-    // Keep prevPos in sync
+    // Keep prevPos in sync + mark dirty
     _drag.prevPos = { x: node.x, y: node.y, z: node.z };
+    _linkPosDirty = true;
+    _instancesDirty = true;
   }, { capture: true, passive: false });
 }
 
@@ -605,10 +958,10 @@ function computeLayout(nodes) {
   }
 
   // 1. Anchors in a wide ring
-  const anchorRadius = anchors.length > 1 ? 200 + anchors.length * 60 : 0;
-  const ANCHOR_Y = 200;
-  const TAG_Y = ANCHOR_Y - 120;
-  const SPHERE_GAP = 40;
+  const anchorRadius = anchors.length > 1 ? 500 + anchors.length * 150 : 0;
+  const ANCHOR_Y = 400;
+  const TAG_Y = ANCHOR_Y - 180;
+  const SPHERE_GAP = 120;
 
   anchors.forEach((anchor, i) => {
     const angle = (i / anchors.length) * Math.PI * 2 - Math.PI / 2;
@@ -626,7 +979,7 @@ function computeLayout(nodes) {
     const directMems = memories.filter(m => m.payload.category === cat && !placed.has(m.id));
 
     if (childTags.length) {
-      const tagRingRadius = Math.max(120, childTags.length * 65);
+      const tagRingRadius = Math.max(280, childTags.length * 120);
 
       childTags.forEach((tag, i) => {
         const angle = (i / childTags.length) * Math.PI * 2;
@@ -639,7 +992,7 @@ function computeLayout(nodes) {
         const tagCat = tag.payload._tagCategory;
         const tagMems = memories.filter(m => m.payload.category === tagCat && !placed.has(m.id));
         if (tagMems.length) {
-          const r = 25 + Math.sqrt(tagMems.length) * 8;
+          const r = 70 + Math.sqrt(tagMems.length) * 14;
           const sphereCenter = { x: tag.x, y: tag.y - r - SPHERE_GAP, z: tag.z };
           const positions = fibSphere(tagMems.length, r, sphereCenter);
           tagMems.forEach((mem, j) => {
@@ -655,7 +1008,7 @@ function computeLayout(nodes) {
 
     // Direct-parent memories
     if (directMems.length) {
-      const r = 25 + Math.sqrt(directMems.length) * 8;
+      const r = 70 + Math.sqrt(directMems.length) * 14;
       const sphereCenter = { x: anchor.x, y: TAG_Y - r - SPHERE_GAP, z: anchor.z };
       const positions = fibSphere(directMems.length, r, sphereCenter);
       directMems.forEach((mem, i) => {
@@ -678,14 +1031,14 @@ function computeLayout(nodes) {
       catGroups[c].push(m);
     });
     const groupNames = Object.keys(catGroups);
-    const orphanBase = anchorRadius + 150;
+    const orphanBase = anchorRadius + 250;
 
     groupNames.forEach((c, gi) => {
       const angle = (gi / Math.max(groupNames.length, 1)) * Math.PI * 2;
       const cx = Math.cos(angle) * orphanBase;
       const cz = Math.sin(angle) * orphanBase;
       const mems = catGroups[c];
-      const r = 25 + Math.sqrt(mems.length) * 8;
+      const r = 70 + Math.sqrt(mems.length) * 14;
       const positions = fibSphere(mems.length, r, { x: cx, y: 0, z: cz });
 
       mems.forEach((mem, i) => {
@@ -836,7 +1189,59 @@ export function applyGraphData() {
   }
 
   graph.graphData({ nodes: visibleNodes, links: visibleLinks });
+
+  // ── Sync anchor/tag Three.js objects with scene ──
+  const currentIds = new Set(visibleNodes.map(n => n.id));
+
+  // Remove objects for nodes no longer present
+  for (const [id, obj] of _anchorTagObjects) {
+    if (!currentIds.has(id)) {
+      _scene.remove(obj);
+      // Dispose textures from sprites
+      obj.traverse(child => {
+        if (child.material) {
+          if (child.material.map) child.material.map.dispose();
+          child.material.dispose();
+        }
+        if (child.geometry) child.geometry.dispose();
+      });
+      _anchorTagObjects.delete(id);
+    }
+  }
+
+  // Add/update anchor/tag objects
+  for (const n of visibleNodes) {
+    if (!n.payload || (!n.payload._isAnchor && !n.payload._isTag)) continue;
+
+    const existing = _anchorTagObjects.get(n.id);
+    if (existing) {
+      // Already exists — update position
+      existing.position.set(n.x || 0, n.y || 0, n.z || 0);
+      n.__threeObj = existing; // keep compat for animate loop
+      continue;
+    }
+
+    // Create new anchor/tag Three.js object
+    let obj;
+    if (n.payload._isAnchor) obj = createAnchorObject(n);
+    else if (n.payload._isTag) obj = createTagObject(n);
+
+    if (obj) {
+      obj.position.set(n.x || 0, n.y || 0, n.z || 0);
+      _scene.add(obj);
+      _anchorTagObjects.set(n.id, obj);
+      n.__threeObj = obj; // compat for animate loop
+    }
+  }
+
+  // Rebuild flat array for fast iteration in animate()
+  _anchorTagArray = Array.from(_anchorTagObjects.values());
+
+  // Rebuild instance mapping for instanced memory node rendering
+  rebuildInstanceMap();
+
   _linkBatchDirty = true;
+  _linkPosDirty = true;
 
   // Pin any unpositioned nodes
   for (const n of visibleNodes) {
@@ -851,16 +1256,37 @@ export function applyGraphData() {
 // ═══════════════════════════════════════════
 export function applyLinkVisibility() {
   _linkBatchDirty = true;
+  _linkPosDirty = true;
 }
 
-export function setLinkMode(mode) {
+let _linksFetching = false;
+export async function setLinkMode(mode) {
   state.linkMode = mode;
   if (mode === 'off') {
     noLinksScaleBoost = 1.4;
-  } else {
-    noLinksScaleBoost = 1.0;
-    applyGraphData();
+    applyLinkVisibility();
+    return;
   }
+
+  noLinksScaleBoost = 1.0;
+
+  // Lazy-load links from server on first enable
+  if (state.allLinks.length === 0 && !_linksFetching) {
+    _linksFetching = true;
+    try {
+      const data = await fetchLinks();
+      if (data.links) {
+        state.allLinks = data.links;
+        emit('stats-changed');
+      }
+    } catch (err) {
+      console.error('Failed to fetch links:', err);
+    } finally {
+      _linksFetching = false;
+    }
+  }
+
+  applyGraphData();
   applyLinkVisibility();
 }
 
@@ -874,6 +1300,7 @@ export function setLinkTypeFilter(filter) {
 // ═══════════════════════════════════════════
 export function scheduleGraphRemoval(delay = 600) {
   _linkBatchDirty = true;
+  _linkPosDirty = true;
   if (graphRemovalTimer) clearTimeout(graphRemovalTimer);
   graphRemovalTimer = setTimeout(() => {
     graphRemovalTimer = null;
@@ -900,6 +1327,223 @@ function _initUIGuards() {
   });
 }
 
+// ═══════════════════════════════════════════
+// CUSTOM POINTER EVENTS + RAYCASTING
+// Replaces ForceGraph3D's onNodeHover/Click/Drag
+// ═══════════════════════════════════════════
+
+function _raycastMemoryNodes(ray) {
+  // O(N) ray-sphere intersection against memory node positions.
+  // No scene graph objects — pure math. Returns { node, dist } or null.
+  let bestDist = Infinity;
+  let bestNode = null;
+  const ox = ray.origin.x, oy = ray.origin.y, oz = ray.origin.z;
+  const dx = ray.direction.x, dy = ray.direction.y, dz = ray.direction.z;
+
+  for (let gi = 0, len = _glowNodeOrder.length; gi < len; gi++) {
+    if (_nodeScale[gi] <= 0.01) continue; // hidden
+    const node = _glowNodeOrder[gi];
+    const radius = _nodeBaseRadius[gi] * _nodeScale[gi] * 1.2; // 1.2 = hit margin
+    const cx = node.x || 0, cy = node.y || 0, cz = node.z || 0;
+
+    // Ray-sphere intersection (algebraic form)
+    const ecx = ox - cx, ecy = oy - cy, ecz = oz - cz;
+    const b = ecx * dx + ecy * dy + ecz * dz;
+    const c = ecx * ecx + ecy * ecy + ecz * ecz - radius * radius;
+    const disc = b * b - c;
+    if (disc < 0) continue;
+    const dist = -b - Math.sqrt(disc);
+    if (dist < 0 || dist >= bestDist) continue;
+    bestDist = dist;
+    bestNode = node;
+  }
+  return bestNode ? { node: bestNode, dist: bestDist } : null;
+}
+
+function _pickNode(mouseNDC) {
+  // Two-pass picking: anchor/tag objects first (standard Three.js), then memory nodes (ray-sphere)
+  _raycaster.setFromCamera(mouseNDC, _camera);
+  const ray = _raycaster.ray;
+
+  // Pass 1: anchor/tag objects (~50-100 Three.js Groups with PlaneGeometry hitboxes)
+  if (_anchorTagArray.length > 0) {
+    const hits = _raycaster.intersectObjects(_anchorTagArray, true);
+    if (hits.length > 0) {
+      let obj = hits[0].object;
+      while (obj && !obj.userData.nodeId) obj = obj.parent;
+      if (obj && obj.userData.nodeId) {
+        const node = _nodeById.get(obj.userData.nodeId);
+        if (node) return { node, dist: hits[0].distance };
+      }
+    }
+  }
+
+  // Pass 2: memory nodes (ray-sphere math — no scene objects)
+  return _raycastMemoryNodes(ray);
+}
+
+let _prevHoveredNode = null;
+
+function _onPointerMove(e) {
+  if (_pointerOverUI) return;
+
+  const rect = _graphContainer
+    ? _graphContainer.getBoundingClientRect()
+    : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  _mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  _mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+  if (_drag.active) {
+    _handleDragMove(e);
+    return;
+  }
+
+  // Hover detection
+  const hit = _pickNode(_mouse);
+  const hoveredNode = hit ? hit.node : null;
+  if (hoveredNode !== _prevHoveredNode) {
+    handleNodeHover(hoveredNode, _prevHoveredNode);
+    _prevHoveredNode = hoveredNode;
+  }
+}
+
+function _onPointerDown(e) {
+  if (e.button !== 0 || _pointerOverUI) return;
+  _pointerDownPos = { x: e.clientX, y: e.clientY };
+  _pointerDownTime = performance.now();
+
+  const hit = _pickNode(_mouse);
+  _pointerDownNode = hit ? hit.node : null;
+
+  if (_pointerDownNode) {
+    _startDrag(_pointerDownNode, e);
+  }
+}
+
+function _onPointerUp(e) {
+  if (e.button !== 0) return;
+
+  if (_drag.active) {
+    const wasDrag = _pointerDownPos
+      ? Math.sqrt(
+          (e.clientX - _pointerDownPos.x) ** 2 +
+          (e.clientY - _pointerDownPos.y) ** 2
+        ) >= 5
+      : true;
+
+    _endDrag();
+
+    // If pointer barely moved, treat as click on the originally picked node
+    if (!wasDrag && _pointerDownNode) {
+      handleNodeClick(_pointerDownNode, e);
+    }
+    _pointerDownPos = null;
+    _pointerDownNode = null;
+    return;
+  }
+
+  if (!_pointerDownPos) return;
+  const dx = e.clientX - _pointerDownPos.x;
+  const dy = e.clientY - _pointerDownPos.y;
+  const dt = performance.now() - _pointerDownTime;
+  const isClick = Math.sqrt(dx * dx + dy * dy) < 5 && dt < 500;
+
+  if (isClick) {
+    const hit = _pickNode(_mouse);
+    if (hit) {
+      handleNodeClick(hit.node, e);
+    } else {
+      handleBackgroundClick();
+    }
+  }
+  _pointerDownPos = null;
+  _pointerDownNode = null;
+}
+
+function _startDrag(node, e) {
+  // Drag plane: perpendicular to camera, passing through node position
+  const nodePos = _dragHit.set(node.x || 0, node.y || 0, node.z || 0);
+  const camDir = _camera.getWorldDirection(_mouseDir);
+  _dragPlane.setFromNormalAndCoplanarPoint(camDir, nodePos);
+
+  const { type, dragSet } = _buildDragSet(node, _graphNodes);
+  _drag.active = true;
+  _drag.node = node;
+  _drag.type = type;
+  _drag.dragSet = dragSet;
+  _drag.depthOffset.set(0, 0, 0);
+  _drag.prevPos = { x: node.x || 0, y: node.y || 0, z: node.z || 0 };
+  _instancesDirty = true;
+  document.body.style.cursor = 'grabbing';
+  _controls.enabled = false; // Disable orbit during drag
+}
+
+function _handleDragMove(e) {
+  if (!_drag.active || !_drag.node) return;
+
+  _raycaster.setFromCamera(_mouse, _camera);
+  if (!_raycaster.ray.intersectPlane(_dragPlane, _dragHit)) return;
+
+  const newX = _dragHit.x + _drag.depthOffset.x;
+  const newY = _dragHit.y + _drag.depthOffset.y;
+  const newZ = _dragHit.z + _drag.depthOffset.z;
+  const node = _drag.node;
+
+  if (_drag.prevPos) {
+    const ddx = newX - _drag.prevPos.x;
+    const ddy = newY - _drag.prevPos.y;
+    const ddz = newZ - _drag.prevPos.z;
+
+    if (ddx !== 0 || ddy !== 0 || ddz !== 0) {
+      for (let i = 0, len = _graphNodes.length; i < len; i++) {
+        const n = _graphNodes[i];
+        if (n === node || !_drag.dragSet.has(n.id)) continue;
+        n.x = (n.x || 0) + ddx;
+        n.y = (n.y || 0) + ddy;
+        n.z = (n.z || 0) + ddz;
+        n.fx = n.x; n.fy = n.y; n.fz = n.z;
+        // Move anchor/tag Three.js object if exists
+        const obj = _anchorTagObjects.get(n.id);
+        if (obj) obj.position.set(n.x, n.y, n.z);
+      }
+    }
+  }
+
+  node.x = newX; node.y = newY; node.z = newZ;
+  node.fx = node.x; node.fy = node.y; node.fz = node.z;
+  const nodeObj = _anchorTagObjects.get(node.id);
+  if (nodeObj) nodeObj.position.set(node.x, node.y, node.z);
+
+  _drag.prevPos = { x: newX, y: newY, z: newZ };
+  _linkPosDirty = true;
+  _instancesDirty = true;
+}
+
+function _endDrag() {
+  if (!_drag.active) return;
+  const node = _drag.node;
+  if (node) { node.fx = node.x; node.fy = node.y; node.fz = node.z; }
+  document.body.style.cursor = state.hoveredNodeId ? 'grab' : 'default';
+  _drag.active = false;
+  _drag.node = null;
+  _drag.type = null;
+  _drag.dragSet = new Set();
+  _drag.prevPos = null;
+  _drag.depthOffset.set(0, 0, 0);
+  _controls.enabled = true; // Re-enable orbit
+  _linkPosDirty = true;
+  _instancesDirty = true;
+  schedulePositionSave();
+}
+
+function _initPointerEvents(canvas) {
+  canvas.addEventListener('pointermove', _onPointerMove);
+  canvas.addEventListener('pointerdown', _onPointerDown);
+  canvas.addEventListener('pointerup', _onPointerUp);
+}
+
+// ═══════════════════════════════════════════
+
 function handleNodeHover(node, prevNode) {
   const $tooltip = document.getElementById('tooltip');
   if (_pointerOverUI) {
@@ -916,6 +1560,7 @@ function handleNodeHover(node, prevNode) {
     document.body.style.cursor = node ? 'grab' : 'default';
   }
   state.hoveredNodeId = node ? node.id : null;
+  _instancesDirty = true;
 
   if (node) {
     const cat = node.payload.category;
@@ -1034,6 +1679,7 @@ function handleNodeClick(node, event) {
     } else {
       state.multiSelected.add(node.id);
     }
+    _instancesDirty = true;
     emit('multiselect:update');
     return;
   }
@@ -1041,6 +1687,7 @@ function handleNodeClick(node, event) {
   // Regular click: clear multi-select, navigate
   if (state.multiSelected.size > 0) {
     state.multiSelected.clear();
+    _instancesDirty = true;
     emit('multiselect:update');
   }
   navigateToNode(node);
@@ -1050,6 +1697,7 @@ export function navigateToNode(node, { zoom = 'close' } = {}) {
   if (!node) return;
   if (node.payload && (node.payload._isAnchor || node.payload._isTag)) return;
   state.selectedNodeId = node.id;
+  _instancesDirty = true;
   storage.setItem(KEYS.SELECTED_NODE, node.id);
 
   // Ensure category is visible
@@ -1081,6 +1729,142 @@ function handleBackgroundClick() {
 }
 
 // ═══════════════════════════════════════════
+// INSTANCED MEMORY NODES — static, dirty-flag
+// ═══════════════════════════════════════════
+
+function _updateMemoryNodesInstanced() {
+  const nodeCount = _glowNodeOrder.length;
+  if (nodeCount === 0) return;
+  if (!_instancesDirty) return;
+  _instancesDirty = false;
+
+  // Phase 1: compute final state directly (no animation, no lerp)
+  for (let gi = 0; gi < nodeCount; gi++) {
+    const node = _glowNodeOrder[gi];
+    const nodeId = node.id;
+
+    const isHovered = nodeId === state.hoveredNodeId;
+    const isSelected = nodeId === state.selectedNodeId;
+    const isDragMember = _drag.active && _drag.dragSet.has(nodeId);
+    const isMultiSelected = state.multiSelected.has(nodeId);
+    const isCatHidden = !state.activeCategories.has(node.payload.category);
+    const isSearchMatch = state.searchResults !== null && state.searchResults.has(nodeId);
+    const isSearchMiss = state.searchResults !== null && !isSearchMatch;
+
+    // Opacity — direct target, no interpolation
+    let opacity = _nodeBaseOpacity[gi];
+    if (isSearchMatch) opacity = 0.85;
+    else if (isSearchMiss) opacity = 0;
+    if (isCatHidden) opacity = 0;
+    if (_drag.active && !isCatHidden) {
+      if (isDragMember) opacity = Math.max(opacity, 0.6);
+      else opacity *= 0.35;
+    }
+    if (isHovered) opacity = 0.75;
+    if (isSelected) opacity = 0.85;
+    if (isMultiSelected) opacity = 0.7;
+    _nodeOpacity[gi] = opacity;
+
+    // Glow opacity
+    const glowMult = isSearchMatch ? 0.95 : 0.85;
+    _nodeGlowOpacity[gi] = opacity * glowMult;
+
+    // Color — direct set, no interpolation
+    if (isMultiSelected) {
+      _nodeColorR[gi] = _MULTI_SELECT_BLUE.r;
+      _nodeColorG[gi] = _MULTI_SELECT_BLUE.g;
+      _nodeColorB[gi] = _MULTI_SELECT_BLUE.b;
+    } else {
+      _nodeColorR[gi] = _nodeBaseColorR[gi];
+      _nodeColorG[gi] = _nodeBaseColorG[gi];
+      _nodeColorB[gi] = _nodeBaseColorB[gi];
+    }
+
+    // Scale — direct target, no interpolation
+    let scale = 1.0;
+    if (isCatHidden || isSearchMiss) scale = 0;
+    else if (isSearchMatch) scale = 1.8;
+    if (isSelected) scale = 2.0;
+    else if (isMultiSelected) scale = 1.5;
+    else if (isHovered) scale = 1.6;
+    scale *= noLinksScaleBoost;
+    _nodeScale[gi] = scale;
+
+    // Memory nodes have no Three.js object — raycasting uses _nodeScale[] directly
+  }
+
+  // Phase 2: compose instance matrices and upload GPU attributes
+  const tiers = [_wireInstLow, _wireInstMed, _wireInstHigh];
+  let globalOffset = 0;
+
+  for (let t = 0; t < 3; t++) {
+    const inst = tiers[t];
+    const tierLen = _tierNodes[t].length;
+    if (!inst || tierLen === 0) { globalOffset += tierLen; continue; }
+
+    const colorArr = inst.geometry.attributes.instanceColor.array;
+    const opacityArr = inst.geometry.attributes.instanceOpacity.array;
+
+    for (let i = 0; i < tierLen; i++) {
+      const gi = globalOffset + i;
+      const node = _tierNodes[t][i];
+      const scale = _nodeScale[gi] * _nodeBaseRadius[gi];
+
+      // Compose matrix: position + uniform scale (no rotation)
+      _instPos.set(node.x || 0, node.y || 0, node.z || 0);
+      _instScaleV.set(scale, scale, scale);
+      _instMatrix.compose(_instPos, _identityQuat, _instScaleV);
+      inst.setMatrixAt(i, _instMatrix);
+
+      // Color
+      const ci3 = i * 3;
+      colorArr[ci3]     = _nodeColorR[gi];
+      colorArr[ci3 + 1] = _nodeColorG[gi];
+      colorArr[ci3 + 2] = _nodeColorB[gi];
+
+      // Opacity
+      opacityArr[i] = _nodeOpacity[gi];
+    }
+
+    inst.instanceMatrix.needsUpdate = true;
+    inst.geometry.attributes.instanceColor.needsUpdate = true;
+    inst.geometry.attributes.instanceOpacity.needsUpdate = true;
+
+    globalOffset += tierLen;
+  }
+
+  // Glow Points: write position + color + opacity + size
+  if (_glowPoints && nodeCount > 0) {
+    const posArr = _glowPointsGeo.attributes.position.array;
+    const colArr = _glowPointsGeo.attributes.glowColor.array;
+    const opArr  = _glowPointsGeo.attributes.glowOpacity.array;
+    const sizeArr = _glowPointsGeo.attributes.glowSize.array;
+
+    for (let gi = 0; gi < nodeCount; gi++) {
+      const node = _glowNodeOrder[gi];
+      const gi3 = gi * 3;
+
+      posArr[gi3]     = node.x || 0;
+      posArr[gi3 + 1] = node.y || 0;
+      posArr[gi3 + 2] = node.z || 0;
+
+      colArr[gi3]     = _nodeColorR[gi];
+      colArr[gi3 + 1] = _nodeColorG[gi];
+      colArr[gi3 + 2] = _nodeColorB[gi];
+
+      opArr[gi] = _nodeGlowOpacity[gi];
+      sizeArr[gi] = _nodeBaseRadius[gi] * _nodeScale[gi] * 1.4;
+    }
+
+    _glowPointsGeo.attributes.position.needsUpdate = true;
+    _glowPointsGeo.attributes.glowColor.needsUpdate = true;
+    _glowPointsGeo.attributes.glowOpacity.needsUpdate = true;
+    _glowPointsGeo.attributes.glowSize.needsUpdate = true;
+  }
+}
+
+
+// ═══════════════════════════════════════════
 // ANIMATION LOOP
 // ═══════════════════════════════════════════
 function animate() {
@@ -1089,19 +1873,26 @@ function animate() {
 
   TWEEN.update();
 
+  // Update wireframe orb shader time uniform (Fresnel shimmer)
+  if (_wireInstLow)  _wireInstLow.material.uniforms.uTime.value = time;
+  if (_wireInstMed)  _wireInstMed.material.uniforms.uTime.value = time;
+  if (_wireInstHigh) _wireInstHigh.material.uniforms.uTime.value = time;
+
   // WASD camera movement — delegated to camera module via event
   emit('camera-tick');
 
-  // Update 3D mouse position via raycasting
-  updateMouse3D();
+  // Update 3D mouse position via raycasting (skip when mouse hasn't moved)
+  if (_mouseMoved) {
+    updateMouse3D();
+    _mouseMoved = false;
+  }
 
   // Floor effect uniforms (updated by background module listening to 'animate-tick')
   emit('animate-tick', { time, graph });
 
-  // ── Node pass — iterate graph nodes directly ──
+  // ── Node pass ──
   if (graph) {
-    const gd = graph.graphData();
-    const _cam = graph.camera();
+    const _cam = _camera;
 
     // Build frustum once per frame
     _cam.updateMatrixWorld();
@@ -1110,8 +1901,9 @@ function animate() {
     _frustumPadded.copy(_frustum);
     for (let _pi = 0; _pi < 6; _pi++) _frustumPadded.planes[_pi].constant += 60;
 
-    for (let _ni = 0, _nlen = gd.nodes.length; _ni < _nlen; _ni++) {
-      const obj = gd.nodes[_ni].__threeObj;
+    // ── Pass 1: Anchor/Tag nodes only (~50-100 objects, not 3500) ──
+    for (let _ni = 0, _nlen = _anchorTagArray.length; _ni < _nlen; _ni++) {
+      const obj = _anchorTagArray[_ni];
       if (!obj || !obj.userData || !obj.userData.nodeId) continue;
 
       const dot = obj.userData.dot;
@@ -1132,15 +1924,27 @@ function animate() {
         _cullZone = 0;
       }
 
-      // Zone 2: fully outside — decay to invisible
+      // Zone 2: fully outside — decay to invisible, then skip entirely
       if (_cullZone === 2) {
+        // Already fully faded — skip all work
+        if (obj.userData._currentScale <= 0.01) {
+          const dotOp = dot ? dot.material.opacity : 0;
+          const labelOp = label ? (label.material.uniforms ? label.material.uniforms.uOpacity.value : label.material.opacity) : 0;
+          const glowOp = obj.userData.glow ? obj.userData.glow.material.opacity : 0;
+          if (dotOp === 0 && labelOp === 0 && glowOp === 0) continue;
+        }
         if (dot) {
           dot.material.opacity *= 0.85;
           if (dot.material.opacity < 0.005) dot.material.opacity = 0;
         }
         if (label) {
-          label.material.opacity *= 0.85;
-          if (label.material.opacity < 0.005) label.material.opacity = 0;
+          if (label.material.uniforms) {
+            label.material.uniforms.uOpacity.value *= 0.85;
+            if (label.material.uniforms.uOpacity.value < 0.005) label.material.uniforms.uOpacity.value = 0;
+          } else {
+            label.material.opacity *= 0.85;
+            if (label.material.opacity < 0.005) label.material.opacity = 0;
+          }
         }
         const _glowCull = obj.userData.glow;
         if (_glowCull) {
@@ -1168,7 +1972,7 @@ function animate() {
       if (obj.userData.isAnchor) {
         const baseOp = obj.userData.baseOpacity;
         let dotTarget = baseOp + mouseProx * 0.2;
-        let labelTarget = 0.85;
+        let labelTarget = 1.0;
         if (!state.labelsVisible) labelTarget = 0;
         if (isCatHidden) { dotTarget = 0; labelTarget = 0; }
         else if (state.searchResults !== null && !state.searchResults.has(obj.userData.nodeId)) {
@@ -1180,11 +1984,19 @@ function animate() {
         }
         if (isHovered) { dotTarget = 1.0; labelTarget = 1.0; }
         if (isSelected) dotTarget = 1.0;
-        if (_cullZone === 1) { dotTarget *= 0.3; labelTarget *= 0.3; }
+        if (_cullZone === 1) { dotTarget *= 0.5; }
 
         const fade = isCatHidden ? 0.15 : 0.1;
         if (dot) dot.material.opacity += (dotTarget * breathe - dot.material.opacity) * fade;
-        if (label) label.material.opacity += (labelTarget - label.material.opacity) * fade;
+        if (label) {
+          if (label.material.uniforms) {
+            label.material.uniforms.uOpacity.value += (labelTarget - label.material.uniforms.uOpacity.value) * fade;
+          } else {
+            label.material.opacity += (labelTarget - label.material.opacity) * fade;
+          }
+          // Billboard: face camera
+          label.quaternion.copy(_cam.quaternion);
+        }
 
         if (label && obj.userData.baseLabelScale) {
           const camDist = _cam.position.distanceTo(_worldPos);
@@ -1205,7 +2017,7 @@ function animate() {
       if (obj.userData.isTag) {
         const baseOp = obj.userData.baseOpacity;
         let dotTarget = baseOp + mouseProx * 0.3;
-        let labelTarget = 0.6;
+        let labelTarget = 1.0;
         if (!state.labelsVisible) labelTarget = 0;
 
         if (isCatHidden) { dotTarget = 0; labelTarget = 0; }
@@ -1214,15 +2026,23 @@ function animate() {
         }
         if (_drag.active && !isCatHidden) {
           if (_drag.dragSet.has(obj.userData.nodeId)) dotTarget = Math.max(dotTarget, 0.8);
-          else { dotTarget *= 0.4; labelTarget *= 0.3; }
+          else { dotTarget *= 0.4; labelTarget *= 0.5; }
         }
-        if (isHovered) { dotTarget = 0.9; labelTarget = 0.9; }
+        if (isHovered) { dotTarget = 1.0; labelTarget = 1.0; }
         if (isSelected) dotTarget = 1.0;
-        if (_cullZone === 1) { dotTarget *= 0.3; labelTarget *= 0.3; }
+        if (_cullZone === 1) { dotTarget *= 0.5; }
 
         const fade = isCatHidden ? 0.15 : 0.1;
         if (dot) dot.material.opacity += (dotTarget * breathe - dot.material.opacity) * fade;
-        if (label) label.material.opacity += (labelTarget - label.material.opacity) * fade;
+        if (label) {
+          if (label.material.uniforms) {
+            label.material.uniforms.uOpacity.value += (labelTarget - label.material.uniforms.uOpacity.value) * fade;
+          } else {
+            label.material.opacity += (labelTarget - label.material.opacity) * fade;
+          }
+          // Billboard: face camera
+          label.quaternion.copy(_cam.quaternion);
+        }
 
         if (label && obj.userData.baseLabelScale) {
           const camDist = _cam.position.distanceTo(_worldPos);
@@ -1240,62 +2060,10 @@ function animate() {
         continue;
       }
 
-      // ── Memory nodes — wireframe geodesic ──
-      if (!dot) continue;
-
-      const baseOp = obj.userData.baseOpacity;
-      let dotTarget = baseOp + mouseProx * 0.15;
-      const isSearchMatch = state.searchResults !== null && state.searchResults.has(obj.userData.nodeId);
-      const isSearchMiss = state.searchResults !== null && !isSearchMatch;
-
-      if (isSearchMatch) dotTarget = 0.85;
-      else if (isSearchMiss) dotTarget = 0;
-      if (isCatHidden) dotTarget = 0;
-      if (_drag.active && !isCatHidden) {
-        if (_drag.dragSet.has(obj.userData.nodeId)) dotTarget = Math.max(dotTarget, 0.35);
-        else dotTarget *= 0.35;
-      }
-      if (isHovered) dotTarget = 0.45;
-      if (isSelected) dotTarget = 0.55 + 0.05 * Math.sin(time * 2.5);
-      if (isMultiSelected) dotTarget = 0.5;
-      if (_cullZone === 1) dotTarget *= 0.3;
-
-      const fadeSpeed = isCatHidden ? 0.18 : 0.12;
-      dot.material.opacity += (dotTarget * breathe - dot.material.opacity) * fadeSpeed;
-
-      const glowSprite = obj.userData.glow;
-      if (glowSprite) {
-        const glowMult = isSearchMatch ? 0.6 : 0.3;
-        glowSprite.material.opacity += (dotTarget * glowMult * breathe - glowSprite.material.opacity) * fadeSpeed;
-      }
-
-      // Multi-select color tint
-      if (isMultiSelected) {
-        dot.material.color.lerp(_MULTI_SELECT_BLUE, 0.15);
-        if (glowSprite) glowSprite.material.color.lerp(_MULTI_SELECT_BLUE, 0.15);
-      } else if (obj.userData.baseColor) {
-        dot.material.color.lerp(obj.userData.baseColor, 0.1);
-        if (glowSprite) glowSprite.material.color.lerp(obj.userData.baseColor, 0.1);
-      }
-
-      // Slow rotation
-      const rotSpeed = 0.15 + (obj.userData.importance || 5) * 0.02;
-      dot.rotation.y += rotSpeed * 0.016;
-      dot.rotation.x += rotSpeed * 0.008;
-
-      // Scale — search matches get boosted
-      let scaleMultiplier = 1 + mouseProx * 0.3;
-      if (isCatHidden) scaleMultiplier = 0;
-      else if (isSearchMiss) scaleMultiplier = 0;
-      else if (isSearchMatch) scaleMultiplier = 1.8;
-      if (isSelected) scaleMultiplier = 2.0;
-      else if (isMultiSelected) scaleMultiplier = 1.5;
-      else if (isHovered) scaleMultiplier = 1.6;
-      const targetScale = breathe * scaleMultiplier * noLinksScaleBoost;
-      if (obj.userData._currentScale == null) obj.userData._currentScale = 0.01;
-      obj.userData._currentScale += (targetScale - obj.userData._currentScale) * 0.12;
-      obj.scale.setScalar(obj.userData._currentScale);
     }
+
+    // ── Pass 2: Memory nodes (instanced rendering) ──
+    _updateMemoryNodesInstanced();
 
     // ── LINK BATCH — single draw call ──
     if (_linkBatch) {
@@ -1349,28 +2117,39 @@ function animate() {
         _linkBatchDirty = false;
       }
 
-      // Update positions every frame
-      const bl = _batchLinks;
-      const blen = bl.length;
-      if (blen > 0) {
-        const pos = _linkBatchPositions;
-        let pi = 0;
-        for (let i = 0; i < blen; i++) {
-          const s = bl[i]._srcNode, t = bl[i]._tgtNode;
-          pos[pi] = s.x; pos[pi + 1] = s.y; pos[pi + 2] = s.z;
-          pos[pi + 3] = t.x; pos[pi + 4] = t.y; pos[pi + 5] = t.z;
-          pi += 6;
+      // Update positions only when nodes have moved (drag, layout change)
+      if (_linkPosDirty) {
+        const bl = _batchLinks;
+        const blen = bl.length;
+        if (blen > 0) {
+          const pos = _linkBatchPositions;
+          let pi = 0;
+          for (let i = 0; i < blen; i++) {
+            const s = bl[i]._srcNode, t = bl[i]._tgtNode;
+            pos[pi] = s.x; pos[pi + 1] = s.y; pos[pi + 2] = s.z;
+            pos[pi + 3] = t.x; pos[pi + 4] = t.y; pos[pi + 5] = t.z;
+            pi += 6;
+          }
+          _linkBatchGeo.attributes.position.needsUpdate = true;
+          _linkBatchGeo.setDrawRange(0, blen * 2);
+        } else {
+          _linkBatchGeo.setDrawRange(0, 0);
         }
-        _linkBatchGeo.attributes.position.needsUpdate = true;
-        _linkBatchGeo.setDrawRange(0, blen * 2);
-      } else {
-        _linkBatchGeo.setDrawRange(0, 0);
+        _linkPosDirty = false;
       }
 
       // Sync opacity from GFX slider
       const targetOp = gfx.linkOpacity || 0.12;
       if (_linkBatch.material.opacity !== targetOp) _linkBatch.material.opacity = targetOp;
     }
+  }
+
+  // ── Render ── (single render loop — no more ForceGraph3D internal loop)
+  if (_controls) _controls.update(); // damping
+  if (_composer) {
+    _composer.render();
+  } else if (_renderer && _scene && _camera) {
+    _renderer.render(_scene, _camera);
   }
 }
 
@@ -1379,11 +2158,11 @@ function animate() {
 // ═══════════════════════════════════════════
 
 /**
- * Create the ForceGraph3D instance, configure it, and start the animation loop.
+ * Initialize the 3D graph with raw Three.js (no ForceGraph3D dependency).
  * @param {HTMLElement} container  The DOM element to render into (e.g. #graph-container)
  * @param {Object} [options]       Optional callbacks
  * @param {Function} [options.onApplyBgTheme]  Called after graph is built to apply background
- * @returns {Object} The ForceGraph3D instance
+ * @returns {Object} The graph proxy object
  */
 export function initGraph(container, options = {}) {
   _graphContainer = container;
@@ -1392,126 +2171,79 @@ export function initGraph(container, options = {}) {
   _initMouseTracking();
   _initUIGuards();
 
-  graph = ForceGraph3D({ controlType: 'orbit' })(container)
-    .backgroundColor('#050505')
-    .showNavInfo(false)
-    .nodeId('id')
-    .nodeLabel(() => '')
-    .nodeThreeObject(createNodeObject)
-    .nodeThreeObjectExtend(false)
-    .linkSource('source')
-    .linkTarget('target')
-    // Links rendered via batch LineSegments — library link objects disabled
-    .linkThreeObject(() => { const o = new THREE.Object3D(); o.visible = false; return o; })
-    .linkWidth(0)
-    .linkCurvature(0)
-    .linkDirectionalParticles(0)
-    .linkVisibility(() => false)
-    .onNodeHover(handleNodeHover)
-    .onNodeClick(handleNodeClick)
-    .onBackgroundClick(handleBackgroundClick)
-    .onNodeDrag((node) => {
-      const gd = graph.graphData();
+  // ── 1. Renderer ──
+  _renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    powerPreference: 'high-performance',
+    alpha: false,
+  });
+  _renderer.setPixelRatio(window.devicePixelRatio);
+  _renderer.setSize(container.offsetWidth, container.offsetHeight);
+  _renderer.setClearColor(new THREE.Color('#050505'));
+  _renderer.toneMapping = THREE.NoToneMapping;
+  _renderer.sortObjects = false;
+  _renderer.info.autoReset = false;
+  container.appendChild(_renderer.domElement);
 
-      if (!_drag.active) {
-        _drag.active = true;
-        _drag.node = node;
+  // ── 2. Scene ──
+  _scene = new THREE.Scene();
 
-        const { type, dragSet } = _buildDragSet(node, gd.nodes);
-        _drag.type = type;
-        _drag.dragSet = dragSet;
-        _drag.depthOffset.set(0, 0, 0);
+  // ── 3. Camera ──
+  _camera = new THREE.PerspectiveCamera(
+    70,
+    container.offsetWidth / container.offsetHeight,
+    0.1,
+    50000,
+  );
+  _camera.position.set(0, 500, 1000);
 
-        document.body.style.cursor = 'grabbing';
-      }
+  // ── 4. OrbitControls ──
+  _controls = new OrbitControls(_camera, _renderer.domElement);
+  _controls.enableDamping = true;
+  _controls.dampingFactor = 0.08;
 
-      // Apply accumulated wheel depth offset after ForceGraph3D's plane projection
-      node.x = (node.x || 0) + _drag.depthOffset.x;
-      node.y = (node.y || 0) + _drag.depthOffset.y;
-      node.z = (node.z || 0) + _drag.depthOffset.z;
-      node.fx = node.x; node.fy = node.y; node.fz = node.z;
+  // ── 5. EffectComposer + RenderPass ──
+  _composer = new EffectComposer(_renderer);
+  _composer.addPass(new RenderPass(_scene, _camera));
 
-      // Rigid-body translate (delta includes both lateral mouse + depth from wheel)
-      if (_drag.prevPos) {
-        const dx = node.x - _drag.prevPos.x;
-        const dy = node.y - _drag.prevPos.y;
-        const dz = node.z - _drag.prevPos.z;
+  // ── 6. Resize handler ──
+  window.addEventListener('resize', _onResize);
 
-        if (dx !== 0 || dy !== 0 || dz !== 0) {
-          for (const n of gd.nodes) {
-            if (n === node) continue;
-            if (_drag.dragSet.has(n.id)) {
-              n.x = (n.x || 0) + dx;
-              n.y = (n.y || 0) + dy;
-              n.z = (n.z || 0) + dz;
-              n.fx = n.x; n.fy = n.y; n.fz = n.z;
-            }
-          }
-        }
-      }
-      _drag.prevPos = { x: node.x, y: node.y, z: node.z };
-    })
-    .onNodeDragEnd(node => {
-      if (!_drag.active) return;
+  // ── 7. Assign proxy as `graph` ──
+  graph = graphProxy;
 
-      node.fx = node.x; node.fy = node.y; node.fz = node.z;
+  // ── 8. Pointer events for hover/click/drag (custom raycasting) ──
+  _initPointerEvents(_renderer.domElement);
 
-      document.body.style.cursor = state.hoveredNodeId ? 'grab' : 'default';
-      _drag.active = false;
-      _drag.node = null;
-      _drag.type = null;
-      _drag.dragSet = new Set();
-      _drag.prevPos = null;
-      _drag.depthOffset.set(0, 0, 0);
-      schedulePositionSave();
-    })
-    .warmupTicks(1)
-    .cooldownTicks(0)
-    .d3AlphaDecay(1)
-    .d3VelocityDecay(1);
-
-  // Forces disabled — layout is computed by computeLayout()
-  graph.d3Force('charge', null);
-  graph.d3Force('center', null);
-  graph.d3Force('link').strength(0);
-
-  // Enable hardware acceleration
-  const renderer = graph.renderer();
-  if (renderer) {
-    renderer.antialias = true;
-    renderer.powerPreference = 'high-performance';
-    renderer.precision = 'highp';
-
-    const gl = renderer.getContext();
-    if (gl) {
-      gl.enable(gl.DEPTH_TEST);
-      gl.enable(gl.CULL_FACE);
-    }
-
-    renderer.sortObjects = false;
-    renderer.info.autoReset = false;
-  }
+  // Init instanced rendering for memory nodes (MUST be before applyGraphData
+  // so rebuildInstanceMap() can set instance counts on the already-created meshes)
+  initInstancedRendering();
 
   // Apply data (layout is computed, positions are pinned)
   applyGraphData();
 
   // One-time reset: clear saved positions for new layout version
-  if (storage.getItem(KEYS.LAYOUT_VERSION) !== 'v4-spacing') {
+  if (storage.getItem(KEYS.LAYOUT_VERSION) !== 'v6-polished') {
     try { storage.removeItem(_posStorageKey); } catch (_) {}
-    storage.setItem(KEYS.LAYOUT_VERSION, 'v4-spacing');
+    storage.setItem(KEYS.LAYOUT_VERSION, 'v6-polished');
   }
 
   // Apply link visibility
   applyLinkVisibility();
 
-  // Bloom post-processing
-  _bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(container.offsetWidth, container.offsetHeight),
-    0.3,   // strength
-    0.4,   // radius
-    0.45   // threshold
-  );
-  graph.postProcessingComposer().addPass(_bloomPass);
+  // Bloom post-processing (half resolution for performance)
+  if (gfx.bloomEnabled !== false) {
+    _bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(Math.floor(container.offsetWidth / 2), Math.floor(container.offsetHeight / 2)),
+      0.5,   // strength
+      0.5,   // radius
+      0.25   // threshold
+    );
+    _composer.addPass(_bloomPass);
+  }
+
+  // OutputPass: converts linear→sRGB for correct display brightness
+  _composer.addPass(new OutputPass());
 
   // Apply background theme
   if (options.onApplyBgTheme) {
@@ -1528,10 +2260,26 @@ export function initGraph(container, options = {}) {
 }
 
 // ═══════════════════════════════════════════
+// RESIZE HANDLER
+// ═══════════════════════════════════════════
+function _onResize() {
+  if (!_graphContainer || !_camera || !_renderer || !_composer) return;
+  const w = _graphContainer.offsetWidth;
+  const h = _graphContainer.offsetHeight;
+  _camera.aspect = w / h;
+  _camera.updateProjectionMatrix();
+  _renderer.setSize(w, h);
+  _composer.setSize(w, h);
+  if (_bloomPass) {
+    _bloomPass.resolution.set(Math.floor(w / 2), Math.floor(h / 2));
+  }
+}
+
+// ═══════════════════════════════════════════
 // PUBLIC API
 // ═══════════════════════════════════════════
 
-/** Returns the ForceGraph3D instance (or null before init). */
+/** Returns the graph proxy (or null before init). */
 export function getGraph() {
   return graph;
 }
@@ -1554,6 +2302,7 @@ export function getNodeById() {
 /** Mark the link batch as dirty (force rebuild on next frame). */
 export function markLinksDirty() {
   _linkBatchDirty = true;
+  _linkPosDirty = true;
 }
 
 /** Returns the drag state object (read-only). */
@@ -1591,6 +2340,13 @@ export function setBloomParams(strength, threshold, radius) {
     if (strength !== undefined) _bloomPass.strength = strength;
     if (threshold !== undefined) _bloomPass.threshold = threshold;
     if (radius !== undefined) _bloomPass.radius = radius;
+  }
+}
+
+/** Enable or disable bloom post-processing at runtime. */
+export function setBloomEnabled(enabled) {
+  if (_bloomPass) {
+    _bloomPass.enabled = enabled;
   }
 }
 

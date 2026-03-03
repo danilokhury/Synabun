@@ -48,6 +48,8 @@
     "view": "View",
     "graph": "Graph",
     "skills": "Skills",
+    "automations": "Automations",
+    "games": "Games",
     "apps": "Apps",
     "bookmarks": "Bookmarks",
     "layouts": "Layouts",
@@ -70,6 +72,7 @@
       "linksAll": "All Links",
       "linkTypeGroup": "Link Type",
       "allTypes": "All Types",
+      "nodeLimitGroup": "Node Limit",
       "resetLayout": "Reset Layout"
     },
     "skills": {
@@ -77,12 +80,21 @@
       "newSkill": "New Skill...",
       "import": "Import..."
     },
+    "automations": {
+      "studio": "Automation Studio",
+      "newAutomation": "New Automation...",
+      "import": "Import..."
+    },
+    "games": {
+      "ticTacToe": "Tic Tac Toe"
+    },
     "apps": {
       "claudeCode": "Claude Code",
       "codexCli": "Codex CLI",
       "geminiCli": "Gemini CLI",
       "shell": "Shell",
       "browser": "Browser",
+      "youtube": "YouTube",
       "showTerminal": "Show Terminal"
     }
   },

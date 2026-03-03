@@ -1,7 +1,7 @@
 import fs from 'fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ensureCollection } from './services/qdrant.js';
+import { ensureCollection, ensureSessionCollection } from './services/qdrant.js';
 import { getEnvPath } from './config.js';
 import { rememberSchema, rememberDescription, handleRemember, buildRememberSchema } from './tools/remember.js';
 import { recallSchema, recallDescription, handleRecall, buildRecallSchema } from './tools/recall.js';
@@ -9,13 +9,28 @@ import { forgetSchema, forgetDescription, handleForget } from './tools/forget.js
 import { restoreSchema, restoreDescription, handleRestore } from './tools/restore.js';
 import { reflectSchema, reflectDescription, handleReflect, buildReflectSchema } from './tools/reflect.js';
 import { memoriesSchema, memoriesDescription, handleMemories, buildMemoriesSchema } from './tools/memories.js';
-import { categoryCreateSchema, categoryCreateDescription, handleCategoryCreate } from './tools/category-create.js';
-import { categoryDeleteSchema, categoryDeleteDescription, handleCategoryDelete } from './tools/category-delete.js';
-import { categoryUpdateSchema, categoryUpdateDescription, handleCategoryUpdate } from './tools/category-update.js';
-import { categoryListSchema, categoryListDescription, handleCategoryList } from './tools/category-list.js';
+import { categorySchema, categoryDescription, handleCategory } from './tools/category.js';
 import { syncSchema, syncDescription, handleSync } from './tools/sync.js';
+import { loopSchema, loopDescription, handleLoop } from './tools/loop.js';
 import { registerBrowserTools } from './tools/browser.js';
+import { registerWhiteboardTools } from './tools/whiteboard.js';
+import { registerCardTools } from './tools/card.js';
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, switchCategoryConnection, initCategoryCache } from './services/categories.js';
+
+function buildServerInstructions(): string {
+  return `SynaBun — persistent vector memory system for Claude Code sessions.
+
+Tool groups:
+- Memory: remember, recall, reflect, forget, restore, memories
+- Categories: category (action: create/update/delete/list)
+- Browser: browser_navigate, browser_click, browser_type, browser_fill, browser_snapshot, browser_screenshot, browser_content, browser_evaluate, browser_hover, browser_select, browser_press, browser_wait, browser_go_back, browser_go_forward, browser_session
+- Whiteboard: whiteboard_read, whiteboard_add, whiteboard_update, whiteboard_remove, whiteboard_screenshot
+- Cards: card_list, card_open, card_close, card_update, card_screenshot
+- Sync: sync
+- Loop: loop (action: start/stop/status)
+
+Use "category" with action "list" to see valid category names before using remember/recall/reflect.`;
+}
 
 // Register all tools on a given McpServer instance.
 // Returns references needed for dynamic schema refresh.
@@ -26,26 +41,29 @@ export function registerTools(server: McpServer) {
   server.tool('restore', restoreDescription, restoreSchema, handleRestore);
   const reflectTool = server.tool('reflect', reflectDescription, reflectSchema, handleReflect);
   const memoriesTool = server.tool('memories', memoriesDescription, memoriesSchema, handleMemories);
-  server.tool('category_create', categoryCreateDescription, categoryCreateSchema, handleCategoryCreate);
-  server.tool('category_update', categoryUpdateDescription, categoryUpdateSchema, handleCategoryUpdate);
-  server.tool('category_delete', categoryDeleteDescription, categoryDeleteSchema, handleCategoryDelete);
-  server.tool('category_list', categoryListDescription, categoryListSchema, handleCategoryList);
+  server.tool('category', categoryDescription, categorySchema, handleCategory);
   server.tool('sync', syncDescription, syncSchema, handleSync);
+  server.tool('loop', loopDescription, loopSchema, handleLoop);
   registerBrowserTools(server);
+  registerWhiteboardTools(server);
+  registerCardTools(server);
   return { rememberTool, recallTool, reflectTool, memoriesTool };
 }
 
 // Create a fully configured McpServer with all tools registered.
 export function createMcpServer() {
-  const server = new McpServer({ name: 'claude-memory', version: '1.1.0' });
+  const server = new McpServer(
+    { name: 'claude-memory', version: '1.1.0' },
+    { instructions: buildServerInstructions() }
+  );
   registerTools(server);
   return server;
 }
 
-const server = new McpServer({
-  name: 'claude-memory',
-  version: '1.1.0',
-});
+const server = new McpServer(
+  { name: 'claude-memory', version: '1.1.0' },
+  { instructions: buildServerInstructions() }
+);
 
 const { rememberTool, recallTool, reflectTool, memoriesTool } = registerTools(server);
 
@@ -64,6 +82,7 @@ let connectionsWatcher: fs.FSWatcher | null = null;
 async function main() {
   try {
     await ensureCollection();
+    await ensureSessionCollection();
   } catch (err) {
     console.error(
       'Warning: Could not connect to Qdrant on startup.',

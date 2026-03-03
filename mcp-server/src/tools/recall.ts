@@ -2,9 +2,10 @@ import { z } from 'zod';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { generateEmbedding } from '../services/embeddings.js';
-import { searchMemories, updatePayload } from '../services/qdrant.js';
-import { buildCategoryDescription, validateCategory } from '../services/categories.js';
-import type { MemoryPayload } from '../types.js';
+import { searchMemories, updatePayload, searchSessionChunks } from '../services/qdrant.js';
+import { validateCategory } from '../services/categories.js';
+import { coerceStringArray } from './utils.js';
+import type { MemoryPayload, SessionChunkPayload } from '../types.js';
 import { config, detectProject } from '../config.js';
 
 export function buildRecallSchema() {
@@ -13,17 +14,14 @@ export function buildRecallSchema() {
     category: z
       .string()
       .optional()
-      .describe(
-        'Optional: filter by category. ' + buildCategoryDescription()
-      ),
+      .describe('Optional: filter by category name.'),
     project: z
       .string()
       .optional()
       .describe(
         'Optional: filter by project. If omitted, searches all projects but boosts current project.'
       ),
-    tags: z
-      .array(z.string())
+    tags: coerceStringArray()
       .optional()
       .describe('Optional: filter by tags (any match).'),
     limit: z
@@ -44,6 +42,10 @@ export function buildRecallSchema() {
       .max(1)
       .optional()
       .describe('Minimum similarity score 0-1 (default 0.3).'),
+    include_sessions: z
+      .boolean()
+      .optional()
+      .describe('Override session chunk search. Auto-triggers on temporal queries or sparse results. Set true to force, false to disable.'),
   };
 }
 
@@ -95,6 +97,7 @@ export async function handleRecall(args: {
   limit?: number;
   min_importance?: number;
   min_score?: number;
+  include_sessions?: boolean;
 }) {
   const query = args.query;
   const category = args.category;
@@ -103,6 +106,7 @@ export async function handleRecall(args: {
   const limit = args.limit ?? 5;
   const minImportance = args.min_importance;
   const minScore = args.min_score ?? 0.3;
+  const includeSessionsExplicit = args.include_sessions;
 
   if (category) {
     const catCheck = validateCategory(category);
@@ -184,11 +188,76 @@ export async function handleRecall(args: {
     return `${i + 1}. [${r.id}] (${score}% match, importance: ${p.importance}, ${formatAge(p.created_at)})\n   ${p.category}${sub} | ${p.project}${tagStr}\n   ${displayContent}${files}`;
   });
 
+  // Session chunk search — auto-trigger when useful, or explicit override
+  const shouldIncludeSessions = (() => {
+    // Explicit override takes priority
+    if (includeSessionsExplicit !== undefined) return includeSessionsExplicit;
+    // Temporal/process keywords → likely asking about past sessions
+    const q = query.toLowerCase();
+    const sessionKeywords = [
+      'yesterday', 'last session', 'last time', 'remember when',
+      'how did we', 'what did we', 'earlier today', 'previous session',
+      'conversation about', 'we discussed', 'we worked on', 'we talked about',
+      'that session', 'that conversation', 'the other day', 'last week',
+      'before', 'recently', 'a while ago', 'few days ago',
+    ];
+    if (sessionKeywords.some(kw => q.includes(kw))) return true;
+    // Sparse/weak memory results → widen the net
+    if (scored.length < 3) return true;
+    if (scored.length > 0 && scored[0].score < 0.45) return true;
+    return false;
+  })();
+
+  let sessionLines: string[] = [];
+  if (shouldIncludeSessions) {
+    try {
+      const sessionFilter: Record<string, unknown> = {};
+      if (project) {
+        sessionFilter.must = [{ key: 'project', match: { value: project } }];
+      }
+      const sessionLimit = Math.max(3, Math.floor(limit / 2));
+      const sessionResults = await searchSessionChunks(vector, sessionLimit * 2, Object.keys(sessionFilter).length > 0 ? sessionFilter : undefined, minScore);
+
+      // Deduplicate: skip chunks whose dedup_memory_id matches a returned memory
+      const memoryIds = new Set(scored.map((r) => r.id));
+      const filteredSessions = sessionResults.filter((r) => {
+        const payload = r.payload as unknown as SessionChunkPayload;
+        return !payload.dedup_memory_id || !memoryIds.has(payload.dedup_memory_id);
+      }).slice(0, sessionLimit);
+
+      sessionLines = filteredSessions.map((r, i) => {
+        const p = r.payload as unknown as SessionChunkPayload;
+        const score = (r.score * 100).toFixed(0);
+        const timeRange = p.start_timestamp && p.end_timestamp
+          ? `${new Date(p.start_timestamp).toISOString().slice(0, 16)} - ${new Date(p.end_timestamp).toISOString().slice(11, 16)}`
+          : 'unknown time';
+        const toolStr = p.tools_used?.length ? `Tools: ${p.tools_used.join(', ')}` : '';
+        const fileStr = p.files_modified?.length ? `Files: ${p.files_modified.join(', ')}` : '';
+        const linkedMems = p.related_memory_ids?.length ? `Linked memories: ${p.related_memory_ids.join(', ')}` : '';
+        const details = [toolStr, fileStr, linkedMems].filter(Boolean).join(' | ');
+        return `SESSION: [${r.id}] (${score}% match, ${timeRange}, branch: ${p.git_branch || 'unknown'})\n   Session: ${p.session_id} | Chunk ${p.chunk_index + 1} | ${p.project}\n   ${p.summary}\n   ${details}`;
+      });
+    } catch {
+      // Session search failure is non-fatal
+    }
+  }
+
+  const allLines = [...lines];
+  if (sessionLines.length > 0) {
+    allLines.push('', '--- Session Context ---');
+    allLines.push(...sessionLines);
+  }
+
+  const totalCount = scored.length + sessionLines.length;
+  const label = sessionLines.length > 0
+    ? `Found ${scored.length} memories and ${sessionLines.length} session chunks`
+    : `Found ${scored.length} memories`;
+
   return {
     content: [
       {
         type: 'text' as const,
-        text: `Found ${scored.length} memories for "${query}":\n\n${lines.join('\n\n')}`,
+        text: `${label} for "${query}":\n\n${allLines.join('\n\n')}`,
       },
     ],
   };

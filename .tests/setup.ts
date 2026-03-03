@@ -272,6 +272,16 @@ vi.mock('../mcp-server/src/services/file-checksums.js', () => ({
   hashFile: vi.fn().mockReturnValue('abc123hash'),
 }));
 
+// --- Mock: neural-interface (avoids real HTTP calls to Neural Interface server) ---
+import { mockNi, resetNiState } from './mocks/neural-interface.mock.js';
+
+vi.mock('../mcp-server/src/services/neural-interface.js', () => mockNi);
+
+// --- Mock: index.js (avoids pulling in the full MCP server for category tool) ---
+vi.mock('../mcp-server/src/index.js', () => ({
+  refreshCategorySchemas: vi.fn(),
+}));
+
 // --- Mock: config (avoid import.meta.dirname issues in test runner) ---
 vi.mock('../mcp-server/src/config.js', () => ({
   config: {
@@ -312,4 +322,5 @@ beforeEach(() => {
   _qdrantCalls.length = 0;
   (globalThis as Record<string, unknown>).__synabun_scroll_config = null;
   (globalThis as Record<string, unknown>).__synabun_retrieve_payload = null;
+  resetNiState();
 });

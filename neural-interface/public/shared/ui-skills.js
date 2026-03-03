@@ -6,6 +6,7 @@
 
 import { emit, on } from './state.js';
 import { storage } from './storage.js';
+import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
 import {
   fetchSkillsLibrary, fetchSkillsArtifact, saveSkillsArtifact,
   fetchSkillsSubFile, saveSkillsSubFile, createSkillsSubFile, deleteSkillsSubFile,
@@ -252,6 +253,10 @@ export function initSkillsStudio() {
 // ═══════════════════════════════════════════
 
 async function openPanel() {
+  if (isGuest() && !hasPermission('skills')) {
+    showGuestToast('Skills Studio is disabled by the host');
+    return;
+  }
   if (_panel) { _panel.focus(); return; }
 
   // Backdrop
@@ -272,7 +277,7 @@ async function openPanel() {
     const saved = JSON.parse(storage.getItem(PANEL_KEY));
     if (saved) {
       if (saved.x != null) _panel.style.left = saved.x + 'px';
-      if (saved.y != null) _panel.style.top = saved.y + 'px';
+      if (saved.y != null) _panel.style.top = Math.max(48, saved.y) + 'px';
       if (saved.w) _panel.style.width = saved.w + 'px';
       if (saved.h) _panel.style.height = saved.h + 'px';
     }
@@ -282,7 +287,7 @@ async function openPanel() {
   if (!_panel.style.left) {
     const vw = window.innerWidth, vh = window.innerHeight;
     _panel.style.left = Math.max(20, (vw - 980) / 2) + 'px';
-    _panel.style.top = Math.max(40, (vh - 640) / 2) + 'px';
+    _panel.style.top = Math.max(48, (vh - 640) / 2) + 'px';
   }
 
   wirePanel();
