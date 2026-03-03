@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { generateEmbedding } from '../services/embeddings.js';
-import { upsertMemory } from '../services/qdrant.js';
+import { generateEmbedding } from '../services/local-embeddings.js';
+import { upsertMemory } from '../services/sqlite.js';
 import { validateCategory } from '../services/categories.js';
 import { coerceStringArray } from './utils.js';
 import type { MemoryPayload, MemorySource } from '../types.js';

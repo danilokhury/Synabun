@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getQdrantCallsByMethod } from '../mocks/trackers.js';
-import { searchMemories } from '../../mcp-server/src/services/qdrant.js';
+import { getDbCallsByMethod } from '../mocks/trackers.js';
+import { searchMemories } from '../../mcp-server/src/services/sqlite.js';
 
 // recall.ts reads display-settings.json via node:fs — mock it
 vi.mock('node:fs', async (importOriginal) => {
@@ -36,20 +36,20 @@ describe('recall — behavioral tests', () => {
 
   it('category filter builds correct filter in searchMemories call', async () => {
     await handleRecall({ query: 'test', category: 'architecture' });
-    const searches = getQdrantCallsByMethod('search');
+    const searches = getDbCallsByMethod('search');
     expect(searches).toHaveLength(1);
     // Category was passed — verify filter was built (search was called)
   });
 
   it('project filter is applied', async () => {
     await handleRecall({ query: 'test', project: 'criticalpixel' });
-    const searches = getQdrantCallsByMethod('search');
+    const searches = getDbCallsByMethod('search');
     expect(searches).toHaveLength(1);
   });
 
   it('min_importance filter is applied', async () => {
     await handleRecall({ query: 'test', min_importance: 7 });
-    const searches = getQdrantCallsByMethod('search');
+    const searches = getDbCallsByMethod('search');
     expect(searches).toHaveLength(1);
   });
 
@@ -58,12 +58,12 @@ describe('recall — behavioral tests', () => {
     const text = result.content[0].text;
     expect(text).toContain('does-not-exist');
     // Should not have searched
-    expect(getQdrantCallsByMethod('search')).toHaveLength(0);
+    expect(getDbCallsByMethod('search')).toHaveLength(0);
   });
 
   it('limit is doubled when passed to searchMemories', async () => {
     await handleRecall({ query: 'test query', limit: 5 });
-    const searches = getQdrantCallsByMethod('search');
+    const searches = getDbCallsByMethod('search');
     expect(searches).toHaveLength(1);
     expect((searches[0].params as Record<string, unknown>).limit).toBe(10); // 5 * 2
   });

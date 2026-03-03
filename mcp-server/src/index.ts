@@ -1,8 +1,7 @@
-import fs from 'fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ensureCollection, ensureSessionCollection } from './services/qdrant.js';
-import { getEnvPath } from './config.js';
+import { ensureDatabase, closeDatabase } from './services/sqlite.js';
+import { warmupEmbeddings } from './services/local-embeddings.js';
 import { rememberSchema, rememberDescription, handleRemember, buildRememberSchema } from './tools/remember.js';
 import { recallSchema, recallDescription, handleRecall, buildRecallSchema } from './tools/recall.js';
 import { forgetSchema, forgetDescription, handleForget } from './tools/forget.js';
@@ -15,7 +14,7 @@ import { loopSchema, loopDescription, handleLoop } from './tools/loop.js';
 import { registerBrowserTools } from './tools/browser.js';
 import { registerWhiteboardTools } from './tools/whiteboard.js';
 import { registerCardTools } from './tools/card.js';
-import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, switchCategoryConnection, initCategoryCache } from './services/categories.js';
+import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, initCategoryCache } from './services/categories.js';
 
 function buildServerInstructions(): string {
   return `SynaBun — persistent vector memory system for Claude Code sessions.
@@ -77,20 +76,22 @@ export function refreshCategorySchemas() {
   memoriesTool.update({ paramsSchema: buildMemoriesSchema() });
 }
 
-let connectionsWatcher: fs.FSWatcher | null = null;
-
 async function main() {
   try {
-    await ensureCollection();
-    await ensureSessionCollection();
+    await ensureDatabase();
   } catch (err) {
     console.error(
-      'Warning: Could not connect to Qdrant on startup.',
+      'Warning: Could not initialize SQLite database on startup.',
       err instanceof Error ? err.message : err
     );
   }
 
-  // Initialize per-connection category cache (may fetch from Qdrant or migrate from global file)
+  // Warmup embedding model in background (non-blocking)
+  warmupEmbeddings().catch((err) => {
+    console.error('Embedding model warmup failed:', err instanceof Error ? err.message : err);
+  });
+
+  // Initialize category cache (loads from SQLite or starts empty)
   await initCategoryCache();
 
   // Set up file watcher for external category changes
@@ -106,57 +107,17 @@ async function main() {
   });
   startWatchingCategories();
 
-  // Watch .env for active connection changes
-  // Debounced to handle Windows fs.watch firing multiple events per write
-  let envSwitchTimeout: NodeJS.Timeout | null = null;
-  let lastQdrantActive = process.env.QDRANT_ACTIVE || '';
-  try {
-    const envPath = getEnvPath();
-    connectionsWatcher = fs.watch(envPath, (eventType) => {
-      if (eventType === 'change') {
-        if (envSwitchTimeout) clearTimeout(envSwitchTimeout);
-        envSwitchTimeout = setTimeout(async () => {
-          // Re-read .env to update process.env
-          try {
-            const content = fs.readFileSync(envPath, 'utf-8');
-            for (const line of content.split('\n')) {
-              const trimmed = line.trim();
-              if (!trimmed || trimmed.startsWith('#')) continue;
-              const eq = trimmed.indexOf('=');
-              if (eq === -1) continue;
-              process.env[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
-            }
-          } catch { /* ignore read errors */ }
+  // No .env watcher needed — SQLite uses a single local database file
 
-          // Check if the active Qdrant connection changed
-          const newActive = process.env.QDRANT_ACTIVE || '';
-          if (newActive !== lastQdrantActive) {
-            lastQdrantActive = newActive;
-            console.error('Active Qdrant connection changed, switching...');
-            await switchCategoryConnection();
-            refreshCategorySchemas();
-            server.server.notification({
-              method: 'notifications/tools/list_changed',
-            }).catch((err) => {
-              console.error('Failed to send tools/list_changed notification:', err);
-            });
-          }
-        }, 300);
-      }
-    });
-  } catch (err) {
-    console.error('Could not watch .env for connection changes:', err);
-  }
-
-  // Clean up file watchers on exit
+  // Clean up on exit
   process.on('SIGINT', () => {
     stopWatchingCategories();
-    connectionsWatcher?.close();
+    closeDatabase();
     process.exit(0);
   });
   process.on('SIGTERM', () => {
     stopWatchingCategories();
-    connectionsWatcher?.close();
+    closeDatabase();
     process.exit(0);
   });
 

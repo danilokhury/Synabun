@@ -182,7 +182,7 @@ export async function fetchSettings() {
 }
 
 export async function saveSettings(payload) {
-  // payload: { openaiApiKey?, qdrantUrl?, qdrantApiKey? }
+  // payload: { databasePath? }
   return jsonFetch('/api/settings', {
     method: 'PUT',
     ...jsonBody(payload),
@@ -786,16 +786,20 @@ export async function setupBuild() {
   return jsonFetch('/api/setup/build', { method: 'POST' });
 }
 
-export async function testQdrant() {
+export async function testDatabase() {
   return jsonFetch('/api/setup/test-qdrant');
 }
 
-export async function testQdrantCloud(payload) {
+export async function testDatabaseRemote(payload) {
   return jsonFetch('/api/setup/test-qdrant-cloud', {
     method: 'POST',
     ...jsonBody(payload),
   });
 }
+
+// Backward compat aliases
+export { testDatabase as testQdrant };
+export { testDatabaseRemote as testQdrantCloud };
 
 export async function writeMcpJson(payload) {
   return jsonFetch('/api/setup/write-mcp-json', {

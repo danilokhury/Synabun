@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getEmbeddingCalls, getQdrantCallsByMethod, setRetrievePayload } from '../mocks/trackers.js';
-import { getMemory } from '../../mcp-server/src/services/qdrant.js';
+import { getEmbeddingCalls, getDbCallsByMethod, setRetrievePayload } from '../mocks/trackers.js';
+import { getMemory } from '../../mcp-server/src/services/sqlite.js';
 import { computeChecksums } from '../../mcp-server/src/services/file-checksums.js';
 
 const { handleReflect } = await import('../../mcp-server/src/tools/reflect.js');
@@ -41,7 +41,7 @@ describe('reflect — behavioral tests', () => {
     expect(getEmbeddingCalls()).toHaveLength(1);
     expect(getEmbeddingCalls()[0].input).toBe(newContent);
     // updateVector (tracked as 'upsert') should have been called, not setPayload
-    expect(getQdrantCallsByMethod('upsert')).toHaveLength(1);
+    expect(getDbCallsByMethod('upsert')).toHaveLength(1);
     // updatePayload (tracked as 'setPayload') should NOT have been called for content update
     // (there is retrieve call tracked as setPayload? No — retrieve is tracked as 'retrieve')
   });
@@ -51,9 +51,9 @@ describe('reflect — behavioral tests', () => {
     // No embedding calls for metadata-only
     expect(getEmbeddingCalls()).toHaveLength(0);
     // updatePayload (tracked as 'setPayload') should be called
-    expect(getQdrantCallsByMethod('setPayload')).toHaveLength(1);
+    expect(getDbCallsByMethod('setPayload')).toHaveLength(1);
     // updateVector (tracked as 'upsert') should NOT be called
-    expect(getQdrantCallsByMethod('upsert')).toHaveLength(0);
+    expect(getDbCallsByMethod('upsert')).toHaveLength(0);
   });
 
   it('add_tags merges with existing and deduplicates', async () => {
@@ -65,7 +65,7 @@ describe('reflect — behavioral tests', () => {
     const text = result.content[0].text;
     expect(text).toContain('tags added');
     // updatePayload should have been called (metadata-only update)
-    const setPayloads = getQdrantCallsByMethod('setPayload');
+    const setPayloads = getDbCallsByMethod('setPayload');
     expect(setPayloads).toHaveLength(1);
     // The payload passed to updatePayload should have deduplicated tags
     const payloadArg = (setPayloads[0].params as Record<string, unknown>).payload as Record<string, unknown>;

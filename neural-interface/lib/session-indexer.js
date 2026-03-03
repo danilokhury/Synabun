@@ -1,87 +1,28 @@
 /**
  * Session Indexer — Pipeline orchestrator for indexing Claude Code session transcripts.
- * Reads JSONL files, chunks them, embeds chunks, stores in Qdrant, cross-references with memories.
+ * Reads JSONL files, chunks them, embeds chunks, stores in SQLite, cross-references with memories.
  *
- * Runs in the Neural Interface server process. Uses its own OpenAI + Qdrant clients
- * (reads config from shared .env) to avoid circular dependency with MCP server.
+ * Runs in the Neural Interface server process. Uses shared SQLite database + local embeddings
+ * via lib/db.js (same memory.db as MCP server, WAL mode for concurrent access).
  */
 
 import { readFileSync, writeFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { QdrantClient } from '@qdrant/js-client-rest';
-import OpenAI from 'openai';
 import { chunkSession, parseLine } from './session-chunker.js';
+import {
+  getDb, getEmbedding, getEmbeddingBatch,
+  encodeVector, decodeVector, cosineSimilarity,
+  searchMemories, getMemoryById, updateMemoryPayload,
+} from './db.js';
 
 const PROJECT_ROOT = resolve(import.meta.dirname, '..');
 const DATA_DIR = join(PROJECT_ROOT, 'data');
 const STATE_FILE = join(DATA_DIR, 'session-index-state.json');
 
-const SESSION_COLLECTION = 'session_chunks';
-const MEMORY_COLLECTION_DEFAULT = 'claude_memory';
 const EMBEDDING_BATCH_SIZE = 20;
-const QDRANT_UPSERT_BATCH_SIZE = 50;
+const UPSERT_BATCH_SIZE = 50;
 const DEDUP_THRESHOLD = 0.92;
-
-// --- Config loading from .env ---
-
-function loadEnvConfig() {
-  const env = {};
-  // Check both neural-interface/.env and parent Synabun/.env
-  const candidates = [join(PROJECT_ROOT, '.env'), join(PROJECT_ROOT, '..', '.env')];
-  for (const envPath of candidates) {
-    if (existsSync(envPath)) {
-      const content = readFileSync(envPath, 'utf-8');
-      for (const line of content.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const eq = trimmed.indexOf('=');
-        if (eq === -1) continue;
-        env[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
-      }
-    }
-  }
-  // Also include process.env (dotenv may have loaded already)
-  return { ...env, ...process.env };
-}
-
-function getQdrantConfig(env) {
-  const active = env.QDRANT_ACTIVE || '';
-  if (active) {
-    const prefix = `QDRANT__${active}__`;
-    const port = env[`${prefix}PORT`] || '6333';
-    const url = env[`${prefix}URL`] || `http://localhost:${port}`;
-    return {
-      url,
-      apiKey: env[`${prefix}API_KEY`] || '',
-      collection: env[`${prefix}COLLECTION`] || MEMORY_COLLECTION_DEFAULT,
-    };
-  }
-  return {
-    url: env.QDRANT_MEMORY_URL || `http://localhost:${env.QDRANT_PORT || '6333'}`,
-    apiKey: env.QDRANT_MEMORY_API_KEY || '',
-    collection: env.QDRANT_MEMORY_COLLECTION || MEMORY_COLLECTION_DEFAULT,
-  };
-}
-
-function getEmbeddingConfig(env) {
-  const active = env.EMBEDDING_ACTIVE || '';
-  if (active) {
-    const prefix = `EMBEDDING__${active}__`;
-    return {
-      apiKey: env[`${prefix}API_KEY`] || env.OPENAI_EMBEDDING_API_KEY || '',
-      baseUrl: env[`${prefix}BASE_URL`] || 'https://api.openai.com/v1',
-      model: env[`${prefix}MODEL`] || 'text-embedding-3-small',
-      dimensions: parseInt(env[`${prefix}DIMENSIONS`] || '1536', 10),
-    };
-  }
-  return {
-    apiKey: env.OPENAI_EMBEDDING_API_KEY || env.OPENAI_API_KEY || '',
-    baseUrl: env.EMBEDDING_BASE_URL || 'https://api.openai.com/v1',
-    model: env.EMBEDDING_MODEL || 'text-embedding-3-small',
-    dimensions: parseInt(env.EMBEDDING_DIMENSIONS || '1536', 10),
-  };
-}
 
 // --- State management ---
 
@@ -123,29 +64,15 @@ function detectProjectFromDir(dirName) {
   for (const [key, value] of Object.entries(PROJECT_MAP)) {
     if (lower.includes(key)) return value;
   }
-  // Use last segment of the dir name (after last -)
   const parts = dirName.split('-').filter(Boolean);
   return (parts[parts.length - 1] || 'global').toLowerCase();
 }
 
 // --- Embedding ---
 
-async function embedBatch(openai, config, texts) {
+async function embedBatch(texts) {
   if (texts.length === 0) return [];
-  const results = [];
-  for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
-    const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-    const response = await openai.embeddings.create({
-      model: config.model,
-      input: batch,
-      dimensions: config.dimensions,
-    });
-    const sorted = response.data.sort((a, b) => a.index - b.index);
-    for (const item of sorted) {
-      results.push(item.embedding);
-    }
-  }
-  return results;
+  return getEmbeddingBatch(texts);
 }
 
 // --- Session file parsing ---
@@ -161,7 +88,6 @@ function parseSessionFile(filePath) {
     if (!parsed) continue;
     lines.push(parsed);
 
-    // Extract session metadata from first user message
     if (!sessionMeta && parsed.type === 'user' && parsed.message && !parsed.isMeta) {
       sessionMeta = {
         sessionId: parsed.sessionId || basename(filePath, '.jsonl'),
@@ -173,7 +99,6 @@ function parseSessionFile(filePath) {
   }
 
   if (!sessionMeta) {
-    // Fallback: try to extract from any line
     for (const line of lines) {
       if (line.sessionId) {
         sessionMeta = {
@@ -192,71 +117,109 @@ function parseSessionFile(filePath) {
 
 // --- Cross-referencing ---
 
-async function findRelatedMemories(qdrant, memoryCollection, chunkStartTs, chunkEndTs, project) {
-  // Find memories created during this chunk's time window
-  const filter = {
-    must: [
-      { key: 'created_at', range: { gte: chunkStartTs, lte: chunkEndTs } },
-    ],
-  };
+function findRelatedMemories(chunkStartTs, chunkEndTs, project) {
+  const d = getDb();
+  const clauses = ['trashed_at IS NULL'];
+  const params = [];
+
+  if (chunkStartTs) {
+    clauses.push('created_at >= ?');
+    params.push(chunkStartTs);
+  }
+  if (chunkEndTs) {
+    clauses.push('created_at <= ?');
+    params.push(chunkEndTs);
+  }
   if (project && project !== 'global') {
-    filter.must.push({ key: 'project', match: { value: project } });
+    clauses.push('project = ?');
+    params.push(project);
   }
 
-  try {
-    const result = await qdrant.scroll(memoryCollection, {
-      filter,
-      limit: 20,
-      with_payload: true,
-    });
-    return result.points.map(p => String(p.id));
-  } catch {
-    return [];
-  }
+  const where = clauses.length > 0 ? 'WHERE ' + clauses.join(' AND ') : '';
+  const rows = d.prepare(`SELECT id FROM memories ${where} LIMIT 20`).all(...params);
+  return rows.map(r => r.id);
 }
 
-async function findDedupMemory(qdrant, memoryCollection, vector) {
-  try {
-    // Exclude system metadata point
-    const filter = {
-      must_not: [{ key: '_type', match: { value: 'system_metadata' } }],
-      must: [{ is_empty: { key: 'trashed_at' } }],
-    };
-    const results = await qdrant.search(memoryCollection, {
-      vector,
-      limit: 1,
-      with_payload: true,
-      score_threshold: DEDUP_THRESHOLD,
-      filter,
-    });
-    if (results.length > 0) {
-      return String(results[0].id);
-    }
-  } catch { /* ignore */ }
+function findDedupMemory(vector) {
+  // Search all non-trashed memories and find near-duplicate by cosine similarity
+  const results = searchMemories(vector, 1, { scoreThreshold: DEDUP_THRESHOLD });
+  if (results.length > 0) {
+    return results[0].id;
+  }
   return null;
 }
 
-async function backlinkMemory(qdrant, memoryCollection, memoryId, sessionId, chunkId) {
+function backlinkMemory(memoryId, sessionId, chunkId) {
   try {
-    const points = await qdrant.retrieve(memoryCollection, {
-      ids: [memoryId],
-      with_payload: true,
-      with_vector: false,
-    });
-    if (points.length === 0) return;
+    const mem = getMemoryById(memoryId);
+    if (!mem) return;
 
-    const payload = points[0].payload;
-    const existing = payload.source_session_chunks || [];
-    // Don't add duplicate links
+    const existing = mem.source_session_chunks || [];
     if (existing.some(e => e.chunk_id === chunkId)) return;
 
-    await qdrant.setPayload(memoryCollection, {
-      points: [memoryId],
-      payload: {
-        source_session_chunks: [...existing, { session_id: sessionId, chunk_id: chunkId }],
-      },
+    updateMemoryPayload(memoryId, {
+      source_session_chunks: [...existing, { session_id: sessionId, chunk_id: chunkId }],
     });
   } catch { /* ignore backlink failures */ }
+}
+
+// --- SQLite upsert helpers ---
+
+function upsertSessionChunks(points) {
+  const d = getDb();
+  d.exec('BEGIN');
+  try {
+    const stmt = d.prepare(`INSERT OR REPLACE INTO session_chunks
+      (id, vector, content, summary, session_id, project, git_branch, cwd,
+       chunk_index, start_timestamp, end_timestamp, tools_used, files_modified,
+       files_read, user_messages, turn_count, related_memory_ids, dedup_memory_id, indexed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
+    for (const p of points) {
+      const pl = p.payload;
+      stmt.run(
+        p.id, encodeVector(p.vector), pl.content, pl.summary || null,
+        pl.session_id || null, pl.project || null, pl.git_branch || null, pl.cwd || null,
+        pl.chunk_index ?? 0, pl.start_timestamp || null, pl.end_timestamp || null,
+        JSON.stringify(pl.tools_used || []), JSON.stringify(pl.files_modified || []),
+        JSON.stringify(pl.files_read || []), JSON.stringify(pl.user_messages || []),
+        pl.turn_count ?? 0, JSON.stringify(pl.related_memory_ids || []),
+        pl.dedup_memory_id || null, pl.indexed_at || new Date().toISOString()
+      );
+    }
+    d.exec('COMMIT');
+  } catch (err) {
+    d.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function upsertMemories(points) {
+  const d = getDb();
+  d.exec('BEGIN');
+  try {
+    const stmt = d.prepare(`INSERT OR REPLACE INTO memories
+      (id, vector, content, category, subcategory, project, tags, importance, source,
+       created_at, updated_at, accessed_at, access_count, related_files,
+       related_memory_ids, source_session_chunks)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
+    for (const p of points) {
+      const pl = p.payload;
+      stmt.run(
+        p.id, encodeVector(p.vector), pl.content, pl.category, pl.subcategory || null,
+        pl.project || 'global', JSON.stringify(pl.tags || []), pl.importance ?? 5,
+        pl.source || 'auto-saved', pl.created_at, pl.updated_at, pl.accessed_at,
+        pl.access_count ?? 0, JSON.stringify(pl.related_files || []),
+        JSON.stringify(pl.related_memory_ids || []),
+        JSON.stringify(pl.source_session_chunks || [])
+      );
+    }
+    d.exec('COMMIT');
+  } catch (err) {
+    d.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 // --- Retry helper ---
@@ -267,7 +230,7 @@ async function withRetry(fn, maxRetries = 3) {
       return await fn();
     } catch (err) {
       if (attempt === maxRetries) throw err;
-      const delay = Math.pow(3, attempt) * 1000; // 1s, 3s, 9s
+      const delay = Math.pow(3, attempt) * 1000;
       await new Promise(r => setTimeout(r, delay));
     }
   }
@@ -293,39 +256,6 @@ export async function startIndexing(options = {}) {
   const { onProgress, isCancelled } = options;
   const emit = onProgress || (() => {});
 
-  // Load config
-  const env = loadEnvConfig();
-  const qdrantConfig = getQdrantConfig(env);
-  const embConfig = getEmbeddingConfig(env);
-
-  if (!embConfig.apiKey) {
-    throw new Error('No embedding API key configured');
-  }
-
-  // Initialize clients
-  const qdrant = new QdrantClient({ url: qdrantConfig.url, apiKey: qdrantConfig.apiKey });
-  const openai = new OpenAI({ apiKey: embConfig.apiKey, baseURL: embConfig.baseUrl });
-  const memoryCollection = qdrantConfig.collection;
-
-  // Ensure session_chunks collection exists
-  try {
-    const exists = await qdrant.collectionExists(SESSION_COLLECTION);
-    if (!exists.exists) {
-      await qdrant.createCollection(SESSION_COLLECTION, {
-        vectors: { size: embConfig.dimensions, distance: 'Cosine' },
-        optimizers_config: { indexing_threshold: 100 },
-      });
-      const keywordFields = ['session_id', 'project', 'git_branch', 'tools_used', 'dedup_memory_id', 'start_timestamp', 'end_timestamp'];
-      const integerFields = ['chunk_index', 'turn_count'];
-      const textFields = ['content'];
-      for (const f of keywordFields) await qdrant.createPayloadIndex(SESSION_COLLECTION, { field_name: f, field_schema: 'keyword' });
-      for (const f of integerFields) await qdrant.createPayloadIndex(SESSION_COLLECTION, { field_name: f, field_schema: 'integer' });
-      for (const f of textFields) await qdrant.createPayloadIndex(SESSION_COLLECTION, { field_name: f, field_schema: 'text' });
-    }
-  } catch (err) {
-    throw new Error(`Failed to ensure session_chunks collection: ${err.message}`);
-  }
-
   // Load indexing state
   const state = loadState();
 
@@ -342,7 +272,6 @@ export async function startIndexing(options = {}) {
       .map(d => ({ name: d.name, path: join(claudeProjectsDir, d.name) }));
   } catch { /* no projects dir */ }
 
-  // Filter by project if requested (match on directory name containing project keyword)
   if (options.project) {
     const projLower = options.project.toLowerCase();
     projectDirs = projectDirs.filter(d => d.name.toLowerCase().includes(projLower));
@@ -356,17 +285,15 @@ export async function startIndexing(options = {}) {
       const sessionId = file.replace('.jsonl', '');
       const filePath = join(projDir.path, file);
 
-      // Check if specific sessions requested
       if (options.sessionIds && !options.sessionIds.includes(sessionId)) continue;
 
-      // Check if already indexed
       if (!options.reindex && state.sessions[sessionId]) {
         const entry = state.sessions[sessionId];
         if (entry.status === 'complete') {
           try {
             const stat = statSync(filePath);
             if (stat.size === entry.file_size && stat.mtime.toISOString() === entry.file_mtime) {
-              continue; // Already indexed and unchanged
+              continue;
             }
           } catch { continue; }
         }
@@ -374,7 +301,6 @@ export async function startIndexing(options = {}) {
 
       try {
         const stat = statSync(filePath);
-        // Skip tiny sessions (< 1KB = likely empty)
         if (stat.size < 1024) continue;
         sessionsToIndex.push({
           sessionId,
@@ -387,7 +313,6 @@ export async function startIndexing(options = {}) {
     }
   }
 
-  // Sort by mtime desc (newest first)
   sessionsToIndex.sort((a, b) => new Date(b.fileMtime) - new Date(a.fileMtime));
 
   const totalSessions = sessionsToIndex.length;
@@ -412,7 +337,6 @@ export async function startIndexing(options = {}) {
       const { lines, sessionMeta, lineCount } = parseSessionFile(session.filePath);
 
       if (!sessionMeta || lines.length < 3) {
-        // Too small to chunk meaningfully
         state.sessions[session.sessionId] = {
           session_id: session.sessionId,
           file_path: session.filePath,
@@ -448,10 +372,10 @@ export async function startIndexing(options = {}) {
         continue;
       }
 
-      // Step 3: Embed chunks
+      // Step 3: Embed chunks (local model — no API key needed)
       emit({ type: 'indexing:session-progress', sessionId: session.sessionId, phase: 'embedding' });
       const contentTexts = chunks.map(c => c.content);
-      const vectors = await withRetry(() => embedBatch(openai, embConfig, contentTexts));
+      const vectors = await withRetry(() => embedBatch(contentTexts));
 
       // Step 4: Dedup check + cross-reference
       emit({ type: 'indexing:session-progress', sessionId: session.sessionId, phase: 'cross-referencing' });
@@ -464,14 +388,11 @@ export async function startIndexing(options = {}) {
         const chunkId = randomUUID();
         chunkIds.push(chunkId);
 
-        // Dedup check
-        const dedupMemoryId = await findDedupMemory(qdrant, memoryCollection, vector);
+        const dedupMemoryId = findDedupMemory(vector);
 
-        // Cross-reference: find memories created during this chunk's time window
         let relatedMemoryIds = [];
         if (chunk.startTimestamp && chunk.endTimestamp) {
-          relatedMemoryIds = await findRelatedMemories(
-            qdrant, memoryCollection,
+          relatedMemoryIds = findRelatedMemories(
             chunk.startTimestamp, chunk.endTimestamp,
             sessionMeta.project
           );
@@ -500,24 +421,17 @@ export async function startIndexing(options = {}) {
         points.push({ id: chunkId, vector, payload });
       }
 
-      // Step 5: Upsert to Qdrant
+      // Step 5: Upsert to SQLite session_chunks
       emit({ type: 'indexing:session-progress', sessionId: session.sessionId, phase: 'upserting' });
-      for (let i = 0; i < points.length; i += QDRANT_UPSERT_BATCH_SIZE) {
-        const batch = points.slice(i, i + QDRANT_UPSERT_BATCH_SIZE);
-        await withRetry(() => qdrant.upsert(SESSION_COLLECTION, {
-          points: batch.map(p => ({
-            id: p.id,
-            vector: p.vector,
-            payload: p.payload,
-          })),
-        }));
+      for (let i = 0; i < points.length; i += UPSERT_BATCH_SIZE) {
+        const batch = points.slice(i, i + UPSERT_BATCH_SIZE);
+        upsertSessionChunks(batch);
       }
 
-      // Step 6: Mirror chunks to claude_memory as conversations category
+      // Step 6: Mirror chunks to memories as conversations category
       emit({ type: 'indexing:session-progress', sessionId: session.sessionId, phase: 'mirroring' });
       const mirrorPoints = [];
       for (const point of points) {
-        // Skip chunks that are near-duplicates of existing memories
         if (point.payload.dedup_memory_id) continue;
 
         const chunk = point.payload;
@@ -546,24 +460,17 @@ export async function startIndexing(options = {}) {
       }
 
       if (mirrorPoints.length > 0) {
-        for (let i = 0; i < mirrorPoints.length; i += QDRANT_UPSERT_BATCH_SIZE) {
-          const batch = mirrorPoints.slice(i, i + QDRANT_UPSERT_BATCH_SIZE);
-          await withRetry(() => qdrant.upsert(memoryCollection, {
-            points: batch.map(p => ({
-              id: p.id,
-              vector: p.vector,
-              payload: p.payload,
-            })),
-          }));
+        for (let i = 0; i < mirrorPoints.length; i += UPSERT_BATCH_SIZE) {
+          const batch = mirrorPoints.slice(i, i + UPSERT_BATCH_SIZE);
+          upsertMemories(batch);
         }
       }
 
-      // Step 7: Backlink memories (fire-and-forget style — don't block on failures)
+      // Step 7: Backlink memories
       for (const point of points) {
         const { related_memory_ids } = point.payload;
         for (const memId of related_memory_ids) {
-          backlinkMemory(qdrant, memoryCollection, memId, sessionMeta.sessionId, point.id)
-            .catch(() => {}); // fire-and-forget
+          backlinkMemory(memId, sessionMeta.sessionId, point.id);
         }
       }
 
@@ -602,7 +509,6 @@ export async function startIndexing(options = {}) {
     }
   }
 
-  // Update last_run metadata
   state.last_run = {
     started_at: startedAt,
     completed_at: new Date().toISOString(),
@@ -618,113 +524,89 @@ export async function startIndexing(options = {}) {
 }
 
 /**
- * One-time migration: copy existing session_chunks into claude_memory as conversations.
- * Uses vectors already stored in Qdrant — no re-embedding needed.
- * Skips chunks that already exist in claude_memory (same UUID) or have dedup_memory_id.
+ * One-time migration: copy existing session_chunks into memories as conversations.
+ * Uses vectors already stored in SQLite — no re-embedding needed.
+ * Skips chunks that already exist in memories (same UUID) or have dedup_memory_id.
  * @param {function} [onProgress] - Progress callback
  * @returns {Promise<{ mirrored: number, skipped: number, errors: number }>}
  */
 export async function mirrorExistingChunks(onProgress) {
   const emit = onProgress || (() => {});
-  const env = loadEnvConfig();
-  const qdrantConfig = getQdrantConfig(env);
-  const qdrant = new QdrantClient({ url: qdrantConfig.url, apiKey: qdrantConfig.apiKey });
-  const memoryCollection = qdrantConfig.collection;
+  const d = getDb();
 
   let mirrored = 0;
   let skipped = 0;
   let errors = 0;
-  let offset = null;
-  let batch = 0;
 
   emit({ type: 'mirror:started' });
 
-  // Scroll through all session_chunks with vectors
-  while (true) {
-    const result = await qdrant.scroll(SESSION_COLLECTION, {
-      limit: 50,
-      with_payload: true,
-      with_vector: true,
-      offset: offset ?? undefined,
+  // Get all session chunks with vectors
+  const rows = d.prepare(`SELECT id, vector, content, summary, session_id, project, git_branch,
+    cwd, chunk_index, start_timestamp, end_timestamp, tools_used, files_modified,
+    files_read, user_messages, turn_count, related_memory_ids, dedup_memory_id, indexed_at
+    FROM session_chunks`).all();
+
+  const mirrorPoints = [];
+
+  for (const row of rows) {
+    const dedupMemoryId = row.dedup_memory_id;
+    if (dedupMemoryId) {
+      skipped++;
+      continue;
+    }
+
+    // Check if already mirrored
+    const existing = getMemoryById(row.id);
+    if (existing) {
+      skipped++;
+      continue;
+    }
+
+    const toolsUsed = JSON.parse(row.tools_used || '[]');
+    const filesModified = JSON.parse(row.files_modified || '[]');
+    const relatedMemoryIds = JSON.parse(row.related_memory_ids || '[]');
+
+    const mirrorPayload = {
+      content: row.content,
+      category: 'conversations',
+      subcategory: 'session-chunk',
+      project: row.project || 'global',
+      tags: [
+        'session-index',
+        ...(row.git_branch ? [`branch:${row.git_branch}`] : []),
+        ...toolsUsed.slice(0, 3),
+      ],
+      importance: 3,
+      source: 'auto-saved',
+      created_at: row.start_timestamp || new Date().toISOString(),
+      updated_at: row.indexed_at || new Date().toISOString(),
+      accessed_at: row.indexed_at || new Date().toISOString(),
+      access_count: 0,
+      related_files: filesModified.slice(0, 20),
+      related_memory_ids: relatedMemoryIds,
+      source_session_chunks: [{ session_id: row.session_id, chunk_id: row.id }],
+    };
+
+    mirrorPoints.push({
+      id: row.id,
+      vector: Array.from(new Float32Array(row.vector.buffer, row.vector.byteOffset, row.vector.byteLength / 4)),
+      payload: mirrorPayload,
     });
+  }
 
-    if (result.points.length === 0) break;
-
-    const mirrorPoints = [];
-
-    for (const point of result.points) {
-      const chunk = point.payload;
-
-      // Skip if dedup (already has a near-identical memory)
-      if (chunk.dedup_memory_id) {
-        skipped++;
-        continue;
+  // Batch upsert to memories
+  if (mirrorPoints.length > 0) {
+    try {
+      for (let i = 0; i < mirrorPoints.length; i += UPSERT_BATCH_SIZE) {
+        const batch = mirrorPoints.slice(i, i + UPSERT_BATCH_SIZE);
+        upsertMemories(batch);
+        mirrored += batch.length;
+        emit({ type: 'mirror:progress', mirrored, skipped, errors, batch: Math.floor(i / UPSERT_BATCH_SIZE) });
       }
-
-      // Check if already mirrored (same ID exists in claude_memory)
-      try {
-        const existing = await qdrant.retrieve(memoryCollection, {
-          ids: [String(point.id)],
-          with_payload: false,
-          with_vector: false,
-        });
-        if (existing.length > 0) {
-          skipped++;
-          continue;
-        }
-      } catch { /* doesn't exist — good, mirror it */ }
-
-      const mirrorPayload = {
-        content: chunk.content,
-        category: 'conversations',
-        subcategory: 'session-chunk',
-        project: chunk.project || 'global',
-        tags: [
-          'session-index',
-          ...(chunk.git_branch ? [`branch:${chunk.git_branch}`] : []),
-          ...((chunk.tools_used || []).slice(0, 3)),
-        ],
-        importance: 3,
-        source: 'auto-saved',
-        created_at: chunk.start_timestamp || new Date().toISOString(),
-        updated_at: chunk.indexed_at || new Date().toISOString(),
-        accessed_at: chunk.indexed_at || new Date().toISOString(),
-        access_count: 0,
-        related_files: (chunk.files_modified || []).slice(0, 20),
-        related_memory_ids: chunk.related_memory_ids || [],
-        source_session_chunks: [{ session_id: chunk.session_id, chunk_id: String(point.id) }],
-      };
-
-      mirrorPoints.push({
-        id: String(point.id),
-        vector: point.vector,
-        payload: mirrorPayload,
-      });
+    } catch (err) {
+      errors += mirrorPoints.length - mirrored;
+      emit({ type: 'mirror:error', error: err.message });
     }
-
-    // Batch upsert to claude_memory
-    if (mirrorPoints.length > 0) {
-      try {
-        await withRetry(() => qdrant.upsert(memoryCollection, {
-          points: mirrorPoints.map(p => ({
-            id: p.id,
-            vector: p.vector,
-            payload: p.payload,
-          })),
-        }));
-        mirrored += mirrorPoints.length;
-      } catch (err) {
-        errors += mirrorPoints.length;
-        emit({ type: 'mirror:error', error: err.message, batch });
-      }
-    }
-
-    batch++;
-    emit({ type: 'mirror:progress', mirrored, skipped, errors, batch });
-
-    // Next page
-    offset = result.next_page_offset ?? null;
-    if (offset === null) break;
   }
 
   emit({ type: 'mirror:complete', mirrored, skipped, errors });

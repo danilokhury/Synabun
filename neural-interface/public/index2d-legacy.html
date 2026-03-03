@@ -4098,7 +4098,7 @@
     50% { opacity: 1; }
   }
 
-  /* Docker / Qdrant down state */
+  /* Database down state */
   #loading-overlay.error #loading-text { animation: none; opacity: 0.7; }
   #loading-overlay.error #loading-sub { color: rgba(255,255,255,0.3); }
   #loading-action {
@@ -5159,9 +5159,8 @@ async function init() {
       const health = await healthRes.json();
       if (!health.ok) {
         const messages = {
-          docker_not_running: ['Database Offline', 'The memory database needs to be started'],
-          container_stopped:  ['Database Stopped', 'The memory database was stopped'],
-          qdrant_unreachable: ['Database Unreachable', 'The database engine is not responding'],
+          db_missing:         ['Database Unreachable', 'The SQLite database file is missing'],
+          db_error:           ['Database Unreachable', 'The database engine encountered an error'],
           remote_unreachable: ['Connection Failed', health.detail || 'Cannot reach the remote database'],
           auth_error:         ['Authentication Error', health.detail || 'The database rejected the connection'],
         };
