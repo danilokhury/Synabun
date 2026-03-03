@@ -4,6 +4,7 @@ import {
   browserNavigateSchema, browserNavigateDescription, handleBrowserNavigate,
   browserGoBackSchema, browserGoBackDescription, handleBrowserGoBack,
   browserGoForwardSchema, browserGoForwardDescription, handleBrowserGoForward,
+  browserReloadSchema, browserReloadDescription, handleBrowserReload,
 } from './browser-navigate.js';
 
 import {
@@ -13,12 +14,16 @@ import {
   browserHoverSchema, browserHoverDescription, handleBrowserHover,
   browserSelectSchema, browserSelectDescription, handleBrowserSelect,
   browserPressSchema, browserPressDescription, handleBrowserPress,
+  browserScrollSchema, browserScrollDescription, handleBrowserScroll,
+  browserUploadSchema, browserUploadDescription, handleBrowserUpload,
 } from './browser-interact.js';
 
 import {
   browserSnapshotSchema, browserSnapshotDescription, handleBrowserSnapshot,
   browserContentSchema, browserContentDescription, handleBrowserContent,
   browserScreenshotSchema, browserScreenshotDescription, handleBrowserScreenshot,
+  browserExtractTweetsSchema, browserExtractTweetsDescription, handleBrowserExtractTweets,
+  browserExtractFbPostsSchema, browserExtractFbPostsDescription, handleBrowserExtractFbPosts,
 } from './browser-observe.js';
 
 import {
@@ -28,7 +33,7 @@ import {
 } from './browser-advanced.js';
 
 /**
- * Register all 15 browser MCP tools on the given server instance.
+ * Register all 20 browser MCP tools on the given server instance.
  * Browser tools are static (no dynamic schema refresh needed).
  */
 export function registerBrowserTools(server: McpServer) {
@@ -36,6 +41,7 @@ export function registerBrowserTools(server: McpServer) {
   server.tool('browser_navigate', browserNavigateDescription, browserNavigateSchema, handleBrowserNavigate);
   server.tool('browser_go_back', browserGoBackDescription, browserGoBackSchema, handleBrowserGoBack);
   server.tool('browser_go_forward', browserGoForwardDescription, browserGoForwardSchema, handleBrowserGoForward);
+  server.tool('browser_reload', browserReloadDescription, browserReloadSchema, handleBrowserReload);
 
   // Interaction
   server.tool('browser_click', browserClickDescription, browserClickSchema, handleBrowserClick);
@@ -44,11 +50,15 @@ export function registerBrowserTools(server: McpServer) {
   server.tool('browser_hover', browserHoverDescription, browserHoverSchema, handleBrowserHover);
   server.tool('browser_select', browserSelectDescription, browserSelectSchema, handleBrowserSelect);
   server.tool('browser_press', browserPressDescription, browserPressSchema, handleBrowserPress);
+  server.tool('browser_scroll', browserScrollDescription, browserScrollSchema, handleBrowserScroll);
+  server.tool('browser_upload', browserUploadDescription, browserUploadSchema, handleBrowserUpload);
 
   // Observation
   server.tool('browser_snapshot', browserSnapshotDescription, browserSnapshotSchema, handleBrowserSnapshot);
   server.tool('browser_content', browserContentDescription, browserContentSchema, handleBrowserContent);
   server.tool('browser_screenshot', browserScreenshotDescription, browserScreenshotSchema, handleBrowserScreenshot);
+  server.tool('browser_extract_tweets', browserExtractTweetsDescription, browserExtractTweetsSchema, handleBrowserExtractTweets);
+  server.tool('browser_extract_fb_posts', browserExtractFbPostsDescription, browserExtractFbPostsSchema, handleBrowserExtractFbPosts);
 
   // Advanced
   server.tool('browser_evaluate', browserEvaluateDescription, browserEvaluateSchema, handleBrowserEvaluate);

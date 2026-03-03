@@ -27,6 +27,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadCategories, buildCategoryReference, detectProject } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
@@ -62,6 +63,7 @@ async function main() {
   const sessionId = input.session_id || '';
   const toolName = input.tool_name || '';
   const toolInput = input.tool_input || {};
+  const cwd = input.cwd || '';
 
   if (!sessionId) {
     process.stdout.write(JSON.stringify({}));
@@ -106,6 +108,19 @@ async function main() {
       } else {
         nudgeText = `SynaBun: ${flag.editCount} file edits — this is significant work. You MUST call \`remember\` before continuing.`;
       }
+
+      // On first threshold hit, append the full category reference (lazy injection)
+      if (!flag.categoryTreeInjected) {
+        try {
+          const categories = loadCategories();
+          const project = detectProject(cwd);
+          const categoryRef = buildCategoryReference(categories, project);
+          nudgeText += `\n\n${categoryRef}`;
+          flag.categoryTreeInjected = true;
+          writeFileSync(flagPath, JSON.stringify(flag));
+        } catch { /* category tree optional — nudge still works without it */ }
+      }
+
       process.stdout.write(JSON.stringify({ additionalContext: nudgeText }));
     } else {
       process.stdout.write(JSON.stringify({}));

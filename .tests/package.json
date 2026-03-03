@@ -7,7 +7,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:verbose": "vitest run --reporter=verbose",
-    "test:report": "vitest run --reporter=verbose 2>&1 | tee reports/latest.txt"
+    "test:report": "vitest run --reporter=verbose 2>&1 | tee reports/latest.txt",
+    "test:unit": "vitest run unit",
+    "test:hooks": "vitest run hooks",
+    "test:integration": "vitest run integration",
+    "test:all": "vitest run"
   },
   "devDependencies": {
     "vitest": "^2.1.0",

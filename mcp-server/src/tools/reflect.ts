@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { getMemory, updatePayload, updateVector } from '../services/qdrant.js';
 import { generateEmbedding } from '../services/embeddings.js';
-import { buildCategoryDescription, validateCategory } from '../services/categories.js';
+import { validateCategory } from '../services/categories.js';
+import { coerceStringArray } from './utils.js';
 import type { MemoryPayload } from '../types.js';
+import { invalidateCache } from '../services/neural-interface.js';
 import { computeChecksums } from '../services/file-checksums.js';
 
 export function buildReflectSchema() {
@@ -15,27 +17,21 @@ export function buildReflectSchema() {
         'Updated content. If provided, the embedding vector is regenerated.'
       ),
     importance: z.coerce.number().min(1).max(10).optional().describe('Updated importance score.'),
-    tags: z
-      .array(z.string())
+    tags: coerceStringArray()
       .optional()
       .describe('Replace all tags with these.'),
-    add_tags: z
-      .array(z.string())
+    add_tags: coerceStringArray()
       .optional()
       .describe('Add tags without replacing existing ones.'),
     subcategory: z.string().optional().describe('Updated subcategory.'),
     category: z
       .string()
       .optional()
-      .describe(
-        'Change the category. ' + buildCategoryDescription()
-      ),
-    related_files: z
-      .array(z.string())
+      .describe('Change the category name.'),
+    related_files: coerceStringArray()
       .optional()
       .describe('Updated related file paths.'),
-    related_memory_ids: z
-      .array(z.string())
+    related_memory_ids: coerceStringArray()
       .optional()
       .describe('Link to related memories.'),
   };
@@ -141,7 +137,8 @@ export async function handleReflect(args: {
   // Recompute file checksums whenever the memory is updated
   const finalFiles = (updates.related_files ?? payload.related_files);
   if (finalFiles?.length) {
-    updates.file_checksums = computeChecksums(finalFiles);
+    const cs = computeChecksums(finalFiles);
+    updates.file_checksums = Object.keys(cs).length > 0 ? cs : undefined;
   }
 
   if (args.content) {
@@ -151,6 +148,9 @@ export async function handleReflect(args: {
   } else {
     await updatePayload(memoryId, updates);
   }
+
+  // Invalidate Neural Interface link cache (fire-and-forget)
+  invalidateCache('reflect');
 
   return {
     content: [

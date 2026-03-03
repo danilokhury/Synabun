@@ -2,8 +2,39 @@
   "permissions": {
     "allow": [
       "mcp__SynaBun__recall",
+      "mcp__SynaBun__remember",
+      "mcp__SynaBun__reflect",
+      "mcp__SynaBun__forget",
+      "mcp__SynaBun__memories",
+      "mcp__SynaBun__loop",
+      "mcp__SynaBun__category",
+      "mcp__SynaBun__sync",
+      "mcp__SynaBun__browser_navigate",
+      "mcp__SynaBun__browser_click",
+      "mcp__SynaBun__browser_fill",
+      "mcp__SynaBun__browser_type",
+      "mcp__SynaBun__browser_hover",
+      "mcp__SynaBun__browser_select",
+      "mcp__SynaBun__browser_press",
+      "mcp__SynaBun__browser_evaluate",
+      "mcp__SynaBun__browser_snapshot",
+      "mcp__SynaBun__browser_content",
+      "mcp__SynaBun__browser_screenshot",
+      "mcp__SynaBun__browser_session",
+      "mcp__SynaBun__browser_go_back",
+      "mcp__SynaBun__browser_go_forward",
+      "mcp__SynaBun__browser_reload",
+      "mcp__SynaBun__browser_wait",
+      "mcp__SynaBun__whiteboard_read",
+      "mcp__SynaBun__whiteboard_add",
+      "mcp__SynaBun__whiteboard_update",
+      "mcp__SynaBun__whiteboard_remove",
+      "mcp__SynaBun__whiteboard_screenshot",
       "WebSearch",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "mcp__SynaBun__browser_scroll",
+      "mcp__SynaBun__browser_extract_tweets",
+      "Bash(ls:*)"
     ]
   }
 }
