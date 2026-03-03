@@ -1,7 +1,7 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { config, getActiveConnection, getActiveCollection } from '../config.js';
 import { getAllCategories } from './categories.js';
-import type { MemoryPayload, MemoryStats } from '../types.js';
+import type { MemoryPayload, MemoryStats, SessionChunkPayload } from '../types.js';
 
 let client: QdrantClient | null = null;
 let currentUrl: string = '';
@@ -232,6 +232,111 @@ export async function getMemoryStats(): Promise<MemoryStats> {
   }
 
   return { total, by_category, by_project, oldest, newest };
+}
+
+// --- Session Chunks Collection ---
+
+const SESSION_COLLECTION = 'session_chunks';
+
+export async function ensureSessionCollection(): Promise<void> {
+  const qdrant = getQdrantClient();
+
+  try {
+    const exists = await qdrant.collectionExists(SESSION_COLLECTION);
+    if (exists.exists) return;
+  } catch {
+    // Collection doesn't exist, create it
+  }
+
+  await qdrant.createCollection(SESSION_COLLECTION, {
+    vectors: {
+      size: config.openai.dimensions,
+      distance: 'Cosine',
+    },
+    optimizers_config: {
+      indexing_threshold: 100,
+    },
+  });
+
+  const keywordFields = ['session_id', 'project', 'git_branch', 'tools_used', 'dedup_memory_id', 'start_timestamp', 'end_timestamp'];
+  const integerFields = ['chunk_index', 'turn_count'];
+  const textFields = ['content'];
+
+  for (const field of keywordFields) {
+    await qdrant.createPayloadIndex(SESSION_COLLECTION, {
+      field_name: field,
+      field_schema: 'keyword',
+    });
+  }
+
+  for (const field of integerFields) {
+    await qdrant.createPayloadIndex(SESSION_COLLECTION, {
+      field_name: field,
+      field_schema: 'integer',
+    });
+  }
+
+  for (const field of textFields) {
+    await qdrant.createPayloadIndex(SESSION_COLLECTION, {
+      field_name: field,
+      field_schema: 'text',
+    });
+  }
+}
+
+export async function searchSessionChunks(
+  vector: number[],
+  limit: number,
+  filter?: Record<string, unknown>,
+  scoreThreshold = 0.3
+) {
+  const qdrant = getQdrantClient();
+  return qdrant.search(SESSION_COLLECTION, {
+    vector,
+    limit,
+    with_payload: true,
+    score_threshold: scoreThreshold,
+    filter: filter as never,
+  });
+}
+
+export async function upsertSessionChunks(
+  points: Array<{ id: string; vector: number[]; payload: SessionChunkPayload }>
+): Promise<void> {
+  const qdrant = getQdrantClient();
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < points.length; i += BATCH_SIZE) {
+    await qdrant.upsert(SESSION_COLLECTION, {
+      points: points.slice(i, i + BATCH_SIZE).map((p) => ({
+        id: p.id,
+        vector: p.vector,
+        payload: p.payload as unknown as Record<string, unknown>,
+      })),
+    });
+  }
+}
+
+export async function scrollSessionChunks(
+  filter?: Record<string, unknown>,
+  limit: number = 20,
+  offset?: string
+) {
+  const qdrant = getQdrantClient();
+  return qdrant.scroll(SESSION_COLLECTION, {
+    filter: filter as never,
+    limit,
+    with_payload: true,
+    offset: offset ?? undefined,
+  });
+}
+
+export async function countSessionChunks(filter?: Record<string, unknown>): Promise<number> {
+  const qdrant = getQdrantClient();
+  const result = await qdrant.count(SESSION_COLLECTION, {
+    filter: filter as never,
+    exact: true,
+  });
+  return result.count;
 }
 
 // --- System metadata (categories stored in Qdrant) ---

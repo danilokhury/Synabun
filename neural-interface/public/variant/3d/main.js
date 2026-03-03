@@ -29,6 +29,7 @@ import { openMemoryCard, restoreOpenCards, initDetailPanel, setDetailCallbacks }
 import { initSettings, restoreInterfaceConfig, loadIfaceConfig } from '../../shared/ui-settings.js';
 import { initTrash } from '../../shared/ui-trash.js';
 import { initBookmarks } from '../../shared/ui-bookmarks.js';
+import { initResume } from '../../shared/ui-resume.js';
 import { initLayouts, registerBuiltinPresets } from '../../shared/ui-layouts.js';
 import { initHelp } from '../../shared/ui-help.js';
 import { initMultiSelect } from '../../shared/ui-multiselect.js';
@@ -36,12 +37,20 @@ import { updateStats, initStats } from '../../shared/ui-stats.js';
 import { initExplorer } from '../../shared/ui-explorer.js';
 import { initSkillsStudio } from '../../shared/ui-skills.js';
 import { initTerminal } from '../../shared/ui-terminal.js';
+import { initLink } from '../../shared/ui-link.js';
+import { initWhiteboard } from '../../shared/ui-whiteboard.js';
+import { initGames, clearGameOnLoad } from '../../shared/ui-games.js';
 import { initWorkspaces } from '../../shared/ui-workspaces.js';
+import { initInvite } from '../../shared/ui-invite.js';
+import { initSync } from '../../shared/ui-sync.js';
 import { initKeybinds } from '../../shared/ui-keybinds.js';
+import { initTutorial } from '../../shared/ui-tutorial.js';
 
 // ── 3D variant modules ──
 import { gfx } from './gfx.js';
 import { setGraphicsHooks } from './settings-gfx.js';
+import { initAutomationStudio } from '../../shared/ui-automation-studio.js';
+import { initCommandRunner } from '../../shared/ui-command-runner.js';
 import { initCamera, updateCameraMovement, animateCameraToNode, frameCameraToExtent, saveCameraState, restoreCameraState } from './camera.js';
 import { applyFloorStyle, applyBgTheme, animateBackground } from './background.js';
 import {
@@ -50,7 +59,7 @@ import {
   applyLinkVisibility, setLinkMode, setLinkTypeFilter,
   navigateToNode, scheduleGraphRemoval, cancelScheduledRemoval,
   saveNodePositions, clearSavedPositions, resetLayout,
-  setBloomParams, stopAnimation, startAnimation,
+  setBloomParams, setBloomEnabled, stopAnimation, startAnimation,
 } from './graph.js';
 
 
@@ -121,6 +130,7 @@ setGraphicsHooks({
     if (g) applyFloorStyle(style, g);
   },
   getGraph,
+  setBloomEnabled,
 });
 
 
@@ -136,7 +146,8 @@ on('graph:navigate', ({ node, zoom }) => {
 // When shared UI requests data reload (e.g. after OpenClaw bridge sync)
 on('data:reload', async () => {
   try {
-    const res = await fetch('/api/memories');
+    const needLinks = state.linkMode !== 'off';
+    const res = await fetch(`/api/memories${needLinks ? '' : '?links=false'}`);
     if (!res.ok) return;
     const data = await res.json();
     state.allNodes = normalizeNodes(data.nodes);
@@ -266,8 +277,8 @@ async function boot() {
       // /api/health failed — continue to try /api/memories
     }
 
-    // Fetch all memories
-    const res = await fetch('/api/memories');
+    // Fetch all memories (skip expensive link computation — loaded on demand)
+    const res = await fetch('/api/memories?links=false');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
@@ -352,6 +363,7 @@ async function boot() {
 // 8. INIT ALL SHARED UI SYSTEMS
 // ═══════════════════════════════════════════
 
+initLoading({ onInit: boot });
 initKeybinds();  // async — loads keybinds from server, installs central dispatcher
 initTooltip();
 initPanelSystem();
@@ -364,14 +376,24 @@ initDetailPanel();
 initSettings();
 initTrash();
 initBookmarks();
+initResume();
 initLayouts();
 initWorkspaces();
+initInvite();
+initSync();
 initHelp();
 initMultiSelect();
 initStats();
 initExplorer();
 initSkillsStudio();
+initAutomationStudio();
+initCommandRunner();
 initTerminal();
+initLink();
+clearGameOnLoad();
+initWhiteboard();
+initGames();
+initTutorial();
 
 // View switch handler
 {
@@ -416,6 +438,12 @@ on('viz:toggle', (enabled) => {
   } else {
     stopAnimation();
   }
+});
+
+// Focus mode isolation — clear 3D-specific interactive state
+on('focus:enter', () => {
+  state.hoveredNodeId = null;
+  document.body.style.cursor = 'default';
 });
 
 // Workspace scene snapshot (3D)

@@ -143,8 +143,37 @@ export function applyIfaceConfig(cfg, { instant = false } = {}) {
 
   if (!vizEnabled) {
     // ENTERING FOCUS MODE
-    // Hide controls + 2D canvases
-    for (const id of ['controls-panel', 'stats-bar']) {
+
+    // ── Clean up all interactive state ──
+    // Hide 3D tooltip + detach its mousemove listener
+    const $tooltip = document.getElementById('tooltip');
+    if ($tooltip) {
+      $tooltip.classList.remove('visible');
+      if ($tooltip._moveHandler) {
+        document.removeEventListener('mousemove', $tooltip._moveHandler);
+        $tooltip._moveHandler = null;
+      }
+    }
+    // Hide data-tooltip tooltips
+    const uiTip = document.querySelector('.ui-tooltip');
+    if (uiTip) {
+      uiTip.classList.remove('visible');
+      uiTip.style.display = 'none';
+    }
+    // Clear hover state
+    state.hoveredNodeId = null;
+    // Clear multi-select
+    if (state.multiSelected.size > 0) {
+      state.multiSelected.clear();
+      const bar = document.getElementById('multi-select-bar');
+      if (bar) bar.classList.remove('open');
+      emit('multiselect:cleared');
+    }
+    // Reset cursor
+    document.body.style.cursor = 'default';
+
+    // Hide controls, 2D canvases, category sidebar
+    for (const id of ['controls-panel', 'stats-bar', 'category-sidebar']) {
       const el = document.getElementById(id);
       if (el) el.classList.add('viz-hidden');
     }
@@ -163,6 +192,8 @@ export function applyIfaceConfig(cfg, { instant = false } = {}) {
         if (staticBg) staticBg.classList.add('visible');
       }, 100);
     }
+    // Notify variant-specific cleanup (lasso, context menu, etc.)
+    emit('focus:enter');
   } else {
     // EXITING FOCUS MODE
     // Iris open the graph + close focus bg
@@ -175,19 +206,20 @@ export function applyIfaceConfig(cfg, { instant = false } = {}) {
     }
     if (instant) {
       // Page load — show controls immediately
-      for (const id of ['controls-panel', 'stats-bar']) {
+      for (const id of ['controls-panel', 'stats-bar', 'category-sidebar']) {
         const el = document.getElementById(id);
         if (el) el.classList.remove('viz-hidden');
       }
     } else {
       // User toggle — delay controls until iris starts opening
       setTimeout(() => {
-        for (const id of ['controls-panel', 'stats-bar']) {
+        for (const id of ['controls-panel', 'stats-bar', 'category-sidebar']) {
           const el = document.getElementById(id);
           if (el) el.classList.remove('viz-hidden');
         }
       }, 200);
     }
+    emit('focus:exit');
   }
   // Notify variants to pause/resume rendering
   emit('viz:toggle', vizEnabled);
@@ -208,33 +240,61 @@ export function restoreInterfaceConfig() {
 
 // ── Shared tab order (variant tabs injected by order) ──
 
-const SHARED_TAB_IDS = ['server', 'hooks', 'terminal', 'setup', 'collections', 'projects', 'memory', 'interface'];
+const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'collections', 'memory', 'projects', 'hooks', 'interface'];
+
+// ── Tab descriptor map ──
+const TAB_META = {
+  server:      { label: 'General',     desc: 'API keys & status',       group: 'System' },
+  setup:       { label: 'Setup',       desc: 'Claude, Gemini, Codex',   group: 'System' },
+  terminal:    { label: 'Terminal',    desc: 'CLI executables',          group: 'System' },
+  collections: { label: 'Collections', desc: 'Qdrant databases',        group: 'Data' },
+  memory:      { label: 'Recall',      desc: 'Token budget & sync',     group: 'Data' },
+  projects:    { label: 'Projects',    desc: 'Workspace configs',       group: 'Data' },
+  hooks:       { label: 'Connections', desc: 'Integrations & bridges',  group: 'Connections' },
+  interface:   { label: 'Interface',   desc: 'Theme & appearance',      group: 'Appearance' },
+};
 
 // ═══════════════════════════════════════════
 // TAB HTML BUILDERS
 // ═══════════════════════════════════════════
 
-function buildNavHTML(variantTabs) {
+function buildNavHTML(variantTabs, statusMap = {}) {
   let html = '';
-  // Shared tabs
+  let lastGroup = '';
+
+  // Shared tabs — grouped with section headers
   for (const id of SHARED_TAB_IDS) {
-    const label = id === 'server' ? 'General' : id === 'hooks' ? 'Connections' : id === 'collections' ? 'Memory'
-      : id === 'terminal' ? 'Terminal' : id.charAt(0).toUpperCase() + id.slice(1);
-    html += `<button class="settings-nav-item${id === 'server' ? ' active' : ''}" data-tab="${id}">
-      ${TAB_ICONS[id] || ''}
-      ${label}
+    const meta = TAB_META[id] || { label: id, desc: '', group: '' };
+
+    // Insert group header when group changes
+    if (meta.group && meta.group !== lastGroup) {
+      if (lastGroup) html += `<div class="settings-nav-sep"></div>\n`;
+      html += `<div class="stg-nav-group-label">${meta.group}</div>\n`;
+      lastGroup = meta.group;
+    }
+
+    const statusAttr = statusMap[id] ? ` data-status="${statusMap[id]}"` : '';
+    html += `<button class="settings-nav-item${id === 'server' ? ' active' : ''}" data-tab="${id}"${statusAttr}>
+      <span class="stg-nav-icon">${TAB_ICONS[id] || ''}</span>
+      <span class="stg-nav-text">
+        <span class="stg-nav-label">${meta.label}</span>
+        <span class="stg-nav-desc">${meta.desc}</span>
+      </span>
     </button>\n`;
   }
-  // Separator before variant tabs
+
+  // Separator + variant-registered tabs under "Appearance" group
   if (variantTabs.length) {
     html += `<div class="settings-nav-sep"></div>\n`;
   }
-  // Variant-registered tabs
   for (const tab of variantTabs) {
     const icon = TAB_ICONS[tab.id] || (tab.icon.startsWith('<') ? tab.icon : `<span style="font-size:14px">${tab.icon}</span>`);
     html += `<button class="settings-nav-item" data-tab="${tab.id}">
-      ${icon}
-      ${tab.label}
+      <span class="stg-nav-icon">${icon}</span>
+      <span class="stg-nav-text">
+        <span class="stg-nav-label">${tab.label}</span>
+        <span class="stg-nav-desc"></span>
+      </span>
     </button>\n`;
   }
   return html;
@@ -276,7 +336,7 @@ function buildServerTab(settings, qdrantOk) {
           <button class="settings-btn-save" id="stg-save">Save</button>
         </div>
 
-        <div style="margin:20px 0 16px;border-top:1px solid var(--s-medium)"></div>
+        <div class="stg-section-divider"></div>
         <div class="gfx-group-title">System Backup & Restore</div>
         <div class="settings-hint" style="margin-bottom:12px">
           Create a full backup of all SynaBun data including .env config, data files,
@@ -443,15 +503,14 @@ function buildSetupTab(setupStatus) {
               <div class="bc-card-row">
                 <label class="bc-lbl">Mode</label>
                 <div class="bc-inline-group">
-                  <input type="hidden" id="bc-headless" value="true">
+                  <input type="hidden" id="bc-headless" value="false">
                   <div class="cc-dropdown bc-dropdown" data-for="bc-headless">
                     <button class="cc-dropdown-trigger" type="button">
-                      <span class="cc-dropdown-value">Headless</span>
+                      <span class="cc-dropdown-value">Headed</span>
                       <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
                     </button>
                     <div class="cc-dropdown-menu">
                       <div class="cc-dropdown-item active" data-value="true">Headless</div>
-                      <div class="cc-dropdown-item" data-value="new">New Headless</div>
                       <div class="cc-dropdown-item" data-value="false">Headed</div>
                     </div>
                   </div>
@@ -509,12 +568,35 @@ function buildSetupTab(setupStatus) {
             <!-- ════ PROFILE ════ -->
             <div class="bc-card bc-card-accent">
               <div class="bc-card-header">Profile &amp; Storage</div>
+              <input type="hidden" id="bc-userDataDir" value="">
               <div class="bc-card-row">
-                <label class="bc-lbl">User Data Dir</label>
-                <input type="text" class="browser-cfg-input" id="bc-userDataDir" placeholder="Empty = clean sandbox" spellcheck="false" autocomplete="off">
+                <label class="bc-lbl">Chrome Profile</label>
+                <div class="browser-cfg-input-row" style="flex:1">
+                  <button class="cli-detect-btn" id="bc-detect-profiles" data-tooltip="Scan for profiles" style="order:2">
+                    <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  </button>
+                </div>
               </div>
-              <div class="bc-protip">
-                <strong>Pro tip:</strong> Create a dedicated Chrome profile for SynaBun: Chrome &rarr; profile icon &rarr; <em>Add</em> &rarr; name it "SynaBun". Then paste the path from <code>chrome://version</code> &rarr; "Profile Path". Use the <strong>parent folder</strong> (User Data), not the subfolder. Chrome must be fully closed.
+              <div class="bc-profile-list" id="bc-profile-list">
+                <div class="bc-profile-item selected" data-profile-value="">
+                  <span class="bc-profile-radio"></span>
+                  <span class="bc-profile-name">Clean Sandbox</span>
+                  <span class="bc-profile-hint">No persistent profile</span>
+                </div>
+                <div class="bc-profile-item" data-profile-value="__synabun__">
+                  <span class="bc-profile-radio"></span>
+                  <span class="bc-profile-name">SynaBun Profile</span>
+                  <span class="bc-profile-hint">Managed</span>
+                </div>
+              </div>
+              <div class="bc-card-row" style="margin-top:6px">
+                <label class="bc-lbl">Path</label>
+                <div class="browser-cfg-input-row" style="flex:1">
+                  <input type="text" class="browser-cfg-input" id="bc-custom-profile-path" placeholder="Profile folder path (or pick from list above)" spellcheck="false" autocomplete="off" style="flex:1">
+                  <button class="cli-detect-btn" id="bc-browse-folder" data-tooltip="Browse for folder" style="order:2">
+                    <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                  </button>
+                </div>
               </div>
               <div class="bc-card-row">
                 <label class="bc-lbl">Persist State</label>
@@ -957,16 +1039,75 @@ function buildCollectionsTab(connections) {
       </div>`;
 }
 
-function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig) {
+function buildToolPermissionsSection(categories, permissions, chevron) {
+  if (!categories || !categories.length) return '';
+  const perms = permissions || {};
+
+  // Count totals
+  let totalOn = 0, totalAll = 0;
+  const catData = categories.map(cat => {
+    const onCount = cat.tools.filter(t => perms[t.key] !== false).length;
+    totalOn += onCount;
+    totalAll += cat.tools.length;
+    return { ...cat, onCount };
+  });
+
+  const allOn = totalOn === totalAll;
+
+  const categoryHTML = catData.map(cat => {
+    const catAllOn = cat.onCount === cat.tools.length;
+    const toolRows = cat.tools.map(t => {
+      const isOn = perms[t.key] !== false;
+      return `
+              <div class="cc-integration-item${isOn ? ' enabled' : ''}" data-tool-key="${t.key}">
+                <div class="cc-integration-info">
+                  <div class="cc-integration-label">${t.label}</div>
+                  <div class="cc-integration-path">${t.desc}</div>
+                </div>
+                <button class="cc-toggle${isOn ? ' on' : ''}" data-cc-tool="${t.key}"></button>
+              </div>`;
+    }).join('');
+
+    return `
+            <div class="cc-tool-category" data-tool-category="${cat.id}">
+              <div class="cc-tool-category-header">
+                <span class="cc-tool-category-label">${cat.label}</span>
+                <span class="cc-tool-category-count">${cat.onCount}/${cat.tools.length}</span>
+                <button class="cc-tool-category-all${catAllOn ? ' on' : ''}" data-cc-tool-cat="${cat.id}" title="Toggle all ${cat.label} tools">${catAllOn ? 'All' : 'All'}</button>
+              </div>
+              <div class="cc-hook-toggles">${toolRows}
+              </div>
+            </div>`;
+  }).join('');
+
+  return `
+        <div class="iface-section collapsed" data-collapsible id="cc-tool-permissions">
+          <div class="gfx-group-title" style="justify-content:space-between">
+            <span style="display:flex;align-items:center;gap:6px">
+              ${chevron} Permissions
+              <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-tools-badge">${totalOn}/${totalAll}</span>
+            </span>
+          </div>
+          <div class="cc-section-body">
+            <div class="cc-tool-permissions-hint" style="font-size:10px;color:var(--t-dim);margin-bottom:8px;padding:0 2px">
+              Choose which actions can run automatically without asking you first.
+            </div>
+            ${categoryHTML}
+          </div>
+        </div>`;
+}
+
+function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, toolPermissions, toolCategories) {
   const gh = ccIntegrations.global.hooks || {};
   const projs = ccIntegrations.projects || [];
   const ssOn = gh.SessionStart && projs.every(p => (p.hooks || {}).SessionStart);
   const psOn = gh.UserPromptSubmit && projs.every(p => (p.hooks || {}).UserPromptSubmit);
   const pcOn = gh.PreCompact && projs.every(p => (p.hooks || {}).PreCompact);
   const stOn = gh.Stop && projs.every(p => (p.hooks || {}).Stop);
+  const prOn = gh.PreToolUse && projs.every(p => (p.hooks || {}).PreToolUse);
   const ptOn = gh.PostToolUse && projs.every(p => (p.hooks || {}).PostToolUse);
-  const allOn = ssOn && psOn && pcOn && stOn && ptOn;
-  const onCount = [ssOn, psOn, pcOn, stOn, ptOn].filter(Boolean).length;
+  const allOn = ssOn && psOn && pcOn && stOn && prOn && ptOn;
+  const onCount = [ssOn, psOn, pcOn, stOn, prOn, ptOn].filter(Boolean).length;
   const hf = ccIntegrations.hookFeatures || {};
   const cmOn = hf.conversationMemory !== false;
   const grOn = hf.greeting === true;
@@ -974,11 +1115,12 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
   const ulThreshold = hf.userLearningThreshold || 8;
 
   const hookRows = [
-    { key: 'SessionStart', on: ssOn, label: 'SessionStart', desc: 'Runs once when a new session begins' },
-    { key: 'UserPromptSubmit', on: psOn, label: 'UserPromptSubmit', desc: 'Runs on every user message' },
-    { key: 'PreCompact', on: pcOn, label: 'PreCompact', desc: 'Caches session data before context compaction' },
-    { key: 'Stop', on: stOn, label: 'Stop', desc: 'Enforces session indexing after compaction' },
-    { key: 'PostToolUse', on: ptOn, label: 'PostToolUse', desc: 'Tracks edits and clears enforcement flags on remember' },
+    { key: 'SessionStart', on: ssOn, label: 'Session Startup', desc: 'Load memory and context when a new session begins' },
+    { key: 'UserPromptSubmit', on: psOn, label: 'Message Processing', desc: 'Process each message for memory triggers and rule enforcement' },
+    { key: 'PreCompact', on: pcOn, label: 'Context Preservation', desc: 'Save session data before the context window is compressed' },
+    { key: 'Stop', on: stOn, label: 'Session Indexing', desc: 'Index completed sessions so they can be recalled later' },
+    { key: 'PreToolUse', on: prOn, label: 'Tool Safety Guard', desc: 'Prevent web searches while browser automation is running' },
+    { key: 'PostToolUse', on: ptOn, label: 'Action Tracking', desc: 'Track file changes, enforce rules, and save plans on approval' },
   ];
 
   // Build greeting project options
@@ -1146,7 +1288,7 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
         <!-- 2. HOOKS -->
         <div class="iface-section collapsed" data-collapsible data-cc-target="global">
           <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Hooks <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/5</span></span>
+            <span style="display:flex;align-items:center;gap:6px">${chevron} Automations <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/6</span></span>
             ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
           </div>
           <div class="cc-section-body">
@@ -1174,14 +1316,14 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
               <div class="cc-integration-item${cmOn ? ' enabled' : ''}" data-feature="conversationMemory">
                 <div class="cc-integration-info">
                   <div class="cc-integration-label">Conversation Memory</div>
-                  <div class="cc-integration-path">Auto-index sessions on compaction for cross-session recall</div>
+                  <div class="cc-integration-path">Remember past sessions so context carries over between conversations</div>
                 </div>
                 <button class="cc-toggle${cmOn ? ' on' : ''}" data-cc-feature="conversationMemory"></button>
               </div>
               <div class="cc-integration-item${ulOn ? ' enabled' : ''}" data-feature="userLearning">
                 <div class="cc-integration-info">
                   <div class="cc-integration-label">User Learning</div>
-                  <div class="cc-integration-path">Observe communication patterns, preferences, and behavioral singularity</div>
+                  <div class="cc-integration-path">Learn your communication style and preferences over time</div>
                   <div class="cc-ul-threshold" id="cc-ul-threshold" style="display:${ulOn ? 'flex' : 'none'};align-items:center;gap:6px;margin-top:5px">
                     <span style="font-size:10px;color:var(--t-dim);white-space:nowrap">Reflect every</span>
                     <input type="number" id="cc-ul-threshold-input" min="3" max="30" value="${ulThreshold}" style="width:40px;padding:2px 4px;font-size:10px;background:rgba(255,255,255,0.04);border:1px solid var(--b-subtle);border-radius:4px;color:var(--t-bright);text-align:center;font-family:inherit">
@@ -1193,6 +1335,9 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
             </div>
           </div>
         </div>
+
+        <!-- 3.5 TOOL PERMISSIONS -->
+        ${buildToolPermissionsSection(toolCategories, toolPermissions, chevron)}
 
         <!-- 4. EXTERNAL ACCESS -->
         <div class="iface-section collapsed" data-collapsible>
@@ -1492,9 +1637,11 @@ export async function openSettingsModal() {
   let greetingConfig = { defaults: {}, projects: {}, global: {} };
   let setupStatus = { claude: {}, gemini: {}, codex: {}, paths: {} };
   let cliConfig = {};
+  let toolPermissions = {};
+  let toolCategories = [];
 
   try {
-    const [settingsRes, statsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes] = await Promise.allSettled([
+    const [settingsRes, statsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes] = await Promise.allSettled([
       fetch('/api/settings').then(r => r.json()),
       fetch('/api/stats').then(r => r.json()),
       fetch('/api/connections').then(r => r.json()),
@@ -1506,6 +1653,8 @@ export async function openSettingsModal() {
       fetch('/api/greeting/config').then(r => r.json()),
       fetch('/api/setup/status').then(r => r.json()),
       fetch('/api/cli/config').then(r => r.json()),
+      fetch('/api/claude-code/tool-permissions').then(r => r.json()),
+      fetch('/api/claude-code/tool-categories').then(r => r.json()),
     ]);
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
     if (statsRes.status === 'fulfilled' && statsRes.value.status) qdrantOk = true;
@@ -1518,6 +1667,8 @@ export async function openSettingsModal() {
     if (greetRes.status === 'fulfilled' && greetRes.value.ok) greetingConfig = greetRes.value.config;
     if (setupRes.status === 'fulfilled' && setupRes.value.ok) setupStatus = setupRes.value;
     if (cliRes.status === 'fulfilled' && cliRes.value.ok) cliConfig = cliRes.value.config;
+    if (toolPermsRes.status === 'fulfilled' && toolPermsRes.value.ok) toolPermissions = toolPermsRes.value.tools;
+    if (toolCatsRes.status === 'fulfilled' && toolCatsRes.value.ok) toolCategories = toolCatsRes.value.categories;
   } catch {}
   let openclawBridge = _bridgeResult || { enabled: false };
 
@@ -1542,7 +1693,7 @@ export async function openSettingsModal() {
     if (savedPanel.width) overlay.style.width = savedPanel.width;
     if (savedPanel.height) overlay.style.height = savedPanel.height;
   } else {
-    overlay.style.left = Math.max(20, (window.innerWidth - 620) / 2) + 'px';
+    overlay.style.left = Math.max(20, (window.innerWidth - 680) / 2) + 'px';
     overlay.style.top = Math.max(navbarH, (window.innerHeight - 600) / 2) + 'px';
   }
 
@@ -1563,16 +1714,30 @@ export async function openSettingsModal() {
     <div class="resize-handle resize-handle-bl" data-resize="bl"></div>
     <div class="resize-handle resize-handle-br" data-resize="br"></div>
     <div class="settings-panel-header drag-handle" data-drag="settings-panel">
-      <h3>Settings</h3>
+      <div class="stg-header-left">
+        <h3>Settings</h3>
+        <span class="stg-status-badge">
+          <span class="stg-status-dot ${qdrantOk ? 'connected' : 'disconnected'}"></span>
+          Qdrant
+        </span>
+      </div>
+      <button class="stg-focus-btn" id="stg-focus" data-tooltip="Focus mode">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
+          <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+        </svg>
+      </button>
       <button class="settings-panel-close" id="stg-close" data-tooltip="Close">&times;</button>
     </div>
     <div class="settings-panel-body">
       <nav class="settings-nav">
-        ${buildNavHTML(variantTabs)}
+        ${buildNavHTML(variantTabs, {
+          server: qdrantOk ? 'connected' : 'disconnected',
+          setup: (setupStatus.claude?.installed || setupStatus.gemini?.installed || setupStatus.codex?.installed) ? 'connected' : 'disconnected',
+        })}
       </nav>
       <div class="settings-content">
         ${buildServerTab(settings, qdrantOk)}
-        ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig)}
+        ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, toolPermissions, toolCategories)}
         ${buildTerminalTab(cliConfig)}
         ${buildSetupTab(setupStatus)}
         ${buildCollectionsTab(connections)}
@@ -1585,6 +1750,20 @@ export async function openSettingsModal() {
   `;
 
   document.body.appendChild(overlay);
+
+  // ── Open animation (matches Skills/Automation Studio) ──
+  requestAnimationFrame(() => overlay.classList.add('open'));
+
+  // ── Focus mode ──
+  let _focusMode = false;
+  const focusBtn = overlay.querySelector('#stg-focus');
+  if (focusBtn) {
+    focusBtn.addEventListener('click', () => {
+      _focusMode = !_focusMode;
+      backdrop.classList.toggle('focus', _focusMode);
+      focusBtn.classList.toggle('active', _focusMode);
+    });
+  }
 
   // ── Close helper ──
   const close = () => {
@@ -2476,8 +2655,8 @@ export async function openSettingsModal() {
     const onCount = [...toggles].filter(t => t.classList.contains('on')).length;
     const badge = overlay.querySelector('#cc-hooks-badge');
     if (badge) {
-      badge.textContent = `${onCount}/5`;
-      badge.classList.toggle('all-on', onCount === 5);
+      badge.textContent = `${onCount}/6`;
+      badge.classList.toggle('all-on', onCount === 6);
     }
   }
 
@@ -2539,6 +2718,75 @@ export async function openSettingsModal() {
         else { alert(data.error || 'Failed to toggle feature'); }
       } catch (err) { alert('Failed: ' + err.message); }
       finally { toggle.style.opacity = ''; toggle.style.pointerEvents = ''; }
+    });
+  });
+
+  // ── Tool Permission toggles ──
+  function updateToolBadges() {
+    const section = overlay.querySelector('#cc-tool-permissions');
+    if (!section) return;
+    let totalOn = 0, totalAll = 0;
+    section.querySelectorAll('.cc-tool-category').forEach(catEl => {
+      const toggles = catEl.querySelectorAll('.cc-toggle[data-cc-tool]');
+      const on = [...toggles].filter(t => t.classList.contains('on')).length;
+      totalOn += on;
+      totalAll += toggles.length;
+      const countEl = catEl.querySelector('.cc-tool-category-count');
+      if (countEl) countEl.textContent = `${on}/${toggles.length}`;
+      const allBtn = catEl.querySelector('.cc-tool-category-all');
+      if (allBtn) allBtn.classList.toggle('on', on === toggles.length);
+    });
+    const badge = overlay.querySelector('#cc-tools-badge');
+    if (badge) {
+      badge.textContent = `${totalOn}/${totalAll}`;
+      badge.classList.toggle('all-on', totalOn === totalAll);
+    }
+  }
+
+  function applyToolPermissionResult(tools) {
+    const section = overlay.querySelector('#cc-tool-permissions');
+    if (!section) return;
+    for (const [key, enabled] of Object.entries(tools)) {
+      const toggle = section.querySelector(`.cc-toggle[data-cc-tool="${key}"]`);
+      if (toggle) {
+        toggle.classList.toggle('on', enabled);
+        const row = toggle.closest('.cc-integration-item');
+        if (row) row.classList.toggle('enabled', enabled);
+      }
+    }
+    updateToolBadges();
+  }
+
+  // Individual tool toggles
+  overlay.querySelectorAll('.cc-toggle[data-cc-tool]').forEach(toggle => {
+    toggle.addEventListener('click', async () => {
+      const tool = toggle.dataset.ccTool;
+      const isOn = toggle.classList.contains('on');
+      try {
+        toggle.style.opacity = '0.4'; toggle.style.pointerEvents = 'none';
+        const res = await fetch('/api/claude-code/tool-permissions', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tool, enabled: !isOn }) });
+        const data = await res.json();
+        if (data.ok) applyToolPermissionResult(data.tools);
+        else alert(data.error || 'Failed to toggle tool');
+      } catch (err) { alert('Failed: ' + err.message); }
+      finally { toggle.style.opacity = ''; toggle.style.pointerEvents = ''; }
+    });
+  });
+
+  // Category "All" toggles
+  overlay.querySelectorAll('.cc-tool-category-all[data-cc-tool-cat]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const category = btn.dataset.ccToolCat;
+      const isOn = btn.classList.contains('on');
+      try {
+        btn.style.opacity = '0.4'; btn.style.pointerEvents = 'none';
+        const res = await fetch('/api/claude-code/tool-permissions', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category, enabled: !isOn }) });
+        const data = await res.json();
+        if (data.ok) applyToolPermissionResult(data.tools);
+        else alert(data.error || 'Failed to toggle category');
+      } catch (err) { alert('Failed: ' + err.message); }
+      finally { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
     });
   });
 
@@ -3067,6 +3315,211 @@ export async function openSettingsModal() {
       });
     }
 
+    // ── Chrome profile picker ──
+    let _detectedProfiles = [];
+    let _synabunProfile = '';
+
+    /** Select a profile from the list. Updates hidden field + path input. */
+    function selectProfileItem(value) {
+      const list = overlay.querySelector('#bc-profile-list');
+      if (!list) return;
+      list.querySelectorAll('.bc-profile-item').forEach(el => el.classList.remove('selected'));
+      const hidden = overlay.querySelector('#bc-userDataDir');
+      const pathInput = overlay.querySelector('#bc-custom-profile-path');
+
+      let resolvedPath = '';
+      if (value === '') {
+        resolvedPath = '';
+      } else if (value === '__synabun__') {
+        resolvedPath = _synabunProfile || 'data/chrome-profile';
+      } else {
+        resolvedPath = value;
+      }
+
+      if (hidden) hidden.value = resolvedPath;
+      if (pathInput) pathInput.value = resolvedPath;
+
+      const match = list.querySelector(`[data-profile-value="${CSS.escape(value)}"]`);
+      if (match) match.classList.add('selected');
+    }
+
+    /** Set the path directly (from typing or browse). Highlights matching profile or deselects all. */
+    function setProfilePath(path) {
+      const hidden = overlay.querySelector('#bc-userDataDir');
+      if (hidden) hidden.value = path;
+
+      const list = overlay.querySelector('#bc-profile-list');
+      if (!list) return;
+      list.querySelectorAll('.bc-profile-item').forEach(el => el.classList.remove('selected'));
+
+      if (!path) {
+        const sandbox = list.querySelector('[data-profile-value=""]');
+        if (sandbox) sandbox.classList.add('selected');
+        return;
+      }
+
+      const norm = path.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+      const synNorm = (_synabunProfile || '').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+
+      if (synNorm && norm === synNorm) {
+        const el = list.querySelector('[data-profile-value="__synabun__"]');
+        if (el) el.classList.add('selected');
+        return;
+      }
+
+      for (const p of _detectedProfiles) {
+        if (p.path.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '') === norm) {
+          const el = list.querySelector(`[data-profile-value="${CSS.escape(p.path)}"]`);
+          if (el) el.classList.add('selected');
+          return;
+        }
+      }
+      // No match — nothing highlighted, path input is the source of truth
+    }
+
+    function buildProfileList(profiles, synabunProfile) {
+      const list = overlay.querySelector('#bc-profile-list');
+      if (!list) return;
+
+      const currentVal = overlay.querySelector('#bc-userDataDir')?.value || '';
+
+      list.innerHTML = '';
+
+      // Built-in: Clean Sandbox
+      list.insertAdjacentHTML('beforeend', `
+        <div class="bc-profile-item" data-profile-value="">
+          <span class="bc-profile-radio"></span>
+          <span class="bc-profile-name">Clean Sandbox</span>
+          <span class="bc-profile-hint">No persistent profile</span>
+        </div>
+      `);
+
+      // Built-in: SynaBun Profile
+      list.insertAdjacentHTML('beforeend', `
+        <div class="bc-profile-item" data-profile-value="__synabun__">
+          <span class="bc-profile-radio"></span>
+          <span class="bc-profile-name">SynaBun Profile</span>
+          <span class="bc-profile-hint">Managed</span>
+        </div>
+      `);
+
+      // Group detected profiles by browser
+      const byBrowser = {};
+      for (const p of profiles) {
+        if (!byBrowser[p.browser]) byBrowser[p.browser] = [];
+        byBrowser[p.browser].push(p);
+      }
+
+      for (const [browser, items] of Object.entries(byBrowser)) {
+        list.insertAdjacentHTML('beforeend', `<div class="bc-profile-divider">${browser}</div>`);
+        for (const p of items) {
+          const label = p.name === p.folder ? p.name : `${p.name} (${p.folder})`;
+          list.insertAdjacentHTML('beforeend', `
+            <div class="bc-profile-item" data-profile-value="${p.path.replace(/"/g, '&quot;')}">
+              <span class="bc-profile-radio"></span>
+              <span class="bc-profile-name">${label}</span>
+              <span class="bc-profile-hint">${p.isDefault ? 'Default' : ''}</span>
+            </div>
+          `);
+        }
+      }
+
+      // Attach click handlers
+      list.querySelectorAll('.bc-profile-item').forEach(el => {
+        el.addEventListener('click', () => selectProfileItem(el.dataset.profileValue));
+      });
+
+      // Restore selection
+      matchProfileSelection(currentVal, synabunProfile);
+    }
+
+    function matchProfileSelection(userDataDir, synabunProfile) {
+      const pathInput = overlay.querySelector('#bc-custom-profile-path');
+      if (!userDataDir) {
+        if (pathInput) pathInput.value = '';
+        selectProfileItem('');
+        return;
+      }
+
+      if (pathInput) pathInput.value = userDataDir;
+
+      const norm = (userDataDir || '').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+      const synNorm = (synabunProfile || '').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+
+      if (synNorm && norm === synNorm) {
+        selectProfileItem('__synabun__');
+        return;
+      }
+
+      for (const p of _detectedProfiles) {
+        if (p.path.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '') === norm) {
+          selectProfileItem(p.path);
+          return;
+        }
+      }
+
+      // Custom path — just set the hidden field, no list item to highlight
+      const hidden = overlay.querySelector('#bc-userDataDir');
+      if (hidden) hidden.value = userDataDir;
+    }
+
+    async function detectAndBuildProfiles() {
+      const btn = overlay.querySelector('#bc-detect-profiles');
+      if (btn) { btn.style.opacity = '0.4'; btn.style.pointerEvents = 'none'; }
+      try {
+        const res = await fetch('/api/browser/detect-profiles');
+        const data = await res.json();
+        _detectedProfiles = data.profiles || [];
+        _synabunProfile = data.synabunProfile || '';
+        buildProfileList(_detectedProfiles, _synabunProfile);
+      } catch {
+        // Keep existing list if detection fails
+      } finally {
+        if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+      }
+    }
+
+    // Attach click handlers to initial static profile items
+    overlay.querySelectorAll('#bc-profile-list .bc-profile-item').forEach(el => {
+      el.addEventListener('click', () => selectProfileItem(el.dataset.profileValue));
+    });
+
+    // Detect button click
+    const profileDetectBtn = overlay.querySelector('#bc-detect-profiles');
+    if (profileDetectBtn) {
+      profileDetectBtn.addEventListener('click', detectAndBuildProfiles);
+    }
+
+    // Path input → sync to hidden field + highlight matching profile
+    const customPathInput = overlay.querySelector('#bc-custom-profile-path');
+    if (customPathInput) {
+      customPathInput.addEventListener('input', () => {
+        setProfilePath(customPathInput.value.trim());
+      });
+    }
+
+    // Browse folder button → open native folder picker
+    const browseBtn = overlay.querySelector('#bc-browse-folder');
+    if (browseBtn) {
+      browseBtn.addEventListener('click', async () => {
+        browseBtn.style.opacity = '0.4';
+        browseBtn.style.pointerEvents = 'none';
+        try {
+          const res = await fetch('/api/browser/browse-folder', { method: 'POST' });
+          const data = await res.json();
+          if (data.path) {
+            const input = overlay.querySelector('#bc-custom-profile-path');
+            if (input) input.value = data.path;
+            setProfilePath(data.path);
+          }
+        } catch { /* dialog failed or cancelled */ }
+        finally {
+          browseBtn.style.opacity = '';
+          browseBtn.style.pointerEvents = '';
+        }
+      });
+    }
+
     // Collect all config from the form
     function collectBrowserConfig() {
       const val = (id) => (overlay.querySelector(`#${id}`)?.value || '').trim();
@@ -3083,7 +3536,7 @@ export async function openSettingsModal() {
         // Executable
         executablePath: val('bc-executablePath') || null,
         userDataDir: val('bc-userDataDir') || null,
-        headless: val('bc-headless') === 'false' ? false : val('bc-headless') === 'new' ? 'new' : true,
+        headless: val('bc-headless') === 'false' ? false : true,
         channel: val('bc-channel') || null,
         slowMo: num('bc-slowMo', 0),
         timeout: num('bc-timeout', 30000),
@@ -3191,6 +3644,7 @@ export async function openSettingsModal() {
       // Executable
       setVal('bc-executablePath', cfg.executablePath);
       setVal('bc-userDataDir', cfg.userDataDir || '');
+      matchProfileSelection(cfg.userDataDir || '', _synabunProfile);
       setVal('bc-headless', String(cfg.headless ?? 'true'));
       setVal('bc-channel', cfg.channel || '');
       setVal('bc-slowMo', cfg.slowMo ?? 0);
@@ -3315,12 +3769,15 @@ export async function openSettingsModal() {
       }
     }
 
-    // Load config on open
-    fetch('/api/browser/config').then(r => r.json()).then(data => {
+    // Load config on open, then auto-detect profiles
+    fetch('/api/browser/config').then(r => r.json()).then(async (data) => {
       if (data.config) { applyBrowserConfig(data.config); syncBcDropdowns(); }
       // Show detected path
       const hint = overlay.querySelector('#bc-detected-path');
       if (hint && data.detectedPath) hint.textContent = `Detected: ${data.detectedPath}`;
+      // Auto-detect Chrome profiles and select current
+      await detectAndBuildProfiles();
+      if (data.config) matchProfileSelection(data.config.userDataDir || '', _synabunProfile);
     }).catch(() => {});
 
     // Save button
@@ -3357,7 +3814,7 @@ export async function openSettingsModal() {
     if (resetBtn) {
       resetBtn.addEventListener('click', () => {
         const defaults = {
-          executablePath: null, headless: true, channel: null, slowMo: 0,
+          executablePath: null, headless: false, channel: null, slowMo: 0,
           timeout: 30000, navigationTimeout: 30000, extraArgs: null,
           viewport: { width: 1280, height: 800 }, screen: { width: 1920, height: 1080 },
           deviceScaleFactor: 1, isMobile: false, hasTouch: false,
@@ -3388,6 +3845,7 @@ export async function openSettingsModal() {
         setTimeout(() => { if (status) status.textContent = ''; }, 3000);
       });
     }
+
   }
 
   // ── Tunnel toggle ──

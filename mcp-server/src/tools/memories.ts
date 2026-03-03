@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { scrollMemories, getMemoryStats } from '../services/qdrant.js';
-import { buildCategoryDescription, validateCategory } from '../services/categories.js';
+import { validateCategory } from '../services/categories.js';
 import type { MemoryPayload } from '../types.js';
 
 export function buildMemoriesSchema() {
@@ -13,9 +13,7 @@ export function buildMemoriesSchema() {
     category: z
       .string()
       .optional()
-      .describe(
-        'Filter by category (for by-category action). ' + buildCategoryDescription()
-      ),
+      .describe('Category to filter by (for by-category action).'),
     project: z
       .string()
       .optional()
