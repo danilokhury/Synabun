@@ -70,7 +70,7 @@ describe('medium user scenario (15 remember + 30 recall, 2 sessions/day)', () =>
     expect(total).toBeGreaterThan(0);
   });
 
-  it('calculates per-session Qdrant operations', () => {
+  it('calculates per-session DB operations', () => {
     const rememberOps = SESSION_REMEMBER * 1;
     const recallOps = (SESSION_RECALL + SESSION_START_RECALLS) * (1 + DEFAULT_RECALL_LIMIT);
     const reflectMetaOps = SESSION_REFLECT_METADATA * 2;
@@ -78,7 +78,7 @@ describe('medium user scenario (15 remember + 30 recall, 2 sessions/day)', () =>
     const forgetRestoreOps = (SESSION_FORGET + SESSION_RESTORE) * 2;
     const total = rememberOps + recallOps + reflectMetaOps + reflectContentOps + forgetRestoreOps;
 
-    console.log(`\n  Medium user — Qdrant ops/session: ${total}`);
+    console.log(`\n  Medium user — DB ops/session: ${total}`);
     expect(total).toBeGreaterThan(0);
   });
 
@@ -124,8 +124,8 @@ describe('medium user scenario (15 remember + 30 recall, 2 sessions/day)', () =>
 
     const session = aggregateSession('medium', 'Medium user: 15 remember + 30 recall, 2 sessions/day', stats);
 
-    const expectedOpenAI = SESSION_REMEMBER + SESSION_RECALL + SESSION_START_RECALLS + SESSION_REFLECT_CONTENT;
-    expect(session.totals.openaiCalls).toBe(expectedOpenAI);
+    const expectedEmbedding = SESSION_REMEMBER + SESSION_RECALL + SESSION_START_RECALLS + SESSION_REFLECT_CONTENT;
+    expect(session.totals.embeddingCallCount).toBe(expectedEmbedding);
     expect(session.totals.embeddingTokens).toBeGreaterThan(0);
   });
 });

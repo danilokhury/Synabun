@@ -31,15 +31,15 @@ related_files:
 
 - **MCP Server**: `cd mcp-server && npm run dev` (tsx with hot reload)
 - **Neural Interface**: `cd neural-interface && npm start` (Express server on port 3344)
-- **Qdrant**: `docker compose up -d`
+- **Database**: SQLite file-based — no separate process needed
 
 ## Where to Make Changes
 
 | Change type | Where |
 |------------|-------|
 | New MCP tool | `mcp-server/src/tools/` (TypeScript) |
-| Qdrant queries | `mcp-server/src/services/qdrant.ts` |
-| Embedding logic | `mcp-server/src/services/embeddings.ts` |
+| Database queries | `mcp-server/src/services/sqlite.ts` |
+| Embedding logic | `mcp-server/src/services/local-embeddings.ts` |
 | Category management | `mcp-server/src/services/categories.ts` |
 | Neural Interface API | `neural-interface/server.js` |
 | 3D visualization | `neural-interface/public/index.html` |

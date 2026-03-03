@@ -4348,7 +4348,7 @@
     50% { opacity: 1; }
   }
 
-  /* Docker / Qdrant down state */
+  /* Database down state */
   #loading-overlay.error #loading-text { animation: none; opacity: 0.7; }
   #loading-overlay.error #loading-sub { color: rgba(255,255,255,0.3); }
   #loading-action {
@@ -4645,7 +4645,7 @@
   <div id="loading-action">
     <button id="loading-action-btn" type="button">
       <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      <span id="loading-action-label">Start Docker</span>
+      <span id="loading-action-label">Start Database</span>
     </button>
     <div id="loading-action-status"></div>
   </div>
@@ -5616,9 +5616,8 @@ async function init() {
       const health = await healthRes.json();
       if (!health.ok) {
         const messages = {
-          docker_not_running: ['Database Offline', 'The memory database needs to be started'],
-          container_stopped:  ['Database Stopped', 'The memory database was stopped'],
-          qdrant_unreachable: ['Database Unreachable', 'The database engine is not responding'],
+          db_missing:         ['Database Unreachable', 'The SQLite database file is missing'],
+          db_error:           ['Database Unreachable', 'The database engine encountered an error'],
           remote_unreachable: ['Connection Failed', health.detail || 'Cannot reach the remote database'],
           auth_error:         ['Authentication Error', health.detail || 'The database rejected the connection'],
         };
@@ -8050,7 +8049,7 @@ function showDetailPanel(node) {
   catLabel.textContent = (p._isOpenClaw ? '[OC] ' : '') + p.category + (p.subcategory ? ' / ' + p.subcategory : '');
   catLabel.style.color = color;
 
-  // OpenClaw nodes are read-only (file-backed, not Qdrant)
+  // OpenClaw nodes are read-only (file-backed, not from memory database)
   const isOC = !!p._isOpenClaw;
   document.getElementById('detail-change-cat-btn').style.display = isOC ? 'none' : '';
   document.getElementById('detail-delete-inline-btn').style.display = isOC ? 'none' : '';
@@ -12117,7 +12116,7 @@ async function openSettingsModal() {
   if (existing) { existing.style.zIndex = '301'; return; }
 
   let settings = {};
-  let qdrantOk = false;
+  let dbOk = false;
   let connections = [];
   let ccIntegrations = { global: { installed: false }, projects: [] };
   let ccSkills = [];
@@ -12137,7 +12136,7 @@ async function openSettingsModal() {
       fetch('/api/bridges/openclaw').then(r => r.json()),
     ]);
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
-    if (statsRes.status === 'fulfilled' && statsRes.value.status) qdrantOk = true;
+    if (statsRes.status === 'fulfilled' && statsRes.value.status) dbOk = true;
     if (connRes.status === 'fulfilled' && connRes.value.connections) connections = connRes.value.connections;
     if (ccRes.status === 'fulfilled' && ccRes.value.ok) ccIntegrations = ccRes.value;
     if (skillsRes.status === 'fulfilled' && skillsRes.value.ok) ccSkills = skillsRes.value.skills || [];
@@ -12231,8 +12230,8 @@ async function openSettingsModal() {
       <!-- SERVER TAB -->
       <div class="settings-tab-body active" data-tab="server">
         <div class="settings-status">
-          <span class="settings-status-dot ${qdrantOk ? 'connected' : 'disconnected'}"></span>
-          Qdrant: ${qdrantOk ? 'Connected' : 'Not connected'}
+          <span class="settings-status-dot ${dbOk ? 'connected' : 'disconnected'}"></span>
+          Database: ${dbOk ? 'Connected' : 'Not connected'}
         </div>
 
         <div class="settings-field">
@@ -12245,20 +12244,11 @@ async function openSettingsModal() {
         </div>
 
         <div class="settings-field">
-          <label>Qdrant URL</label>
+          <label>Database Path</label>
           <div class="settings-key-row">
-            <input type="text" id="stg-qdrant-url" placeholder="${settings.qdrantUrl || 'http://localhost:6333'}" autocomplete="off" spellcheck="false">
+            <input type="text" id="stg-db-path" placeholder="${settings.databasePath || 'data/memory.db'}" autocomplete="off" spellcheck="false">
           </div>
-          <div class="settings-hint">Default: http://localhost:6333</div>
-        </div>
-
-        <div class="settings-field">
-          <label>Qdrant API Key</label>
-          <div class="settings-key-row">
-            <input type="password" id="stg-qdrant-key" placeholder="${settings.qdrantApiKey || 'your-key'}" autocomplete="off" spellcheck="false">
-            <button class="settings-toggle-vis" data-target="stg-qdrant-key" data-tooltip="Toggle">${eyeClosed}</button>
-          </div>
-          <div class="settings-hint">${settings.qdrantApiKeySet ? 'Key is set' : 'Not configured'} — leave empty to keep current</div>
+          <div class="settings-hint">Default: data/memory.db</div>
         </div>
 
         <div class="settings-restart-notice" id="stg-restart-notice">Settings saved. Restart the server for changes to take effect.</div>
@@ -12740,7 +12730,7 @@ async function openSettingsModal() {
   const recallSliderVal = overlay.querySelector('#recall-slider-val');
   const recallPreview = overlay.querySelector('#recall-preview');
   const recallPresets = overlay.querySelector('#recall-presets');
-  const PREVIEW_TEXT = 'SynaBun is a persistent vector memory system for AI assistants built with three core components: MCP Server (TypeScript/Node.js), Neural Interface (Express.js + Three.js), and Qdrant Vector Database (Docker). It stores memory embeddings in a single collection with cosine distance similarity and supports multiple projects.';
+  const PREVIEW_TEXT = 'SynaBun is a persistent vector memory system for AI assistants built with three core components: MCP Server (TypeScript/Node.js), Neural Interface (Express.js + Three.js), and SQLite Database (file-based). It stores memory embeddings in a single collection with cosine distance similarity and supports multiple projects.';
 
   function updateRecallUI(maxChars) {
     // Update slider position
@@ -12871,12 +12861,10 @@ async function openSettingsModal() {
   overlay.querySelector('#stg-save').addEventListener('click', async () => {
     const body = {};
     const openai = overlay.querySelector('#stg-openai').value.trim();
-    const qdrantUrl = overlay.querySelector('#stg-qdrant-url').value.trim();
-    const qdrantKey = overlay.querySelector('#stg-qdrant-key').value.trim();
+    const dbPath = overlay.querySelector('#stg-db-path').value.trim();
 
     if (openai) body.openaiApiKey = openai;
-    if (qdrantUrl) body.qdrantUrl = qdrantUrl;
-    if (qdrantKey) body.qdrantApiKey = qdrantKey;
+    if (dbPath) body.databasePath = dbPath;
 
     if (Object.keys(body).length === 0) { close(); return; }
 
@@ -12955,7 +12943,7 @@ async function openSettingsModal() {
       const label = btn.dataset.connLabel;
       if (!id) return;
 
-      if (!confirm(`Remove connection "${label}"?\nThis only removes the config, not the Qdrant data.`)) return;
+      if (!confirm(`Remove connection "${label}"?\nThis only removes the config, not the database data.`)) return;
 
       try {
         const res = await fetch(`/api/connections/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -12980,7 +12968,7 @@ async function openSettingsModal() {
     });
   });
 
-  // Start a stopped Docker container for an unreachable connection
+  // Start an unreachable connection's database
   overlay.querySelectorAll('.conn-item-start').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -13084,7 +13072,7 @@ async function openSettingsModal() {
               File: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)
             </p>
             <p style="font-size:var(--fs-xs);color:var(--accent-dim);margin-bottom:18px">
-              The snapshot must be from the same Qdrant version.
+              The snapshot must be from the same database format.
             </p>
             <div class="tag-delete-modal-actions">
               <button class="action-btn action-btn--ghost" id="restore-cancel">Cancel</button>
@@ -13151,8 +13139,8 @@ async function openSettingsModal() {
           Upload a .snapshot file to restore a collection. The collection will be created if it doesn't exist, and automatically added to your connections.
         </p>
         <div class="settings-field" style="margin-bottom:12px">
-          <label>Qdrant URL</label>
-          <input type="text" id="rs-url" placeholder="http://localhost:6333" autocomplete="off" spellcheck="false" style="font-family:'JetBrains Mono',monospace;font-size:12px">
+          <label>Database Path</label>
+          <input type="text" id="rs-url" placeholder="data/memory.db" autocomplete="off" spellcheck="false" style="font-family:'JetBrains Mono',monospace;font-size:12px">
         </div>
         <div class="settings-field" style="margin-bottom:12px">
           <label>API Key</label>
@@ -13428,7 +13416,7 @@ async function openSettingsModal() {
       return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
     }
     function toDockerName(label) {
-      return 'synabun-qdrant-' + label.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+      return 'synabun-db-' + label.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
     }
     function suggestPort() {
       let max = 6333;
@@ -13464,13 +13452,13 @@ async function openSettingsModal() {
             <div class="wiz-mode-grid">
               <div class="wiz-mode-card" data-mode="docker">
                 <svg class="wmc-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><line x1="17.5" y1="14" x2="17.5" y2="21"/><line x1="14" y1="17.5" x2="21" y2="17.5"/></svg>
-                <div class="wmc-title">New Docker Instance</div>
-                <div class="wmc-desc">Spin up a fresh Qdrant container on its own port</div>
+                <div class="wmc-title">New Database File</div>
+                <div class="wmc-desc">Create a new database file for this collection</div>
               </div>
               <div class="wiz-mode-card" data-mode="existing">
                 <svg class="wmc-icon" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                <div class="wmc-title">Existing Instance</div>
-                <div class="wmc-desc">Create a new collection on a running Qdrant</div>
+                <div class="wmc-title">Existing Database</div>
+                <div class="wmc-desc">Create a new collection on an existing database</div>
               </div>
             </div>
           </div>
@@ -13478,8 +13466,8 @@ async function openSettingsModal() {
           <!-- Step 1: Configuration (content swapped based on mode) -->
           <div class="conn-wizard-step right" data-wiz-step="1">
             <div id="wiz-config-docker" style="display:none">
-              <h3>Configure Container</h3>
-              <div class="wiz-subtitle">Set up your new Qdrant Docker instance.</div>
+              <h3>Configure Database</h3>
+              <div class="wiz-subtitle">Set up your new database file.</div>
               <div class="wiz-field">
                 <label>Label</label>
                 <input type="text" id="wiz-d-label" placeholder="My Project" autocomplete="off" spellcheck="false">
@@ -13510,14 +13498,14 @@ async function openSettingsModal() {
                   <input type="text" id="wiz-d-key" value="${generateApiKey()}" autocomplete="off" spellcheck="false">
                   <button class="wiz-generate-btn" id="wiz-d-gen">Generate</button>
                 </div>
-                <div class="wiz-hint">Secures the Qdrant instance. Min 8 characters.</div>
+                <div class="wiz-hint">Secures the database instance. Min 8 characters.</div>
                 <div class="wiz-error" id="wiz-d-key-err"></div>
               </div>
             </div>
 
             <div id="wiz-config-existing" style="display:none">
               <h3>Instance Details</h3>
-              <div class="wiz-subtitle">Connect to a running Qdrant instance and create a new collection.</div>
+              <div class="wiz-subtitle">Connect to an existing database and create a new collection.</div>
               <div class="wiz-field">
                 <label>Label</label>
                 <input type="text" id="wiz-e-label" placeholder="My Memory Store" autocomplete="off" spellcheck="false">
@@ -13525,9 +13513,9 @@ async function openSettingsModal() {
                 <div class="wiz-error" id="wiz-e-label-err"></div>
               </div>
               <div class="wiz-field">
-                <label>Qdrant URL</label>
-                <input type="text" id="wiz-e-url" placeholder="http://localhost:6333" autocomplete="off" spellcheck="false">
-                <div class="wiz-hint">The full URL of your Qdrant instance</div>
+                <label>Database Path</label>
+                <input type="text" id="wiz-e-url" placeholder="data/memory.db" autocomplete="off" spellcheck="false">
+                <div class="wiz-hint">The file path of your database</div>
                 <div class="wiz-error" id="wiz-e-url-err"></div>
               </div>
               <div class="wiz-field">
@@ -13544,11 +13532,11 @@ async function openSettingsModal() {
             </div>
           </div>
 
-          <!-- Step 2: Action (docker start or collection create) -->
+          <!-- Step 2: Action (database create or collection create) -->
           <div class="conn-wizard-step right" data-wiz-step="2">
             <div id="wiz-action-docker" style="display:none">
-              <h3>Start Container</h3>
-              <div class="wiz-subtitle">Spinning up a new Qdrant instance and creating your collection.</div>
+              <h3>Create Database</h3>
+              <div class="wiz-subtitle">Creating a new database file and setting up your collection.</div>
               <div class="wiz-status" id="wiz-docker-status" style="display:none">
                 <div class="wiz-status-dot spin" id="wiz-docker-dot"></div>
                 <span id="wiz-docker-status-text">Starting container...</span>
@@ -13559,7 +13547,7 @@ async function openSettingsModal() {
 
             <div id="wiz-action-existing" style="display:none">
               <h3>Create Collection</h3>
-              <div class="wiz-subtitle">Testing connectivity and creating the collection on your Qdrant instance.</div>
+              <div class="wiz-subtitle">Testing connectivity and creating the collection on your database.</div>
               <div class="wiz-status" id="wiz-existing-status" style="display:none">
                 <div class="wiz-status-dot spin" id="wiz-existing-dot"></div>
                 <span id="wiz-existing-status-text">Connecting...</span>
@@ -13727,7 +13715,7 @@ async function openSettingsModal() {
       if (!isNaN(p)) wiz.querySelector('#wiz-d-grpc').value = p + 1;
     });
 
-    // --- Step 2: Docker action ---
+    // --- Step 2: Database create action ---
     wiz.querySelector('#wiz-docker-btn').addEventListener('click', async () => {
       const btn = wiz.querySelector('#wiz-docker-btn');
       const term = wiz.querySelector('#wiz-docker-term');
@@ -13739,11 +13727,11 @@ async function openSettingsModal() {
       btn.textContent = 'Starting...';
       statusEl.style.display = 'flex';
       dot.className = 'wiz-status-dot spin';
-      statusText.textContent = 'Starting container...';
-      term.textContent = 'Running docker run...\n';
+      statusText.textContent = 'Creating database...';
+      term.textContent = 'Setting up database file...\n';
 
       try {
-        // 1. Start Docker container
+        // 1. Create database file
         const dockerRes = await fetch('/api/connections/docker-new', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -13755,16 +13743,16 @@ async function openSettingsModal() {
         });
         const dockerData = await dockerRes.json();
         if (!dockerRes.ok) {
-          throw new Error(dockerData.error || 'Failed to start container');
+          throw new Error(dockerData.error || 'Failed to create database');
         }
-        term.textContent += (dockerData.output || 'Container started.') + '\n';
+        term.textContent += (dockerData.output || 'Database created.') + '\n';
 
         if (!dockerData.ready) {
-          throw new Error('Container started but Qdrant is not responding. Check Docker logs.');
+          throw new Error('Database file created but not accessible. Check server logs.');
         }
 
-        statusText.textContent = 'Container ready. Creating collection...';
-        term.textContent += 'Qdrant is ready on port ' + wizState.port + '\n';
+        statusText.textContent = 'Database ready. Creating collection...';
+        term.textContent += 'Database is ready on port ' + wizState.port + '\n';
 
         // 2. Create collection
         const colRes = await fetch('/api/connections/create-collection', {
@@ -13837,7 +13825,7 @@ async function openSettingsModal() {
         <div class="wiz-summary-row"><span class="wsr-label">Label</span><span class="wsr-value">${wizState.label}</span></div>
         <div class="wiz-summary-row"><span class="wsr-label">URL</span><span class="wsr-value">${wizState.url}</span></div>
         <div class="wiz-summary-row"><span class="wsr-label">Collection</span><span class="wsr-value">${wizState.collection}</span></div>
-        <div class="wiz-summary-row"><span class="wsr-label">Mode</span><span class="wsr-value">${wizState.mode === 'docker' ? 'New Docker Container' : 'Existing Instance'}</span></div>
+        <div class="wiz-summary-row"><span class="wsr-label">Mode</span><span class="wsr-value">${wizState.mode === 'docker' ? 'New Database File' : 'Existing Database'}</span></div>
       `;
     }
 

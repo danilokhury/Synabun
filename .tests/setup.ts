@@ -1,28 +1,23 @@
 import { vi, beforeEach } from 'vitest';
 
 // --- Environment variables (must be set before any source module imports) ---
-process.env.OPENAI_EMBEDDING_API_KEY = 'test-key-not-real';
-process.env.QDRANT_MEMORY_URL = 'http://localhost:6333';
-process.env.QDRANT_MEMORY_API_KEY = 'test-qdrant-key';
-process.env.QDRANT_MEMORY_COLLECTION = 'test_collection';
 process.env.MEMORY_DATA_DIR = '/tmp/synabun-test-data';
 
 // ============================================================================
-// Service-level mocks (intercept at qdrant.js / embeddings.js layer)
-// This is critical — the real QdrantClient creates a singleton that bypasses
-// per-file package mocks. Mocking at the service level ensures all tool files
-// get the mock regardless of import order.
+// Service-level mocks (intercept at sqlite.js / local-embeddings.js layer)
+// Mocking at the service level ensures all tool files get the mock
+// regardless of import order.
 // ============================================================================
 
 // --- Shared call trackers (imported by test files via mock modules) ---
 // These are populated by the vi.mock factories below.
 
 const _embeddingCalls: Array<{ input: string; tokens: number; timestamp: number }> = [];
-const _qdrantCalls: Array<{ method: string; params: unknown; timestamp: number }> = [];
+const _dbCalls: Array<{ method: string; params: unknown; timestamp: number }> = [];
 
 // Expose for test files to import
 (globalThis as Record<string, unknown>).__synabun_embedding_calls = _embeddingCalls;
-(globalThis as Record<string, unknown>).__synabun_qdrant_calls = _qdrantCalls;
+(globalThis as Record<string, unknown>).__synabun_qdrant_calls = _dbCalls; // keep key for tracker compat
 
 // --- Scroll pagination config (configurable per test) ---
 (globalThis as Record<string, unknown>).__synabun_scroll_config = null as {
@@ -49,8 +44,9 @@ const defaultPayload = () => ({
 
 (globalThis as Record<string, unknown>).__synabun_retrieve_payload = null;
 
-// --- Mock: embeddings service ---
-vi.mock('../mcp-server/src/services/embeddings.js', () => ({
+// --- Mock: local-embeddings service ---
+vi.mock('../mcp-server/src/services/local-embeddings.js', () => ({
+  EMBEDDING_DIMENSIONS: 384,
   generateEmbedding: vi.fn(async (text: string) => {
     const calls = (globalThis as Record<string, unknown>).__synabun_embedding_calls as typeof _embeddingCalls;
     calls.push({
@@ -58,16 +54,28 @@ vi.mock('../mcp-server/src/services/embeddings.js', () => ({
       tokens: Math.ceil(text.length / 4),
       timestamp: Date.now(),
     });
-    return new Array(1536).fill(0.01);
+    return new Array(384).fill(0.01);
   }),
+  generateEmbeddingBatch: vi.fn(async (texts: string[]) => {
+    const calls = (globalThis as Record<string, unknown>).__synabun_embedding_calls as typeof _embeddingCalls;
+    for (const text of texts) {
+      calls.push({
+        input: text,
+        tokens: Math.ceil(text.length / 4),
+        timestamp: Date.now(),
+      });
+    }
+    return texts.map(() => new Array(384).fill(0.01));
+  }),
+  warmupEmbeddings: vi.fn().mockResolvedValue(undefined),
 }));
 
-// --- Mock: qdrant service ---
-vi.mock('../mcp-server/src/services/qdrant.js', () => {
+// --- Mock: sqlite service ---
+vi.mock('../mcp-server/src/services/sqlite.js', () => {
   const now = new Date().toISOString();
 
   function trackCall(method: string, params: unknown) {
-    const calls = (globalThis as Record<string, unknown>).__synabun_qdrant_calls as typeof _qdrantCalls;
+    const calls = (globalThis as Record<string, unknown>).__synabun_qdrant_calls as typeof _dbCalls;
     calls.push({ method, params, timestamp: Date.now() });
   }
 
@@ -98,8 +106,9 @@ vi.mock('../mcp-server/src/services/qdrant.js', () => {
     CATEGORIES_POINT_ID: '00000000-0000-0000-0000-000000000000',
 
     ensureCollection: vi.fn().mockResolvedValue(undefined),
-
-    getQdrantClient: vi.fn(),
+    ensureSessionCollection: vi.fn().mockResolvedValue(undefined),
+    ensureDatabase: vi.fn().mockResolvedValue(undefined),
+    closeDatabase: vi.fn(),
 
     upsertMemory: vi.fn(async (_id: string, _vector: number[], _payload: unknown) => {
       trackCall('upsert', { id: _id });
@@ -219,12 +228,17 @@ vi.mock('../mcp-server/src/services/qdrant.js', () => {
       };
     }),
 
+    searchSessionChunks: vi.fn(async () => []),
+    upsertSessionChunks: vi.fn().mockResolvedValue(undefined),
+    scrollSessionChunks: vi.fn(async () => ({ points: [], next_page_offset: null })),
+    countSessionChunks: vi.fn(async () => 0),
+
     getCategoriesFromQdrant: vi.fn(async () => null),
     saveCategoriesToQdrant: vi.fn(async () => {}),
   };
 });
 
-// --- Mock: categories service (avoids fs reads and Qdrant calls) ---
+// --- Mock: categories service (avoids fs reads and DB calls) ---
 vi.mock('../mcp-server/src/services/categories.js', () => {
   const MOCK_CATEGORIES = [
     { name: 'architecture', description: 'System architecture', parent: 'synabun', color: '#3b82f6' },
@@ -285,32 +299,15 @@ vi.mock('../mcp-server/src/index.js', () => ({
 // --- Mock: config (avoid import.meta.dirname issues in test runner) ---
 vi.mock('../mcp-server/src/config.js', () => ({
   config: {
-    qdrant: {
-      url: 'http://localhost:6333',
-      apiKey: 'test-qdrant-key',
-      collection: 'test_collection',
+    sqlite: {
+      dbPath: '/tmp/synabun-test-data/memory.db',
     },
-    openai: {
-      apiKey: 'test-key-not-real',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'text-embedding-3-small',
-      dimensions: 1536,
+    embedding: {
+      model: 'Xenova/all-MiniLM-L6-v2',
+      dimensions: 384,
     },
     dataDir: '/tmp/synabun-test-data',
   },
-  getActiveConnection: () => ({
-    url: 'http://localhost:6333',
-    apiKey: 'test-qdrant-key',
-    collection: 'test_collection',
-  }),
-  getActiveCollection: () => 'test_collection',
-  getActiveConnectionId: () => 'test',
-  getActiveEmbeddingConfig: () => ({
-    apiKey: 'test-key-not-real',
-    baseUrl: 'https://api.openai.com/v1',
-    model: 'text-embedding-3-small',
-    dimensions: 1536,
-  }),
   detectProject: () => 'test-project',
   getEnvPath: () => '/tmp/.env',
 }));
@@ -319,7 +316,7 @@ vi.mock('../mcp-server/src/config.js', () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   _embeddingCalls.length = 0;
-  _qdrantCalls.length = 0;
+  _dbCalls.length = 0;
   (globalThis as Record<string, unknown>).__synabun_scroll_config = null;
   (globalThis as Record<string, unknown>).__synabun_retrieve_payload = null;
   resetNiState();

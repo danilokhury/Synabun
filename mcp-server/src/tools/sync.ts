@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { scrollMemories } from '../services/qdrant.js';
+import { scrollMemories } from '../services/sqlite.js';
 import { hashFile } from '../services/file-checksums.js';
 import type { MemoryPayload } from '../types.js';
 import { coerceStringArray } from './utils.js';

@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { generateEmbedding } from '../services/embeddings.js';
-import { searchMemories, updatePayload, searchSessionChunks } from '../services/qdrant.js';
+import { generateEmbedding } from '../services/local-embeddings.js';
+import { searchMemories, updatePayload, searchSessionChunks } from '../services/sqlite.js';
 import { validateCategory } from '../services/categories.js';
 import { coerceStringArray } from './utils.js';
 import type { MemoryPayload, SessionChunkPayload } from '../types.js';

@@ -13,10 +13,10 @@ related_files:
 ## Root Files
 
 - `setup.js`: One-command setup wizard (`npm start` entry point)
-- `docker-compose.yml`: Qdrant container definition
+- `data/memory.db`: SQLite database file (created at runtime, gitignored)
 - `.env`: Environment variables (gitignored — contains API keys)
 - `.env.example`: Template with placeholder values
-- `connections.json`: Multi-Qdrant connection registry (gitignored — contains API keys)
+- `connections.json`: Multi-database connection registry (gitignored)
 - `LICENSE`: Apache License 2.0
 - `LICENSE-COMMERCIAL.md`: Commercial licensing (Open Core model)
 - `README.md`: Main documentation (~680 lines)
@@ -31,7 +31,7 @@ related_files:
 - `src/config.ts`: Environment config, project detection, connection management
 - `src/types.ts`: TypeScript interfaces (MemoryPayload, MemorySearchResult, MemoryStats)
 - `src/tools/`: 10 tool files — `remember.ts`, `recall.ts`, `forget.ts`, `reflect.ts`, `memories.ts`, `sync.ts`, `category-create.ts`, `category-update.ts`, `category-delete.ts`, `category-list.ts`
-- `src/services/`: `qdrant.ts` (203 lines), `embeddings.ts` (29 lines), `categories.ts` (364 lines), `file-checksums.ts` (SHA-256 content hashing for stale memory detection)
+- `src/services/`: `sqlite.ts` (SQLite database operations), `local-embeddings.ts` (Transformers.js all-MiniLM-L6-v2, 384 dims), `categories.ts` (364 lines), `file-checksums.ts` (SHA-256 content hashing for stale memory detection)
 - `data/custom-categories.json`: User-defined categories (NOT in git — created at runtime)
 - `dist/`: Compiled JavaScript output (gitignored)
 

@@ -11,8 +11,7 @@ You are free to fork and modify SynaBun under the [Apache 2.0 license](./LICENSE
 Open an issue using the **Bug Report** template. Include:
 
 - Operating system and version
-- Node.js version (`node --version`)
-- Docker version (`docker --version`)
+- Node.js version (`node --version`) — requires 22.5+
 - Full error output or stack trace
 - Steps to reproduce
 
@@ -44,9 +43,7 @@ You are free to fork SynaBun and modify it for any purpose under the [Apache 2.0
 
 ### Prerequisites
 
-- Node.js 18+
-- Docker (for Qdrant)
-- An embedding API key (OpenAI, Google Gemini, or any [supported provider](./README.md#embedding-providers))
+- Node.js 22.5+ (for built-in `node:sqlite`)
 
 ### Quick Start
 
@@ -73,13 +70,6 @@ cd neural-interface
 npm start            # Express server on port 3344
 ```
 
-**Qdrant** (Docker):
-```bash
-docker compose up -d     # Start
-docker compose down      # Stop
-docker compose logs -f   # View logs
-```
-
 ## Project Structure (for forkers)
 
 ```
@@ -87,7 +77,7 @@ synabun/
 ├── mcp-server/         # MCP Protocol server (TypeScript)
 │   └── src/
 │       ├── tools/      # 11 MCP tools (remember, recall, forget, restore, reflect, memories, sync, category_*)
-│       └── services/   # Qdrant, embeddings, categories, file-checksums
+│       └── services/   # SQLite, local embeddings, categories, file-checksums
 ├── neural-interface/   # 3D visualization UI (Express + Three.js)
 │   ├── server.js       # REST API backend (55+ endpoints)
 │   └── public/         # Frontend HTML/JS (3D + 2D variants)
@@ -109,8 +99,8 @@ See the [README File Structure](./README.md#file-structure) section for a comple
 | Change type | Where |
 |------------|-------|
 | New MCP tool | `mcp-server/src/tools/` (TypeScript) — register in `index.ts` |
-| Qdrant queries | `mcp-server/src/services/qdrant.ts` |
-| Embedding logic | `mcp-server/src/services/embeddings.ts` |
+| Database queries | `mcp-server/src/services/sqlite.ts` |
+| Embedding logic | `mcp-server/src/services/local-embeddings.ts` |
 | Category management | `mcp-server/src/services/categories.ts` |
 | File hash tracking | `mcp-server/src/services/file-checksums.ts` |
 | Neural Interface API | `neural-interface/server.js` |

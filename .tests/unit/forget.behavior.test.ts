@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { getQdrantCallsByMethod, setRetrievePayload } from '../mocks/trackers.js';
-import { getMemory } from '../../mcp-server/src/services/qdrant.js';
+import { getDbCallsByMethod, setRetrievePayload } from '../mocks/trackers.js';
+import { getMemory } from '../../mcp-server/src/services/sqlite.js';
 import { invalidateCache } from '../../mcp-server/src/services/neural-interface.js';
 
 const { handleForget } = await import('../../mcp-server/src/tools/forget.js');
@@ -37,7 +37,7 @@ describe('forget — behavioral tests', () => {
   it('calls softDeleteMemory for valid forget', async () => {
     // Default payload has trashed_at: null, so it should proceed
     await handleForget({ memory_id: 'test-uuid' });
-    const softDeletes = getQdrantCallsByMethod('setPayload').filter(
+    const softDeletes = getDbCallsByMethod('setPayload').filter(
       (c) => (c.params as Record<string, unknown>).action === 'softDelete'
     );
     expect(softDeletes).toHaveLength(1);

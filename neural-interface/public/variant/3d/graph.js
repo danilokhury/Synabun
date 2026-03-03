@@ -273,7 +273,7 @@ function createWireInstanceMaterial() {
         float rim = 0.7 + fresnel * 0.3;
         // Subtle shimmer
         float shimmer = 1.0 + sin(uTime * 1.5 + vViewPos.x * 0.1) * 0.05;
-        gl_FragColor = vec4(vColor * 2.5 * rim * shimmer, 1.0);
+        gl_FragColor = vec4(vColor * 1.8 * rim * shimmer, 1.0);
       }
     `,
   });
@@ -308,7 +308,7 @@ function createGlowPointsMaterial() {
       void main() {
         if (vOpacity < 0.003) discard;
         vec4 texel = texture2D(uTexture, gl_PointCoord);
-        gl_FragColor = vec4(vColor * 2.5, texel.a * vOpacity * 2.5);
+        gl_FragColor = vec4(vColor * 1.8, texel.a * vOpacity * 2.0);
       }
     `,
   });
@@ -319,6 +319,7 @@ function createGlowPointsMaterial() {
 // ═══════════════════════════════════════════
 const _categoryLogos = new Map();
 
+let _logoRefreshTimer = null;
 export function preloadCategoryLogos(categories) {
   const names = new Set(categories.map(c => c.name));
   for (const [k] of _categoryLogos) { if (!names.has(k)) _categoryLogos.delete(k); }
@@ -327,8 +328,23 @@ export function preloadCategoryLogos(categories) {
     const existing = _categoryLogos.get(cat.name);
     if (existing && existing.src === cat.logo) continue;
     const img = new Image();
+    img.crossOrigin = 'anonymous';
+    const catName = cat.name;
     const entry = { img, ready: false, src: cat.logo };
-    img.onload = () => { entry.ready = true; };
+    img.onload = () => {
+      entry.ready = true;
+      // Remove existing anchor so applyGraphData recreates it with the logo
+      for (const [id, obj] of _anchorTagObjects) {
+        if (obj.userData.anchorCategory === catName) {
+          _scene.remove(obj);
+          _anchorTagObjects.delete(id);
+          break;
+        }
+      }
+      // Debounced graph refresh so logos appear on anchors once loaded
+      clearTimeout(_logoRefreshTimer);
+      _logoRefreshTimer = setTimeout(() => { if (graph) applyGraphData(); }, 200);
+    };
     img.onerror = () => { _categoryLogos.delete(cat.name); };
     img.src = cat.logo;
     _categoryLogos.set(cat.name, entry);
@@ -516,10 +532,12 @@ function createAnchorObject(node) {
 
   const group = new THREE.Group();
 
-  // Label sprite — tightly sized canvas
+  // Label — logo or text on canvas
   const _logoEntry = _categoryLogos.get(parentName);
   const useLogo = (_logoEntry && _logoEntry.ready) || (parentName === 'openclaw' && _openclawLogoReady);
   const logoImage = (_logoEntry && _logoEntry.ready) ? _logoEntry.img : _openclawLogo;
+  if (_logoEntry) console.log(`[anchor] ${parentName}: logo entry found, ready=${_logoEntry.ready}, src=${_logoEntry.src}`);
+  else console.log(`[anchor] ${parentName}: no logo entry in _categoryLogos (map size: ${_categoryLogos.size})`);
 
   let contentW, contentH;
   const PAD = 16;
@@ -566,7 +584,7 @@ function createAnchorObject(node) {
   const SCALE = 0.2;
   const labelW = canvasW * SCALE;
   const labelH = canvasH * SCALE;
-  const labelGeo = new THREE.PlaneGeometry(labelW, labelH);
+  const labelGeo = new THREE.PlaneGeometry(1, 1); // 1x1 base — scale set in animate loop via baseLabelScale
   const labelShaderMat = new THREE.ShaderMaterial({
     transparent: true,
     depthTest: false,
@@ -590,7 +608,7 @@ function createAnchorObject(node) {
       void main() {
         vec4 tex = texture2D(uTexture, vUv);
         if (tex.a < 0.01) discard;
-        gl_FragColor = vec4(tex.rgb * 3.0, tex.a * uOpacity);
+        gl_FragColor = vec4(tex.rgb, tex.a * uOpacity);
       }
     `,
   });
@@ -679,7 +697,7 @@ function createTagObject(node) {
   const TAG_SCALE = 0.15;
   const tagLabelW = tagCanvasW * TAG_SCALE;
   const tagLabelH = tagCanvasH * TAG_SCALE;
-  const tagLabelGeo = new THREE.PlaneGeometry(tagLabelW, tagLabelH);
+  const tagLabelGeo = new THREE.PlaneGeometry(1, 1); // 1x1 base — scale set in animate loop via baseLabelScale
   const tagLabelShaderMat = new THREE.ShaderMaterial({
     transparent: true,
     depthTest: false,
@@ -703,7 +721,7 @@ function createTagObject(node) {
       void main() {
         vec4 tex = texture2D(uTexture, vUv);
         if (tex.a < 0.01) discard;
-        gl_FragColor = vec4(tex.rgb * 3.0, tex.a * uOpacity);
+        gl_FragColor = vec4(tex.rgb, tex.a * uOpacity);
       }
     `,
   });
@@ -2236,8 +2254,8 @@ export function initGraph(container, options = {}) {
     _bloomPass = new UnrealBloomPass(
       new THREE.Vector2(Math.floor(container.offsetWidth / 2), Math.floor(container.offsetHeight / 2)),
       0.5,   // strength
-      0.5,   // radius
-      0.25   // threshold
+      0.4,   // radius
+      1.0    // threshold — only orbs (2.5x output) bloom, not labels
     );
     _composer.addPass(_bloomPass);
   }

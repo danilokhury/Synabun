@@ -4,57 +4,76 @@
     "47a99c68-475e-458f-9d01-f0d7cc39298d": {
       "session_id": "47a99c68-475e-458f-9d01-f0d7cc39298d",
       "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\47a99c68-475e-458f-9d01-f0d7cc39298d.jsonl",
-      "file_size": 8444770,
-      "file_mtime": "2026-03-02T18:50:40.276Z",
-      "chunk_count": 22,
+      "file_size": 14181432,
+      "file_mtime": "2026-03-02T23:19:04.783Z",
+      "chunk_count": 39,
       "chunk_ids": [
-        "d7bd2091-b00b-41d2-a39c-adb1873e957a",
-        "5aa9eb73-ac59-4684-8825-e5ed9b487bd5",
-        "2f715174-42fa-49f1-a375-50376b916526",
-        "be3b8e81-ec3f-4407-842b-6c367781542d",
-        "37f4e5b9-9f20-4dd4-a08d-f485e23783eb",
-        "4e8f9eec-89e9-4e48-886d-a84bed447c61",
-        "44975a9d-400a-422d-b50d-f11fa5859663",
-        "f65417bf-d7da-4347-aac2-e693915566cd",
-        "8983a08f-3071-4d62-9f72-5ddaf8c8993c",
-        "168108eb-7430-4ff4-a21c-22455d450a5b",
-        "5bd06d6f-a3c9-4582-82be-eadc5d376092",
-        "0354b2df-3171-452a-a739-bb0a805f3d76",
-        "e69262d5-645c-448d-8ea0-d1a07b9d3fa2",
-        "6a3a5fd3-5212-4959-95f9-24b1cfb6a779",
-        "c2663ded-cc62-4f1c-ae5a-8b99e8978a53",
-        "433ac7d1-4a7b-45bc-adce-92ab2dc2bf29",
-        "32635d7e-bb25-492e-8619-c015f5f95517",
-        "a813f37a-fcea-4b86-9c83-f38b84d58891",
-        "732f6e70-92c8-4504-8c26-735f3bf96152",
-        "4ff8f78d-39b8-48f8-89fb-82744d4aa5be",
-        "70c1faf9-5089-4800-90c2-b6a72a693633",
-        "07dcb175-0647-484b-9046-03d72e75d4d2"
+        "b4dc6cee-7a61-4345-a9b2-2143dc403229",
+        "fe37ccda-d82f-492a-ab32-d23e72489769",
+        "aa3263fa-b9f4-4f43-88f6-636b7638c0b8",
+        "a1007a5b-483f-46d2-b7e5-35cfcd38e460",
+        "c2fb67a4-80b4-4d22-9015-09a2550bb90c",
+        "2b3bf460-d43d-4fa4-9bfc-89cac9711810",
+        "ba7dfe50-b159-4724-8dab-90910fc7a112",
+        "07624276-5ebf-454a-978e-c86122b4ba0b",
+        "b8e1a025-8b8f-4629-b793-dfc9ce0ed719",
+        "92cdceb8-61cf-4aab-9c22-96d50cd35b8e",
+        "99955276-fd40-4762-859d-604ccf577d3f",
+        "0c4d057c-7811-4d8f-9fa1-7218d20808c1",
+        "262a1e15-25dd-4140-997d-d3535eb3c15c",
+        "3dda12e5-12e4-49c7-9412-563b26c16bfc",
+        "1e753805-3d9e-4044-b18a-1d1286159ba3",
+        "523486cf-2fc9-47ca-a0ce-23f4ed10b2a6",
+        "73feb184-85ac-441f-b7ec-2d6dc2ac8c4c",
+        "84219365-bd4a-40ff-af6d-7118dc2aa0b8",
+        "456b1ed5-f796-4a98-9b86-a29e66926826",
+        "659466bf-55e9-440c-8740-08a9936a14f3",
+        "bfbacfc8-08e4-485f-a918-76393f5d0528",
+        "68b5d29f-57ab-42e4-8748-5f889e3b7580",
+        "3aca4d92-f4a5-4200-b53f-275d66fdf521",
+        "f2289e70-46e5-4e5e-9768-76e54d211b54",
+        "1fdfc4a5-7409-4fbe-958e-cc1745c0304d",
+        "4287e812-3082-4760-8c4c-aee6fdd3ff0e",
+        "9255183f-0711-4436-9d73-55101a50a43d",
+        "dab5b9d2-5ccb-423a-a42d-c3fdb34963ea",
+        "55aceb46-d963-4168-841c-e0198a642d74",
+        "44e2af92-4626-4c2c-9a6b-8a3428075c4a",
+        "3bb9bcc5-aa78-4c06-849e-f01cd237c830",
+        "abb175fd-250d-4152-9609-3bd33e7951e7",
+        "22d4d766-d0bb-4603-8eef-06216a106c1d",
+        "7cc91aea-a318-4f60-be79-a631d6fd9ae2",
+        "fa432566-0676-48ee-b427-993e9912045d",
+        "1aad7c86-18e0-4092-aa1e-baa08ab4d578",
+        "6cd5b545-94af-485d-a997-b133c7ce4145",
+        "5016ca34-247b-423c-9ac2-cfa11c1b05e5",
+        "8820b9c9-8042-44c2-bce4-e66b091fc905"
       ],
-      "indexed_at": "2026-03-02T18:50:46.487Z",
+      "indexed_at": "2026-03-03T21:21:21.616Z",
       "project": "criticalpixel",
       "status": "complete",
-      "last_line_indexed": 1816
+      "last_line_indexed": 2773
     },
     "4cc316c7-7e6d-4c03-9ba8-aca21ec921e2": {
       "session_id": "4cc316c7-7e6d-4c03-9ba8-aca21ec921e2",
       "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\4cc316c7-7e6d-4c03-9ba8-aca21ec921e2.jsonl",
-      "file_size": 4605506,
-      "file_mtime": "2026-03-02T18:49:58.091Z",
-      "chunk_count": 7,
+      "file_size": 5039302,
+      "file_mtime": "2026-03-02T20:11:18.123Z",
+      "chunk_count": 9,
       "chunk_ids": [
-        "7b380a6d-e86c-42c0-9257-d16880303bd7",
-        "ef291112-d58b-4489-a1fe-11ab96b94219",
-        "e94dd4fb-d7de-4234-acc3-9529a0ff2bc3",
-        "e1cf7c63-06e8-43c7-812e-71bb6c52261a",
-        "f67e7ad6-91d4-4ae1-a89f-75d1971cadda",
-        "3d877c7d-0e9b-4cb6-8649-9613092311e1",
-        "7b2ee489-27cf-4ade-8745-e76cddb6d4eb"
+        "14fde9f6-df12-4945-a69c-32f251c24032",
+        "da95b200-b3f9-47d4-bb50-e06cb25c93b6",
+        "d600bdff-dac0-4c5b-a057-b275668ed171",
+        "32ed39ff-3491-455b-b436-b2bf73c5c6db",
+        "6ada6db6-1e0c-473f-ba36-cab6e8a1e205",
+        "d3708cd7-815e-4981-8982-e8139a8a4b2a",
+        "df81e23b-3e2f-4b45-a79c-8ca58572df2a",
+        "c4f36a48-3ee5-4038-bd3d-02c10e6bed51",
+        "495c4724-00d4-4efc-ba3c-055f0fde36de"
       ],
-      "indexed_at": "2026-03-02T18:50:47.233Z",
+      "indexed_at": "2026-03-03T21:21:25.374Z",
       "project": "criticalpixel",
       "status": "complete",
-      "last_line_indexed": 1084
+      "last_line_indexed": 1292
     },
     "df7f28ec-9976-415c-b04f-42c45287c39b": {
       "session_id": "df7f28ec-9976-415c-b04f-42c45287c39b",
@@ -71,17 +90,21 @@
     "d6b839f5-8aae-42f3-9a9b-84cba9d5c768": {
       "session_id": "d6b839f5-8aae-42f3-9a9b-84cba9d5c768",
       "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\d6b839f5-8aae-42f3-9a9b-84cba9d5c768.jsonl",
-      "file_size": 4176267,
-      "file_mtime": "2026-03-02T18:02:46.169Z",
-      "chunk_count": 2,
+      "file_size": 5609147,
+      "file_mtime": "2026-03-02T23:36:55.167Z",
+      "chunk_count": 6,
       "chunk_ids": [
-        "942d2e66-5a01-46b1-814a-c66f0f4c7126",
-        "86cb9123-278b-4bba-b2a3-514c2a9df62a"
+        "70cad4ae-6ebe-449f-8fc4-142dfdc685e0",
+        "ea319349-7e05-432e-9a73-9559ddfeb317",
+        "39a13bf3-af37-4e88-81ab-f3bec2e28e45",
+        "37b47681-ff23-46f3-8388-324ab36de2c8",
+        "404ba9fb-23ab-4836-9144-320e0f51d213",
+        "17f4dd3f-479b-408c-b288-d4cc25833c2e"
       ],
-      "indexed_at": "2026-03-02T18:50:47.611Z",
+      "indexed_at": "2026-03-03T21:21:16.682Z",
       "project": "criticalpixel",
       "status": "complete",
-      "last_line_indexed": 309
+      "last_line_indexed": 573
     },
     "c43b840b-35d9-45ca-a417-64a2fd272236": {
       "session_id": "c43b840b-35d9-45ca-a417-64a2fd272236",
@@ -112,19 +135,20 @@
     "e588cfc5-a901-4420-8cd9-d0f86f2bc39d": {
       "session_id": "e588cfc5-a901-4420-8cd9-d0f86f2bc39d",
       "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\e588cfc5-a901-4420-8cd9-d0f86f2bc39d.jsonl",
-      "file_size": 324234,
-      "file_mtime": "2026-03-02T17:39:43.535Z",
-      "chunk_count": 4,
+      "file_size": 381713,
+      "file_mtime": "2026-03-02T20:24:27.136Z",
+      "chunk_count": 5,
       "chunk_ids": [
-        "e97c39a8-8a94-4560-80bb-2a805689d606",
-        "1123fc92-73de-4927-a64c-53f977c9507a",
-        "cf0efdf6-3c32-4d0a-815b-fc7db32c062b",
-        "ff6457a8-b766-4c1e-88cb-8cd0b162579b"
+        "8c9a8b83-c36d-4835-8bb0-b876c894ac03",
+        "85f2bd11-e397-407a-a997-6b69ca5757a0",
+        "6fe0f5c9-3d79-4a4d-91f6-6447f3828dcb",
+        "602d8a76-5852-41d5-b025-f7cd8898a204",
+        "80ffd329-a30f-433a-9542-086e371499dd"
       ],
-      "indexed_at": "2026-03-02T18:50:48.257Z",
+      "indexed_at": "2026-03-03T21:21:24.309Z",
       "project": "criticalpixel",
       "status": "complete",
-      "last_line_indexed": 96
+      "last_line_indexed": 124
     },
     "53f9d61c-4a9a-4666-b9db-75f69d453abd": {
       "session_id": "53f9d61c-4a9a-4666-b9db-75f69d453abd",
@@ -141,24 +165,25 @@
     "18f776d0-875b-4a6e-8449-db474282bfeb": {
       "session_id": "18f776d0-875b-4a6e-8449-db474282bfeb",
       "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\18f776d0-875b-4a6e-8449-db474282bfeb.jsonl",
-      "file_size": 9241769,
-      "file_mtime": "2026-03-02T17:30:55.382Z",
-      "chunk_count": 9,
+      "file_size": 9802316,
+      "file_mtime": "2026-03-02T20:46:49.832Z",
+      "chunk_count": 10,
       "chunk_ids": [
-        "ad568993-a435-4ff9-8c9c-33f24003667c",
-        "2fe3083a-7fce-48fe-bd2d-49b64a96070e",
-        "50a154ee-cd80-4759-ab06-5abfd46f99b3",
-        "88f2837e-cd62-4bfe-8897-34a18f34bb20",
-        "1835fc16-fc06-4ec5-9621-da384f9905b9",
-        "8089d13f-e42f-4305-9176-c735f7726d95",
-        "4625e05e-bdeb-4606-90fa-acc9a70e4559",
-        "73a821d8-7fdd-4b46-9b32-df2da75ed74e",
-        "07201be1-f294-450b-bf27-8b9526bc4047"
+        "d1b854ca-0faa-42e2-9b80-b462923d1584",
+        "88f7c7b8-47a6-4bfa-8c2a-4a9295340768",
+        "e67883ee-9d52-4241-ac34-40e1eaf721ea",
+        "451fc522-e4a7-4228-b88a-7e1061e058dd",
+        "85509420-90e8-4321-85f5-392e2ac91afd",
+        "acc73eab-bcbb-4b3b-817d-7ff3dc4c10e6",
+        "934454fa-9887-47b7-ba64-8f2cabe1b3f3",
+        "3f3d4221-5bd8-4a84-9f96-1bbc6294707f",
+        "4f89d7cc-1064-42c2-8ecb-6e0acaa0ca61",
+        "a6fbabe9-5f97-4224-9fca-4dd9bf061bee"
       ],
-      "indexed_at": "2026-03-02T18:50:48.907Z",
+      "indexed_at": "2026-03-03T21:21:23.636Z",
       "project": "criticalpixel",
       "status": "complete",
-      "last_line_indexed": 1090
+      "last_line_indexed": 1141
     },
     "01322a14-fcdb-48b6-bcbe-3b1b43f8754e": {
       "session_id": "01322a14-fcdb-48b6-bcbe-3b1b43f8754e",
@@ -13345,13 +13370,796 @@
       "project": "criticalpixel",
       "status": "complete",
       "last_line_indexed": 150
+    },
+    "a31edaf7-dcae-4ce3-aeba-4d246be0b8e6": {
+      "session_id": "a31edaf7-dcae-4ce3-aeba-4d246be0b8e6",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\a31edaf7-dcae-4ce3-aeba-4d246be0b8e6.jsonl",
+      "file_size": 236635,
+      "file_mtime": "2026-03-03T21:21:24.559Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "7ada143c-d90f-4d59-bf62-f822270211b9"
+      ],
+      "indexed_at": "2026-03-03T21:22:10.150Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 70
+    },
+    "54e0e1d3-ac86-4c1c-9a39-a67068c32701": {
+      "session_id": "54e0e1d3-ac86-4c1c-9a39-a67068c32701",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\54e0e1d3-ac86-4c1c-9a39-a67068c32701.jsonl",
+      "file_size": 2947675,
+      "file_mtime": "2026-03-03T21:16:28.610Z",
+      "chunk_count": 4,
+      "chunk_ids": [
+        "805d0439-0252-4335-a887-cde946bedb68",
+        "0c6fd372-ec15-4d27-8aeb-0507c6ab6555",
+        "f556878a-82bd-4b23-97bd-1dcd3e3f82f1",
+        "053956b0-9404-4286-a65b-7763080e6292"
+      ],
+      "indexed_at": "2026-03-03T21:21:05.265Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 207
+    },
+    "5c9866e2-7da3-4cb7-883c-e6768aaf6c04": {
+      "session_id": "5c9866e2-7da3-4cb7-883c-e6768aaf6c04",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\5c9866e2-7da3-4cb7-883c-e6768aaf6c04.jsonl",
+      "file_size": 27227825,
+      "file_mtime": "2026-03-03T21:21:59.955Z",
+      "chunk_count": 7,
+      "chunk_ids": [
+        "084d74ac-e56c-4e9f-a3c8-c3495513068a",
+        "41045727-75dd-4cd4-967b-614d4b3ffd80",
+        "ae2553fd-ba0d-4e72-879a-d340f00e2375",
+        "6f7de3a3-00c9-4f0f-a90d-a3ef63df55e3",
+        "76dae5ca-95c7-4b1c-b2ec-77769e46a48a",
+        "42ff5d53-3175-45ac-9a23-17d95d786243",
+        "6e9d7537-6a59-40ac-8eba-6e12a2fdd065"
+      ],
+      "indexed_at": "2026-03-03T21:22:09.996Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 2251
+    },
+    "470454e9-f5cc-4364-8c16-8c389e8020ec": {
+      "session_id": "470454e9-f5cc-4364-8c16-8c389e8020ec",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\470454e9-f5cc-4364-8c16-8c389e8020ec.jsonl",
+      "file_size": 5640,
+      "file_mtime": "2026-03-03T20:50:09.718Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:06.149Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 3
+    },
+    "b7ac9e79-2f10-4f3a-bf5c-7bd2c1a6f40e": {
+      "session_id": "b7ac9e79-2f10-4f3a-bf5c-7bd2c1a6f40e",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\b7ac9e79-2f10-4f3a-bf5c-7bd2c1a6f40e.jsonl",
+      "file_size": 20996510,
+      "file_mtime": "2026-03-03T20:09:04.510Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "176ffc24-5616-4cbd-9be8-b8dbb1ae28b9"
+      ],
+      "indexed_at": "2026-03-03T21:21:06.359Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 2965
+    },
+    "875c3b92-0ed8-4aa9-b8bc-97a765960feb": {
+      "session_id": "875c3b92-0ed8-4aa9-b8bc-97a765960feb",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\875c3b92-0ed8-4aa9-b8bc-97a765960feb.jsonl",
+      "file_size": 10439019,
+      "file_mtime": "2026-03-03T18:59:46.462Z",
+      "chunk_count": 5,
+      "chunk_ids": [
+        "5b2048e3-a927-4410-99b6-d4cb1cf9cf51",
+        "447cc9e8-0099-4b61-9438-577751127ffa",
+        "9bc2114a-db8d-46cf-9b24-f80c746e3441",
+        "53fddab1-af46-4c13-a889-2abf4fd4df12",
+        "4accf813-f844-479b-ae58-d48f23951ae5"
+      ],
+      "indexed_at": "2026-03-03T21:21:07.061Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 1187
+    },
+    "29dbdd11-a5c3-4260-b6fb-3fe38149be65": {
+      "session_id": "29dbdd11-a5c3-4260-b6fb-3fe38149be65",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\29dbdd11-a5c3-4260-b6fb-3fe38149be65.jsonl",
+      "file_size": 4212579,
+      "file_mtime": "2026-03-03T18:55:13.338Z",
+      "chunk_count": 3,
+      "chunk_ids": [
+        "89b91a07-caca-47b0-a006-cd423b3df4b9",
+        "1d6f190d-c2ef-446d-83e5-4f85b66eefd8",
+        "fdaac7c2-bcde-4bbe-8264-f13968c4e686"
+      ],
+      "indexed_at": "2026-03-03T21:21:07.489Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 1204
+    },
+    "258f2ee8-280e-4150-965c-ea2f067c1aab": {
+      "session_id": "258f2ee8-280e-4150-965c-ea2f067c1aab",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\258f2ee8-280e-4150-965c-ea2f067c1aab.jsonl",
+      "file_size": 19196672,
+      "file_mtime": "2026-03-03T18:32:34.255Z",
+      "chunk_count": 5,
+      "chunk_ids": [
+        "debe77e7-5d1a-4942-9612-a3f281832884",
+        "3ed68453-c8e2-4a67-9085-879a9e716f46",
+        "b94e0542-bb17-429a-853a-f20a39d0b375",
+        "4cb1133b-df6d-4804-bf18-096d3bb62ade",
+        "f1624898-6345-4dd1-975b-9a4dc8ca78e2"
+      ],
+      "indexed_at": "2026-03-03T21:21:08.137Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 694
+    },
+    "2026faad-e1c8-40b3-8690-f7aabab19ab8": {
+      "session_id": "2026faad-e1c8-40b3-8690-f7aabab19ab8",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\2026faad-e1c8-40b3-8690-f7aabab19ab8.jsonl",
+      "file_size": 49656,
+      "file_mtime": "2026-03-03T17:54:09.074Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "ca82d3bd-1cf5-4b7a-9222-b796b05ad0c7"
+      ],
+      "indexed_at": "2026-03-03T21:21:08.269Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 17
+    },
+    "1ecfc4ab-e139-44d9-a5d8-187ae6a29999": {
+      "session_id": "1ecfc4ab-e139-44d9-a5d8-187ae6a29999",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\1ecfc4ab-e139-44d9-a5d8-187ae6a29999.jsonl",
+      "file_size": 4669,
+      "file_mtime": "2026-03-03T17:09:03.495Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:08.272Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 8
+    },
+    "0b71c1a9-d955-4618-93ef-526b151ef2ce": {
+      "session_id": "0b71c1a9-d955-4618-93ef-526b151ef2ce",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\0b71c1a9-d955-4618-93ef-526b151ef2ce.jsonl",
+      "file_size": 33287675,
+      "file_mtime": "2026-03-03T17:08:52.566Z",
+      "chunk_count": 5,
+      "chunk_ids": [
+        "68a88628-9b87-4655-978d-cb3c31936659",
+        "223dc528-2adc-4465-82c1-9ddede43be34",
+        "e7fd02d0-b2ce-4d76-a02d-ea89d2ceba9e",
+        "f9edc1f9-150a-4e49-9c71-b562175798f3",
+        "cdc7acc0-f0b3-4805-a86f-f83e6b8579d2"
+      ],
+      "indexed_at": "2026-03-03T21:21:09.032Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 1644
+    },
+    "1f978068-eaf5-4343-b154-61e4b3779514": {
+      "session_id": "1f978068-eaf5-4343-b154-61e4b3779514",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\1f978068-eaf5-4343-b154-61e4b3779514.jsonl",
+      "file_size": 3163704,
+      "file_mtime": "2026-03-03T16:32:06.272Z",
+      "chunk_count": 13,
+      "chunk_ids": [
+        "bde03be6-101b-4085-92f2-8d0181cf9f08",
+        "2290ea21-7900-4dcc-9679-c7ad51b6aaa6",
+        "b8b683cb-896d-405e-91e5-ac6a8ea28455",
+        "91b6f083-4a58-4b24-a956-50e60fd2167f",
+        "a2a6ef8e-654d-46d5-ada0-2f9d21d4d4fe",
+        "bcf08aa9-4393-430c-9b66-7177d138b43b",
+        "3392b59d-61ce-4b3d-8b37-4cf5a4c3a866",
+        "d0287ce4-c87a-479e-aa7d-0f5242cf2546",
+        "2ac31f21-b3bd-4581-81ef-71b93194d8ae",
+        "d80fdea6-a238-4932-bfa3-7f36fcbcf8f7",
+        "9b416e01-8d85-4fcc-a241-8b17211e052c",
+        "7a1c11f5-ecf8-4d78-be41-e120fdc57d1b",
+        "85492472-7ba9-4365-8750-af48813a0d80"
+      ],
+      "indexed_at": "2026-03-03T21:21:10.529Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 867
+    },
+    "b48e0940-0f21-4021-98c9-ee9411c9c269": {
+      "session_id": "b48e0940-0f21-4021-98c9-ee9411c9c269",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\b48e0940-0f21-4021-98c9-ee9411c9c269.jsonl",
+      "file_size": 233708,
+      "file_mtime": "2026-03-03T15:47:15.434Z",
+      "chunk_count": 2,
+      "chunk_ids": [
+        "f2b2a473-17ad-41a0-b3e6-9d26fbf6474c",
+        "015cfca4-3930-4af0-bb9d-0264351cb1b0"
+      ],
+      "indexed_at": "2026-03-03T21:21:10.768Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 74
+    },
+    "e99a00ab-d451-4d96-96f0-609461dced10": {
+      "session_id": "e99a00ab-d451-4d96-96f0-609461dced10",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\e99a00ab-d451-4d96-96f0-609461dced10.jsonl",
+      "file_size": 185808,
+      "file_mtime": "2026-03-03T15:38:21.156Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "0699c11b-df58-48c6-8bc4-e6a9b0236c52"
+      ],
+      "indexed_at": "2026-03-03T21:21:10.896Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 32
+    },
+    "a7949544-9543-4696-bf4e-071b6daf6332": {
+      "session_id": "a7949544-9543-4696-bf4e-071b6daf6332",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\a7949544-9543-4696-bf4e-071b6daf6332.jsonl",
+      "file_size": 1040330,
+      "file_mtime": "2026-03-03T15:33:26.613Z",
+      "chunk_count": 4,
+      "chunk_ids": [
+        "d636b2d0-7585-424a-9190-6b3e8e976b43",
+        "e46faa88-6f60-4648-960d-72fc7842fd3d",
+        "c347ae6f-3967-47b6-bd5f-b687d81c90c5",
+        "d527f0fb-9f2f-453d-9b84-b81e8662dc00"
+      ],
+      "indexed_at": "2026-03-03T21:21:11.361Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 127
+    },
+    "3b18bd27-e1be-4969-9c87-13c1a64f161e": {
+      "session_id": "3b18bd27-e1be-4969-9c87-13c1a64f161e",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\3b18bd27-e1be-4969-9c87-13c1a64f161e.jsonl",
+      "file_size": 5249,
+      "file_mtime": "2026-03-03T15:19:29.753Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:11.363Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 8
+    },
+    "aa1f0f22-ab6e-47a5-aedf-dd4600bb59c7": {
+      "session_id": "aa1f0f22-ab6e-47a5-aedf-dd4600bb59c7",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\aa1f0f22-ab6e-47a5-aedf-dd4600bb59c7.jsonl",
+      "file_size": 7976,
+      "file_mtime": "2026-03-03T15:17:33.848Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:11.364Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 10
+    },
+    "4bc9314e-2bbb-4d9b-aca8-69acd6a6e796": {
+      "session_id": "4bc9314e-2bbb-4d9b-aca8-69acd6a6e796",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\4bc9314e-2bbb-4d9b-aca8-69acd6a6e796.jsonl",
+      "file_size": 5631486,
+      "file_mtime": "2026-03-03T06:59:11.115Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "25e2d093-a382-44a5-9bdb-18eae643d2c2"
+      ],
+      "indexed_at": "2026-03-03T21:21:11.532Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 3908
+    },
+    "369f1073-0047-436b-9d41-4a098a21bcbc": {
+      "session_id": "369f1073-0047-436b-9d41-4a098a21bcbc",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\369f1073-0047-436b-9d41-4a098a21bcbc.jsonl",
+      "file_size": 432158,
+      "file_mtime": "2026-03-03T05:16:09.647Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "e10199fc-fa41-4750-9d00-76eddacf52e7"
+      ],
+      "indexed_at": "2026-03-03T21:21:11.649Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 360
+    },
+    "74bb7476-a464-4496-bb6b-eebaaec53b90": {
+      "session_id": "74bb7476-a464-4496-bb6b-eebaaec53b90",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\74bb7476-a464-4496-bb6b-eebaaec53b90.jsonl",
+      "file_size": 14601437,
+      "file_mtime": "2026-03-03T04:57:36.587Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "93f25ef8-a168-4364-ab60-c3a7960ca331"
+      ],
+      "indexed_at": "2026-03-03T21:21:11.850Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 3430
+    },
+    "e290369e-3052-4601-b000-d60d63de8a6e": {
+      "session_id": "e290369e-3052-4601-b000-d60d63de8a6e",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\e290369e-3052-4601-b000-d60d63de8a6e.jsonl",
+      "file_size": 10670301,
+      "file_mtime": "2026-03-03T04:25:26.531Z",
+      "chunk_count": 4,
+      "chunk_ids": [
+        "2ef10bab-bff7-4381-a220-d3adc2bee277",
+        "1bb3ad30-a1c1-4929-b7a1-87db65f6167f",
+        "b750bad5-cdb2-44ba-a488-76c247c421a4",
+        "8163d85b-9da3-4978-832b-752d3868d684"
+      ],
+      "indexed_at": "2026-03-03T21:21:12.396Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 552
+    },
+    "1dff12e1-1f6a-4622-b53b-86233d6066ef": {
+      "session_id": "1dff12e1-1f6a-4622-b53b-86233d6066ef",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\1dff12e1-1f6a-4622-b53b-86233d6066ef.jsonl",
+      "file_size": 32619,
+      "file_mtime": "2026-03-03T04:21:05.064Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "276e74f8-7d56-4122-95d5-73565e59a247"
+      ],
+      "indexed_at": "2026-03-03T21:21:12.519Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 15
+    },
+    "e048a1de-c18b-48e6-b13b-d304f6dbe3b0": {
+      "session_id": "e048a1de-c18b-48e6-b13b-d304f6dbe3b0",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\e048a1de-c18b-48e6-b13b-d304f6dbe3b0.jsonl",
+      "file_size": 10320581,
+      "file_mtime": "2026-03-03T03:52:44.720Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "bd182e6c-cd23-4257-a79b-473f1a4ba9c6"
+      ],
+      "indexed_at": "2026-03-03T21:21:12.696Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 419
+    },
+    "ffaea2ac-1692-484e-87b6-f0fe6ab0fca9": {
+      "session_id": "ffaea2ac-1692-484e-87b6-f0fe6ab0fca9",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\ffaea2ac-1692-484e-87b6-f0fe6ab0fca9.jsonl",
+      "file_size": 601790,
+      "file_mtime": "2026-03-03T03:43:40.224Z",
+      "chunk_count": 2,
+      "chunk_ids": [
+        "fd0ea4a6-a239-440a-80d2-a27feacf52c6",
+        "decc6988-53b1-4b62-919b-afa9c3623f3a"
+      ],
+      "indexed_at": "2026-03-03T21:21:12.935Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 155
+    },
+    "829f93bc-86dc-4620-814c-b40415ed3dbd": {
+      "session_id": "829f93bc-86dc-4620-814c-b40415ed3dbd",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\829f93bc-86dc-4620-814c-b40415ed3dbd.jsonl",
+      "file_size": 2201305,
+      "file_mtime": "2026-03-03T03:37:48.166Z",
+      "chunk_count": 2,
+      "chunk_ids": [
+        "58da1c0d-499e-4a2f-acf4-10444721f922",
+        "b2b821e4-f65a-457c-8127-7f473ecb344d"
+      ],
+      "indexed_at": "2026-03-03T21:21:13.216Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 161
+    },
+    "0ade23df-b3a6-4421-b47c-8689cf60a03b": {
+      "session_id": "0ade23df-b3a6-4421-b47c-8689cf60a03b",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\0ade23df-b3a6-4421-b47c-8689cf60a03b.jsonl",
+      "file_size": 7315028,
+      "file_mtime": "2026-03-03T03:20:46.660Z",
+      "chunk_count": 6,
+      "chunk_ids": [
+        "948d4d9b-a6ce-4b0e-bf43-f2cd8b65dfe7",
+        "0e160087-84e2-4f37-a20e-d1a25634f37d",
+        "467f4811-cd37-4767-9c98-960b95cc4432",
+        "9de268fa-c776-4b5b-90dc-dbf9a889db08",
+        "e59940d5-05fc-4874-9dc2-c7a48419eeee",
+        "4d36a8c0-4b58-4a75-a012-a38cbe59856f"
+      ],
+      "indexed_at": "2026-03-03T21:21:13.984Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 1190
+    },
+    "803bf07e-1e31-4299-8e5f-b6b615dd1eca": {
+      "session_id": "803bf07e-1e31-4299-8e5f-b6b615dd1eca",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\803bf07e-1e31-4299-8e5f-b6b615dd1eca.jsonl",
+      "file_size": 1048978,
+      "file_mtime": "2026-03-03T02:36:39.151Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "700be39e-636e-4452-9561-60eaeccc1be2"
+      ],
+      "indexed_at": "2026-03-03T21:21:14.081Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 6
+    },
+    "dd6a9f46-24bd-4707-ae17-389b25accbd3": {
+      "session_id": "dd6a9f46-24bd-4707-ae17-389b25accbd3",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\dd6a9f46-24bd-4707-ae17-389b25accbd3.jsonl",
+      "file_size": 1229,
+      "file_mtime": "2026-03-03T02:33:37.751Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:14.084Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 4
+    },
+    "a3c66a32-ce93-4e80-901c-8f38242f1b37": {
+      "session_id": "a3c66a32-ce93-4e80-901c-8f38242f1b37",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\a3c66a32-ce93-4e80-901c-8f38242f1b37.jsonl",
+      "file_size": 4632,
+      "file_mtime": "2026-03-03T02:28:36.609Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:14.084Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 6
+    },
+    "85d6d23c-4f59-45ed-91b1-3addbaaccef1": {
+      "session_id": "85d6d23c-4f59-45ed-91b1-3addbaaccef1",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\85d6d23c-4f59-45ed-91b1-3addbaaccef1.jsonl",
+      "file_size": 12464580,
+      "file_mtime": "2026-03-03T01:42:49.216Z",
+      "chunk_count": 5,
+      "chunk_ids": [
+        "1b0a02e7-ea14-4d9f-97e6-fa2cc0a25fc4",
+        "9d13e343-f6cc-4a65-ae97-03620253b727",
+        "c09af903-5242-4e57-b570-d58d81a19e11",
+        "7c20be03-bfd4-4cbc-8cf9-3da1345c74d1",
+        "af8c59bd-3334-40d5-8547-c88a5c7b24ae"
+      ],
+      "indexed_at": "2026-03-03T21:21:14.790Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 1428
+    },
+    "d0b30806-b81d-4baf-adc7-ed0508d63d6f": {
+      "session_id": "d0b30806-b81d-4baf-adc7-ed0508d63d6f",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\d0b30806-b81d-4baf-adc7-ed0508d63d6f.jsonl",
+      "file_size": 3938512,
+      "file_mtime": "2026-03-03T01:08:52.250Z",
+      "chunk_count": 2,
+      "chunk_ids": [
+        "7c4c3b36-339a-4a4f-b6ce-7507859f7f31",
+        "a98ee3fc-39ca-4af4-987c-c22a46c1b597"
+      ],
+      "indexed_at": "2026-03-03T21:21:15.086Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 523
+    },
+    "3702e332-e664-4d55-8393-358b16ee7897": {
+      "session_id": "3702e332-e664-4d55-8393-358b16ee7897",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\3702e332-e664-4d55-8393-358b16ee7897.jsonl",
+      "file_size": 30773,
+      "file_mtime": "2026-03-03T01:00:59.068Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "1a55c66b-13a5-4986-bf11-283978a13fd3"
+      ],
+      "indexed_at": "2026-03-03T21:21:15.209Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 22
+    },
+    "9e528ba5-e648-4434-83b6-f4ce24b72db4": {
+      "session_id": "9e528ba5-e648-4434-83b6-f4ce24b72db4",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\9e528ba5-e648-4434-83b6-f4ce24b72db4.jsonl",
+      "file_size": 2011949,
+      "file_mtime": "2026-03-03T00:56:19.155Z",
+      "chunk_count": 2,
+      "chunk_ids": [
+        "4421b996-cf42-4015-908a-cc8dcc528a9d",
+        "2d5a5d52-51c4-4c9e-94b4-7dff3e22ff19"
+      ],
+      "indexed_at": "2026-03-03T21:21:15.501Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 302
+    },
+    "a3227d26-e889-4c3b-9e46-adf6ebd7e67e": {
+      "session_id": "a3227d26-e889-4c3b-9e46-adf6ebd7e67e",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\a3227d26-e889-4c3b-9e46-adf6ebd7e67e.jsonl",
+      "file_size": 2188860,
+      "file_mtime": "2026-03-03T00:54:48.993Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "ffd41851-5856-4359-9044-f8af27bb4b90"
+      ],
+      "indexed_at": "2026-03-03T21:21:15.645Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 82
+    },
+    "994cc5ad-dc63-4907-9a6c-01a39091ffd7": {
+      "session_id": "994cc5ad-dc63-4907-9a6c-01a39091ffd7",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\994cc5ad-dc63-4907-9a6c-01a39091ffd7.jsonl",
+      "file_size": 58752,
+      "file_mtime": "2026-03-03T00:45:21.181Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "2de9abd1-d0ba-4c48-9bc1-b78740c00a21"
+      ],
+      "indexed_at": "2026-03-03T21:21:15.769Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 24
+    },
+    "a16edd80-c24e-4ea9-8e07-d59aae4f691e": {
+      "session_id": "a16edd80-c24e-4ea9-8e07-d59aae4f691e",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\a16edd80-c24e-4ea9-8e07-d59aae4f691e.jsonl",
+      "file_size": 2657954,
+      "file_mtime": "2026-03-03T00:28:57.622Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "db204ddf-ce16-4c69-ad47-accb63b3b72f"
+      ],
+      "indexed_at": "2026-03-03T21:21:15.924Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 497
+    },
+    "604440b7-e227-409e-bdbe-9e65212c5b43": {
+      "session_id": "604440b7-e227-409e-bdbe-9e65212c5b43",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\604440b7-e227-409e-bdbe-9e65212c5b43.jsonl",
+      "file_size": 2349,
+      "file_mtime": "2026-03-03T00:24:54.851Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:15.927Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 4
+    },
+    "e16481d8-a28c-4771-9073-472f1013a5ab": {
+      "session_id": "e16481d8-a28c-4771-9073-472f1013a5ab",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\e16481d8-a28c-4771-9073-472f1013a5ab.jsonl",
+      "file_size": 3812130,
+      "file_mtime": "2026-03-02T23:10:57.181Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "58122dfe-83ee-456c-afcb-28a6531865e1"
+      ],
+      "indexed_at": "2026-03-03T21:21:21.760Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 2284
+    },
+    "fa87fdac-391a-4aad-afb8-c7bdc52b82a8": {
+      "session_id": "fa87fdac-391a-4aad-afb8-c7bdc52b82a8",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\fa87fdac-391a-4aad-afb8-c7bdc52b82a8.jsonl",
+      "file_size": 321011,
+      "file_mtime": "2026-03-02T22:21:41.687Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "c209533b-f8fa-412e-84ee-347dfbe98f7d"
+      ],
+      "indexed_at": "2026-03-03T21:21:21.881Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 225
+    },
+    "793607f3-5c2d-478f-988e-29e01bd8fdd1": {
+      "session_id": "793607f3-5c2d-478f-988e-29e01bd8fdd1",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\793607f3-5c2d-478f-988e-29e01bd8fdd1.jsonl",
+      "file_size": 57455,
+      "file_mtime": "2026-03-02T22:06:47.725Z",
+      "chunk_count": 2,
+      "chunk_ids": [
+        "0613defc-f87c-4d81-87cd-4af72872b347",
+        "530d6dbb-1848-47c6-ac12-574904e3ac2c"
+      ],
+      "indexed_at": "2026-03-03T21:21:22.126Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 30
+    },
+    "89b6c4d1-0525-41e6-b199-0eba03754a66": {
+      "session_id": "89b6c4d1-0525-41e6-b199-0eba03754a66",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\89b6c4d1-0525-41e6-b199-0eba03754a66.jsonl",
+      "file_size": 7516,
+      "file_mtime": "2026-03-02T22:00:29.581Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:22.128Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 5
+    },
+    "9b7e86e2-c16c-424b-a820-8fff6478d065": {
+      "session_id": "9b7e86e2-c16c-424b-a820-8fff6478d065",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\9b7e86e2-c16c-424b-a820-8fff6478d065.jsonl",
+      "file_size": 869120,
+      "file_mtime": "2026-03-02T21:56:17.736Z",
+      "chunk_count": 2,
+      "chunk_ids": [
+        "315c4cb5-3614-4a02-af47-14ec549521dc",
+        "ebb68981-d513-4c38-8806-cc2264e8f228"
+      ],
+      "indexed_at": "2026-03-03T21:21:22.399Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 234
+    },
+    "96df22c2-2d70-4ae8-ae57-c0114d0ed6dc": {
+      "session_id": "96df22c2-2d70-4ae8-ae57-c0114d0ed6dc",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\96df22c2-2d70-4ae8-ae57-c0114d0ed6dc.jsonl",
+      "file_size": 39969,
+      "file_mtime": "2026-03-02T20:42:53.284Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:23.640Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 12
+    },
+    "c3ead5ae-3fe3-43eb-9ec1-88b9cd8cd13c": {
+      "session_id": "c3ead5ae-3fe3-43eb-9ec1-88b9cd8cd13c",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\c3ead5ae-3fe3-43eb-9ec1-88b9cd8cd13c.jsonl",
+      "file_size": 129109,
+      "file_mtime": "2026-03-02T20:29:46.666Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "a1bf4dbb-ea82-4518-8838-0437045a0242"
+      ],
+      "indexed_at": "2026-03-03T21:21:23.759Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 30
+    },
+    "a58ce550-d590-40b6-a6b0-2deecd6d47b0": {
+      "session_id": "a58ce550-d590-40b6-a6b0-2deecd6d47b0",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\a58ce550-d590-40b6-a6b0-2deecd6d47b0.jsonl",
+      "file_size": 39674,
+      "file_mtime": "2026-03-02T20:24:49.152Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:23.762Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 12
+    },
+    "ffcc64c1-ddc7-4f96-a19f-01aaf72582de": {
+      "session_id": "ffcc64c1-ddc7-4f96-a19f-01aaf72582de",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\ffcc64c1-ddc7-4f96-a19f-01aaf72582de.jsonl",
+      "file_size": 2717,
+      "file_mtime": "2026-03-02T20:22:08.303Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:24.312Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 7
+    },
+    "9d37a127-f5bd-4aef-9771-7c6c4d365932": {
+      "session_id": "9d37a127-f5bd-4aef-9771-7c6c4d365932",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\9d37a127-f5bd-4aef-9771-7c6c4d365932.jsonl",
+      "file_size": 22123,
+      "file_mtime": "2026-03-02T20:09:57.637Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:25.377Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 9
+    },
+    "30ed3f5b-9353-440b-9861-d3200373ac61": {
+      "session_id": "30ed3f5b-9353-440b-9861-d3200373ac61",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\30ed3f5b-9353-440b-9861-d3200373ac61.jsonl",
+      "file_size": 413784,
+      "file_mtime": "2026-03-02T20:06:14.551Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "4abb9bbc-5b91-4837-8f3c-9367f5ab5f38"
+      ],
+      "indexed_at": "2026-03-03T21:21:25.477Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 326
+    },
+    "4e46458f-3c04-447b-8704-fa0d6415b8a6": {
+      "session_id": "4e46458f-3c04-447b-8704-fa0d6415b8a6",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\4e46458f-3c04-447b-8704-fa0d6415b8a6.jsonl",
+      "file_size": 4072752,
+      "file_mtime": "2026-03-02T19:28:03.951Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "dabe8f14-4ebf-4262-ba0b-03f2f4fe3405"
+      ],
+      "indexed_at": "2026-03-03T21:21:25.600Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 306
+    },
+    "ffb5977b-f768-4dc6-81ba-01473232f6dd": {
+      "session_id": "ffb5977b-f768-4dc6-81ba-01473232f6dd",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\J--Sites-Apps-Synabun\\ffb5977b-f768-4dc6-81ba-01473232f6dd.jsonl",
+      "file_size": 20114,
+      "file_mtime": "2026-03-02T19:21:16.885Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "19ce8d74-71e1-43ca-ac60-a315fa4c2fea"
+      ],
+      "indexed_at": "2026-03-03T21:21:25.693Z",
+      "project": "synabun",
+      "status": "complete",
+      "last_line_indexed": 15
+    },
+    "626e2cf8-4623-482f-b4b6-de11ae5e81cf": {
+      "session_id": "626e2cf8-4623-482f-b4b6-de11ae5e81cf",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\626e2cf8-4623-482f-b4b6-de11ae5e81cf.jsonl",
+      "file_size": 16405,
+      "file_mtime": "2026-03-02T19:18:49.444Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:25.696Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 7
+    },
+    "87e34d24-cb1f-4350-9eba-49e89645d324": {
+      "session_id": "87e34d24-cb1f-4350-9eba-49e89645d324",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\87e34d24-cb1f-4350-9eba-49e89645d324.jsonl",
+      "file_size": 134267,
+      "file_mtime": "2026-03-02T19:14:43.237Z",
+      "chunk_count": 1,
+      "chunk_ids": [
+        "ffe97c5d-f41d-4f50-bbe0-df87252b41bc"
+      ],
+      "indexed_at": "2026-03-03T21:21:25.802Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 24
+    },
+    "fd54de59-2996-448d-9556-461335bc6530": {
+      "session_id": "fd54de59-2996-448d-9556-461335bc6530",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\fd54de59-2996-448d-9556-461335bc6530.jsonl",
+      "file_size": 2931,
+      "file_mtime": "2026-03-02T19:12:53.419Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:25.804Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 3
+    },
+    "a4e04161-bf1d-4531-9eca-0146203924f7": {
+      "session_id": "a4e04161-bf1d-4531-9eca-0146203924f7",
+      "file_path": "C:\\Users\\danil\\.claude\\projects\\j--Sites-CriticalPixel\\a4e04161-bf1d-4531-9eca-0146203924f7.jsonl",
+      "file_size": 7828,
+      "file_mtime": "2026-03-02T19:11:24.560Z",
+      "chunk_count": 0,
+      "chunk_ids": [],
+      "indexed_at": "2026-03-03T21:21:25.805Z",
+      "project": "criticalpixel",
+      "status": "complete",
+      "last_line_indexed": 4
     }
   },
   "last_run": {
-    "started_at": "2026-03-02T18:50:44.643Z",
-    "completed_at": "2026-03-02T18:56:04.903Z",
-    "total_sessions": 861,
-    "total_chunks": 2438,
+    "started_at": "2026-03-03T21:22:08.708Z",
+    "completed_at": "2026-03-03T21:22:10.153Z",
+    "total_sessions": 2,
+    "total_chunks": 8,
     "errors": 0
   }
 }

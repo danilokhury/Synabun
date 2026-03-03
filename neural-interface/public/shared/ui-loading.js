@@ -106,9 +106,8 @@ export async function checkHealth() {
     const health = await fetchHealth();
     if (!health.ok) {
       const messages = {
-        docker_not_running: [t('loading.health.dockerNotRunning.title'), t('loading.health.dockerNotRunning.sub')],
-        container_stopped:  [t('loading.health.containerStopped.title'), t('loading.health.containerStopped.sub')],
-        qdrant_unreachable: [t('loading.health.qdrantUnreachable.title'), t('loading.health.qdrantUnreachable.sub')],
+        db_missing:         [t('loading.health.databaseUnreachable.title'), health.detail || t('loading.health.databaseUnreachable.sub')],
+        db_error:           [t('loading.health.databaseUnreachable.title'), health.detail || t('loading.health.databaseUnreachable.sub')],
         remote_unreachable: [t('loading.health.remoteUnreachable.title'), health.detail || t('loading.health.remoteUnreachable.sub')],
         auth_error:         [t('loading.health.authError.title'), health.detail || t('loading.health.authError.sub')],
       };

@@ -8,7 +8,7 @@
  * When Claude exits plan mode (plan approved), this hook:
  * 1. Finds the most recently modified plan file in ~/.claude/plans/
  * 2. Auto-creates a child category under "plans" for the project if needed
- * 3. Stores the full plan markdown in Qdrant with embedding
+ * 3. Generates a local embedding and stores the plan in SQLite
  * 4. Returns additionalContext confirming storage
  *
  * Input (stdin JSON):
@@ -19,10 +19,11 @@
  */
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname, join, basename } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { detectProject, getCategoriesPath, ENV_PATH, DATA_DIR } from './shared.mjs';
+import { detectProject, getCategoriesPath, MCP_DATA_DIR, DATA_DIR } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -31,6 +32,9 @@ const PLANS_DIR = join(process.env.USERPROFILE || process.env.HOME || '', '.clau
 
 // Dedup tracker — records which plan files have already been stored
 const STORED_PLANS_PATH = join(DATA_DIR, 'stored-plans.json');
+
+// SQLite database path
+const DB_PATH = process.env.SQLITE_DB_PATH || join(MCP_DATA_DIR, 'memory.db');
 
 // ─── Stdin ───
 
@@ -45,56 +49,62 @@ function readStdin() {
   });
 }
 
-// ─── Env config ───
+// ─── Local embedding generation ───
 
-function parseEnvFile() {
+async function generateEmbedding(text) {
+  const embPath = join(__dirname, '..', '..', 'mcp-server', 'dist', 'services', 'local-embeddings.js');
+  if (!existsSync(embPath)) {
+    throw new Error('MCP server not built. Run: cd mcp-server && npm run build');
+  }
+  const { generateEmbedding: embed } = await import(pathToFileURL(embPath).href);
+  return embed(text);
+}
+
+// ─── Vector encoding ───
+
+function encodeVector(vector) {
+  const f32 = new Float32Array(vector);
+  return new Uint8Array(f32.buffer);
+}
+
+// ─── Database storage ───
+
+function storeInSQLite(id, vector, payload) {
+  const db = new DatabaseSync(DB_PATH);
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA busy_timeout = 5000');
+
   try {
-    const content = readFileSync(ENV_PATH, 'utf-8');
-    const vars = {};
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq === -1) continue;
-      vars[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
-    }
-    return vars;
-  } catch { return {}; }
-}
-
-function loadEmbeddingConfig(vars) {
-  const activeId = vars.EMBEDDING_ACTIVE;
-  if (activeId && vars[`EMBEDDING__${activeId}__API_KEY`]) {
-    return {
-      apiKey: vars[`EMBEDDING__${activeId}__API_KEY`],
-      baseUrl: vars[`EMBEDDING__${activeId}__BASE_URL`] || 'https://api.openai.com/v1',
-      model: vars[`EMBEDDING__${activeId}__MODEL`] || 'text-embedding-3-small',
-      dimensions: parseInt(vars[`EMBEDDING__${activeId}__DIMENSIONS`] || '1536', 10),
-    };
+    db.prepare(`
+      INSERT OR REPLACE INTO memories
+        (id, vector, content, category, subcategory, project, tags, importance, source,
+         created_at, updated_at, accessed_at, access_count, related_files,
+         related_memory_ids, file_checksums, trashed_at, source_session_chunks)
+      VALUES
+        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      encodeVector(vector),
+      payload.content,
+      payload.category,
+      payload.subcategory || null,
+      payload.project,
+      JSON.stringify(payload.tags || []),
+      payload.importance || 5,
+      payload.source || 'auto-saved',
+      payload.created_at,
+      payload.updated_at,
+      payload.accessed_at,
+      payload.access_count || 0,
+      null, // related_files
+      null, // related_memory_ids
+      null, // file_checksums
+      null, // trashed_at
+      null, // source_session_chunks
+    );
+  } finally {
+    db.close();
   }
-  return {
-    apiKey: vars.OPENAI_EMBEDDING_API_KEY || vars.OPENAI_API_KEY || '',
-    baseUrl: vars.EMBEDDING_BASE_URL || 'https://api.openai.com/v1',
-    model: vars.EMBEDDING_MODEL || 'text-embedding-3-small',
-    dimensions: parseInt(vars.EMBEDDING_DIMENSIONS || '1536', 10),
-  };
-}
-
-function loadQdrantConfig(vars) {
-  const activeId = vars.QDRANT_ACTIVE;
-  if (activeId && vars[`QDRANT__${activeId}__PORT`]) {
-    const port = vars[`QDRANT__${activeId}__PORT`] || '6333';
-    return {
-      url: vars[`QDRANT__${activeId}__URL`] || `http://localhost:${port}`,
-      apiKey: vars[`QDRANT__${activeId}__API_KEY`] || '',
-      collection: vars[`QDRANT__${activeId}__COLLECTION`] || 'claude_memory',
-    };
-  }
-  return {
-    url: vars.QDRANT_MEMORY_URL || `http://localhost:${vars.QDRANT_PORT || '6333'}`,
-    apiKey: vars.QDRANT_MEMORY_API_KEY || 'claude-memory-local-key',
-    collection: vars.QDRANT_MEMORY_COLLECTION || 'claude_memory',
-  };
 }
 
 // ─── Dedup tracker ───
@@ -183,58 +193,6 @@ function ensureProjectCategory(project) {
   }
 }
 
-// ─── Embedding generation ───
-
-async function generateEmbedding(text, embConfig) {
-  const res = await fetch(`${embConfig.baseUrl}/embeddings`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${embConfig.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: embConfig.model,
-      input: text,
-      dimensions: embConfig.dimensions,
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Embedding API ${res.status}: ${errText}`);
-  }
-
-  const data = await res.json();
-  return data.data[0].embedding;
-}
-
-// ─── Qdrant storage ───
-
-async function storeInQdrant(id, vector, payload, qdrantConfig) {
-  const url = `${qdrantConfig.url}/collections/${qdrantConfig.collection}/points`;
-  const res = await fetch(url, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'api-key': qdrantConfig.apiKey,
-    },
-    body: JSON.stringify({
-      points: [{
-        id,
-        vector,
-        payload,
-      }],
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Qdrant ${res.status}: ${errText}`);
-  }
-
-  return res.json();
-}
-
 // ─── Neural Interface cache invalidation ───
 
 async function invalidateNeuralInterface() {
@@ -297,26 +255,14 @@ async function main() {
   // Ensure child category exists under "plans"
   const categoryName = ensureProjectCategory(project);
 
-  // Load config from .env
-  const vars = parseEnvFile();
-  const embConfig = loadEmbeddingConfig(vars);
-  const qdrantConfig = loadQdrantConfig(vars);
+  // Generate local embedding (Transformers.js, no API key needed)
+  const embedding = await generateEmbedding(planContent);
 
-  if (!embConfig.apiKey) {
-    process.stdout.write(JSON.stringify({
-      additionalContext: 'SynaBun: Plan storage skipped — no embedding API key configured.',
-    }));
-    return;
-  }
-
-  // Generate embedding from plan content
-  const embedding = await generateEmbedding(planContent, embConfig);
-
-  // Store in Qdrant
+  // Store in SQLite
   const id = randomUUID();
   const now = new Date().toISOString();
 
-  await storeInQdrant(id, embedding, {
+  storeInSQLite(id, embedding, {
     content: planContent,
     category: categoryName,
     project,
@@ -328,9 +274,7 @@ async function main() {
     updated_at: now,
     accessed_at: now,
     access_count: 0,
-    plan_file: planFile.name,
-    plan_title: planTitle,
-  }, qdrantConfig);
+  });
 
   // Mark this plan as stored (dedup for future ExitPlanMode calls)
   markPlanStored(planFile.name, id);

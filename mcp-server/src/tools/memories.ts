@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { scrollMemories, getMemoryStats } from '../services/qdrant.js';
+import { scrollMemories, getMemoryStats } from '../services/sqlite.js';
 import { validateCategory } from '../services/categories.js';
 import type { MemoryPayload } from '../types.js';
 
