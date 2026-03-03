@@ -59,7 +59,7 @@ async function request(
 
 /**
  * Resolve which session ID to use.
- * - If sessionId provided, use it (verify it exists).
+ * - If sessionId provided, return it immediately (server returns 404 if invalid).
  * - If 1 session exists, auto-select it.
  * - If 0 sessions exist and autoCreate is true, create one.
  * - If multiple sessions and no ID, return error listing them.
@@ -69,14 +69,9 @@ export async function resolveSession(
   autoCreate?: { url?: string }
 ): Promise<{ sessionId: string } | { error: string }> {
   if (sessionId) {
-    // Verify session exists
-    const data = await request('GET', '/api/browser/sessions');
-    if (data.error) return { error: data.error };
-    const sessions = (data.sessions || []) as BrowserSessionInfo[];
-    if (sessions.find(s => s.id === sessionId)) {
-      return { sessionId };
-    }
-    return { error: `Session ${sessionId} not found. Available: ${sessions.map(s => s.id).join(', ') || 'none'}` };
+    // Trust the server — it will 404 if the session doesn't exist.
+    // Skipping the extra GET /api/browser/sessions verification call saves a full round-trip.
+    return { sessionId };
   }
 
   // List sessions
@@ -102,6 +97,16 @@ export async function resolveSession(
   // Multiple sessions — require explicit ID
   const list = sessions.map(s => `  ${s.id} — ${s.title || s.url}`).join('\n');
   return { error: `Multiple browser sessions open. Specify sessionId:\n${list}` };
+}
+
+// ── Cache invalidation ──
+
+export async function invalidateCache(reason: string): Promise<void> {
+  try {
+    await request('POST', '/api/cache/invalidate', { reason });
+  } catch {
+    // Fire-and-forget — don't block MCP tools if Neural Interface is down
+  }
 }
 
 // ── Session management ──
@@ -132,17 +137,21 @@ export async function goForward(sessionId: string): Promise<NiResponse> {
   return request('POST', `/api/browser/sessions/${sessionId}/forward`);
 }
 
+export async function reload(sessionId: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/reload`, undefined, LONG_TIMEOUT);
+}
+
 // ── Interaction (selector-based) ──
 
-export async function click(sessionId: string, selector: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/click`, { selector });
+export async function click(sessionId: string, selector: string, nthMatch?: number): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/click`, { selector, ...(nthMatch !== undefined && { nthMatch }) });
 }
 
 export async function fill(sessionId: string, selector: string, value: string): Promise<NiResponse> {
   return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value });
 }
 
-export async function type(sessionId: string, selector: string, text: string): Promise<NiResponse> {
+export async function type(sessionId: string, selector: string | null, text: string): Promise<NiResponse> {
   return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text });
 }
 
@@ -158,9 +167,25 @@ export async function pressKey(sessionId: string, key: string): Promise<NiRespon
   return request('POST', `/api/browser/sessions/${sessionId}/press`, { key });
 }
 
+export async function scroll(
+  sessionId: string,
+  opts: { direction: string; distance?: number; selector?: string }
+): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/scroll`, opts as Record<string, unknown>);
+}
+
+export async function upload(
+  sessionId: string,
+  selector: string,
+  filePaths: string[]
+): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths }, LONG_TIMEOUT);
+}
+
 // ── Observation ──
 
-export async function snapshot(sessionId: string): Promise<NiResponse> {
+export async function snapshot(sessionId: string, selector?: string): Promise<NiResponse> {
+  if (selector) return request('POST', `/api/browser/sessions/${sessionId}/snapshot`, { selector });
   return request('GET', `/api/browser/sessions/${sessionId}/snapshot`);
 }
 
@@ -180,7 +205,70 @@ export async function evaluate(sessionId: string, script: string): Promise<NiRes
 
 export async function waitFor(
   sessionId: string,
-  opts: { selector?: string; state?: string; timeout?: number }
+  opts: { selector?: string; state?: string; loadState?: string; timeout?: number }
 ): Promise<NiResponse> {
   return request('POST', `/api/browser/sessions/${sessionId}/wait`, opts, LONG_TIMEOUT);
+}
+
+// ── Whiteboard ──
+
+export async function getWhiteboard(): Promise<NiResponse> {
+  return request('GET', '/api/whiteboard');
+}
+
+export async function addWhiteboardElements(
+  elements: Record<string, unknown>[],
+  coordMode?: string,
+  layout?: string
+): Promise<NiResponse> {
+  return request('POST', '/api/whiteboard/elements', { elements, coordMode, layout } as Record<string, unknown>);
+}
+
+export async function updateWhiteboardElement(
+  id: string,
+  updates: Record<string, unknown>,
+  coordMode?: string
+): Promise<NiResponse> {
+  return request('PUT', `/api/whiteboard/elements/${id}`, { updates, coordMode } as Record<string, unknown>);
+}
+
+export async function removeWhiteboardElement(id: string): Promise<NiResponse> {
+  return request('DELETE', `/api/whiteboard/elements/${id}`);
+}
+
+export async function clearWhiteboard(): Promise<NiResponse> {
+  return request('POST', '/api/whiteboard/clear');
+}
+
+export async function whiteboardScreenshot(): Promise<NiResponse> {
+  return request('GET', '/api/whiteboard/screenshot', undefined, 15_000);
+}
+
+// ── Cards (Memory Card MCP integration) ──
+
+export async function getCards(): Promise<NiResponse> {
+  return request('GET', '/api/cards');
+}
+
+export async function openCard(
+  memoryId: string,
+  opts?: { left?: number; top?: number; compact?: boolean; coordMode?: string }
+): Promise<NiResponse> {
+  return request('POST', '/api/cards/open', { memoryId, ...opts } as Record<string, unknown>);
+}
+
+export async function closeCard(memoryId?: string): Promise<NiResponse> {
+  return request('POST', '/api/cards/close', memoryId ? { memoryId } : {} as Record<string, unknown>);
+}
+
+export async function updateCard(
+  memoryId: string,
+  updates: Record<string, unknown>,
+  coordMode?: string
+): Promise<NiResponse> {
+  return request('PUT', `/api/cards/${memoryId}`, { ...updates, coordMode } as Record<string, unknown>);
+}
+
+export async function cardsScreenshot(): Promise<NiResponse> {
+  return request('GET', '/api/cards/screenshot', undefined, 15_000);
 }

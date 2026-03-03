@@ -3,8 +3,8 @@ import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, dirname, extname, join, resolve } from 'path';
 import { config as dotenvConfig } from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, renameSync, cpSync, appendFileSync } from 'fs';
-import { randomBytes, createHash } from 'crypto';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, renameSync, cpSync, appendFileSync, openSync, readSync, closeSync } from 'fs';
+import { randomBytes, randomUUID, createHash } from 'crypto';
 import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
 import { Readable } from 'stream';
@@ -15,6 +15,8 @@ import pty from 'node-pty';
 import archiver from 'archiver';
 import AdmZip from 'adm-zip';
 import { chromium } from 'playwright-core';
+import { VTermBuffer } from './public/shared/vterm-buffer.js';
+import { startIndexing, getIndexingStatus, mirrorExistingChunks } from './lib/session-indexer.js';
 
 const execAsync = promisify(exec);
 
@@ -25,14 +27,94 @@ const __dirname = dirname(__filename);
 dotenvConfig({ path: resolve(__dirname, '..', '.env') });
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 
-// Block tunnel traffic from accessing anything except /mcp
+// Block tunnel traffic from accessing anything except /mcp and /invite
 // Cloudflared adds CF-Connecting-IP header on proxied requests
-const TUNNEL_ALLOWED = ['/mcp'];
+const TUNNEL_ALLOWED = ['/mcp', '/invite'];
+
+// Simple cookie parser (no dependency)
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  if (!cookieHeader) return cookies;
+  cookieHeader.split(';').forEach(part => {
+    const [k, ...v] = part.trim().split('=');
+    if (k) cookies[k.trim()] = decodeURIComponent(v.join('=').trim());
+  });
+  return cookies;
+}
+
+// Check if request has a valid invite session cookie
+function isValidInviteSession(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies['synabun_invite'];
+  if (!token) return false;
+  const session = inviteSessions.get(token);
+  if (!session) return false;
+  // 24-hour TTL
+  if (Date.now() - session.createdAt > 24 * 60 * 60 * 1000) {
+    inviteSessions.delete(token);
+    persistInviteSessions();
+    return false;
+  }
+  session.lastSeen = Date.now();
+  return true;
+}
+
 app.use((req, res, next) => {
-  if (req.headers['cf-connecting-ip'] && !TUNNEL_ALLOWED.some(p => req.path.startsWith(p))) {
+  if (req.headers['cf-connecting-ip']) {
+    // Allow explicitly permitted paths
+    if (TUNNEL_ALLOWED.some(p => req.path.startsWith(p))) return next();
+    // Allow cookie-authenticated invite sessions (full UI access)
+    if (isValidInviteSession(req)) return next();
     return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+});
+
+// Guest detection — works for both Cloudflare tunnel and custom proxy
+function isGuestRequest(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies['synabun_invite'];
+  return !!token && inviteSessions.has(token);
+}
+
+// Admin-only protection — block guests from sensitive endpoints
+const ADMIN_ONLY_PREFIXES = [
+  '/api/settings', '/api/display-settings',
+  '/api/connections', '/api/setup', '/api/system',
+  '/api/invite/key', '/api/invite/sessions', '/api/invite/proxy', '/api/invite/permissions',
+  '/api/claude-code', '/api/mcp-key',
+  '/api/tunnel/start', '/api/tunnel/stop',
+  '/api/bridges', '/api/keybinds',
+  '/api/cli',
+];
+
+app.use((req, res, next) => {
+  if (isGuestRequest(req) && ADMIN_ONLY_PREFIXES.some(p => req.path.startsWith(p))) {
+    return res.status(403).json({ error: 'Admin only' });
+  }
+  next();
+});
+
+// Feature permission enforcement — block guest mutations for disabled features
+const FEATURE_PERMISSION_MAP = [
+  { prefix: '/api/terminal',      perm: 'terminal' },
+  { prefix: '/api/whiteboard',    perm: 'whiteboard' },
+  { prefix: '/api/memory',        perm: 'memories' },
+  { prefix: '/api/categories',    perm: 'memories' },
+  { prefix: '/api/trash',         perm: 'memories' },
+  { prefix: '/api/skills-studio', perm: 'skills' },
+  { prefix: '/api/browser',       perm: 'browser' },
+  { prefix: '/api/cards',         perm: 'cards' },
+];
+
+app.use((req, res, next) => {
+  if (req.method !== 'GET' && isGuestRequest(req)) {
+    const match = FEATURE_PERMISSION_MAP.find(m => req.path.startsWith(m.prefix));
+    if (match && !invitePermissions[match.perm]) {
+      return res.status(403).json({ error: 'Feature not enabled' });
+    }
   }
   next();
 });
@@ -549,7 +631,12 @@ app.get('/', (req, res, next) => {
 });
 
 app.use('/i18n', express.static(join(__dirname, 'i18n')));
-app.use(express.static(join(__dirname, 'public')));
+app.use('/games', express.static(join(__dirname, 'games')));
+app.use(express.static(join(__dirname, 'public'), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'),
+}));
 
 // --- Helpers ---
 
@@ -604,20 +691,194 @@ async function getEmbedding(text) {
   return data.data[0].embedding;
 }
 
+// --- Link cache ---
+let _linkCache = null;   // { links, pointCount, timestamp }
+const _LINK_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function invalidateMemoriesCache(reason) {
+  if (_linkCache) {
+    _linkCache = null;
+    console.log(`[cache] Link cache invalidated (${reason})`);
+  }
+}
+
+/**
+ * Compute links between nodes. Uses pre-computed magnitudes and inverted indexes
+ * for file/tag overlap instead of O(n² × m) array intersections.
+ */
+function computeLinks(nodes) {
+  const SIM_THRESHOLD = 0.65;
+  const MAX_LINKS_PER_NODE = 8;
+
+  // Load categories to build parent lookup
+  let categoryParentMap = {};
+  try {
+    const catData = JSON.parse(readFileSync(getCategoriesPath(), 'utf-8'));
+    for (const cat of catData.categories) {
+      categoryParentMap[cat.name] = cat.parent || cat.name;
+    }
+  } catch (e) {
+    console.warn('Could not load categories for parent lookup:', e.message);
+  }
+  for (const cat of _openclawCategories) {
+    categoryParentMap[cat.name] = cat.parent || cat.name;
+  }
+
+  const linkMap = new Map();
+  function addLink(idA, idB, str, type) {
+    const key = idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
+    const existing = linkMap.get(key);
+    if (existing) {
+      existing.strength = Math.max(existing.strength, str);
+      if (!existing.types.includes(type)) existing.types.push(type);
+    } else {
+      linkMap.set(key, { source: idA, target: idB, strength: str, types: [type] });
+    }
+  }
+
+  // Pre-compute vector magnitudes (halves cosine computation)
+  const magnitudes = new Float64Array(nodes.length);
+  for (let i = 0; i < nodes.length; i++) {
+    if (!nodes[i].vector) continue;
+    const v = nodes[i].vector;
+    let sum = 0;
+    for (let k = 0; k < v.length; k++) sum += v[k] * v[k];
+    magnitudes[i] = Math.sqrt(sum);
+  }
+
+  // Build inverted indexes for shared files and tags (O(n) instead of O(n²×m))
+  const fileIndex = new Map();  // filename → [nodeIndex, ...]
+  const tagIndex = new Map();   // tag → [nodeIndex, ...]
+  const nodeIdIndex = new Map(); // id → nodeIndex
+  for (let i = 0; i < nodes.length; i++) {
+    nodeIdIndex.set(nodes[i].id, i);
+    const p = nodes[i].payload;
+    if (p.related_files) {
+      for (const f of p.related_files) {
+        let arr = fileIndex.get(f);
+        if (!arr) { arr = []; fileIndex.set(f, arr); }
+        arr.push(i);
+      }
+    }
+    if (p.tags) {
+      for (const t of p.tags) {
+        let arr = tagIndex.get(t);
+        if (!arr) { arr = []; tagIndex.set(t, arr); }
+        arr.push(i);
+      }
+    }
+  }
+
+  // Cosine similarity + same-parent-category (still O(n²) for cosine, but optimized)
+  const t0 = Date.now();
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+
+      // Cosine similarity with pre-computed magnitudes
+      if (a.vector && b.vector && magnitudes[i] > 0 && magnitudes[j] > 0) {
+        let dot = 0;
+        const va = a.vector, vb = b.vector;
+        for (let k = 0; k < va.length; k++) dot += va[k] * vb[k];
+        const sim = dot / (magnitudes[i] * magnitudes[j]);
+        if (sim > SIM_THRESHOLD) {
+          addLink(a.id, b.id, (sim - SIM_THRESHOLD) / (1 - SIM_THRESHOLD), 'similarity');
+        }
+      }
+
+      // Same parent category
+      const parentA = categoryParentMap[a.payload.category];
+      const parentB = categoryParentMap[b.payload.category];
+      if (parentA && parentB && parentA === parentB) {
+        const pairKey = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
+        const existing = linkMap.get(pairKey);
+        if (!existing || existing.strength < 0.3) {
+          addLink(a.id, b.id, 0.2, 'family');
+        }
+      }
+    }
+
+    // Explicit related_memory_ids
+    if (a.payload.related_memory_ids) {
+      for (const relId of a.payload.related_memory_ids) {
+        if (nodeIdIndex.has(relId)) {
+          addLink(a.id, relId, 0.9, 'manual');
+        }
+      }
+    }
+  }
+
+  // Shared files via inverted index (O(pairs) not O(n²×m))
+  for (const [, indices] of fileIndex) {
+    if (indices.length < 2) continue;
+    for (let x = 0; x < indices.length; x++) {
+      for (let y = x + 1; y < indices.length; y++) {
+        const a = nodes[indices[x]], b = nodes[indices[y]];
+        // Count total shared files between this pair
+        const aFiles = new Set(a.payload.related_files);
+        const shared = b.payload.related_files.filter(f => aFiles.has(f)).length;
+        if (shared > 0) addLink(a.id, b.id, 0.3 + shared * 0.15, 'files');
+      }
+    }
+  }
+
+  // Shared tags via inverted index
+  for (const [, indices] of tagIndex) {
+    if (indices.length < 2) continue;
+    for (let x = 0; x < indices.length; x++) {
+      for (let y = x + 1; y < indices.length; y++) {
+        const a = nodes[indices[x]], b = nodes[indices[y]];
+        const aTags = new Set(a.payload.tags);
+        const shared = b.payload.tags.filter(t => aTags.has(t)).length;
+        if (shared > 0) addLink(a.id, b.id, 0.25 + shared * 0.1, 'tags');
+      }
+    }
+  }
+
+  const elapsed = Date.now() - t0;
+  console.log(`[links] Computed ${linkMap.size} raw links from ${nodes.length} nodes in ${elapsed}ms`);
+
+  // Filter and cap per node
+  const allCandidates = [];
+  for (const link of linkMap.values()) {
+    if (link.strength > 0.1) {
+      allCandidates.push({ source: link.source, target: link.target, strength: Math.min(link.strength, 1), types: link.types });
+    }
+  }
+  allCandidates.sort((a, b) => b.strength - a.strength);
+  const nodeLinkCount = new Map();
+  const links = [];
+  for (const link of allCandidates) {
+    const sc = nodeLinkCount.get(link.source) || 0;
+    const tc = nodeLinkCount.get(link.target) || 0;
+    const isManual = link.types.includes('manual');
+    if (!isManual && sc >= MAX_LINKS_PER_NODE && tc >= MAX_LINKS_PER_NODE) continue;
+    links.push(link);
+    nodeLinkCount.set(link.source, sc + 1);
+    nodeLinkCount.set(link.target, tc + 1);
+  }
+
+  return links;
+}
+
 // --- Routes ---
 
-// GET /api/memories — All memories with pre-computed graph edges
+// GET /api/memories — All memories, optionally with pre-computed graph edges
+// Use ?links=false to skip the expensive link computation (default for initial 3D load)
 app.get('/api/memories', async (req, res) => {
   try {
+    const includeLinks = req.query.links !== 'false';
+
     const allPoints = [];
     let offset = null;
 
-    // Paginated scroll to get all points
+    // Paginated scroll — only fetch vectors when computing links
     do {
       const body = {
         limit: 100,
         with_payload: true,
-        with_vector: true,
+        with_vector: includeLinks,
         filter: SYSTEM_METADATA_FILTER,
       };
       if (offset) body.offset = offset;
@@ -635,10 +896,10 @@ app.get('/api/memories', async (req, res) => {
     const nodes = allPoints.map(p => ({
       id: p.id,
       payload: p.payload,
-      vector: p.vector,
+      vector: p.vector || null,
     }));
 
-    // --- Merge OpenClaw bridge nodes (no vectors, no cosine links) ---
+    // Merge OpenClaw bridge nodes
     const ocBridge = loadBridgeConfig('openclaw');
     if (ocBridge?.enabled && _openclawNodes.length > 0) {
       for (const ocNode of _openclawNodes) {
@@ -646,95 +907,20 @@ app.get('/api/memories', async (req, res) => {
       }
     }
 
-    // Build links via cosine similarity + shared related files + parent category + shared tags + manual links
-    const SIM_THRESHOLD = 0.65;
-
-    // Load categories to build parent lookup
-    let categoryParentMap = {};
-    try {
-      const catData = JSON.parse(readFileSync(getCategoriesPath(), 'utf-8'));
-      for (const cat of catData.categories) {
-        // Map each category to its parent (or itself if it's a top-level parent)
-        categoryParentMap[cat.name] = cat.parent || cat.name;
-      }
-    } catch (e) {
-      console.warn('Could not load categories for parent lookup:', e.message);
-    }
-    // Add ephemeral OpenClaw categories to parent map
-    for (const cat of _openclawCategories) {
-      categoryParentMap[cat.name] = cat.parent || cat.name;
-    }
-
-    // Track link pairs to merge types when multiple methods connect the same pair
-    const linkMap = new Map(); // "idA|idB" → { source, target, strength, types[] }
-    function addLink(idA, idB, str, type) {
-      const key = idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
-      const existing = linkMap.get(key);
-      if (existing) {
-        existing.strength = Math.max(existing.strength, str);
-        if (!existing.types.includes(type)) existing.types.push(type);
+    // Compute or skip links
+    let links = [];
+    if (includeLinks) {
+      // Check cache first
+      if (_linkCache && _linkCache.pointCount === allPoints.length && (Date.now() - _linkCache.timestamp < _LINK_CACHE_TTL)) {
+        links = _linkCache.links;
+        console.log(`[cache] Serving ${links.length} cached links`);
       } else {
-        linkMap.set(key, { source: idA, target: idB, strength: str, types: [type] });
+        links = computeLinks(nodes);
+        _linkCache = { links, pointCount: allPoints.length, timestamp: Date.now() };
       }
     }
 
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i];
-        const b = nodes[j];
-
-        // Cosine similarity — "Similar Content"
-        if (a.vector && b.vector) {
-          const sim = cosineSimilarity(a.vector, b.vector);
-          if (sim > SIM_THRESHOLD) {
-            const str = (sim - SIM_THRESHOLD) / (1 - SIM_THRESHOLD);
-            addLink(a.id, b.id, str, 'similarity');
-          }
-        }
-
-        // Shared related files — "Shared Files"
-        if (a.payload.related_files && b.payload.related_files) {
-          const shared = a.payload.related_files.filter(f => b.payload.related_files.includes(f));
-          if (shared.length > 0) {
-            addLink(a.id, b.id, 0.3 + shared.length * 0.15, 'files');
-          }
-        }
-
-        // Same parent category — "Same Family"
-        const parentA = categoryParentMap[a.payload.category];
-        const parentB = categoryParentMap[b.payload.category];
-        if (parentA && parentB && parentA === parentB) {
-          addLink(a.id, b.id, 0.2, 'family');
-        }
-
-        // Shared tags — "Shared Tags"
-        if (a.payload.tags && b.payload.tags) {
-          const sharedTags = a.payload.tags.filter(t => b.payload.tags.includes(t));
-          if (sharedTags.length > 0) {
-            addLink(a.id, b.id, 0.25 + sharedTags.length * 0.1, 'tags');
-          }
-        }
-      }
-
-      // Explicit related_memory_ids — "Manually Linked"
-      if (nodes[i].payload.related_memory_ids) {
-        for (const relId of nodes[i].payload.related_memory_ids) {
-          if (nodes.some(n => n.id === relId)) {
-            addLink(nodes[i].id, relId, 0.9, 'manual');
-          }
-        }
-      }
-    }
-
-    // Filter to only links above threshold
-    const links = [];
-    for (const link of linkMap.values()) {
-      if (link.strength > 0.1) {
-        links.push({ source: link.source, target: link.target, strength: Math.min(link.strength, 1), types: link.types });
-      }
-    }
-
-    // Strip vectors from response (too large for client)
+    // Strip vectors from response
     const clientNodes = nodes.map(({ vector, ...rest }) => rest);
 
     res.json({ nodes: clientNodes, links, totalVectors: allPoints.length, openclawNodes: ocBridge?.enabled ? _openclawNodes.length : 0 });
@@ -742,6 +928,56 @@ app.get('/api/memories', async (req, res) => {
     console.error('GET /api/memories error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// GET /api/links — Fetch only the links (lazy-loaded by client when user enables link mode)
+app.get('/api/links', async (req, res) => {
+  try {
+    // Check cache first
+    if (_linkCache && (Date.now() - _linkCache.timestamp < _LINK_CACHE_TTL)) {
+      console.log(`[cache] Serving ${_linkCache.links.length} cached links (dedicated endpoint)`);
+      return res.json({ links: _linkCache.links });
+    }
+
+    // Need to fetch all points with vectors for computation
+    const allPoints = [];
+    let offset = null;
+    do {
+      const body = {
+        limit: 100,
+        with_payload: true,
+        with_vector: true,
+        filter: SYSTEM_METADATA_FILTER,
+      };
+      if (offset) body.offset = offset;
+      const result = await qdrantFetch('/points/scroll', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      allPoints.push(...result.result.points);
+      offset = result.result.next_page_offset ?? null;
+    } while (offset);
+
+    const nodes = allPoints.map(p => ({ id: p.id, payload: p.payload, vector: p.vector }));
+    const ocBridge = loadBridgeConfig('openclaw');
+    if (ocBridge?.enabled && _openclawNodes.length > 0) {
+      for (const ocNode of _openclawNodes) nodes.push({ ...ocNode, vector: null });
+    }
+
+    const links = computeLinks(nodes);
+    _linkCache = { links, pointCount: allPoints.length, timestamp: Date.now() };
+
+    res.json({ links });
+  } catch (err) {
+    console.error('GET /api/links error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/cache/invalidate — External cache invalidation (called by MCP server)
+app.post('/api/cache/invalidate', (req, res) => {
+  invalidateMemoriesCache(req.body?.reason || 'external');
+  res.json({ ok: true });
 });
 
 // POST /api/search — Semantic vector search
@@ -872,6 +1108,8 @@ app.patch('/api/memory/:id', async (req, res) => {
     });
 
     res.json({ ok: true, id: req.params.id, ...payload });
+    invalidateMemoriesCache('memory:updated');
+    broadcastSync({ type: 'memory:updated', id: req.params.id });
   } catch (err) {
     console.error('PATCH /api/memory/:id error:', err.message);
     res.status(500).json({ error: err.message });
@@ -954,6 +1192,8 @@ app.post('/api/categories', (req, res) => {
       categories: categories,
       message: `Created "${name}"` + (parent ? ` under "${parent}"` : '') + (color ? ` with color ${color}` : '')
     });
+    invalidateMemoriesCache('category:created');
+    broadcastSync({ type: 'category:created', name });
   } catch (err) {
     console.error('POST /api/categories error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1105,6 +1345,8 @@ app.put('/api/categories/:name', async (req, res) => {
       categories: categories,
       message: `Updated "${oldName}"${new_name ? ` → "${new_name}"` : ''}: ${changes.join(', ')}`
     });
+    invalidateMemoriesCache('category:updated');
+    broadcastSync({ type: 'category:updated', name: new_name || oldName });
   } catch (err) {
     console.error('PUT /api/categories error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1135,6 +1377,8 @@ app.delete('/api/memory/:id', async (req, res) => {
     }
 
     res.json({ ok: true, id, permanent: !!permanent });
+    invalidateMemoriesCache(permanent ? 'memory:deleted' : 'memory:trashed');
+    broadcastSync({ type: permanent ? 'memory:deleted' : 'memory:trashed', id });
   } catch (err) {
     console.error('DELETE /api/memory/:id error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1192,6 +1436,8 @@ app.post('/api/trash/:id/restore', async (req, res) => {
         points: [id],
       }),
     });
+    invalidateMemoriesCache('memory:restored');
+    broadcastSync({ type: 'memory:restored', id });
     res.json({ ok: true, id });
   } catch (err) {
     console.error('POST /api/trash/:id/restore error:', err.message);
@@ -1233,6 +1479,8 @@ app.delete('/api/trash/purge', async (req, res) => {
       body: JSON.stringify({ points: pointIds }),
     });
 
+    invalidateMemoriesCache('trash:purged');
+    broadcastSync({ type: 'trash:purged', count: pointIds.length });
     res.json({ ok: true, purged: pointIds.length });
   } catch (err) {
     console.error('DELETE /api/trash/purge error:', err.message);
@@ -1332,6 +1580,8 @@ app.patch('/api/categories/:name', (req, res) => {
     cat.description = description.trim();
     saveCategories(categories);
 
+    invalidateMemoriesCache('category:updated');
+    broadcastSync({ type: 'category:updated', name });
     res.json({
       categories: categories.map(c => ({ name: c.name, description: c.description })),
     });
@@ -1371,6 +1621,8 @@ app.post('/api/categories/:name/logo',
       cat.logo = `/${fileName}`;
       saveCategories(categories);
 
+      invalidateMemoriesCache('category:updated');
+    broadcastSync({ type: 'category:updated', name });
       res.json({ ok: true, logo: cat.logo, categories });
     } catch (err) {
       console.error('POST /api/categories/:name/logo error:', err.message);
@@ -1395,6 +1647,8 @@ app.delete('/api/categories/:name/logo', (req, res) => {
     delete cat.logo;
     saveCategories(categories);
 
+    invalidateMemoriesCache('category:updated');
+    broadcastSync({ type: 'category:updated', name });
     res.json({ ok: true, categories });
   } catch (err) {
     console.error('DELETE /api/categories/:name/logo error:', err.message);
@@ -1565,6 +1819,8 @@ app.delete('/api/categories/:name', async (req, res) => {
     if (deletedCount > 0) message += ` ${deletedCount} memor${deletedCount === 1 ? 'y' : 'ies'} moved to trash.`;
     if (matchingPoints.length > 0 && reassignTo) message += ` ${matchingPoints.length} memor${matchingPoints.length === 1 ? 'y' : 'ies'} reassigned to "${reassignTo}".`;
 
+    invalidateMemoriesCache('category:deleted');
+    broadcastSync({ type: 'category:deleted', name });
     res.json({
       categories: updated,
       message,
@@ -1786,6 +2042,357 @@ app.post('/api/ui-state', (req, res) => {
   } catch (err) {
     console.error('POST /api/ui-state error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ═══════════════════════════════════════════
+// WHITEBOARD API — Claude MCP integration
+// ═══════════════════════════════════════════
+
+// Layout engine for whiteboard auto-positioning
+function applyWhiteboardLayout(elements, layout, vp) {
+  const gap = 40;
+  const pad = 60;
+  const n = elements.length;
+  if (!n) return;
+
+  if (layout === 'center') {
+    const totalH = elements.reduce((s, el) => s + (el.height || 100), 0) + gap * (n - 1);
+    let y = (vp.height - totalH) / 2;
+    for (const el of elements) {
+      el.x = Math.round((vp.width - (el.width || 200)) / 2);
+      el.y = Math.round(y);
+      y += (el.height || 100) + gap;
+    }
+  } else if (layout === 'row') {
+    const totalW = elements.reduce((s, el) => s + (el.width || 200), 0) + gap * (n - 1);
+    let x = (vp.width - totalW) / 2;
+    for (const el of elements) {
+      el.x = Math.round(x);
+      el.y = Math.round((vp.height - (el.height || 100)) / 2);
+      x += (el.width || 200) + gap;
+    }
+  } else if (layout === 'column') {
+    const totalH = elements.reduce((s, el) => s + (el.height || 100), 0) + gap * (n - 1);
+    let y = (vp.height - totalH) / 2;
+    for (const el of elements) {
+      el.x = Math.round((vp.width - (el.width || 200)) / 2);
+      el.y = Math.round(y);
+      y += (el.height || 100) + gap;
+    }
+  } else if (layout === 'grid') {
+    const cols = n <= 2 ? 2 : n <= 6 ? 3 : 4;
+    const rows = Math.ceil(n / cols);
+    const cellW = (vp.width - pad * 2 - gap * (cols - 1)) / cols;
+    const cellH = (vp.height - pad * 2 - gap * (rows - 1)) / rows;
+    elements.forEach((el, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      el.x = Math.round(pad + col * (cellW + gap) + (cellW - (el.width || 200)) / 2);
+      el.y = Math.round(pad + row * (cellH + gap) + (cellH - (el.height || 100)) / 2);
+    });
+  }
+}
+
+// GET /api/whiteboard — Read current whiteboard state from ui-state storage
+app.get('/api/whiteboard', (req, res) => {
+  try {
+    const state = loadUiState();
+    const wb = state['neural-whiteboard'];
+    if (!wb || !wb.elements) {
+      return res.json({ ok: true, elements: [], nextZIndex: 1, viewport: whiteboardViewport });
+    }
+    res.json({ ok: true, elements: wb.elements, nextZIndex: wb.nextZIndex || 1, viewport: whiteboardViewport });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/whiteboard/elements — Add one or more elements
+app.post('/api/whiteboard/elements', (req, res) => {
+  try {
+    const { elements, coordMode, layout } = req.body;
+    if (!Array.isArray(elements) || elements.length === 0) {
+      return res.status(400).json({ error: 'elements must be a non-empty array' });
+    }
+
+    // Auto-layout or percentage coordinate conversion
+    if (layout && whiteboardViewport) {
+      applyWhiteboardLayout(elements, layout, whiteboardViewport);
+    } else if (coordMode === 'pct' && whiteboardViewport) {
+      for (const el of elements) {
+        if (el.x != null) el.x = Math.round((el.x / 100) * whiteboardViewport.width);
+        if (el.y != null) el.y = Math.round((el.y / 100) * whiteboardViewport.height);
+        if (el.width != null) el.width = Math.round((el.width / 100) * whiteboardViewport.width);
+        if (el.height != null) el.height = Math.round((el.height / 100) * whiteboardViewport.height);
+      }
+    }
+
+    const state = loadUiState();
+    const wb = state['neural-whiteboard'] || { elements: [], nextZIndex: 1 };
+    if (!Array.isArray(wb.elements)) wb.elements = [];
+
+    const added = [];
+    for (const el of elements) {
+      // Resolve image URL to base64 dataUrl (for MCP image type)
+      if (el.type === 'image' && el.url && !el.dataUrl) {
+        try {
+          const filePath = join(__dirname, el.url.replace(/^\//, ''));
+          if (existsSync(filePath)) {
+            const buf = readFileSync(filePath);
+            const ext = extname(filePath).toLowerCase();
+            const mime = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : 'image/jpeg';
+            el.dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
+          }
+        } catch { /* ignore — element will just have no dataUrl */ }
+      }
+      if (!el.id) el.id = 'wb-' + Date.now() + '-' + randomBytes(2).toString('hex').slice(0, 3);
+      el.zIndex = wb.nextZIndex++;
+      wb.elements.push(el);
+      added.push(el);
+    }
+
+    state['neural-whiteboard'] = wb;
+    saveUiState(state);
+    broadcastToWhiteboard({ type: 'add', elements: added });
+
+    res.json({ ok: true, added: added.map(e => ({ id: e.id, type: e.type, zIndex: e.zIndex })) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/whiteboard/elements/:id — Update an element
+app.put('/api/whiteboard/elements/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const { updates, coordMode } = req.body.updates ? req.body : { updates: req.body, coordMode: req.body.coordMode };
+
+    // Percentage coordinate conversion for updates
+    if (coordMode === 'pct' && whiteboardViewport) {
+      if (updates.x != null) updates.x = Math.round((updates.x / 100) * whiteboardViewport.width);
+      if (updates.y != null) updates.y = Math.round((updates.y / 100) * whiteboardViewport.height);
+      if (updates.width != null) updates.width = Math.round((updates.width / 100) * whiteboardViewport.width);
+      if (updates.height != null) updates.height = Math.round((updates.height / 100) * whiteboardViewport.height);
+    }
+
+    const state = loadUiState();
+    const wb = state['neural-whiteboard'];
+    if (!wb || !wb.elements) return res.status(404).json({ error: 'Whiteboard is empty' });
+
+    const idx = wb.elements.findIndex(e => e.id === id);
+    if (idx === -1) return res.status(404).json({ error: `Element ${id} not found` });
+
+    const el = wb.elements[idx];
+    for (const [key, value] of Object.entries(updates)) {
+      if (key === 'id' || key === 'type' || key === 'coordMode') continue;
+      el[key] = value;
+    }
+
+    state['neural-whiteboard'] = wb;
+    saveUiState(state);
+    broadcastToWhiteboard({ type: 'update', id, updates });
+
+    res.json({ ok: true, element: el });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/whiteboard/elements/:id — Remove an element
+app.delete('/api/whiteboard/elements/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const state = loadUiState();
+    const wb = state['neural-whiteboard'];
+    if (!wb || !wb.elements) return res.status(404).json({ error: 'Whiteboard is empty' });
+
+    const idx = wb.elements.findIndex(e => e.id === id);
+    if (idx === -1) return res.status(404).json({ error: `Element ${id} not found` });
+
+    const removed = wb.elements.splice(idx, 1)[0];
+
+    // Detach arrows anchored to this element
+    for (const a of wb.elements) {
+      if (a.type !== 'arrow') continue;
+      if (a.startAnchor === id) a.startAnchor = null;
+      if (a.endAnchor === id) a.endAnchor = null;
+    }
+
+    state['neural-whiteboard'] = wb;
+    saveUiState(state);
+    broadcastToWhiteboard({ type: 'remove', id });
+
+    res.json({ ok: true, removed: { id: removed.id, type: removed.type } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/whiteboard/clear — Clear all elements
+app.post('/api/whiteboard/clear', (req, res) => {
+  try {
+    const state = loadUiState();
+    state['neural-whiteboard'] = { elements: [], nextZIndex: 1 };
+    saveUiState(state);
+    broadcastToWhiteboard({ type: 'clear' });
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/whiteboard/screenshot — Request screenshot from connected browser
+app.get('/api/whiteboard/screenshot', async (req, res) => {
+  if (whiteboardClients.size === 0) {
+    return res.status(503).json({ error: 'No browser connected to whiteboard. Open the Neural Interface and enter Focus mode.' });
+  }
+
+  const requestId = randomBytes(8).toString('hex');
+  try {
+    const data = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        whiteboardPendingScreenshots.delete(requestId);
+        reject(new Error('Screenshot timed out after 10s'));
+      }, 10000);
+
+      whiteboardPendingScreenshots.set(requestId, { resolve, reject, timer });
+      broadcastToWhiteboard({ type: 'screenshot:request', requestId });
+    });
+
+    res.json({ ok: true, data }); // data is base64 JPEG
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ══════════════════════════════════════════════
+// CARDS — REST API (Claude MCP integration)
+// ══════════════════════════════════════════════
+
+// Helper: send a WS request to the browser and await the ACK response
+function requestCardOp(message, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    if (cardsClients.size === 0) {
+      return reject(new Error('No browser connected. Open the Neural Interface.'));
+    }
+    const requestId = randomBytes(8).toString('hex');
+    message.requestId = requestId;
+    const timer = setTimeout(() => {
+      cardsPendingOps.delete(requestId);
+      reject(new Error('Browser did not respond within 10 seconds'));
+    }, timeoutMs);
+    cardsPendingOps.set(requestId, { resolve, reject, timer });
+    broadcastToCards(message);
+  });
+}
+
+// GET /api/cards — Read all open cards from persisted ui-state
+app.get('/api/cards', (req, res) => {
+  try {
+    const state = loadUiState();
+    const raw = state['neural-open-cards'];
+    const cards = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
+
+    // Enrich each card with pin state
+    for (const card of cards) {
+      const pinKey = 'neural-pinned-' + card.panelId;
+      card.isPinned = state[pinKey] === 'true' || state[pinKey] === true;
+    }
+
+    res.json({ ok: true, cards, count: cards.length, viewport: cardsViewport });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/cards/open — Open a memory card (WS round-trip to browser)
+app.post('/api/cards/open', async (req, res) => {
+  const { memoryId, left, top, compact, coordMode } = req.body || {};
+  if (!memoryId) return res.status(400).json({ error: 'memoryId is required' });
+
+  // Percentage coordinate conversion
+  let resolvedLeft = left, resolvedTop = top;
+  if (coordMode === 'pct' && cardsViewport) {
+    if (left != null) resolvedLeft = Math.round((left / 100) * cardsViewport.width);
+    if (top != null) resolvedTop = Math.round((top / 100) * cardsViewport.height);
+  }
+
+  try {
+    const result = await requestCardOp({
+      type: 'card:open-request',
+      memoryId,
+      ...(resolvedLeft !== undefined && { left: resolvedLeft }),
+      ...(resolvedTop !== undefined && { top: resolvedTop }),
+      ...(compact !== undefined && { compact }),
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    const status = err.message.includes('No browser') || err.message.includes('did not respond') ? 503 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// POST /api/cards/close — Close one card or all cards (WS round-trip)
+app.post('/api/cards/close', async (req, res) => {
+  const { memoryId } = req.body || {};
+
+  try {
+    const result = await requestCardOp({
+      type: 'card:close-request',
+      ...(memoryId && { memoryId }),
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    const status = err.message.includes('No browser') || err.message.includes('did not respond') ? 503 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// PUT /api/cards/:memoryId — Update card state (WS round-trip)
+app.put('/api/cards/:memoryId', async (req, res) => {
+  const { memoryId } = req.params;
+  const { coordMode, ...updates } = req.body || {};
+
+  // Percentage coordinate conversion
+  if (coordMode === 'pct' && cardsViewport) {
+    if (updates.left != null) updates.left = Math.round((updates.left / 100) * cardsViewport.width);
+    if (updates.top != null) updates.top = Math.round((updates.top / 100) * cardsViewport.height);
+    if (updates.width != null) updates.width = Math.round((updates.width / 100) * cardsViewport.width);
+    if (updates.height != null) updates.height = Math.round((updates.height / 100) * cardsViewport.height);
+  }
+
+  // Check at least one valid update field
+  const validFields = ['left', 'top', 'width', 'height', 'compact', 'pinned'];
+  const hasUpdate = validFields.some(f => updates[f] !== undefined);
+  if (!hasUpdate) {
+    return res.status(400).json({ error: 'No update fields provided. Use: left, top, width, height, compact, pinned' });
+  }
+
+  try {
+    const result = await requestCardOp({
+      type: 'card:update-request',
+      memoryId,
+      updates,
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    const status = err.message.includes('No browser') || err.message.includes('did not respond') ? 503 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// GET /api/cards/screenshot — Capture viewport screenshot (WS round-trip, 15s timeout)
+app.get('/api/cards/screenshot', async (req, res) => {
+  try {
+    const result = await requestCardOp({ type: 'screenshot:request' }, 15000);
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    const status = err.message.includes('No browser') || err.message.includes('did not respond') ? 503 : 500;
+    res.status(status).json({ error: err.message });
   }
 });
 
@@ -2439,6 +3046,461 @@ app.post('/api/connections/restore-standalone', express.raw({ type: 'application
 });
 
 // ═══════════════════════════════════════════
+// LOOP TEMPLATES
+// ═══════════════════════════════════════════
+
+const LOOP_TEMPLATES_PATH = resolve(PROJECT_ROOT, 'data', 'loop-templates.json');
+const LOOP_DIR = resolve(PROJECT_ROOT, 'data', 'loop');
+
+function readLoopTemplates() {
+  try {
+    if (existsSync(LOOP_TEMPLATES_PATH)) {
+      return JSON.parse(readFileSync(LOOP_TEMPLATES_PATH, 'utf-8'));
+    }
+  } catch { /* corrupt file */ }
+  return [];
+}
+
+function writeLoopTemplates(templates) {
+  writeFileSync(LOOP_TEMPLATES_PATH, JSON.stringify(templates, null, 2));
+}
+
+// GET /api/loop/templates — list all saved templates
+app.get('/api/loop/templates', (req, res) => {
+  res.json(readLoopTemplates());
+});
+
+// POST /api/loop/templates — create a template
+app.post('/api/loop/templates', (req, res) => {
+  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser } = req.body;
+  if (!name?.trim() || !task?.trim()) {
+    return res.status(400).json({ error: 'name and task are required' });
+  }
+  const templates = readLoopTemplates();
+  const id = randomBytes(12).toString('hex');
+  const template = {
+    id,
+    name: name.trim(),
+    description: (description || '').trim(),
+    task: task.trim(),
+    context: (context || '').trim() || null,
+    iterations: Math.min(Math.max(iterations || 10, 1), 50),
+    maxMinutes: Math.min(Math.max(maxMinutes || 30, 1), 120),
+    usesBrowser: usesBrowser || false,
+    icon: icon || '\u{1F504}',
+    category: category || 'custom',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  templates.push(template);
+  writeLoopTemplates(templates);
+  res.json(template);
+});
+
+// GET /api/loop/templates/export — export all templates as JSON (must be before /:id)
+app.get('/api/loop/templates/export', (req, res) => {
+  const templates = readLoopTemplates();
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', 'attachment; filename="synabun-loop-templates.json"');
+  res.json({
+    version: 1,
+    type: 'synabun-loop-templates',
+    exportedAt: new Date().toISOString(),
+    templates,
+  });
+});
+
+// POST /api/loop/templates/import — import templates from JSON
+app.post('/api/loop/templates/import', (req, res) => {
+  const { templates: incoming, template: single } = req.body;
+  const toImport = incoming || (single ? [single] : null);
+  if (!toImport || !Array.isArray(toImport)) {
+    return res.status(400).json({ error: 'Invalid import format: expected templates array or template object' });
+  }
+  const existing = readLoopTemplates();
+  let added = 0;
+  let updated = 0;
+  for (const t of toImport) {
+    if (!t.name?.trim() || !t.task?.trim()) continue;
+    const existingIdx = existing.findIndex(e => e.name === t.name);
+    const template = {
+      id: t.id || randomBytes(12).toString('hex'),
+      name: t.name.trim(),
+      description: (t.description || '').trim(),
+      task: t.task.trim(),
+      context: (t.context || '').trim() || null,
+      iterations: Math.min(Math.max(t.iterations || 10, 1), 50),
+      maxMinutes: Math.min(Math.max(t.maxMinutes || 30, 1), 120),
+      usesBrowser: t.usesBrowser || false,
+      icon: t.icon || '\u{1F504}',
+      category: t.category || 'custom',
+      createdAt: t.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    if (existingIdx >= 0) {
+      template.id = existing[existingIdx].id; // keep original id
+      existing[existingIdx] = template;
+      updated++;
+    } else {
+      existing.push(template);
+      added++;
+    }
+  }
+  writeLoopTemplates(existing);
+  res.json({ ok: true, added, updated, total: existing.length });
+});
+
+// PUT /api/loop/templates/:id — update a template
+app.put('/api/loop/templates/:id', (req, res) => {
+  const templates = readLoopTemplates();
+  const idx = templates.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Template not found' });
+  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser } = req.body;
+  if (name !== undefined) templates[idx].name = name.trim();
+  if (description !== undefined) templates[idx].description = description.trim();
+  if (task !== undefined) templates[idx].task = task.trim();
+  if (context !== undefined) templates[idx].context = context.trim() || null;
+  if (iterations !== undefined) templates[idx].iterations = Math.min(Math.max(iterations, 1), 50);
+  if (maxMinutes !== undefined) templates[idx].maxMinutes = Math.min(Math.max(maxMinutes, 1), 120);
+  if (icon !== undefined) templates[idx].icon = icon;
+  if (category !== undefined) templates[idx].category = category;
+  if (usesBrowser !== undefined) templates[idx].usesBrowser = !!usesBrowser;
+  templates[idx].updatedAt = new Date().toISOString();
+  writeLoopTemplates(templates);
+  res.json(templates[idx]);
+});
+
+// DELETE /api/loop/templates/:id — delete a template
+app.delete('/api/loop/templates/:id', (req, res) => {
+  const templates = readLoopTemplates();
+  const idx = templates.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Template not found' });
+  templates.splice(idx, 1);
+  writeLoopTemplates(templates);
+  res.json({ ok: true });
+});
+
+// GET /api/loop/active — scan for active loop status
+app.get('/api/loop/active', (req, res) => {
+  try {
+    if (!existsSync(LOOP_DIR)) return res.json({ active: false });
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
+    for (const f of files) {
+      try {
+        const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
+        if (data?.active) {
+          const elapsed = Date.now() - new Date(data.startedAt).getTime();
+          const maxMs = (data.maxMinutes || 30) * 60 * 1000;
+          return res.json({
+            active: true,
+            sessionId: f.replace('.json', ''),
+            task: data.task,
+            context: data.context,
+            currentIteration: data.currentIteration || 0,
+            totalIterations: data.totalIterations || 10,
+            maxMinutes: data.maxMinutes || 30,
+            elapsedMinutes: Math.round(elapsed / 60000),
+            remainingMinutes: Math.max(0, Math.round((maxMs - elapsed) / 60000)),
+            startedAt: data.startedAt,
+            lastIterationAt: data.lastIterationAt,
+          });
+        }
+      } catch { /* skip corrupt */ }
+    }
+    return res.json({ active: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/loop/launch — create loop state + terminal session atomically
+app.post('/api/loop/launch', async (req, res) => {
+  try {
+    const { task, context, iterations, maxMinutes, usesBrowser, cwd, profile, model } = req.body;
+    if (!task?.trim()) return res.status(400).json({ error: 'task is required' });
+
+    // Validate profile if provided
+    const cliProfile = profile || 'claude-code';
+    const validProfiles = Object.keys(loadCliConfig());
+    if (!validProfiles.includes(cliProfile) && cliProfile !== 'shell') {
+      return res.status(400).json({ error: `Invalid profile: ${cliProfile}. Valid: ${validProfiles.join(', ')}` });
+    }
+
+    // 1. Ensure loop directory exists
+    if (!existsSync(LOOP_DIR)) mkdirSync(LOOP_DIR, { recursive: true });
+
+    // 1b. Prevent duplicate launches — stop any active/pending loops first
+    const existing = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
+    for (const f of existing) {
+      try {
+        const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
+        if (data.active || data.pending) {
+          if (data.terminalSessionId && terminalSessions.has(data.terminalSessionId)) {
+            try { terminalSessions.get(data.terminalSessionId).pty.kill(); } catch {}
+            terminalSessions.delete(data.terminalSessionId);
+          }
+          data.active = false; delete data.pending; data.stopped = true;
+          data.finishedAt = new Date().toISOString();
+          writeFileSync(resolve(LOOP_DIR, f), JSON.stringify(data, null, 2));
+        }
+      } catch { /* skip corrupt */ }
+    }
+
+    // 1c. Reuse existing browser session opened by the UI.
+    // The UI opens the browser BEFORE calling this endpoint (same path as Apps menu),
+    // which creates the viewport + WebSocket screencast that keeps the session alive.
+    // We only reuse here — never create server-side (no viewer = grace timer kills it).
+    let browserSessionId = null;
+    if (usesBrowser) {
+      const existingIds = [...browserSessions.keys()];
+      if (existingIds.length > 0) {
+        browserSessionId = existingIds[0];
+        // Cancel any pending grace timer — this session is needed by the loop
+        const reusedSession = browserSessions.get(browserSessionId);
+        if (reusedSession?.graceTimer) {
+          clearTimeout(reusedSession.graceTimer);
+          reusedSession.graceTimer = null;
+          console.log(`[loop] Cleared grace timer on session ${browserSessionId}`);
+        }
+        console.log(`[loop] Reusing existing browser session ${browserSessionId}`);
+      } else {
+        console.warn('[loop] usesBrowser=true but no browser session found — UI should have opened one');
+      }
+    }
+
+    // 2. Create terminal PTY session with selected CLI profile + optional model flag
+    // Default CWD to Synabun project root — it has no .mcp.json, so no auth-requiring
+    // MCP servers (e.g. supabase OAuth) trigger the "needs auth" prompt that blocks loops.
+    // The SynaBun MCP server is registered globally in ~/.claude.json, so it's always available.
+    const loopCwd = cwd || PROJECT_ROOT;
+    const terminalSessionId = createTerminalSession(cliProfile, 120, 30, loopCwd, { model });
+
+    // 3. Create pending loop state file (placeholder — prompt-submit hook will rename)
+    const pendingId = 'pending-' + randomBytes(8).toString('hex');
+    const loopState = {
+      active: true,
+      task: task.trim(),
+      context: context?.trim() || null,
+      totalIterations: Math.min(Math.max(iterations || 10, 1), 50),
+      currentIteration: 0,
+      maxMinutes: Math.min(Math.max(maxMinutes || 30, 1), 60),
+      startedAt: new Date().toISOString(),
+      lastIterationAt: null,
+      retries: 0,
+      pending: true,
+      terminalSessionId,
+      usesBrowser: !!usesBrowser,
+      browserSessionId,
+      profile: cliProfile,
+      model: model || null,
+    };
+    writeFileSync(resolve(LOOP_DIR, `${pendingId}.json`), JSON.stringify(loopState, null, 2));
+
+    broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile: cliProfile });
+
+    res.json({ ok: true, pendingId, terminalSessionId, browserSessionId });
+  } catch (err) {
+    console.error('POST /api/loop/launch error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/loop/stop — force-stop active/pending loops and clean up PTY sessions
+app.post('/api/loop/stop', (req, res) => {
+  try {
+    if (!existsSync(LOOP_DIR)) return res.json({ ok: true, stopped: 0 });
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
+    let stopped = 0;
+    for (const f of files) {
+      try {
+        const filePath = resolve(LOOP_DIR, f);
+        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+        if (data.active || data.pending) {
+          // Kill PTY session if still alive
+          if (data.terminalSessionId && terminalSessions.has(data.terminalSessionId)) {
+            const session = terminalSessions.get(data.terminalSessionId);
+            try { session.pty.kill(); } catch {}
+            terminalSessions.delete(data.terminalSessionId);
+          }
+          // Mark as stopped
+          data.active = false;
+          delete data.pending;
+          data.stopped = true;
+          data.finishedAt = new Date().toISOString();
+          writeFileSync(filePath, JSON.stringify(data, null, 2));
+          stopped++;
+        }
+      } catch { /* skip corrupt */ }
+    }
+    res.json({ ok: true, stopped });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/loop/history — list completed, stopped, and stale loop runs
+app.get('/api/loop/history', (req, res) => {
+  try {
+    if (!existsSync(LOOP_DIR)) return res.json([]);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 200);
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
+    const completed = [];
+    const now = Date.now();
+    for (const f of files) {
+      try {
+        const filePath = resolve(LOOP_DIR, f);
+        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+        if (!data) continue;
+
+        // Skip pending files that haven't been claimed yet (still waiting for Claude Code)
+        if (data.pending) continue;
+
+        // Include: inactive loops, OR stale active loops (past time cap + 5min grace)
+        let isStale = false;
+        if (data.active && data.startedAt) {
+          const elapsed = now - new Date(data.startedAt).getTime();
+          const maxMs = ((data.maxMinutes || 30) + 5) * 60 * 1000;
+          if (elapsed > maxMs) {
+            isStale = true;
+            // Auto-mark stale loops as stopped
+            data.active = false;
+            data.stopped = true;
+            data.stale = true;
+            data.finishedAt = data.lastIterationAt || new Date(new Date(data.startedAt).getTime() + (data.maxMinutes || 30) * 60000).toISOString();
+            try { writeFileSync(filePath, JSON.stringify(data, null, 2)); } catch { /* ok */ }
+          }
+        }
+
+        if (!data.active || isStale) {
+          completed.push({
+            sessionId: f.replace('.json', ''),
+            task: data.task,
+            context: data.context,
+            totalIterations: data.totalIterations || 10,
+            completedIterations: data.currentIteration || 0,
+            maxMinutes: data.maxMinutes || 30,
+            startedAt: data.startedAt,
+            finishedAt: data.finishedAt || data.lastIterationAt,
+            stopped: !!data.stopped,
+            stale: !!data.stale,
+            usesBrowser: !!data.usesBrowser,
+            template: data.template || null,
+          });
+        }
+      } catch { /* skip corrupt */ }
+    }
+    // Sort by finishedAt descending (newest first)
+    completed.sort((a, b) => new Date(b.finishedAt || 0) - new Date(a.finishedAt || 0));
+    res.json(completed.slice(0, limit));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/loop/history/:id — delete a single history entry
+app.delete('/api/loop/history/:id', (req, res) => {
+  try {
+    const filePath = resolve(LOOP_DIR, `${req.params.id}.json`);
+    if (!existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
+    unlinkSync(filePath);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/loop/complete — store a completed loop as a Qdrant memory
+app.post('/api/loop/complete', async (req, res) => {
+  try {
+    const { task, context, template, iterations, duration, result, tags } = req.body;
+    if (!task) return res.status(400).json({ error: 'task is required' });
+
+    const content = [
+      `Automation: ${task}`,
+      context ? `Context: ${context}` : null,
+      template ? `Template: ${template}` : null,
+      `Iterations: ${iterations || '?'}`,
+      `Duration: ${duration || '?'}`,
+      result ? `Result: ${result}` : null,
+    ].filter(Boolean).join('\n');
+
+    const embedding = await getEmbedding(content);
+    const id = randomUUID();
+    const now = new Date().toISOString();
+
+    await qdrantFetch('/points', {
+      method: 'PUT',
+      body: JSON.stringify({
+        points: [{
+          id,
+          vector: embedding,
+          payload: {
+            content,
+            category: 'automations',
+            subcategory: 'loop-result',
+            project: 'synabun',
+            importance: 6,
+            tags: tags || ['automation', 'loop'],
+            source: 'auto-saved',
+            created_at: now,
+            updated_at: now,
+            template: template || null,
+            task,
+          },
+        }],
+      }),
+    });
+
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('POST /api/loop/complete error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/search/memories — category-filtered semantic search
+app.post('/api/search/memories', async (req, res) => {
+  try {
+    const { query, category, limit = 15 } = req.body;
+    if (!query) return res.status(400).json({ error: 'query required' });
+
+    const embedding = await getEmbedding(query);
+
+    const filter = {
+      must: [
+        ...(SYSTEM_METADATA_FILTER.must || []),
+        ...(category ? [{ key: 'category', match: { value: category } }] : []),
+      ],
+      must_not: SYSTEM_METADATA_FILTER.must_not || [],
+    };
+
+    const result = await qdrantFetch('/points/search', {
+      method: 'POST',
+      body: JSON.stringify({
+        vector: embedding,
+        limit: Math.min(limit, 50),
+        with_payload: true,
+        score_threshold: 0.3,
+        filter,
+      }),
+    });
+
+    res.json({
+      results: result.result.map(r => ({
+        id: r.id,
+        score: r.score,
+        payload: r.payload,
+      })),
+      query,
+      category,
+    });
+  } catch (err) {
+    console.error('POST /api/search/memories error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════
 // FULL SYSTEM BACKUP & RESTORE
 // ═══════════════════════════════════════════
 
@@ -2516,11 +3578,14 @@ app.get('/api/system/backup', async (req, res) => {
     // 2. data/ directory
     const dataDir = resolve(PROJECT_ROOT, 'data');
     for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
-                      'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json']) {
+                      'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json',
+                      'invite-key.json', 'invite-proxy.json', 'invite-permissions.json',
+                      'loop-templates.json']) {
       addFile(`data/${f}`, resolve(dataDir, f));
     }
     addJsonDir('data/pending-remember', resolve(dataDir, 'pending-remember'));
     addJsonDir('data/pending-compact', resolve(dataDir, 'pending-compact'));
+    addJsonDir('data/loop', resolve(dataDir, 'loop'));
 
     // 3. mcp-server/data/
     if (existsSync(CATEGORIES_DATA_DIR)) {
@@ -2692,7 +3757,7 @@ app.post('/api/system/restore',
       // data/ files
       const dataDir = resolve(PROJECT_ROOT, 'data');
       mkdirSync(dataDir, { recursive: true });
-      for (const subdir of ['pending-remember', 'pending-compact']) {
+      for (const subdir of ['pending-remember', 'pending-compact', 'loop']) {
         mkdirSync(resolve(dataDir, subdir), { recursive: true });
       }
 
@@ -3563,7 +4628,9 @@ const HOOK_SCRIPTS = [
   { event: 'UserPromptSubmit',  script: 'prompt-submit.mjs', timeout: 3 },
   { event: 'PreCompact',        script: 'pre-compact.mjs',   timeout: 10 },
   { event: 'Stop',              script: 'stop.mjs',          timeout: 3 },
+  { event: 'PreToolUse',        script: 'pre-websearch.mjs', timeout: 3, matcher: '^WebSearch$|^WebFetch$' },
   { event: 'PostToolUse',       script: 'post-remember.mjs', timeout: 3, matcher: '^Edit$|^Write$|^NotebookEdit$|Syna[Bb]un__remember' },
+  { event: 'PostToolUse',       script: 'post-plan.mjs',     timeout: 15, matcher: '^ExitPlanMode$' },
 ];
 
 function getClaudeSettingsPath(projectPath) {
@@ -3604,17 +4671,166 @@ function isHookInstalled(settings) {
 
 function isSpecificHookInstalled(settings, hookEvent) {
   if (!settings?.hooks?.[hookEvent]) return false;
-  const def = HOOK_SCRIPTS.find(d => d.event === hookEvent);
-  if (!def) return false;
-  const cmd = hookCommandString(def.script);
-  return settings.hooks[hookEvent].some(entry =>
-    entry.hooks?.some(h => h.command === cmd)
-  );
+  const defs = HOOK_SCRIPTS.filter(d => d.event === hookEvent);
+  if (defs.length === 0) return false;
+  // All scripts for this event must be installed
+  return defs.every(def => {
+    const cmd = hookCommandString(def.script);
+    return settings.hooks[hookEvent].some(entry =>
+      entry.hooks?.some(h => h.command === cmd)
+    );
+  });
 }
+
+// Environment variables SynaBun enforces in Claude Code settings
+const SYNABUN_ENV_DEFAULTS = {
+  ENABLE_TOOL_SEARCH: 'true',   // Defer MCP tools not in active use — saves ~50%+ context tokens
+};
+
+function ensureSynaBunEnv(settings) {
+  if (!settings.env) settings.env = {};
+  for (const [key, value] of Object.entries(SYNABUN_ENV_DEFAULTS)) {
+    if (!(key in settings.env)) settings.env[key] = value;
+  }
+  return settings;
+}
+
+// MCP tool permissions SynaBun auto-injects so tools work without per-call prompts
+const SYNABUN_TOOL_PERMISSIONS = [
+  'mcp__SynaBun__recall',
+  'mcp__SynaBun__remember',
+  'mcp__SynaBun__reflect',
+  'mcp__SynaBun__forget',
+  'mcp__SynaBun__memories',
+  'mcp__SynaBun__restore',
+  'mcp__SynaBun__loop',
+  'mcp__SynaBun__category',
+  'mcp__SynaBun__sync',
+  'mcp__SynaBun__browser_navigate',
+  'mcp__SynaBun__browser_click',
+  'mcp__SynaBun__browser_fill',
+  'mcp__SynaBun__browser_type',
+  'mcp__SynaBun__browser_hover',
+  'mcp__SynaBun__browser_select',
+  'mcp__SynaBun__browser_press',
+  'mcp__SynaBun__browser_evaluate',
+  'mcp__SynaBun__browser_snapshot',
+  'mcp__SynaBun__browser_content',
+  'mcp__SynaBun__browser_screenshot',
+  'mcp__SynaBun__browser_session',
+  'mcp__SynaBun__browser_go_back',
+  'mcp__SynaBun__browser_go_forward',
+  'mcp__SynaBun__browser_reload',
+  'mcp__SynaBun__browser_wait',
+  'mcp__SynaBun__browser_scroll',
+  'mcp__SynaBun__browser_upload',
+  'mcp__SynaBun__browser_extract_tweets',
+  'mcp__SynaBun__browser_extract_fb_posts',
+  'mcp__SynaBun__whiteboard_read',
+  'mcp__SynaBun__whiteboard_add',
+  'mcp__SynaBun__whiteboard_update',
+  'mcp__SynaBun__whiteboard_remove',
+  'mcp__SynaBun__whiteboard_screenshot',
+  'mcp__SynaBun__card_list',
+  'mcp__SynaBun__card_open',
+  'mcp__SynaBun__card_close',
+  'mcp__SynaBun__card_update',
+  'mcp__SynaBun__card_screenshot',
+];
+
+function ensureSynaBunPermissions(settings) {
+  if (!settings.permissions) settings.permissions = {};
+  if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
+  const existing = new Set(settings.permissions.allow);
+  for (const tool of SYNABUN_TOOL_PERMISSIONS) {
+    if (!existing.has(tool)) {
+      settings.permissions.allow.push(tool);
+    }
+  }
+  return settings;
+}
+
+// Tool categories with human-readable labels for the Settings UI
+const SYNABUN_TOOL_CATEGORIES = [
+  {
+    id: 'memory', label: 'Memory',
+    tools: [
+      { key: 'mcp__SynaBun__recall', label: 'Search memories', desc: 'Find relevant memories by meaning' },
+      { key: 'mcp__SynaBun__remember', label: 'Save memory', desc: 'Store something new to remember' },
+      { key: 'mcp__SynaBun__reflect', label: 'Edit memory', desc: 'Update an existing memory' },
+      { key: 'mcp__SynaBun__forget', label: 'Delete memory', desc: 'Remove a memory (can be restored)' },
+      { key: 'mcp__SynaBun__memories', label: 'View memory list', desc: 'Browse recent memories and stats' },
+      { key: 'mcp__SynaBun__restore', label: 'Restore deleted', desc: 'Recover previously deleted memories' },
+      { key: 'mcp__SynaBun__sync', label: 'Fix stale data', desc: 'Detect and repair outdated memories' },
+    ],
+  },
+  {
+    id: 'browser', label: 'Browser',
+    tools: [
+      { key: 'mcp__SynaBun__browser_navigate', label: 'Open URL', desc: 'Go to a web address' },
+      { key: 'mcp__SynaBun__browser_click', label: 'Click', desc: 'Click on a page element' },
+      { key: 'mcp__SynaBun__browser_fill', label: 'Fill input', desc: 'Type into a form field' },
+      { key: 'mcp__SynaBun__browser_type', label: 'Type text', desc: 'Type character by character' },
+      { key: 'mcp__SynaBun__browser_hover', label: 'Hover', desc: 'Hover over an element' },
+      { key: 'mcp__SynaBun__browser_select', label: 'Select option', desc: 'Choose from a dropdown' },
+      { key: 'mcp__SynaBun__browser_press', label: 'Press key', desc: 'Press a keyboard key' },
+      { key: 'mcp__SynaBun__browser_evaluate', label: 'Run JavaScript', desc: 'Execute code on the page' },
+      { key: 'mcp__SynaBun__browser_snapshot', label: 'Read page structure', desc: 'Get the page layout and elements' },
+      { key: 'mcp__SynaBun__browser_content', label: 'Read page text', desc: 'Get the visible text content' },
+      { key: 'mcp__SynaBun__browser_screenshot', label: 'Take screenshot', desc: 'Capture what the page looks like' },
+      { key: 'mcp__SynaBun__browser_session', label: 'Manage sessions', desc: 'Open, close, or switch browser windows' },
+      { key: 'mcp__SynaBun__browser_go_back', label: 'Go back', desc: 'Navigate to the previous page' },
+      { key: 'mcp__SynaBun__browser_go_forward', label: 'Go forward', desc: 'Navigate to the next page' },
+      { key: 'mcp__SynaBun__browser_reload', label: 'Reload page', desc: 'Refresh the current page' },
+      { key: 'mcp__SynaBun__browser_wait', label: 'Wait for page', desc: 'Wait until an element or page finishes loading' },
+      { key: 'mcp__SynaBun__browser_scroll', label: 'Scroll', desc: 'Scroll the page or a specific area' },
+      { key: 'mcp__SynaBun__browser_upload', label: 'Upload file', desc: 'Upload a file through a form' },
+      { key: 'mcp__SynaBun__browser_extract_tweets', label: 'Extract tweets', desc: 'Pull tweet data from the page' },
+      { key: 'mcp__SynaBun__browser_extract_fb_posts', label: 'Extract FB posts', desc: 'Pull Facebook post data from the page' },
+    ],
+  },
+  {
+    id: 'whiteboard', label: 'Whiteboard',
+    tools: [
+      { key: 'mcp__SynaBun__whiteboard_read', label: 'Read board', desc: 'View whiteboard contents' },
+      { key: 'mcp__SynaBun__whiteboard_add', label: 'Add to board', desc: 'Place new items on the whiteboard' },
+      { key: 'mcp__SynaBun__whiteboard_update', label: 'Edit board items', desc: 'Modify items on the whiteboard' },
+      { key: 'mcp__SynaBun__whiteboard_remove', label: 'Remove from board', desc: 'Delete items from the whiteboard' },
+      { key: 'mcp__SynaBun__whiteboard_screenshot', label: 'Screenshot board', desc: 'Capture the whiteboard as an image' },
+    ],
+  },
+  {
+    id: 'cards', label: 'Cards',
+    tools: [
+      { key: 'mcp__SynaBun__card_list', label: 'List cards', desc: 'See all open memory cards' },
+      { key: 'mcp__SynaBun__card_open', label: 'Open card', desc: 'Open a memory card on screen' },
+      { key: 'mcp__SynaBun__card_close', label: 'Close card', desc: 'Dismiss open memory cards' },
+      { key: 'mcp__SynaBun__card_update', label: 'Arrange cards', desc: 'Move, resize, pin, or compact cards' },
+      { key: 'mcp__SynaBun__card_screenshot', label: 'Screenshot cards', desc: 'Capture open cards as an image' },
+    ],
+  },
+  {
+    id: 'automation', label: 'Automation',
+    tools: [
+      { key: 'mcp__SynaBun__loop', label: 'Autonomous loops', desc: 'Run, stop, or check background tasks' },
+      { key: 'mcp__SynaBun__category', label: 'Manage categories', desc: 'Create, edit, or remove memory categories' },
+    ],
+  },
+  {
+    id: 'thirdparty', label: 'Third Party',
+    tools: [
+      { key: 'WebSearch', label: 'Web search', desc: 'Search the internet for information' },
+    ],
+  },
+];
 
 function addHookToSettings(settings, onlyEvent) {
   if (!settings) settings = {};
   if (!settings.hooks) settings.hooks = {};
+
+  // Enforce SynaBun env defaults and tool permissions alongside hooks
+  ensureSynaBunEnv(settings);
+  ensureSynaBunPermissions(settings);
 
   const defs = onlyEvent ? HOOK_SCRIPTS.filter(d => d.event === onlyEvent) : HOOK_SCRIPTS;
   for (const def of defs) {
@@ -3664,6 +4880,260 @@ function saveHookProjects(projects) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(HOOK_PROJECTS_PATH, JSON.stringify(projects, null, 2), 'utf-8');
 }
+
+// ── Claude session index helpers ──
+
+/** Extract metadata from a .jsonl session file by reading its first user message.
+ *  Reads line-by-line (stops at first `type: user`) to avoid loading the whole file. */
+function extractSessionMeta(filePath) {
+  try {
+    const fd = openSync(filePath, 'r');
+    const buf = Buffer.alloc(8192); // read first 8KB — enough for metadata lines
+    const bytesRead = readSync(fd, buf, 0, buf.length, 0);
+    closeSync(fd);
+    const chunk = buf.toString('utf-8', 0, bytesRead);
+    const lines = chunk.split('\n');
+    let messageCount = 0;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === 'user' || obj.type === 'assistant') messageCount++;
+        if (obj.type === 'user' && obj.message) {
+          const txt = obj.message.content;
+          const prompt = Array.isArray(txt)
+            ? (txt.find(b => b.type === 'text')?.text || '')
+            : (txt || '');
+          return {
+            sessionId: obj.sessionId || basename(filePath, '.jsonl'),
+            firstPrompt: prompt.slice(0, 200),
+            gitBranch: obj.gitBranch || null,
+            isSidechain: !!obj.isSidechain,
+            cwd: obj.cwd || null,
+          };
+        }
+      } catch {}
+    }
+    return null; // no user message found
+  } catch { return null; }
+}
+
+/** Build a complete session list for a project dir by merging the
+ *  (potentially stale) sessions-index.json with any JSONL files not in the index. */
+function buildSessionEntries(projDir) {
+  // 1. Load existing index
+  const indexPath = join(projDir, 'sessions-index.json');
+  let indexed = [];
+  try {
+    if (existsSync(indexPath)) {
+      const data = JSON.parse(readFileSync(indexPath, 'utf-8'));
+      indexed = data.entries || [];
+    }
+  } catch { indexed = []; }
+
+  const indexedIds = new Set(indexed.map(e => e.sessionId));
+
+  // 2. Scan for JSONL files not in the index
+  let allFiles;
+  try { allFiles = readdirSync(projDir); } catch { return indexed; }
+
+  const jsonlFiles = allFiles.filter(f => f.endsWith('.jsonl'));
+  const missing = jsonlFiles.filter(f => !indexedIds.has(f.replace('.jsonl', '')));
+
+  if (missing.length === 0) return indexed;
+
+  // 3. Extract metadata from missing files (sorted by mtime desc, cap at 200 newest)
+  const missingWithMtime = missing.map(f => {
+    try {
+      const stat = statSync(join(projDir, f));
+      return { file: f, mtime: stat.mtime };
+    } catch { return null; }
+  }).filter(Boolean).sort((a, b) => b.mtime - a.mtime).slice(0, 200);
+
+  const newEntries = [];
+  for (const { file, mtime } of missingWithMtime) {
+    const meta = extractSessionMeta(join(projDir, file));
+    if (!meta) continue;
+    newEntries.push({
+      sessionId: meta.sessionId,
+      firstPrompt: meta.firstPrompt,
+      messageCount: meta.messageCount || 0,
+      created: mtime.toISOString(),
+      modified: mtime.toISOString(),
+      gitBranch: meta.gitBranch,
+      isSidechain: meta.isSidechain,
+      projectPath: meta.cwd,
+    });
+  }
+
+  return [...indexed, ...newEntries];
+}
+
+// GET /api/claude-code/sessions — browse past Claude Code sessions across registered projects
+app.get('/api/claude-code/sessions', (req, res) => {
+  try {
+    const projects = loadHookProjects();
+    const targetProject = req.query.project;
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+    const offset = parseInt(req.query.offset) || 0;
+    const search = (req.query.search || '').toLowerCase().trim();
+
+    const homeDir = process.env.USERPROFILE || process.env.HOME;
+    const claudeProjectsDir = join(homeDir, '.claude', 'projects');
+
+    const result = [];
+
+    for (const proj of projects) {
+      if (targetProject && resolve(proj.path) !== resolve(targetProject)) continue;
+
+      // Convert project path to Claude's directory name format
+      // "J:\Sites\CriticalPixel" -> "j--Sites-CriticalPixel"
+      // Try both lowercase and uppercase drive letter (Claude is inconsistent)
+      const projKeyLower = proj.path
+        .replace(/\\/g, '-')
+        .replace(/:/g, '-')
+        .replace(/^([A-Z])/, (m) => m.toLowerCase());
+      const projKeyUpper = proj.path
+        .replace(/\\/g, '-')
+        .replace(/:/g, '-');
+
+      let projDir = join(claudeProjectsDir, projKeyLower);
+      if (!existsSync(projDir)) projDir = join(claudeProjectsDir, projKeyUpper);
+      if (!existsSync(projDir)) {
+        result.push({ path: proj.path, label: proj.label || basename(proj.path), total: 0, sessions: [] });
+        continue;
+      }
+
+      // Build complete session list (index + unindexed JSONL files)
+      let entries = buildSessionEntries(projDir);
+
+      // Filter out sidechains by default, sort by modified descending
+      entries = entries.filter(e => !e.isSidechain);
+      entries.sort((a, b) => new Date(b.modified) - new Date(a.modified));
+
+      // Apply text filter if search provided
+      if (search) {
+        entries = entries.filter(e =>
+          (e.firstPrompt || '').toLowerCase().includes(search) ||
+          (e.gitBranch || '').toLowerCase().includes(search) ||
+          (e.sessionId || '').toLowerCase().includes(search)
+        );
+      }
+
+      const total = entries.length;
+      const paginated = entries.slice(offset, offset + limit);
+
+      result.push({
+        path: proj.path,
+        label: proj.label || basename(proj.path),
+        total,
+        sessions: paginated.map(e => ({
+          sessionId: e.sessionId,
+          firstPrompt: (e.firstPrompt || '').slice(0, 200),
+          messageCount: e.messageCount || 0,
+          created: e.created,
+          modified: e.modified,
+          gitBranch: e.gitBranch || null,
+          isSidechain: e.isSidechain || false,
+        })),
+      });
+    }
+
+    res.json({ projects: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Session Indexing ---
+
+let _indexingJob = null; // { jobId, cancelled, promise }
+
+app.post('/api/session-indexing/start', (req, res) => {
+  if (_indexingJob && !_indexingJob.done) {
+    return res.status(409).json({ error: 'Indexing already in progress', jobId: _indexingJob.jobId });
+  }
+
+  const { project, reindex, sessionIds } = req.body || {};
+  const jobId = `idx-${Date.now()}`;
+  let cancelled = false;
+
+  const job = {
+    jobId,
+    done: false,
+    cancelled: false,
+    progress: { completed: 0, total: 0, chunks: 0 },
+  };
+
+  job.promise = startIndexing({
+    project,
+    reindex: !!reindex,
+    sessionIds: sessionIds || undefined,
+    onProgress: (event) => {
+      event.jobId = jobId;
+      // Track progress
+      if (event.type === 'indexing:started') {
+        job.progress.total = event.totalSessions;
+      } else if (event.type === 'indexing:session-complete') {
+        job.progress.completed = event.sessionIndex + 1;
+        job.progress.chunks += event.chunkCount;
+      }
+      // Broadcast to all connected WebSocket clients
+      try { broadcastSync(event); } catch {}
+    },
+    isCancelled: () => job.cancelled,
+  }).then((result) => {
+    job.done = true;
+    job.result = result;
+  }).catch((err) => {
+    job.done = true;
+    job.error = err.message;
+    try { broadcastSync({ type: 'indexing:error', jobId, error: err.message }); } catch {}
+  });
+
+  _indexingJob = job;
+  res.json({ ok: true, jobId, message: 'Indexing started' });
+});
+
+app.post('/api/session-indexing/cancel', (req, res) => {
+  if (!_indexingJob || _indexingJob.done) {
+    return res.status(404).json({ error: 'No active indexing job' });
+  }
+  _indexingJob.cancelled = true;
+  res.json({ ok: true, message: 'Cancellation requested' });
+});
+
+app.get('/api/session-indexing/status', (req, res) => {
+  try {
+    const status = getIndexingStatus();
+    const running = _indexingJob && !_indexingJob.done;
+    res.json({
+      running: !!running,
+      jobId: running ? _indexingJob.jobId : null,
+      progress: running ? _indexingJob.progress : null,
+      indexedSessions: status.indexedSessions,
+      totalChunks: status.totalChunks,
+      lastRun: status.lastRun,
+      // Convert Set to Array for JSON serialization
+      indexedSessionIds: [...(status.indexedSessionIds || [])],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/session-indexing/mirror — one-time migration of existing session_chunks to claude_memory
+app.post('/api/session-indexing/mirror', async (req, res) => {
+  res.json({ ok: true, message: 'Mirror started' });
+  try {
+    await mirrorExistingChunks((event) => {
+      try { broadcastSync(event); } catch {}
+    });
+  } catch (err) {
+    console.error('Mirror error:', err);
+    try { broadcastSync({ type: 'mirror:error', error: err.message }); } catch {}
+  }
+});
 
 // GET /api/claude-code/integrations — list all hook integration targets with status
 app.get('/api/claude-code/integrations', (req, res) => {
@@ -3897,6 +5367,99 @@ app.put('/api/claude-code/hook-features/config', (req, res) => {
   }
 });
 
+// ── Tool Permissions (fine-grained control over which SynaBun tools are auto-allowed) ──
+
+// GET /api/claude-code/tool-categories — return categorized tool definitions for UI rendering
+app.get('/api/claude-code/tool-categories', (req, res) => {
+  res.json({ ok: true, categories: SYNABUN_TOOL_CATEGORIES });
+});
+
+// GET /api/claude-code/tool-permissions — current permission state for all SynaBun tools
+app.get('/api/claude-code/tool-permissions', (req, res) => {
+  try {
+    const globalPath = getGlobalClaudeSettingsPath();
+    const settings = readClaudeSettings(globalPath) || {};
+    const allowed = new Set(settings.permissions?.allow || []);
+
+    const tools = {};
+    for (const cat of SYNABUN_TOOL_CATEGORIES) {
+      for (const t of cat.tools) {
+        tools[t.key] = allowed.has(t.key);
+      }
+    }
+    res.json({ ok: true, tools });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/claude-code/tool-permissions — toggle individual tool or category group
+app.put('/api/claude-code/tool-permissions', (req, res) => {
+  try {
+    const { tool, category, enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled (boolean) is required.' });
+    }
+    if (!tool && !category) {
+      return res.status(400).json({ error: 'Provide tool (string) or category (string).' });
+    }
+
+    // Resolve which tool keys to toggle
+    let keys = [];
+    if (category) {
+      const cat = SYNABUN_TOOL_CATEGORIES.find(c => c.id === category);
+      if (!cat) return res.status(400).json({ error: `Unknown category: ${category}` });
+      keys = cat.tools.map(t => t.key);
+    } else {
+      keys = [tool];
+    }
+
+    // Apply to global settings
+    const globalPath = getGlobalClaudeSettingsPath();
+    let settings = readClaudeSettings(globalPath) || {};
+    if (!settings.permissions) settings.permissions = {};
+    if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
+
+    const allowSet = new Set(settings.permissions.allow);
+    for (const k of keys) {
+      if (enabled) allowSet.add(k);
+      else allowSet.delete(k);
+    }
+    settings.permissions.allow = [...allowSet];
+    writeClaudeSettings(globalPath, settings);
+
+    // Cascade to registered projects
+    const projects = loadHookProjects();
+    for (const p of projects) {
+      const projPath = getClaudeSettingsPath(p.path);
+      let projSettings = readClaudeSettings(projPath);
+      if (!projSettings) continue;
+      if (!projSettings.permissions) projSettings.permissions = {};
+      if (!Array.isArray(projSettings.permissions.allow)) projSettings.permissions.allow = [];
+
+      const projSet = new Set(projSettings.permissions.allow);
+      for (const k of keys) {
+        if (enabled) projSet.add(k);
+        else projSet.delete(k);
+      }
+      projSettings.permissions.allow = [...projSet];
+      writeClaudeSettings(projPath, projSettings);
+    }
+
+    // Return updated state
+    const updatedAllowed = new Set(settings.permissions.allow);
+    const tools = {};
+    for (const cat of SYNABUN_TOOL_CATEGORIES) {
+      for (const t of cat.tools) {
+        tools[t.key] = updatedAllowed.has(t.key);
+      }
+    }
+    res.json({ ok: true, tools });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Greeting Config (read/write greeting-config.json for the greeting hook) ──
 
 const GREETING_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'greeting-config.json');
@@ -4028,6 +5591,13 @@ app.post('/api/claude-code/mcp', (req, res) => {
       env: { DOTENV_PATH: envPath },
     };
     writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+
+    // Also inject tool permissions into global settings so tools work without prompts
+    const globalSettingsPath = getGlobalClaudeSettingsPath();
+    let globalSettings = readClaudeSettings(globalSettingsPath) || {};
+    ensureSynaBunPermissions(globalSettings);
+    writeClaudeSettings(globalSettingsPath, globalSettings);
+
     res.json({ ok: true, message: 'SynaBun MCP registered. Restart Claude Code to connect.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5272,6 +6842,239 @@ app.delete('/api/mcp-key', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Invite Key & Session Management ---
+const INVITE_KEY_PATH = resolve(PROJECT_ROOT, 'data', 'invite-key.json');
+const INVITE_SESSIONS_PATH = resolve(PROJECT_ROOT, 'data', 'invite-sessions.json');
+const INVITE_PROXY_PATH = resolve(PROJECT_ROOT, 'data', 'invite-proxy.json');
+const INVITE_PERMISSIONS_PATH = resolve(PROJECT_ROOT, 'data', 'invite-permissions.json');
+
+const DEFAULT_PERMISSIONS = { terminal: false, whiteboard: false, memories: true, skills: false, cards: true, browser: false };
+
+let activeInviteKey = null;
+const inviteSessions = new Map(); // token → { createdAt, lastSeen, userAgent }
+
+function loadInviteKey() {
+  try {
+    if (existsSync(INVITE_KEY_PATH)) {
+      const data = JSON.parse(readFileSync(INVITE_KEY_PATH, 'utf8'));
+      activeInviteKey = data.key || null;
+      return data;
+    }
+  } catch {}
+  activeInviteKey = null;
+  return null;
+}
+
+function saveInviteKey(key) {
+  const dir = resolve(PROJECT_ROOT, 'data');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const data = { key, createdAt: new Date().toISOString() };
+  writeFileSync(INVITE_KEY_PATH, JSON.stringify(data, null, 2));
+  activeInviteKey = key;
+  return data;
+}
+
+function deleteInviteKey() {
+  try {
+    if (existsSync(INVITE_KEY_PATH)) writeFileSync(INVITE_KEY_PATH, JSON.stringify({}, null, 2));
+  } catch {}
+  activeInviteKey = null;
+}
+
+function loadInviteSessions() {
+  try {
+    if (existsSync(INVITE_SESSIONS_PATH)) {
+      const data = JSON.parse(readFileSync(INVITE_SESSIONS_PATH, 'utf8'));
+      if (Array.isArray(data.sessions)) {
+        const now = Date.now();
+        for (const s of data.sessions) {
+          if (s.token && s.createdAt && (now - s.createdAt) < 24 * 60 * 60 * 1000) {
+            inviteSessions.set(s.token, { createdAt: s.createdAt, lastSeen: s.lastSeen || s.createdAt, userAgent: s.userAgent });
+          }
+        }
+      }
+    }
+  } catch {}
+}
+
+function persistInviteSessions() {
+  const dir = resolve(PROJECT_ROOT, 'data');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const sessions = [...inviteSessions.entries()].map(([token, s]) => ({
+    token, createdAt: s.createdAt, lastSeen: s.lastSeen, userAgent: s.userAgent
+  }));
+  writeFileSync(INVITE_SESSIONS_PATH, JSON.stringify({ sessions }, null, 2));
+}
+
+function loadInviteProxy() {
+  try {
+    if (existsSync(INVITE_PROXY_PATH)) {
+      return JSON.parse(readFileSync(INVITE_PROXY_PATH, 'utf8'));
+    }
+  } catch {}
+  return { useProxy: false, proxyUrl: '' };
+}
+
+function saveInviteProxy(config) {
+  const dir = resolve(PROJECT_ROOT, 'data');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(INVITE_PROXY_PATH, JSON.stringify(config, null, 2));
+}
+
+let invitePermissions = { ...DEFAULT_PERMISSIONS };
+
+function loadInvitePermissions() {
+  try {
+    if (existsSync(INVITE_PERMISSIONS_PATH)) {
+      const data = JSON.parse(readFileSync(INVITE_PERMISSIONS_PATH, 'utf8'));
+      invitePermissions = { ...DEFAULT_PERMISSIONS, ...data };
+      return invitePermissions;
+    }
+  } catch {}
+  invitePermissions = { ...DEFAULT_PERMISSIONS };
+  return invitePermissions;
+}
+
+function saveInvitePermissions(perms) {
+  const dir = resolve(PROJECT_ROOT, 'data');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  invitePermissions = { ...DEFAULT_PERMISSIONS, ...perms };
+  writeFileSync(INVITE_PERMISSIONS_PATH, JSON.stringify(invitePermissions, null, 2));
+  return invitePermissions;
+}
+
+// Load on startup
+loadInviteKey();
+loadInviteSessions();
+loadInvitePermissions();
+
+// Invite status (local only — tunnel middleware blocks unauthenticated)
+app.get('/api/invite/status', (req, res) => {
+  const keyData = loadInviteKey();
+  const proxy = loadInviteProxy();
+  // Clean expired sessions
+  const now = Date.now();
+  for (const [token, session] of inviteSessions.entries()) {
+    if (now - session.createdAt > 24 * 60 * 60 * 1000) inviteSessions.delete(token);
+  }
+  const masked = keyData?.key ? '***' + keyData.key.slice(-8) : null;
+  res.json({
+    ok: true,
+    hasKey: !!activeInviteKey,
+    maskedKey: masked,
+    createdAt: keyData?.createdAt || null,
+    activeSessions: inviteSessions.size,
+    proxyConfig: proxy,
+  });
+});
+
+// Generate or rotate invite key (clears all sessions)
+app.post('/api/invite/key', (req, res) => {
+  const { custom } = req.body || {};
+  let key;
+  if (custom && typeof custom === 'string' && custom.trim().length >= 6) {
+    key = custom.trim();
+  } else {
+    key = 'synabun_inv_' + randomBytes(24).toString('hex');
+  }
+  const data = saveInviteKey(key);
+  inviteSessions.clear();
+  persistInviteSessions();
+  res.json({ ok: true, key, createdAt: data.createdAt });
+});
+
+// Revoke invite key + all sessions
+app.delete('/api/invite/key', (req, res) => {
+  deleteInviteKey();
+  inviteSessions.clear();
+  persistInviteSessions();
+  res.json({ ok: true });
+});
+
+// Revoke all sessions (keep key)
+app.delete('/api/invite/sessions', (req, res) => {
+  inviteSessions.clear();
+  persistInviteSessions();
+  res.json({ ok: true });
+});
+
+// Save custom proxy config
+app.put('/api/invite/proxy', (req, res) => {
+  const { useProxy, proxyUrl } = req.body || {};
+  const config = {
+    useProxy: !!useProxy,
+    proxyUrl: typeof proxyUrl === 'string' ? proxyUrl.trim() : '',
+  };
+  saveInviteProxy(config);
+  res.json({ ok: true });
+});
+
+// Get guest permissions
+app.get('/api/invite/permissions', (req, res) => {
+  res.json({ ok: true, permissions: { ...invitePermissions } });
+});
+
+// Update guest permissions (owner only — admin middleware blocks guests)
+app.put('/api/invite/permissions', (req, res) => {
+  const updates = req.body || {};
+  const validKeys = Object.keys(DEFAULT_PERMISSIONS);
+  const merged = { ...invitePermissions };
+  for (const k of validKeys) {
+    if (typeof updates[k] === 'boolean') merged[k] = updates[k];
+  }
+  const saved = saveInvitePermissions(merged);
+  broadcastSync({ type: 'permissions:changed', permissions: saved });
+  res.json({ ok: true, permissions: saved });
+});
+
+// Serve invite auth page (express.static won't match /invite -> invite.html)
+app.get('/invite', (req, res) => {
+  res.sendFile(join(__dirname, 'public', 'invite.html'));
+});
+
+// Invite auth — validate key, create session, set cookie
+app.post('/invite/auth', (req, res) => {
+  if (!activeInviteKey) {
+    return res.status(403).json({ error: 'Invitations are not enabled' });
+  }
+  const { key } = req.body || {};
+  if (!key || key !== activeInviteKey) {
+    return res.status(401).json({ error: 'Invalid invite key' });
+  }
+  const token = randomBytes(32).toString('hex');
+  const session = {
+    createdAt: Date.now(),
+    lastSeen: Date.now(),
+    userAgent: req.headers['user-agent'] || 'unknown',
+  };
+  inviteSessions.set(token, session);
+  persistInviteSessions();
+
+  const isSecure = !!req.headers['cf-connecting-ip'];
+  const cookieParts = [
+    `synabun_invite=${token}`,
+    'HttpOnly',
+    'Path=/',
+    'SameSite=None',
+    isSecure ? 'Secure' : '',
+    'Max-Age=86400',
+  ].filter(Boolean).join('; ');
+  res.setHeader('Set-Cookie', cookieParts);
+  res.json({ ok: true });
+});
+
+// Invite logout
+app.get('/invite/logout', (req, res) => {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies['synabun_invite'];
+  if (token) {
+    inviteSessions.delete(token);
+    persistInviteSessions();
+  }
+  res.setHeader('Set-Cookie', 'synabun_invite=; HttpOnly; Path=/; Max-Age=0');
+  res.redirect('/invite');
+});
+
 // --- Cloudflare Tunnel Management ---
 let tunnelProcess = null;
 let tunnelUrl = null;
@@ -5416,16 +7219,34 @@ const SHELL_PROFILE = { shell: DEFAULT_SHELL, args: [], env: {} };
 /**
  * Build terminal profile config dynamically from cli-config.json.
  * Re-reads config each call so changes take effect without restart.
+ * @param {string} profileId - CLI profile ID (e.g. 'claude-code', 'codex', 'gemini', 'shell')
+ * @param {Object} [opts] - Optional overrides
+ * @param {string} [opts.model] - Model flag for CLIs that support it (e.g. claude --model sonnet)
  */
-function getTerminalProfile(profileId) {
+function getTerminalProfile(profileId, opts = {}) {
   if (profileId === 'shell') return SHELL_PROFILE;
 
   const config = loadCliConfig();
   const entry = config[profileId];
   if (!entry || !entry.command) return SHELL_PROFILE;
 
-  const cmd = entry.command.trim();
+  let cmd = entry.command.trim();
   if (!cmd) return SHELL_PROFILE;
+
+  // Append resume flag for Claude Code (mutually exclusive with model)
+  if (opts.resume && profileId === 'claude-code') {
+    cmd = `${cmd} --resume ${opts.resume}`;
+  }
+  // Append model flag for CLIs that support it
+  else if (opts.model) {
+    const modelMap = {
+      'claude-code': (m) => `${cmd} --model ${m}`,
+      'codex':       (m) => `${cmd} --model ${m}`,
+      'gemini':      (m) => `${cmd} --model ${m}`,
+    };
+    const builder = modelMap[profileId];
+    if (builder) cmd = builder(opts.model);
+  }
 
   return {
     shell: DEFAULT_SHELL,
@@ -5434,9 +7255,9 @@ function getTerminalProfile(profileId) {
   };
 }
 
-function createTerminalSession(profile, cols, rows, cwd) {
+function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
   const sessionId = randomBytes(16).toString('hex');
-  const profileCfg = getTerminalProfile(profile);
+  const profileCfg = getTerminalProfile(profile, opts);
 
   const ptyProcess = pty.spawn(profileCfg.shell, profileCfg.args, {
     name: 'xterm-256color',
@@ -5464,10 +7285,16 @@ function createTerminalSession(profile, cols, rows, cwd) {
       session.outputBufferBytes -= session.outputBuffer.shift().length;
     }
 
+    // Live link capture hook — called when a live-mode link is capturing this session's output
+    if (session._linkCaptureCallback) {
+      session._linkCaptureCallback(data);
+    }
+
     const msg = JSON.stringify({ type: 'output', data });
     session.clients.forEach(ws => {
       if (ws.readyState === 1) ws.send(msg);
     });
+
   });
 
   ptyProcess.onExit(({ exitCode }) => {
@@ -5481,6 +7308,14 @@ function createTerminalSession(profile, cols, rows, cwd) {
     // Clean up temp files from image paste
     if (session.tempFiles) {
       session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
+    }
+    // Destroy any links involving this session
+    for (const [linkId, link] of terminalLinks) {
+      if (link.sessions.includes(sessionId)) {
+        const sessions = [...link.sessions];
+        destroyTerminalLink(linkId);
+        broadcastSync({ type: 'link:deleted', linkId, sessions, reason: 'session-exited' });
+      }
     }
     terminalSessions.delete(sessionId);
   });
@@ -5502,9 +7337,10 @@ app.get('/api/terminal/sessions', (req, res) => {
 });
 
 app.post('/api/terminal/sessions', (req, res) => {
-  const { profile = 'shell', cols = 120, rows = 30, cwd } = req.body;
+  const { profile = 'shell', cols = 120, rows = 30, cwd, resume, model } = req.body;
   try {
-    const sessionId = createTerminalSession(profile, cols, rows, cwd);
+    const sessionId = createTerminalSession(profile, cols, rows, cwd, { resume, model });
+    broadcastSync({ type: 'terminal:session-created', sessionId, profile });
     res.json({ sessionId, profile });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5520,6 +7356,7 @@ app.delete('/api/terminal/sessions/:id', (req, res) => {
     session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
   }
   terminalSessions.delete(req.params.id);
+  broadcastSync({ type: 'terminal:session-deleted', sessionId: req.params.id });
   res.json({ ok: true });
 });
 
@@ -5783,6 +7620,760 @@ app.post('/api/cli/detect/:profileId', (req, res) => {
 });
 
 // ═══════════════════════════════════════════
+// TERMINAL LINKS — Relay/Mediator between PTY sessions
+// ═══════════════════════════════════════════
+
+const terminalLinks = new Map(); // linkId → LinkState
+
+/**
+ * Strip ANSI escape sequences from raw PTY output for relay purposes.
+ * Covers CSI, OSC, DCS, charset designators, and C0 control chars.
+ * Keeps \n and \t for readable text.
+ */
+function stripAnsi(str) {
+  return str
+    .replace(/\x1b\[[\x20-\x3f]*[\x40-\x7e]/g, '')              // CSI sequences
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')          // OSC sequences (BEL or ST terminated)
+    .replace(/\x1b[P^_][\s\S]*?(?:\x1b\\|\x07)/g, '')           // DCS/PM/APC strings
+    .replace(/\x1b[()][AB012]/g, '')                              // Charset designators
+    .replace(/\x1b[=><78HMNOZcn]/g, '')                          // Simple ESC sequences
+    .replace(/\x1b./g, '')                                        // Stray ESC + char
+    .replace(/[^\n]*\r(?!\n)/g, '')                               // CR overwrite cleanup
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');          // Control chars (keep \n \t)
+}
+
+// ── Sidecar CLI config — non-interactive args for each profile ──
+// Spawns headless CLI processes for clean text relay (sidecar mode).
+//
+// stdin: true  — message piped to stdin (flag is a boolean mode switch)
+// stdin: false — message appended as the last CLI arg (flag takes a value)
+const CLI_SIDECAR_CONFIG = {
+  'claude-code': { args: ['-p', '--verbose'], stdin: true },   // -p = non-interactive mode; reads prompt from stdin
+  'gemini':      { args: ['-p'],              stdin: false },   // -p <value>; PowerShell passes correctly on Windows
+  'codex':       { args: ['-q'],              stdin: false },   // -q <msg>; flag takes a value
+  'shell':       null,
+};
+
+// ── Live PTY config — inject messages into the actual TUI terminal ──
+// User sees messages typed and agents responding in real-time.
+// Response captured from PTY output stream, ANSI-stripped, then relayed.
+const CLI_LIVE_CONFIG = {
+  'claude-code': {
+    promptPatterns: [/>\s*$/m],             // ">" at end of stripped output
+    idleMs: 3000,                           // 3s of no output → check prompt
+    maxIdleMs: 120000,                      // 2 min absolute max wait
+    useBracketedPaste: true,
+  },
+  'gemini': {
+    promptPatterns: [/>\s*$/m, /\u276F\s*$/m],
+    idleMs: 3000,
+    maxIdleMs: 120000,
+    useBracketedPaste: true,
+  },
+  'codex': {
+    promptPatterns: [/>\s*$/m],
+    idleMs: 3000,
+    maxIdleMs: 120000,
+    useBracketedPaste: true,
+  },
+  'shell': null,
+};
+
+const LIVE_CAPTURE_SETTLE_MS = 500; // delay after injection before starting capture
+
+const LINK_SIDECAR_TIMEOUT_MS = 5 * 60 * 1000; // 5 min max per sidecar process
+
+/**
+ * Create a terminal link (relay/mediator session between agents).
+ * mode: 'sidecar' (headless CLI processes) or 'live' (inject into TUI PTY).
+ */
+function createTerminalLink(sessionIds, config = {}) {
+  for (const sid of sessionIds) {
+    if (!terminalSessions.has(sid)) throw new Error(`Session ${sid} not found`);
+  }
+  for (const sid of sessionIds) {
+    for (const [, link] of terminalLinks) {
+      if (link.sessions.includes(sid)) throw new Error(`Session ${sid} is already linked`);
+    }
+  }
+
+  const mode = config.mode || 'sidecar';
+
+  // Validate live mode profiles
+  if (mode === 'live') {
+    for (const sid of sessionIds) {
+      const s = terminalSessions.get(sid);
+      if (!s || !CLI_LIVE_CONFIG[s.profile]) {
+        throw new Error(`Profile "${s?.profile}" does not support live mode`);
+      }
+    }
+  }
+
+  const linkId = randomBytes(16).toString('hex');
+  const link = {
+    id: linkId,
+    sessions: sessionIds,
+    status: 'idle',           // idle | running | paused
+    activeAgent: 0,           // index into sessions[]
+    history: [],              // { role, sessionId, content, timestamp }
+    mode,                     // 'sidecar' | 'live'
+    config: {
+      autoContinue: config.autoContinue !== false,
+      maxTurns: config.maxTurns || 0,
+      turnCount: 0,
+    },
+    // Sidecar-mode state
+    _sidecarProcess: null,
+    _sidecarSessionId: null,
+    // Live-mode state
+    _captureBuffer: '',
+    _captureVTerm: null,           // VTermBuffer for clean text extraction
+    _captureSessionId: null,
+    _idleTimer: null,
+    _maxIdleTimer: null,
+    _injectionEcho: '',
+    createdAt: Date.now(),
+  };
+
+  terminalLinks.set(linkId, link);
+  return linkId;
+}
+
+/**
+ * Destroy a terminal link — kill sidecar, remove from map.
+ */
+function destroyTerminalLink(linkId) {
+  const link = terminalLinks.get(linkId);
+  if (!link) return false;
+
+  // Clean up sidecar mode
+  if (link._sidecarProcess) {
+    try { link._sidecarProcess.kill('SIGTERM'); } catch {}
+    link._sidecarProcess = null;
+  }
+
+  // Clean up live mode
+  if (link._idleTimer) clearTimeout(link._idleTimer);
+  if (link._maxIdleTimer) clearTimeout(link._maxIdleTimer);
+  if (link._captureSessionId) {
+    const capSession = terminalSessions.get(link._captureSessionId);
+    if (capSession) capSession._linkCaptureCallback = null;
+  }
+  link._captureVTerm = null;
+
+  terminalLinks.delete(linkId);
+  return true;
+}
+
+/**
+ * Spawn a non-interactive sidecar CLI process for a linked agent.
+ * Instead of injecting into the TUI PTY, we spawn a separate headless
+ * process (e.g. `claude -p "message"`) and capture its clean stdout.
+ */
+function spawnSidecarProcess(linkId, sessionId, message) {
+  const link = terminalLinks.get(linkId);
+  if (!link) throw new Error('Link not found');
+
+  const session = terminalSessions.get(sessionId);
+  if (!session) throw new Error('Session not found');
+
+  const profile = session.profile;
+  const sidecarConfig = CLI_SIDECAR_CONFIG[profile];
+  if (!sidecarConfig) throw new Error(`No sidecar config for profile: ${profile}`);
+
+  // Get the CLI command from config (e.g. 'claude', 'gemini', 'codex')
+  const cliConfig = loadCliConfig();
+  const command = (cliConfig[profile]?.command || '').trim();
+  if (!command) throw new Error(`No CLI command configured for ${profile}`);
+
+  let spawnCmd = command;
+  let spawnArgs = [...sidecarConfig.args];
+  let useShell = IS_WIN;
+  let tmpFile = null;
+
+  if (sidecarConfig.stdin) {
+    // stdin-based: args are fixed, message piped after spawn (e.g. Claude Code)
+  } else if (IS_WIN) {
+    // Windows: cmd.exe shell quoting mangles multi-word args (splits by spaces),
+    // causing CLIs like Gemini to misparse -p "hello world" as -p + positional "hello" "world".
+    // Use PowerShell which correctly passes $msg as a single argument value.
+    tmpFile = join(os.tmpdir(), `synabun-relay-${randomBytes(4).toString('hex')}.txt`);
+    writeFileSync(tmpFile, message, 'utf-8');
+    const flag = spawnArgs[0]; // e.g. '-p', '-q'
+    spawnCmd = 'powershell.exe';
+    spawnArgs = ['-NoProfile', '-NonInteractive', '-Command',
+      `$msg = Get-Content -Raw '${tmpFile}'; & '${command}' ${flag} $msg`];
+    useShell = false;
+  } else {
+    // Unix: pass directly as the flag's value arg (no shell quoting issues)
+    spawnArgs.push(message);
+  }
+
+  console.log(`[link-sidecar] Spawning: ${spawnCmd} ${spawnArgs.join(' ').slice(0, 200)}... (${profile}, cwd: ${session.cwd || process.cwd()})`);
+
+  const child = spawn(spawnCmd, spawnArgs, {
+    cwd: session.cwd || process.cwd(),
+    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+    shell: useShell,
+    timeout: LINK_SIDECAR_TIMEOUT_MS,
+    windowsHide: true,
+  });
+
+  // Pipe message to stdin for CLIs that support it (e.g. Claude Code)
+  if (sidecarConfig.stdin) {
+    child.stdin.write(message);
+  }
+  child.stdin.end();
+
+  // Track on link state
+  link._sidecarProcess = child;
+  link._sidecarSessionId = sessionId;
+
+  let fullOutput = '';
+
+  child.stdout.on('data', (chunk) => {
+    const text = chunk.toString();
+    fullOutput += text;
+
+    // Broadcast streaming chunk to clients
+    broadcastSync({
+      type: 'link:chunk',
+      linkId,
+      sessionId,
+      profile,
+      content: text,
+    });
+  });
+
+  let stderrOutput = '';
+  child.stderr.on('data', (chunk) => {
+    const text = chunk.toString();
+    stderrOutput += text;
+    console.log(`[link-sidecar] ${profile} stderr: ${text.slice(0, 500)}`);
+  });
+
+  child.on('close', (code) => {
+    link._sidecarProcess = null;
+    link._sidecarSessionId = null;
+    if (tmpFile) { try { unlinkSync(tmpFile); } catch {} }
+
+    const cleanOutput = fullOutput.trim();
+
+    if (code !== 0 && code !== null) {
+      console.error(`[link-sidecar] ${profile} exited with code ${code}${stderrOutput ? ': ' + stderrOutput.slice(0, 500) : ''}`);
+      if (!cleanOutput) {
+        const errDetail = stderrOutput.trim().slice(0, 200) || `exited with code ${code}`;
+        broadcastSync({ type: 'link:error', linkId, error: `${profile}: ${errDetail}` });
+        link.status = 'idle';
+        return;
+      }
+    }
+
+    if (cleanOutput) {
+      onSidecarFinished(linkId, sessionId, cleanOutput);
+    } else {
+      link.status = 'idle';
+      broadcastSync({ type: 'link:agent-finished', linkId, sessionId, profile });
+    }
+  });
+
+  child.on('error', (err) => {
+    link._sidecarProcess = null;
+    link._sidecarSessionId = null;
+    console.error(`[link-sidecar] ${profile} spawn error:`, err.message);
+    broadcastSync({ type: 'link:error', linkId, error: `Failed to start ${profile}: ${err.message}` });
+    link.status = 'idle';
+  });
+
+  return child;
+}
+
+/**
+ * Called when a sidecar process finishes with output.
+ * Output is already clean text — no ANSI stripping needed.
+ */
+function onSidecarFinished(linkId, sessionId, cleanOutput) {
+  const link = terminalLinks.get(linkId);
+  if (!link) return;
+
+  const session = terminalSessions.get(sessionId);
+  const profile = session?.profile || 'unknown';
+
+  // Add to history
+  const entry = { role: profile, sessionId, content: cleanOutput, timestamp: Date.now() };
+  link.history.push(entry);
+
+  broadcastSync({ type: 'link:agent-finished', linkId, sessionId, profile });
+  broadcastSync({ type: 'link:message', linkId, ...entry, turnCount: link.config.turnCount });
+
+  // Auto-continue to next agent?
+  if (link.config.autoContinue && link.status === 'running') {
+    link.config.turnCount++;
+    if (link.config.maxTurns > 0 && link.config.turnCount >= link.config.maxTurns) {
+      link.status = 'idle';
+      broadcastSync({ type: 'link:paused', linkId, reason: 'max-turns' });
+      return;
+    }
+    relayToNextAgent(linkId, cleanOutput);
+  } else {
+    link.status = 'idle';
+  }
+}
+
+// ── Live PTY injection functions ──
+
+/**
+ * Inject a message into a live PTY terminal and capture the response.
+ * The message is typed directly into the TUI CLI's input prompt.
+ * Response is captured from PTY output, ANSI-stripped, and relayed.
+ */
+function injectIntoLivePty(linkId, sessionId, message) {
+  const link = terminalLinks.get(linkId);
+  if (!link) throw new Error('Link not found');
+  if (link.mode !== 'live') throw new Error('Link is not in live mode');
+
+  const session = terminalSessions.get(sessionId);
+  if (!session) throw new Error('Session not found');
+
+  const profile = session.profile;
+  const liveConfig = CLI_LIVE_CONFIG[profile];
+  if (!liveConfig) throw new Error(`No live config for profile: ${profile}`);
+
+  if (session._linkCaptureCallback) {
+    throw new Error(`Session ${sessionId.slice(0, 8)} already has a capture callback`);
+  }
+
+  console.log(`[link-live] Injecting into ${profile} (session ${sessionId.slice(0, 8)}), msg: ${message.slice(0, 200)}...`);
+
+  // Set up link capture state
+  link._captureBuffer = '';
+  link._captureSessionId = sessionId;
+  link._injectionEcho = message;
+
+  // Create VTermBuffer matching the session's PTY dimensions for clean text extraction.
+  // Unlike regex stripAnsi(), this properly handles TUI cursor positioning, spinners,
+  // and screen overwrites — only the final visual state is retained.
+  const ptyCols = session.pty.cols || 120;
+  const ptyRows = session.pty.rows || 30;
+  link._captureVTerm = new VTermBuffer(ptyCols, ptyRows);
+
+  broadcastSync({ type: 'link:agent-started', linkId, sessionId, profile });
+
+  // Inject message into PTY — send text first, then Enter after a short delay.
+  // TUI frameworks (Ink) process input per-frame; Enter must arrive as a separate
+  // keystroke or it gets swallowed when bundled with the text in one write.
+  const pty = session.pty;
+  const ENTER_DELAY_MS = 80;
+
+  if (liveConfig.useBracketedPaste && message.includes('\n')) {
+    pty.write('\x1b[200~' + message + '\x1b[201~');
+  } else {
+    pty.write(message);
+  }
+  // Send Enter separately after delay
+  setTimeout(() => pty.write('\r'), ENTER_DELAY_MS);
+
+  // Wait for settle delay, then start capturing output
+  setTimeout(() => {
+    if (!terminalLinks.has(linkId)) return;
+    if (link._captureSessionId !== sessionId) return;
+
+    session._linkCaptureCallback = (data) => {
+      link._captureBuffer += data;
+
+      // Feed raw data into VTermBuffer for proper terminal emulation
+      if (link._captureVTerm) {
+        try { link._captureVTerm.write(data); } catch {}
+      }
+
+      // Broadcast streaming chunk (ANSI-stripped for display)
+      const cleanChunk = stripAnsi(data);
+      if (cleanChunk.trim()) {
+        broadcastSync({
+          type: 'link:chunk',
+          linkId,
+          sessionId,
+          profile,
+          content: cleanChunk,
+        });
+      }
+
+      // Reset idle timer on each output chunk
+      if (link._idleTimer) clearTimeout(link._idleTimer);
+      link._idleTimer = setTimeout(() => {
+        _checkLiveCaptureComplete(linkId, sessionId);
+      }, liveConfig.idleMs);
+    };
+
+    // Absolute max wait safety net
+    link._maxIdleTimer = setTimeout(() => {
+      console.log(`[link-live] Max idle timeout for ${profile}`);
+      _finalizeLiveCapture(linkId, sessionId, 'max-idle-timeout');
+    }, liveConfig.maxIdleMs);
+
+  }, LIVE_CAPTURE_SETTLE_MS);
+}
+
+/**
+ * Called after idle timeout — check if the CLI prompt has reappeared.
+ */
+function _checkLiveCaptureComplete(linkId, sessionId) {
+  const link = terminalLinks.get(linkId);
+  if (!link || link._captureSessionId !== sessionId) return;
+
+  const session = terminalSessions.get(sessionId);
+  if (!session) {
+    _finalizeLiveCapture(linkId, sessionId, 'session-gone');
+    return;
+  }
+
+  const profile = session.profile;
+  const liveConfig = CLI_LIVE_CONFIG[profile];
+  if (!liveConfig) {
+    _finalizeLiveCapture(linkId, sessionId, 'no-config');
+    return;
+  }
+
+  // Check last 5 lines of ANSI-stripped output for prompt patterns
+  const stripped = stripAnsi(link._captureBuffer);
+  const lastLines = stripped.split('\n').slice(-5).join('\n');
+  const promptFound = liveConfig.promptPatterns.some(p => p.test(lastLines));
+
+  if (promptFound) {
+    console.log(`[link-live] Prompt detected for ${profile}, finalizing`);
+    _finalizeLiveCapture(linkId, sessionId, 'prompt-detected');
+  } else {
+    // No prompt found — set a short follow-up timer, then force finalize.
+    // The idle timeout already means no output for idleMs; if still nothing
+    // after another idleMs, the response is almost certainly done.
+    console.log(`[link-live] Idle but no prompt for ${profile}, will finalize in ${liveConfig.idleMs}ms`);
+    link._idleTimer = setTimeout(() => {
+      _finalizeLiveCapture(linkId, sessionId, 'idle-no-prompt');
+    }, liveConfig.idleMs);
+  }
+}
+
+/**
+ * Finalize a live PTY capture — strip ANSI, clean up, and relay.
+ * Reuses onSidecarFinished() for history and auto-continue logic.
+ */
+function _finalizeLiveCapture(linkId, sessionId, reason) {
+  const link = terminalLinks.get(linkId);
+  if (!link) return;
+
+  const session = terminalSessions.get(sessionId);
+  const profile = session?.profile || 'unknown';
+
+  console.log(`[link-live] Finalizing capture for ${profile}: ${reason}`);
+
+  // Remove capture callback
+  if (session) session._linkCaptureCallback = null;
+
+  // Clear timers
+  if (link._idleTimer) { clearTimeout(link._idleTimer); link._idleTimer = null; }
+  if (link._maxIdleTimer) { clearTimeout(link._maxIdleTimer); link._maxIdleTimer = null; }
+
+  // Extract clean text from VTermBuffer (proper terminal emulation).
+  // Unlike regex stripAnsi(), VTermBuffer correctly handles cursor positioning,
+  // spinner overwrites, and screen repaints — only the final visual state remains.
+  let cleanOutput = '';
+  const vterm = link._captureVTerm;
+  if (vterm) {
+    const sb = vterm.scrollbackLength;
+    const totalRows = sb + vterm.rows;
+    // Get all text: scrollback + visible screen
+    cleanOutput = vterm.getText(0, 0, totalRows - 1, vterm.cols - 1);
+    // Collapse excessive blank lines (TUI apps leave lots of empty rows)
+    cleanOutput = cleanOutput.replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // Fallback to regex stripping if VTermBuffer produced nothing
+  if (!cleanOutput) {
+    cleanOutput = stripAnsi(link._captureBuffer).trim();
+  }
+
+  console.log(`[link-live] Extracted text (${cleanOutput.length} chars, via ${vterm ? 'vterm' : 'regex'}): ${cleanOutput.slice(0, 300)}...`);
+
+  // Strip injected echo — TUI CLIs echo back what was typed
+  if (link._injectionEcho) {
+    const echoText = link._injectionEcho.trim();
+    // Strategy 1: prefix match
+    if (cleanOutput.startsWith(echoText)) {
+      cleanOutput = cleanOutput.slice(echoText.length).trim();
+    } else {
+      // Strategy 2: line-by-line match
+      const echoLines = echoText.split('\n');
+      const outputLines = cleanOutput.split('\n');
+      let matched = 0;
+      while (matched < echoLines.length && matched < outputLines.length) {
+        if (outputLines[matched].trim() === echoLines[matched].trim()) {
+          matched++;
+        } else break;
+      }
+      if (matched > 0) {
+        cleanOutput = outputLines.slice(matched).join('\n').trim();
+      }
+    }
+  }
+
+  // Strip trailing prompt patterns
+  const liveConfig = CLI_LIVE_CONFIG[profile];
+  if (liveConfig) {
+    for (const pattern of liveConfig.promptPatterns) {
+      cleanOutput = cleanOutput.replace(pattern, '').trim();
+    }
+  }
+
+  // Reset live capture state
+  link._captureBuffer = '';
+  link._captureVTerm = null;
+  link._captureSessionId = null;
+  link._injectionEcho = '';
+
+  if (cleanOutput) {
+    onSidecarFinished(linkId, sessionId, cleanOutput);
+  } else {
+    link.status = 'idle';
+    broadcastSync({ type: 'link:agent-finished', linkId, sessionId, profile });
+    if (reason === 'max-idle-timeout') {
+      broadcastSync({ type: 'link:error', linkId, error: `${profile}: No response detected (timed out)` });
+    }
+  }
+}
+
+/**
+ * Forward a message to the next agent in the link chain.
+ * Dispatches to sidecar or live mode based on link.mode.
+ */
+function relayToNextAgent(linkId, message) {
+  const link = terminalLinks.get(linkId);
+  if (!link) return;
+
+  // Advance to next agent (round-robin)
+  link.activeAgent = (link.activeAgent + 1) % link.sessions.length;
+  const nextSessionId = link.sessions[link.activeAgent];
+  const session = terminalSessions.get(nextSessionId);
+  if (!session) {
+    link.status = 'idle';
+    broadcastSync({ type: 'link:error', linkId, error: 'Target session not found' });
+    return;
+  }
+
+  link.status = 'running';
+
+  // Cap message length (16KB — more generous since it's a CLI arg, not PTY)
+  const MAX_RELAY_LEN = 16 * 1024;
+  let relayMsg = message;
+  if (relayMsg.length > MAX_RELAY_LEN) {
+    relayMsg = relayMsg.slice(0, MAX_RELAY_LEN) + '\n\n[... response truncated]';
+  }
+
+  try {
+    if (link.mode === 'live') {
+      injectIntoLivePty(linkId, nextSessionId, relayMsg);
+    } else {
+      broadcastSync({ type: 'link:agent-started', linkId, sessionId: nextSessionId, profile: session.profile });
+      spawnSidecarProcess(linkId, nextSessionId, relayMsg);
+    }
+  } catch (err) {
+    link.status = 'idle';
+    broadcastSync({ type: 'link:error', linkId, error: err.message });
+  }
+}
+
+/**
+ * User-initiated send — spawns sidecar for the specified (or first) agent.
+ */
+function sendToLink(linkId, message, targetIdx) {
+  const link = terminalLinks.get(linkId);
+  if (!link) throw new Error('Link not found');
+
+  // Kill any running sidecar / clean up live capture
+  if (link._sidecarProcess) {
+    try { link._sidecarProcess.kill('SIGTERM'); } catch {}
+    link._sidecarProcess = null;
+  }
+  if (link._captureSessionId) {
+    const capSession = terminalSessions.get(link._captureSessionId);
+    if (capSession) capSession._linkCaptureCallback = null;
+    if (link._idleTimer) { clearTimeout(link._idleTimer); link._idleTimer = null; }
+    if (link._maxIdleTimer) { clearTimeout(link._maxIdleTimer); link._maxIdleTimer = null; }
+    link._captureBuffer = '';
+    link._captureVTerm = null;
+    link._captureSessionId = null;
+  }
+
+  const agentIdx = (typeof targetIdx === 'number') ? targetIdx : link.activeAgent;
+  const sessionId = link.sessions[agentIdx];
+  const session = terminalSessions.get(sessionId);
+  if (!session) throw new Error('Target session not found');
+
+  // Record in history as user message
+  const entry = { role: 'user', sessionId: null, content: message, timestamp: Date.now() };
+  link.history.push(entry);
+  broadcastSync({ type: 'link:message', linkId, ...entry, turnCount: link.config.turnCount });
+
+  // Set link to running
+  link.activeAgent = agentIdx;
+  link.status = 'running';
+
+  // Dispatch based on mode
+  if (link.mode === 'live') {
+    injectIntoLivePty(linkId, sessionId, message);
+  } else {
+    broadcastSync({ type: 'link:agent-started', linkId, sessionId, profile: session.profile });
+    spawnSidecarProcess(linkId, sessionId, message);
+  }
+}
+
+// ── Terminal Link REST endpoints ──
+
+app.get('/api/terminal/links', (req, res) => {
+  const links = [...terminalLinks.entries()].map(([id, l]) => ({
+    id,
+    sessions: l.sessions.map(sid => {
+      const s = terminalSessions.get(sid);
+      return { id: sid, profile: s?.profile || 'unknown', cwd: s?.cwd };
+    }),
+    status: l.status,
+    activeAgent: l.activeAgent,
+    historyCount: l.history.length,
+    mode: l.mode,
+    config: { autoContinue: l.config.autoContinue, maxTurns: l.config.maxTurns, turnCount: l.config.turnCount },
+    createdAt: l.createdAt,
+  }));
+  res.json({ links });
+});
+
+app.get('/api/terminal/links/:id', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  res.json({
+    id: link.id,
+    sessions: link.sessions.map(sid => {
+      const s = terminalSessions.get(sid);
+      return { id: sid, profile: s?.profile || 'unknown', cwd: s?.cwd };
+    }),
+    status: link.status,
+    activeAgent: link.activeAgent,
+    mode: link.mode,
+    history: link.history,
+    config: { autoContinue: link.config.autoContinue, maxTurns: link.config.maxTurns, turnCount: link.config.turnCount },
+    createdAt: link.createdAt,
+  });
+});
+
+app.post('/api/terminal/links', (req, res) => {
+  const { sessions, autoContinue, maxTurns, mode } = req.body;
+  if (!Array.isArray(sessions) || sessions.length < 2) {
+    return res.status(400).json({ error: 'At least 2 session IDs required' });
+  }
+  try {
+    const linkId = createTerminalLink(sessions, { autoContinue, maxTurns, mode });
+    broadcastSync({ type: 'link:created', linkId, sessions, mode: mode || 'sidecar' });
+    res.json({ linkId });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/terminal/links/:id', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  const sessions = [...link.sessions];
+  destroyTerminalLink(req.params.id);
+  broadcastSync({ type: 'link:deleted', linkId: req.params.id, sessions });
+  res.json({ ok: true });
+});
+
+app.patch('/api/terminal/links/:id', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  const { autoContinue, maxTurns } = req.body;
+  if (typeof autoContinue === 'boolean') link.config.autoContinue = autoContinue;
+  if (typeof maxTurns === 'number') link.config.maxTurns = maxTurns;
+  res.json({ ok: true, config: link.config });
+});
+
+app.post('/api/terminal/links/:id/send', (req, res) => {
+  const { message, targetIdx } = req.body;
+  if (!message || typeof message !== 'string') {
+    return res.status(400).json({ error: 'message is required' });
+  }
+  try {
+    sendToLink(req.params.id, message, targetIdx);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/terminal/links/:id/pause', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  link.status = 'idle';
+  link.config.autoContinue = false;
+  // Kill any running sidecar process
+  if (link._sidecarProcess) {
+    try { link._sidecarProcess.kill('SIGTERM'); } catch {}
+    link._sidecarProcess = null;
+    link._sidecarSessionId = null;
+  }
+  // Clean up live capture
+  if (link._captureSessionId) {
+    const capSession = terminalSessions.get(link._captureSessionId);
+    if (capSession) capSession._linkCaptureCallback = null;
+    if (link._idleTimer) { clearTimeout(link._idleTimer); link._idleTimer = null; }
+    if (link._maxIdleTimer) { clearTimeout(link._maxIdleTimer); link._maxIdleTimer = null; }
+    link._captureBuffer = '';
+    link._captureVTerm = null;
+    link._captureSessionId = null;
+  }
+  broadcastSync({ type: 'link:paused', linkId: req.params.id, reason: 'manual' });
+  res.json({ ok: true });
+});
+
+app.post('/api/terminal/links/:id/resume', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  link.config.autoContinue = true;
+  broadcastSync({ type: 'link:resumed', linkId: req.params.id });
+  res.json({ ok: true });
+});
+
+app.post('/api/terminal/links/:id/nudge', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+
+  // Kill current sidecar / clean up live capture
+  if (link._sidecarProcess) {
+    try { link._sidecarProcess.kill('SIGTERM'); } catch {}
+    link._sidecarProcess = null;
+    link._sidecarSessionId = null;
+  }
+  if (link._captureSessionId) {
+    const capSession = terminalSessions.get(link._captureSessionId);
+    if (capSession) capSession._linkCaptureCallback = null;
+    if (link._idleTimer) { clearTimeout(link._idleTimer); link._idleTimer = null; }
+    if (link._maxIdleTimer) { clearTimeout(link._maxIdleTimer); link._maxIdleTimer = null; }
+    link._captureBuffer = '';
+    link._captureVTerm = null;
+    link._captureSessionId = null;
+  }
+
+  // Get last agent message from history (or a nudge placeholder)
+  const lastAgentMsg = [...link.history].reverse().find(h => h.role !== 'user');
+  const relayContent = lastAgentMsg?.content || '[nudge — no previous response]';
+
+  link.status = 'running';
+  link.config.autoContinue = true;
+  relayToNextAgent(link.id, relayContent);
+  res.json({ ok: true });
+});
+
+
+// ═══════════════════════════════════════════
 // BROWSER — Playwright-core CDP Manager
 // ═══════════════════════════════════════════
 //
@@ -5792,6 +8383,95 @@ app.post('/api/cli/detect/:profileId', (req, res) => {
 
 const browserSessions = new Map(); // sessionId → { browser, context, page, clients, cdpSession, screencastActive, ... }
 const BROWSER_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 min before orphaned browser is killed
+
+/** Check if a browser session is actively used by a running automation loop. */
+function isSessionUsedByActiveLoop(sessionId) {
+  if (!existsSync(LOOP_DIR)) return false;
+  try {
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
+    for (const f of files) {
+      try {
+        const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
+        if (data.active && data.browserSessionId === sessionId) return true;
+      } catch {}
+    }
+  } catch {}
+  return false;
+}
+
+// ── Real-time sync WebSocket (multi-client state broadcast) ──
+const syncClients = new Set(); // Set<WebSocket>
+
+function broadcastSync(message, excludeWs = null) {
+  const data = JSON.stringify(message);
+  let sent = 0;
+  for (const client of syncClients) {
+    if (client !== excludeWs && client.readyState === 1) { client.send(data); sent++; }
+  }
+  if (syncClients.size > 0) console.log(`[sync] broadcast "${message.type}" → ${sent}/${syncClients.size} clients`);
+}
+
+// Relayable message types (client → server → other clients)
+const RELAYABLE_TYPES = new Set([
+  'card:opened', 'card:closed', 'card:moved', 'card:resized', 'card:compacted', 'card:expanded',
+  'terminal:session-created', 'terminal:session-deleted',
+  'browser:session-created', 'browser:session-deleted',
+  'link:created', 'link:deleted', 'link:message', 'link:agent-started', 'link:agent-finished',
+  'link:paused', 'link:resumed', 'link:error', 'link:chunk',
+]);
+
+// Permission required per relay type prefix
+const RELAY_PERM_MAP = { 'card:': 'cards', 'terminal:': 'terminal', 'link:': 'terminal' };
+
+function handleSyncWebSocket(ws, req) {
+  const guest = isGuestRequest(req);
+  ws._isGuest = guest;
+  syncClients.add(ws);
+  console.log(`[sync] Client connected (${guest ? 'guest' : 'owner'}), total: ${syncClients.size}`);
+
+  // Send initial state with role + permissions
+  ws.send(JSON.stringify({
+    type: 'connected',
+    clients: syncClients.size,
+    isGuest: guest,
+    permissions: { ...invitePermissions },
+  }));
+  broadcastSync({ type: 'clients', count: syncClients.size });
+
+  // Bidirectional relay: client → server → other clients
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      if (!msg.type || !RELAYABLE_TYPES.has(msg.type)) return;
+
+      // Permission check for guest senders
+      if (ws._isGuest) {
+        const permKey = Object.entries(RELAY_PERM_MAP).find(([prefix]) => msg.type.startsWith(prefix));
+        if (permKey && !invitePermissions[permKey[1]]) return; // silently drop
+      }
+
+      broadcastSync(msg, ws); // relay to everyone except sender
+    } catch { /* ignore malformed */ }
+  });
+
+  ws.on('close', () => {
+    syncClients.delete(ws);
+    console.log(`[sync] Client disconnected (${ws._isGuest ? 'guest' : 'owner'}), total: ${syncClients.size}`);
+    broadcastSync({ type: 'clients', count: syncClients.size });
+  });
+}
+
+// ── Whiteboard WebSocket clients (Claude MCP integration) ──
+const whiteboardClients = new Set(); // Set<WebSocket>
+const whiteboardPendingScreenshots = new Map(); // requestId → { resolve, reject, timer }
+let whiteboardViewport = { width: 1920, height: 937 }; // updated by browser on WS connect + resize
+
+function broadcastToWhiteboard(message, excludeWs = null) {
+  const data = JSON.stringify(message);
+  for (const client of whiteboardClients) {
+    if (client !== excludeWs && client.readyState === 1) client.send(data);
+  }
+}
 
 // ── Browser config ──
 
@@ -5842,6 +8522,83 @@ function findBrowserExecutable() {
 }
 
 /**
+ * Detect Chrome/Edge/Chromium profile directories on the system.
+ * Scans common User Data locations and reads Preferences files to get
+ * human-readable profile names.
+ */
+function detectChromeProfiles() {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const localAppData = process.env.LOCALAPPDATA || '';
+
+  // Browser User Data root directories by platform
+  const browserRoots = IS_WIN ? [
+    { browser: 'Chrome', dir: join(localAppData, 'Google', 'Chrome', 'User Data') },
+    { browser: 'Edge', dir: join(localAppData, 'Microsoft', 'Edge', 'User Data') },
+    { browser: 'Chromium', dir: join(localAppData, 'Chromium', 'User Data') },
+  ] : process.platform === 'darwin' ? [
+    { browser: 'Chrome', dir: join(home, 'Library', 'Application Support', 'Google', 'Chrome') },
+    { browser: 'Edge', dir: join(home, 'Library', 'Application Support', 'Microsoft Edge') },
+    { browser: 'Chromium', dir: join(home, 'Library', 'Application Support', 'Chromium') },
+  ] : [
+    { browser: 'Chrome', dir: join(home, '.config', 'google-chrome') },
+    { browser: 'Chromium', dir: join(home, '.config', 'chromium') },
+    { browser: 'Edge', dir: join(home, '.config', 'microsoft-edge') },
+  ];
+
+  const profiles = [];
+
+  for (const { browser, dir } of browserRoots) {
+    if (!existsSync(dir)) continue;
+
+    // Read Local State for authoritative profile names (Chrome updates names here, not in per-profile Preferences)
+    let localStateNames = {};
+    try {
+      const lsPath = join(dir, 'Local State');
+      if (existsSync(lsPath)) {
+        const ls = JSON.parse(readFileSync(lsPath, 'utf-8'));
+        const cache = ls?.profile?.info_cache || {};
+        for (const [folder, info] of Object.entries(cache)) {
+          if (info.name) localStateNames[folder] = info.name;
+        }
+      }
+    } catch { /* Local State unavailable */ }
+
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const folderName = entry.name;
+      // Match "Default", "Profile 1", "Profile 2", etc.
+      if (folderName !== 'Default' && !/^Profile \d+$/.test(folderName)) continue;
+
+      const profileDir = join(dir, folderName);
+      const prefsPath = join(profileDir, 'Preferences');
+      if (!existsSync(prefsPath)) continue;
+
+      // Prefer Local State name (authoritative after renames), fall back to per-profile Preferences
+      let displayName = localStateNames[folderName] || folderName;
+      if (!localStateNames[folderName]) {
+        try {
+          const prefs = JSON.parse(readFileSync(prefsPath, 'utf-8'));
+          if (prefs.profile?.name) displayName = prefs.profile.name;
+        } catch { /* use folder name */ }
+      }
+
+      profiles.push({
+        browser,
+        name: displayName,
+        folder: folderName,
+        path: profileDir.replace(/\\/g, '/'),
+        isDefault: folderName === 'Default',
+      });
+    }
+  }
+
+  return profiles;
+}
+
+/**
  * Launch a browser session. Returns sessionId + CDP WebSocket URL.
  * Merges saved browser-config.json with per-session overrides, clones
  * the real browser's fingerprint from Neural Interface request headers.
@@ -5855,6 +8612,14 @@ async function createBrowserSession(options = {}) {
   const vpW = options.width || savedCfg.viewport?.width || 1280;
   const vpH = options.height || savedCfg.viewport?.height || 800;
 
+  // Per-session headless override (from launch dialog) takes priority over saved config
+  // Note: Playwright only accepts boolean for headless (the old "new" string mode is no longer valid)
+  // Default: headed (false) — headless only when explicitly set to true
+  const headlessVal = options.headless !== undefined
+    ? (options.headless === true || options.headless === 'true')
+    : savedCfg.headless === true ? true : false;
+  console.log(`[browser] headless=${headlessVal} (override: ${JSON.stringify(options.headless)}, config: ${JSON.stringify(savedCfg.headless)})`);
+
   // ── Stealth args: strip all headless indicators ──
   const stealthArgs = [
     '--no-first-run',
@@ -5866,9 +8631,16 @@ async function createBrowserSession(options = {}) {
     '--disable-infobars',
     '--disable-dev-shm-usage',
     '--no-sandbox',
-    '--use-gl=swiftshader',
     '--enable-webgl',
+    '--disable-session-crashed-bubble',
+    '--hide-crash-restore-bubble',
   ];
+
+  // SwiftShader (software GL) only for headless — in headed mode it can prevent
+  // the Chrome window from rendering or appearing on the desktop.
+  if (headlessVal) {
+    stealthArgs.push('--use-gl=swiftshader');
+  }
 
   // ── Resolve userDataDir ──
   // Chrome refuses --remote-debugging-pipe with its own default User Data directory.
@@ -5901,9 +8673,6 @@ async function createBrowserSession(options = {}) {
     const extra = savedCfg.extraArgs.split(/\s+/).filter(Boolean);
     stealthArgs.push(...extra);
   }
-
-  const headlessVal = savedCfg.headless === false ? false : savedCfg.headless === 'new' ? 'new' : true;
-  console.log(`[browser] headless=${headlessVal} (config value: ${JSON.stringify(savedCfg.headless)}, type: ${typeof savedCfg.headless})`);
   const launchOpts = { headless: headlessVal, args: stealthArgs };
   if (execPath) launchOpts.executablePath = execPath;
   if (savedCfg.channel) launchOpts.channel = savedCfg.channel;
@@ -5996,17 +8765,42 @@ async function createBrowserSession(options = {}) {
     // launchPersistentContext returns a BrowserContext directly — no separate browser.newContext()
     _isPersistent = true;
 
-    // Check if Chrome is already running — it enforces single-instance per profile
-    // If Chrome is running with the same profile (even via junction), the new process
-    // will delegate to the existing one and exit, causing immediate session close.
+    // Chrome enforces single-instance per User Data directory. If Chrome is running
+    // and the selected profile is inside Chrome's User Data dir, the new Playwright
+    // process will be killed by Chrome's singleton lock within seconds.
+    // Detect this and redirect to SynaBun's managed profile instead.
+    let _chromeConflict = false;
     if (IS_WIN) {
       try {
         const tasklist = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', { encoding: 'utf8', timeout: 3000 });
         if (tasklist.includes('chrome.exe')) {
-          console.warn('[browser] WARNING: Chrome is currently running!');
-          console.warn('[browser] Chrome enforces single-instance per profile. The browser will likely');
-          console.warn('[browser] close immediately. Close ALL Chrome windows and background processes first.');
-          console.warn('[browser] Tip: Check system tray for Chrome running in background.');
+          // Check if the selected profile is inside Chrome's User Data directory
+          const norm = userDataDir.replace(/\\/g, '/').toLowerCase();
+          const chromeUD = ((process.env.LOCALAPPDATA || '') + '/Google/Chrome/User Data').replace(/\\/g, '/').toLowerCase();
+          const edgeUD = ((process.env.LOCALAPPDATA || '') + '/Microsoft/Edge/User Data').replace(/\\/g, '/').toLowerCase();
+          if (norm.startsWith(chromeUD) || norm.startsWith(edgeUD)) {
+            _chromeConflict = true;
+            const safeDir = resolve(PROJECT_ROOT, 'data', 'chrome-profile');
+            if (!existsSync(safeDir)) mkdirSync(safeDir, { recursive: true });
+            console.warn(`[browser] Chrome is running — can't use ${userDataDir} (singleton lock conflict)`);
+            console.warn(`[browser] Redirecting to SynaBun managed profile: ${safeDir}`);
+            console.warn(`[browser] Tip: Log into sites once in SynaBun's browser — logins persist across sessions.`);
+            userDataDir = safeDir;
+            broadcastSync({ type: 'notification', level: 'warn', message: 'Chrome is running — using SynaBun\'s own profile instead. Log into sites once here and logins will persist.' });
+          }
+        }
+      } catch {}
+    }
+
+    // Pre-launch: clean crash markers to prevent "didn't shut down correctly" dialog
+    const _prefsFile = resolve(userDataDir, 'Default', 'Preferences');
+    if (existsSync(_prefsFile)) {
+      try {
+        const _prefs = JSON.parse(readFileSync(_prefsFile, 'utf-8'));
+        if (_prefs.profile) {
+          _prefs.profile.exit_type = 'Normal';
+          _prefs.profile.exited_cleanly = true;
+          writeFileSync(_prefsFile, JSON.stringify(_prefs));
         }
       } catch {}
     }
@@ -6176,6 +8970,7 @@ async function createBrowserSession(options = {}) {
     });
     session.clients.clear();
     browserSessions.delete(sessionId);
+    broadcastSync({ type: 'browser:session-deleted', sessionId });
   });
 
   browserSessions.set(sessionId, session);
@@ -6263,10 +9058,29 @@ async function destroyBrowserSession(sessionId) {
   if (session._isPersistent) {
     // Persistent context: close the context which also kills the browser process
     try { await session.context.close(); } catch {}
+    // Mark profile as cleanly exited so next launch doesn't show crash dialog
+    const _cfg = loadBrowserConfig();
+    if (_cfg.userDataDir) {
+      for (const base of [_cfg.userDataDir, resolve(PROJECT_ROOT, _cfg.userDataDir)]) {
+        const pp = resolve(base, 'Default', 'Preferences');
+        if (existsSync(pp)) {
+          try {
+            const prefs = JSON.parse(readFileSync(pp, 'utf-8'));
+            if (prefs.profile) {
+              prefs.profile.exit_type = 'Normal';
+              prefs.profile.exited_cleanly = true;
+            }
+            writeFileSync(pp, JSON.stringify(prefs));
+          } catch {}
+          break;
+        }
+      }
+    }
   } else {
     try { await session.browser.close(); } catch {}
   }
   browserSessions.delete(sessionId);
+  broadcastSync({ type: 'browser:session-deleted', sessionId });
 }
 
 // ── Browser REST endpoints ──
@@ -6285,7 +9099,7 @@ app.get('/api/browser/sessions', (req, res) => {
 });
 
 app.post('/api/browser/sessions', async (req, res) => {
-  const { url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone } = req.body;
+  const { url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, headless } = req.body;
   try {
     // Clone the real browser's headers from this HTTP request
     const _realHeaders = {
@@ -6296,8 +9110,9 @@ app.post('/api/browser/sessions', async (req, res) => {
       'sec-ch-ua-platform': req.headers['sec-ch-ua-platform'],
     };
     const result = await createBrowserSession({
-      url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, _realHeaders,
+      url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, headless, _realHeaders,
     });
+    broadcastSync({ type: 'browser:session-created', sessionId: result.sessionId, url: url || 'about:blank' });
     res.json({ sessionId: result.sessionId, url: url || 'about:blank', wsEndpoint: result.wsEndpoint });
   } catch (err) {
     console.error('Browser session create error:', err.message);
@@ -6413,13 +9228,35 @@ app.get('/api/browser/sessions/:id/claude-connect', (req, res) => {
 
 // ── Selector-based browser interaction endpoints (for MCP tools) ──
 
+/**
+ * Normalize selectors from LLMs that may use invalid CSS pseudo-classes.
+ * Converts common mistakes to valid Playwright selector syntax.
+ */
+function normalizeSelector(sel) {
+  if (!sel || typeof sel !== 'string') return sel;
+  // :contains("text") → :has-text("text")  (jQuery → Playwright)
+  sel = sel.replace(/:contains\(/gi, ':has-text(');
+  return sel;
+}
+
 app.post('/api/browser/sessions/:id/click', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector, timeout } = req.body;
-  if (!selector) return res.status(400).json({ error: 'selector required' });
+  const { selector: rawSelector, timeout, nthMatch } = req.body;
+  if (!rawSelector) return res.status(400).json({ error: 'selector required' });
+  const selector = normalizeSelector(rawSelector);
   try {
-    await session.page.locator(selector).click({ timeout: timeout || 5000 });
+    const loc = session.page.locator(selector);
+    // Pre-check element count for better error messages
+    const count = await loc.count().catch(() => -1);
+    if (count === 0) {
+      return res.status(400).json({ error: `No elements match selector: ${selector}` });
+    }
+    if (count > 1 && nthMatch === undefined) {
+      return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
+    }
+    const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
+    await target.click({ timeout: timeout || 5000 });
     session.currentUrl = session.page.url();
     session.title = await session.page.title().catch(() => '');
     res.json({ ok: true, url: session.currentUrl, title: session.title });
@@ -6431,11 +9268,13 @@ app.post('/api/browser/sessions/:id/click', async (req, res) => {
 app.post('/api/browser/sessions/:id/fill', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector, value, timeout } = req.body;
-  if (!selector) return res.status(400).json({ error: 'selector required' });
+  const { selector: rawFillSel, value, timeout } = req.body;
+  if (!rawFillSel) return res.status(400).json({ error: 'selector required' });
   try {
-    await session.page.locator(selector).fill(value ?? '', { timeout: timeout || 5000 });
-    res.json({ ok: true });
+    await session.page.locator(normalizeSelector(rawFillSel)).fill(value ?? '', { timeout: timeout || 5000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -6444,11 +9283,17 @@ app.post('/api/browser/sessions/:id/fill', async (req, res) => {
 app.post('/api/browser/sessions/:id/type', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector, text, timeout } = req.body;
-  if (!selector) return res.status(400).json({ error: 'selector required' });
+  const { selector: rawTypeSel, text, timeout } = req.body;
   try {
-    await session.page.locator(selector).pressSequentially(text ?? '', { timeout: timeout || 5000 });
-    res.json({ ok: true });
+    if (rawTypeSel) {
+      await session.page.locator(normalizeSelector(rawTypeSel)).pressSequentially(text ?? '', { timeout: timeout || 5000 });
+    } else {
+      // No selector: type into the currently focused element via keyboard
+      await session.page.keyboard.type(text ?? '');
+    }
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -6457,11 +9302,13 @@ app.post('/api/browser/sessions/:id/type', async (req, res) => {
 app.post('/api/browser/sessions/:id/hover', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector, timeout } = req.body;
-  if (!selector) return res.status(400).json({ error: 'selector required' });
+  const { selector: rawHoverSel, timeout } = req.body;
+  if (!rawHoverSel) return res.status(400).json({ error: 'selector required' });
   try {
-    await session.page.locator(selector).hover({ timeout: timeout || 5000 });
-    res.json({ ok: true });
+    await session.page.locator(normalizeSelector(rawHoverSel)).hover({ timeout: timeout || 5000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -6470,11 +9317,13 @@ app.post('/api/browser/sessions/:id/hover', async (req, res) => {
 app.post('/api/browser/sessions/:id/select', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector, value, timeout } = req.body;
-  if (!selector) return res.status(400).json({ error: 'selector required' });
+  const { selector: rawSelSel, value, timeout } = req.body;
+  if (!rawSelSel) return res.status(400).json({ error: 'selector required' });
   try {
-    await session.page.locator(selector).selectOption(value ?? '', { timeout: timeout || 5000 });
-    res.json({ ok: true });
+    await session.page.locator(normalizeSelector(rawSelSel)).selectOption(value ?? '', { timeout: timeout || 5000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -6487,7 +9336,9 @@ app.post('/api/browser/sessions/:id/press', async (req, res) => {
   if (!key) return res.status(400).json({ error: 'key required' });
   try {
     await session.page.keyboard.press(key);
-    res.json({ ok: true });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -6500,7 +9351,8 @@ app.post('/api/browser/sessions/:id/evaluate', async (req, res) => {
   if (!script) return res.status(400).json({ error: 'script required' });
   try {
     const result = await session.page.evaluate(script);
-    res.json({ ok: true, result });
+    // Ensure result is JSON-serializable (undefined becomes null)
+    res.json({ ok: true, result: result === undefined ? null : result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -6510,7 +9362,17 @@ app.get('/api/browser/sessions/:id/snapshot', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   try {
-    const tree = await session.page.accessibility.snapshot();
+    // page.accessibility was removed in Playwright 1.50+
+    let tree = null;
+    if (session.page.accessibility && typeof session.page.accessibility.snapshot === 'function') {
+      tree = await session.page.accessibility.snapshot();
+    } else {
+      // Fallback: build a tree from ariaSnapshot text
+      const ariaText = await session.page.locator('body').ariaSnapshot({ timeout: 5000 }).catch(() => null);
+      if (ariaText) {
+        tree = parseAriaSnapshotText(ariaText);
+      }
+    }
     session.currentUrl = session.page.url();
     session.title = await session.page.title().catch(() => '');
     res.json({ ok: true, url: session.currentUrl, title: session.title, snapshot: tree });
@@ -6519,12 +9381,79 @@ app.get('/api/browser/sessions/:id/snapshot', async (req, res) => {
   }
 });
 
+app.post('/api/browser/sessions/:id/snapshot', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector: rawSel } = req.body;
+  const scopeSel = rawSel ? normalizeSelector(rawSel) : null;
+  try {
+    let tree = null;
+    if (scopeSel) {
+      const ariaText = await session.page.locator(scopeSel).ariaSnapshot({ timeout: 8000 }).catch(() => null);
+      if (ariaText) tree = parseAriaSnapshotText(ariaText);
+    } else {
+      if (session.page.accessibility && typeof session.page.accessibility.snapshot === 'function') {
+        tree = await session.page.accessibility.snapshot();
+      } else {
+        const ariaText = await session.page.locator('body').ariaSnapshot({ timeout: 5000 }).catch(() => null);
+        if (ariaText) tree = parseAriaSnapshotText(ariaText);
+      }
+    }
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title, snapshot: tree });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Parse Playwright's ariaSnapshot YAML-like text into a tree structure
+function parseAriaSnapshotText(text) {
+  if (!text) return null;
+  const lines = text.split('\n').filter(l => l.trim());
+  if (lines.length === 0) return null;
+
+  const root = { role: 'document', name: '', children: [] };
+  const stack = [{ node: root, indent: -1 }];
+
+  for (const line of lines) {
+    const stripped = line.replace(/^\s*- /, '');
+    const indent = line.length - line.trimStart().length;
+
+    // Parse "role "name"" or "role "name": value"
+    const match = stripped.match(/^(\w+)(?:\s+"([^"]*)")?(?::\s*(.*))?$/);
+    if (!match) continue;
+
+    const node = {
+      role: match[1] || 'generic',
+      name: match[2] || '',
+      children: [],
+    };
+    if (match[3]) node.value = match[3];
+
+    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
+      stack.pop();
+    }
+    stack[stack.length - 1].node.children.push(node);
+    stack.push({ node, indent });
+  }
+
+  return root.children.length === 1 ? root.children[0] : root;
+}
+
 app.post('/api/browser/sessions/:id/wait', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector, state, timeout } = req.body;
+  const { selector, state, loadState, timeout } = req.body;
   try {
-    if (selector) {
+    if (loadState) {
+      const valid = ['load', 'domcontentloaded', 'networkidle'];
+      if (!valid.includes(loadState)) return res.status(400).json({ error: `Invalid loadState. Use: ${valid.join(', ')}` });
+      await session.page.waitForLoadState(loadState, { timeout: timeout || 15000 });
+      session.currentUrl = session.page.url();
+      session.title = await session.page.title().catch(() => '');
+      res.json({ ok: true, loadState, url: session.currentUrl, title: session.title });
+    } else if (selector) {
       await session.page.locator(selector).waitFor({
         state: state || 'visible',
         timeout: timeout || 10000,
@@ -6571,6 +9500,46 @@ app.get('/api/browser/sessions/:id/screenshot-base64', async (req, res) => {
   }
 });
 
+app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { direction = 'down', distance = 500, selector: rawSel } = req.body;
+  const deltaX = direction === 'right' ? distance : direction === 'left' ? -distance : 0;
+  const deltaY = direction === 'down' ? distance : direction === 'up' ? -distance : 0;
+  try {
+    if (rawSel) {
+      await session.page.locator(normalizeSelector(rawSel)).evaluate(
+        (el, { dx, dy }) => el.scrollBy(dx, dy), { dx: deltaX, dy: deltaY }
+      );
+    } else {
+      await session.page.evaluate(({ dx, dy }) => window.scrollBy(dx, dy), { dx: deltaX, dy: deltaY });
+    }
+    await session.page.waitForTimeout(300);
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/upload', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector: rawSel, filePaths } = req.body;
+  if (!rawSel) return res.status(400).json({ error: 'selector required' });
+  if (!Array.isArray(filePaths) || !filePaths.length) return res.status(400).json({ error: 'filePaths must be a non-empty array' });
+  try {
+    await session.page.locator(normalizeSelector(rawSel)).setInputFiles(filePaths);
+    await session.page.waitForTimeout(500);
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Browser config endpoint
 app.get('/api/browser/config', (req, res) => {
   const config = loadBrowserConfig();
@@ -6585,6 +9554,41 @@ app.put('/api/browser/config', (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Detect Chrome/Edge/Chromium profiles on the system
+app.get('/api/browser/detect-profiles', (req, res) => {
+  try {
+    const profiles = detectChromeProfiles();
+    const synabunProfile = resolve(PROJECT_ROOT, 'data', 'chrome-profile').replace(/\\/g, '/');
+    const synabunExists = existsSync(synabunProfile);
+    res.json({ profiles, synabunProfile, synabunProfileExists: synabunExists });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Open native folder picker dialog (Windows: PowerShell, macOS: osascript, Linux: zenity)
+app.post('/api/browser/browse-folder', async (req, res) => {
+  try {
+    let cmd;
+    if (IS_WIN) {
+      cmd = 'powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = \'Select Chrome profile directory\'; $d.ShowNewFolderButton = $false; if ($d.ShowDialog() -eq \'OK\') { $d.SelectedPath } else { \'\' }"';
+    } else if (process.platform === 'darwin') {
+      cmd = "osascript -e 'POSIX path of (choose folder with prompt \"Select Chrome profile directory\")'";
+    } else {
+      cmd = 'zenity --file-selection --directory --title="Select Chrome profile directory" 2>/dev/null';
+    }
+    const result = execSync(cmd, { encoding: 'utf8', timeout: 60000 }).trim();
+    if (result) {
+      res.json({ path: result.replace(/\\/g, '/') });
+    } else {
+      res.json({ path: null, cancelled: true });
+    }
+  } catch (err) {
+    // User cancelled or dialog failed
+    res.json({ path: null, cancelled: true });
   }
 });
 
@@ -6603,7 +9607,9 @@ const httpServer = app.listen(PORT, async () => {
   console.log(`  Collection: ${COLLECTION}`);
   console.log(`  OpenAI:  ${OPENAI_KEY ? 'configured' : 'MISSING'}`);
   console.log(`  Terminal: WebSocket on ws://localhost:${PORT}/ws/terminal/*`);
-  console.log(`  Browser:  WebSocket on ws://localhost:${PORT}/ws/browser/*\n`);
+  console.log(`  Browser:  WebSocket on ws://localhost:${PORT}/ws/browser/*`);
+  console.log(`  Whiteboard: WebSocket on ws://localhost:${PORT}/ws/whiteboard`);
+  console.log(`  Cards:      WebSocket on ws://localhost:${PORT}/ws/cards\n`);
 
   // Ensure trashed_at index exists for soft-delete filtering on existing collections
   try {
@@ -6638,14 +9644,23 @@ const httpServer = app.listen(PORT, async () => {
 const wss = new WebSocketServer({ noServer: true });
 
 httpServer.on('upgrade', (req, socket, head) => {
-  // Block tunnel traffic from WebSocket upgrades
-  if (req.headers['cf-connecting-ip']) {
+  // Block tunnel traffic from WebSocket upgrades, except cookie-authenticated invite sessions
+  if (req.headers['cf-connecting-ip'] && !isValidInviteSession(req)) {
     socket.destroy();
     return;
   }
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
-  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/')) {
+
+  // Permission-based WS upgrade blocking for guests
+  const guest = isGuestRequest(req);
+  if (guest) {
+    if (url.pathname.startsWith('/ws/terminal/') && !invitePermissions.terminal) { socket.destroy(); return; }
+    if (url.pathname.startsWith('/ws/browser/') && !invitePermissions.browser) { socket.destroy(); return; }
+    // Whiteboard + sync always allowed (read-only viewing; sync needed for permission delivery)
+  }
+
+  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });
@@ -6656,6 +9671,24 @@ httpServer.on('upgrade', (req, socket, head) => {
 
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // ── Route: Real-time sync (multi-client state broadcast) ──
+  if (url.pathname === '/ws/sync') {
+    handleSyncWebSocket(ws, req);
+    return;
+  }
+
+  // ── Route: Whiteboard (Claude MCP integration) ──
+  if (url.pathname === '/ws/whiteboard') {
+    handleWhiteboardWebSocket(ws);
+    return;
+  }
+
+  // ── Route: Cards (Claude MCP integration) ──
+  if (url.pathname === '/ws/cards') {
+    handleCardsWebSocket(ws);
+    return;
+  }
 
   // ── Route: Browser session ──
   if (url.pathname.startsWith('/ws/browser/')) {
@@ -6704,6 +9737,18 @@ wss.on('connection', (ws, req) => {
         } catch (err) {
           ws.send(JSON.stringify({ type: 'error', message: `Image paste failed: ${err.message}` }));
         }
+      } else if (msg.type === 'image_drop' && msg.data) {
+        // Save whiteboard image drag-drop to temp file, write path into PTY
+        const ext = (msg.mimeType === 'image/jpeg') ? 'jpg' : 'png';
+        const tmpPath = join(os.tmpdir(), `synabun-wbimg-${sessionId}-${Date.now()}.${ext}`);
+        try {
+          writeFileSync(tmpPath, Buffer.from(msg.data, 'base64'));
+          if (!session.tempFiles) session.tempFiles = [];
+          session.tempFiles.push(tmpPath);
+          ws.send(JSON.stringify({ type: 'image_dropped', path: tmpPath }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: `Image drop failed: ${err.message}` }));
+        }
       } else if (msg.type === 'memory_drop' && msg.content) {
         // Save memory as .md temp file so CLI can pick it up as a file reference
         const slug = (msg.title || 'memory').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
@@ -6734,6 +9779,137 @@ wss.on('connection', (ws, req) => {
     }
   });
 });
+
+// ═══════════════════════════════════════════
+// WHITEBOARD — WebSocket Handler (Claude MCP ↔ Browser)
+// ═══════════════════════════════════════════
+
+function handleWhiteboardWebSocket(ws) {
+  whiteboardClients.add(ws);
+  console.log(`[ws-whiteboard] Client connected (total: ${whiteboardClients.size})`);
+
+  // Send init with current element count
+  try {
+    const state = loadUiState();
+    const wb = state['neural-whiteboard'];
+    const count = wb?.elements?.length || 0;
+    ws.send(JSON.stringify({ type: 'init', elementCount: count }));
+  } catch { /* ignore */ }
+
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+
+      if (msg.type === 'viewport') {
+        whiteboardViewport = { width: msg.width, height: msg.height };
+        console.log(`[ws-whiteboard] Viewport: ${msg.width}x${msg.height}`);
+      }
+
+      if (msg.type === 'screenshot:response' && msg.requestId) {
+        const pending = whiteboardPendingScreenshots.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          whiteboardPendingScreenshots.delete(msg.requestId);
+          pending.resolve(msg.data);
+        }
+      }
+
+      if (msg.type === 'screenshot:error' && msg.requestId) {
+        const pending = whiteboardPendingScreenshots.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          whiteboardPendingScreenshots.delete(msg.requestId);
+          pending.reject(new Error(msg.error || 'Screenshot failed'));
+        }
+      }
+
+      // Client pushes full state sync after local mutation — save and relay to other clients
+      if (msg.type === 'state:sync' && msg.snapshot) {
+        mergeUiState({ 'neural-whiteboard': msg.snapshot });
+        broadcastToWhiteboard({ type: 'state:full', snapshot: msg.snapshot }, ws);
+      }
+    } catch { /* ignore malformed */ }
+  });
+
+  ws.on('close', () => {
+    whiteboardClients.delete(ws);
+    console.log(`[ws-whiteboard] Client disconnected (remaining: ${whiteboardClients.size})`);
+  });
+}
+
+// ── Cards WebSocket clients (Claude MCP integration) ──
+const cardsClients = new Set(); // Set<WebSocket>
+const cardsPendingOps = new Map(); // requestId → { resolve, reject, timer }
+let cardsViewport = { width: 1920, height: 1080 }; // updated by browser on WS connect + resize
+
+function broadcastToCards(message, excludeWs = null) {
+  const data = JSON.stringify(message);
+  for (const client of cardsClients) {
+    if (client !== excludeWs && client.readyState === 1) client.send(data);
+  }
+}
+
+function handleCardsWebSocket(ws) {
+  cardsClients.add(ws);
+  console.log(`[ws-cards] Client connected (total: ${cardsClients.size})`);
+
+  // Send init with current open card count
+  try {
+    const state = loadUiState();
+    const raw = state['neural-open-cards'];
+    const cards = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
+    ws.send(JSON.stringify({ type: 'init', openCount: cards.length }));
+  } catch { /* ignore */ }
+
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+
+      if (msg.type === 'viewport') {
+        cardsViewport = { width: msg.width, height: msg.height };
+        console.log(`[ws-cards] Viewport: ${msg.width}x${msg.height}`);
+      }
+
+      // ACK responses from browser for card operations (open/close/update)
+      if (msg.type === 'ack' && msg.requestId) {
+        const pending = cardsPendingOps.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          cardsPendingOps.delete(msg.requestId);
+          if (msg.ok) {
+            pending.resolve(msg.result || {});
+          } else {
+            pending.reject(new Error(msg.error || 'Operation failed'));
+          }
+        }
+      }
+
+      // Screenshot response from browser
+      if (msg.type === 'screenshot:response' && msg.requestId) {
+        const pending = cardsPendingOps.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          cardsPendingOps.delete(msg.requestId);
+          pending.resolve(msg.data);
+        }
+      }
+
+      if (msg.type === 'screenshot:error' && msg.requestId) {
+        const pending = cardsPendingOps.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          cardsPendingOps.delete(msg.requestId);
+          pending.reject(new Error(msg.error || 'Screenshot failed'));
+        }
+      }
+    } catch { /* ignore malformed */ }
+  });
+
+  ws.on('close', () => {
+    cardsClients.delete(ws);
+    console.log(`[ws-cards] Client disconnected (remaining: ${cardsClients.size})`);
+  });
+}
 
 // ═══════════════════════════════════════════
 // BROWSER — WebSocket Handler
@@ -6833,6 +10009,11 @@ async function handleBrowserWebSocket(ws, url) {
       // Grace period before killing browser
       session.graceTimer = setTimeout(async () => {
         if (session.clients.size === 0 && browserSessions.has(sessionId)) {
+          // Don't destroy if an active loop is using this browser session
+          if (isSessionUsedByActiveLoop(sessionId)) {
+            console.log(`[browser] Grace period: skipping destroy — active loop uses session ${sessionId}`);
+            return;
+          }
           await destroyBrowserSession(sessionId);
         }
       }, BROWSER_GRACE_PERIOD_MS);

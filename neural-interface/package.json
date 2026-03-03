@@ -9,11 +9,13 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
+    "@qdrant/js-client-rest": "^1.17.0",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "node-pty": "^1.1.0",
+    "openai": "^6.25.0",
     "playwright-core": "^1.58.2",
     "ws": "^8.19.0"
   }

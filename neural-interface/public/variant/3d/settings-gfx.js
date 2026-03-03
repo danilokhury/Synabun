@@ -18,14 +18,16 @@ import {
 
 
 // ── Lazy bindings for functions still in the monolith ──
-let _applyBgTheme   = null;
+let _applyBgTheme    = null;
 let _applyFloorStyle = null;
 let _getGraph        = null;
+let _setBloomEnabled = null;
 
 export function setGraphicsHooks(hooks) {
-  if (hooks.applyBgTheme)   _applyBgTheme   = hooks.applyBgTheme;
-  if (hooks.applyFloorStyle) _applyFloorStyle = hooks.applyFloorStyle;
-  if (hooks.getGraph)        _getGraph        = hooks.getGraph;
+  if (hooks.applyBgTheme)    _applyBgTheme    = hooks.applyBgTheme;
+  if (hooks.applyFloorStyle) _applyFloorStyle  = hooks.applyFloorStyle;
+  if (hooks.getGraph)        _getGraph         = hooks.getGraph;
+  if (hooks.setBloomEnabled) _setBloomEnabled  = hooks.setBloomEnabled;
 }
 
 
@@ -118,6 +120,9 @@ function initGraphicsTab(container) {
     card.addEventListener('click', () => {
       const g = _getGraph ? _getGraph() : null;
       applyGfxPreset(card.dataset.preset, gfx, g, _applyBgTheme);
+
+      // Toggle bloom pass based on preset
+      if (_setBloomEnabled) _setBloomEnabled(gfx.bloomEnabled !== false);
 
       container.querySelectorAll('.gfx-preset-card[data-preset]').forEach(c => {
         c.classList.toggle('active', c.dataset.preset === card.dataset.preset);

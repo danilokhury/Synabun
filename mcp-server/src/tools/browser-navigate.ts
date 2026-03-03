@@ -62,3 +62,23 @@ export async function handleBrowserGoForward(args: { sessionId?: string }) {
     content: [{ type: 'text' as const, text: `Went forward to ${result.url} — "${result.title}"` }],
   };
 }
+
+// ── browser_reload ──
+
+export const browserReloadSchema = {
+  sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+};
+
+export const browserReloadDescription = 'Reload the current page. Useful after making changes or when content is stale.';
+
+export async function handleBrowserReload(args: { sessionId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId);
+  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+
+  const result = await ni.reload(resolved.sessionId);
+  if (result.error) return { content: [{ type: 'text' as const, text: `Reload failed: ${result.error}` }] };
+
+  return {
+    content: [{ type: 'text' as const, text: `Reloaded — now at ${result.url} "${result.title}"` }],
+  };
+}

@@ -149,13 +149,57 @@
       "description": "Knowledge about the user as a person — communication style, preferences, behavioral patterns, and interaction singularity",
       "created_at": "2026-02-23T18:57:47.747Z",
       "is_parent": true,
-      "color": "#ffffff"
+      "color": "#000000"
     },
     {
       "name": "communication-style",
       "description": "How the user communicates: tone, formality, verbosity, language patterns, emoji usage, text quirks",
       "created_at": "2026-02-23T18:57:51.144Z",
       "parent": "user-profile"
+    },
+    {
+      "name": "research",
+      "description": "Research loop outputs — findings, summaries, references, and insights from automated Content Research automations",
+      "created_at": "2026-02-27T23:59:38.420Z",
+      "color": "#10b981",
+      "is_parent": true
+    },
+    {
+      "name": "asgasg",
+      "description": "Research category for asgasg topic",
+      "created_at": "2026-02-28T01:40:40.861Z",
+      "parent": "research"
+    },
+    {
+      "name": "social-interactions",
+      "description": "Research category for social media interactions, hashtag scouting, and community discussions",
+      "created_at": "2026-02-28T04:50:29.142Z",
+      "parent": "research"
+    },
+    {
+      "name": "facebook-groups",
+      "description": "Facebook groups found and joined — AI, vibecoding, MCP, automation communities in Brazil (Portuguese)",
+      "created_at": "2026-03-01T17:47:53.396Z",
+      "parent": "research"
+    },
+    {
+      "name": "plans",
+      "description": "Implementation plans stored after plan mode approval. Sub-categorized by project name. Contains full markdown plan content.",
+      "created_at": "2026-03-03T00:11:04.794Z",
+      "color": "#06d6a0",
+      "is_parent": true
+    },
+    {
+      "name": "plans-criticalpixel",
+      "description": "Implementation plans for criticalpixel project",
+      "parent": "plans",
+      "created_at": "2026-03-03T00:29:11.886Z"
+    },
+    {
+      "name": "plans-synabun-website",
+      "description": "Implementation plans for SynaBun Website project",
+      "created_at": "2026-03-03T16:22:02.725Z",
+      "parent": "plans"
     }
   ]
 }

@@ -20,9 +20,11 @@ export async function handleBrowserEvaluate(args: { script: string; sessionId?: 
 
   let text: string;
   try {
-    text = typeof result.result === 'string' ? result.result : JSON.stringify(result.result, null, 2);
+    // Guard against undefined — JSON.stringify(undefined) returns undefined (not a string)
+    const val = result.result ?? null;
+    text = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
   } catch {
-    text = String(result.result);
+    text = String(result.result ?? 'undefined');
   }
 
   return { content: [{ type: 'text' as const, text }] };
@@ -31,18 +33,22 @@ export async function handleBrowserEvaluate(args: { script: string; sessionId?: 
 // ── browser_wait ──
 
 export const browserWaitSchema = {
-  selector: z.string().optional().describe('CSS selector to wait for. If omitted, waits for the specified timeout.'),
-  state: z.enum(['visible', 'hidden', 'attached', 'detached']).optional().describe('State to wait for (default: "visible"). Only used with selector.'),
-  timeout: z.coerce.number().optional().describe('Timeout in milliseconds (default: 10000).'),
+  selector: z.string().optional().describe('CSS selector to wait for. If omitted and loadState also omitted, waits for timeout.'),
+  state: z.enum(['visible', 'hidden', 'attached', 'detached']).optional().describe('Element state to wait for (default: "visible"). Only used with selector.'),
+  loadState: z.enum(['load', 'domcontentloaded', 'networkidle']).optional().describe(
+    'Page load state to wait for. Use "networkidle" after posting a tweet to confirm XHR requests settled. Takes priority over selector when provided.'
+  ),
+  timeout: z.coerce.number().optional().describe('Timeout in ms (default: 10000 for element waits, 15000 for loadState).'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
 };
 
 export const browserWaitDescription =
-  'Wait for an element to reach a certain state, or wait for a fixed timeout. Useful after navigation or clicks that trigger async content loading.';
+  'Wait for an element to reach a certain state, a page load state, or a fixed timeout. Useful after navigation or clicks that trigger async content loading. Use loadState="networkidle" after posting on Twitter/X or after navigation to ensure all async requests have settled.';
 
 export async function handleBrowserWait(args: {
   selector?: string;
   state?: string;
+  loadState?: string;
   timeout?: number;
   sessionId?: string;
 }) {
@@ -52,10 +58,14 @@ export async function handleBrowserWait(args: {
   const result = await ni.waitFor(resolved.sessionId, {
     selector: args.selector,
     state: args.state,
+    loadState: args.loadState,
     timeout: args.timeout,
   });
   if (result.error) return { content: [{ type: 'text' as const, text: `Wait failed: ${result.error}` }] };
 
+  if (args.loadState) {
+    return { content: [{ type: 'text' as const, text: `Page reached "${args.loadState}" — now at ${result.url} "${result.title}"` }] };
+  }
   if (args.selector) {
     return { content: [{ type: 'text' as const, text: `"${args.selector}" is now ${result.state}` }] };
   }

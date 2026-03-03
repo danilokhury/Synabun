@@ -19,7 +19,7 @@ let _origControlsUpdate = null;
 let floorMesh = null;
 let floorParticles = null;
 
-export const FLOOR_Y = -200;
+export const FLOOR_Y = -500;
 
 // ═══════════════════════════════════════════
 // FLOOR EFFECTS — Selectable floor styles
@@ -844,9 +844,9 @@ export function applyBgTheme(graph, bloomPass) {
   addBackgroundDeepGrid(graph);
   graph.backgroundColor('#000000');
   if (bloomPass) {
-    bloomPass.strength = 0.2;
-    bloomPass.threshold = 0.5;
-    bloomPass.radius = 0.3;
+    bloomPass.strength = 0.45;
+    bloomPass.threshold = 0.3;
+    bloomPass.radius = 0.45;
   }
   applyFloorStyle(gfx.floorStyle || 'grid', graph);
 }
