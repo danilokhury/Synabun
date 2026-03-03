@@ -154,6 +154,12 @@ on('data:reload', async () => {
     state.allLinks = data.links;
 
     await loadCategories();
+    // Preload logos into graph module's own map (sidebar has a separate one)
+    const _logoCats = Object.entries(state.categoryMetadata)
+      .filter(([, m]) => m.logo)
+      .map(([name, m]) => ({ name, logo: m.logo }));
+    preloadGraphLogos(_logoCats);
+
     const presentCats = new Set(state.allNodes.map(n => n.payload.category));
     state.activeCategories = new Set([...presentCats, ...state.allCategoryNames]);
 
@@ -167,6 +173,11 @@ on('data:reload', async () => {
 
 // When categories change, rebuild sidebar and refresh graph
 on('categories-changed', () => {
+  // Re-preload logos in case a category logo was added/changed
+  const _lc = Object.entries(state.categoryMetadata)
+    .filter(([, m]) => m.logo)
+    .map(([name, m]) => ({ name, logo: m.logo }));
+  preloadGraphLogos(_lc);
   applyGraphData();
 });
 
@@ -263,9 +274,8 @@ async function boot() {
       const health = await healthRes.json();
       if (!health.ok) {
         const messages = {
-          docker_not_running: [t('loading.health.dockerNotRunning.title'), t('loading.health.dockerNotRunning.sub')],
-          container_stopped:  [t('loading.health.containerStopped.title'), t('loading.health.containerStopped.sub')],
-          qdrant_unreachable: [t('loading.health.qdrantUnreachable.title'), t('loading.health.qdrantUnreachable.sub')],
+          db_missing:         [t('loading.health.databaseUnreachable.title'), health.detail || t('loading.health.databaseUnreachable.sub')],
+          db_error:           [t('loading.health.databaseUnreachable.title'), health.detail || t('loading.health.databaseUnreachable.sub')],
           remote_unreachable: [t('loading.health.remoteUnreachable.title'), health.detail || t('loading.health.remoteUnreachable.sub')],
           auth_error:         [t('loading.health.authError.title'), health.detail || t('loading.health.authError.sub')],
         };
@@ -287,6 +297,11 @@ async function boot() {
 
     // Fetch category definitions
     await loadCategories();
+    // Preload logos into graph module's own map (sidebar has a separate one)
+    const _logoCats = Object.entries(state.categoryMetadata)
+      .filter(([, m]) => m.logo)
+      .map(([name, m]) => ({ name, logo: m.logo }));
+    preloadGraphLogos(_logoCats);
 
     // Discover all categories present
     const presentCats = new Set(state.allNodes.map(n => n.payload.category));

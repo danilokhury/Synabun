@@ -1,6 +1,6 @@
 import { get_encoding, type Tiktoken } from 'tiktoken';
 
-// text-embedding-3-small uses the cl100k_base tokenizer (same as GPT-4)
+// cl100k_base tokenizer (used for token counting reference)
 let encoder: Tiktoken | null = null;
 
 function getEncoder(): Tiktoken {
@@ -12,7 +12,7 @@ function getEncoder(): Tiktoken {
 
 /**
  * Count exact tokens using tiktoken WASM (cl100k_base).
- * This is the tokenizer used by text-embedding-3-small.
+ * Used for reference cost projections (embeddings are now local/free).
  */
 export function countTokens(text: string): number {
   const enc = getEncoder();
@@ -27,8 +27,8 @@ export function estimateTokensFast(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-// --- Pricing ---
-// text-embedding-3-small: $0.02 per 1M tokens (source: OpenAI pricing page, 2024)
+// --- Pricing (historical reference — local embeddings are now free) ---
+// Was: text-embedding-3-small at $0.02 per 1M tokens. Kept for cost comparison tests.
 const PRICE_PER_TOKEN = 0.00000002;
 
 export function tokensToUSD(tokens: number): number {

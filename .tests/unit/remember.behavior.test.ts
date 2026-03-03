@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getQdrantCallsByMethod } from '../mocks/trackers.js';
+import { getDbCallsByMethod } from '../mocks/trackers.js';
 import { computeChecksums } from '../../mcp-server/src/services/file-checksums.js';
 import { invalidateCache } from '../../mcp-server/src/services/neural-interface.js';
 
@@ -18,7 +18,7 @@ describe('remember — behavioral tests', () => {
     const text = result.content[0].text;
     expect(text).toContain('does-not-exist');
     // Should not have upserted anything
-    expect(getQdrantCallsByMethod('upsert')).toHaveLength(0);
+    expect(getDbCallsByMethod('upsert')).toHaveLength(0);
   });
 
   it('response text includes category, project, and importance', async () => {
@@ -42,7 +42,7 @@ describe('remember — behavioral tests', () => {
 
   it('defaults source to self-discovered', async () => {
     await handleRemember({ content: 'Test content', category: 'architecture' });
-    const upserts = getQdrantCallsByMethod('upsert');
+    const upserts = getDbCallsByMethod('upsert');
     expect(upserts).toHaveLength(1);
     // The source defaults are verified by the handler logic; we confirm upsert was called
     // and the response text was generated (source is in the payload, not displayed in text)

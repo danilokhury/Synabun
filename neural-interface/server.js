@@ -17,6 +17,17 @@ import AdmZip from 'adm-zip';
 import { chromium } from 'playwright-core';
 import { VTermBuffer } from './public/shared/vterm-buffer.js';
 import { startIndexing, getIndexingStatus, mirrorExistingChunks } from './lib/session-indexer.js';
+import {
+  getDb, closeDb, getDbPath, getEmbedding, getEmbeddingBatch, getEmbeddingDims, warmupEmbeddings,
+  encodeVector, decodeVector, cosineSimilarity,
+  searchMemories as dbSearchMemories, getAllMemories, getAllMemoriesWithVectors,
+  getMemoryById, getMemoryWithVector, updateMemoryPayload,
+  softDeleteMemory, hardDeleteMemory, restoreMemory as dbRestoreMemory,
+  getTrashedMemories, purgeTrash, countMemories, getMemoryStats,
+  getMemoriesByCategory, updateMemoriesCategory,
+  getCategories as dbGetCategories, saveCategories as dbSaveCategories,
+  countSessionChunks, searchSessionChunks as dbSearchSessionChunks,
+} from './lib/db.js';
 
 const execAsync = promisify(exec);
 
@@ -120,50 +131,13 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.NEURAL_PORT || 3344;
-let QDRANT_URL = process.env.QDRANT_MEMORY_URL || `http://localhost:${process.env.QDRANT_PORT || '6333'}`;
-let QDRANT_KEY = process.env.QDRANT_MEMORY_API_KEY || 'claude-memory-local-key';
-let COLLECTION = process.env.QDRANT_MEMORY_COLLECTION || 'claude_memory';
-let OPENAI_KEY = process.env.OPENAI_EMBEDDING_API_KEY || process.env.OPENAI_API_KEY || '';
-let EMBEDDING_BASE_URL = process.env.EMBEDDING_BASE_URL || 'https://api.openai.com/v1';
-let EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
-let EMBEDDING_DIMS = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10);
+// SQLite database is used directly via lib/db.js — no Qdrant/OpenAI vars needed
+const EMBEDDING_DIMS = getEmbeddingDims();
 const PROJECT_ROOT = resolve(__dirname, '..');
 
-// Reload config vars from .env (single source of truth for everything)
+// Reload config — SQLite + local embeddings, no external services needed
 function reloadConfig() {
-  const vars = parseEnvFile(ENV_PATH); // Returns {} if .env doesn't exist yet
-
-  // Embedding config: prefer namespaced, fall back to flat keys
-  const embActiveId = vars.EMBEDDING_ACTIVE;
-  if (embActiveId && vars[`EMBEDDING__${embActiveId}__API_KEY`]) {
-    OPENAI_KEY = vars[`EMBEDDING__${embActiveId}__API_KEY`];
-    EMBEDDING_BASE_URL = vars[`EMBEDDING__${embActiveId}__BASE_URL`] || 'https://api.openai.com/v1';
-    EMBEDDING_MODEL = vars[`EMBEDDING__${embActiveId}__MODEL`] || 'text-embedding-3-small';
-    EMBEDDING_DIMS = parseInt(vars[`EMBEDDING__${embActiveId}__DIMENSIONS`] || '1536', 10);
-  } else {
-    // Backward compat with flat keys
-    OPENAI_KEY = vars.OPENAI_EMBEDDING_API_KEY || vars.OPENAI_API_KEY || '';
-    EMBEDDING_BASE_URL = vars.EMBEDDING_BASE_URL || 'https://api.openai.com/v1';
-    EMBEDDING_MODEL = vars.EMBEDDING_MODEL || 'text-embedding-3-small';
-    EMBEDDING_DIMS = parseInt(vars.EMBEDDING_DIMENSIONS || '1536', 10);
-  }
-
-  // Qdrant config: from QDRANT_ACTIVE + QDRANT__<id>__* entries in .env
-  const connData = loadQdrantConnections();
-  const activeConn = connData.active ? connData.connections[connData.active] : null;
-  if (activeConn?.url && activeConn?.apiKey && activeConn?.collection) {
-    QDRANT_URL = activeConn.url;
-    QDRANT_KEY = activeConn.apiKey;
-    COLLECTION = activeConn.collection;
-  } else {
-    // Final fallback to legacy flat keys
-    const port = vars.QDRANT_PORT || '6333';
-    QDRANT_URL = vars.QDRANT_MEMORY_URL || `http://localhost:${port}`;
-    QDRANT_KEY = vars.QDRANT_MEMORY_API_KEY || 'claude-memory-local-key';
-    COLLECTION = vars.QDRANT_MEMORY_COLLECTION || 'claude_memory';
-  }
-
-  console.log(`  Config reloaded — Qdrant: ${QDRANT_URL}, Collection: ${COLLECTION}`);
+  console.log(`  Config reloaded — SQLite: ${getDbPath()}, Embedding: local (${EMBEDDING_DIMS}d)`);
 }
 
 // --- Category Helpers (per-connection) ---
@@ -194,17 +168,14 @@ const DEFAULT_CATEGORIES = [
 ];
 
 function getCategoriesPath() {
-  const activeId = getActiveConnectionIdFromEnv() || 'default';
-  const perConnPath = resolve(CATEGORIES_DATA_DIR, `custom-categories-${activeId}.json`);
-
-  // If per-connection file doesn't exist, seed with defaults (Qdrant is source of truth)
-  if (!existsSync(perConnPath)) {
-    const dir = resolve(perConnPath, '..');
+  // Single categories file — no per-connection paths needed with SQLite
+  if (!existsSync(GLOBAL_CATEGORIES_PATH)) {
+    const dir = resolve(GLOBAL_CATEGORIES_PATH, '..');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(perConnPath, JSON.stringify({ version: 1, categories: DEFAULT_CATEGORIES }, null, 2), 'utf-8');
+    writeFileSync(GLOBAL_CATEGORIES_PATH, JSON.stringify({ version: 1, categories: DEFAULT_CATEGORIES }, null, 2), 'utf-8');
   }
 
-  return perConnPath;
+  return GLOBAL_CATEGORIES_PATH;
 }
 
 function loadCategories() {
@@ -226,52 +197,15 @@ function saveCategories(categories) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(filePath, JSON.stringify({ version: 1, categories }, null, 2), 'utf-8');
 
-  // Fire-and-forget write-through to Qdrant (source of truth)
-  saveCategoriesToQdrant(categories).catch(err => {
-    console.error('Failed to sync categories to Qdrant:', err.message);
-  });
+  // Write-through to SQLite categories table
+  try {
+    dbSaveCategories(categories);
+  } catch (err) {
+    console.error('Failed to sync categories to SQLite:', err.message);
+  }
 }
 
-async function saveCategoriesToQdrant(categories) {
-  const zeroVector = new Array(EMBEDDING_DIMS).fill(0);
-  await qdrantFetch('/points', {
-    method: 'PUT',
-    body: JSON.stringify({
-      points: [{
-        id: CATEGORIES_POINT_ID,
-        vector: zeroVector,
-        payload: {
-          _type: 'system_metadata',
-          metadata_key: 'categories',
-          categories,
-          updated_at: new Date().toISOString(),
-        },
-      }],
-    }),
-  });
-}
-
-// System metadata + trash exclusion filter for Qdrant queries
-// Uses is_empty (matches missing, null, and empty) since existing memories lack the trashed_at field
-const SYSTEM_METADATA_FILTER = {
-  must_not: [{ key: '_type', match: { value: 'system_metadata' } }],
-  must: [{ is_empty: { key: 'trashed_at' } }],
-};
-
-// Filter for viewing ONLY trashed items (inverted: must_not is_empty = field must be present and non-null)
-const TRASH_FILTER = {
-  must_not: [
-    { key: '_type', match: { value: 'system_metadata' } },
-    { is_empty: { key: 'trashed_at' } },
-  ],
-};
-
-function mergeExclusionFilter(existingFilter) {
-  if (!existingFilter) return { ...SYSTEM_METADATA_FILTER };
-  const mustNot = [...(existingFilter.must_not || []), ...SYSTEM_METADATA_FILTER.must_not];
-  const must = [...(existingFilter.must || []), ...SYSTEM_METADATA_FILTER.must];
-  return { ...existingFilter, must_not: mustNot, must };
-}
+// No more Qdrant filter constants needed — SQLite queries use direct WHERE clauses
 
 // --- .env Helpers ---
 
@@ -296,20 +230,13 @@ function parseEnvFile(filePath) {
 
 function writeEnvFile(filePath, vars) {
   const globalVars = {};
-  const qdrantVars = {};    // { connectionId: { FIELD: value } }
-  const embeddingVars = {}; // { providerId: { FIELD: value } }
   const bridgeVars = {};    // { bridgeId: { FIELD: value } }
 
   for (const [key, value] of Object.entries(vars)) {
     let match;
-    if ((match = key.match(/^QDRANT__([a-z0-9_]+)__(.+)$/))) {
-      const [, id, field] = match;
-      if (!qdrantVars[id]) qdrantVars[id] = {};
-      qdrantVars[id][field] = value;
-    } else if ((match = key.match(/^EMBEDDING__([a-z0-9_]+)__(.+)$/))) {
-      const [, id, field] = match;
-      if (!embeddingVars[id]) embeddingVars[id] = {};
-      embeddingVars[id][field] = value;
+    // Skip legacy Qdrant/embedding vars
+    if (key.match(/^QDRANT__|^EMBEDDING__|^QDRANT_ACTIVE$|^EMBEDDING_ACTIVE$|^OPENAI_EMBEDDING_API_KEY$|^OPENAI_API_KEY$/)) {
+      continue;
     } else if ((match = key.match(/^BRIDGE__([a-z0-9_]+)__(.+)$/))) {
       const [, id, field] = match;
       if (!bridgeVars[id]) bridgeVars[id] = {};
@@ -320,56 +247,6 @@ function writeEnvFile(filePath, vars) {
   }
 
   const lines = [];
-
-  // Section: Embedding providers (namespaced)
-  const embIds = Object.keys(embeddingVars).sort();
-  if (embIds.length > 0) {
-    for (const id of embIds) {
-      const fields = embeddingVars[id];
-      const label = fields.LABEL || id.replace(/_/g, ' ');
-      lines.push(`# -- Embedding: ${id} (${label}) --`);
-      for (const field of ['API_KEY', 'BASE_URL', 'MODEL', 'DIMENSIONS', 'LABEL']) {
-        if (fields[field] !== undefined) lines.push(`EMBEDDING__${id}__${field}=${fields[field]}`);
-      }
-      lines.push('');
-    }
-  }
-
-  // EMBEDDING_ACTIVE selector
-  if (globalVars.EMBEDDING_ACTIVE) {
-    lines.push(`EMBEDDING_ACTIVE=${globalVars.EMBEDDING_ACTIVE}`);
-    lines.push('');
-    delete globalVars.EMBEDDING_ACTIVE;
-  }
-
-  // Legacy flat embedding keys (backward compat)
-  const legacyEmbeddingKeys = ['OPENAI_EMBEDDING_API_KEY', 'OPENAI_API_KEY', 'EMBEDDING_BASE_URL', 'EMBEDDING_MODEL', 'EMBEDDING_DIMENSIONS'];
-  const hasLegacy = legacyEmbeddingKeys.some(k => globalVars[k] !== undefined);
-  if (hasLegacy) {
-    for (const k of legacyEmbeddingKeys) {
-      if (globalVars[k] !== undefined) { lines.push(`${k}=${globalVars[k]}`); delete globalVars[k]; }
-    }
-    lines.push('');
-  }
-
-  // QDRANT_ACTIVE selector
-  if (globalVars.QDRANT_ACTIVE) {
-    lines.push(`QDRANT_ACTIVE=${globalVars.QDRANT_ACTIVE}`);
-    lines.push('');
-    delete globalVars.QDRANT_ACTIVE;
-  }
-
-  // Section: Per-connection Qdrant entries
-  const connIds = Object.keys(qdrantVars).sort();
-  for (const connId of connIds) {
-    const fields = qdrantVars[connId];
-    const label = fields.LABEL || connId.replace(/_/g, '-');
-    lines.push(`# -- Qdrant: ${connId} (${label}) --`);
-    for (const field of ['URL', 'PORT', 'GRPC_PORT', 'API_KEY', 'COLLECTION', 'LABEL']) {
-      if (fields[field] !== undefined) lines.push(`QDRANT__${connId}__${field}=${fields[field]}`);
-    }
-    lines.push('');
-  }
 
   // Section: Bridges
   const bridgeIds = Object.keys(bridgeVars).sort();
@@ -403,97 +280,7 @@ function extractPort(url) {
   }
 }
 
-// --- .env-based Config Layer (replaces connections.json) ---
-
-/**
- * Parse all QDRANT__<id>__<FIELD> entries from .env into a connections structure.
- */
-function loadQdrantConnections() {
-  const vars = parseEnvFile(ENV_PATH);
-  const active = vars.QDRANT_ACTIVE || null;
-  const connections = {};
-
-  for (const [key, value] of Object.entries(vars)) {
-    const match = key.match(/^QDRANT__([a-z0-9_]+)__(.+)$/);
-    if (!match) continue;
-    const connId = match[1];
-    const field = match[2];
-    if (!connections[connId]) connections[connId] = {};
-    connections[connId][field] = value;
-  }
-
-  const result = {};
-  for (const [id, fields] of Object.entries(connections)) {
-    const port = parseInt(fields.PORT || '6333', 10);
-    result[id] = {
-      label: fields.LABEL || id.replace(/_/g, ' '),
-      url: fields.URL || `http://localhost:${port}`,
-      apiKey: fields.API_KEY || '',
-      collection: fields.COLLECTION || 'claude_memory',
-      port,
-      grpcPort: parseInt(fields.GRPC_PORT || String(port + 1), 10),
-    };
-  }
-
-  return { active, connections: result };
-}
-
-/**
- * Save a Qdrant connection to .env by writing/updating QDRANT__<id>__* entries.
- */
-function saveQdrantConnection(id, conn, setActive = false) {
-  const vars = parseEnvFile(ENV_PATH);
-  const envId = id.replace(/-/g, '_');
-  const port = conn.port || extractPort(conn.url);
-
-  vars[`QDRANT__${envId}__PORT`] = String(port);
-  vars[`QDRANT__${envId}__GRPC_PORT`] = String(conn.grpcPort || port + 1);
-  vars[`QDRANT__${envId}__API_KEY`] = conn.apiKey;
-  vars[`QDRANT__${envId}__COLLECTION`] = conn.collection;
-  vars[`QDRANT__${envId}__LABEL`] = conn.label || id;
-  // Store explicit URL for remote instances (not just localhost)
-  if (conn.url && !conn.url.match(/^https?:\/\/localhost:\d+\/?$/)) {
-    vars[`QDRANT__${envId}__URL`] = conn.url;
-  }
-
-  if (setActive) {
-    vars.QDRANT_ACTIVE = envId;
-  }
-
-  writeEnvFile(ENV_PATH, vars);
-}
-
-/**
- * Remove a Qdrant connection from .env.
- */
-function removeQdrantConnection(id) {
-  const vars = parseEnvFile(ENV_PATH);
-  const envId = id.replace(/-/g, '_');
-  const prefix = `QDRANT__${envId}__`;
-
-  for (const key of Object.keys(vars)) {
-    if (key.startsWith(prefix)) delete vars[key];
-  }
-
-  writeEnvFile(ENV_PATH, vars);
-}
-
-/**
- * Set the active Qdrant connection ID in .env.
- */
-function setActiveQdrantConnection(id) {
-  const vars = parseEnvFile(ENV_PATH);
-  vars.QDRANT_ACTIVE = id.replace(/-/g, '_');
-  writeEnvFile(ENV_PATH, vars);
-}
-
-/**
- * Get the active connection ID from .env.
- */
-function getActiveConnectionIdFromEnv() {
-  const vars = parseEnvFile(ENV_PATH);
-  return vars.QDRANT_ACTIVE || null;
-}
+// --- Connection management removed (SQLite uses a single local file) ---
 
 // --- Bridge Helpers (read/write BRIDGE__<id>__* in .env) ---
 
@@ -541,75 +328,7 @@ function removeBridgeConfig(bridgeId) {
   writeEnvFile(ENV_PATH, vars);
 }
 
-// --- Migration: connections.json → .env ---
-
-function migrateConnectionsJsonToEnv() {
-  const connectionsPath = resolve(__dirname, '..', 'connections.json');
-  if (!existsSync(connectionsPath)) return;
-
-  console.log('  Migrating connections.json → .env ...');
-
-  try {
-    const data = JSON.parse(readFileSync(connectionsPath, 'utf-8'));
-    const vars = parseEnvFile(ENV_PATH);
-
-    // 1. Migrate Qdrant connections
-    if (data.connections) {
-      for (const [id, conn] of Object.entries(data.connections)) {
-        const envId = id.replace(/-/g, '_');
-        const port = extractPort(conn.url);
-        vars[`QDRANT__${envId}__PORT`] = String(port);
-        vars[`QDRANT__${envId}__GRPC_PORT`] = String(port + 1);
-        vars[`QDRANT__${envId}__API_KEY`] = conn.apiKey;
-        vars[`QDRANT__${envId}__COLLECTION`] = conn.collection;
-        vars[`QDRANT__${envId}__LABEL`] = conn.label || id;
-        if (conn.url && !conn.url.match(/^https?:\/\/localhost:\d+\/?$/)) {
-          vars[`QDRANT__${envId}__URL`] = conn.url;
-        }
-      }
-    }
-
-    // 2. Migrate active connection
-    if (data.active) {
-      vars.QDRANT_ACTIVE = data.active.replace(/-/g, '_');
-    }
-
-    // 3. Migrate bridges
-    if (data.bridges) {
-      for (const [bridgeId, bridge] of Object.entries(data.bridges)) {
-        vars[`BRIDGE__${bridgeId}__ENABLED`] = String(bridge.enabled ?? false);
-        if (bridge.workspacePath) vars[`BRIDGE__${bridgeId}__WORKSPACE_PATH`] = bridge.workspacePath;
-        if (bridge.lastSync) vars[`BRIDGE__${bridgeId}__LAST_SYNC`] = bridge.lastSync;
-      }
-    }
-
-    // 4. Migrate flat embedding keys to namespaced format
-    if (vars.OPENAI_EMBEDDING_API_KEY && !Object.keys(vars).some(k => k.startsWith('EMBEDDING__'))) {
-      const embId = 'openai_main';
-      vars.EMBEDDING_ACTIVE = embId;
-      vars[`EMBEDDING__${embId}__API_KEY`] = vars.OPENAI_EMBEDDING_API_KEY;
-      if (vars.EMBEDDING_BASE_URL) vars[`EMBEDDING__${embId}__BASE_URL`] = vars.EMBEDDING_BASE_URL;
-      if (vars.EMBEDDING_MODEL) vars[`EMBEDDING__${embId}__MODEL`] = vars.EMBEDDING_MODEL;
-      if (vars.EMBEDDING_DIMENSIONS) vars[`EMBEDDING__${embId}__DIMENSIONS`] = vars.EMBEDDING_DIMENSIONS;
-      vars[`EMBEDDING__${embId}__LABEL`] = 'OpenAI Main';
-    }
-
-    // 5. Clean up legacy flat Qdrant keys
-    delete vars.QDRANT_PORT;
-    delete vars.QDRANT_GRPC_PORT;
-    delete vars.QDRANT_MEMORY_API_KEY;
-    delete vars.QDRANT_MEMORY_URL;
-    delete vars.QDRANT_MEMORY_COLLECTION;
-
-    writeEnvFile(ENV_PATH, vars);
-
-    // 6. Rename connections.json to connections.json.bak
-    renameSync(connectionsPath, connectionsPath + '.bak');
-    console.log(`  Migration complete — ${Object.keys(data.connections || {}).length} connections migrated. connections.json renamed to .bak`);
-  } catch (err) {
-    console.error('  Migration failed:', err.message);
-  }
-}
+// migrateConnectionsJsonToEnv() removed — Qdrant connections no longer used
 
 function maskKey(value) {
   if (!value) return '';
@@ -621,12 +340,8 @@ function maskKey(value) {
 app.get('/', (req, res, next) => {
   const vars = parseEnvFile(ENV_PATH);
   if (vars.SETUP_COMPLETE === 'true') return next();
-  // Also allow through if .env has an active connection + embedding key
-  const connData = loadQdrantConnections();
-  const activeConn = connData.active ? connData.connections[connData.active] : null;
-  const hasConnection = !!(activeConn?.apiKey);
-  const hasEmbed = !!(vars.OPENAI_EMBEDDING_API_KEY || vars.EMBEDDING_ACTIVE);
-  if (hasConnection && hasEmbed) return next();
+  // SQLite + local embeddings need no external config — check if DB exists
+  if (existsSync(getDbPath())) return next();
   res.redirect('/onboarding.html');
 });
 
@@ -640,56 +355,9 @@ app.use(express.static(join(__dirname, 'public'), {
 
 // --- Helpers ---
 
-function qdrantHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    'api-key': QDRANT_KEY,
-  };
-}
-
-async function qdrantFetch(path, options = {}) {
-  const url = `${QDRANT_URL}/collections/${COLLECTION}${path}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: { ...qdrantHeaders(), ...(options.headers || {}) },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Qdrant ${res.status}: ${text}`);
-  }
-  return res.json();
-}
-
-function cosineSimilarity(a, b) {
-  let dot = 0, magA = 0, magB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    magA += a[i] * a[i];
-    magB += b[i] * b[i];
-  }
-  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
-}
-
-async function getEmbedding(text) {
-  const res = await fetch(`${EMBEDDING_BASE_URL}/embeddings`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_KEY}`,
-    },
-    body: JSON.stringify({
-      model: EMBEDDING_MODEL,
-      input: text,
-      dimensions: EMBEDDING_DIMS,
-    }),
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Embedding API ${res.status}: ${errText}`);
-  }
-  const data = await res.json();
-  return data.data[0].embedding;
-}
+// qdrantHeaders(), qdrantFetch(), old getEmbedding() removed — replaced by lib/db.js exports
+// cosineSimilarity is imported from lib/db.js
+// getEmbedding is imported from lib/db.js
 
 // --- Link cache ---
 let _linkCache = null;   // { links, pointCount, timestamp }
@@ -870,32 +538,12 @@ app.get('/api/memories', async (req, res) => {
   try {
     const includeLinks = req.query.links !== 'false';
 
-    const allPoints = [];
-    let offset = null;
-
-    // Paginated scroll — only fetch vectors when computing links
-    do {
-      const body = {
-        limit: 100,
-        with_payload: true,
-        with_vector: includeLinks,
-        filter: SYSTEM_METADATA_FILTER,
-      };
-      if (offset) body.offset = offset;
-
-      const result = await qdrantFetch('/points/scroll', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-
-      allPoints.push(...result.result.points);
-      offset = result.result.next_page_offset ?? null;
-    } while (offset);
+    const allPoints = includeLinks ? getAllMemoriesWithVectors() : getAllMemories();
 
     // Build nodes
     const nodes = allPoints.map(p => ({
       id: p.id,
-      payload: p.payload,
+      payload: { content: p.content, category: p.category, subcategory: p.subcategory, project: p.project, tags: p.tags, importance: p.importance, source: p.source, created_at: p.created_at, updated_at: p.updated_at, accessed_at: p.accessed_at, access_count: p.access_count, related_files: p.related_files, related_memory_ids: p.related_memory_ids, file_checksums: p.file_checksums, trashed_at: p.trashed_at, source_session_chunks: p.source_session_chunks },
       vector: p.vector || null,
     }));
 
@@ -910,7 +558,6 @@ app.get('/api/memories', async (req, res) => {
     // Compute or skip links
     let links = [];
     if (includeLinks) {
-      // Check cache first
       if (_linkCache && _linkCache.pointCount === allPoints.length && (Date.now() - _linkCache.timestamp < _LINK_CACHE_TTL)) {
         links = _linkCache.links;
         console.log(`[cache] Serving ${links.length} cached links`);
@@ -933,32 +580,17 @@ app.get('/api/memories', async (req, res) => {
 // GET /api/links — Fetch only the links (lazy-loaded by client when user enables link mode)
 app.get('/api/links', async (req, res) => {
   try {
-    // Check cache first
     if (_linkCache && (Date.now() - _linkCache.timestamp < _LINK_CACHE_TTL)) {
       console.log(`[cache] Serving ${_linkCache.links.length} cached links (dedicated endpoint)`);
       return res.json({ links: _linkCache.links });
     }
 
-    // Need to fetch all points with vectors for computation
-    const allPoints = [];
-    let offset = null;
-    do {
-      const body = {
-        limit: 100,
-        with_payload: true,
-        with_vector: true,
-        filter: SYSTEM_METADATA_FILTER,
-      };
-      if (offset) body.offset = offset;
-      const result = await qdrantFetch('/points/scroll', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      allPoints.push(...result.result.points);
-      offset = result.result.next_page_offset ?? null;
-    } while (offset);
-
-    const nodes = allPoints.map(p => ({ id: p.id, payload: p.payload, vector: p.vector }));
+    const allPoints = getAllMemoriesWithVectors();
+    const nodes = allPoints.map(p => ({
+      id: p.id,
+      payload: { content: p.content, category: p.category, project: p.project, tags: p.tags, importance: p.importance, related_files: p.related_files, related_memory_ids: p.related_memory_ids },
+      vector: p.vector,
+    }));
     const ocBridge = loadBridgeConfig('openclaw');
     if (ocBridge?.enabled && _openclawNodes.length > 0) {
       for (const ocNode of _openclawNodes) nodes.push({ ...ocNode, vector: null });
@@ -987,23 +619,13 @@ app.post('/api/search', async (req, res) => {
     if (!query) return res.status(400).json({ error: 'query required' });
 
     const embedding = await getEmbedding(query);
-
-    const result = await qdrantFetch('/points/search', {
-      method: 'POST',
-      body: JSON.stringify({
-        vector: embedding,
-        limit,
-        with_payload: true,
-        score_threshold: 0.3,
-        filter: SYSTEM_METADATA_FILTER,
-      }),
-    });
+    const results = dbSearchMemories(embedding, limit, { scoreThreshold: 0.3 });
 
     res.json({
-      results: result.result.map(r => ({
+      results: results.map(r => ({
         id: r.id,
         score: r.score,
-        payload: r.payload,
+        payload: { content: r.content, category: r.category, subcategory: r.subcategory, project: r.project, tags: r.tags, importance: r.importance, source: r.source, created_at: r.created_at, updated_at: r.updated_at, accessed_at: r.accessed_at, access_count: r.access_count, related_files: r.related_files, related_memory_ids: r.related_memory_ids, trashed_at: r.trashed_at },
       })),
       query,
     });
@@ -1013,29 +635,17 @@ app.post('/api/search', async (req, res) => {
   }
 });
 
-// GET /api/stats — Collection count including trash count
+// GET /api/stats — Memory count including trash count
 app.get('/api/stats', async (req, res) => {
   try {
-    const result = await fetch(`${QDRANT_URL}/collections/${COLLECTION}`, {
-      headers: qdrantHeaders(),
-    });
-    const data = await result.json();
-
-    // Count trashed items
-    let trash_count = 0;
-    try {
-      const trashResult = await qdrantFetch('/points/count', {
-        method: 'POST',
-        body: JSON.stringify({ filter: TRASH_FILTER, exact: true }),
-      });
-      trash_count = trashResult.result.count;
-    } catch {}
+    const stats = getMemoryStats();
+    const sessionChunks = countSessionChunks();
 
     res.json({
-      count: data.result.points_count,
-      vectors: data.result.vectors_count,
-      status: data.result.status,
-      trash_count,
+      count: stats.total,
+      vectors: stats.total + sessionChunks,
+      status: 'green',
+      trash_count: stats.trashedCount,
     });
   } catch (err) {
     console.error('GET /api/stats error:', err.message);
@@ -1046,19 +656,11 @@ app.get('/api/stats', async (req, res) => {
 // GET /api/memory/:id — Single memory detail
 app.get('/api/memory/:id', async (req, res) => {
   try {
-    const result = await qdrantFetch('/points', {
-      method: 'POST',
-      body: JSON.stringify({
-        ids: [req.params.id],
-        with_payload: true,
-      }),
-    });
+    const mem = getMemoryById(req.params.id);
+    if (!mem) return res.status(404).json({ error: 'Memory not found' });
 
-    if (!result.result || result.result.length === 0) {
-      return res.status(404).json({ error: 'Memory not found' });
-    }
-
-    res.json(result.result[0]);
+    // Return in standard format for UI compatibility
+    res.json({ id: mem.id, payload: { content: mem.content, category: mem.category, subcategory: mem.subcategory, project: mem.project, tags: mem.tags, importance: mem.importance, source: mem.source, created_at: mem.created_at, updated_at: mem.updated_at, accessed_at: mem.accessed_at, access_count: mem.access_count, related_files: mem.related_files, related_memory_ids: mem.related_memory_ids, file_checksums: mem.file_checksums, trashed_at: mem.trashed_at, source_session_chunks: mem.source_session_chunks } });
   } catch (err) {
     console.error('GET /api/memory/:id error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1087,7 +689,6 @@ app.patch('/api/memory/:id', async (req, res) => {
       if (!Array.isArray(tags)) {
         return res.status(400).json({ error: 'tags must be an array of strings' });
       }
-      // Sanitize: lowercase, trim, deduplicate, remove empties
       const clean = [...new Set(tags.map(t => String(t).trim().toLowerCase()).filter(Boolean))];
       payload.tags = clean;
     }
@@ -1099,13 +700,7 @@ app.patch('/api/memory/:id', async (req, res) => {
       payload.content = content;
     }
 
-    await qdrantFetch('/points/payload', {
-      method: 'POST',
-      body: JSON.stringify({
-        payload,
-        points: [req.params.id],
-      }),
-    });
+    updateMemoryPayload(req.params.id, payload);
 
     res.json({ ok: true, id: req.params.id, ...payload });
     invalidateMemoriesCache('memory:updated');
@@ -1256,7 +851,7 @@ app.put('/api/categories/:name', async (req, res) => {
 
     const cat = categories[catIndex];
 
-    // If renaming, update all children that reference this category as parent AND update memories in Qdrant
+    // If renaming, update all children that reference this category as parent AND update memories in SQLite
     if (new_name && new_name !== oldName) {
       categories.forEach(c => {
         if (c.parent === oldName) {
@@ -1277,36 +872,15 @@ app.put('/api/categories/:name', async (req, res) => {
         }
       }
 
-      // Update all memories in Qdrant that use the old category name
+      // Update all memories in SQLite that use the old category name
       try {
-        // First, find all points with the old category
-        const scrollBody = {
-          limit: 100,
-          with_payload: true,
-          filter: mergeExclusionFilter({ must: [{ key: 'category', match: { value: oldName } }] })
-        };
-
-        const scrollResult = await qdrantFetch('/points/scroll', {
-          method: 'POST',
-          body: JSON.stringify(scrollBody),
-        });
-
-        const matchingPoints = scrollResult.result.points || [];
-        if (matchingPoints.length > 0) {
-          const pointIds = matchingPoints.map(p => p.id);
-          // Update all matching points with the new category name
-          await qdrantFetch('/points/payload', {
-            method: 'POST',
-            body: JSON.stringify({
-              payload: { category: new_name, updated_at: new Date().toISOString() },
-              points: pointIds,
-            }),
-          });
-          console.log(`✓ Updated ${matchingPoints.length} memories from "${oldName}" to "${new_name}"`);
+        const matchingMems = getMemoriesByCategory(oldName);
+        if (matchingMems.length > 0) {
+          updateMemoriesCategory(matchingMems.map(m => m.id), new_name);
+          console.log(`✓ Updated ${matchingMems.length} memories from "${oldName}" to "${new_name}"`);
         }
       } catch (err) {
         console.error('Error updating memories during category rename:', err.message);
-        // Don't fail the request, just log the error
       }
     }
 
@@ -1360,20 +934,9 @@ app.delete('/api/memory/:id', async (req, res) => {
     const permanent = req.query.permanent === 'true';
 
     if (permanent) {
-      // Hard delete — permanently remove from Qdrant (used by trash purge)
-      await qdrantFetch('/points/delete', {
-        method: 'POST',
-        body: JSON.stringify({ points: [id] }),
-      });
+      hardDeleteMemory(id);
     } else {
-      // Soft delete — set trashed_at timestamp
-      await qdrantFetch('/points/payload', {
-        method: 'POST',
-        body: JSON.stringify({
-          payload: { trashed_at: new Date().toISOString() },
-          points: [id],
-        }),
-      });
+      softDeleteMemory(id);
     }
 
     res.json({ ok: true, id, permanent: !!permanent });
@@ -1392,32 +955,12 @@ app.delete('/api/memory/:id', async (req, res) => {
 // GET /api/trash — List all trashed memories
 app.get('/api/trash', async (req, res) => {
   try {
-    reloadConfig();
-    const allPoints = [];
-    let offset = null;
-
-    do {
-      const body = {
-        limit: 100,
-        with_payload: true,
-        with_vector: false,
-        filter: TRASH_FILTER,
-      };
-      if (offset) body.offset = offset;
-
-      const result = await qdrantFetch('/points/scroll', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-
-      allPoints.push(...result.result.points);
-      offset = result.result.next_page_offset ?? null;
-    } while (offset);
-
-    // Sort by trashed_at descending (most recently trashed first)
-    allPoints.sort((a, b) => (b.payload.trashed_at || '').localeCompare(a.payload.trashed_at || ''));
-
-    res.json({ items: allPoints, count: allPoints.length });
+    const trashed = getTrashedMemories();
+    const items = trashed.map(m => ({
+      id: m.id,
+      payload: { content: m.content, category: m.category, project: m.project, tags: m.tags, importance: m.importance, source: m.source, created_at: m.created_at, trashed_at: m.trashed_at },
+    }));
+    res.json({ items, count: items.length });
   } catch (err) {
     console.error('GET /api/trash error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1427,15 +970,8 @@ app.get('/api/trash', async (req, res) => {
 // POST /api/trash/:id/restore — Restore a trashed memory
 app.post('/api/trash/:id/restore', async (req, res) => {
   try {
-    reloadConfig();
     const id = req.params.id;
-    await qdrantFetch('/points/payload', {
-      method: 'POST',
-      body: JSON.stringify({
-        payload: { trashed_at: null },
-        points: [id],
-      }),
-    });
+    dbRestoreMemory(id);
     invalidateMemoriesCache('memory:restored');
     broadcastSync({ type: 'memory:restored', id });
     res.json({ ok: true, id });
@@ -1448,40 +984,15 @@ app.post('/api/trash/:id/restore', async (req, res) => {
 // DELETE /api/trash/purge — Permanently delete all trashed memories
 app.delete('/api/trash/purge', async (req, res) => {
   try {
-    reloadConfig();
+    const purgedIds = purgeTrash();
 
-    // Scroll all trashed points
-    const allTrashed = [];
-    let offset = null;
-    do {
-      const body = {
-        limit: 100,
-        with_payload: true,
-        with_vector: false,
-        filter: TRASH_FILTER,
-      };
-      if (offset) body.offset = offset;
-      const result = await qdrantFetch('/points/scroll', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      allTrashed.push(...result.result.points);
-      offset = result.result.next_page_offset ?? null;
-    } while (offset);
-
-    if (allTrashed.length === 0) {
+    if (purgedIds.length === 0) {
       return res.json({ ok: true, purged: 0 });
     }
 
-    const pointIds = allTrashed.map(p => p.id);
-    await qdrantFetch('/points/delete', {
-      method: 'POST',
-      body: JSON.stringify({ points: pointIds }),
-    });
-
     invalidateMemoriesCache('trash:purged');
-    broadcastSync({ type: 'trash:purged', count: pointIds.length });
-    res.json({ ok: true, purged: pointIds.length });
+    broadcastSync({ type: 'trash:purged', count: purgedIds.length });
+    res.json({ ok: true, purged: purgedIds.length });
   } catch (err) {
     console.error('DELETE /api/trash/purge error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1502,25 +1013,12 @@ function hashFileContent(filePath) {
 // GET /api/sync/check — Detect memories whose related files changed via content hash comparison
 app.get('/api/sync/check', async (req, res) => {
   try {
-    const allPoints = [];
-    let offset = null;
-
-    // Scroll all memories
-    do {
-      const body = { limit: 100, with_payload: true, with_vector: false, filter: SYSTEM_METADATA_FILTER };
-      if (offset) body.offset = offset;
-      const result = await qdrantFetch('/points/scroll', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      allPoints.push(...result.result.points);
-      offset = result.result.next_page_offset ?? null;
-    } while (offset);
+    const allMems = getAllMemories();
 
     // Filter to memories with related_files
-    const withFiles = allPoints.filter(
-      p => p.payload.related_files && p.payload.related_files.length > 0
-    );
+    const withFiles = allMems.filter(
+      m => m.related_files && m.related_files.length > 0
+    ).map(m => ({ id: m.id, payload: m }));
 
     const stale = [];
     for (const point of withFiles) {
@@ -1552,7 +1050,7 @@ app.get('/api/sync/check', async (req, res) => {
 
     res.json({
       stale,
-      total_checked: allPoints.length,
+      total_checked: allMems.length,
       total_with_files: withFiles.length,
       total_stale: stale.length,
     });
@@ -1659,52 +1157,28 @@ app.delete('/api/categories/:name/logo', (req, res) => {
 // GET /api/categories/:name/export — Export all memories in a category as Markdown
 app.get('/api/categories/:name/export', async (req, res) => {
   try {
-    reloadConfig();
     const { name } = req.params;
+    const memories = getMemoriesByCategory(name);
 
-    // Scroll all memories in this category (paginated to handle large categories)
-    let allPoints = [];
-    let offset = null;
-    do {
-      const scrollBody = {
-        limit: 100,
-        with_payload: true,
-        filter: mergeExclusionFilter({ must: [{ key: 'category', match: { value: name } }] }),
-      };
-      if (offset) scrollBody.offset = offset;
-      const scrollResult = await qdrantFetch('/points/scroll', { method: 'POST', body: JSON.stringify(scrollBody) });
-      const points = scrollResult.result.points || [];
-      allPoints.push(...points);
-      offset = scrollResult.result.next_page_offset || null;
-    } while (offset);
-
-    if (allPoints.length === 0) {
+    if (memories.length === 0) {
       return res.status(404).json({ error: `No memories found in category "${name}".` });
     }
 
-    // Sort by created_at descending (newest first)
-    allPoints.sort((a, b) => {
-      const da = a.payload.created_at || '';
-      const db = b.payload.created_at || '';
-      return db.localeCompare(da);
-    });
-
     // Build markdown
     let md = `# Memories — ${name}\n\n`;
-    md += `> Exported ${allPoints.length} memor${allPoints.length === 1 ? 'y' : 'ies'} on ${new Date().toISOString().split('T')[0]}\n\n---\n\n`;
+    md += `> Exported ${memories.length} memor${memories.length === 1 ? 'y' : 'ies'} on ${new Date().toISOString().split('T')[0]}\n\n---\n\n`;
 
-    for (const point of allPoints) {
-      const p = point.payload;
-      md += `## ${(p.content || '').split('\n')[0].substring(0, 80)}\n\n`;
+    for (const mem of memories) {
+      md += `## ${(mem.content || '').split('\n')[0].substring(0, 80)}\n\n`;
       md += `| Field | Value |\n|---|---|\n`;
-      md += `| **ID** | \`${point.id}\` |\n`;
-      if (p.importance) md += `| **Importance** | ${p.importance} |\n`;
-      if (p.project) md += `| **Project** | ${p.project} |\n`;
-      if (p.tags && p.tags.length) md += `| **Tags** | ${p.tags.join(', ')} |\n`;
-      if (p.created_at) md += `| **Created** | ${p.created_at} |\n`;
-      if (p.updated_at) md += `| **Updated** | ${p.updated_at} |\n`;
-      if (p.related_files && p.related_files.length) md += `| **Files** | ${p.related_files.join(', ')} |\n`;
-      md += `\n${p.content || '(empty)'}\n\n---\n\n`;
+      md += `| **ID** | \`${mem.id}\` |\n`;
+      if (mem.importance) md += `| **Importance** | ${mem.importance} |\n`;
+      if (mem.project) md += `| **Project** | ${mem.project} |\n`;
+      if (mem.tags && mem.tags.length) md += `| **Tags** | ${mem.tags.join(', ')} |\n`;
+      if (mem.created_at) md += `| **Created** | ${mem.created_at} |\n`;
+      if (mem.updated_at) md += `| **Updated** | ${mem.updated_at} |\n`;
+      if (mem.related_files && mem.related_files.length) md += `| **Files** | ${mem.related_files.join(', ')} |\n`;
+      md += `\n${mem.content || '(empty)'}\n\n---\n\n`;
     }
 
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
@@ -1726,13 +1200,11 @@ app.delete('/api/categories/:name', async (req, res) => {
     const categories = loadCategories();
     const existsInConfig = categories.some(c => c.name === name);
 
-    // Check Qdrant for memories using this category (needed for both config and orphan categories)
-    const scrollBody = { limit: 100, with_payload: true, filter: mergeExclusionFilter({ must: [{ key: 'category', match: { value: name } }] }) };
-    const scrollResult = await qdrantFetch('/points/scroll', { method: 'POST', body: JSON.stringify(scrollBody) });
-    const matchingPoints = scrollResult.result.points || [];
+    // Check SQLite for memories using this category
+    const matchingMemories = getMemoriesByCategory(name);
 
     // If not in config and no memories exist, it truly doesn't exist
-    if (!existsInConfig && matchingPoints.length === 0) {
+    if (!existsInConfig && matchingMemories.length === 0) {
       return res.status(404).json({ error: `Category "${name}" not found.` });
     }
 
@@ -1769,38 +1241,24 @@ app.delete('/api/categories/:name', async (req, res) => {
     }
 
     let deletedCount = 0;
+    const memIds = matchingMemories.map(m => m.id);
 
-    if (matchingPoints.length > 0 && delete_memories) {
+    if (matchingMemories.length > 0 && delete_memories) {
       // Soft-delete: move all memories to trash
-      const pointIds = matchingPoints.map(p => p.id);
-      await qdrantFetch('/points/payload', {
-        method: 'POST',
-        body: JSON.stringify({
-          payload: { trashed_at: new Date().toISOString() },
-          points: pointIds,
-        }),
-      });
-      deletedCount = pointIds.length;
-    } else if (matchingPoints.length > 0 && reassignTo) {
+      for (const id of memIds) softDeleteMemory(id);
+      deletedCount = memIds.length;
+    } else if (matchingMemories.length > 0 && reassignTo) {
       // Reassign memories
       const allNames = new Set(categories.map(c => c.name));
       allNames.delete(name);
       if (!allNames.has(reassignTo)) {
         return res.status(400).json({ error: `Reassign target "${reassignTo}" is not a valid category.` });
       }
-
-      const pointIds = matchingPoints.map(p => p.id);
-      await qdrantFetch('/points/payload', {
-        method: 'POST',
-        body: JSON.stringify({
-          payload: { category: reassignTo },
-          points: pointIds,
-        }),
-      });
-    } else if (matchingPoints.length > 0) {
+      updateMemoriesCategory(memIds, reassignTo);
+    } else if (matchingMemories.length > 0) {
       return res.status(409).json({
-        error: `${matchingPoints.length} memories use this category. Provide reassign_to to move them or delete_memories to remove them.`,
-        count: matchingPoints.length,
+        error: `${matchingMemories.length} memories use this category. Provide reassign_to to move them or delete_memories to remove them.`,
+        count: matchingMemories.length,
       });
     }
 
@@ -1817,14 +1275,14 @@ app.delete('/api/categories/:name', async (req, res) => {
     let message = `Deleted "${name}".`;
     if (childrenMsg) message += childrenMsg;
     if (deletedCount > 0) message += ` ${deletedCount} memor${deletedCount === 1 ? 'y' : 'ies'} moved to trash.`;
-    if (matchingPoints.length > 0 && reassignTo) message += ` ${matchingPoints.length} memor${matchingPoints.length === 1 ? 'y' : 'ies'} reassigned to "${reassignTo}".`;
+    if (matchingMemories.length > 0 && reassignTo) message += ` ${matchingMemories.length} memor${matchingMemories.length === 1 ? 'y' : 'ies'} reassigned to "${reassignTo}".`;
 
     invalidateMemoriesCache('category:deleted');
     broadcastSync({ type: 'category:deleted', name });
     res.json({
       categories: updated,
       message,
-      reassigned: reassignTo ? matchingPoints.length : 0,
+      reassigned: reassignTo ? matchingMemories.length : 0,
       deleted: deletedCount,
     });
   } catch (err) {
@@ -1833,28 +1291,24 @@ app.delete('/api/categories/:name', async (req, res) => {
   }
 });
 
-// GET /api/settings — Current config with masked keys
+// GET /api/settings — Current config (SQLite + local embeddings)
 app.get('/api/settings', (req, res) => {
   try {
-    const vars = parseEnvFile(ENV_PATH);
-
-    // Qdrant config from .env
-    const connData = loadQdrantConnections();
-    const activeConn = connData.active ? connData.connections[connData.active] : null;
-    const qdrantUrl = activeConn?.url || `http://localhost:${vars.QDRANT_PORT || '6333'}`;
-    const qdrantApiKey = activeConn?.apiKey || '';
-    const collection = activeConn?.collection || 'claude_memory';
-    const openaiApiKey = vars.OPENAI_EMBEDDING_API_KEY || '';
+    const dbPath = getDbPath();
+    const dbExists = existsSync(dbPath);
+    let dbSizeBytes = 0;
+    if (dbExists) {
+      try { dbSizeBytes = statSync(dbPath).size; } catch {}
+    }
 
     res.json({
-      qdrantUrl,
-      qdrantApiKey: maskKey(qdrantApiKey),
-      qdrantApiKeySet: !!qdrantApiKey,
-      collection,
-      openaiApiKey: maskKey(openaiApiKey),
-      openaiApiKeySet: !!openaiApiKey,
-      qdrantPort: activeConn?.port ? String(activeConn.port) : '6333',
-      qdrantGrpcPort: activeConn?.grpcPort ? String(activeConn.grpcPort) : '6334',
+      storage: 'sqlite',
+      dbPath,
+      dbExists,
+      dbSizeBytes,
+      embedding: 'local',
+      embeddingModel: 'Xenova/all-MiniLM-L6-v2',
+      embeddingDims: EMBEDDING_DIMS,
     });
   } catch (err) {
     console.error('GET /api/settings error:', err.message);
@@ -1862,35 +1316,12 @@ app.get('/api/settings', (req, res) => {
   }
 });
 
-// PUT /api/settings — Save settings to .env
+// PUT /api/settings — No external config needed with SQLite + local embeddings
 app.put('/api/settings', (req, res) => {
   try {
-    const { qdrantUrl, qdrantApiKey, collection, openaiApiKey, qdrantPort, qdrantGrpcPort } = req.body;
-
-    // Embedding config
-    const vars = parseEnvFile(ENV_PATH);
-    if (openaiApiKey) {
-      vars.OPENAI_EMBEDDING_API_KEY = openaiApiKey;
-      // Also update namespaced embedding if it exists
-      const embId = vars.EMBEDDING_ACTIVE;
-      if (embId) vars[`EMBEDDING__${embId}__API_KEY`] = openaiApiKey;
-    }
-    writeEnvFile(ENV_PATH, vars);
-
-    // Update active Qdrant connection in .env
-    const connData = loadQdrantConnections();
-    if (connData.active && connData.connections[connData.active]) {
-      const conn = connData.connections[connData.active];
-      if (qdrantUrl) conn.url = qdrantUrl;
-      if (qdrantApiKey) conn.apiKey = qdrantApiKey;
-      if (collection) conn.collection = collection;
-      if (qdrantPort) conn.port = parseInt(qdrantPort, 10);
-      if (qdrantGrpcPort) conn.grpcPort = parseInt(qdrantGrpcPort, 10);
-      saveQdrantConnection(connData.active, conn);
-    }
-
+    // Nothing to configure externally — SQLite + local embeddings are self-contained
     reloadConfig();
-    res.json({ ok: true, message: 'Settings saved. Neural Interface reloaded — restart your AI tool for MCP changes.' });
+    res.json({ ok: true, message: 'Settings reloaded.' });
   } catch (err) {
     console.error('PUT /api/settings error:', err.message);
     res.status(500).json({ error: err.message });
@@ -2397,12 +1828,8 @@ app.get('/api/cards/screenshot', async (req, res) => {
 });
 
 
-// --- Connection Management Routes (multi-instance Qdrant) ---
-// All connection/bridge config is stored in .env (single source of truth).
-// Functions: loadQdrantConnections(), saveQdrantConnection(), removeQdrantConnection(),
-//            setActiveQdrantConnection(), getActiveConnectionIdFromEnv()
-//            loadBridgeConfig(), saveBridgeConfig(), removeBridgeConfig()
-// (Defined above near writeEnvFile)
+// --- Bridge config helpers (read/write BRIDGE__<id>__* in .env) ---
+// loadBridgeConfig(), saveBridgeConfig(), removeBridgeConfig() defined above near writeEnvFile
 
 // --- OpenClaw Bridge: Markdown Parsers ---
 
@@ -2681,366 +2108,26 @@ function syncOpenClawBridge() {
   };
 }
 
-// GET /api/connections — List all configured connections with live point counts
-app.get('/api/connections', async (req, res) => {
+// GET /api/connections — Returns SQLite database info (legacy endpoint for UI compat)
+app.get('/api/connections', (req, res) => {
   try {
-    const data = loadQdrantConnections();
-    const entries = [];
-
-    for (const [id, conn] of Object.entries(data.connections)) {
-      let points = 0;
-      let reachable = false;
-      try {
-        const infoRes = await fetch(`${conn.url}/collections/${conn.collection}`, {
-          headers: { 'Content-Type': 'application/json', 'api-key': conn.apiKey },
-          signal: AbortSignal.timeout(3000),
-        });
-        if (infoRes.ok) {
-          const info = await infoRes.json();
-          points = info.result?.points_count ?? 0;
-          reachable = true;
-        }
-      } catch {}
-      entries.push({
-        id,
-        label: conn.label || id,
-        url: conn.url,
-        collection: conn.collection,
-        points,
-        reachable,
-        active: id === data.active,
-      });
-    }
-
-    res.json({ connections: entries, active: data.active });
+    const dbPath = getDbPath();
+    const dbExists = existsSync(dbPath);
+    const memCount = dbExists ? countMemories() : 0;
+    res.json({
+      connections: [{
+        id: 'sqlite',
+        label: 'Local SQLite',
+        url: dbPath,
+        collection: 'memories',
+        points: memCount,
+        reachable: dbExists,
+        active: true,
+      }],
+      active: 'sqlite',
+    });
   } catch (err) {
     console.error('GET /api/connections error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/connections/suggest-port — Suggest the next available port based on existing connections
-app.get('/api/connections/suggest-port', (req, res) => {
-  try {
-    const data = loadQdrantConnections();
-    let maxPort = 6333;
-    for (const conn of Object.values(data.connections)) {
-      const port = conn.port || extractPort(conn.url);
-      maxPort = Math.max(maxPort, port);
-    }
-    // Round up to next 10 boundary, then add 10 for clean spacing
-    const suggested = maxPort + 10 - (maxPort % 10) + (maxPort % 10 === 0 ? 0 : 10);
-    res.json({ port: suggested, grpcPort: suggested + 1 });
-  } catch (err) {
-    res.json({ port: 6333, grpcPort: 6334 });
-  }
-});
-
-// POST /api/connections — Add a new connection
-app.post('/api/connections', async (req, res) => {
-  try {
-    const { id, label, url, apiKey, collection } = req.body;
-    if (!id || !url || !apiKey || !collection) {
-      return res.status(400).json({ error: 'id, url, apiKey, and collection are required' });
-    }
-
-    const envId = id.replace(/-/g, '_');
-    const data = loadQdrantConnections();
-    if (data.connections[envId]) {
-      return res.status(409).json({ error: `Connection "${id}" already exists` });
-    }
-
-    // Verify we can reach Qdrant
-    try {
-      const pingRes = await fetch(`${url}/collections`, {
-        headers: { 'Content-Type': 'application/json', 'api-key': apiKey },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!pingRes.ok) {
-        return res.status(400).json({ error: `Cannot reach Qdrant at ${url} (HTTP ${pingRes.status})` });
-      }
-    } catch (err) {
-      return res.status(400).json({ error: `Cannot reach Qdrant at ${url}: ${err.message}` });
-    }
-
-    saveQdrantConnection(id, { label: label || id, url, apiKey, collection });
-
-    res.json({ ok: true, message: `Connection "${label || id}" added` });
-  } catch (err) {
-    console.error('POST /api/connections error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PUT /api/connections/active — Switch active connection
-app.put('/api/connections/active', async (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id || typeof id !== 'string') {
-      return res.status(400).json({ error: 'Connection id is required' });
-    }
-
-    const data = loadQdrantConnections();
-    const conn = data.connections[id];
-    if (!conn) {
-      return res.status(404).json({ error: `Connection "${id}" not found` });
-    }
-
-    // Verify we can reach it before switching
-    try {
-      const checkRes = await fetch(`${conn.url}/collections/${conn.collection}`, {
-        headers: { 'Content-Type': 'application/json', 'api-key': conn.apiKey },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!checkRes.ok) {
-        return res.status(400).json({ error: `Cannot reach collection "${conn.collection}" at ${conn.url}` });
-      }
-    } catch (err) {
-      return res.status(400).json({ error: `Cannot reach Qdrant at ${conn.url}: ${err.message}` });
-    }
-
-    setActiveQdrantConnection(id);
-
-    // Also update the runtime variables so the neural interface uses the new connection
-    QDRANT_URL = conn.url;
-    QDRANT_KEY = conn.apiKey;
-    COLLECTION = conn.collection;
-    console.log(`  Connection switched — ${conn.label || id}: ${conn.url}/collections/${conn.collection}`);
-
-    res.json({ ok: true, message: `Switched to "${conn.label || id}"`, active: id });
-  } catch (err) {
-    console.error('PUT /api/connections/active error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// DELETE /api/connections/:id — Remove a connection
-app.delete('/api/connections/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const data = loadQdrantConnections();
-    if (!data.connections[id]) {
-      return res.status(404).json({ error: `Connection "${id}" not found` });
-    }
-    if (id === data.active) {
-      return res.status(400).json({ error: 'Cannot delete the active connection. Switch to another first.' });
-    }
-
-    removeQdrantConnection(id);
-
-    res.json({ ok: true, message: `Connection "${id}" removed` });
-  } catch (err) {
-    console.error('DELETE /api/connections/:id error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/connections/sync-env — DEPRECATED: .env is now the single source of truth
-app.post('/api/connections/sync-env', (req, res) => {
-  const data = loadQdrantConnections();
-  const count = Object.keys(data.connections).length;
-  res.json({ ok: true, message: `.env is the single source of truth. ${count} connections configured.` });
-});
-
-// POST /api/connections/start-container — Start a stopped Docker container for a connection
-app.post('/api/connections/start-container', async (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'Connection id is required' });
-
-    const data = loadQdrantConnections();
-    const conn = data.connections[id];
-    if (!conn) return res.status(404).json({ error: `Connection "${id}" not found` });
-
-    const port = conn.port || extractPort(conn.url);
-    const containerName = 'synabun-qdrant-' + id.replace(/[^a-z0-9]/g, '-');
-
-    // Try to start by exact container name first
-    let started = false;
-    try {
-      await execAsync(`docker start ${containerName}`, { timeout: 15000 });
-      started = true;
-    } catch {
-      // Fall back: search by port binding
-      try {
-        const { stdout } = await execAsync(
-          `docker ps -a --filter "publish=${port}" --format "{{.Names}}"`,
-          { timeout: 5000 }
-        );
-        const name = stdout.trim().split('\n')[0];
-        if (name) {
-          await execAsync(`docker start ${name}`, { timeout: 15000 });
-          started = true;
-        }
-      } catch {}
-    }
-
-    if (!started) {
-      return res.status(404).json({ error: `No Docker container found for "${id}" (port ${port}). Create a new one from the wizard.` });
-    }
-
-    // Wait for Qdrant to be ready (up to 15s)
-    let ready = false;
-    for (let i = 0; i < 15; i++) {
-      try {
-        const ping = await fetch(`${conn.url}/collections`, {
-          headers: { 'api-key': conn.apiKey },
-          signal: AbortSignal.timeout(2000),
-        });
-        if (ping.ok) { ready = true; break; }
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    res.json({ ok: ready, message: ready ? 'Container started' : 'Container started but Qdrant not responding yet' });
-  } catch (err) {
-    console.error('POST /api/connections/start-container error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/connections/:id/backup — Create and download a Qdrant snapshot
-app.post('/api/connections/:id/backup', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const data = loadQdrantConnections();
-    const conn = data.connections[id];
-    if (!conn) return res.status(404).json({ error: `Connection "${id}" not found` });
-
-    const { url, apiKey, collection } = conn;
-    const headers = { 'api-key': apiKey };
-
-    // 1. Create snapshot
-    const snapRes = await fetch(`${url}/collections/${collection}/snapshots`, {
-      method: 'POST',
-      headers,
-      signal: AbortSignal.timeout(120000),
-    });
-    if (!snapRes.ok) {
-      const text = await snapRes.text();
-      throw new Error(`Snapshot creation failed: ${text}`);
-    }
-    const snapData = await snapRes.json();
-    const snapName = snapData.result?.name;
-    if (!snapName) throw new Error('Snapshot created but no name returned');
-
-    // 2. Download snapshot binary
-    const dlRes = await fetch(`${url}/collections/${collection}/snapshots/${snapName}`, {
-      headers,
-      signal: AbortSignal.timeout(300000),
-    });
-    if (!dlRes.ok) {
-      const text = await dlRes.text();
-      throw new Error(`Snapshot download failed: ${text}`);
-    }
-
-    // 3. Stream to client
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${collection}-${timestamp}.snapshot"`);
-    if (dlRes.headers.get('content-length')) {
-      res.setHeader('Content-Length', dlRes.headers.get('content-length'));
-    }
-
-    const nodeStream = Readable.fromWeb(dlRes.body);
-    nodeStream.pipe(res);
-
-    nodeStream.on('end', () => {
-      // 4. Cleanup: delete the snapshot from Qdrant (fire-and-forget)
-      fetch(`${url}/collections/${collection}/snapshots/${snapName}`, {
-        method: 'DELETE',
-        headers,
-        signal: AbortSignal.timeout(10000),
-      }).catch(() => {});
-    });
-
-    nodeStream.on('error', (err) => {
-      console.error('Snapshot stream error:', err.message);
-      if (!res.headersSent) res.status(500).json({ error: err.message });
-    });
-  } catch (err) {
-    console.error('POST /api/connections/:id/backup error:', err.message);
-    if (!res.headersSent) res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/connections/:id/restore — Upload a .snapshot file to restore a collection
-app.post('/api/connections/:id/restore', express.raw({ type: 'application/octet-stream', limit: '500mb' }), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const data = loadQdrantConnections();
-    const conn = data.connections[id];
-    if (!conn) return res.status(404).json({ error: `Connection "${id}" not found` });
-
-    if (!req.body || req.body.length === 0) {
-      return res.status(400).json({ error: 'No snapshot data received' });
-    }
-
-    const { url, apiKey, collection } = conn;
-
-    // Build multipart form data with the snapshot buffer
-    const form = new FormData();
-    form.append('snapshot', new Blob([req.body]), 'restore.snapshot');
-
-    const uploadRes = await fetch(`${url}/collections/${collection}/snapshots/upload?priority=snapshot`, {
-      method: 'POST',
-      headers: { 'api-key': apiKey },
-      body: form,
-      signal: AbortSignal.timeout(300000),
-    });
-
-    if (!uploadRes.ok) {
-      const text = await uploadRes.text();
-      throw new Error(`Restore failed: ${text}`);
-    }
-
-    res.json({ ok: true, message: `Collection "${collection}" restored successfully` });
-  } catch (err) {
-    console.error('POST /api/connections/:id/restore error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/connections/restore-standalone — Restore a snapshot to any Qdrant instance (not necessarily in connections.json)
-// Expects URL query params: ?url=...&apiKey=...&collection=...&label=...
-// Body: raw snapshot bytes (application/octet-stream)
-app.post('/api/connections/restore-standalone', express.raw({ type: 'application/octet-stream', limit: '500mb' }), async (req, res) => {
-  try {
-    const { url, apiKey, collection, label } = req.query;
-    if (!url || !apiKey || !collection) {
-      return res.status(400).json({ error: 'url, apiKey, and collection query params are required' });
-    }
-    if (!req.body || req.body.length === 0) {
-      return res.status(400).json({ error: 'No snapshot data received' });
-    }
-
-    // Upload snapshot to Qdrant (creates collection if it doesn't exist)
-    const form = new FormData();
-    form.append('snapshot', new Blob([req.body]), 'restore.snapshot');
-
-    const uploadRes = await fetch(`${url}/collections/${collection}/snapshots/upload?priority=snapshot`, {
-      method: 'POST',
-      headers: { 'api-key': apiKey },
-      body: form,
-      signal: AbortSignal.timeout(300000),
-    });
-
-    if (!uploadRes.ok) {
-      const text = await uploadRes.text();
-      throw new Error(`Restore failed: ${text}`);
-    }
-
-    // Add to .env if not already there
-    const envId = (label || collection).toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'restored';
-    const data = loadQdrantConnections();
-    if (!data.connections[envId]) {
-      saveQdrantConnection(envId, { label: label || collection, url, apiKey, collection });
-    }
-
-    res.json({ ok: true, message: `Collection "${collection}" restored successfully`, connectionId: id });
-  } catch (err) {
-    console.error('POST /api/connections/restore-standalone error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3409,7 +2496,7 @@ app.delete('/api/loop/history/:id', (req, res) => {
   }
 });
 
-// POST /api/loop/complete — store a completed loop as a Qdrant memory
+// POST /api/loop/complete — store a completed loop as a SQLite memory
 app.post('/api/loop/complete', async (req, res) => {
   try {
     const { task, context, template, iterations, duration, result, tags } = req.body;
@@ -3427,30 +2514,16 @@ app.post('/api/loop/complete', async (req, res) => {
     const embedding = await getEmbedding(content);
     const id = randomUUID();
     const now = new Date().toISOString();
+    const d = getDb();
 
-    await qdrantFetch('/points', {
-      method: 'PUT',
-      body: JSON.stringify({
-        points: [{
-          id,
-          vector: embedding,
-          payload: {
-            content,
-            category: 'automations',
-            subcategory: 'loop-result',
-            project: 'synabun',
-            importance: 6,
-            tags: tags || ['automation', 'loop'],
-            source: 'auto-saved',
-            created_at: now,
-            updated_at: now,
-            template: template || null,
-            task,
-          },
-        }],
-      }),
-    });
+    d.prepare(`INSERT OR REPLACE INTO memories (id, vector, content, category, subcategory, project, importance, tags, source, created_at, updated_at, accessed_at, access_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id, encodeVector(embedding), content, 'automations', 'loop-result', 'synabun',
+      6, JSON.stringify(tags || ['automation', 'loop']), 'auto-saved',
+      now, now, now, 0
+    );
 
+    invalidateMemoriesCache('loop:complete');
     res.json({ ok: true, id });
   } catch (err) {
     console.error('POST /api/loop/complete error:', err.message);
@@ -3465,31 +2538,13 @@ app.post('/api/search/memories', async (req, res) => {
     if (!query) return res.status(400).json({ error: 'query required' });
 
     const embedding = await getEmbedding(query);
-
-    const filter = {
-      must: [
-        ...(SYSTEM_METADATA_FILTER.must || []),
-        ...(category ? [{ key: 'category', match: { value: category } }] : []),
-      ],
-      must_not: SYSTEM_METADATA_FILTER.must_not || [],
-    };
-
-    const result = await qdrantFetch('/points/search', {
-      method: 'POST',
-      body: JSON.stringify({
-        vector: embedding,
-        limit: Math.min(limit, 50),
-        with_payload: true,
-        score_threshold: 0.3,
-        filter,
-      }),
-    });
+    const results = dbSearchMemories(embedding, Math.min(limit, 50), { category, scoreThreshold: 0.3 });
 
     res.json({
-      results: result.result.map(r => ({
+      results: results.map(r => ({
         id: r.id,
         score: r.score,
-        payload: r.payload,
+        payload: { content: r.content, category: r.category, subcategory: r.subcategory, project: r.project, tags: r.tags, importance: r.importance, source: r.source, created_at: r.created_at, updated_at: r.updated_at, accessed_at: r.accessed_at, access_count: r.access_count, related_files: r.related_files, related_memory_ids: r.related_memory_ids, trashed_at: r.trashed_at },
       })),
       query,
       category,
@@ -3521,11 +2576,11 @@ app.get('/api/system/backup', async (req, res) => {
     archive.pipe(res);
 
     const manifest = {
-      version: 1,
+      version: 2,
       created: new Date().toISOString(),
       hostname: os.hostname(),
-      connections: {},
-      unreachableConnections: [],
+      storage: 'sqlite',
+      database: null,
       files: [],
       checksums: {},
     };
@@ -3624,66 +2679,19 @@ app.get('/api/system/backup', async (req, res) => {
       }
     }
 
-    // 7. Qdrant snapshots — one per reachable connection
-    const connData = loadQdrantConnections();
-    for (const [id, conn] of Object.entries(connData.connections)) {
+    // 7. SQLite database file
+    const dbPath = getDbPath();
+    if (existsSync(dbPath)) {
       try {
-        const baseUrl = conn.url || `http://localhost:${conn.port || 6333}`;
-        const headers = { 'api-key': conn.apiKey };
-
-        // Health check
-        const healthRes = await fetch(`${baseUrl}/healthz`, {
-          headers, signal: AbortSignal.timeout(5000),
-        });
-        if (!healthRes.ok) throw new Error('unreachable');
-
-        // Get point count
-        let pointCount = 0;
-        try {
-          const infoRes = await fetch(`${baseUrl}/collections/${conn.collection}`, {
-            headers, signal: AbortSignal.timeout(5000),
-          });
-          if (infoRes.ok) {
-            const info = await infoRes.json();
-            pointCount = info?.result?.points_count ?? 0;
-          }
-        } catch { /* non-critical */ }
-
-        // Create snapshot
-        const snapRes = await fetch(`${baseUrl}/collections/${conn.collection}/snapshots`, {
-          method: 'POST', headers, signal: AbortSignal.timeout(120000),
-        });
-        if (!snapRes.ok) throw new Error('snapshot creation failed');
-        const snapData = await snapRes.json();
-        const snapName = snapData.result?.name;
-        if (!snapName) throw new Error('no snapshot name returned');
-
-        // Download snapshot
-        const dlRes = await fetch(`${baseUrl}/collections/${conn.collection}/snapshots/${snapName}`, {
-          headers, signal: AbortSignal.timeout(300000),
-        });
-        if (!dlRes.ok) throw new Error('snapshot download failed');
-
-        const snapBuffer = Buffer.from(await dlRes.arrayBuffer());
-        const archiveName = `snapshots/${id}.snapshot`;
-        archive.append(snapBuffer, { name: `${prefix}/${archiveName}` });
-
-        manifest.connections[id] = {
-          collection: conn.collection,
-          label: conn.label,
-          snapshotFile: archiveName,
-          snapshotSizeBytes: snapBuffer.length,
-          pointCount,
+        const dbContent = readFileSync(dbPath);
+        archive.append(dbContent, { name: `${prefix}/database/memory.db` });
+        manifest.database = {
+          file: 'database/memory.db',
+          sizeBytes: dbContent.length,
+          memoryCount: countMemories(),
         };
-
-        // Cleanup: delete snapshot from Qdrant (fire-and-forget)
-        fetch(`${baseUrl}/collections/${conn.collection}/snapshots/${snapName}`, {
-          method: 'DELETE', headers, signal: AbortSignal.timeout(10000),
-        }).catch(() => {});
-
       } catch (err) {
-        console.warn(`  Backup: skipping connection "${id}": ${err.message}`);
-        manifest.unreachableConnections.push(id);
+        console.warn(`  Backup: failed to include database: ${err.message}`);
       }
     }
 
@@ -3738,7 +2746,7 @@ app.post('/api/system/restore',
       return res.status(400).json({ error: 'Invalid backup: manifest.json not found' });
     }
     const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
-    if (manifest.version !== 1) {
+    if (manifest.version !== 1 && manifest.version !== 2) {
       return res.status(400).json({ error: `Unsupported backup version: ${manifest.version}` });
     }
 
@@ -3811,60 +2819,32 @@ app.post('/api/system/restore',
       }
     }
 
-    // Reload server config after config files are restored (so globals like QDRANT_URL are fresh)
+    // Reload server config after config files are restored
     if (mode === 'full' || mode === 'config-only') {
       reloadConfig();
     }
 
-    // Restore Qdrant snapshots
+    // Restore SQLite database
     if (mode === 'full' || mode === 'snapshots-only') {
-      // Reload connections (may have changed from .env restore above)
-      reloadConfig();
-      const connData = loadQdrantConnections();
-
-      for (const [connId, snapInfo] of Object.entries(manifest.connections || {})) {
-        const snapshotEntry = entries.find(e =>
-          e.entryName === `${prefix}/${snapInfo.snapshotFile}`
-        );
-        if (!snapshotEntry) {
-          results.errors.push(`Snapshot for "${connId}" not found in ZIP`);
-          continue;
-        }
-
-        const conn = connData.connections[connId];
-        if (!conn) {
-          results.errors.push(`Connection "${connId}" (${snapInfo.collection}) not found in current config — skipped`);
-          continue;
-        }
-
+      const dbEntry = entries.find(e => e.entryName === `${prefix}/database/memory.db`);
+      if (dbEntry) {
         try {
-          const baseUrl = conn.url || `http://localhost:${conn.port || 6333}`;
-          const form = new FormData();
-          form.append('snapshot', new Blob([snapshotEntry.getData()]), 'restore.snapshot');
-
-          const uploadRes = await fetch(
-            `${baseUrl}/collections/${conn.collection}/snapshots/upload?priority=snapshot`,
-            {
-              method: 'POST',
-              headers: { 'api-key': conn.apiKey },
-              body: form,
-              signal: AbortSignal.timeout(300000),
-            }
-          );
-
-          if (!uploadRes.ok) {
-            const text = await uploadRes.text();
-            throw new Error(text);
-          }
-
-          results.snapshots.push({
-            id: connId,
-            collection: snapInfo.collection,
-            pointCount: snapInfo.pointCount,
-          });
+          // Close existing database connection before replacing
+          closeDb();
+          const dbPath = getDbPath();
+          const dbDir = dirname(dbPath);
+          mkdirSync(dbDir, { recursive: true });
+          writeFileSync(dbPath, dbEntry.getData());
+          // Remove WAL/SHM files if they exist
+          try { if (existsSync(dbPath + '-wal')) unlinkSync(dbPath + '-wal'); } catch {}
+          try { if (existsSync(dbPath + '-shm')) unlinkSync(dbPath + '-shm'); } catch {}
+          results.files.push('database/memory.db');
         } catch (err) {
-          results.errors.push(`Failed to restore "${connId}": ${err.message}`);
+          results.errors.push(`Failed to restore database: ${err.message}`);
         }
+      } else if (manifest.connections && Object.keys(manifest.connections).length > 0) {
+        // Old Qdrant-format backup detected
+        results.errors.push('This backup contains Qdrant snapshots (old format). Run the migration script to convert to SQLite first.');
       }
     }
 
@@ -4030,21 +3010,7 @@ app.get('/api/setup/check-deps', async (req, res) => {
     deps.push({ id: 'npm', name: 'npm', ok: false, version: null, detail: 'Not found', url: 'https://nodejs.org/' });
   }
 
-  // Docker
-  try {
-    const { stdout } = await execAsync('docker --version', { timeout: 5000 });
-    const ver = stdout.trim().match(/Docker version ([\d.]+)/)?.[1] || stdout.trim();
-    // CLI exists — now check if daemon is running
-    try {
-      await execAsync('docker info', { timeout: 8000 });
-      deps.push({ id: 'docker', name: 'Docker', ok: true, version: ver, detail: `v${ver} (running)`, url: 'https://docs.docker.com/get-docker/' });
-    } catch {
-      deps.push({ id: 'docker', name: 'Docker', ok: false, warn: true, version: ver, detail: `v${ver} (not running)`, url: 'https://docs.docker.com/get-docker/' });
-    }
-  } catch {
-    deps.push({ id: 'docker', name: 'Docker', ok: false, warn: true, version: null, detail: 'Not found (optional if using Qdrant Cloud)', url: 'https://docs.docker.com/get-docker/' });
-  }
-
+  // Docker no longer required — SQLite is built-in
 
   res.json({ deps });
 });
@@ -4054,30 +3020,14 @@ app.get('/api/setup/onboarding', async (req, res) => {
   try {
     const vars = parseEnvFile(ENV_PATH);
     const setupComplete = vars.SETUP_COMPLETE === 'true';
-    const hasEmbeddingKey = !!vars.OPENAI_EMBEDDING_API_KEY;
-
-    // Check .env for Qdrant config
-    const connData = loadQdrantConnections();
-    const activeConn = connData.active ? connData.connections[connData.active] : null;
-    const hasQdrantKey = !!(activeConn?.apiKey) ||
-      Object.keys(vars).some(k => k.match(/^QDRANT__[a-z0-9_]+__API_KEY$/));
-
-    let dockerRunning = false;
-    try {
-      const qdrantRes = await fetch(`${QDRANT_URL}/collections`, {
-        headers: { 'api-key': QDRANT_KEY },
-        signal: AbortSignal.timeout(3000),
-      });
-      dockerRunning = qdrantRes.ok;
-    } catch {}
-
+    const dbExists = existsSync(getDbPath());
     const mcpBuilt = existsSync(resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'index.js'));
 
     res.json({
       setupComplete,
-      hasQdrantKey,
-      hasEmbeddingKey,
-      dockerRunning,
+      storage: 'sqlite',
+      dbExists,
+      embedding: 'local',
       mcpBuilt,
       projectDir: PROJECT_ROOT,
       platform: process.platform,
@@ -4088,56 +3038,11 @@ app.get('/api/setup/onboarding', async (req, res) => {
   }
 });
 
-// POST /api/setup/save-config — Write all config to .env (single source of truth)
+// POST /api/setup/save-config — Write config to .env (simplified — no Qdrant/embedding API keys needed)
 app.post('/api/setup/save-config', (req, res) => {
   try {
-    const { qdrantApiKey, qdrantUrl, collectionName, collectionDisplayName, embeddingApiKey, embeddingBaseUrl, embeddingModel, embeddingDimensions, qdrantPort, qdrantGrpcPort } = req.body;
-
-    const vars = parseEnvFile(ENV_PATH); // Returns {} on fresh install
-
-    // --- Embedding config ---
-    const embId = vars.EMBEDDING_ACTIVE || 'openai_main';
-    if (embeddingApiKey) {
-      vars.EMBEDDING_ACTIVE = embId;
-      vars[`EMBEDDING__${embId}__API_KEY`] = embeddingApiKey;
-      vars[`EMBEDDING__${embId}__LABEL`] = 'OpenAI Main';
-      // Also keep legacy key for backward compat
-      vars.OPENAI_EMBEDDING_API_KEY = embeddingApiKey;
-    }
-    if (embeddingBaseUrl && embeddingBaseUrl !== 'https://api.openai.com/v1') {
-      vars[`EMBEDDING__${embId}__BASE_URL`] = embeddingBaseUrl;
-    }
-    if (embeddingModel && embeddingModel !== 'text-embedding-3-small') {
-      vars[`EMBEDDING__${embId}__MODEL`] = embeddingModel;
-    }
-    if (embeddingDimensions && String(embeddingDimensions) !== '1536') {
-      vars[`EMBEDDING__${embId}__DIMENSIONS`] = String(embeddingDimensions);
-    }
-
-    // Remove legacy flat Qdrant keys
-    delete vars.QDRANT_PORT;
-    delete vars.QDRANT_GRPC_PORT;
-    delete vars.QDRANT_MEMORY_API_KEY;
-
-    // --- Qdrant connection ---
-    if (qdrantUrl && qdrantApiKey && collectionName) {
-      const connId = collectionName.replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'default';
-      const connLabel = collectionDisplayName || collectionName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-      const port = qdrantPort || extractPort(qdrantUrl);
-      const grpc = qdrantGrpcPort || (parseInt(port, 10) + 1);
-
-      vars[`QDRANT__${connId}__PORT`] = String(port);
-      vars[`QDRANT__${connId}__GRPC_PORT`] = String(grpc);
-      vars[`QDRANT__${connId}__API_KEY`] = qdrantApiKey;
-      vars[`QDRANT__${connId}__COLLECTION`] = collectionName;
-      vars[`QDRANT__${connId}__LABEL`] = connLabel;
-      if (qdrantUrl && !qdrantUrl.match(/^https?:\/\/localhost:\d+\/?$/)) {
-        vars[`QDRANT__${connId}__URL`] = qdrantUrl;
-      }
-
-      if (!vars.QDRANT_ACTIVE) vars.QDRANT_ACTIVE = connId;
-    }
-
+    const vars = parseEnvFile(ENV_PATH);
+    // No external service config needed — SQLite + local embeddings are self-contained
     writeEnvFile(ENV_PATH, vars);
     reloadConfig();
     res.json({ ok: true });
@@ -4147,404 +3052,13 @@ app.post('/api/setup/save-config', (req, res) => {
   }
 });
 
-// POST /api/setup/start-docker-desktop — Launch Docker Desktop and wait for daemon (does NOT start containers)
-app.post('/api/setup/start-docker-desktop', async (req, res) => {
-  try {
-    // Try to launch Docker Desktop (Windows)
-    const dockerDesktopPaths = [
-      'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe',
-      `${process.env.LOCALAPPDATA}\\Docker\\Docker Desktop.exe`,
-    ];
-
-    let launched = false;
-    for (const p of dockerDesktopPaths) {
-      try {
-        if (existsSync(p)) {
-          await execAsync(`start "" "${p}"`, { timeout: 5000, shell: true });
-          launched = true;
-          break;
-        }
-      } catch {}
-    }
-
-    if (!launched) {
-      try {
-        await execAsync('start "" "Docker Desktop"', { timeout: 5000, shell: true });
-        launched = true;
-      } catch {}
-    }
-
-    if (!launched) {
-      return res.status(400).json({ error: 'Could not find Docker Desktop. Please start it manually.' });
-    }
-
-    // Wait for Docker daemon to be ready (up to 45s)
-    let daemonReady = false;
-    for (let i = 0; i < 45; i++) {
-      try {
-        await execAsync('docker info', { timeout: 3000 });
-        daemonReady = true;
-        break;
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    if (!daemonReady) {
-      return res.json({ ok: false, error: 'Docker Desktop launched but daemon not ready after 45s. Try again.' });
-    }
-
-    res.json({ ok: true, daemonReady: true });
-  } catch (err) {
-    console.error('POST /api/setup/start-docker-desktop error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/setup/docker — Start a Qdrant Docker container (plug-and-play, unique per collection)
-app.post('/api/setup/docker', async (req, res) => {
-  try {
-    // Derive unique container/volume names from the collection name
-    const collSafe = COLLECTION.replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-    const containerName = 'synabun-qdrant-' + collSafe;
-    const volumeName = containerName + '-data';
-    let port = parseInt(new URL(QDRANT_URL).port, 10) || 6333;
-    let grpcPort = port + 1;
-
-    // Helper: check if a port is free by attempting a TCP connection
-    async function isPortFree(p) {
-      return new Promise(resolve => {
-        const sock = netConnect({ port: p, host: '127.0.0.1' }, () => {
-          sock.destroy();
-          resolve(false); // something is listening — port is taken
-        });
-        sock.on('error', () => resolve(true)); // nothing listening — port is free
-        sock.setTimeout(1000, () => { sock.destroy(); resolve(true); });
-      });
-    }
-
-    // Helper: find the next free port starting from a given port
-    async function findFreePort(startPort) {
-      let p = startPort;
-      for (let i = 0; i < 20; i++) {
-        const httpFree = await isPortFree(p);
-        const grpcFree = await isPortFree(p + 1);
-        if (httpFree && grpcFree) return p;
-        p += 10; // jump in increments of 10 for clean spacing
-      }
-      return null;
-    }
-
-    // ── Helper: get the real host port a container is mapped to ──
-    async function getContainerPort(name) {
-      try {
-        const result = await execAsync(`docker port ${name} 6333`, { timeout: 5000 });
-        // Output like "0.0.0.0:6333" or ":::6333"
-        const m = (result.stdout || '').match(/:(\d+)\s*$/m);
-        return m ? parseInt(m[1], 10) : null;
-      } catch { return null; }
-    }
-
-    // ── Check if our container already exists (running or stopped) ──
-    let containerExists = false;
-    let containerRunning = false;
-    try {
-      const inspect = await execAsync(
-        `docker inspect --format={{.State.Running}} ${containerName}`,
-        { timeout: 5000 }
-      );
-      containerExists = true;
-      containerRunning = (inspect.stdout || '').trim() === 'true';
-    } catch {} // container doesn't exist — will create fresh
-
-    let stdout = '', stderr = '';
-
-    if (containerExists) {
-      // Container exists — get its REAL port mapping (can't be changed after creation)
-      const realPort = containerRunning ? await getContainerPort(containerName) : null;
-
-      if (containerRunning && realPort) {
-        // Already running — use its actual port
-        port = realPort;
-        grpcPort = realPort + 1;
-        stdout = `Container "${containerName}" is already running on port ${port}.`;
-      } else if (containerRunning) {
-        // Running but can't determine port — trust configured port
-        stdout = `Container "${containerName}" is already running.`;
-      } else {
-        // Stopped — need to check if its port mapping matches what we want
-        // Get the port from the container's config (works even when stopped)
-        let mappedPort = null;
-        try {
-          const inspectPorts = await execAsync(
-            `docker inspect --format={{json .HostConfig.PortBindings}} ${containerName}`,
-            { timeout: 5000 }
-          );
-          const bindings = JSON.parse((inspectPorts.stdout || '').trim());
-          const httpBinding = bindings['6333/tcp'];
-          if (httpBinding && httpBinding[0]) {
-            mappedPort = parseInt(httpBinding[0].HostPort, 10);
-          }
-        } catch {}
-
-        if (mappedPort && mappedPort !== port) {
-          // Container was created with a different port — check if that port is free
-          if (await isPortFree(mappedPort) && await isPortFree(mappedPort + 1)) {
-            // Original port is free — start on it and update our port var
-            port = mappedPort;
-            grpcPort = mappedPort + 1;
-          } else {
-            // Original port is taken — remove old container and recreate with new port
-            await execAsync(`docker rm ${containerName}`, { timeout: 10000 });
-            containerExists = false; // fall through to fresh creation below
-          }
-        }
-
-        if (containerExists) {
-          // Start the existing container on its original port
-          const startResult = await execAsync(`docker start ${containerName}`, { timeout: 15000 });
-          stdout = `Starting container "${containerName}" on port ${port}...\n` + (startResult.stdout || '');
-          stderr = startResult.stderr || '';
-        }
-      }
-    }
-
-    if (!containerExists) {
-      // Container doesn't exist — check ports and create fresh
-      if (!(await isPortFree(port)) || !(await isPortFree(grpcPort))) {
-        const freePort = await findFreePort(port + 10);
-        if (!freePort) {
-          return res.status(409).json({
-            error: `Port ${port} is in use and no free port found in range ${port + 10}-${port + 210}. Change the port above and try again.`,
-            portConflict: true,
-            port: String(port),
-            output: `Scanned ports ${port + 10} to ${port + 210}, all busy.`,
-          });
-        }
-        port = freePort;
-        grpcPort = freePort + 1;
-      }
-
-      const cmd = [
-        'docker run -d',
-        `--name ${containerName}`,
-        '--restart unless-stopped',
-        `-p ${port}:6333`,
-        `-p ${grpcPort}:6334`,
-        `-v ${volumeName}:/qdrant/storage`,
-        `-e QDRANT__SERVICE__API_KEY=${QDRANT_KEY}`,
-        `-e QDRANT__LOG_LEVEL=WARN`,
-        'qdrant/qdrant:latest',
-      ].join(' ');
-
-      const result = await execAsync(cmd, { timeout: 30000 });
-      stdout = result.stdout || '';
-      stderr = result.stderr || '';
-    }
-
-    // Wait for Qdrant to be ready on the ACTUAL port (up to 30s)
-    const resolvedUrl = `http://localhost:${port}`;
-    let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try {
-        const ping = await fetch(`${resolvedUrl}/collections`, {
-          headers: { 'api-key': QDRANT_KEY },
-          signal: AbortSignal.timeout(2000),
-        });
-        if (ping.ok) { ready = true; break; }
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    res.json({ ok: true, output: stdout + (stderr || ''), ready, port, grpcPort });
-  } catch (err) {
-    console.error('POST /api/setup/docker error:', err.message);
-    res.status(500).json({ error: err.message, output: err.stderr || '' });
-  }
-});
-
-// POST /api/setup/create-collection — Create Qdrant collection
-app.post('/api/setup/create-collection', async (req, res) => {
-  try {
-    // Use runtime vars (already set by reloadConfig after save-config)
-    const apiKey = QDRANT_KEY;
-    const qdrantUrl = QDRANT_URL;
-    const collection = COLLECTION;
-    const dims = EMBEDDING_DIMS;
-
-    // Check if collection already exists
-    const checkRes = await fetch(`${qdrantUrl}/collections/${collection}`, {
-      headers: { 'api-key': apiKey },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (checkRes.ok) {
-      return res.json({ ok: true, message: 'Collection already exists', existed: true });
-    }
-
-    // Create collection
-    const createRes = await fetch(`${qdrantUrl}/collections/${collection}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'api-key': apiKey },
-      body: JSON.stringify({
-        vectors: { size: dims, distance: 'Cosine' },
-      }),
-    });
-
-    if (!createRes.ok) {
-      const text = await createRes.text();
-      throw new Error(`Qdrant ${createRes.status}: ${text}`);
-    }
-
-    res.json({ ok: true, message: `Collection "${collection}" created (${dims}d vectors)`, existed: false });
-  } catch (err) {
-    console.error('POST /api/setup/create-collection error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/connections/docker-new — Spin up a new Qdrant Docker container on a specified port
-app.post('/api/connections/docker-new', async (req, res) => {
-  try {
-    const { port, grpcPort, apiKey, containerName, volumeName } = req.body;
-    if (!port || !apiKey || !containerName || !volumeName) {
-      return res.status(400).json({ error: 'port, apiKey, containerName, and volumeName are required' });
-    }
-
-    const httpPort = parseInt(port, 10);
-    const grpc = parseInt(grpcPort || (httpPort + 1), 10);
-
-    const cmd = [
-      'docker run -d',
-      `--name ${containerName}`,
-      '--restart unless-stopped',
-      `-p ${httpPort}:6333`,
-      `-p ${grpc}:6334`,
-      `-v ${volumeName}:/qdrant/storage`,
-      `-e QDRANT__SERVICE__API_KEY=${apiKey}`,
-      `-e QDRANT__LOG_LEVEL=WARN`,
-      'qdrant/qdrant:latest',
-    ].join(' ');
-
-    let stdout = '', stderr = '';
-    try {
-      const result = await execAsync(cmd, { timeout: 30000 });
-      stdout = result.stdout || '';
-      stderr = result.stderr || '';
-    } catch (err) {
-      const combined = (err.stderr || '') + (err.message || '');
-      if (combined.includes('port is already allocated') || combined.includes('address already in use')) {
-        return res.status(409).json({ error: `Port ${httpPort} is already in use`, portConflict: true, output: combined });
-      }
-      if (combined.includes('Conflict') || combined.includes('already in use by container')) {
-        return res.status(409).json({ error: `Container name "${containerName}" already exists`, nameConflict: true, output: combined });
-      }
-      throw err;
-    }
-
-    // Poll until Qdrant is ready (up to 30s)
-    const qdrantUrl = `http://localhost:${httpPort}`;
-    let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try {
-        const ping = await fetch(`${qdrantUrl}/collections`, {
-          headers: { 'api-key': apiKey },
-          signal: AbortSignal.timeout(2000),
-        });
-        if (ping.ok) { ready = true; break; }
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    res.json({ ok: true, url: qdrantUrl, ready, output: stdout + stderr });
-  } catch (err) {
-    console.error('POST /api/connections/docker-new error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/connections/create-collection — Create a Qdrant collection on any instance
-app.post('/api/connections/create-collection', async (req, res) => {
-  try {
-    const { url, apiKey, collection } = req.body;
-    if (!url || !apiKey || !collection) {
-      return res.status(400).json({ error: 'url, apiKey, and collection are required' });
-    }
-    const dims = EMBEDDING_DIMS;
-
-    // Check if collection already exists
-    const checkRes = await fetch(`${url}/collections/${collection}`, {
-      headers: { 'api-key': apiKey },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (checkRes.ok) {
-      return res.json({ ok: true, message: 'Collection already exists', existed: true });
-    }
-
-    // Create collection
-    const createRes = await fetch(`${url}/collections/${collection}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'api-key': apiKey },
-      body: JSON.stringify({ vectors: { size: dims, distance: 'Cosine' } }),
-    });
-    if (!createRes.ok) {
-      const text = await createRes.text();
-      throw new Error(`Qdrant ${createRes.status}: ${text}`);
-    }
-
-    res.json({ ok: true, message: `Collection "${collection}" created (${dims}d vectors)`, existed: false });
-  } catch (err) {
-    console.error('POST /api/connections/create-collection error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/setup/build — Build the MCP server
-app.post('/api/setup/build', async (req, res) => {
-  try {
-    const mcpDir = resolve(PROJECT_ROOT, 'mcp-server');
-    const { stdout, stderr } = await execAsync('npm install && npm run build', {
-      cwd: mcpDir,
-      timeout: 120000,
-    });
-    res.json({ ok: true, output: stdout + (stderr || '') });
-  } catch (err) {
-    console.error('POST /api/setup/build error:', err.message);
-    res.status(500).json({ error: err.message, output: err.stdout || '' });
-  }
-});
-
-// GET /api/setup/test-qdrant — Ping Qdrant (accepts ?port= to test a specific port)
-app.get('/api/setup/test-qdrant', async (req, res) => {
-  try {
-    const port = req.query.port ? parseInt(req.query.port, 10) : null;
-    const url = port ? `http://localhost:${port}` : QDRANT_URL;
-    const ping = await fetch(`${url}/collections`, {
-      headers: { 'api-key': QDRANT_KEY },
-      signal: AbortSignal.timeout(3000),
-    });
-    res.json({ ok: ping.ok });
-  } catch {
-    res.json({ ok: false });
-  }
-});
-
-// POST /api/setup/test-qdrant-cloud — Test connection to a remote Qdrant instance
-app.post('/api/setup/test-qdrant-cloud', async (req, res) => {
-  try {
-    const { url, apiKey } = req.body;
-    if (!url || !apiKey) return res.status(400).json({ error: 'url and apiKey required' });
-
-    const ping = await fetch(`${url.replace(/\/+$/, '')}/collections`, {
-      headers: { 'api-key': apiKey },
-    });
-    if (!ping.ok) {
-      const text = await ping.text();
-      return res.json({ ok: false, error: `Qdrant responded ${ping.status}: ${text.slice(0, 200)}` });
-    }
-    res.json({ ok: true });
-  } catch (err) {
-    res.json({ ok: false, error: err.message });
-  }
-});
+// Docker/Qdrant setup endpoints removed — SQLite is self-contained
+// Legacy stubs for UI compatibility
+app.post('/api/setup/start-docker-desktop', (req, res) => { res.json({ ok: true, message: 'Docker no longer required — using local SQLite.' }); });
+app.post('/api/setup/docker', (req, res) => { res.json({ ok: true, message: 'Docker no longer required — using local SQLite.' }); });
+app.post('/api/setup/create-collection', (req, res) => { res.json({ ok: true, message: 'SQLite database is created automatically.' }); });
+app.get('/api/setup/test-qdrant', (req, res) => { res.json({ ok: true, message: 'Using local SQLite — no Qdrant to test.' }); });
+app.post('/api/setup/test-qdrant-cloud', (req, res) => { res.json({ ok: true, message: 'Using local SQLite — no Qdrant to test.' }); });
 
 // POST /api/setup/write-mcp-json — Generate .mcp.json in target directory
 app.post('/api/setup/write-mcp-json', (req, res) => {
@@ -6650,140 +5164,24 @@ app.post('/api/skills-studio/import', (req, res) => {
   }
 });
 
-// Helper: detect if Docker Desktop is installed on Windows
-function detectDockerDesktop() {
-  const paths = [
-    'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe',
-    `${process.env.LOCALAPPDATA}\\Docker\\Docker Desktop.exe`,
-  ];
-  for (const p of paths) {
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
-
-// GET /api/health — Pre-flight check: is Qdrant reachable? Is Docker running?
-app.get('/api/health', async (req, res) => {
-  const isLocal = /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(QDRANT_URL);
-
-  // 1. Try reaching Qdrant directly
+// GET /api/health — Check if SQLite database is accessible
+app.get('/api/health', (req, res) => {
   try {
-    const ping = await fetch(`${QDRANT_URL}/collections`, {
-      headers: { 'api-key': QDRANT_KEY },
-      signal: AbortSignal.timeout(3000),
-    });
-    if (ping.ok) {
-      return res.json({ ok: true });
+    const dbPath = getDbPath();
+    if (!existsSync(dbPath)) {
+      return res.json({ ok: false, reason: 'db_missing', detail: `Database not found at ${dbPath}` });
     }
-    return res.json({ ok: false, reason: 'auth_error', detail: `Qdrant responded with HTTP ${ping.status}` });
-  } catch {
-    // Qdrant unreachable
+    // Quick read test
+    const count = countMemories();
+    res.json({ ok: true, storage: 'sqlite', memories: count });
+  } catch (err) {
+    res.json({ ok: false, reason: 'db_error', detail: err.message });
   }
-
-  // If remote Qdrant, Docker doesn't matter
-  if (!isLocal) {
-    return res.json({ ok: false, reason: 'remote_unreachable', detail: `Cannot reach ${QDRANT_URL}` });
-  }
-
-  // 2. Check Docker daemon
-  let dockerRunning = false;
-  try {
-    await execAsync('docker info', { timeout: 5000 });
-    dockerRunning = true;
-  } catch {}
-
-  if (!dockerRunning) {
-    const desktopPath = detectDockerDesktop();
-    return res.json({
-      ok: false,
-      reason: 'docker_not_running',
-      canAutoStart: !!desktopPath,
-    });
-  }
-
-  // 3. Docker running — check container state
-  try {
-    const { stdout } = await execAsync('docker ps -a --filter "name=claude-memory" --format "{{.Status}}"', { timeout: 5000 });
-    const status = stdout.trim().toLowerCase();
-    if (status && !status.startsWith('up')) {
-      return res.json({ ok: false, reason: 'container_stopped', canAutoStart: true });
-    }
-  } catch {}
-
-  return res.json({ ok: false, reason: 'qdrant_unreachable', canAutoStart: true });
 });
 
-// POST /api/health/start — One-button fix: start Docker + containers + wait for Qdrant
-app.post('/api/health/start', async (req, res) => {
-  try {
-    // 1. If Docker daemon isn't running, try to launch Docker Desktop
-    let dockerRunning = false;
-    try {
-      await execAsync('docker info', { timeout: 3000 });
-      dockerRunning = true;
-    } catch {}
-
-    if (!dockerRunning) {
-      const desktopPath = detectDockerDesktop();
-      if (!desktopPath) {
-        return res.json({ ok: false, error: 'Docker is not installed. Install Docker Desktop or configure a remote Qdrant instance.' });
-      }
-
-      // Launch Docker Desktop
-      try {
-        await execAsync(`start "" "${desktopPath}"`, { timeout: 5000, shell: true });
-      } catch {}
-
-      // Wait for daemon (up to 60s — Docker Desktop can be slow on first launch)
-      for (let i = 0; i < 60; i++) {
-        try {
-          await execAsync('docker info', { timeout: 3000 });
-          dockerRunning = true;
-          break;
-        } catch {}
-        await new Promise(r => setTimeout(r, 1000));
-      }
-
-      if (!dockerRunning) {
-        return res.json({ ok: false, error: 'Docker Desktop was launched but the engine did not start in time. Try again.' });
-      }
-    }
-
-    // 2. Start containers — build env vars from active connection
-    const connData = loadQdrantConnections();
-    const activeConn = connData.active ? connData.connections[connData.active] : null;
-    const dcPort = activeConn ? (activeConn.port || extractPort(activeConn.url)) : 6333;
-    const dcApiKey = activeConn ? activeConn.apiKey : QDRANT_KEY;
-
-    await execAsync('docker compose up -d', {
-      cwd: PROJECT_ROOT,
-      timeout: 60000,
-      env: {
-        ...process.env,
-        QDRANT_PORT: String(dcPort),
-        QDRANT_GRPC_PORT: String(dcPort + 1),
-        QDRANT_MEMORY_API_KEY: dcApiKey,
-      },
-    });
-
-    // 3. Wait for Qdrant to respond (up to 30s)
-    let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try {
-        const ping = await fetch(`${QDRANT_URL}/collections`, {
-          headers: { 'api-key': QDRANT_KEY },
-          signal: AbortSignal.timeout(2000),
-        });
-        if (ping.ok) { ready = true; break; }
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    res.json({ ok: true, ready });
-  } catch (err) {
-    console.error('POST /api/health/start error:', err.message);
-    res.json({ ok: false, error: err.message });
-  }
+// POST /api/health/start — No-op for SQLite (no Docker to start)
+app.post('/api/health/start', (req, res) => {
+  res.json({ ok: true, ready: true, message: 'SQLite is always available — no startup needed.' });
 });
 
 // --- MCP API Key Management ---
@@ -9593,37 +7991,21 @@ app.post('/api/browser/browse-folder', async (req, res) => {
 });
 
 // --- Start ---
-// Migrate connections.json → .env if it still exists (one-time)
-migrateConnectionsJsonToEnv();
-// Load active connection from .env
 reloadConfig();
 
 const httpServer = app.listen(PORT, async () => {
   console.log(`\n  Neural Memory Interface`);
   console.log(`  ──────────────────────`);
-  console.log(`  Server:  http://localhost:${PORT}`);
-  console.log(`  MCP:     http://localhost:${PORT}/mcp`);
-  console.log(`  Qdrant:  ${QDRANT_URL}`);
-  console.log(`  Collection: ${COLLECTION}`);
-  console.log(`  OpenAI:  ${OPENAI_KEY ? 'configured' : 'MISSING'}`);
-  console.log(`  Terminal: WebSocket on ws://localhost:${PORT}/ws/terminal/*`);
-  console.log(`  Browser:  WebSocket on ws://localhost:${PORT}/ws/browser/*`);
+  console.log(`  Server:    http://localhost:${PORT}`);
+  console.log(`  MCP:       http://localhost:${PORT}/mcp`);
+  console.log(`  Storage:   SQLite (${getDbPath()})`);
+  console.log(`  Embedding: local (${EMBEDDING_DIMS}d)`);
+  console.log(`  Terminal:  WebSocket on ws://localhost:${PORT}/ws/terminal/*`);
+  console.log(`  Browser:   WebSocket on ws://localhost:${PORT}/ws/browser/*`);
   console.log(`  Whiteboard: WebSocket on ws://localhost:${PORT}/ws/whiteboard`);
   console.log(`  Cards:      WebSocket on ws://localhost:${PORT}/ws/cards\n`);
 
-  // Ensure trashed_at index exists for soft-delete filtering on existing collections
-  try {
-    await qdrantFetch('/index', {
-      method: 'PUT',
-      body: JSON.stringify({ field_name: 'trashed_at', field_schema: 'keyword' }),
-    });
-    console.log('  trashed_at index ensured');
-  } catch (err) {
-    // Index may already exist or Qdrant not yet reachable — non-fatal
-    if (!err.message?.includes('already exists')) {
-      console.warn('  trashed_at index warning:', err.message);
-    }
-  }
+  // SQLite indexes are created in schema — no runtime index creation needed
 
   // Auto-sync OpenClaw bridge if enabled
   try {

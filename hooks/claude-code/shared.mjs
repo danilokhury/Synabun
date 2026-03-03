@@ -57,7 +57,7 @@ function parseEnvFile(filePath) {
 
 export function getActiveConnectionId() {
   const vars = parseEnvFile(ENV_PATH);
-  return vars.QDRANT_ACTIVE || 'default';
+  return vars.SYNABUN_ACTIVE_CONNECTION || vars.QDRANT_ACTIVE || 'default';
 }
 
 export function getCategoriesPath() {

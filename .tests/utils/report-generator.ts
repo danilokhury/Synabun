@@ -5,7 +5,7 @@ export function generateReport(sessions: SessionStats[]): string {
   const lines: string[] = [
     '='.repeat(80),
     '  SYNABUN TOKEN USAGE & COST PROJECTION REPORT',
-    '  Model: text-embedding-3-small | Price: $0.02 / 1M tokens',
+    '  Embeddings: local (Xenova/all-MiniLM-L6-v2) | Storage: SQLite',
     '='.repeat(80),
     '',
   ];
@@ -15,17 +15,17 @@ export function generateReport(sessions: SessionStats[]): string {
     lines.push(`  ${session.description}`);
     lines.push('-'.repeat(80));
     lines.push(
-      `  ${'Tool'.padEnd(25)} | ${'Calls'.padStart(5)} | ${'OpenAI'.padStart(6)} | `
-      + `${'Tokens'.padStart(8)} | ${'Qdrant'.padStart(6)} | ${'Cost'.padStart(12)}`
+      `  ${'Tool'.padEnd(25)} | ${'Calls'.padStart(5)} | ${'Embed'.padStart(6)} | `
+      + `${'Tokens'.padStart(8)} | ${'DB ops'.padStart(6)} | ${'Cost'.padStart(12)}`
     );
     lines.push('  ' + '-'.repeat(76));
 
     for (const inv of session.invocations) {
       lines.push(
         `  ${inv.tool.padEnd(25)} | ${String(inv.callCount).padStart(5)} | `
-        + `${String(inv.openaiEmbeddingCalls).padStart(6)} | `
+        + `${String(inv.embeddingCalls).padStart(6)} | `
         + `${formatTokens(inv.totalEmbeddingTokens).padStart(8)} | `
-        + `${String(inv.totalQdrantOps).padStart(6)} | `
+        + `${String(inv.totalDbOps).padStart(6)} | `
         + `${formatCost(inv.estimatedCostUSD).padStart(12)}`
       );
     }
@@ -33,9 +33,9 @@ export function generateReport(sessions: SessionStats[]): string {
     lines.push('  ' + '-'.repeat(76));
     lines.push(
       `  ${'TOTALS'.padEnd(25)} | ${''.padStart(5)} | `
-      + `${String(session.totals.openaiCalls).padStart(6)} | `
+      + `${String(session.totals.embeddingCallCount).padStart(6)} | `
       + `${formatTokens(session.totals.embeddingTokens).padStart(8)} | `
-      + `${String(session.totals.qdrantOps).padStart(6)} | `
+      + `${String(session.totals.dbOps).padStart(6)} | `
       + `${formatCost(session.totals.costUSD).padStart(12)}`
     );
     lines.push('');

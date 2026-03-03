@@ -844,9 +844,9 @@ export function applyBgTheme(graph, bloomPass) {
   addBackgroundDeepGrid(graph);
   graph.backgroundColor('#000000');
   if (bloomPass) {
-    bloomPass.strength = 0.45;
-    bloomPass.threshold = 0.3;
-    bloomPass.radius = 0.45;
+    bloomPass.strength = 0.35;
+    bloomPass.threshold = 1.0;
+    bloomPass.radius = 0.3;
   }
   applyFloorStyle(gfx.floorStyle || 'grid', graph);
 }

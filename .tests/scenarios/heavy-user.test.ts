@@ -64,7 +64,7 @@ describe('heavy user scenario (40 remember + 80 recall, 3 sessions/day)', () => 
     expect(total).toBeGreaterThan(0);
   });
 
-  it('calculates per-session Qdrant operations', () => {
+  it('calculates per-session DB operations', () => {
     const rememberOps = SESSION_REMEMBER * 1;
     const recallOps = (SESSION_RECALL + SESSION_START_RECALLS) * (1 + DEFAULT_RECALL_LIMIT);
     const reflectMetaOps = SESSION_REFLECT_METADATA * 2;
@@ -75,7 +75,7 @@ describe('heavy user scenario (40 remember + 80 recall, 3 sessions/day)', () => 
     const memoriesStatsOps = 1 + CATEGORY_COUNT + 1;
     const total = rememberOps + recallOps + reflectMetaOps + reflectContentOps + forgetOps + restoreOps + memoriesStatsOps;
 
-    console.log('\n  Heavy user — Qdrant ops/session:');
+    console.log('\n  Heavy user — DB ops/session:');
     console.log(`    remember:  ${rememberOps}`);
     console.log(`    recall:    ${recallOps}`);
     console.log(`    reflect:   ${reflectMetaOps + reflectContentOps}`);

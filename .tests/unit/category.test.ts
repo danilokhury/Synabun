@@ -7,7 +7,7 @@ import {
   getParentCategories,
   getCategoryTree,
 } from '../../mcp-server/src/services/categories.js';
-import { countMemories, updatePayloadByFilter } from '../../mcp-server/src/services/qdrant.js';
+import { countMemories, updatePayloadByFilter } from '../../mcp-server/src/services/sqlite.js';
 import { refreshCategorySchemas } from '../../mcp-server/src/index.js';
 
 const { handleCategory } = await import('../../mcp-server/src/tools/category.js');
