@@ -2699,6 +2699,15 @@
     border-color: rgba(79,195,247,0.25);
     color: var(--accent-blue);
   }
+  #cc-tool-permissions .cc-hook-toggles {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  #cc-tool-permissions .cc-hook-toggles > .cc-integration-item:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+  #cc-tool-permissions .cc-hook-toggles > .cc-integration-item + .cc-integration-item { margin-top: 0; }
   #cc-tool-permissions .cc-integration-item {
     padding: 6px 10px;
   }
@@ -7823,6 +7832,8 @@
     background: rgba(255,255,255,0.2);
   }
   .settings-panel-header h3 {
+    flex: 1;
+    min-width: 0;
     margin: 0;
     font-size: var(--fs-base);
     font-weight: 600;
@@ -12967,7 +12978,6 @@
     overflow-x: hidden !important;
     scrollbar-width: thin !important;
     scrollbar-color: rgba(255,255,255,0.35) rgba(255,255,255,0.1) !important;
-    z-index: 10 !important;
     background: transparent !important;
   }
   .term-float-tab-body .xterm-viewport::-webkit-scrollbar {
@@ -13238,7 +13248,6 @@
     overflow-x: hidden !important;
     scrollbar-width: thin !important;
     scrollbar-color: rgb(60,60,65) rgb(16,16,18) !important;
-    z-index: 10 !important;
     background: transparent !important;
   }
   .term-viewport:hover .xterm-viewport {
@@ -13299,6 +13308,8 @@
     padding: 4px 4px 4px 8px;
     scrollbar-width: thin;
     scrollbar-color: rgb(60,60,65) rgb(16,16,18);
+    user-select: none;
+    -webkit-user-select: none;
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
   }

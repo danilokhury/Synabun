@@ -315,6 +315,7 @@ function buildServerTab(settings) {
             <button class="conn-add-btn" id="stg-db-browse-btn" style="margin:0;width:auto;flex:0 0 auto;white-space:nowrap;padding:4px 10px">Browse</button>
             <button class="conn-add-btn" id="stg-db-move-btn" style="margin:0;width:auto;flex:0 0 auto;white-space:nowrap;padding:4px 10px">Move</button>
           </div>
+          <div id="stg-db-browser" style="display:none;margin:4px 0 8px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
           <div class="settings-hint" id="stg-db-hint">${settings.dbExists ? `File exists (${dbSizeMB} MB)` : 'Database not found'}</div>
           <div id="stg-db-move-status" style="display:none;margin-top:8px;font-size:12px;align-items:center;gap:8px"></div>
           <div id="stg-db-move-cleanup" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(109,213,140,0.08);border:1px solid rgba(109,213,140,0.2);border-radius:8px;font-size:12px;">
@@ -334,10 +335,6 @@ function buildServerTab(settings) {
           </div>
           <div class="settings-hint">Embeddings are computed locally, no API key required</div>
         </div>
-        <div class="settings-actions">
-          <button class="settings-btn-cancel" id="stg-cancel">Cancel</button>
-        </div>
-
         <div class="stg-section-divider"></div>
         <div class="gfx-group-title">System Backup & Restore</div>
         <div class="settings-hint" style="margin-bottom:12px">
@@ -599,6 +596,7 @@ function buildSetupTab(setupStatus) {
                     <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
                   </button>
                 </div>
+              <div id="bc-browse-browser" style="display:none;margin:4px 0 4px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
               </div>
               <div class="bc-card-row">
                 <label class="bc-lbl">Persist State</label>
@@ -1048,7 +1046,7 @@ function buildCollectionsTab(connections, settings) {
       </div>`;
 }
 
-function buildToolPermissionsSection(categories, permissions, chevron) {
+function buildToolPermissionsSection(categories, permissions, chevron, providerBadge) {
   if (!categories || !categories.length) return '';
   const perms = permissions || {};
 
@@ -1096,6 +1094,7 @@ function buildToolPermissionsSection(categories, permissions, chevron) {
               ${chevron} Permissions
               <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-tools-badge">${totalOn}/${totalAll}</span>
             </span>
+            ${providerBadge ? providerBadge({ cli: true, vscode: true, web: false, cowork: false }) : ''}
           </div>
           <div class="cc-section-body">
             <div class="cc-tool-permissions-hint" style="font-size:10px;color:var(--t-dim);margin-bottom:8px;padding:0 2px">
@@ -1346,7 +1345,7 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
         </div>
 
         <!-- 3.5 TOOL PERMISSIONS -->
-        ${buildToolPermissionsSection(toolCategories, toolPermissions, chevron)}
+        ${buildToolPermissionsSection(toolCategories, toolPermissions, chevron, providerBadge)}
 
         <!-- 4. EXTERNAL ACCESS -->
         <div class="iface-section collapsed" data-collapsible>
@@ -1906,30 +1905,69 @@ export async function openSettingsModal() {
 
   // ── Close handlers ──
   overlay.querySelector('#stg-close').addEventListener('click', close);
-  overlay.querySelector('#stg-cancel').addEventListener('click', close);
 
   // ── Move Database handlers ──
   const moveBrowseBtn = overlay.querySelector('#stg-db-browse-btn');
   const moveBtn = overlay.querySelector('#stg-db-move-btn');
 
   if (moveBrowseBtn) {
-    moveBrowseBtn.addEventListener('click', async () => {
-      moveBrowseBtn.disabled = true;
-      moveBrowseBtn.textContent = '...';
+    const dbBrowserEl = overlay.querySelector('#stg-db-browser');
+    const dbPathInput = overlay.querySelector('#stg-db-path');
+
+    async function loadDbDir(dirPath) {
+      dbBrowserEl.style.display = 'block';
+      dbBrowserEl.innerHTML = '<div style="padding:10px;color:var(--t-muted);font-size:12px">Loading...</div>';
       try {
-        const res = await fetch('/api/browse-folder', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ description: 'Select new folder for memory database' }),
-        });
+        const qs = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
+        const res = await fetch(`/api/browse-directory${qs}`);
         const data = await res.json();
-        if (data.path) {
-          const pathInput = overlay.querySelector('#stg-db-path');
-          if (pathInput) pathInput.value = data.path + '/memory.db';
+        if (!data.ok) throw new Error(data.error);
+
+        let html = '<div style="padding:6px 10px;font-size:11px;color:var(--t-muted);border-bottom:1px solid var(--s-medium);display:flex;align-items:center;justify-content:space-between">'
+          + `<span style="font-family:'JetBrains Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(data.current)}</span>`
+          + '<button id="stg-db-browse-select" style="flex:0 0 auto;padding:3px 10px;background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);border-radius:4px;cursor:pointer;font-size:11px">Select</button>'
+          + '</div>';
+        html += '<div style="padding:4px 0">';
+        if (data.parent) {
+          html += `<div class="cc-browse-item" data-path="${escapeHtml(data.parent)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t-muted)">`
+            + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><polyline points="15 18 9 12 15 6"/></svg>'
+            + '.. (parent)</div>';
         }
-      } catch {}
-      moveBrowseBtn.disabled = false;
-      moveBrowseBtn.textContent = 'Browse';
+        for (const d of data.directories) {
+          html += `<div class="cc-browse-item" data-path="${escapeHtml(data.current + '/' + d)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px">`
+            + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+            + escapeHtml(d) + '</div>';
+        }
+        if (data.directories.length === 0 && !data.parent) {
+          html += '<div style="padding:8px 10px;color:var(--t-muted);font-size:12px">No subdirectories</div>';
+        }
+        html += '</div>';
+        dbBrowserEl.innerHTML = html;
+
+        dbBrowserEl.querySelector('#stg-db-browse-select').addEventListener('click', () => {
+          dbPathInput.value = data.current.replace(/\\/g, '/') + '/memory.db';
+          dbBrowserEl.style.display = 'none';
+        });
+
+        dbBrowserEl.querySelectorAll('.cc-browse-item').forEach(item => {
+          item.addEventListener('mouseenter', () => item.style.background = 'var(--s-medium)');
+          item.addEventListener('mouseleave', () => item.style.background = '');
+          item.addEventListener('click', () => loadDbDir(item.dataset.path));
+        });
+      } catch (err) {
+        dbBrowserEl.innerHTML = `<div style="padding:10px;color:var(--accent-dim);font-size:12px">Error: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    moveBrowseBtn.addEventListener('click', () => {
+      if (dbBrowserEl.style.display === 'block') {
+        dbBrowserEl.style.display = 'none';
+        return;
+      }
+      // Start browsing from current path's directory, or home
+      const currentVal = (dbPathInput.value || '').trim();
+      const startDir = currentVal ? currentVal.replace(/[/\\][^/\\]*$/, '') : '';
+      loadDbDir(startDir);
     });
   }
 
@@ -3334,25 +3372,65 @@ export async function openSettingsModal() {
       });
     }
 
-    // Browse folder button → open native folder picker
+    // Browse folder button → in-app folder picker
     const browseBtn = overlay.querySelector('#bc-browse-folder');
-    if (browseBtn) {
-      browseBtn.addEventListener('click', async () => {
-        browseBtn.style.opacity = '0.4';
-        browseBtn.style.pointerEvents = 'none';
+    const bcBrowserEl = overlay.querySelector('#bc-browse-browser');
+    if (browseBtn && bcBrowserEl) {
+      async function loadBcDir(dirPath) {
+        bcBrowserEl.style.display = 'block';
+        bcBrowserEl.innerHTML = '<div style="padding:10px;color:var(--t-muted);font-size:12px">Loading...</div>';
         try {
-          const res = await fetch('/api/browser/browse-folder', { method: 'POST' });
+          const qs = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
+          const res = await fetch(`/api/browse-directory${qs}`);
           const data = await res.json();
-          if (data.path) {
-            const input = overlay.querySelector('#bc-custom-profile-path');
-            if (input) input.value = data.path;
-            setProfilePath(data.path);
+          if (!data.ok) throw new Error(data.error);
+
+          let html = '<div style="padding:6px 10px;font-size:11px;color:var(--t-muted);border-bottom:1px solid var(--s-medium);display:flex;align-items:center;justify-content:space-between">'
+            + `<span style="font-family:'JetBrains Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(data.current)}</span>`
+            + '<button id="bc-browse-select" style="flex:0 0 auto;padding:3px 10px;background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);border-radius:4px;cursor:pointer;font-size:11px">Select</button>'
+            + '</div>';
+          html += '<div style="padding:4px 0">';
+          if (data.parent) {
+            html += `<div class="cc-browse-item" data-path="${escapeHtml(data.parent)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t-muted)">`
+              + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><polyline points="15 18 9 12 15 6"/></svg>'
+              + '.. (parent)</div>';
           }
-        } catch { /* dialog failed or cancelled */ }
-        finally {
-          browseBtn.style.opacity = '';
-          browseBtn.style.pointerEvents = '';
+          for (const d of data.directories) {
+            html += `<div class="cc-browse-item" data-path="${escapeHtml(data.current + '/' + d)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px">`
+              + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+              + escapeHtml(d) + '</div>';
+          }
+          if (data.directories.length === 0 && !data.parent) {
+            html += '<div style="padding:8px 10px;color:var(--t-muted);font-size:12px">No subdirectories</div>';
+          }
+          html += '</div>';
+          bcBrowserEl.innerHTML = html;
+
+          bcBrowserEl.querySelector('#bc-browse-select').addEventListener('click', () => {
+            const input = overlay.querySelector('#bc-custom-profile-path');
+            const selected = data.current.replace(/\\/g, '/');
+            if (input) input.value = selected;
+            setProfilePath(selected);
+            bcBrowserEl.style.display = 'none';
+          });
+
+          bcBrowserEl.querySelectorAll('.cc-browse-item').forEach(item => {
+            item.addEventListener('mouseenter', () => item.style.background = 'var(--s-medium)');
+            item.addEventListener('mouseleave', () => item.style.background = '');
+            item.addEventListener('click', () => loadBcDir(item.dataset.path));
+          });
+        } catch (err) {
+          bcBrowserEl.innerHTML = `<div style="padding:10px;color:var(--accent-dim);font-size:12px">Error: ${escapeHtml(err.message)}</div>`;
         }
+      }
+
+      browseBtn.addEventListener('click', () => {
+        if (bcBrowserEl.style.display === 'block') {
+          bcBrowserEl.style.display = 'none';
+          return;
+        }
+        const current = overlay.querySelector('#bc-custom-profile-path')?.value?.trim() || '';
+        loadBcDir(current);
       });
     }
 

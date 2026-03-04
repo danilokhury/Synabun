@@ -1024,17 +1024,8 @@ async function openSession(profile, cwd, existingSessionId) {
   if (document.fonts?.ready) await document.fonts.ready;
   term.open(viewport);
 
-  // Block xterm's built-in paste handler. xterm.js adds an irremovable paste
-  // listener on its internal textarea during open(). We intercept it in the
-  // capture phase with stopImmediatePropagation to prevent the double-paste bug.
-  // Our handlePaste() uses the Clipboard API instead, so we don't need xterm's paste.
+  // Find xterm's internal textarea (used for paste handler below, after ws is created)
   const xtermTextarea = viewport.querySelector('.xterm-helper-textarea');
-  if (xtermTextarea) {
-    xtermTextarea.addEventListener('paste', (e) => {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }, true);
-  }
 
   // Load SearchAddon (stored on session for Ctrl+F)
   const searchAddon = new _SearchAddon();
@@ -1076,10 +1067,11 @@ async function openSession(profile, cwd, existingSessionId) {
 
   // ── Keyboard shortcuts (after ws is declared) ──
   term.attachCustomKeyEventHandler((e) => {
-    // Ctrl+Enter → insert newline (don't submit)
+    // Ctrl+Enter → insert literal newline (multi-line command editing)
+    // Sends Ctrl-V (\x16) + LF (\n) — readline inserts LF literally instead of executing
     if (e.ctrlKey && e.key === 'Enter') {
       if (e.type === 'keydown' && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'input', data: '\n' }));
+        ws.send(JSON.stringify({ type: 'input', data: '\x16\n' }));
       }
       return false;
     }
@@ -1100,10 +1092,9 @@ async function openSession(profile, cwd, existingSessionId) {
       }
       return false;
     }
-    // Ctrl+V or Ctrl+Shift+V → paste from clipboard (images + text)
-    // Block ALL event types (keydown, keyup, keypress) to prevent xterm's own paste
+    // Ctrl+V — block xterm from sending \x16 (lnext) to PTY.
+    // Browser paste event still fires → xterm's built-in paste handler processes it.
     if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
-      if (e.type === 'keydown') handlePaste(ws, term);
       return false;
     }
     // Ctrl+F → open search bar
@@ -1124,12 +1115,43 @@ async function openSession(profile, cwd, existingSessionId) {
     return true; // let xterm handle everything else
   });
 
-  // ── Copy-on-select ──
+  // ── Paste event on textarea (capture) — intercept IMAGE paste only ──
+  // Text paste falls through to xterm's built-in paste handler (bubble phase)
+  // which handles normalization (\r?\n → \r) and bracketed paste wrapping.
+  if (xtermTextarea) {
+    xtermTextarea.addEventListener('paste', (e) => {
+      if (!e.clipboardData || ws.readyState !== WebSocket.OPEN) return;
+      // Only intercept image paste — text falls through to xterm's built-in handler
+      for (const item of e.clipboardData.items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          const blob = item.getAsFile();
+          if (!blob) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = reader.result.split(',')[1];
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'image_paste', data: base64, mimeType: item.type }));
+            }
+          };
+          reader.readAsDataURL(blob);
+          return;
+        }
+      }
+      // Text: do nothing — xterm's built-in paste handler fires next
+    }, true);
+  }
+
+  // ── Copy-on-select (debounced to avoid focus churn during drag) ──
+  let _selTimer = null;
   term.onSelectionChange(() => {
-    const sel = term.getSelection();
-    if (sel) {
-      navigator.clipboard.writeText(sel).catch(() => {});
-    }
+    if (_selTimer) clearTimeout(_selTimer);
+    _selTimer = setTimeout(() => {
+      _selTimer = null;
+      const sel = term.getSelection();
+      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+    }, 150);
   });
 
   ws.onopen = () => {
@@ -1154,8 +1176,9 @@ async function openSession(profile, cwd, existingSessionId) {
       if (msg.type === 'output' || msg.type === 'replay') {
         term.write(msg.data);
         // Auto-scroll to bottom if user hasn't scrolled up, skip in TUI alternate buffer
+        // Also skip if user has an active selection — scrollToBottom clears xterm selections
         const s = _sessions.find(s => s.id === sessionId);
-        if (s?._autoScroll && term.buffer.active.type === 'normal') {
+        if (s?._autoScroll && term.buffer.active.type === 'normal' && !term.hasSelection()) {
           term.scrollToBottom();
         }
       }
@@ -1201,9 +1224,6 @@ async function openSession(profile, cwd, existingSessionId) {
   });
   ro.observe(viewport);
 
-  // Wire image paste on viewport
-  initImagePaste(viewport, ws, term);
-
   // Wire right-click context menu on viewport
   initContextMenu(viewport, term, ws);
 
@@ -1230,11 +1250,9 @@ async function openSession(profile, cwd, existingSessionId) {
   _pendingSessionIds.delete(sessionId);
   _activeIdx = _sessions.length - 1;
 
-  // Start with panel collapsed — show peek dock so user can open when ready
+  // Slide panel up so user sees the session immediately
   ensurePanel();
-  if (_panel.classList.contains('hidden')) {
-    showPeekDock();
-  }
+  showPanel();
   if (_splitMode) renderSplitTabBars();
   renderTabBar();
   switchToSession(_activeIdx);
@@ -1377,11 +1395,9 @@ async function openHtmlTermSession(profile, cwd, existingSessionId) {
     // Right-click context menu (term=null for HTML term — handler uses session)
     initContextMenu(viewport, null, ws);
 
-    // Show panel
+    // Slide panel up so user sees the session immediately
     ensurePanel();
-    if (_panel.classList.contains('hidden')) {
-      showPeekDock();
-    }
+    showPanel();
     if (_splitMode) renderSplitTabBars();
     renderTabBar();
     switchToSession(_activeIdx);
@@ -1963,14 +1979,8 @@ async function reconnectSession(sessionId, profile, options = {}) {
   if (document.fonts?.ready) await document.fonts.ready;
   term.open(viewport);
 
-  // Block xterm's built-in paste handler (same double-paste fix)
+  // Find xterm's internal textarea (used for paste handler below, after ws is created)
   const xtermTextarea = viewport.querySelector('.xterm-helper-textarea');
-  if (xtermTextarea) {
-    xtermTextarea.addEventListener('paste', (e) => {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }, true);
-  }
 
   const searchAddon = new _SearchAddon();
   term.loadAddon(searchAddon);
@@ -2006,10 +2016,10 @@ async function reconnectSession(sessionId, profile, options = {}) {
   const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
 
   term.attachCustomKeyEventHandler((e) => {
-    // Ctrl+Enter → insert newline (don't submit)
+    // Ctrl+Enter → insert literal newline (multi-line command editing)
     if (e.ctrlKey && e.key === 'Enter') {
       if (e.type === 'keydown' && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'input', data: '\n' }));
+        ws.send(JSON.stringify({ type: 'input', data: '\x16\n' }));
       }
       return false;
     }
@@ -2029,8 +2039,9 @@ async function reconnectSession(sessionId, profile, options = {}) {
       }
       return false;
     }
+    // Ctrl+V — block xterm from sending \x16 (lnext) to PTY.
+    // Browser paste event still fires → xterm's built-in paste handler processes it.
     if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
-      if (e.type === 'keydown') handlePaste(ws, term);
       return false;
     }
     if (e.ctrlKey && !e.shiftKey && e.key === 'f' && e.type === 'keydown') {
@@ -2049,9 +2060,42 @@ async function reconnectSession(sessionId, profile, options = {}) {
     return true; // let xterm handle everything else
   });
 
+  // ── Paste event on textarea (capture) — intercept IMAGE paste only ──
+  // Text paste falls through to xterm's built-in paste handler.
+  if (xtermTextarea) {
+    xtermTextarea.addEventListener('paste', (e) => {
+      if (!e.clipboardData || ws.readyState !== WebSocket.OPEN) return;
+      // Only intercept image paste — text falls through to xterm's built-in handler
+      for (const item of e.clipboardData.items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          const blob = item.getAsFile();
+          if (!blob) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = reader.result.split(',')[1];
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'image_paste', data: base64, mimeType: item.type }));
+            }
+          };
+          reader.readAsDataURL(blob);
+          return;
+        }
+      }
+      // Text: do nothing — xterm's built-in paste handler fires next
+    }, true);
+  }
+
+  // Copy-on-select (debounced to avoid focus churn during drag)
+  let _selTimer = null;
   term.onSelectionChange(() => {
-    const sel = term.getSelection();
-    if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+    if (_selTimer) clearTimeout(_selTimer);
+    _selTimer = setTimeout(() => {
+      _selTimer = null;
+      const sel = term.getSelection();
+      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+    }, 150);
   });
 
   ws.onopen = () => {
@@ -2071,8 +2115,9 @@ async function reconnectSession(sessionId, profile, options = {}) {
       if (msg.type === 'output' || msg.type === 'replay') {
         term.write(msg.data);
         // Auto-scroll to bottom if user hasn't scrolled up, skip in TUI alternate buffer
+        // Also skip if user has an active selection — scrollToBottom clears xterm selections
         const s = _sessions.find(s => s.id === sessionId);
-        if (s?._autoScroll && term.buffer.active.type === 'normal') {
+        if (s?._autoScroll && term.buffer.active.type === 'normal' && !term.hasSelection()) {
           term.scrollToBottom();
         }
       }
@@ -2116,7 +2161,6 @@ async function reconnectSession(sessionId, profile, options = {}) {
   });
   ro.observe(viewport);
 
-  initImagePaste(viewport, ws, term);
   initContextMenu(viewport, term, ws);
   initMemoryDrop(viewport, ws, term);
 
@@ -2422,11 +2466,33 @@ function initContextMenu(viewport, term, ws) {
           break;
         }
         case 'paste':
-          navigator.clipboard.readText().then(text => {
-            if (text && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'input', data: text }));
+          navigator.clipboard.read().then(items => {
+            for (const ci of items) {
+              const imgType = ci.types.find(t => t.startsWith('image/'));
+              if (imgType) {
+                ci.getType(imgType).then(blob => {
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const base64 = reader.result.split(',')[1];
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ type: 'image_paste', data: base64, mimeType: imgType }));
+                    }
+                  };
+                  reader.readAsDataURL(blob);
+                });
+                return;
+              }
             }
-          }).catch(() => {});
+            // No image — text paste via xterm's built-in
+            navigator.clipboard.readText().then(text => {
+              if (text && session?.term) session.term.paste(text);
+            }).catch(() => {});
+          }).catch(() => {
+            // Fallback if clipboard.read() not available
+            navigator.clipboard.readText().then(text => {
+              if (text && session?.term) session.term.paste(text);
+            }).catch(() => {});
+          });
           break;
         case 'select-all':
           if (term) term.selectAll();
@@ -2541,82 +2607,6 @@ function showTermToast(message) {
   }, 3000);
 }
 
-// ── Clipboard paste (images + text) ──
-
-async function handlePaste(ws, term) {
-  if (ws.readyState !== WebSocket.OPEN) return;
-
-  try {
-    // Use clipboard.read() to check for images first
-    const items = await navigator.clipboard.read();
-    for (const item of items) {
-      const imageType = item.types.find(t => t.startsWith('image/'));
-      if (imageType) {
-        const blob = await item.getType(imageType);
-        const reader = new FileReader();
-        reader.onload = () => {
-          const base64 = reader.result.split(',')[1];
-          ws.send(JSON.stringify({
-            type: 'image_paste',
-            data: base64,
-            mimeType: imageType,
-          }));
-          // Don't term.write() — it corrupts TUI apps like Claude Code
-        };
-        reader.readAsDataURL(blob);
-        return;
-      }
-    }
-
-    // No image found — fall back to text paste
-    const text = await navigator.clipboard.readText();
-    if (text) {
-      ws.send(JSON.stringify({ type: 'input', data: text }));
-    }
-  } catch {
-    // Fallback if clipboard.read() is denied (requires secure context)
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) {
-        ws.send(JSON.stringify({ type: 'input', data: text }));
-      }
-    } catch {}
-  }
-}
-
-function initImagePaste(viewport, ws, term) {
-  // Handle native paste events for images (e.g. right-click → Paste in browser).
-  // Text paste is already blocked on xterm's textarea (see xtermTextarea listener
-  // in openSession) and handled by our handlePaste() via the Clipboard API.
-  viewport.addEventListener('paste', (e) => {
-    if (!e.clipboardData || !e.clipboardData.items) return;
-
-    for (const item of e.clipboardData.items) {
-      if (item.type.startsWith('image/')) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        const blob = item.getAsFile();
-        if (!blob) return;
-
-        const reader = new FileReader();
-        reader.onload = () => {
-          const base64 = reader.result.split(',')[1];
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              type: 'image_paste',
-              data: base64,
-              mimeType: item.type,
-            }));
-          }
-        };
-        reader.readAsDataURL(blob);
-        return;
-      }
-    }
-  });
-}
-
 // ── Memory & whiteboard image drag-drop (explorer/whiteboard → terminal) ──
 
 const SYNABUN_DRAG_TYPES = ['application/x-synabun-memory', 'application/x-synabun-wb-image'];
@@ -2715,21 +2705,27 @@ function bringTabToFront(sessionId) {
   const session = _sessions.find(s => s.id === sessionId);
   // Pinned tabs stay at 10002
   if (session?.pinned) {
-    // Still focus the terminal for keyboard input
+    // Focus the terminal for keyboard input — skip if already focused (preserves selection)
     if (session._isHtmlTerm) {
       requestAnimationFrame(() => session._htmlTerm?.focus());
     } else if (session.term && !session._isBrowser) {
-      requestAnimationFrame(() => session.term.focus());
+      const ta = session.viewport?.querySelector('.xterm-helper-textarea');
+      if (document.activeElement !== ta) {
+        requestAnimationFrame(() => session.term.focus());
+      }
     }
     return;
   }
   _floatZCounter++;
   tabState.el.style.zIndex = _floatZCounter;
-  // Focus the terminal for immediate keyboard input
+  // Focus the terminal for immediate keyboard input — skip if already focused (preserves selection)
   if (session?._isHtmlTerm) {
     requestAnimationFrame(() => session._htmlTerm?.focus());
   } else if (session?.term && !session._isBrowser) {
-    requestAnimationFrame(() => session.term.focus());
+    const ta = session.viewport?.querySelector('.xterm-helper-textarea');
+    if (document.activeElement !== ta) {
+      requestAnimationFrame(() => session.term.focus());
+    }
   }
 }
 

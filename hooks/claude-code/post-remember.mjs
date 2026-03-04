@@ -24,7 +24,7 @@
  *   - Otherwise: {} (side effects only)
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadCategories, buildCategoryReference, detectProject } from './shared.mjs';
@@ -133,11 +133,14 @@ async function main() {
     const category = toolInput.category || '';
 
     if (category === 'conversations') {
-      // Clear pending-compact flag (compaction enforcement)
-      const compactFlagPath = join(PENDING_COMPACT_DIR, `${sessionId}.json`);
-      if (existsSync(compactFlagPath)) {
-        try { unlinkSync(compactFlagPath); } catch { /* ok */ }
-      }
+      // Clear ALL pending-compact flags (session ID may differ after compaction)
+      try {
+        if (existsSync(PENDING_COMPACT_DIR)) {
+          for (const f of readdirSync(PENDING_COMPACT_DIR).filter(f => f.endsWith('.json'))) {
+            try { unlinkSync(join(PENDING_COMPACT_DIR, f)); } catch { /* ok */ }
+          }
+        }
+      } catch { /* ok */ }
       // Also reset pending-remember flag (conversations remember counts too)
       const rememberFlagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
       if (existsSync(rememberFlagPath)) {
