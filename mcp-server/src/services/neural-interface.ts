@@ -4,7 +4,8 @@
  * which manages Playwright sessions, CDP screencast, stealth, etc.
  */
 
-const BASE_URL = process.env.NEURAL_INTERFACE_URL || 'http://localhost:3344';
+const BASE_URL = process.env.NEURAL_INTERFACE_URL
+  || `http://localhost:${process.env.NEURAL_PORT || '3344'}`;
 const DEFAULT_TIMEOUT = 10_000;
 const LONG_TIMEOUT = 30_000;
 
@@ -271,4 +272,22 @@ export async function updateCard(
 
 export async function cardsScreenshot(): Promise<NiResponse> {
   return request('GET', '/api/cards/screenshot', undefined, 15_000);
+}
+
+// ── TicTacToe ──
+
+export async function tictactoeStart(piece?: string): Promise<NiResponse> {
+  return request('POST', '/api/games/tictactoe/start', { piece } as Record<string, unknown>);
+}
+
+export async function tictactoeMove(cell: number): Promise<NiResponse> {
+  return request('POST', '/api/games/tictactoe/move', { cell } as Record<string, unknown>);
+}
+
+export async function tictactoeState(): Promise<NiResponse> {
+  return request('GET', '/api/games/tictactoe/state');
+}
+
+export async function tictactoeEnd(): Promise<NiResponse> {
+  return request('POST', '/api/games/tictactoe/end');
 }

@@ -33,7 +33,7 @@ describe('integration: remember enforcement', () => {
         session_id: sessionId,
         tool_name: 'Edit',
         tool_input: { file_path: `/src/file${i}.ts`, old_string: 'a', new_string: 'b' },
-        cwd: 'J:/Sites/Apps/Synabun',
+        cwd: '/tmp/test-project',
       });
     }
 
@@ -54,7 +54,7 @@ describe('integration: remember enforcement', () => {
       session_id: sessionId,
       tool_name: 'mcp__SynaBun__remember',
       tool_input: { content: 'Fixed the auth bug', category: 'bug-fixes' },
-      cwd: 'J:/Sites/Apps/Synabun',
+      cwd: '/tmp/test-project',
     });
 
     // Verify editCount was reset

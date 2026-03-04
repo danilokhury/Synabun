@@ -30,11 +30,11 @@ Browse the files by topic:
 
 | Folder | Count | Topics |
 |--------|-------|--------|
-| `architecture/` | 5 | System overview, config, Qdrant, categories, multi-connection |
+| `architecture/` | 5 | System overview, config, SQLite, categories, multi-connection |
 | `mcp-tools/` | 7 | remember, recall, forget, reflect, memories, sync, category CRUD |
 | `neural-interface/` | 5 | Express API, memory endpoints, graph edges, 3D visualization, sync UI |
 | `hooks/` | 4 | SessionStart, PromptSubmit, installation & customization, `/idea` skill |
-| `setup/` | 3 | Quick start, Docker, embedding providers |
+| `setup/` | 3 | Quick start, database setup, local embeddings |
 | `development/` | 4 | File structure, code style, security, type system |
 
 ### Prerequisites
@@ -78,7 +78,7 @@ synabun (parent)
   ├── mcp-tools       — The 10 MCP tools, parameters, scoring algorithm
   ├── neural-interface — 3D visualization UI, Express REST API, graph edges
   ├── hooks           — Claude Code lifecycle hooks, installation
-  ├── setup           — Installation, Docker, embedding providers
+  ├── setup           — Installation, database setup, local embeddings
   └── development     — Code style, project structure, security, types
 
 user-profile (parent)

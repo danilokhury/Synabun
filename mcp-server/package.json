@@ -2,6 +2,7 @@
   "name": "claude-memory-mcp",
   "version": "1.0.0",
   "type": "module",
+  "engines": { "node": ">=22.5.0" },
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -10,15 +11,15 @@
     "dev": "tsx src/index.ts",
     "dev:http": "tsx src/preload-http.ts",
     "tui": "node dist/tui.js",
-    "tui:dev": "tsx src/tui.ts"
+    "tui:dev": "tsx src/tui.ts",
+    "migrate": "tsx src/scripts/migrate-qdrant-to-sqlite.ts"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.2.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "@qdrant/js-client-rest": "^1.13.0",
+    "@huggingface/transformers": "^3.0.0",
     "chalk": "^5.6.2",
     "express": "^4.21.0",
-    "openai": "^4.77.0",
     "uuid": "^11.1.0",
     "zod": "^3.24.2"
   },

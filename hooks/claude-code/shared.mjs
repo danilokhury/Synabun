@@ -5,7 +5,7 @@
  * post-remember, pre-compact, and stop hooks.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -65,18 +65,27 @@ export function getCategoriesPath() {
   return join(MCP_DATA_DIR, `custom-categories-${connId}.json`);
 }
 
+/**
+ * Returns the path to the MCP server's categories file (no connection suffix).
+ * This is the file the MCP server watches — hooks that need the MCP server to
+ * pick up changes (e.g., schema refresh) MUST write to this file.
+ */
+export function getMcpCategoriesPath() {
+  return join(MCP_DATA_DIR, 'custom-categories.json');
+}
+
 // --- Project detection (reads from claude-code-projects.json) ---
 
 const PROJECTS_PATH = join(DATA_DIR, 'claude-code-projects.json');
 
-function loadRegisteredProjects() {
+export function loadRegisteredProjects() {
   try {
     if (!existsSync(PROJECTS_PATH)) return [];
     return JSON.parse(readFileSync(PROJECTS_PATH, 'utf-8'));
   } catch { return []; }
 }
 
-function normalizeLabel(label) {
+export function normalizeLabel(label) {
   return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
@@ -151,6 +160,114 @@ export function buildCategoryTree(categories) {
   }
 
   return lines.join('\n');
+}
+
+// --- Auto-category creation ---
+
+/**
+ * Standalone categories required by hooks. Always created regardless of projects.
+ */
+const STANDALONE_DEFAULTS = [
+  { name: 'conversations', description: 'Session summaries and conversation indexing' },
+  { name: 'communication-style', description: 'User communication patterns and preferences' },
+  { name: 'plans', description: 'Implementation plans stored after plan mode approval', is_parent: true, color: '#06d6a0' },
+];
+
+/**
+ * Default child categories for every registered project.
+ * Created under a project parent, never standalone.
+ */
+const PROJECT_CHILDREN = [
+  { suffix: 'project', description: 'General project knowledge, decisions, and milestones' },
+  { suffix: 'architecture', description: 'System design, tech stack, data flow, and component architecture' },
+  { suffix: 'bugs', description: 'Bug fixes, debugging sessions, and known issues' },
+  { suffix: 'config', description: 'Configuration, deployment, environment, and infrastructure' },
+];
+
+/**
+ * Ensure all registered projects have a parent category with default children,
+ * and that standalone hook-required categories exist.
+ *
+ * Writes to the MCP server's categories file (no connection suffix) so the
+ * MCP server's file watcher picks up changes and refreshes tool schemas.
+ *
+ * Idempotent: only adds missing categories, never modifies or removes existing ones.
+ *
+ * @returns {{ created: string[], total: number }}
+ */
+export function ensureProjectCategories() {
+  const projects = loadRegisteredProjects();
+  const catPath = getMcpCategoriesPath();
+
+  let data;
+  try {
+    data = JSON.parse(readFileSync(catPath, 'utf-8'));
+  } catch {
+    data = { version: 1, categories: [] };
+  }
+
+  const categories = data.categories || [];
+  const existingNames = new Set(categories.map((c) => c.name));
+  const created = [];
+  const now = new Date().toISOString();
+
+  // 1. Ensure standalone defaults exist
+  for (const def of STANDALONE_DEFAULTS) {
+    if (!existingNames.has(def.name)) {
+      const cat = { name: def.name, description: def.description, created_at: now };
+      if (def.is_parent) cat.is_parent = true;
+      if (def.color) cat.color = def.color;
+      categories.push(cat);
+      existingNames.add(def.name);
+      created.push(def.name);
+    }
+  }
+
+  // 2. Ensure project parents + children exist
+  for (const proj of projects) {
+    let label = normalizeLabel(proj.label);
+    // Truncate to 16 chars so children stay within 30-char limit (16 + 1 + 12 = 29)
+    if (label.length > 16) label = label.slice(0, 16).replace(/-$/, '');
+
+    // Ensure parent exists
+    if (!existingNames.has(label)) {
+      categories.push({
+        name: label,
+        description: `Knowledge and context for the ${proj.label} project`,
+        is_parent: true,
+        created_at: now,
+      });
+      existingNames.add(label);
+      created.push(label);
+    } else {
+      // Parent exists — ensure it has is_parent flag
+      const existing = categories.find((c) => c.name === label);
+      if (existing && !existing.is_parent) existing.is_parent = true;
+    }
+
+    // Ensure each default child exists
+    for (const child of PROJECT_CHILDREN) {
+      const childName = `${label}-${child.suffix}`;
+      if (!existingNames.has(childName)) {
+        categories.push({
+          name: childName,
+          description: `${child.description} for ${proj.label}`,
+          parent: label,
+          created_at: now,
+        });
+        existingNames.add(childName);
+        created.push(childName);
+      }
+    }
+  }
+
+  // Only write if we created something new
+  if (created.length > 0) {
+    data.categories = categories;
+    writeFileSync(catPath, JSON.stringify(data, null, 2), 'utf-8');
+  }
+
+  return { created, total: categories.length };
 }
 
 /**

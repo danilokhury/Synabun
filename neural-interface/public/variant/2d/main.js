@@ -29,6 +29,7 @@ import { openMemoryCard, restoreOpenCards, initDetailPanel, setDetailCallbacks }
 import { initSettings, restoreInterfaceConfig, loadIfaceConfig } from '../../shared/ui-settings.js';
 import { initTrash } from '../../shared/ui-trash.js';
 import { initBookmarks } from '../../shared/ui-bookmarks.js';
+import { initResume } from '../../shared/ui-resume.js';
 import { initLayouts } from '../../shared/ui-layouts.js';
 import { initHelp } from '../../shared/ui-help.js';
 import { initMultiSelect } from '../../shared/ui-multiselect.js';
@@ -36,20 +37,29 @@ import { updateStats, initStats } from '../../shared/ui-stats.js';
 import { initExplorer } from '../../shared/ui-explorer.js';
 import { initSkillsStudio } from '../../shared/ui-skills.js';
 import { initTerminal } from '../../shared/ui-terminal.js';
+import { initLink } from '../../shared/ui-link.js';
+import { initWhiteboard } from '../../shared/ui-whiteboard.js';
+import { initGames, clearGameOnLoad } from '../../shared/ui-games.js';
 import { initWorkspaces } from '../../shared/ui-workspaces.js';
+import { initInvite } from '../../shared/ui-invite.js';
+import { initSync } from '../../shared/ui-sync.js';
 import { initKeybinds, registerAction, getDisplayKey } from '../../shared/ui-keybinds.js';
+import { initTutorial } from '../../shared/ui-tutorial.js';
 
 // ── 2D variant modules ──
 import { gfx, saveGfxConfig } from './gfx.js';
 import './settings-gfx.js'; // side-effect: self-registers Graphics tab
+import { initAutomationStudio } from '../../shared/ui-automation-studio.js';
+import { initCommandRunner } from '../../shared/ui-command-runner.js';
 import { stopBackground } from './background.js';
 import { initMinimap, drawMinimap, toggleMinimap, isMinimapVisible, forceHideMinimap, restoreMinimap } from './minimap.js';
-import { initLasso } from './lasso.js';
+import { initLasso, clearLasso } from './lasso.js';
 import { initContextMenu, hideContextMenu } from './context-menu.js';
 import {
   initGraph, getGraph, applyGraphData,
   preloadCategoryLogos, scheduleGraphRemoval, cancelScheduledRemoval,
   refreshGraph, reheatSimulation, getAllCards,
+  stopAnimation, startAnimation,
 } from './graph.js';
 
 
@@ -279,9 +289,8 @@ async function boot() {
       const health = await healthRes.json();
       if (!health.ok) {
         const messages = {
-          docker_not_running: [t('loading.health.dockerNotRunning.title'), t('loading.health.dockerNotRunning.sub')],
-          container_stopped:  [t('loading.health.containerStopped.title'), t('loading.health.containerStopped.sub')],
-          qdrant_unreachable: [t('loading.health.qdrantUnreachable.title'), t('loading.health.qdrantUnreachable.sub')],
+          db_missing:         [t('loading.health.databaseUnreachable.title'), health.detail || t('loading.health.databaseUnreachable.sub')],
+          db_error:           [t('loading.health.databaseUnreachable.title'), health.detail || t('loading.health.databaseUnreachable.sub')],
           remote_unreachable: [t('loading.health.remoteUnreachable.title'), health.detail || t('loading.health.remoteUnreachable.sub')],
           auth_error:         [t('loading.health.authError.title'), health.detail || t('loading.health.authError.sub')],
         };
@@ -383,6 +392,7 @@ async function boot() {
 // 8. INIT ALL SHARED UI SYSTEMS
 // ═══════════════════════════════════════════
 
+initLoading({ onInit: boot });
 initKeybinds();
 initTooltip();
 initPanelSystem();
@@ -395,14 +405,24 @@ initDetailPanel();
 initSettings();
 initTrash();
 initBookmarks();
+initResume();
 initLayouts();
 initWorkspaces();
+initInvite();
+initSync();
 initHelp();
 initMultiSelect();
 initStats();
 initExplorer();
 initSkillsStudio();
+initAutomationStudio();
+initCommandRunner();
 initTerminal();
+initLink();
+clearGameOnLoad();
+initWhiteboard();
+initGames();
+initTutorial();
 
 // View switch handler
 {
@@ -442,9 +462,13 @@ on('viz:toggle', (enabled) => {
     // Show the main canvas (it's position:fixed, not affected by container opacity)
     const mainCanvas = document.getElementById('canvas-main');
     if (mainCanvas) mainCanvas.classList.remove('viz-hidden-2d');
+    // Restart the render loop
+    startAnimation();
     // Restore minimap to user's preference
     restoreMinimap();
   } else {
+    // Stop the render loop entirely — no wasted frames in focus mode
+    stopAnimation();
     stopBackground();
     // Hide the main canvas when entering focus mode
     const mainCanvas = document.getElementById('canvas-main');
@@ -452,6 +476,13 @@ on('viz:toggle', (enabled) => {
     // Always hide minimap in focus mode
     forceHideMinimap();
   }
+});
+
+// Focus mode isolation — clear 2D-specific interactive state
+on('focus:enter', () => {
+  state.hoveredNodeId = null;
+  clearLasso();
+  hideContextMenu();
 });
 
 // Workspace scene snapshot (2D)

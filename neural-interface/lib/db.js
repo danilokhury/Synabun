@@ -21,8 +21,8 @@ let db = null;
 
 let embeddingPipeline = null;
 let embeddingInitPromise = null;
-const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
-const EMBEDDING_DIMS = 384;
+export const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
+export const EMBEDDING_DIMS = 384;
 
 async function getEmbeddingPipeline() {
   if (embeddingPipeline) return embeddingPipeline;
@@ -95,6 +95,23 @@ export function closeDb() {
     db.close();
     db = null;
   }
+}
+
+// --- KV Config ---
+
+const KV_DDL = 'CREATE TABLE IF NOT EXISTS kv_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)';
+
+export function getKvConfig(key) {
+  const d = getDb();
+  d.exec(KV_DDL);
+  const row = d.prepare('SELECT value FROM kv_config WHERE key = ?').get(key);
+  return row ? row.value : null;
+}
+
+export function setKvConfig(key, value) {
+  const d = getDb();
+  d.exec(KV_DDL);
+  d.prepare('INSERT OR REPLACE INTO kv_config (key, value) VALUES (?, ?)').run(key, String(value));
 }
 
 // --- Vector helpers ---

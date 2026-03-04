@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { generateEmbedding } from '../services/embeddings.js';
-import { upsertMemory } from '../services/qdrant.js';
-import { buildCategoryDescription, validateCategory } from '../services/categories.js';
+import { generateEmbedding } from '../services/local-embeddings.js';
+import { upsertMemory } from '../services/sqlite.js';
+import { validateCategory } from '../services/categories.js';
+import { coerceStringArray } from './utils.js';
 import type { MemoryPayload, MemorySource } from '../types.js';
 import { detectProject } from '../config.js';
 import { computeChecksums } from '../services/file-checksums.js';
+import { invalidateCache } from '../services/neural-interface.js';
 
 export function buildRememberSchema() {
   return {
@@ -14,17 +16,14 @@ export function buildRememberSchema() {
       .describe('The information to remember. Be specific and include context.'),
     category: z
       .string()
-      .describe(
-        buildCategoryDescription()
-      ),
+      .describe('Category name. Call category tool with action "list" to see valid categories.'),
   project: z
     .string()
     .optional()
     .describe(
       'Project this belongs to (e.g. "my-project"). Defaults to auto-detected from working directory.'
     ),
-  tags: z
-    .array(z.string())
+  tags: coerceStringArray()
     .optional()
     .describe('Tags for categorization (e.g. ["redis", "cache", "pricing"])'),
   importance: z
@@ -47,8 +46,7 @@ export function buildRememberSchema() {
     .describe(
       'How this was learned. user-told=user explicitly shared, self-discovered=found during work, auto-saved=session context.'
     ),
-  related_files: z
-    .array(z.string())
+  related_files: coerceStringArray()
     .optional()
     .describe('File paths this memory relates to.'),
   };
@@ -101,11 +99,18 @@ export async function handleRemember(args: {
     accessed_at: now,
     access_count: 0,
     related_files,
-    file_checksums: related_files?.length ? computeChecksums(related_files) : undefined,
+    file_checksums: (() => {
+      if (!related_files?.length) return undefined;
+      const cs = computeChecksums(related_files);
+      return Object.keys(cs).length > 0 ? cs : undefined;
+    })(),
   };
 
   const vector = await generateEmbedding(content);
   await upsertMemory(id, vector, payload);
+
+  // Invalidate Neural Interface link cache (fire-and-forget)
+  invalidateCache('remember');
 
   return {
     content: [

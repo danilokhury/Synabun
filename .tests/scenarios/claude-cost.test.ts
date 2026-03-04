@@ -312,7 +312,7 @@ describe('monthly cost projections across all dimensions', () => {
 });
 
 describe('combined cost: embedding + Claude API', () => {
-  // Embedding costs from the existing tests (OpenAI text-embedding-3-small)
+  // Historical embedding costs for reference (local embeddings are now free)
   const EMBEDDING_YEARLY = { light: 0.001, medium: 0.03, heavy: 0.13 };
 
   it('shows embedding cost is negligible vs Claude API cost', () => {

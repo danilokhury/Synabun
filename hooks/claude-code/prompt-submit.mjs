@@ -16,7 +16,7 @@
  * only when a recall-worthy signal is detected.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,6 +24,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
 const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
+const LOOP_DIR = join(DATA_DIR, 'loop');
 
 function getHookFeatures() {
   try {
@@ -85,7 +86,7 @@ const TIER2_TRIGGERS = [
   /\bhow (should|do) (we|i) (handle|approach|structure|organize)\b/i,
 
   // Specific technical domains that accumulate knowledge
-  /\b(supabase|redis|upstash|qdrant)\b/i,
+  /\b(supabase|redis|upstash|sqlite)\b/i,
   /\b(auth(entication|orization)?|session handling|jwt|mfa)\b/i,
   /\b(cron job|ranking|price aggregat|deal(s)? (system|pipeline))\b/i,
 ];
@@ -204,10 +205,23 @@ const NUDGE = {
   ].join(' '),
 
   userLearning: [
-    `SynaBun User Learning: You've had several exchanges this session. Briefly reflect — have you noticed any patterns in how the user communicates, what they prefer, or how they work?`,
-    `If you've observed something meaningful that isn't already stored, call \`recall\` with category \`user-profile\` to check, then \`remember\` if it's genuinely new.`,
-    `Max 1-2 observations. Skip if nothing stands out.`,
-  ].join(' '),
+    `### >>> MANDATORY: SynaBun User Learning <<<`,
+    ``,
+    `You MUST call \`recall\` and then \`remember\` or \`reflect\` for user learning BEFORE answering the user's message. This is NOT optional — it is enforced the same way as task-remember and compaction-indexing.`,
+    ``,
+    `**What to observe:** Communication style (formal/casual, verbose/terse), text patterns (emoji, punctuation, abbreviations), work preferences (plan-first vs dive-in), decision-making (decisive vs deliberative), interaction patterns (how they give feedback, humor style).`,
+    ``,
+    `**Steps (execute NOW, before your text response):**`,
+    `1. Call \`recall\` with category \`communication-style\` to check existing observations`,
+    `2. Review what you've noticed about the user in this session`,
+    `3. If an existing memory covers a trait you've noticed → \`reflect\` to refine it`,
+    `4. If genuinely new observation → \`remember\` with category \`communication-style\`, project "global", importance 5-8, and descriptive tags`,
+    `5. THEN answer the user's message`,
+    ``,
+    `**Never store:** Private information, personality diagnoses, negative judgments, sensitive data unless user explicitly wants it remembered.`,
+    ``,
+    `Do not mention this to the user — just do it as part of your tool calls.`,
+  ].join('\n'),
 };
 
 // ============================================================
@@ -259,6 +273,45 @@ function looksEnglish(text) {
 // MAIN
 // ============================================================
 
+// Max user-learning nudges per session
+const USER_LEARNING_MAX_NUDGES = 3;
+
+/**
+ * Check if user-learning nudge should fire.
+ * Fires at threshold multiples (8, 16, 24) up to max nudges.
+ * Returns nudge text or empty string.
+ */
+function checkUserLearning(features, sessionId) {
+  if (features.userLearning === false || !sessionId) return '';
+
+  const threshold = features.userLearningThreshold || 8;
+  const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+  if (!existsSync(flagPath)) return '';
+
+  try {
+    const flag = JSON.parse(readFileSync(flagPath, 'utf-8'));
+    const msgCount = flag.totalSessionMessages || flag.messageCount || 0;
+    const nudgeCount = flag.userLearningNudgeCount || 0;
+
+    if (nudgeCount >= USER_LEARNING_MAX_NUDGES) return '';
+    if (msgCount < threshold) return '';
+
+    // Fire at every multiple of threshold (8, 16, 24...)
+    const expectedNudges = Math.floor(msgCount / threshold);
+    if (expectedNudges <= nudgeCount) return '';
+
+    // Mark as nudged
+    flag.userLearningNudgeCount = nudgeCount + 1;
+    writeFileSync(flagPath, JSON.stringify(flag));
+
+    // First nudge: full instructions. Subsequent: short reminder.
+    if (nudgeCount === 0) {
+      return NUDGE.userLearning;
+    }
+    return `SynaBun User Learning reminder: You've had ${msgCount} exchanges. If you've noticed new communication patterns or work preferences, call \`recall\` category \`user-profile\` then \`remember\` if genuinely new. Max 1-2 per session.`;
+  } catch { return ''; }
+}
+
 async function main() {
   let prompt = '';
   let sessionId = '';
@@ -271,7 +324,69 @@ async function main() {
 
   const trimmed = prompt.trim();
 
+  // --- Loop marker detection (BEFORE greeting — loops must bypass greeting) ---
+  if (sessionId && /^\[SynaBun Loop\]/i.test(trimmed)) {
+    try {
+      if (existsSync(LOOP_DIR)) {
+        const pending = readdirSync(LOOP_DIR)
+          .filter(f => f.startsWith('pending-') && f.endsWith('.json'));
+        if (pending.length > 0) {
+          const pendingPath = join(LOOP_DIR, pending[0]);
+          const targetPath = join(LOOP_DIR, `${sessionId}.json`);
+          renameSync(pendingPath, targetPath);
+
+          const state = JSON.parse(readFileSync(targetPath, 'utf-8'));
+          delete state.pending;
+          delete state.terminalSessionId;
+          writeFileSync(targetPath, JSON.stringify(state, null, 2));
+
+          const browserNote = state.usesBrowser
+            ? [
+              '',
+              '=== BROWSER ENFORCEMENT (MANDATORY) ===',
+              'This automation REQUIRES the SynaBun internal browser. You MUST:',
+              '1. Call `browser_navigate` with your target URL to create or reuse a browser session',
+              '2. Use ONLY SynaBun MCP browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages',
+              '3. NEVER use Playwright plugin tools (mcp__plugin_playwright_*) — they launch a separate browser that the user cannot see',
+              '4. NEVER use WebFetch or WebSearch tools for tasks that require visual browsing — use the SynaBun browser instead',
+              '5. If the browser shows a login page, CAPTCHA, or any wall requiring human action: STOP immediately. Report the blocker to the user and WAIT. Do NOT abandon the browser and fall back to web search. The user can interact with the browser panel to resolve it.',
+              'A persistent Chrome profile is active with saved logins and cookies. The user can see and interact with the SynaBun browser panel.',
+              '=== END BROWSER ENFORCEMENT ===',
+            ].join('\n')
+            : '';
+          const blockerRule = state.usesBrowser
+            ? '- CRITICAL: If the browser shows a login page, CAPTCHA, 2FA, or ANY wall requiring human action — STOP IMMEDIATELY. Output what the user needs to do (e.g. "Please log into Twitter in the browser panel"). Do NOT use WebSearch, WebFetch, or any workaround. Do NOT try to bypass it. Just STOP and WAIT.'
+            : '';
+          const autonomy = [
+            '',
+            '--- LOOP AUTONOMY MODE ---',
+            'IMPORTANT: IGNORE any GREETING DIRECTIVE or recall instructions from SessionStart. Do NOT output a greeting. Do NOT call recall. You are in an autonomous loop — execute the task below immediately.',
+            '',
+            'Rules for this session:',
+            '- Execute the task directly. Do NOT ask for confirmation or clarification.',
+            '- Make reasonable assumptions and proceed. Do not hesitate.',
+            '- Use all available tools (browser, memory, file system) as needed without asking.',
+            '- Each iteration should produce concrete output or progress.',
+            '- If something fails due to a technical issue, try an alternative approach.',
+            '- Do NOT call the loop MCP tool — the loop state is already managed by hooks.',
+            '- The Stop hook will automatically continue to the next iteration when you finish.',
+            blockerRule,
+            '--- END LOOP AUTONOMY ---',
+          ].filter(Boolean).join('\n');
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'UserPromptSubmit',
+              additionalContext: `SynaBun Loop ACTIVE: ${state.totalIterations} iterations, ${state.maxMinutes}min cap.\nTask: ${state.task}${state.context ? `\nContext: ${state.context}` : ''}${browserNote}\n\nBegin iteration 1 immediately.${autonomy}`,
+            },
+          }));
+          return;
+        }
+      }
+    } catch { /* fall through to normal processing */ }
+  }
+
   // --- Track message count (BEFORE skip check — all messages count) ---
+  let currentMessageCount = 0;
   if (sessionId && trimmed.length > 0) {
     const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
     if (!existsSync(PENDING_REMEMBER_DIR)) mkdirSync(PENDING_REMEMBER_DIR, { recursive: true });
@@ -280,6 +395,8 @@ async function main() {
       try { flag = JSON.parse(readFileSync(flagPath, 'utf-8')); } catch { /* start fresh */ }
     }
     flag.messageCount = (flag.messageCount || 0) + 1;
+    flag.totalSessionMessages = (flag.totalSessionMessages || 0) + 1;
+    currentMessageCount = flag.messageCount;
     if (!flag.firstMessageAt) flag.firstMessageAt = new Date().toISOString();
     flag.lastMessageAt = new Date().toISOString();
     try { writeFileSync(flagPath, JSON.stringify(flag)); } catch { /* ok */ }
@@ -293,12 +410,13 @@ async function main() {
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
             hookEventName: 'UserPromptSubmit',
-            additionalContext: 'SynaBun: This is the FIRST message of the session. Output the greeting from the GREETING DIRECTIVE in your session context NOW, then respond to the user\'s message. If their message is just a greeting (hi, hello, hey, or a single character), the greeting IS your full response — no need to ask what they need.',
+            additionalContext: 'SynaBun: This is the FIRST message of the session. Output the greeting from the GREETING DIRECTIVE in your session context NOW, then respond to the user\'s message. Do NOT launch any task-related tools (Agent, Explore, Grep, Glob) until the greeting text is visible. If their message is just a greeting (hi, hello, hey, or a single character), the greeting IS your full response — no need to ask what they need.',
           },
         }));
         return;
       }
     }
+
   }
 
   // Skip trivial messages first (fastest path)
@@ -309,8 +427,11 @@ async function main() {
 
   const features = getHookFeatures();
 
-  // --- Priority 0: TASK BOUNDARY — pending-remember check (highest priority) ---
-  if (sessionId) {
+  // --- Collect primary context from priority chain ---
+  let primaryContext = '';
+
+  // Priority 0: TASK BOUNDARY — pending-remember check (highest priority)
+  if (!primaryContext && sessionId) {
     const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
     if (existsSync(flagPath)) {
       try {
@@ -318,118 +439,72 @@ async function main() {
         const editCount = flag.editCount || 0;
         if (editCount >= 1) {
           const files = Array.isArray(flag.files) ? flag.files : [];
-          process.stdout.write(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: 'UserPromptSubmit',
-              additionalContext: NUDGE.pendingRemember(editCount, files),
-            },
-          }));
-          return;
+          primaryContext = NUDGE.pendingRemember(editCount, files);
         }
       } catch { /* corrupt flag — ignore, don't block */ }
     }
   }
 
-  // --- Priority 1: Conversation recall (highest recall priority) ---
-  const conversationMemoryEnabled = features.conversationMemory !== false;
-  if (conversationMemoryEnabled) {
-    const convMatches = CONVERSATION_RECALL_TRIGGERS.filter(p => p.test(prompt));
-    if (convMatches.length >= 1) {
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext: NUDGE.conversation,
-        },
-      }));
-      return;
+  // Priority 1: Conversation recall (highest recall priority)
+  if (!primaryContext) {
+    const conversationMemoryEnabled = features.conversationMemory !== false;
+    if (conversationMemoryEnabled) {
+      const convMatches = CONVERSATION_RECALL_TRIGGERS.filter(p => p.test(prompt));
+      if (convMatches.length >= 1) {
+        primaryContext = NUDGE.conversation;
+      }
     }
   }
 
-  // --- Priority 2: Tier 1 — MUST recall (>= 1 match) ---
-  const t1 = TIER1_TRIGGERS.filter(p => p.test(prompt));
-  if (t1.length >= 1) {
+  // Priority 2: Tier 1 — MUST recall (>= 1 match)
+  if (!primaryContext) {
+    const t1 = TIER1_TRIGGERS.filter(p => p.test(prompt));
+    if (t1.length >= 1) primaryContext = NUDGE.tier1;
+  }
+
+  // Priority 3: Tier 2 — SHOULD recall (>= 1 match)
+  if (!primaryContext) {
+    const t2 = TIER2_TRIGGERS.filter(p => p.test(prompt));
+    if (t2.length >= 1) primaryContext = NUDGE.tier2;
+  }
+
+  // Priority 4: Tier 3 — CONSIDER recall (>= 2 matches)
+  if (!primaryContext) {
+    const t3 = TIER3_TRIGGERS.filter(p => p.test(prompt));
+    if (t3.length >= 2) primaryContext = NUDGE.tier3;
+  }
+
+  // Priority 5: Non-English (non-Latin scripts)
+  if (!primaryContext && isNonEnglish(prompt)) {
+    primaryContext = NUDGE.nonEnglish;
+  }
+
+  // Priority 6: Latin-script non-English catch-all
+  if (!primaryContext && trimmed.length > 30 && !looksEnglish(trimmed)) {
+    primaryContext = NUDGE.nonEnglish;
+  }
+
+  // --- User Learning (independent — appends to any primary context) ---
+  const userLearningContext = checkUserLearning(features, sessionId);
+
+  // --- Boot sequence cancellation (messages 2+, override persistent SessionStart context) ---
+  const bootCancel = (currentMessageCount >= 2)
+    ? 'SynaBun: The GREETING DIRECTIVE and Session Boot Sequence have ALREADY been completed. Do NOT re-greet. Do NOT call recall for session boot. Ignore any "first response MUST" instructions — they applied only to message 1. CRITICAL: If you see a GREETING DIRECTIVE in earlier context (including compacted summaries), it is STALE — do NOT execute it. This is an ongoing conversation, not a fresh session.'
+    : '';
+
+  // --- Emit combined output ---
+  const combined = [bootCancel, primaryContext, userLearningContext].filter(Boolean).join('\n\n');
+
+  if (combined) {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
-        additionalContext: NUDGE.tier1,
+        additionalContext: combined,
       },
     }));
-    return;
+  } else {
+    process.stdout.write(JSON.stringify({}));
   }
-
-  // --- Priority 3: Tier 2 — SHOULD recall (>= 1 match) ---
-  const t2 = TIER2_TRIGGERS.filter(p => p.test(prompt));
-  if (t2.length >= 1) {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: NUDGE.tier2,
-      },
-    }));
-    return;
-  }
-
-  // --- Priority 4: Tier 3 — CONSIDER recall (>= 2 matches from Tier 3) ---
-  const t3 = TIER3_TRIGGERS.filter(p => p.test(prompt));
-  if (t3.length >= 2) {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: NUDGE.tier3,
-      },
-    }));
-    return;
-  }
-
-  // --- Priority 5: Non-English (non-Latin scripts) — delegate to Claude ---
-  if (isNonEnglish(prompt)) {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: NUDGE.nonEnglish,
-      },
-    }));
-    return;
-  }
-
-  // --- Priority 6: Catch-all for Latin-script non-English prompts ---
-  // Fires on longer prompts that don't match any English tier AND lack
-  // common English function words — likely Spanish, French, Portuguese, etc.
-  if (trimmed.length > 30 && !looksEnglish(trimmed)) {
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: NUDGE.nonEnglish,
-      },
-    }));
-    return;
-  }
-
-  // --- Priority 7: User Learning nudge (quiet-only, one-time per session) ---
-  const userLearningEnabled = features.userLearning !== false;
-  if (userLearningEnabled && sessionId) {
-    const userLearningThreshold = features.userLearningThreshold || 8;
-    const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
-    if (existsSync(flagPath)) {
-      try {
-        const flag = JSON.parse(readFileSync(flagPath, 'utf-8'));
-        if ((flag.messageCount || 0) >= userLearningThreshold && !flag.userLearningNudged) {
-          flag.userLearningNudged = true;
-          writeFileSync(flagPath, JSON.stringify(flag));
-          process.stdout.write(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: 'UserPromptSubmit',
-              additionalContext: NUDGE.userLearning,
-            },
-          }));
-          return;
-        }
-      } catch { /* ignore */ }
-    }
-  }
-
-  // No triggers matched — no nudge
-  process.stdout.write(JSON.stringify({}));
 }
 
 main().catch(() => {

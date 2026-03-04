@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { getEmbeddingCalls, getQdrantCalls, getQdrantCallsByMethod } from '../mocks/trackers.js';
+import { getEmbeddingCalls, getDbCalls, getDbCallsByMethod } from '../mocks/trackers.js';
 import { countTokens, CONTENT_SIZES, estimateTokensFast, tokensToUSD } from '../utils/token-counter.js';
 
 const { handleRemember } = await import('../../mcp-server/src/tools/remember.js');
 
 describe('remember — token usage', () => {
-  it('makes exactly 1 OpenAI embedding call per invocation', async () => {
+  it('makes exactly 1 embedding call per invocation', async () => {
     await handleRemember({ content: CONTENT_SIZES.small, category: 'architecture' });
     expect(getEmbeddingCalls()).toHaveLength(1);
   });
@@ -16,15 +16,15 @@ describe('remember — token usage', () => {
     expect(getEmbeddingCalls()[0].input).toBe(content);
   });
 
-  it('makes exactly 1 Qdrant upsert call', async () => {
+  it('makes exactly 1 DB upsert call', async () => {
     await handleRemember({ content: CONTENT_SIZES.small, category: 'architecture' });
-    expect(getQdrantCallsByMethod('upsert')).toHaveLength(1);
+    expect(getDbCallsByMethod('upsert')).toHaveLength(1);
   });
 
-  it('makes 0 Qdrant search or retrieve calls', async () => {
+  it('makes 0 DB search or retrieve calls', async () => {
     await handleRemember({ content: CONTENT_SIZES.small, category: 'architecture' });
-    expect(getQdrantCallsByMethod('search')).toHaveLength(0);
-    expect(getQdrantCallsByMethod('retrieve')).toHaveLength(0);
+    expect(getDbCallsByMethod('search')).toHaveLength(0);
+    expect(getDbCallsByMethod('retrieve')).toHaveLength(0);
   });
 
   it('token count scales with content size', () => {
@@ -90,7 +90,7 @@ describe('remember — token usage', () => {
   it('total API footprint: 1 embed + 1 upsert', async () => {
     await handleRemember({ content: 'Test content', category: 'architecture' });
     expect(getEmbeddingCalls()).toHaveLength(1);
-    expect(getQdrantCalls()).toHaveLength(1);
-    expect(getQdrantCallsByMethod('upsert')).toHaveLength(1);
+    expect(getDbCalls()).toHaveLength(1);
+    expect(getDbCallsByMethod('upsert')).toHaveLength(1);
   });
 });

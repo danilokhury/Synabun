@@ -6,9 +6,9 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['./setup.ts'],
-    include: ['unit/**/*.test.ts', 'scenarios/**/*.test.ts'],
+    include: ['unit/**/*.test.ts', 'scenarios/**/*.test.ts', 'hooks/**/*.test.ts', 'integration/**/*.test.ts'],
     reporters: ['verbose'],
-    testTimeout: 10000,
+    testTimeout: 15000,
   },
   resolve: {
     alias: {

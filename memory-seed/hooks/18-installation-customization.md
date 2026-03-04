@@ -45,7 +45,7 @@ Add to `.claude/settings.json` (global: `~/.claude/settings.json`, per-project: 
 }
 ```
 
-On Windows, use forward slashes in paths (e.g., `C:/Users/me/Synabun`).
+On Windows, use forward slashes in paths (e.g., `D:/Apps/Synabun`).
 
 ## Hook Contract
 

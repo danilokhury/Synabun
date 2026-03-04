@@ -1,4 +1,20 @@
 {
   "version": 1,
-  "categories": []
+  "_comment": "Default categories template. Standalone defaults are auto-created by ensureProjectCategories() in shared.mjs. Project-specific categories (parent + children) are auto-created when projects are registered in claude-code-projects.json.",
+  "categories": [
+    {
+      "name": "conversations",
+      "description": "Session summaries and conversation indexing"
+    },
+    {
+      "name": "communication-style",
+      "description": "User communication patterns and preferences"
+    },
+    {
+      "name": "plans",
+      "description": "Implementation plans stored after plan mode approval",
+      "is_parent": true,
+      "color": "#06d6a0"
+    }
+  ]
 }
