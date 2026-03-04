@@ -34,6 +34,7 @@ export function buildReflectSchema() {
     related_memory_ids: coerceStringArray()
       .optional()
       .describe('Link to related memories.'),
+    project: z.string().optional().describe('Change the project this memory belongs to (e.g. "criticalpixel", "synabun", "synabun-website").'),
   };
 }
 
@@ -52,6 +53,7 @@ export async function handleReflect(args: {
   category?: string;
   related_files?: string[];
   related_memory_ids?: string[];
+  project?: string;
 }) {
   const memoryId = args.memory_id;
 
@@ -126,6 +128,10 @@ export async function handleReflect(args: {
   if (args.related_memory_ids) {
     updates.related_memory_ids = args.related_memory_ids;
     changes.push('related_memory_ids updated');
+  }
+  if (args.project) {
+    updates.project = args.project;
+    changes.push(`project -> ${args.project}`);
   }
 
   if (changes.length === 0) {

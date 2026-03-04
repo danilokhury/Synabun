@@ -550,10 +550,10 @@ function createAnchorObject(node) {
   } else {
     const measureCanvas = document.createElement('canvas');
     const measureCtx = measureCanvas.getContext('2d');
-    measureCtx.font = '600 36px "Space Grotesk", "Inter", system-ui, sans-serif';
+    measureCtx.font = '600 48px "Space Grotesk", "Inter", system-ui, sans-serif';
     const metrics = measureCtx.measureText(parentName.toUpperCase());
     contentW = Math.ceil(metrics.width);
-    contentH = 44;
+    contentH = 58;
   }
 
   const canvasW = Math.ceil(contentW + PAD * 2);
@@ -570,7 +570,7 @@ function createAnchorObject(node) {
     labelCtx.drawImage(logoImage, PAD, PAD, contentW, contentH);
     labelCtx.globalAlpha = 1.0;
   } else {
-    labelCtx.font = '600 36px "Space Grotesk", "Inter", system-ui, sans-serif';
+    labelCtx.font = '600 48px "Space Grotesk", "Inter", system-ui, sans-serif';
     labelCtx.textAlign = 'center';
     labelCtx.textBaseline = 'middle';
     labelCtx.fillStyle = 'rgba(255,255,255,1.0)';
@@ -581,7 +581,7 @@ function createAnchorObject(node) {
   labelTex.colorSpace = THREE.SRGBColorSpace;
 
   // Billboard mesh with custom ShaderMaterial — bypasses SpriteMaterial pipeline entirely
-  const SCALE = 0.2;
+  const SCALE = 0.3;
   const labelW = canvasW * SCALE;
   const labelH = canvasH * SCALE;
   const labelGeo = new THREE.PlaneGeometry(1, 1); // 1x1 base — scale set in animate loop via baseLabelScale
@@ -671,10 +671,10 @@ function createTagObject(node) {
   // Small text label
   const measureCanvas = document.createElement('canvas');
   const measureCtx = measureCanvas.getContext('2d');
-  measureCtx.font = '500 28px "JetBrains Mono", "Space Grotesk", monospace';
+  measureCtx.font = '500 38px "JetBrains Mono", "Space Grotesk", monospace';
   const tagMetrics = measureCtx.measureText(catName);
   const tagTextW = Math.ceil(tagMetrics.width);
-  const tagTextH = 36;
+  const tagTextH = 48;
   const tagPad = 12;
   const tagCanvasW = tagTextW + tagPad * 2;
   const tagCanvasH = tagTextH + tagPad * 2;
@@ -684,7 +684,7 @@ function createTagObject(node) {
   labelCanvas.width = tagCanvasW;
   labelCanvas.height = tagCanvasH;
   labelCtx.clearRect(0, 0, tagCanvasW, tagCanvasH);
-  labelCtx.font = '500 28px "JetBrains Mono", "Space Grotesk", monospace';
+  labelCtx.font = '500 38px "JetBrains Mono", "Space Grotesk", monospace';
   labelCtx.textAlign = 'center';
   labelCtx.textBaseline = 'middle';
   labelCtx.fillStyle = color;
@@ -694,7 +694,7 @@ function createTagObject(node) {
   labelTex.colorSpace = THREE.SRGBColorSpace;
 
   // Billboard mesh with custom ShaderMaterial — bypasses SpriteMaterial pipeline
-  const TAG_SCALE = 0.15;
+  const TAG_SCALE = 0.25;
   const tagLabelW = tagCanvasW * TAG_SCALE;
   const tagLabelH = tagCanvasH * TAG_SCALE;
   const tagLabelGeo = new THREE.PlaneGeometry(1, 1); // 1x1 base — scale set in animate loop via baseLabelScale
@@ -976,10 +976,10 @@ function computeLayout(nodes) {
   }
 
   // 1. Anchors in a wide ring
-  const anchorRadius = anchors.length > 1 ? 500 + anchors.length * 150 : 0;
-  const ANCHOR_Y = 400;
-  const TAG_Y = ANCHOR_Y - 180;
-  const SPHERE_GAP = 120;
+  const anchorRadius = anchors.length > 1 ? 700 + anchors.length * 200 : 0;
+  const ANCHOR_Y = 500;
+  const TAG_Y = ANCHOR_Y - 220;
+  const SPHERE_GAP = 160;
 
   anchors.forEach((anchor, i) => {
     const angle = (i / anchors.length) * Math.PI * 2 - Math.PI / 2;
@@ -997,7 +997,7 @@ function computeLayout(nodes) {
     const directMems = memories.filter(m => m.payload.category === cat && !placed.has(m.id));
 
     if (childTags.length) {
-      const tagRingRadius = Math.max(280, childTags.length * 120);
+      const tagRingRadius = Math.max(380, childTags.length * 160);
 
       childTags.forEach((tag, i) => {
         const angle = (i / childTags.length) * Math.PI * 2;
@@ -1010,7 +1010,7 @@ function computeLayout(nodes) {
         const tagCat = tag.payload._tagCategory;
         const tagMems = memories.filter(m => m.payload.category === tagCat && !placed.has(m.id));
         if (tagMems.length) {
-          const r = 70 + Math.sqrt(tagMems.length) * 14;
+          const r = 90 + Math.sqrt(tagMems.length) * 18;
           const sphereCenter = { x: tag.x, y: tag.y - r - SPHERE_GAP, z: tag.z };
           const positions = fibSphere(tagMems.length, r, sphereCenter);
           tagMems.forEach((mem, j) => {
@@ -1026,7 +1026,7 @@ function computeLayout(nodes) {
 
     // Direct-parent memories
     if (directMems.length) {
-      const r = 70 + Math.sqrt(directMems.length) * 14;
+      const r = 90 + Math.sqrt(directMems.length) * 18;
       const sphereCenter = { x: anchor.x, y: TAG_Y - r - SPHERE_GAP, z: anchor.z };
       const positions = fibSphere(directMems.length, r, sphereCenter);
       directMems.forEach((mem, i) => {
@@ -1049,14 +1049,14 @@ function computeLayout(nodes) {
       catGroups[c].push(m);
     });
     const groupNames = Object.keys(catGroups);
-    const orphanBase = anchorRadius + 250;
+    const orphanBase = anchorRadius + 400;
 
     groupNames.forEach((c, gi) => {
       const angle = (gi / Math.max(groupNames.length, 1)) * Math.PI * 2;
       const cx = Math.cos(angle) * orphanBase;
       const cz = Math.sin(angle) * orphanBase;
       const mems = catGroups[c];
-      const r = 70 + Math.sqrt(mems.length) * 14;
+      const r = 90 + Math.sqrt(mems.length) * 18;
       const positions = fibSphere(mems.length, r, { x: cx, y: 0, z: cz });
 
       mems.forEach((mem, i) => {
@@ -1998,17 +1998,21 @@ function animate() {
         }
         if (_drag.active && !isCatHidden) {
           if (_drag.dragSet.has(obj.userData.nodeId)) dotTarget = Math.max(dotTarget, 0.9);
-          else { dotTarget *= 0.5; labelTarget *= 0.4; }
+          else { dotTarget *= 0.5; labelTarget *= 0.85; }
         }
         if (isHovered) { dotTarget = 1.0; labelTarget = 1.0; }
         if (isSelected) dotTarget = 1.0;
         if (_cullZone === 1) { dotTarget *= 0.5; }
 
-        const fade = isCatHidden ? 0.15 : 0.1;
+        const fade = isCatHidden ? 0.15 : 0.2;
         if (dot) dot.material.opacity += (dotTarget * breathe - dot.material.opacity) * fade;
         if (label) {
           if (label.material.uniforms) {
             label.material.uniforms.uOpacity.value += (labelTarget - label.material.uniforms.uOpacity.value) * fade;
+            // Floor: visible labels never go below 0.9 opacity
+            if (_cullZone === 0 && labelTarget > 0 && label.material.uniforms.uOpacity.value < 0.9) {
+              label.material.uniforms.uOpacity.value = 0.9;
+            }
           } else {
             label.material.opacity += (labelTarget - label.material.opacity) * fade;
           }
@@ -2018,7 +2022,7 @@ function animate() {
 
         if (label && obj.userData.baseLabelScale) {
           const camDist = _cam.position.distanceTo(_worldPos);
-          const scaleFactor = Math.max(1.0, Math.min(6.0, camDist / 100)) * state.labelSizeMultiplier;
+          const scaleFactor = Math.max(1.5, Math.min(8.0, camDist / 80)) * state.labelSizeMultiplier;
           const bls = obj.userData.baseLabelScale;
           label.scale.set(bls.x * scaleFactor, bls.y * scaleFactor, 1);
         }
@@ -2044,17 +2048,21 @@ function animate() {
         }
         if (_drag.active && !isCatHidden) {
           if (_drag.dragSet.has(obj.userData.nodeId)) dotTarget = Math.max(dotTarget, 0.8);
-          else { dotTarget *= 0.4; labelTarget *= 0.5; }
+          else { dotTarget *= 0.4; labelTarget *= 0.85; }
         }
         if (isHovered) { dotTarget = 1.0; labelTarget = 1.0; }
         if (isSelected) dotTarget = 1.0;
         if (_cullZone === 1) { dotTarget *= 0.5; }
 
-        const fade = isCatHidden ? 0.15 : 0.1;
+        const fade = isCatHidden ? 0.15 : 0.2;
         if (dot) dot.material.opacity += (dotTarget * breathe - dot.material.opacity) * fade;
         if (label) {
           if (label.material.uniforms) {
             label.material.uniforms.uOpacity.value += (labelTarget - label.material.uniforms.uOpacity.value) * fade;
+            // Floor: visible labels never go below 0.9 opacity
+            if (_cullZone === 0 && labelTarget > 0 && label.material.uniforms.uOpacity.value < 0.9) {
+              label.material.uniforms.uOpacity.value = 0.9;
+            }
           } else {
             label.material.opacity += (labelTarget - label.material.opacity) * fade;
           }
@@ -2064,7 +2072,7 @@ function animate() {
 
         if (label && obj.userData.baseLabelScale) {
           const camDist = _cam.position.distanceTo(_worldPos);
-          const scaleFactor = Math.max(0.8, Math.min(4.0, camDist / 80)) * state.labelSizeMultiplier;
+          const scaleFactor = Math.max(1.2, Math.min(6.0, camDist / 60)) * state.labelSizeMultiplier;
           const bls = obj.userData.baseLabelScale;
           label.scale.set(bls.x * scaleFactor, bls.y * scaleFactor, 1);
           label.position.y = (obj.userData.baseLabelY || obj.userData.baseRadius * 1.0) * scaleFactor;
@@ -2213,7 +2221,7 @@ export function initGraph(container, options = {}) {
     0.1,
     50000,
   );
-  _camera.position.set(0, 500, 1000);
+  _camera.position.set(0, 600, 1400);
 
   // ── 4. OrbitControls ──
   _controls = new OrbitControls(_camera, _renderer.domElement);

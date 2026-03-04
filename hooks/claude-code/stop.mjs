@@ -29,7 +29,7 @@
  *   {} to allow Claude to stop normally
  */
 
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync, appendFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -162,18 +162,52 @@ async function main() {
   }
 
   // ─── CHECK 1: Pending compact (higher priority) ───
-  const compactResult = checkFlag(
-    join(PENDING_COMPACT_DIR, `${sessionId}.json`),
-    (_flag, attempt) =>
-      `SynaBun: Session compacted but not indexed yet — log it in 'conversations' first. (${attempt}/${MAX_RETRIES})`
-  );
+  // Session IDs can differ between PreCompact and post-compaction Stop,
+  // so scan ALL pending-compact files and pick the most recent one.
+  const DEBUG_LOG = join(DATA_DIR, 'compact-debug.log');
+  let compactFlagPath = null;
+  try {
+    if (existsSync(PENDING_COMPACT_DIR)) {
+      const files = readdirSync(PENDING_COMPACT_DIR)
+        .filter(f => f.endsWith('.json') && !f.startsWith('test-'));
+      if (files.length > 0) {
+        // Pick the most recently created flag
+        let newest = null;
+        let newestTime = 0;
+        for (const f of files) {
+          const fp = join(PENDING_COMPACT_DIR, f);
+          try {
+            const flag = JSON.parse(readFileSync(fp, 'utf-8'));
+            const t = new Date(flag.created_at || 0).getTime();
+            if (t > newestTime) { newestTime = t; newest = fp; }
+          } catch { /* skip corrupt */ }
+        }
+        compactFlagPath = newest;
+      }
+    }
+  } catch { /* ok */ }
 
-  if (compactResult?.shouldBlock) {
-    process.stdout.write(JSON.stringify({
-      decision: 'block',
-      reason: compactResult.reason,
-    }));
-    return;
+  try {
+    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] STOP session_id=${sessionId} compactFlagPath=${compactFlagPath}\n`);
+  } catch { /* ok */ }
+
+  if (compactFlagPath) {
+    const compactResult = checkFlag(
+      compactFlagPath,
+      (_flag, attempt) =>
+        `SynaBun: Session compacted but not indexed yet — log it in 'conversations' first. (${attempt}/${MAX_RETRIES})`
+    );
+
+    if (compactResult?.shouldBlock) {
+      try {
+        appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] STOP BLOCKING session_id=${sessionId} reason=${compactResult.reason}\n`);
+      } catch { /* ok */ }
+      process.stdout.write(JSON.stringify({
+        decision: 'block',
+        reason: compactResult.reason,
+      }));
+      return;
+    }
   }
 
   // ─── CHECK 1.5: Active loop ───

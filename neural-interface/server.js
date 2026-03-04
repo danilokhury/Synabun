@@ -3366,7 +3366,8 @@ app.post('/api/browse-folder', (req, res) => {
     let cmd;
     if (process.platform === 'win32') {
       const escaped = prompt.replace(/'/g, "''");
-      cmd = `powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = '${escaped}'; $d.ShowNewFolderButton = $true; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath } else { '' }"`;
+      const pickerScript = resolve(__dirname, 'lib', 'folder-picker.ps1');
+      cmd = `powershell -NoProfile -STA -ExecutionPolicy Bypass -File "${pickerScript}" -Title "${escaped}"`;
     } else if (process.platform === 'darwin') {
       cmd = `osascript -e 'POSIX path of (choose folder with prompt "${prompt}")'`;
     } else {
@@ -3847,6 +3848,7 @@ const SYNABUN_TOOL_CATEGORIES = [
     tools: [
       { key: 'mcp__SynaBun__loop', label: 'Autonomous loops', desc: 'Run, stop, or check background tasks' },
       { key: 'mcp__SynaBun__category', label: 'Manage categories', desc: 'Create, edit, or remove memory categories' },
+      { key: 'mcp__SynaBun__tictactoe', label: 'Tic Tac Toe', desc: 'Play a game of tic-tac-toe with your AI' },
     ],
   },
   {
@@ -8501,7 +8503,8 @@ app.post('/api/browser/browse-folder', async (req, res) => {
   try {
     let cmd;
     if (IS_WIN) {
-      cmd = 'powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = \'Select Chrome profile directory\'; $d.ShowNewFolderButton = $false; if ($d.ShowDialog() -eq \'OK\') { $d.SelectedPath } else { \'\' }"';
+      const pickerScript = resolve(__dirname, 'lib', 'folder-picker.ps1');
+      cmd = `powershell -NoProfile -STA -ExecutionPolicy Bypass -File "${pickerScript}" -Title "Select Chrome profile directory"`;
     } else if (process.platform === 'darwin') {
       cmd = "osascript -e 'POSIX path of (choose folder with prompt \"Select Chrome profile directory\")'";
     } else {

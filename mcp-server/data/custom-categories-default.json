@@ -1,30 +1,20 @@
 {
   "version": 1,
+  "_comment": "Default categories template. Standalone defaults are auto-created by ensureProjectCategories() in shared.mjs. Project-specific categories (parent + children) are auto-created when projects are registered in claude-code-projects.json.",
   "categories": [
     {
-      "name": "design",
-      "description": "UI design, logos, branding, SVG assets, visual identity",
-      "created_at": "2026-02-20T04:13:57.924Z",
-      "is_parent": true
+      "name": "conversations",
+      "description": "Session summaries and conversation indexing"
     },
     {
-      "name": "logo",
-      "description": "Logo creation, iteration, and branding assets",
-      "created_at": "2026-02-20T04:14:04.014Z",
-      "parent": "design"
+      "name": "communication-style",
+      "description": "User communication patterns and preferences"
     },
     {
       "name": "plans",
-      "description": "Implementation plans stored after plan mode approval. Sub-categorized by project name.",
+      "description": "Implementation plans stored after plan mode approval",
       "is_parent": true,
-      "color": "#06d6a0",
-      "created_at": "2026-03-04T00:34:20.400Z"
-    },
-    {
-      "name": "plans-criticalpixel",
-      "description": "Implementation plans for criticalpixel project",
-      "parent": "plans",
-      "created_at": "2026-03-04T00:34:20.401Z"
+      "color": "#06d6a0"
     }
   ]
 }
