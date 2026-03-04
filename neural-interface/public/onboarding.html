@@ -956,7 +956,7 @@
       <ul class="dep-list" id="depList"></ul>
     </div>
 
-    <!-- Step 2: Memory Name -->
+    <!-- Step 2: Memory Name & Location -->
     <div class="step right" data-step="2">
       <div class="step-eyes"></div>
       <h2>Memory Name</h2>
@@ -966,6 +966,16 @@
         <input type="text" id="collectionName" value="Claude Memory" placeholder="Claude Memory">
         <div class="hint">Type any name you like.</div>
         <div class="error-text" id="collectionError"></div>
+      </div>
+      <div class="field" style="margin-top:18px">
+        <label>Database Location</label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="dbLocationPath" autocomplete="off" spellcheck="false"
+                 placeholder="Loading default..." style="flex:1">
+          <button class="action-btn" id="dbBrowseBtn" style="padding:8px 14px;font-size:12px;flex:0 0 auto">Browse</button>
+        </div>
+        <div class="hint">Where to store memory.db. Leave blank to use the default location.</div>
+        <div class="error-text" id="dbLocationError"></div>
       </div>
     </div>
 
@@ -1124,6 +1134,7 @@ let currentStep = 0;
 const wizardState = {
   collectionName: 'claude_memory',
   collectionDisplayName: 'Claude Memory',
+  dbLocationPath: null,
   selectedTool: null,
   projectRoot: '',
   buildReady: false,
@@ -1247,6 +1258,9 @@ function validateStep(n) {
       err.textContent = '';
       wizardState.collectionDisplayName = displayName;
       wizardState.collectionName = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50);
+      // Capture DB location (empty = use default)
+      const dbPath = document.getElementById('dbLocationPath').value.trim();
+      wizardState.dbLocationPath = dbPath || null;
       return true;
     }
     case 4: {
@@ -1265,11 +1279,46 @@ function validateStep(n) {
 async function onStepEnter(n) {
   if (n === 0) startMascot();
   if (n === 1) await onDepsStep();
+  if (n === 2) {
+    // Prefill default DB path
+    const input = document.getElementById('dbLocationPath');
+    if (input && !input.dataset.loaded) {
+      try {
+        const res = await fetch('/api/setup/onboarding');
+        const data = await res.json();
+        if (data.defaultDbDir) input.placeholder = data.defaultDbDir;
+      } catch {}
+      input.dataset.loaded = '1';
+    }
+  }
   if (n === 3) await onBuildStep();
   if (n === 5) await onCompleteStep();
   // Re-measure after async content loads
   resizeViewport(n);
 }
+
+// ═══════════════════════════════════════════
+// DB LOCATION — Browse button
+// ═══════════════════════════════════════════
+
+document.getElementById('dbBrowseBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('dbBrowseBtn');
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const res = await fetch('/api/browse-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'Select folder for SynaBun memory database' }),
+    });
+    const data = await res.json();
+    if (data.path) {
+      document.getElementById('dbLocationPath').value = data.path;
+    }
+  } catch {}
+  btn.disabled = false;
+  btn.textContent = 'Browse';
+});
 
 // ═══════════════════════════════════════════
 // SYNABUN — Glowing Pill Eyes (background)
@@ -1761,6 +1810,7 @@ async function onBuildStep() {
       body: JSON.stringify({
         collectionName: wizardState.collectionName,
         collectionDisplayName: wizardState.collectionDisplayName,
+        dbLocationPath: wizardState.dbLocationPath || null,
       }),
     });
   } catch {}

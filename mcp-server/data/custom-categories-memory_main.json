@@ -65,7 +65,7 @@
     },
     {
       "name": "setup",
-      "description": "Installation, onboarding wizard, Docker, embedding providers, .mcp.json generation",
+      "description": "Installation, onboarding wizard, database setup, local embeddings, .mcp.json generation",
       "created_at": "2026-02-16T03:58:45.948Z",
       "parent": "synabun",
       "color": "#22c55e"

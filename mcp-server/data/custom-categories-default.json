@@ -12,6 +12,19 @@
       "description": "Logo creation, iteration, and branding assets",
       "created_at": "2026-02-20T04:14:04.014Z",
       "parent": "design"
+    },
+    {
+      "name": "plans",
+      "description": "Implementation plans stored after plan mode approval. Sub-categorized by project name.",
+      "is_parent": true,
+      "color": "#06d6a0",
+      "created_at": "2026-03-04T00:34:20.400Z"
+    },
+    {
+      "name": "plans-criticalpixel",
+      "description": "Implementation plans for criticalpixel project",
+      "parent": "plans",
+      "created_at": "2026-03-04T00:34:20.401Z"
     }
   ]
 }

@@ -34,7 +34,8 @@
       "Bash(python:*)",
       "mcp__SynaBun__browser_scroll",
       "mcp__SynaBun__browser_extract_tweets",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "mcp__SynaBun__tictactoe"
     ]
   }
 }

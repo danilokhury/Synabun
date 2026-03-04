@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — Loading Overlay
-// Health check, Docker start, server-offline retry, command copy
+// Health check, server start, server-offline retry, command copy
 // ═══════════════════════════════════════════
 
 import { fetchHealth, startHealth } from './api.js';
@@ -127,7 +127,7 @@ export async function checkHealth() {
 // ═══════════════════════════════════════════
 
 /**
- * Handle the "Start Docker" / retry action button click.
+ * Handle the "Start Server" / retry action button click.
  * Calls /api/health/start and re-triggers init on success.
  */
 async function handleStartAction() {
@@ -209,7 +209,7 @@ async function handleRetryConnection() {
 
 /**
  * Initialize the loading overlay. Wires up all event listeners for:
- * - Start Docker button
+ * - Start Server button
  * - Copy command button
  * - Retry connection button
  *
@@ -222,7 +222,7 @@ export function initLoading({ onInit } = {}) {
   _initCallback = onInit || null;
   _statusDot = $('status-dot');
 
-  // ── Start Docker / retry action button ──
+  // ── Start Server / retry action button ──
   const actionBtn = $('loading-action-btn');
   if (actionBtn) actionBtn.addEventListener('click', handleStartAction);
 

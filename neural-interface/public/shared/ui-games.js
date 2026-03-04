@@ -9,61 +9,154 @@ import { KEYS } from './constants.js';
 
 const $ = (id) => document.getElementById(id);
 
-// ── TicTacToe constants ──
+// ── TicTacToe constants (only used for UI positioning) ──
 const TTT_BOARD_SIZE = 500;
-const TTT_CELL_SIZE = Math.round(TTT_BOARD_SIZE / 3);
-const TTT_PIECE_SIZE = 120;
-const TTT_PIECE_OFFSET = Math.round((TTT_CELL_SIZE - TTT_PIECE_SIZE) / 2);
-const TTT_NUMBER_SIZE = 60;
-const TTT_NUMBER_OFFSET = Math.round((TTT_CELL_SIZE - TTT_NUMBER_SIZE) / 2);
 
-// Cell ID helpers
-const cellId = (n) => `ttt-cell-${n}`;
+// ── Game prompts (dynamic based on dice roll) ──
+function buildGamePrompt(humanFirst, opponentLabel) {
+  const youPiece = humanFirst ? 'O' : 'X';
+  const themPiece = humanFirst ? 'X' : 'O';
 
-// ── Game prompt sent to the AI opponent ──
-const TTT_GAME_PROMPT = `Let's play Tic Tac Toe! A board is set up on the whiteboard with cells numbered 1-9. You play as X (Cross) and I play as O (Circle).
+  return `Tic Tac Toe. You are ${youPiece}. Use tictactoe tool (action "move", cell 1-9) for all moves — yours AND the human's. ${humanFirst ? 'Human goes first. Wait for their cell number.' : 'You go first. Pick a cell now.'}
 
-To see the board: use whiteboard_read or whiteboard_screenshot.
-To make a move: first whiteboard_remove the number marker (id: "ttt-cell-N"), then whiteboard_add an image element with url "/games/TicTacToe/Cross.svg" at the same position (get x,y from whiteboard_read), width 120, height 120.
-
-Cell layout:
-  1 | 2 | 3
-  ---------
-  4 | 5 | 6
-  ---------
-  7 | 8 | 9
-
-You go first — pick a cell and make your move!`;
-
-// ── SVG to DataUrl conversion ──
-async function svgToDataUrl(url) {
-  const resp = await fetch(url);
-  const text = await resp.text();
-  return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(text)));
+Each turn: place the human's ${themPiece} at their cell, then place your ${youPiece}. Keep responses short.`;
 }
 
-// ── Preloaded assets ──
-let _assets = {};
-let _assetsLoaded = false;
+// ── Dice face dot patterns (grid positions: TL=0, TC=1, TR=2, ML=3, MC=4, MR=5, BL=6, BC=7, BR=8) ──
+const DICE_FACES = {
+  1: [4],                     // center
+  2: [2, 6],                  // TR, BL
+  3: [2, 4, 6],               // TR, MC, BL
+  4: [0, 2, 6, 8],            // four corners
+  5: [0, 2, 4, 6, 8],         // four corners + center
+  6: [0, 3, 6, 2, 5, 8],      // left col + right col
+};
 
-async function preloadAssets() {
-  if (_assetsLoaded) return;
-  const names = ['Board', 'Cross', 'Circle', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
-  await Promise.all(names.map(async name => {
-    _assets[name] = await svgToDataUrl(`/games/TicTacToe/${name}.svg`);
-  }));
-  _assetsLoaded = true;
+function createDieElement() {
+  const die = document.createElement('div');
+  die.className = 'ttt-die';
+  for (let i = 0; i < 9; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'ttt-dot';
+    dot.dataset.pos = i;
+    die.appendChild(dot);
+  }
+  return die;
 }
 
-// ── Cell coordinate mapping ──
-function cellPosition(cellNum, boardX, boardY) {
-  const idx = cellNum - 1;
-  const col = idx % 3;
-  const row = Math.floor(idx / 3);
-  return {
-    x: boardX + col * TTT_CELL_SIZE + TTT_PIECE_OFFSET,
-    y: boardY + row * TTT_CELL_SIZE + TTT_PIECE_OFFSET,
-  };
+function setDieFace(die, face) {
+  const dots = die.querySelectorAll('.ttt-dot');
+  const active = DICE_FACES[face] || [];
+  dots.forEach((dot, i) => {
+    dot.classList.toggle('visible', active.includes(i));
+  });
+  die.dataset.face = face;
+}
+
+// ── Dice roll overlay ──
+function showDiceRoll(opponentLabel) {
+  return new Promise((resolve) => {
+    const wbRoot = $('wb-root');
+    if (!wbRoot) return resolve({ humanFirst: true });
+
+    // Move logo up so dice don't overlap it
+    const rect = wbRoot.getBoundingClientRect();
+    const diceAreaTop = Math.round(rect.height / 2) - 80; // dice center minus half their height
+    positionLogoAboveBoard(diceAreaTop);
+
+    const overlay = document.createElement('div');
+    overlay.id = 'ttt-dice-overlay';
+
+    const row = document.createElement('div');
+    row.className = 'ttt-dice-row';
+
+    // Human die
+    const humanPlayer = document.createElement('div');
+    humanPlayer.className = 'ttt-dice-player';
+    const humanDie = createDieElement();
+    const humanLabel = document.createElement('div');
+    humanLabel.className = 'ttt-dice-label';
+    humanLabel.textContent = 'YOU';
+    humanPlayer.appendChild(humanDie);
+    humanPlayer.appendChild(humanLabel);
+
+    // VS text
+    const vs = document.createElement('div');
+    vs.className = 'ttt-dice-vs';
+    vs.textContent = 'VS';
+
+    // AI die
+    const aiPlayer = document.createElement('div');
+    aiPlayer.className = 'ttt-dice-player';
+    const aiDie = createDieElement();
+    const aiLabel = document.createElement('div');
+    aiLabel.className = 'ttt-dice-label';
+    aiLabel.textContent = opponentLabel.toUpperCase();
+    aiPlayer.appendChild(aiDie);
+    aiPlayer.appendChild(aiLabel);
+
+    row.appendChild(humanPlayer);
+    row.appendChild(vs);
+    row.appendChild(aiPlayer);
+
+    // Result text (hidden initially)
+    const resultEl = document.createElement('div');
+    resultEl.className = 'ttt-dice-result';
+
+    overlay.appendChild(row);
+    overlay.appendChild(resultEl);
+    wbRoot.appendChild(overlay);
+
+    // Generate final values (ensure no tie)
+    let humanRoll, aiRoll;
+    do {
+      humanRoll = Math.floor(Math.random() * 6) + 1;
+      aiRoll = Math.floor(Math.random() * 6) + 1;
+    } while (humanRoll === aiRoll);
+
+    const humanFirst = humanRoll > aiRoll;
+
+    // Start rolling animation
+    setDieFace(humanDie, 1);
+    setDieFace(aiDie, 1);
+    humanDie.classList.add('rolling');
+    aiDie.classList.add('rolling');
+
+    const rollInterval = setInterval(() => {
+      setDieFace(humanDie, Math.floor(Math.random() * 6) + 1);
+      setDieFace(aiDie, Math.floor(Math.random() * 6) + 1);
+    }, 80);
+
+    // Settle after 1.5s
+    setTimeout(() => {
+      clearInterval(rollInterval);
+      humanDie.classList.remove('rolling');
+      aiDie.classList.remove('rolling');
+
+      setDieFace(humanDie, humanRoll);
+      setDieFace(aiDie, aiRoll);
+
+      humanDie.classList.add('settled');
+      aiDie.classList.add('settled');
+
+      // Show result text
+      setTimeout(() => {
+        resultEl.textContent = humanFirst
+          ? 'You go first!'
+          : `${opponentLabel} goes first!`;
+        resultEl.classList.add('show');
+      }, 400);
+
+      // Fade out and resolve after 1.8s
+      setTimeout(() => {
+        overlay.classList.add('fade-out');
+        setTimeout(() => {
+          overlay.remove();
+          resolve({ humanFirst, humanRoll, aiRoll });
+        }, 500);
+      }, 1800);
+    }, 1500);
+  });
 }
 
 // ── Position logo above a board at given boardY ──
@@ -115,7 +208,7 @@ const OPPONENTS = [
 // ── Opponent picker overlay ──
 let _pickerEl = null;
 
-function showOpponentPicker(boardX, boardY) {
+function showOpponentPicker() {
   removeOpponentPicker();
 
   const picker = document.createElement('div');
@@ -124,7 +217,7 @@ function showOpponentPicker(boardX, boardY) {
     <div class="ttt-picker-title">CHOOSE YOUR OPPONENT</div>
     <div class="ttt-picker-options">
       ${OPPONENTS.map(o => `
-        <button class="ttt-picker-btn" data-profile="${o.id}" title="${o.label}">
+        <button class="ttt-picker-btn" data-profile="${o.id}" data-label="${o.label}" title="${o.label}">
           <span class="ttt-picker-icon">${o.icon}</span>
           <span class="ttt-picker-label">${o.label}</span>
         </button>
@@ -136,23 +229,31 @@ function showOpponentPicker(boardX, boardY) {
   if (!wbRoot) return;
   wbRoot.appendChild(picker);
 
-  // Center below the board
+  // Move logo up so picker doesn't overlap it
+  const rect = wbRoot.getBoundingClientRect();
+  const pickerAreaTop = Math.round(rect.height / 2) - 40;
+  positionLogoAboveBoard(pickerAreaTop);
+
+  // Center in whiteboard, nudged slightly below center
   picker.style.position = 'absolute';
-  picker.style.left = (boardX + TTT_BOARD_SIZE / 2) + 'px';
-  picker.style.top = (boardY + TTT_BOARD_SIZE + 24) + 'px';
-  picker.style.transform = 'translateX(-50%)';
+  picker.style.left = '50%';
+  picker.style.top = 'calc(50% + 20px)';
+  picker.style.transform = 'translate(-50%, -50%)';
   picker.style.zIndex = '999';
   picker.style.pointerEvents = 'auto';
 
-  // Wire click handlers
+  // Wire click handlers — each button triggers dice roll → game start
   picker.querySelectorAll('.ttt-picker-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const profile = btn.dataset.profile;
+      const label = btn.dataset.label;
       removeOpponentPicker();
-      emit('terminal:launch-floating', {
-        profile,
-        initialMessage: TTT_GAME_PROMPT,
-      });
+
+      // Dice roll to determine who goes first
+      const { humanFirst } = await showDiceRoll(label);
+
+      // Start the game — human is X if they go first, AI is X otherwise
+      await startGameAfterDice(profile, label, humanFirst);
     });
   });
 
@@ -164,6 +265,40 @@ function removeOpponentPicker() {
     _pickerEl.remove();
     _pickerEl = null;
   }
+}
+
+// ── Start game after dice roll ──
+async function startGameAfterDice(profile, opponentLabel, humanFirst) {
+  const wbRoot = $('wb-root');
+  if (!wbRoot) return;
+
+  // If human goes first, human is X. If AI goes first, AI is X.
+  // The `piece` param in /start represents which piece X is assigned to.
+  // X always goes first. We just control the prompt to assign roles.
+  const resp = await fetch('/api/games/tictactoe/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ piece: 'X' }),
+  });
+
+  if (!resp.ok) {
+    console.error('[games] Failed to start TicTacToe:', await resp.text());
+    return;
+  }
+
+  const rect = wbRoot.getBoundingClientRect();
+  const boardX = Math.round((rect.width - TTT_BOARD_SIZE) / 2);
+  const boardY = Math.round((rect.height - TTT_BOARD_SIZE) / 2);
+
+  positionLogoAboveBoard(boardY);
+  showGameHud(boardX, boardY);
+
+  // Launch terminal with dynamic prompt based on dice result
+  const prompt = buildGamePrompt(humanFirst, opponentLabel);
+  emit('terminal:launch-floating', {
+    profile,
+    initialMessage: prompt,
+  });
 }
 
 // ── Game HUD overlay (close button + arrow annotation) ──
@@ -207,14 +342,14 @@ function removeGameHud() {
   }
 }
 
-// ── Teardown: clear board + reset everything ──
+// ── Teardown: end game via API + reset UI ──
 async function teardownTicTacToe() {
   removeGameHud();
   removeOpponentPicker();
   resetLogoPosition();
   const wbRoot = $('wb-root');
   if (wbRoot) wbRoot.classList.remove('ttt-active');
-  await fetch('/api/whiteboard/clear', { method: 'POST' });
+  await fetch('/api/games/tictactoe/end', { method: 'POST' });
 }
 
 // ── Enter focus mode (whiteboard) if not already ──
@@ -228,79 +363,23 @@ function ensureFocusMode() {
   }
 }
 
-// ── Setup the TicTacToe board ──
+// ── Setup the TicTacToe game ──
 async function setupTicTacToe() {
-  // Preload all SVG assets
-  await preloadAssets();
-
   // Enter focus mode (whiteboard)
   ensureFocusMode();
 
   // Wait a tick for focus mode transition
   await new Promise(r => setTimeout(r, 200));
 
-  // Clear the whiteboard
-  await fetch('/api/whiteboard/clear', { method: 'POST' });
-
-  // Wait for clear to propagate
-  await new Promise(r => setTimeout(r, 100));
-
-  // Calculate board position (centered in whiteboard)
   const wbRoot = $('wb-root');
   if (!wbRoot) {
     console.error('[games] Whiteboard root not found');
     return;
   }
   wbRoot.classList.add('ttt-active');
-  const rect = wbRoot.getBoundingClientRect();
-  const boardX = Math.round((rect.width - TTT_BOARD_SIZE) / 2);
-  const boardY = Math.round((rect.height - TTT_BOARD_SIZE) / 2);
 
-  // Animate logo above the board + show HUD + opponent picker
-  positionLogoAboveBoard(boardY);
-  showGameHud(boardX, boardY);
-  showOpponentPicker(boardX, boardY);
-
-  // Build all elements in a single batch
-  const elements = [];
-
-  // Board grid
-  elements.push({
-    id: 'ttt-board',
-    type: 'image',
-    x: boardX,
-    y: boardY,
-    width: TTT_BOARD_SIZE,
-    height: TTT_BOARD_SIZE,
-    dataUrl: _assets.Board,
-  });
-
-  // Number markers (1-9) — small and dim (opacity handled via CSS)
-  for (let i = 1; i <= 9; i++) {
-    const idx = i - 1;
-    const col = idx % 3;
-    const row = Math.floor(idx / 3);
-    elements.push({
-      id: cellId(i),
-      type: 'image',
-      x: boardX + col * TTT_CELL_SIZE + TTT_NUMBER_OFFSET,
-      y: boardY + row * TTT_CELL_SIZE + TTT_NUMBER_OFFSET,
-      width: TTT_NUMBER_SIZE,
-      height: TTT_NUMBER_SIZE,
-      dataUrl: _assets[String(i)],
-    });
-  }
-
-  // Send all elements in one request
-  const resp = await fetch('/api/whiteboard/elements', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ elements }),
-  });
-
-  if (!resp.ok) {
-    console.error('[games] Failed to set up TicTacToe board:', await resp.text());
-  }
+  // Show opponent picker — it handles dice roll → game start → terminal launch
+  showOpponentPicker();
 }
 
 // ── Clear game elements from persisted storage (call BEFORE initWhiteboard) ──
@@ -315,7 +394,7 @@ export function clearGameOnLoad() {
     data.elements = data.elements.filter(el => !el.id || !el.id.startsWith('ttt-'));
     storage.setItem(KEYS.WHITEBOARD, JSON.stringify(data));
     // Also clear server state
-    fetch('/api/whiteboard/clear', { method: 'POST' });
+    fetch('/api/games/tictactoe/end', { method: 'POST' });
   } catch { /* ignore */ }
 }
 
