@@ -24,6 +24,12 @@ import {
   browserScreenshotSchema, browserScreenshotDescription, handleBrowserScreenshot,
   browserExtractTweetsSchema, browserExtractTweetsDescription, handleBrowserExtractTweets,
   browserExtractFbPostsSchema, browserExtractFbPostsDescription, handleBrowserExtractFbPosts,
+  browserExtractTiktokVideosSchema, browserExtractTiktokVideosDescription, handleBrowserExtractTiktokVideos,
+  browserExtractTiktokSearchSchema, browserExtractTiktokSearchDescription, handleBrowserExtractTiktokSearch,
+  browserExtractTiktokStudioSchema, browserExtractTiktokStudioDescription, handleBrowserExtractTiktokStudio,
+  browserExtractTiktokProfileSchema, browserExtractTiktokProfileDescription, handleBrowserExtractTiktokProfile,
+  browserExtractWaChatsSchema, browserExtractWaChatsDescription, handleBrowserExtractWaChats,
+  browserExtractWaMessagesSchema, browserExtractWaMessagesDescription, handleBrowserExtractWaMessages,
 } from './browser-observe.js';
 
 import {
@@ -33,7 +39,7 @@ import {
 } from './browser-advanced.js';
 
 /**
- * Register all 20 browser MCP tools on the given server instance.
+ * Register all 26 browser MCP tools on the given server instance.
  * Browser tools are static (no dynamic schema refresh needed).
  */
 export function registerBrowserTools(server: McpServer) {
@@ -59,6 +65,12 @@ export function registerBrowserTools(server: McpServer) {
   server.tool('browser_screenshot', browserScreenshotDescription, browserScreenshotSchema, handleBrowserScreenshot);
   server.tool('browser_extract_tweets', browserExtractTweetsDescription, browserExtractTweetsSchema, handleBrowserExtractTweets);
   server.tool('browser_extract_fb_posts', browserExtractFbPostsDescription, browserExtractFbPostsSchema, handleBrowserExtractFbPosts);
+  server.tool('browser_extract_tiktok_videos', browserExtractTiktokVideosDescription, browserExtractTiktokVideosSchema, handleBrowserExtractTiktokVideos);
+  server.tool('browser_extract_tiktok_search', browserExtractTiktokSearchDescription, browserExtractTiktokSearchSchema, handleBrowserExtractTiktokSearch);
+  server.tool('browser_extract_tiktok_studio', browserExtractTiktokStudioDescription, browserExtractTiktokStudioSchema, handleBrowserExtractTiktokStudio);
+  server.tool('browser_extract_tiktok_profile', browserExtractTiktokProfileDescription, browserExtractTiktokProfileSchema, handleBrowserExtractTiktokProfile);
+  server.tool('browser_extract_wa_chats', browserExtractWaChatsDescription, browserExtractWaChatsSchema, handleBrowserExtractWaChats);
+  server.tool('browser_extract_wa_messages', browserExtractWaMessagesDescription, browserExtractWaMessagesSchema, handleBrowserExtractWaMessages);
 
   // Advanced
   server.tool('browser_evaluate', browserEvaluateDescription, browserEvaluateSchema, handleBrowserEvaluate);

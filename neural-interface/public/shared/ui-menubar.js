@@ -327,6 +327,7 @@ function wireTerminalMenu() {
     'menu-terminal-youtube': () => emit('browser:open', { url: 'https://www.youtube.com' }),
     'menu-terminal-discord': () => emit('browser:open', { url: 'https://discord.com/app' }),
     'menu-terminal-x':       () => emit('browser:open', { url: 'https://x.com' }),
+    'menu-terminal-whatsapp': () => emit('browser:open', { url: 'https://web.whatsapp.com' }),
     'menu-command-runner':   () => emit('command-runner:open'),
     'menu-terminal-link':    () => emit('link:toggle'),
     'menu-terminal-toggle':  () => emit('terminal:toggle'),

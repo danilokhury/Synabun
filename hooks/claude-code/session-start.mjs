@@ -24,14 +24,15 @@
  * }
  */
 
-import { readFileSync, existsSync, unlinkSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, unlinkSync, readdirSync, statSync, appendFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getHookFeatures, detectProject } from './shared.mjs';
+import { getHookFeatures, detectProject, ensureProjectCategories } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRECOMPACT_DIR = join(__dirname, '..', '..', 'data', 'precompact');
+const DEBUG_LOG = join(__dirname, '..', '..', 'data', 'compact-debug.log');
 const LOOP_DIR = join(__dirname, '..', '..', 'data', 'loop');
 const GREETING_CONFIG_PATH = join(__dirname, '..', '..', 'data', 'greeting-config.json');
 
@@ -134,6 +135,15 @@ async function main() {
   const project = detectProject(cwd);
   const features = getHookFeatures();
   const isCompactRestart = source === 'compact';
+
+  // Ensure all registered projects have their default category trees
+  try { ensureProjectCategories(); } catch { /* non-critical */ }
+
+  // Debug logging
+  try {
+    const cacheExists = sessionId ? existsSync(join(PRECOMPACT_DIR, `${sessionId}.json`)) : false;
+    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] SESSION-START source=${source} session_id=${sessionId} isCompactRestart=${isCompactRestart} cacheExists=${cacheExists} convMemory=${features.conversationMemory}\n`);
+  } catch { /* ok */ }
 
   // --- Build context ---
 
