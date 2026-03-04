@@ -4,7 +4,8 @@
  * which manages Playwright sessions, CDP screencast, stealth, etc.
  */
 
-const BASE_URL = process.env.NEURAL_INTERFACE_URL || 'http://localhost:3344';
+const BASE_URL = process.env.NEURAL_INTERFACE_URL
+  || `http://localhost:${process.env.NEURAL_PORT || '3344'}`;
 const DEFAULT_TIMEOUT = 10_000;
 const LONG_TIMEOUT = 30_000;
 

@@ -1378,8 +1378,8 @@ No parameters.
   },
   "projects": [
     {
-      "path": "J:\\Sites\\CriticalPixel",
-      "label": "CriticalPixel",
+      "path": "/home/user/my-project",
+      "label": "MyProject",
       "installed": true,
       "settingsExists": true
     }
@@ -1466,7 +1466,7 @@ curl -X POST http://localhost:3344/api/claude-code/integrations \
 ```bash
 curl -X POST http://localhost:3344/api/claude-code/integrations \
   -H "Content-Type: application/json" \
-  -d '{"target": "project", "projectPath": "J:\\Sites\\CriticalPixel", "label": "CriticalPixel"}'
+  -d '{"target": "project", "projectPath": "/home/user/my-project", "label": "MyProject"}'
 ```
 
 ---
