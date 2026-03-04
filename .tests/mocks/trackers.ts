@@ -20,7 +20,7 @@ export function getEmbeddingCalls(): EmbeddingCall[] {
 }
 
 export function getDbCalls(): DbCall[] {
-  return (globalThis as Record<string, unknown>).__synabun_qdrant_calls as DbCall[];
+  return (globalThis as Record<string, unknown>).__synabun_db_calls as DbCall[];
 }
 
 export function getDbCallsByMethod(method: string): DbCall[] {

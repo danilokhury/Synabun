@@ -14,6 +14,7 @@ import { loopSchema, loopDescription, handleLoop } from './tools/loop.js';
 import { registerBrowserTools } from './tools/browser.js';
 import { registerWhiteboardTools } from './tools/whiteboard.js';
 import { registerCardTools } from './tools/card.js';
+import { registerTicTacToeTools } from './tools/tictactoe.js';
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, initCategoryCache } from './services/categories.js';
 
 function buildServerInstructions(): string {
@@ -25,6 +26,7 @@ Tool groups:
 - Browser: browser_navigate, browser_click, browser_type, browser_fill, browser_snapshot, browser_screenshot, browser_content, browser_evaluate, browser_hover, browser_select, browser_press, browser_wait, browser_go_back, browser_go_forward, browser_session
 - Whiteboard: whiteboard_read, whiteboard_add, whiteboard_update, whiteboard_remove, whiteboard_screenshot
 - Cards: card_list, card_open, card_close, card_update, card_screenshot
+- TicTacToe: tictactoe (action: start/move/state/end)
 - Sync: sync
 - Loop: loop (action: start/stop/status)
 
@@ -46,6 +48,7 @@ export function registerTools(server: McpServer) {
   registerBrowserTools(server);
   registerWhiteboardTools(server);
   registerCardTools(server);
+  registerTicTacToeTools(server);
   return { rememberTool, recallTool, reflectTool, memoriesTool };
 }
 

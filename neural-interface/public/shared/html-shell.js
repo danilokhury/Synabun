@@ -40,7 +40,7 @@ export function getSharedHTML() {
   <div id="loading-action">
     <button id="loading-action-btn" type="button">
       <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      <span id="loading-action-label">${t('loading.startDocker')}</span>
+      <span id="loading-action-label">${t('loading.startServer')}</span>
     </button>
     <div id="loading-action-status"></div>
   </div>
