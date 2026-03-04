@@ -309,7 +309,7 @@ function buildCommandForm(existing) {
       <input class="cr-form-input cr-form-mono" id="cr-cmd-command" type="text" value="${command}" placeholder="e.g. npm run dev" autocomplete="off" />
 
       <label class="cr-form-label" style="margin-top:12px">Working Directory <span class="cr-form-hint">(optional)</span></label>
-      <input class="cr-form-input cr-form-mono" id="cr-cmd-cwd" type="text" value="${cwd}" placeholder="e.g. J:\\Sites\\CriticalPixel" autocomplete="off" />
+      <input class="cr-form-input cr-form-mono" id="cr-cmd-cwd" type="text" value="${cwd}" placeholder="e.g. /home/user/myproject" autocomplete="off" />
     </div>
     <div class="cr-modal-footer">
       <button class="cr-modal-btn" id="cr-modal-cancel">Cancel</button>

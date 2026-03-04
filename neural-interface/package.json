@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "3D neural visualization of Claude's memory system",
   "type": "module",
+  "engines": { "node": ">=22.5.0" },
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

@@ -41,18 +41,37 @@ function saveState(state) {
 
 // --- Project detection ---
 
-const PROJECT_MAP = {
-  criticalpixel: 'criticalpixel',
-  ellacred: 'ellacred',
-  synabun: 'synabun',
-};
+// Project detection — uses registered projects from claude-code-projects.json (dynamic, no hardcoded names)
+
+function loadRegisteredProjects() {
+  const projectsPath = join(resolve(PROJECT_ROOT, 'mcp-server', 'data'), 'claude-code-projects.json');
+  try {
+    if (existsSync(projectsPath)) {
+      return JSON.parse(readFileSync(projectsPath, 'utf-8'));
+    }
+  } catch { /* ignore */ }
+  return [];
+}
 
 function detectProject(cwd) {
   if (!cwd) return 'global';
-  const lower = cwd.toLowerCase();
-  for (const [key, value] of Object.entries(PROJECT_MAP)) {
-    if (lower.includes(key)) return value;
+  const lower = cwd.toLowerCase().replace(/\\/g, '/');
+  const projects = loadRegisteredProjects();
+
+  // Registered project match (most specific path wins)
+  const sorted = projects
+    .map(p => ({ path: p.path.toLowerCase().replace(/\\/g, '/'), label: p.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }))
+    .sort((a, b) => b.path.length - a.path.length);
+
+  for (const p of sorted) {
+    if (lower.startsWith(p.path + '/') || lower === p.path) return p.label;
   }
+  for (const p of sorted) {
+    const folder = basename(p.path).toLowerCase();
+    if (lower.includes(folder)) return p.label;
+  }
+
+  // Fallback to directory basename
   const base = basename(cwd).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   return base || 'global';
 }
@@ -61,9 +80,13 @@ function detectProject(cwd) {
 function detectProjectFromDir(dirName) {
   if (!dirName) return 'global';
   const lower = dirName.toLowerCase();
-  for (const [key, value] of Object.entries(PROJECT_MAP)) {
-    if (lower.includes(key)) return value;
+  const projects = loadRegisteredProjects();
+
+  for (const p of projects) {
+    const label = p.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (lower.includes(label)) return label;
   }
+
   const parts = dirName.split('-').filter(Boolean);
   return (parts[parts.length - 1] || 'global').toLowerCase();
 }
