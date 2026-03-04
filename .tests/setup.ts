@@ -17,7 +17,7 @@ const _dbCalls: Array<{ method: string; params: unknown; timestamp: number }> = 
 
 // Expose for test files to import
 (globalThis as Record<string, unknown>).__synabun_embedding_calls = _embeddingCalls;
-(globalThis as Record<string, unknown>).__synabun_qdrant_calls = _dbCalls; // keep key for tracker compat
+(globalThis as Record<string, unknown>).__synabun_db_calls = _dbCalls; // keep key for tracker compat
 
 // --- Scroll pagination config (configurable per test) ---
 (globalThis as Record<string, unknown>).__synabun_scroll_config = null as {
@@ -75,7 +75,7 @@ vi.mock('../mcp-server/src/services/sqlite.js', () => {
   const now = new Date().toISOString();
 
   function trackCall(method: string, params: unknown) {
-    const calls = (globalThis as Record<string, unknown>).__synabun_qdrant_calls as typeof _dbCalls;
+    const calls = (globalThis as Record<string, unknown>).__synabun_db_calls as typeof _dbCalls;
     calls.push({ method, params, timestamp: Date.now() });
   }
 
@@ -233,8 +233,8 @@ vi.mock('../mcp-server/src/services/sqlite.js', () => {
     scrollSessionChunks: vi.fn(async () => ({ points: [], next_page_offset: null })),
     countSessionChunks: vi.fn(async () => 0),
 
-    getCategoriesFromQdrant: vi.fn(async () => null),
-    saveCategoriesToQdrant: vi.fn(async () => {}),
+    getCategories: vi.fn(async () => null),
+    saveCategories: vi.fn(async () => {}),
   };
 });
 

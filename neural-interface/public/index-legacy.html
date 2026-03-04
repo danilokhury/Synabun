@@ -12235,15 +12235,6 @@ async function openSettingsModal() {
         </div>
 
         <div class="settings-field">
-          <label>OpenAI API Key</label>
-          <div class="settings-key-row">
-            <input type="password" id="stg-openai" placeholder="${settings.openaiApiKey || 'sk-...'}" autocomplete="off" spellcheck="false">
-            <button class="settings-toggle-vis" data-target="stg-openai" data-tooltip="Toggle">${eyeClosed}</button>
-          </div>
-          <div class="settings-hint">${settings.openaiApiKeySet ? 'Key is set' : 'Not configured'} — leave empty to keep current</div>
-        </div>
-
-        <div class="settings-field">
           <label>Database Path</label>
           <div class="settings-key-row">
             <input type="text" id="stg-db-path" placeholder="${settings.databasePath || 'data/memory.db'}" autocomplete="off" spellcheck="false">
@@ -12860,10 +12851,8 @@ async function openSettingsModal() {
   // Save handler (server tab)
   overlay.querySelector('#stg-save').addEventListener('click', async () => {
     const body = {};
-    const openai = overlay.querySelector('#stg-openai').value.trim();
     const dbPath = overlay.querySelector('#stg-db-path').value.trim();
 
-    if (openai) body.openaiApiKey = openai;
     if (dbPath) body.databasePath = dbPath;
 
     if (Object.keys(body).length === 0) { close(); return; }

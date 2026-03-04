@@ -51,7 +51,7 @@ describe('remember — behavioral tests', () => {
   it('passes tags array through to upsert', async () => {
     const tags = ['redis', 'cache', 'pricing'];
     await handleRemember({ content: 'Tags test', category: 'architecture', tags });
-    const calls = (globalThis as any).__synabun_qdrant_calls as Array<{ method: string; params: unknown }>;
+    const calls = (globalThis as any).__synabun_db_calls as Array<{ method: string; params: unknown }>;
     const upserts = calls.filter(c => c.method === 'upsert');
     expect(upserts).toHaveLength(1);
     // upsertMemory was called; tags are embedded in the payload passed to it
