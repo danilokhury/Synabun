@@ -14,7 +14,7 @@ import { createToolStats, aggregateSession } from '../utils/call-tracker.js';
 const SESSION_REMEMBER = 5;
 const SESSION_RECALL = 10;
 const SESSION_START_RECALLS = 3;
-const SESSION_REFLECT_METADATA = 2; // No OpenAI cost
+const SESSION_REFLECT_METADATA = 2; // No embedding cost
 const DEFAULT_RECALL_LIMIT = 5;
 
 const AVG_REMEMBER_CONTENT = 'This is a typical memory about an implementation detail or bug fix that was discovered during a coding session. It includes the what, why, and how of the change made.';
@@ -44,19 +44,19 @@ describe('light user scenario (5 remember + 10 recall, 1 session/day)', () => {
     expect(cost).toBeLessThan(0.01);
   });
 
-  it('calculates per-session Qdrant operations', () => {
-    const rememberQdrant = SESSION_REMEMBER * 1; // 1 upsert each
-    const recallQdrant = (SESSION_RECALL + SESSION_START_RECALLS) * (1 + DEFAULT_RECALL_LIMIT);
-    const reflectQdrant = SESSION_REFLECT_METADATA * 2; // 1 retrieve + 1 setPayload
-    const totalQdrant = rememberQdrant + recallQdrant + reflectQdrant;
+  it('calculates per-session DB operations', () => {
+    const rememberDb = SESSION_REMEMBER * 1; // 1 upsert each
+    const recallDb = (SESSION_RECALL + SESSION_START_RECALLS) * (1 + DEFAULT_RECALL_LIMIT);
+    const reflectDb = SESSION_REFLECT_METADATA * 2; // 1 retrieve + 1 setPayload
+    const totalDb = rememberDb + recallDb + reflectDb;
 
-    console.log('\n  Light user — Qdrant ops/session:');
-    console.log(`    remember: ${rememberQdrant} (${SESSION_REMEMBER} upserts)`);
-    console.log(`    recall:   ${recallQdrant} (${SESSION_RECALL + SESSION_START_RECALLS} searches + access updates)`);
-    console.log(`    reflect:  ${reflectQdrant} (${SESSION_REFLECT_METADATA} retrieve+setPayload)`);
-    console.log(`    TOTAL:    ${totalQdrant} ops`);
+    console.log('\n  Light user — DB ops/session:');
+    console.log(`    remember: ${rememberDb} (${SESSION_REMEMBER} upserts)`);
+    console.log(`    recall:   ${recallDb} (${SESSION_RECALL + SESSION_START_RECALLS} searches + access updates)`);
+    console.log(`    reflect:  ${reflectDb} (${SESSION_REFLECT_METADATA} retrieve+setPayload)`);
+    console.log(`    TOTAL:    ${totalDb} ops`);
 
-    expect(totalQdrant).toBeGreaterThan(0);
+    expect(totalDb).toBeGreaterThan(0);
   });
 
   it('calculates monthly projection at 1 session/day', () => {
@@ -108,7 +108,7 @@ describe('light user scenario (5 remember + 10 recall, 1 session/day)', () => {
       rememberStats, recallStats, startStats, reflectStats,
     ]);
 
-    expect(session.totals.openaiCalls).toBe(SESSION_REMEMBER + SESSION_RECALL + SESSION_START_RECALLS);
+    expect(session.totals.embeddingCallCount).toBe(SESSION_REMEMBER + SESSION_RECALL + SESSION_START_RECALLS);
     expect(session.totals.embeddingTokens).toBeGreaterThan(0);
     expect(session.totals.costUSD).toBeGreaterThan(0);
   });

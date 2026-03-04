@@ -61,7 +61,7 @@ describe('integration: compaction flow', () => {
       session_id: sessionId,
       transcript_path: transcriptPath,
       trigger: 'auto',
-      cwd: 'J:/Sites/CriticalPixel',
+      cwd: '/tmp/test-project',
     });
 
     expect(preCompactResult.exitCode).toBe(0);
@@ -86,7 +86,7 @@ describe('integration: compaction flow', () => {
       session_id: sessionId,
       tool_name: 'mcp__SynaBun__remember',
       tool_input: { content: 'Session summary', category: 'conversations' },
-      cwd: 'J:/Sites/CriticalPixel',
+      cwd: '/tmp/test-project',
     });
 
     // Verify pending-compact flag was cleared
@@ -101,7 +101,7 @@ describe('integration: compaction flow', () => {
 
     // Step 5: Fire session-start with source='compact' → should load precompact cache
     const startResult = await runHook('session-start.mjs', {
-      cwd: 'J:/Sites/CriticalPixel',
+      cwd: '/tmp/test-project',
       source: 'compact',
       session_id: sessionId,
     });

@@ -38,7 +38,7 @@ describe('session start overhead', () => {
     }
 
     const cost = tokensToUSD(totalTokens);
-    const totalQdrantOps = SESSION_START_QUERIES.length * (1 + DEFAULT_RECALL_LIMIT); // 1 search + N setPayload per recall
+    const totalDbOps = SESSION_START_QUERIES.length * (1 + DEFAULT_RECALL_LIMIT); // 1 search + N setPayload per recall
 
     console.log('\n  Session start overhead:');
     console.log('  Mandatory recall queries:');
@@ -46,7 +46,7 @@ describe('session start overhead', () => {
       console.log(`    "${d.query}" -> ${d.tokens} tokens`);
     }
     console.log(`\n  Total: ${totalTokens} tokens, ${formatCost(cost)}`);
-    console.log(`  Qdrant ops: ${totalQdrantOps} (${SESSION_START_QUERIES.length} searches + ${SESSION_START_QUERIES.length * DEFAULT_RECALL_LIMIT} access updates)`);
+    console.log(`  DB ops: ${totalDbOps} (${SESSION_START_QUERIES.length} searches + ${SESSION_START_QUERIES.length * DEFAULT_RECALL_LIMIT} access updates)`);
 
     expect(totalTokens).toBeGreaterThan(0);
     expect(totalTokens).toBeLessThan(100); // Queries are short
@@ -61,10 +61,10 @@ describe('session start overhead', () => {
     }
 
     const cost = tokensToUSD(totalTokens);
-    const openaiCalls = allQueries.length;
-    const qdrantOps = allQueries.length * (1 + DEFAULT_RECALL_LIMIT);
+    const embeddingCalls = allQueries.length;
+    const dbOps = allQueries.length * (1 + DEFAULT_RECALL_LIMIT);
 
-    console.log(`\n  With prompt triggers: ${totalTokens} tokens, ${openaiCalls} OpenAI calls, ${qdrantOps} Qdrant ops, ${formatCost(cost)}`);
+    console.log(`\n  With prompt triggers: ${totalTokens} tokens, ${embeddingCalls} embedding calls, ${dbOps} DB ops, ${formatCost(cost)}`);
 
     expect(totalTokens).toBeLessThan(150);
     expect(cost).toBeLessThan(0.001);
@@ -85,7 +85,7 @@ describe('session start overhead', () => {
 
     const session = aggregateSession('session-overhead', 'Baseline cost per session start', [stats]);
 
-    expect(session.totals.openaiCalls).toBe(allQueries.length);
+    expect(session.totals.embeddingCallCount).toBe(allQueries.length);
     expect(session.totals.embeddingTokens).toBe(totalTokens);
     expect(session.totals.costUSD).toBe(tokensToUSD(totalTokens));
   });

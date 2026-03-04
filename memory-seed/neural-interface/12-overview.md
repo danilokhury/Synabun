@@ -36,5 +36,5 @@ The Neural Interface (`neural-interface/server.js`, 1557 lines) is an Express.js
 ## Onboarding Wizard (public/onboarding.html)
 
 - Guided 7-step setup flow for new users
-- Steps: dependency check → provider selection → API key → Docker/Qdrant → collection → MCP registration → CLAUDE.md injection
+- Steps: dependency check → embedding model selection → database setup → MCP registration → CLAUDE.md injection
 - Communicates with setup API endpoints on the same server

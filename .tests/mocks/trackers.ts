@@ -9,7 +9,7 @@ export interface EmbeddingCall {
   timestamp: number;
 }
 
-export interface QdrantCall {
+export interface DbCall {
   method: string;
   params: unknown;
   timestamp: number;
@@ -19,12 +19,12 @@ export function getEmbeddingCalls(): EmbeddingCall[] {
   return (globalThis as Record<string, unknown>).__synabun_embedding_calls as EmbeddingCall[];
 }
 
-export function getQdrantCalls(): QdrantCall[] {
-  return (globalThis as Record<string, unknown>).__synabun_qdrant_calls as QdrantCall[];
+export function getDbCalls(): DbCall[] {
+  return (globalThis as Record<string, unknown>).__synabun_db_calls as DbCall[];
 }
 
-export function getQdrantCallsByMethod(method: string): QdrantCall[] {
-  return getQdrantCalls().filter(c => c.method === method);
+export function getDbCallsByMethod(method: string): DbCall[] {
+  return getDbCalls().filter(c => c.method === method);
 }
 
 export function setScrollConfig(totalPoints: number, pointsPerPage: number = 100) {

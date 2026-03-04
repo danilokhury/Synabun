@@ -40,6 +40,9 @@ export const state = {
   // ── Grid snap ──
   gridSnap: false,
   gridSize: 20,
+
+  // ── Terminal links ──
+  linkedSessionIds: new Set(),  // session IDs currently in an active link
 };
 
 

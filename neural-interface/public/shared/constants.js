@@ -5,12 +5,12 @@
 export const DEFAULT_COLOR = '#888888';
 
 export const COLOR_PALETTE = [
-  '#7BA3C4', '#8AAF7A', '#C4A84E', '#C08050', '#6BAABE',
-  '#9A9A9A', '#6B8AC4', '#C47A8E', '#C4AA5E', '#A870B8',
-  '#5EA898', '#C47A5E', '#7E6AAE', '#5EB0B8', '#B0B85E',
-  '#B06A4E', '#6AB898', '#B090C0', '#C4A060', '#60A0B8',
-  '#90B060', '#50A8B8', '#9080B0', '#C06868', '#A05050',
-  '#60B8A8', '#6A80B8', '#C06080',
+  '#4FC3F7', '#66BB6A', '#FFC107', '#FF7043', '#29B6F6',
+  '#BDBDBD', '#42A5F5', '#EF5350', '#FFCA28', '#AB47BC',
+  '#26A69A', '#FF8A65', '#7E57C2', '#26C6DA', '#D4E157',
+  '#FF7043', '#26A69A', '#CE93D8', '#FFB300', '#00ACC1',
+  '#9CCC65', '#00BCD4', '#7986CB', '#EF5350', '#E53935',
+  '#00BFA5', '#5C6BC0', '#EC407A',
 ];
 
 /** All storage key names used across both variants.
@@ -45,11 +45,21 @@ export const KEYS = {
   TERMINAL_DETACHED:   'neural-terminal-detached',
   TERMINAL_FLOAT_POS:  'neural-terminal-float-pos',
   TERMINAL_SESSIONS:   'neural-terminal-active-sessions',
+  TERMINAL_SPLIT_RATIO: 'neural-terminal-split-ratio',
   OPEN_CARDS:          'neural-open-cards',
   WORKSPACES:          'neural-workspaces',
   ACTIVE_WORKSPACE:    'neural-active-workspace',  // sessionStorage
   GRID_SNAP:           'neural-grid-snap',
   CATEGORIES_VISIBLE:  'neural-categories-visible',
+  WHITEBOARD:          'neural-whiteboard',
+  TUTORIAL_COMPLETED:  'neural-tutorial-completed',
+  TUTORIAL_SKIPPED:    'neural-tutorial-skipped',
+  TUTORIAL_STEP:       'neural-tutorial-step',
+  TUTORIAL_STARTED:    'neural-tutorial-started',
+  LINK_PANEL_POS:      'neural-link-panel-pos',
+  LINK_PANEL_SIZE:     'neural-link-panel-size',
+  ACTIVE_LINKS:        'neural-active-links',
+  COMMAND_RUNNER:      'neural-command-runner',
 };
 
 /** Default keybind mappings — action ID → combo string.
@@ -58,6 +68,7 @@ export const KEYS = {
 export const DEFAULT_KEYBINDS = {
   'toggle-categories':   'c',
   'open-skills':         'k',
+  'open-automations':    'a',
   'toggle-terminal':     't',
   'toggle-terminal-alt': 'Ctrl+`',
   'focus-search':        '/',
@@ -65,16 +76,19 @@ export const DEFAULT_KEYBINDS = {
   'toggle-explorer':     'f',
   'toggle-focus-mode':   'v',
   'toggle-minimap':      'm',
-  'open-keybinds':       null,
+  'open-keybinds':       'n',
   'launch-claude':       '1',
   'launch-codex':        '2',
   'launch-gemini':       '3',
+  'launch-browser':      'b',
+  'launch-youtube':      'y',
 };
 
 /** Display metadata for each rebindable action. */
 export const KEYBIND_META = {
   'toggle-categories':   { label: 'Toggle Categories',     group: 'Navigation' },
   'open-skills':         { label: 'Open Skills Studio',    group: 'Navigation' },
+  'open-automations':    { label: 'Open Automation Studio', group: 'Navigation' },
   'toggle-terminal':     { label: 'Toggle Terminal',       group: 'Navigation' },
   'toggle-terminal-alt': { label: 'Toggle Terminal (alt)', group: 'Navigation' },
   'focus-search':        { label: 'Focus Search',          group: 'Navigation' },
@@ -83,7 +97,9 @@ export const KEYBIND_META = {
   'toggle-focus-mode':   { label: 'Toggle Focus Mode',     group: 'Navigation' },
   'toggle-minimap':      { label: 'Toggle Minimap',        group: 'View' },
   'open-keybinds':       { label: 'Open Keybinds',         group: 'Settings' },
-  'launch-claude':       { label: 'Claude Code',           group: 'Launch CLI', icon: 'claude' },
-  'launch-codex':        { label: 'Codex CLI',             group: 'Launch CLI', icon: 'codex' },
-  'launch-gemini':       { label: 'Gemini CLI',            group: 'Launch CLI', icon: 'gemini' },
+  'launch-claude':       { label: 'Claude Code',           group: 'Launch App', icon: 'claude' },
+  'launch-codex':        { label: 'Codex CLI',             group: 'Launch App', icon: 'codex' },
+  'launch-gemini':       { label: 'Gemini CLI',            group: 'Launch App', icon: 'gemini' },
+  'launch-browser':      { label: 'Browser',               group: 'Launch App', icon: 'browser' },
+  'launch-youtube':      { label: 'YouTube',               group: 'Launch App', icon: 'youtube' },
 };

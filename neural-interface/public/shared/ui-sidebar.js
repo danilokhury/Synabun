@@ -20,6 +20,7 @@ import { KEYS, COLOR_PALETTE } from './constants.js';
 import { storage } from './storage.js';
 import { normalizeNodes } from './utils.js';
 import { catColor, upgradeSelect } from './colors.js';
+import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
 import {
   fetchCategories,
   createCategory   as apiCreateCategory,
@@ -125,6 +126,7 @@ function closeColorPicker() {
 }
 
 function openColorPicker(cat, chipEl) {
+  if (isGuest() && !hasPermission('memories')) return;
   closeColorPicker();
 
   const picker = document.createElement('div');
@@ -371,6 +373,10 @@ function applyApiResponse(data) {
 // ─── Create category ────────────────────────────────────────────
 
 async function createCategoryAction(name, description, color, parent, isParent) {
+  if (isGuest() && !hasPermission('memories')) {
+    showGuestToast('Category creation is disabled by the host');
+    return;
+  }
   const payload = { name, description };
   if (parent) payload.parent = parent;
   if (color) payload.color = color;
@@ -410,6 +416,10 @@ async function createCategoryAction(name, description, color, parent, isParent) 
 // ─── Edit category UI (modal) ────────────────────────────────────
 
 async function editCategoryUI(name) {
+  if (isGuest() && !hasPermission('memories')) {
+    showGuestToast('Category editing is disabled by the host');
+    return;
+  }
   const overlay = document.createElement('div');
   overlay.className = 'tag-delete-overlay';
 
@@ -448,15 +458,25 @@ async function editCategoryUI(name) {
           <div class="ecm-field ecm-field--name">
             <input type="text" class="edit-cat-name ecm-input" value="${name}" placeholder="Category name">
           </div>
-          <button class="ecm-color-btn edit-cat-color-trigger">
+          <button class="ecm-color-btn edit-cat-color-trigger" aria-label="Pick color">
             <span class="ecm-color-swatch" style="background:${currentColor}"></span>
           </button>
-          <input type="color" class="edit-cat-color ecm-color-hidden" value="${currentColor}">
+        </div>
+
+        <div class="ecm-palette" hidden>
+          <div class="ecm-palette-grid">
+            ${COLOR_PALETTE.map(c => `<button class="ecm-palette-swatch${c === currentColor ? ' active' : ''}" data-color="${c}" style="background:${c}"></button>`).join('')}
+            <div class="ecm-palette-custom">
+              <span class="ecm-palette-custom-hash">#</span>
+              <input type="text" class="ecm-palette-custom-input" maxlength="6" placeholder="hex" value="${currentColor.replace('#', '')}">
+              <span class="ecm-palette-custom-preview" style="background:${currentColor}"></span>
+            </div>
+          </div>
         </div>
 
         <div class="ecm-field">
           <label>Description</label>
-          <textarea class="edit-cat-desc ecm-input ecm-textarea" rows="2" placeholder="What this category is for...">${currentDesc}</textarea>
+          <textarea class="edit-cat-desc ecm-input ecm-textarea" rows="4" placeholder="What this category is for...">${currentDesc}</textarea>
         </div>
 
         <div class="ecm-divider"></div>
@@ -507,21 +527,63 @@ async function editCategoryUI(name) {
   const $nameInput = overlay.querySelector('.edit-cat-name');
   const $descInput = overlay.querySelector('.edit-cat-desc');
   const $parentSelect = overlay.querySelector('.edit-cat-parent');
-  const $colorInput = overlay.querySelector('.edit-cat-color');
   const $isParentCheck = overlay.querySelector('.edit-cat-isparent');
   const $isParentRow = overlay.querySelector('.edit-cat-isparent-row');
 
   upgradeSelect($parentSelect);
 
-  // Color button opens native picker; live-update dot + swatch
+  // Color palette toggle + swatch selection
+  let selectedColor = currentColor;
   const $colorBtn = overlay.querySelector('.ecm-color-btn');
   const $colorSwatch = overlay.querySelector('.ecm-color-swatch');
   const $headerDot = overlay.querySelector('.ecm-dot');
-  $colorBtn.addEventListener('click', () => $colorInput.click());
-  $colorInput.addEventListener('input', () => {
-    if ($headerDot) $headerDot.style.background = $colorInput.value;
-    if ($colorSwatch) $colorSwatch.style.background = $colorInput.value;
+  const $palette = overlay.querySelector('.ecm-palette');
+  const $paletteSwatches = overlay.querySelectorAll('.ecm-palette-swatch');
+
+  $colorBtn.addEventListener('click', () => {
+    $palette.hidden = !$palette.hidden;
   });
+
+  const $customInput = overlay.querySelector('.ecm-palette-custom-input');
+  const $customPreview = overlay.querySelector('.ecm-palette-custom-preview');
+
+  function applyColor(hex) {
+    selectedColor = hex;
+    $paletteSwatches.forEach(s => s.classList.toggle('active', s.dataset.color === hex));
+    if ($headerDot) $headerDot.style.background = hex;
+    if ($colorSwatch) $colorSwatch.style.background = hex;
+    if ($customPreview) $customPreview.style.background = hex;
+    if ($customInput) $customInput.value = hex.replace('#', '');
+  }
+
+  $paletteSwatches.forEach(sw => {
+    sw.addEventListener('click', () => {
+      applyColor(sw.dataset.color);
+      $palette.hidden = true;
+    });
+  });
+
+  // Custom hex input — live preview on valid hex, apply on Enter
+  $customInput.addEventListener('input', () => {
+    const v = $customInput.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6);
+    $customInput.value = v;
+    if (v.length === 3 || v.length === 6) {
+      const hex = '#' + v;
+      $customPreview.style.background = hex;
+    }
+  });
+  $customInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = $customInput.value.trim();
+      if (v.length === 3 || v.length === 6) {
+        applyColor('#' + v);
+        $palette.hidden = true;
+      }
+    }
+    e.stopPropagation();
+  });
+  $customInput.addEventListener('keyup', (e) => e.stopPropagation());
 
   const $logoRow = overlay.querySelector('.edit-cat-logo-row');
   const $logoFile = overlay.querySelector('.edit-cat-logo-file');
@@ -621,7 +683,7 @@ async function editCategoryUI(name) {
     const newName = $nameInput.value.trim();
     const newDesc = $descInput.value.trim();
     const newParent = $parentSelect.value;
-    const newColor = $colorInput.value;
+    const newColor = selectedColor;
     const newIsParent = $isParentCheck.checked;
 
     if (!newName || !newDesc) {
@@ -693,6 +755,10 @@ async function editCategoryUI(name) {
 // ─── Delete category UI (modal) ──────────────────────────────────
 
 function deleteCategoryUI(name, count, chipEl) {
+  if (isGuest() && !hasPermission('memories')) {
+    showGuestToast('Category deletion is disabled by the host');
+    return;
+  }
   const overlay = document.createElement('div');
   overlay.className = 'tag-delete-overlay';
   const allCats = state.allCategoryNames.filter(c => c !== name);
@@ -1063,7 +1129,7 @@ export function buildCategorySidebar(presentCats) {
       const parentMeta = state.categoryMetadata[meta.parent] || {};
       const isEphemeral = !!parentMeta._ephemeral;
       clusterHeader.innerHTML = `
-        <span class="cluster-dot" style="background:${catColor(meta.parent)}" data-tooltip="Color"></span>
+        <span class="cluster-dot" style="background:${catColor(meta.parent)}; color:${catColor(meta.parent)}" data-tooltip="Color"></span>
         <span class="cluster-name">${meta.parent}</span>
         ${isEphemeral
           ? '<span style="margin-left:auto;font-size:10px;opacity:0.5;color:var(--t-muted)">bridge</span>'
@@ -1144,7 +1210,7 @@ export function buildCategorySidebar(presentCats) {
       const childCount = (categoryGroups[cat] || []).length;
       const isEphemeralCat = !!(state.categoryMetadata[cat] || {})._ephemeral;
       clusterHeader.innerHTML = `
-        <span class="cluster-dot" style="background:${catColor(cat)}" data-tooltip="Color"></span>
+        <span class="cluster-dot" style="background:${catColor(cat)}; color:${catColor(cat)}" data-tooltip="Color"></span>
         <span class="cluster-name">${cat}</span>
         ${isEphemeralCat
           ? '<span style="margin-left:auto;font-size:10px;opacity:0.5;color:var(--t-muted)">bridge</span>'

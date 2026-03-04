@@ -5,8 +5,9 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
-// Loop state files and templates live in the Neural Interface data dir (Synabun/data/)
-const NI_DATA_DIR = join(__dirname, '..', '..', '..', 'data');
+// Loop state files and templates live in the project root data dir (Synabun/data/)
+const PROJECT_ROOT = process.env.SYNABUN_ROOT || join(__dirname, '..', '..', '..');
+const NI_DATA_DIR = join(PROJECT_ROOT, 'data');
 const LOOP_DIR = join(NI_DATA_DIR, 'loop');
 const LOOP_TEMPLATES_PATH = join(NI_DATA_DIR, 'loop-templates.json');
 

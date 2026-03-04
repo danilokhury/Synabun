@@ -1,10 +1,10 @@
 export interface ToolInvocationStats {
   tool: string;
   callCount: number;
-  openaiEmbeddingCalls: number;
+  embeddingCalls: number;
   totalEmbeddingTokens: number;
-  qdrantCalls: Record<string, number>;
-  totalQdrantOps: number;
+  dbCalls: Record<string, number>;
+  totalDbOps: number;
   estimatedCostUSD: number;
 }
 
@@ -13,9 +13,9 @@ export interface SessionStats {
   description: string;
   invocations: ToolInvocationStats[];
   totals: {
-    openaiCalls: number;
+    embeddingCallCount: number;
     embeddingTokens: number;
-    qdrantOps: number;
+    dbOps: number;
     costUSD: number;
   };
 }
@@ -23,18 +23,18 @@ export interface SessionStats {
 export function createToolStats(
   tool: string,
   callCount: number,
-  openaiCalls: number,
+  embeddingCallCount: number,
   tokens: number,
-  qdrant: Record<string, number>,
+  db: Record<string, number>,
   costUSD: number,
 ): ToolInvocationStats {
   return {
     tool,
     callCount,
-    openaiEmbeddingCalls: openaiCalls,
+    embeddingCalls: embeddingCallCount,
     totalEmbeddingTokens: tokens,
-    qdrantCalls: qdrant,
-    totalQdrantOps: Object.values(qdrant).reduce((s, v) => s + v, 0),
+    dbCalls: db,
+    totalDbOps: Object.values(db).reduce((s, v) => s + v, 0),
     estimatedCostUSD: costUSD,
   };
 }
@@ -49,9 +49,9 @@ export function aggregateSession(
     description,
     invocations,
     totals: {
-      openaiCalls: invocations.reduce((s, i) => s + i.openaiEmbeddingCalls, 0),
+      embeddingCallCount: invocations.reduce((s, i) => s + i.embeddingCalls, 0),
       embeddingTokens: invocations.reduce((s, i) => s + i.totalEmbeddingTokens, 0),
-      qdrantOps: invocations.reduce((s, i) => s + i.totalQdrantOps, 0),
+      dbOps: invocations.reduce((s, i) => s + i.totalDbOps, 0),
       costUSD: invocations.reduce((s, i) => s + i.estimatedCostUSD, 0),
     },
   };

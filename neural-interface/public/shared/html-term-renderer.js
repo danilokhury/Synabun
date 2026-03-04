@@ -140,8 +140,8 @@ export class HtmlTermRenderer {
     // Update spacer height (scrollback may have grown)
     this._updateSpacerHeight();
 
-    // Auto-scroll to bottom if we were already there
-    if (wasBottom) {
+    // Auto-scroll to bottom if we were already there (but not during selection)
+    if (wasBottom && !this._selecting) {
       this._scrollToMax();
     }
 
@@ -558,12 +558,16 @@ export class HtmlTermRenderer {
   // ─── Keyboard input ───────────────────────────────────
 
   _wireKeyboard() {
-    // Focus proxy: click on terminal → focus textarea
+    // Focus proxy: click on terminal → focus textarea (but not during selection drag)
     this._root.addEventListener('mousedown', (e) => {
       if (e.target === this._scrollEl || e.target === this._rowsEl ||
           e.target === this._root || e.target.classList.contains('html-term-row') ||
           e.target.closest('.html-term-rows')) {
-        setTimeout(() => this._input.focus(), 0);
+        // Delay focus to avoid stealing it during selection drag.
+        // onUp handler calls focus() when selection is complete.
+        if (!this._selecting) {
+          setTimeout(() => { if (!this._selecting) this._input.focus(); }, 0);
+        }
       }
     });
 
@@ -581,16 +585,34 @@ export class HtmlTermRenderer {
       }
     });
 
-    // Handle paste
+    // Handle paste (text + images)
     this._input.addEventListener('paste', (e) => {
       if (this._disposed) return;
       e.preventDefault();
+      if (e.clipboardData) {
+        // Check for image paste first
+        for (const item of e.clipboardData.items) {
+          if (item.type.startsWith('image/') && this._ws?.readyState === WebSocket.OPEN) {
+            const blob = item.getAsFile();
+            if (!blob) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+              const base64 = reader.result.split(',')[1];
+              this._ws.send(JSON.stringify({ type: 'image_paste', data: base64, mimeType: item.type }));
+            };
+            reader.readAsDataURL(blob);
+            return;
+          }
+        }
+      }
+      // Text paste
       const text = e.clipboardData?.getData('text') || '';
       if (!text) return;
+      const normalized = text.replace(/\r?\n/g, '\r');
       if (this._buffer.bracketedPaste) {
-        this._send('\x1b[200~' + text + '\x1b[201~');
+        this._send('\x1b[200~' + normalized + '\x1b[201~');
       } else {
-        this._send(text);
+        this._send(normalized);
       }
     });
 
@@ -620,8 +642,8 @@ export class HtmlTermRenderer {
       }
     }
 
-    // Ctrl+Shift+V → paste (handled via paste event)
-    if (ctrl && shift && key === 'V') return null;
+    // Ctrl+V / Ctrl+Shift+V → let browser fire paste event
+    if (ctrl && (key === 'v' || key === 'V')) return null;
 
     // Ctrl+C → SIGINT if no selection
     if (ctrl && !shift && key === 'c') {
@@ -694,10 +716,14 @@ export class HtmlTermRenderer {
   _wireMouse() {
     this._scrollEl.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
+      e.preventDefault(); // Block native text selection — we handle selection ourselves
       this._selecting = true;
-      this._selStart = this._mouseToCell(e);
+      // Clear previous selection first, THEN set new start
+      this._selStart = null;
       this._selEnd = null;
-      this._clearSelectionHighlight();
+      this._selectionDirty = true;
+      this._scheduleRender();
+      this._selStart = this._mouseToCell(e);
 
       const onMove = (ev) => {
         if (!this._selecting) return;
@@ -729,6 +755,7 @@ export class HtmlTermRenderer {
 
     // Double-click to select word
     this._scrollEl.addEventListener('dblclick', (e) => {
+      e.preventDefault(); // Block native word selection
       const cell = this._mouseToCell(e);
       const scrollback = this._buffer.scrollbackLength;
       const row = cell.row < scrollback

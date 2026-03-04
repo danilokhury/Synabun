@@ -545,6 +545,7 @@ function deleteElement(id) {
   pushUndo('delete', el, null);
   _selectedIds.delete(id);
   if (_selectedId === id) _selectedId = null;
+  hideContextMenu();
   renderAll();
   persistDebounced();
 }

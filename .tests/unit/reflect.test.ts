@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getEmbeddingCalls, getQdrantCalls, getQdrantCallsByMethod } from '../mocks/trackers.js';
+import { getEmbeddingCalls, getDbCalls, getDbCallsByMethod } from '../mocks/trackers.js';
 import { countTokens, tokensToUSD } from '../utils/token-counter.js';
 
 const { handleReflect } = await import('../../mcp-server/src/tools/reflect.js');
@@ -7,7 +7,7 @@ const { handleReflect } = await import('../../mcp-server/src/tools/reflect.js');
 const VALID_UUID = '8f7cab3b-644e-4cea-8662-de0ca695bdf2';
 
 describe('reflect — conditional token usage', () => {
-  it('makes 0 OpenAI calls when only changing importance/tags', async () => {
+  it('makes 0 embedding calls when only changing importance/tags', async () => {
     await handleReflect({
       memory_id: VALID_UUID,
       importance: 8,
@@ -18,11 +18,11 @@ describe('reflect — conditional token usage', () => {
 
   it('uses setPayload (not upsert) when no content change', async () => {
     await handleReflect({ memory_id: VALID_UUID, importance: 7 });
-    expect(getQdrantCallsByMethod('setPayload')).toHaveLength(1);
-    expect(getQdrantCallsByMethod('upsert')).toHaveLength(0);
+    expect(getDbCallsByMethod('setPayload')).toHaveLength(1);
+    expect(getDbCallsByMethod('upsert')).toHaveLength(0);
   });
 
-  it('makes 1 OpenAI call when content field is provided', async () => {
+  it('makes 1 embedding call when content field is provided', async () => {
     const newContent = 'Updated memory content with new architectural insights about the caching layer';
     await handleReflect({ memory_id: VALID_UUID, content: newContent });
     expect(getEmbeddingCalls()).toHaveLength(1);
@@ -34,12 +34,12 @@ describe('reflect — conditional token usage', () => {
       memory_id: VALID_UUID,
       content: 'New content requiring re-embedding',
     });
-    expect(getQdrantCallsByMethod('upsert')).toHaveLength(1);
+    expect(getDbCallsByMethod('upsert')).toHaveLength(1);
   });
 
   it('always makes 1 retrieve call first', async () => {
     await handleReflect({ memory_id: VALID_UUID, importance: 9 });
-    expect(getQdrantCallsByMethod('retrieve')).toHaveLength(1);
+    expect(getDbCallsByMethod('retrieve')).toHaveLength(1);
   });
 
   it('cost difference: metadata-only vs content update', async () => {

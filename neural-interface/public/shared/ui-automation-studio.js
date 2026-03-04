@@ -739,7 +739,7 @@ function formatLoopCommand(taskText, state) {
   return lines.join('\n');
 }
 
-const BROWSER_CONTEXT = 'BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_extract_tweets, browser_extract_fb_posts, browser_go_back, browser_go_forward, browser_evaluate. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.';
+const BROWSER_CONTEXT = 'BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.';
 
 // ── Launch dialog ──
 // Instead of launching immediately, show a confirmation dialog where the user picks CLI + model

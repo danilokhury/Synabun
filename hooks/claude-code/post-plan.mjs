@@ -23,7 +23,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { detectProject, getCategoriesPath, MCP_DATA_DIR, DATA_DIR } from './shared.mjs';
+import { detectProject, getMcpCategoriesPath, MCP_DATA_DIR, DATA_DIR } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -152,7 +152,7 @@ function findLatestPlan() {
 
 function ensureProjectCategory(project) {
   const categoryName = `plans-${project}`;
-  const catPath = getCategoriesPath();
+  const catPath = getMcpCategoriesPath();
 
   try {
     const data = JSON.parse(readFileSync(catPath, 'utf-8'));
@@ -198,7 +198,8 @@ function ensureProjectCategory(project) {
 async function invalidateNeuralInterface() {
   try {
     // Trigger sync broadcast so the Neural Interface graph refreshes
-    await fetch('http://localhost:3344/api/memories?invalidate=true', {
+    const niUrl = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
+    await fetch(`${niUrl}/api/memories?invalidate=true`, {
       method: 'GET',
       signal: AbortSignal.timeout(2000),
     });
