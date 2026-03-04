@@ -14,7 +14,7 @@ describe('integration: plan storage', () => {
       session_id: 'test-plan-int-1',
       tool_name: 'Edit',
       tool_input: {},
-      cwd: 'J:/Sites/CriticalPixel',
+      cwd: '/tmp/test-project',
     });
 
     expect(result.exitCode).toBe(0);
@@ -27,7 +27,7 @@ describe('integration: plan storage', () => {
       session_id: 'test-plan-int-2',
       tool_name: 'ExitPlanMode',
       tool_input: {},
-      cwd: 'J:/Sites/CriticalPixel',
+      cwd: '/tmp/test-project',
     });
 
     expect(result.exitCode).toBe(0);
