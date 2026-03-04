@@ -4,18 +4,22 @@ import * as ni from '../services/neural-interface.js';
 // ── browser_evaluate ──
 
 export const browserEvaluateSchema = {
-  script: z.string().describe('JavaScript code to execute in the browser page context. The return value will be serialized to JSON.'),
+  script: z.string().optional().describe('JavaScript code to execute in the browser page context. The return value will be serialized to JSON.'),
+  expression: z.string().optional().describe('Alias for "script" — accepted for compatibility with Playwright conventions.'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
 };
 
 export const browserEvaluateDescription =
   'Execute JavaScript in the browser page context and return the result. Useful for reading DOM state, extracting data, or performing actions not covered by other tools.';
 
-export async function handleBrowserEvaluate(args: { script: string; sessionId?: string }) {
+export async function handleBrowserEvaluate(args: { script?: string; expression?: string; sessionId?: string }) {
+  const code = args.script || args.expression;
+  if (!code) return { content: [{ type: 'text' as const, text: 'Either "script" or "expression" is required.' }] };
+
   const resolved = await ni.resolveSession(args.sessionId);
   if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
 
-  const result = await ni.evaluate(resolved.sessionId, args.script);
+  const result = await ni.evaluate(resolved.sessionId, code);
   if (result.error) return { content: [{ type: 'text' as const, text: `Evaluate failed: ${result.error}` }] };
 
   let text: string;
