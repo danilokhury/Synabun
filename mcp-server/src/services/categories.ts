@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config.js';
-import { getCategoriesFromQdrant, saveCategoriesToQdrant } from './sqlite.js';
+import { getCategories as getCategoriesFromDb, saveCategories as saveCategoriesToDb } from './sqlite.js';
 
 interface CustomCategory {
   name: string;
@@ -161,14 +161,14 @@ function saveCategoriesToDisk(categories: CustomCategory[]): void {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 
   // Fire-and-forget write-through to SQLite (source of truth)
-  saveCategoriesToQdrant(categories).catch((err) => {
+  saveCategoriesToDb(categories).catch((err) => {
     console.error('Failed to sync categories to SQLite:', err instanceof Error ? err.message : err);
   });
 }
 
 /**
  * Initialize the local category cache for the active connection.
- * If the per-connection cache file doesn't exist, tries to load from Qdrant first,
+ * If the per-connection cache file doesn't exist, tries to load from database first,
  * then falls back to the old global file, then starts empty.
  */
 export async function initCategoryCache(): Promise<void> {
@@ -186,7 +186,7 @@ export async function initCategoryCache(): Promise<void> {
   }
 
   // Try loading from SQLite (source of truth)
-  const dbCategories = await getCategoriesFromQdrant();
+  const dbCategories = await getCategoriesFromDb();
   if (dbCategories) {
     const data: CustomCategoriesFile = { version: 1, categories: dbCategories };
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
@@ -203,7 +203,7 @@ export async function initCategoryCache(): Promise<void> {
 
 /**
  * Call after a connection switch to re-point the file watcher
- * at the new connection's category file and sync from Qdrant if needed.
+ * at the new connection's category file and sync from database if needed.
  */
 export async function switchCategoryConnection(): Promise<void> {
   invalidateCategoryCache();

@@ -310,10 +310,22 @@ function buildServerTab(settings) {
         </div>
         <div class="settings-field">
           <label>Database Path</label>
-          <div class="settings-key-row">
-            <input type="text" value="${settings.dbPath || ''}" readonly style="opacity:0.7;cursor:default" autocomplete="off" spellcheck="false">
+          <div class="settings-key-row" style="display:flex;gap:6px">
+            <input type="text" id="stg-db-path" value="${escapeHtml(settings.dbPath || '')}" autocomplete="off" spellcheck="false" style="flex:1">
+            <button class="conn-add-btn" id="stg-db-browse-btn" style="margin:0;width:auto;flex:0 0 auto;white-space:nowrap;padding:4px 10px">Browse</button>
+            <button class="conn-add-btn" id="stg-db-move-btn" style="margin:0;width:auto;flex:0 0 auto;white-space:nowrap;padding:4px 10px">Move</button>
           </div>
-          <div class="settings-hint">${settings.dbExists ? `File exists (${dbSizeMB} MB)` : 'Database not found'}</div>
+          <div class="settings-hint" id="stg-db-hint">${settings.dbExists ? `File exists (${dbSizeMB} MB)` : 'Database not found'}</div>
+          <div id="stg-db-move-status" style="display:none;margin-top:8px;font-size:12px;align-items:center;gap:8px"></div>
+          <div id="stg-db-move-cleanup" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(109,213,140,0.08);border:1px solid rgba(109,213,140,0.2);border-radius:8px;font-size:12px;">
+            <div style="color:var(--green);margin-bottom:6px;font-weight:600">Move successful!</div>
+            <div style="color:var(--t-secondary);margin-bottom:6px">Old database files remain at the previous location.</div>
+            <div id="stg-db-mcp-notice" style="color:var(--t-muted);margin-bottom:8px;font-size:11px">Note: Restart the MCP server for the change to take effect.</div>
+            <div style="display:flex;gap:8px">
+              <button class="conn-add-btn" id="stg-db-delete-old" style="margin:0">Delete Old Files</button>
+              <button class="settings-btn-cancel" id="stg-db-keep-old" style="margin:0">Keep Them</button>
+            </div>
+          </div>
         </div>
         <div class="settings-field">
           <label>Embedding</label>
@@ -322,18 +334,8 @@ function buildServerTab(settings) {
           </div>
           <div class="settings-hint">Embeddings are computed locally, no API key required</div>
         </div>
-        <div class="settings-field">
-          <label>OpenAI API Key</label>
-          <div class="settings-key-row">
-            <input type="password" id="stg-openai" placeholder="${settings.openaiApiKey || 'sk-...'}" autocomplete="off" spellcheck="false">
-            <button class="settings-toggle-vis" data-target="stg-openai" data-tooltip="Toggle">${eyeClosed}</button>
-          </div>
-          <div class="settings-hint">${settings.openaiApiKeySet ? 'Key is set' : 'Not configured'} — leave empty to keep current</div>
-        </div>
-        <div class="settings-restart-notice" id="stg-restart-notice">Settings saved. Restart the server for changes to take effect.</div>
         <div class="settings-actions">
           <button class="settings-btn-cancel" id="stg-cancel">Cancel</button>
-          <button class="settings-btn-save" id="stg-save">Save</button>
         </div>
 
         <div class="stg-section-divider"></div>
@@ -998,8 +1000,15 @@ function buildTerminalTab(cliConfig) {
 function buildCollectionsTab(connections, settings) {
   const conn = connections[0] || {};
   const dbSizeMB = settings.dbSizeBytes ? (settings.dbSizeBytes / 1024 / 1024).toFixed(1) : '0';
+
+  const mismatchBanner = settings.embeddingMismatch ? `
+        <div style="margin-bottom:12px;padding:10px 12px;background:rgba(255,107,107,0.10);border:1px solid rgba(255,107,107,0.25);border-radius:8px;font-size:12px;color:var(--red);line-height:1.5">
+          Embedding model mismatch detected. Vectors may not match the current model. Run <strong>Reindex</strong> to regenerate all embeddings.
+        </div>` : '';
+
   return `
       <div class="settings-tab-body" data-tab="collections">
+        ${mismatchBanner}
         <div class="gfx-group-title">Memory Database</div>
         <div class="conn-list" id="conn-list">
           <div class="conn-item active">
@@ -1015,6 +1024,26 @@ function buildCollectionsTab(connections, settings) {
           <div><strong style="color:var(--t-secondary)">Storage:</strong> SQLite</div>
           <div><strong style="color:var(--t-secondary)">DB Size:</strong> ${dbSizeMB} MB</div>
           <div><strong style="color:var(--t-secondary)">Embedding:</strong> ${settings.embeddingModel || 'local'} (${settings.embeddingDims || '?'}d)</div>
+        </div>
+
+        <div class="stg-section-divider"></div>
+        <div class="gfx-group-title">Embedding Management</div>
+        <div class="settings-hint" style="margin-bottom:12px">
+          Regenerate all memory and session chunk embeddings using the current model. Use this if you change the embedding model or provider.
+        </div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button class="conn-add-btn" id="reindex-btn" style="margin:0">Reindex All Memories</button>
+          <button class="settings-btn-cancel" id="reindex-cancel-btn" style="margin:0;display:none">Cancel</button>
+        </div>
+        <div id="reindex-status" style="display:none;margin-top:10px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <div class="wiz-status-dot spin" id="reindex-dot"></div>
+            <span id="reindex-text" style="font-size:12px;color:var(--t-secondary)"></span>
+          </div>
+          <div style="background:rgba(255,255,255,0.06);border-radius:4px;height:4px;overflow:hidden">
+            <div id="reindex-bar" style="background:var(--green);height:100%;width:0%;transition:width 0.3s ease"></div>
+          </div>
+          <div id="reindex-summary" style="font-size:11px;color:var(--t-muted);margin-top:4px"></div>
         </div>
       </div>`;
 }
@@ -1879,38 +1908,170 @@ export async function openSettingsModal() {
   overlay.querySelector('#stg-close').addEventListener('click', close);
   overlay.querySelector('#stg-cancel').addEventListener('click', close);
 
-  // ── Save handler (server tab) ──
-  overlay.querySelector('#stg-save').addEventListener('click', async () => {
-    const body = {};
-    const openai = overlay.querySelector('#stg-openai').value.trim();
-    if (openai) body.openaiApiKey = openai;
-    if (Object.keys(body).length === 0) { close(); return; }
-    try {
-      const saveBtn = overlay.querySelector('#stg-save');
-      saveBtn.textContent = 'Saving...';
-      saveBtn.disabled = true;
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        const notice = overlay.querySelector('#stg-restart-notice');
-        notice.textContent = data.message || 'Settings saved.';
-        notice.style.display = 'block';
-        saveBtn.textContent = 'Saved';
-        setTimeout(() => { close(); location.reload(); }, 2000);
-      } else {
-        saveBtn.textContent = 'Error';
-        saveBtn.disabled = false;
+  // ── Move Database handlers ──
+  const moveBrowseBtn = overlay.querySelector('#stg-db-browse-btn');
+  const moveBtn = overlay.querySelector('#stg-db-move-btn');
+
+  if (moveBrowseBtn) {
+    moveBrowseBtn.addEventListener('click', async () => {
+      moveBrowseBtn.disabled = true;
+      moveBrowseBtn.textContent = '...';
+      try {
+        const res = await fetch('/api/browse-folder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ description: 'Select new folder for memory database' }),
+        });
+        const data = await res.json();
+        if (data.path) {
+          const pathInput = overlay.querySelector('#stg-db-path');
+          if (pathInput) pathInput.value = data.path + '/memory.db';
+        }
+      } catch {}
+      moveBrowseBtn.disabled = false;
+      moveBrowseBtn.textContent = 'Browse';
+    });
+  }
+
+  if (moveBtn) {
+    moveBtn.addEventListener('click', async () => {
+      const pathInput = overlay.querySelector('#stg-db-path');
+      const newPath = (pathInput?.value || '').trim();
+      const statusEl = overlay.querySelector('#stg-db-move-status');
+      const cleanupEl = overlay.querySelector('#stg-db-move-cleanup');
+      const hintEl = overlay.querySelector('#stg-db-hint');
+
+      if (!newPath) return;
+
+      // Extract directory from the path (user may type full path with memory.db or just a dir)
+      const newDir = newPath.endsWith('memory.db') ? newPath.replace(/[/\\]memory\.db$/, '') : newPath;
+
+      statusEl.style.display = 'flex';
+      statusEl.innerHTML = '<div class="wiz-status-dot spin" style="display:inline-block"></div> Moving database...';
+      moveBtn.disabled = true;
+
+      try {
+        const res = await fetch('/api/settings/move-db', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newPath: newDir }),
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+          statusEl.style.display = 'none';
+          if (hintEl) hintEl.textContent = 'Moved successfully';
+          if (pathInput) pathInput.value = data.newDbPath;
+          cleanupEl.style.display = 'block';
+          cleanupEl.dataset.oldPath = data.oldDbPath;
+        } else {
+          statusEl.innerHTML = `<span style="color:var(--red)">Error: ${data.error}</span>`;
+          moveBtn.disabled = false;
+        }
+      } catch (err) {
+        statusEl.innerHTML = `<span style="color:var(--red)">Error: ${err.message}</span>`;
+        moveBtn.disabled = false;
       }
-    } catch {
-      const saveBtn = overlay.querySelector('#stg-save');
-      saveBtn.textContent = 'Error';
-      saveBtn.disabled = false;
+    });
+
+    // Delete old files
+    const deleteOldBtn = overlay.querySelector('#stg-db-delete-old');
+    if (deleteOldBtn) {
+      deleteOldBtn.addEventListener('click', async () => {
+        const cleanupEl = overlay.querySelector('#stg-db-move-cleanup');
+        const oldPath = cleanupEl?.dataset.oldPath;
+        if (!oldPath) return;
+        deleteOldBtn.disabled = true;
+        deleteOldBtn.textContent = 'Deleting...';
+        try {
+          await fetch('/api/settings/move-db/cleanup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ oldPath }),
+          });
+        } catch {}
+        cleanupEl.style.display = 'none';
+      });
     }
-  });
+
+    const keepOldBtn = overlay.querySelector('#stg-db-keep-old');
+    if (keepOldBtn) {
+      keepOldBtn.addEventListener('click', () => {
+        const cleanupEl = overlay.querySelector('#stg-db-move-cleanup');
+        if (cleanupEl) cleanupEl.style.display = 'none';
+      });
+    }
+  }
+
+  // ── Reindex handlers ──
+  const reindexBtn = overlay.querySelector('#reindex-btn');
+  const reindexCancelBtn = overlay.querySelector('#reindex-cancel-btn');
+
+  let _reindexPoll = null;
+
+  if (reindexBtn) {
+    reindexBtn.addEventListener('click', async () => {
+      const statusEl = overlay.querySelector('#reindex-status');
+      const textEl = overlay.querySelector('#reindex-text');
+      const barEl = overlay.querySelector('#reindex-bar');
+      const summaryEl = overlay.querySelector('#reindex-summary');
+      const dotEl = overlay.querySelector('#reindex-dot');
+
+      try {
+        const res = await fetch('/api/settings/reindex', { method: 'POST' });
+        const data = await res.json();
+        if (!data.ok) {
+          if (textEl) textEl.textContent = `Error: ${data.error}`;
+          if (statusEl) statusEl.style.display = 'block';
+          return;
+        }
+
+        reindexBtn.disabled = true;
+        if (reindexCancelBtn) reindexCancelBtn.style.display = '';
+        if (statusEl) statusEl.style.display = 'block';
+        if (textEl) textEl.textContent = 'Starting reindex...';
+        if (dotEl) dotEl.className = 'wiz-status-dot spin';
+
+        _reindexPoll = setInterval(async () => {
+          try {
+            const sr = await fetch('/api/settings/reindex/status');
+            const sd = await sr.json();
+
+            if (!sd.running) {
+              clearInterval(_reindexPoll);
+              _reindexPoll = null;
+              if (dotEl) dotEl.className = 'wiz-status-dot ' + (sd.cancelled ? 'yellow' : 'green');
+              if (textEl) textEl.textContent = sd.cancelled ? 'Reindex cancelled.' : 'Reindex complete!';
+              if (barEl) barEl.style.width = sd.cancelled ? barEl.style.width : '100%';
+              if (summaryEl) summaryEl.textContent = `${sd.completed} memories + ${sd.chunks} session chunks processed, ${sd.errors} error${sd.errors !== 1 ? 's' : ''}`;
+              reindexBtn.disabled = false;
+              if (reindexCancelBtn) reindexCancelBtn.style.display = 'none';
+              return;
+            }
+
+            const pct = sd.total > 0 ? Math.round((sd.completed / sd.total) * 100) : 0;
+            if (textEl) textEl.textContent = `Processing ${sd.completed} / ${sd.total} memories...`;
+            if (barEl) barEl.style.width = `${pct}%`;
+            if (summaryEl) summaryEl.textContent = `${sd.chunks} / ${sd.totalChunks} session chunks, ${sd.errors} error${sd.errors !== 1 ? 's' : ''}`;
+          } catch {}
+        }, 800);
+      } catch (err) {
+        if (textEl) textEl.textContent = `Error: ${err.message}`;
+        if (statusEl) statusEl.style.display = 'block';
+      }
+    });
+  }
+
+  if (reindexCancelBtn) {
+    reindexCancelBtn.addEventListener('click', async () => {
+      reindexCancelBtn.disabled = true;
+      const textEl = overlay.querySelector('#reindex-text');
+      if (textEl) textEl.textContent = 'Cancelling...';
+      try {
+        await fetch('/api/settings/reindex/cancel', { method: 'POST' });
+      } catch {}
+    });
+  }
 
   // ── System Backup & Restore handlers ──
 

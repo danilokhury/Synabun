@@ -148,7 +148,7 @@ curl http://localhost:3344/api/memories
 
 ### POST /api/search
 
-Performs semantic vector search across all memories. The query text is embedded via the configured OpenAI-compatible embedding API and searched against the SQLite database with a minimum score threshold of `0.3`.
+Performs semantic vector search across all memories. The query text is embedded locally via Transformers.js (all-MiniLM-L6-v2, 384d) and searched against the SQLite database with a minimum score threshold of `0.3`.
 
 **Request**
 
@@ -864,17 +864,13 @@ No parameters.
 
 ```json
 {
-  "databasePath": "data/memory.db",
-  "openaiApiKey": "****ab12",
-  "openaiApiKeySet": true
+  "databasePath": "data/memory.db"
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `databasePath` | string | Path to the active SQLite database file |
-| `openaiApiKey` | string | Masked OpenAI/embedding API key |
-| `openaiApiKeySet` | boolean | Whether an embedding API key is configured |
 
 **Example**
 
@@ -892,8 +888,7 @@ Saves settings. Embedding config is written to `.env`. Database config is writte
 
 ```json
 {
-  "databasePath": "string (optional)",
-  "openaiApiKey": "string (optional)"
+  "databasePath": "string (optional)"
 }
 ```
 
@@ -919,7 +914,7 @@ All fields are optional; only provided fields are updated.
 ```bash
 curl -X PUT http://localhost:3344/api/settings \
   -H "Content-Type: application/json" \
-  -d '{"openaiApiKey": "sk-new-key-here"}'
+  -d '{"databasePath": "data/memory.db"}'
 ```
 
 ---
@@ -1015,7 +1010,7 @@ No parameters.
 | Field | Type | Description |
 |-------|------|-------------|
 | `setupComplete` | boolean | Whether `SETUP_COMPLETE=true` is in `.env` |
-| `hasEmbeddingKey` | boolean | Whether `OPENAI_EMBEDDING_API_KEY` is set in `.env` |
+| `hasEmbeddingKey` | boolean | Whether the local embedding model is available |
 | `databaseReady` | boolean | Whether the SQLite database at `data/memory.db` is accessible |
 | `mcpBuilt` | boolean | Whether `mcp-server/dist/index.js` exists |
 | `projectDir` | string | Absolute path to the SynaBun project root |
@@ -1036,16 +1031,11 @@ Writes configuration during onboarding. Embedding config is saved to `.env`. Dat
 **Request**
 
 ```json
-{
-  "embeddingApiKey": "string (optional)",
-  "embeddingBaseUrl": "string (optional, default: https://api.openai.com/v1)",
-  "embeddingModel": "string (optional, default: text-embedding-3-small)",
-  "embeddingDimensions": "number (optional, default: 1536)"
-}
+{}
 ```
 
 **Notes:**
-- `embeddingBaseUrl`, `embeddingModel`, and `embeddingDimensions` are only written to `.env` if they differ from defaults (to keep the file clean).
+- Embeddings are handled locally via Transformers.js (all-MiniLM-L6-v2, 384d). No API key or external service needed.
 - The SQLite database at `data/memory.db` is created automatically if it does not exist.
 
 **Response**
@@ -1067,9 +1057,7 @@ Writes configuration during onboarding. Embedding config is saved to `.env`. Dat
 ```bash
 curl -X POST http://localhost:3344/api/setup/save-config \
   -H "Content-Type: application/json" \
-  -d '{
-    "embeddingApiKey": "sk-openai-key"
-  }'
+  -d '{}'
 ```
 
 ---
@@ -1125,7 +1113,7 @@ No parameters (body is ignored). Uses runtime config set by `reloadConfig()`.
 ```json
 {
   "ok": true,
-  "message": "Database tables created (1536d vectors)",
+  "message": "Database tables created (384d vectors)",
   "existed": false
 }
 ```

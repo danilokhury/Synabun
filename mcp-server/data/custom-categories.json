@@ -33,8 +33,8 @@
       "parent": "criticalpixel"
     },
     {
-      "name": "architecture",
-      "description": "System architecture, components, data flow, config, Qdrant integration, multi-connection support",
+      "name": "arch-v2",
+      "description": "System architecture, components, data flow, config, SQLite storage, local embeddings",
       "created_at": "2026-02-16T03:58:28.685Z",
       "parent": "synabun",
       "color": "#3b82f6"
@@ -62,7 +62,7 @@
     },
     {
       "name": "setup",
-      "description": "Installation, onboarding wizard, Docker, embedding providers, .mcp.json generation",
+      "description": "Installation, onboarding wizard, database setup, local embeddings, .mcp.json generation",
       "created_at": "2026-02-16T03:58:45.948Z",
       "parent": "synabun",
       "color": "#22c55e"
@@ -202,6 +202,11 @@
       "description": "Facebook group management, posts, and community building",
       "created_at": "2026-03-03T23:11:15.566Z",
       "parent": "social"
+    },
+    {
+      "name": "test-new",
+      "description": "A test category",
+      "created_at": "2026-03-04T00:40:09.112Z"
     }
   ]
 }

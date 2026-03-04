@@ -747,6 +747,108 @@
     color: rgba(255,255,255,0.6);
   }
 
+  /* ── Dice roll overlay ── */
+  #ttt-dice-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    pointer-events: auto;
+    opacity: 1;
+    transition: opacity 0.5s ease;
+  }
+  #ttt-dice-overlay.fade-out {
+    opacity: 0;
+  }
+  .ttt-dice-row {
+    display: flex;
+    gap: 60px;
+    align-items: center;
+  }
+  .ttt-dice-player {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+  .ttt-die {
+    width: 80px;
+    height: 80px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    padding: 12px;
+    gap: 0;
+    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .ttt-die.rolling {
+    animation: tttDieShake 0.12s linear infinite;
+  }
+  .ttt-die.settled {
+    animation: tttDieSettle 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .ttt-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.85);
+    align-self: center;
+    justify-self: center;
+    opacity: 0;
+    transition: opacity 0.05s;
+  }
+  .ttt-dot.visible { opacity: 1; }
+
+  .ttt-dice-label {
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.3);
+    font-weight: 600;
+    user-select: none;
+  }
+  .ttt-dice-vs {
+    font-size: 16px;
+    color: rgba(255,255,255,0.12);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    user-select: none;
+    margin-bottom: 14px;
+  }
+  .ttt-dice-result {
+    margin-top: 28px;
+    font-size: 18px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.7);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.4s ease, transform 0.4s ease;
+    user-select: none;
+  }
+  .ttt-dice-result.show {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  @keyframes tttDieShake {
+    0%   { transform: translate(0, 0) rotate(0deg); }
+    25%  { transform: translate(-2px, 1px) rotate(-3deg); }
+    50%  { transform: translate(2px, -1px) rotate(3deg); }
+    75%  { transform: translate(-1px, -2px) rotate(-2deg); }
+    100% { transform: translate(1px, 2px) rotate(1deg); }
+  }
+  @keyframes tttDieSettle {
+    0%   { transform: scale(1.15) rotate(-2deg); }
+    50%  { transform: scale(0.95) rotate(1deg); }
+    100% { transform: scale(1) rotate(0deg); }
+  }
+
   /* ── Resize handles (shared for text + image) ── */
   .wb-resize-handle {
     position: absolute;

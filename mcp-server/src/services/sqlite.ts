@@ -1,6 +1,5 @@
 /**
- * SQLite storage layer — drop-in replacement for qdrant.ts.
- * Same exported function signatures so tool code needs only import path changes.
+ * SQLite storage layer.
  * Uses Node.js built-in node:sqlite (available since Node 22.5.0).
  * Vectors stored as Float32Array BLOBs, cosine similarity computed in JS.
  */
@@ -56,7 +55,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot;
 }
 
-// --- Qdrant filter translation ---
+// --- Filter translation ---
 
 interface FilterCondition {
   key: string;
@@ -65,20 +64,20 @@ interface FilterCondition {
   is_empty?: { key: string };
 }
 
-interface QdrantFilter {
+interface MemoryFilter {
   must?: FilterCondition[];
   must_not?: FilterCondition[];
   should?: FilterCondition[];
 }
 
 /**
- * Translates Qdrant-style JSON filters to SQL WHERE clauses.
+ * Translates JSON filters to SQL WHERE clauses.
  * Supports: exact match, range, tags (JSON array contains), is_empty.
  */
 function translateFilter(filter?: Record<string, unknown>): { where: string; params: SQLValue[] } {
   if (!filter) return { where: '', params: [] };
 
-  const f = filter as QdrantFilter;
+  const f = filter as MemoryFilter;
   const clauses: string[] = [];
   const params: SQLValue[] = [];
 
@@ -198,6 +197,11 @@ CREATE INDEX IF NOT EXISTS idx_mem_source ON memories(source);
 CREATE INDEX IF NOT EXISTS idx_sc_session ON session_chunks(session_id);
 CREATE INDEX IF NOT EXISTS idx_sc_project ON session_chunks(project);
 CREATE INDEX IF NOT EXISTS idx_sc_branch ON session_chunks(git_branch);
+
+CREATE TABLE IF NOT EXISTS kv_config (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 // FTS5 created separately since CREATE VIRTUAL TABLE IF NOT EXISTS
@@ -620,7 +624,7 @@ interface StoredCategory {
   is_parent?: boolean;
 }
 
-export async function getCategoriesFromQdrant(): Promise<StoredCategory[] | null> {
+export async function getCategories(): Promise<StoredCategory[] | null> {
   try {
     const d = getDb();
     const rows = d.prepare('SELECT name, description, created_at, parent, color, is_parent FROM categories ORDER BY name')
@@ -639,7 +643,7 @@ export async function getCategoriesFromQdrant(): Promise<StoredCategory[] | null
   }
 }
 
-export async function saveCategoriesToQdrant(categories: StoredCategory[]): Promise<void> {
+export async function saveCategories(categories: StoredCategory[]): Promise<void> {
   const d = getDb();
   const insertStmt = d.prepare(`
     INSERT OR REPLACE INTO categories (name, description, created_at, parent, color, is_parent)

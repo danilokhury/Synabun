@@ -27,6 +27,7 @@ import {
   getMemoriesByCategory, updateMemoriesCategory,
   getCategories as dbGetCategories, saveCategories as dbSaveCategories,
   countSessionChunks, searchSessionChunks as dbSearchSessionChunks,
+  getKvConfig, setKvConfig, EMBEDDING_MODEL,
 } from './lib/db.js';
 
 const execAsync = promisify(exec);
@@ -131,7 +132,7 @@ app.use((req, res, next) => {
 });
 
 const PORT = process.env.NEURAL_PORT || 3344;
-// SQLite database is used directly via lib/db.js — no Qdrant/OpenAI vars needed
+// SQLite database is used directly via lib/db.js
 const EMBEDDING_DIMS = getEmbeddingDims();
 const PROJECT_ROOT = resolve(__dirname, '..');
 
@@ -139,6 +140,9 @@ const PROJECT_ROOT = resolve(__dirname, '..');
 function reloadConfig() {
   console.log(`  Config reloaded — SQLite: ${getDbPath()}, Embedding: local (${EMBEDDING_DIMS}d)`);
 }
+
+// --- Reindex Job State ---
+let _reindexJob = null;
 
 // --- Category Helpers (per-connection) ---
 
@@ -205,7 +209,7 @@ function saveCategories(categories) {
   }
 }
 
-// No more Qdrant filter constants needed — SQLite queries use direct WHERE clauses
+// SQLite queries use direct WHERE clauses
 
 // --- .env Helpers ---
 
@@ -234,7 +238,7 @@ function writeEnvFile(filePath, vars) {
 
   for (const [key, value] of Object.entries(vars)) {
     let match;
-    // Skip legacy Qdrant/embedding vars
+    // Skip legacy env vars
     if (key.match(/^QDRANT__|^EMBEDDING__|^QDRANT_ACTIVE$|^EMBEDDING_ACTIVE$|^OPENAI_EMBEDDING_API_KEY$|^OPENAI_API_KEY$/)) {
       continue;
     } else if ((match = key.match(/^BRIDGE__([a-z0-9_]+)__(.+)$/))) {
@@ -268,16 +272,6 @@ function writeEnvFile(filePath, vars) {
   }
 
   writeFileSync(filePath, lines.join('\n'), 'utf-8');
-}
-
-function extractPort(url) {
-  try {
-    const parsed = new URL(url);
-    return parseInt(parsed.port, 10) || 6333;
-  } catch {
-    const m = (url || '').match(/:(\d+)\/?$/);
-    return m ? parseInt(m[1], 10) : 6333;
-  }
 }
 
 // --- Connection management removed (SQLite uses a single local file) ---
@@ -328,7 +322,7 @@ function removeBridgeConfig(bridgeId) {
   writeEnvFile(ENV_PATH, vars);
 }
 
-// migrateConnectionsJsonToEnv() removed — Qdrant connections no longer used
+// migrateConnectionsJsonToEnv() removed
 
 function maskKey(value) {
   if (!value) return '';
@@ -355,9 +349,7 @@ app.use(express.static(join(__dirname, 'public'), {
 
 // --- Helpers ---
 
-// qdrantHeaders(), qdrantFetch(), old getEmbedding() removed — replaced by lib/db.js exports
-// cosineSimilarity is imported from lib/db.js
-// getEmbedding is imported from lib/db.js
+// cosineSimilarity and getEmbedding imported from lib/db.js
 
 // --- Link cache ---
 let _linkCache = null;   // { links, pointCount, timestamp }
@@ -1301,14 +1293,24 @@ app.get('/api/settings', (req, res) => {
       try { dbSizeBytes = statSync(dbPath).size; } catch {}
     }
 
+    // Check embedding model mismatch
+    let embeddingMismatch = false;
+    try {
+      const storedModel = getKvConfig('embedding_model');
+      if (storedModel && storedModel !== EMBEDDING_MODEL) {
+        embeddingMismatch = true;
+      }
+    } catch {}
+
     res.json({
       storage: 'sqlite',
       dbPath,
       dbExists,
       dbSizeBytes,
       embedding: 'local',
-      embeddingModel: 'Xenova/all-MiniLM-L6-v2',
+      embeddingModel: EMBEDDING_MODEL,
       embeddingDims: EMBEDDING_DIMS,
+      embeddingMismatch,
     });
   } catch (err) {
     console.error('GET /api/settings error:', err.message);
@@ -1326,6 +1328,215 @@ app.put('/api/settings', (req, res) => {
     console.error('PUT /api/settings error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// POST /api/settings/move-db — Move SQLite database to a new directory
+app.post('/api/settings/move-db', (req, res) => {
+  try {
+    const { newPath } = req.body || {};
+    if (!newPath) return res.status(400).json({ error: 'newPath is required' });
+
+    const currentDbPath = getDbPath();
+    const newDir = resolve(newPath);
+    const newDbPath = resolve(newDir, 'memory.db');
+
+    // Must be a different location
+    if (resolve(currentDbPath) === newDbPath) {
+      return res.status(400).json({ error: 'New path is the same as the current path' });
+    }
+
+    // Validate writability
+    try {
+      mkdirSync(newDir, { recursive: true });
+      const testFile = resolve(newDir, '.synabun-write-test');
+      writeFileSync(testFile, 'test');
+      unlinkSync(testFile);
+    } catch (err) {
+      return res.status(400).json({ error: `Cannot write to new location: ${err.message}` });
+    }
+
+    // Checkpoint WAL to flush pending writes, then close
+    try {
+      const d = getDb();
+      d.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {}
+    closeDb();
+
+    // Copy database files
+    const suffixes = ['', '-wal', '-shm'];
+    for (const suffix of suffixes) {
+      const src = currentDbPath + suffix;
+      const dst = newDbPath + suffix;
+      if (existsSync(src)) cpSync(src, dst);
+    }
+
+    // Update .env and runtime
+    const vars = parseEnvFile(ENV_PATH);
+    vars['SQLITE_DB_PATH'] = newDbPath;
+    writeEnvFile(ENV_PATH, vars);
+    process.env['SQLITE_DB_PATH'] = newDbPath;
+
+    // Reopen from new location
+    getDb();
+    reloadConfig();
+
+    res.json({ ok: true, oldDbPath: currentDbPath, newDbPath, mcpRestartRequired: true });
+  } catch (err) {
+    console.error('POST /api/settings/move-db error:', err.message);
+    // Try to reopen at original location on failure
+    try { getDb(); } catch {}
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/settings/move-db/cleanup — Delete old database files after move
+app.post('/api/settings/move-db/cleanup', (req, res) => {
+  try {
+    const { oldPath } = req.body || {};
+    if (!oldPath) return res.status(400).json({ error: 'oldPath is required' });
+
+    const resolvedOldPath = resolve(oldPath);
+
+    // Safety: never delete the active database
+    if (resolvedOldPath === resolve(getDbPath())) {
+      return res.status(400).json({ error: 'Cannot delete the currently active database' });
+    }
+
+    for (const suffix of ['', '-wal', '-shm']) {
+      const f = resolvedOldPath + suffix;
+      try { if (existsSync(f)) unlinkSync(f); } catch {}
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Reindex Endpoints ---
+
+const REINDEX_BATCH_SIZE = 50;
+
+async function runReindex(job) {
+  const d = getDb();
+
+  // Count total work
+  const memCount = d.prepare('SELECT COUNT(*) as cnt FROM memories WHERE trashed_at IS NULL').get().cnt;
+  const chunkCount = d.prepare('SELECT COUNT(*) as cnt FROM session_chunks').get().cnt;
+  job.total = memCount;
+  job.totalChunks = chunkCount;
+
+  // Phase 1: Reindex memories
+  let offset = 0;
+  while (offset < memCount) {
+    if (job.cancelled) { job.running = false; return; }
+
+    const rows = d.prepare('SELECT id, content FROM memories WHERE trashed_at IS NULL LIMIT ? OFFSET ?')
+                  .all(REINDEX_BATCH_SIZE, offset);
+    if (rows.length === 0) break;
+
+    try {
+      const texts = rows.map(r => r.content);
+      const vectors = await getEmbeddingBatch(texts);
+      const updateStmt = d.prepare('UPDATE memories SET vector = ? WHERE id = ?');
+      for (let i = 0; i < rows.length; i++) {
+        try {
+          updateStmt.run(encodeVector(vectors[i]), rows[i].id);
+          job.completed++;
+        } catch {
+          job.errors++;
+        }
+      }
+    } catch {
+      job.errors += rows.length;
+    }
+
+    offset += REINDEX_BATCH_SIZE;
+  }
+
+  // Phase 2: Reindex session chunks
+  offset = 0;
+  while (offset < chunkCount) {
+    if (job.cancelled) { job.running = false; return; }
+
+    const rows = d.prepare('SELECT id, content FROM session_chunks LIMIT ? OFFSET ?')
+                  .all(REINDEX_BATCH_SIZE, offset);
+    if (rows.length === 0) break;
+
+    try {
+      const texts = rows.map(r => r.content || '');
+      const vectors = await getEmbeddingBatch(texts);
+      const updateStmt = d.prepare('UPDATE session_chunks SET vector = ? WHERE id = ?');
+      for (let i = 0; i < rows.length; i++) {
+        try {
+          updateStmt.run(encodeVector(vectors[i]), rows[i].id);
+          job.chunks++;
+        } catch {
+          job.errors++;
+        }
+      }
+    } catch {
+      job.errors += rows.length;
+    }
+
+    offset += REINDEX_BATCH_SIZE;
+  }
+
+  // Update stored model metadata
+  try {
+    setKvConfig('embedding_model', EMBEDDING_MODEL);
+    setKvConfig('embedding_dims', String(EMBEDDING_DIMS));
+  } catch {}
+
+  job.running = false;
+
+  try {
+    broadcastSync({ type: 'reindex:complete', jobId: job.jobId, completed: job.completed, chunks: job.chunks, errors: job.errors });
+  } catch {}
+}
+
+// POST /api/settings/reindex — Start a full embedding reindex
+app.post('/api/settings/reindex', async (req, res) => {
+  if (_reindexJob && _reindexJob.running) {
+    return res.status(409).json({ error: 'Reindex already in progress', jobId: _reindexJob.jobId });
+  }
+
+  const jobId = `reindex-${Date.now()}`;
+  _reindexJob = { jobId, running: true, cancelled: false, completed: 0, total: 0, totalChunks: 0, chunks: 0, errors: 0 };
+
+  res.json({ ok: true, jobId });
+
+  // Run async — don't await
+  runReindex(_reindexJob).catch(err => {
+    console.error('[reindex] Fatal error:', err.message);
+    if (_reindexJob) { _reindexJob.running = false; _reindexJob.errors++; }
+  });
+});
+
+// GET /api/settings/reindex/status — Poll reindex progress
+app.get('/api/settings/reindex/status', (req, res) => {
+  if (!_reindexJob) {
+    return res.json({ running: false, completed: 0, total: 0, chunks: 0, totalChunks: 0, errors: 0 });
+  }
+  res.json({
+    running: _reindexJob.running,
+    cancelled: _reindexJob.cancelled || false,
+    jobId: _reindexJob.jobId,
+    completed: _reindexJob.completed,
+    total: _reindexJob.total,
+    chunks: _reindexJob.chunks,
+    totalChunks: _reindexJob.totalChunks,
+    errors: _reindexJob.errors,
+  });
+});
+
+// POST /api/settings/reindex/cancel — Cancel in-progress reindex
+app.post('/api/settings/reindex/cancel', (req, res) => {
+  if (!_reindexJob || !_reindexJob.running) {
+    return res.status(404).json({ error: 'No active reindex job' });
+  }
+  _reindexJob.cancelled = true;
+  res.json({ ok: true });
 });
 
 // --- Display Settings Routes (MCP response control) ---
@@ -1694,6 +1905,272 @@ app.get('/api/whiteboard/screenshot', async (req, res) => {
     });
 
     res.json({ ok: true, data }); // data is base64 JPEG
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ══════════════════════════════════════════════════
+// TIC TAC TOE — REST API (dedicated game endpoints)
+// ══════════════════════════════════════════════════
+
+const TTT_BOARD_SIZE = 500;
+const TTT_CELL_SIZE = Math.round(TTT_BOARD_SIZE / 3);
+const TTT_PIECE_SIZE = 120;
+const TTT_PIECE_OFFSET = Math.round((TTT_CELL_SIZE - TTT_PIECE_SIZE) / 2);
+const TTT_NUMBER_SIZE = 60;
+const TTT_NUMBER_OFFSET = Math.round((TTT_CELL_SIZE - TTT_NUMBER_SIZE) / 2);
+
+const TTT_WIN_LINES = [
+  [0,1,2], [3,4,5], [6,7,8], // rows
+  [0,3,6], [1,4,7], [2,5,8], // columns
+  [0,4,8], [2,4,6],          // diagonals
+];
+
+function tttCheckResult(board) {
+  for (const [a,b,c] of TTT_WIN_LINES) {
+    if (board[a] && board[a] === board[b] && board[b] === board[c]) return board[a];
+  }
+  return board.every(c => c !== null) ? 'draw' : null;
+}
+
+function tttBoardAscii(board) {
+  const display = board.map((c, i) => c || String(i + 1));
+  return [
+    `  ${display[0]} | ${display[1]} | ${display[2]}`,
+    '  ---------',
+    `  ${display[3]} | ${display[4]} | ${display[5]}`,
+    '  ---------',
+    `  ${display[6]} | ${display[7]} | ${display[8]}`,
+  ].join('\n');
+}
+
+function tttLoadAsset(name) {
+  const filePath = join(__dirname, 'games', 'TicTacToe', `${name}.svg`);
+  if (!existsSync(filePath)) return null;
+  const buf = readFileSync(filePath);
+  return `data:image/svg+xml;base64,${buf.toString('base64')}`;
+}
+
+function tttCellPosition(cellNum, boardX, boardY, size, offset) {
+  const idx = cellNum - 1;
+  const col = idx % 3;
+  const row = Math.floor(idx / 3);
+  return {
+    x: boardX + col * TTT_CELL_SIZE + offset,
+    y: boardY + row * TTT_CELL_SIZE + offset,
+  };
+}
+
+// POST /api/games/tictactoe/start — Set up board and initialize game
+app.post('/api/games/tictactoe/start', (req, res) => {
+  try {
+    const piece = (req.body.piece || 'X').toUpperCase();
+    if (piece !== 'X' && piece !== 'O') {
+      return res.status(400).json({ error: 'piece must be "X" or "O"' });
+    }
+
+    // Clear whiteboard first
+    const state = loadUiState();
+    state['neural-whiteboard'] = { elements: [], nextZIndex: 1 };
+
+    // Calculate centered board position
+    const vp = whiteboardViewport || { width: 1920, height: 937 };
+    const boardX = Math.round((vp.width - TTT_BOARD_SIZE) / 2);
+    const boardY = Math.round((vp.height - TTT_BOARD_SIZE) / 2);
+
+    // Build board elements
+    const wb = state['neural-whiteboard'];
+    const elements = [];
+
+    // Board grid
+    const boardDataUrl = tttLoadAsset('Board');
+    elements.push({
+      id: 'ttt-board',
+      type: 'image',
+      x: boardX,
+      y: boardY,
+      width: TTT_BOARD_SIZE,
+      height: TTT_BOARD_SIZE,
+      dataUrl: boardDataUrl,
+      zIndex: wb.nextZIndex++,
+    });
+
+    // Number markers (1-9)
+    for (let i = 1; i <= 9; i++) {
+      const pos = tttCellPosition(i, boardX, boardY, TTT_NUMBER_SIZE, TTT_NUMBER_OFFSET);
+      const dataUrl = tttLoadAsset(String(i));
+      elements.push({
+        id: `ttt-cell-${i}`,
+        type: 'image',
+        x: pos.x,
+        y: pos.y,
+        width: TTT_NUMBER_SIZE,
+        height: TTT_NUMBER_SIZE,
+        dataUrl,
+        zIndex: wb.nextZIndex++,
+      });
+    }
+
+    wb.elements = elements;
+
+    // Initialize game state
+    const gameState = {
+      board: [null,null,null, null,null,null, null,null,null],
+      turn: 'X',
+      status: 'playing',
+      winner: null,
+      piece,
+      boardX,
+      boardY,
+    };
+    state['tictactoe-game'] = gameState;
+    saveUiState(state);
+
+    // Broadcast to whiteboard clients
+    broadcastToWhiteboard({ type: 'clear' });
+    broadcastToWhiteboard({ type: 'add', elements });
+    broadcastToWhiteboard({ type: 'ttt-started', boardX, boardY });
+
+    res.json({
+      ok: true,
+      board: gameState.board,
+      ascii: tttBoardAscii(gameState.board),
+      turn: gameState.turn,
+      status: gameState.status,
+      piece,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/games/tictactoe/move — Make a move
+app.post('/api/games/tictactoe/move', (req, res) => {
+  try {
+    const cell = parseInt(req.body.cell, 10);
+    if (isNaN(cell) || cell < 1 || cell > 9) {
+      return res.status(400).json({ error: 'cell must be a number 1-9' });
+    }
+
+    const state = loadUiState();
+    const game = state['tictactoe-game'];
+    if (!game) {
+      return res.status(400).json({ error: 'No active TicTacToe game. Use start first.' });
+    }
+    if (game.status !== 'playing') {
+      return res.status(400).json({ error: `Game is over: ${game.status}${game.winner ? ' — ' + game.winner + ' wins' : ''}` });
+    }
+
+    const idx = cell - 1;
+    if (game.board[idx] !== null) {
+      return res.status(400).json({ error: `Cell ${cell} is already taken by ${game.board[idx]}` });
+    }
+
+    // Place the piece
+    const currentPiece = game.turn;
+    game.board[idx] = currentPiece;
+
+    // Update whiteboard: remove number marker, add piece
+    const wb = state['neural-whiteboard'];
+    if (wb && wb.elements) {
+      // Remove number marker
+      const markerIdx = wb.elements.findIndex(e => e.id === `ttt-cell-${cell}`);
+      let removedMarker = null;
+      if (markerIdx !== -1) {
+        removedMarker = wb.elements.splice(markerIdx, 1)[0];
+      }
+
+      // Add piece at correct position
+      const assetName = currentPiece === 'X' ? 'Cross' : 'Circle';
+      const dataUrl = tttLoadAsset(assetName);
+      const pos = tttCellPosition(cell, game.boardX, game.boardY, TTT_PIECE_SIZE, TTT_PIECE_OFFSET);
+      const pieceEl = {
+        id: `ttt-piece-${cell}`,
+        type: 'image',
+        x: pos.x,
+        y: pos.y,
+        width: TTT_PIECE_SIZE,
+        height: TTT_PIECE_SIZE,
+        dataUrl,
+        zIndex: wb.nextZIndex++,
+      };
+      wb.elements.push(pieceEl);
+
+      // Broadcast whiteboard changes
+      if (removedMarker) broadcastToWhiteboard({ type: 'remove', id: `ttt-cell-${cell}` });
+      broadcastToWhiteboard({ type: 'add', elements: [pieceEl] });
+    }
+
+    // Check for win/draw
+    const result = tttCheckResult(game.board);
+    if (result === 'draw') {
+      game.status = 'draw';
+    } else if (result) {
+      game.status = 'won';
+      game.winner = result;
+    } else {
+      // Toggle turn
+      game.turn = game.turn === 'X' ? 'O' : 'X';
+    }
+
+    state['tictactoe-game'] = game;
+    saveUiState(state);
+
+    const response = {
+      ok: true,
+      board: game.board,
+      ascii: tttBoardAscii(game.board),
+      turn: game.turn,
+      status: game.status,
+    };
+    if (game.winner) response.winner = game.winner;
+
+    res.json(response);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/games/tictactoe/state — Get current game state
+app.get('/api/games/tictactoe/state', (req, res) => {
+  try {
+    const state = loadUiState();
+    const game = state['tictactoe-game'];
+    if (!game) {
+      return res.json({ ok: true, active: false, message: 'No active game' });
+    }
+
+    const response = {
+      ok: true,
+      active: true,
+      board: game.board,
+      ascii: tttBoardAscii(game.board),
+      turn: game.turn,
+      status: game.status,
+      piece: game.piece,
+    };
+    if (game.winner) response.winner = game.winner;
+
+    res.json(response);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/games/tictactoe/end — Tear down game
+app.post('/api/games/tictactoe/end', (req, res) => {
+  try {
+    const state = loadUiState();
+    delete state['tictactoe-game'];
+    state['neural-whiteboard'] = { elements: [], nextZIndex: 1 };
+    saveUiState(state);
+
+    broadcastToWhiteboard({ type: 'clear' });
+    broadcastToWhiteboard({ type: 'ttt-ended' });
+
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2881,6 +3358,31 @@ app.get('/api/browse-directory', (req, res) => {
   }
 });
 
+// POST /api/browse-folder — Open native OS folder picker dialog
+app.post('/api/browse-folder', (req, res) => {
+  try {
+    const { description } = req.body || {};
+    const prompt = description || 'Select a folder';
+    let cmd;
+    if (process.platform === 'win32') {
+      const escaped = prompt.replace(/'/g, "''");
+      cmd = `powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = '${escaped}'; $d.ShowNewFolderButton = $true; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath } else { '' }"`;
+    } else if (process.platform === 'darwin') {
+      cmd = `osascript -e 'POSIX path of (choose folder with prompt "${prompt}")'`;
+    } else {
+      cmd = `zenity --file-selection --directory --title="${prompt}" 2>/dev/null`;
+    }
+    const result = execSync(cmd, { encoding: 'utf8', timeout: 60000 }).trim();
+    if (result) {
+      res.json({ path: result.replace(/\\/g, '/') });
+    } else {
+      res.json({ path: null, cancelled: true });
+    }
+  } catch {
+    res.json({ path: null, cancelled: true });
+  }
+});
+
 // ═══════════════════════════════════════════
 // BRIDGE ENDPOINTS
 // ═══════════════════════════════════════════
@@ -3031,6 +3533,7 @@ app.get('/api/setup/onboarding', async (req, res) => {
       mcpBuilt,
       projectDir: PROJECT_ROOT,
       platform: process.platform,
+      defaultDbDir: dirname(getDbPath()),
     });
   } catch (err) {
     console.error('GET /api/setup/onboarding error:', err.message);
@@ -3038,11 +3541,28 @@ app.get('/api/setup/onboarding', async (req, res) => {
   }
 });
 
-// POST /api/setup/save-config — Write config to .env (simplified — no Qdrant/embedding API keys needed)
+// POST /api/setup/save-config — Write config to .env
 app.post('/api/setup/save-config', (req, res) => {
   try {
+    const { dbLocationPath } = req.body || {};
     const vars = parseEnvFile(ENV_PATH);
-    // No external service config needed — SQLite + local embeddings are self-contained
+
+    if (dbLocationPath) {
+      const resolvedDir = resolve(dbLocationPath);
+      const resolvedPath = resolve(resolvedDir, 'memory.db');
+      // Validate: create directory and test writability
+      try {
+        mkdirSync(resolvedDir, { recursive: true });
+        const testFile = resolve(resolvedDir, '.synabun-write-test');
+        writeFileSync(testFile, 'test');
+        unlinkSync(testFile);
+      } catch (err) {
+        return res.status(400).json({ ok: false, error: `Cannot write to path: ${err.message}` });
+      }
+      vars['SQLITE_DB_PATH'] = resolvedPath;
+      process.env['SQLITE_DB_PATH'] = resolvedPath;
+    }
+
     writeEnvFile(ENV_PATH, vars);
     reloadConfig();
     res.json({ ok: true });
@@ -3052,8 +3572,7 @@ app.post('/api/setup/save-config', (req, res) => {
   }
 });
 
-// Docker/Qdrant setup endpoints removed — SQLite is self-contained
-// Legacy stubs for UI compatibility
+// Legacy setup stubs for UI compatibility
 app.post('/api/setup/start-docker-desktop', (req, res) => { res.json({ ok: true, message: 'Docker no longer required — using local SQLite.' }); });
 app.post('/api/setup/docker', (req, res) => { res.json({ ok: true, message: 'Docker no longer required — using local SQLite.' }); });
 app.post('/api/setup/create-collection', (req, res) => { res.json({ ok: true, message: 'SQLite database is created automatically.' }); });
@@ -8004,6 +8523,12 @@ const httpServer = app.listen(PORT, async () => {
   console.log(`  Browser:   WebSocket on ws://localhost:${PORT}/ws/browser/*`);
   console.log(`  Whiteboard: WebSocket on ws://localhost:${PORT}/ws/whiteboard`);
   console.log(`  Cards:      WebSocket on ws://localhost:${PORT}/ws/cards\n`);
+
+  // Write embedding model metadata so mismatch can be detected later
+  try {
+    setKvConfig('embedding_model', EMBEDDING_MODEL);
+    setKvConfig('embedding_dims', String(EMBEDDING_DIMS));
+  } catch {}
 
   // SQLite indexes are created in schema — no runtime index creation needed
 

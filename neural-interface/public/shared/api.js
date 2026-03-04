@@ -337,14 +337,6 @@ export async function systemRestore(zipBuffer, mode = 'full') {
   return res.json();
 }
 
-export async function dockerNewConnection(payload) {
-  // payload: { port, grpcPort, apiKey, containerName, volumeName }
-  return jsonFetch('/api/connections/docker-new', {
-    method: 'POST',
-    ...jsonBody(payload),
-  });
-}
-
 export async function createCollection(payload) {
   // payload: { url, apiKey, collection }
   return jsonFetch('/api/connections/create-collection', {
@@ -764,17 +756,6 @@ export async function saveSetupConfig(payload) {
   });
 }
 
-export async function startDockerDesktop() {
-  return jsonFetch('/api/setup/start-docker-desktop', { method: 'POST' });
-}
-
-export async function setupDocker(payload) {
-  return jsonFetch('/api/setup/docker', {
-    method: 'POST',
-    ...jsonBody(payload),
-  });
-}
-
 export async function setupCreateCollection(payload) {
   return jsonFetch('/api/setup/create-collection', {
     method: 'POST',
@@ -796,10 +777,6 @@ export async function testDatabaseRemote(payload) {
     ...jsonBody(payload),
   });
 }
-
-// Backward compat aliases
-export { testDatabase as testQdrant };
-export { testDatabaseRemote as testQdrantCloud };
 
 export async function writeMcpJson(payload) {
   return jsonFetch('/api/setup/write-mcp-json', {
