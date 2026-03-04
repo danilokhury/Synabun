@@ -152,8 +152,8 @@ The `.mcp.json` path must match the platform where **Claude Code is running**:
 
 | Platform | Path format | Example |
 |----------|-------------|---------|
-| **Windows** | Forward slashes | `J:/Sites/Apps/Synabun/mcp-server/run.mjs` |
-| **WSL** | Linux mount paths | `/mnt/j/Sites/Apps/Synabun/mcp-server/run.mjs` |
+| **Windows** | Forward slashes | `D:/Apps/Synabun/mcp-server/run.mjs` |
+| **WSL** | Linux mount paths | `/mnt/d/Apps/Synabun/mcp-server/run.mjs` |
 | **Linux/macOS** | Native paths | `/home/user/Apps/Synabun/mcp-server/run.mjs` |
 
 **Common pitfall:** If Claude Code runs on Windows but you use a WSL-style path like `/mnt/j/...`, Node.js will resolve it to `J:\mnt\j\...` (prepending the drive letter), which doesn't exist. Always use Windows-native paths when Claude Code runs on Windows.

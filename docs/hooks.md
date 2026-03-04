@@ -420,7 +420,7 @@ Add the following to your `.claude/settings.json` file:
 
 **Per-project** (`<project>/.claude/settings.json`): Same structure, but scoped to that project only.
 
-Replace `/path/to/Synabun` with your actual SynaBun installation path. On Windows, use forward slashes (e.g., `J:/Sites/Apps/Synabun`).
+Replace `/path/to/Synabun` with your actual SynaBun installation path. On Windows, use forward slashes (e.g., `D:/Apps/Synabun`).
 
 ---
 

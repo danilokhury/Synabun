@@ -198,7 +198,8 @@ function ensureProjectCategory(project) {
 async function invalidateNeuralInterface() {
   try {
     // Trigger sync broadcast so the Neural Interface graph refreshes
-    await fetch('http://localhost:3344/api/memories?invalidate=true', {
+    const niUrl = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
+    await fetch(`${niUrl}/api/memories?invalidate=true`, {
       method: 'GET',
       signal: AbortSignal.timeout(2000),
     });

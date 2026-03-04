@@ -4020,7 +4020,7 @@ app.get('/api/claude-code/sessions', (req, res) => {
       if (targetProject && resolve(proj.path) !== resolve(targetProject)) continue;
 
       // Convert project path to Claude's directory name format
-      // "J:\Sites\CriticalPixel" -> "j--Sites-CriticalPixel"
+      // "D:\Projects\MyApp" -> "d--Projects-MyApp"
       // Try both lowercase and uppercase drive letter (Claude is inconsistent)
       const projKeyLower = proj.path
         .replace(/\\/g, '-')
@@ -5998,12 +5998,22 @@ let tunnelUrl = null;
 let tunnelStarting = false;
 
 function findCloudflared() {
-  const paths = [
-    'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
-    'C:\\Program Files\\cloudflared\\cloudflared.exe',
-    `${process.env.LOCALAPPDATA}\\cloudflared\\cloudflared.exe`,
-  ];
-  for (const p of paths) { if (existsSync(p)) return p; }
+  // Try PATH-based lookup first (cross-platform)
+  try {
+    const cmd = process.platform === 'win32' ? 'where cloudflared' : 'which cloudflared';
+    const result = execSync(cmd, { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    if (result) return result.split('\n')[0].trim();
+  } catch { /* not in PATH */ }
+
+  // Windows-specific fallback paths
+  if (process.platform === 'win32') {
+    const paths = [
+      `${process.env.LOCALAPPDATA}\\cloudflared\\cloudflared.exe`,
+      `${process.env.ProgramFiles}\\cloudflared\\cloudflared.exe`,
+      `${process.env['ProgramFiles(x86)']}\\cloudflared\\cloudflared.exe`,
+    ];
+    for (const p of paths) { if (p && existsSync(p)) return p; }
+  }
   return null;
 }
 

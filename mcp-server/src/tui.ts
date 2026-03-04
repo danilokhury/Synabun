@@ -6,7 +6,7 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname_ = dirname(fileURLToPath(import.meta.url));
-const envPath = resolve(__dirname_, '..', '..', '.env');
+const envPath = process.env.DOTENV_PATH || resolve(__dirname_, '..', '..', '.env');
 try {
   const envContent = readFileSync(envPath, 'utf-8');
   for (const line of envContent.split('\n')) {
