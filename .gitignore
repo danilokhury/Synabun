@@ -13,4 +13,3 @@ mcp-server/data/custom-categories*.json
 !mcp-server/data/custom-categories-default.json
 mcp-server/data/display-settings.json
 node_modules/
-mcp-server/dist/
