@@ -1,6 +1,0 @@
-{
-  "conversationMemory": true,
-  "greeting": true,
-  "userLearning": true,
-  "userLearningThreshold": 8
-}
