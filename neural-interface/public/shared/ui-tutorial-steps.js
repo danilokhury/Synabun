@@ -50,12 +50,7 @@ function _showSettingsHint(svg, dom, cx, cy, goToStep) {
     duration: 350,
   });
 
-  // Auto-advance after 2 seconds (guard against double-fire)
-  const timer = setTimeout(() => {
-    if (svg.isConnected) goToStep(6);
-  }, 2000);
-
-  // Optional "Continue" button for impatient users
+  // Continue button — user clicks to advance (no auto-timer)
   const contEl = document.createElement('div');
   contEl.className = 'wb-tutorial-btn';
   contEl.textContent = 'Continue';
@@ -78,7 +73,6 @@ function _showSettingsHint(svg, dom, cx, cy, goToStep) {
     contEl.style.transform = 'translate(-50%, 0) scale(1)';
   });
   contEl.addEventListener('click', () => {
-    clearTimeout(timer);
     goToStep(6);
   });
 }
