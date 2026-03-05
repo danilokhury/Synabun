@@ -4098,7 +4098,7 @@
     50% { opacity: 1; }
   }
 
-  /* Docker / Qdrant down state */
+  /* Database down state */
   #loading-overlay.error #loading-text { animation: none; opacity: 0.7; }
   #loading-overlay.error #loading-sub { color: rgba(255,255,255,0.3); }
   #loading-action {
@@ -4409,14 +4409,14 @@
   <div id="loading-action">
     <button id="loading-action-btn" type="button">
       <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      <span id="loading-action-label">Start Docker</span>
+      <span id="loading-action-label">Start Server</span>
     </button>
     <div id="loading-action-status"></div>
   </div>
   <div id="loading-server-cmd">
     <div id="loading-server-cmd-hint">Run this command to start the server:</div>
     <div id="loading-server-cmd-box">
-      <code id="loading-cmd-text">node J:\Sites\Apps\Synabun\neural-interface\server.js</code>
+      <code id="loading-cmd-text">node path/to/synabun/neural-interface/server.js</code>
       <button id="loading-cmd-copy" title="Copy to clipboard">
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       </button>
@@ -5159,9 +5159,8 @@ async function init() {
       const health = await healthRes.json();
       if (!health.ok) {
         const messages = {
-          docker_not_running: ['Database Offline', 'The memory database needs to be started'],
-          container_stopped:  ['Database Stopped', 'The memory database was stopped'],
-          qdrant_unreachable: ['Database Unreachable', 'The database engine is not responding'],
+          db_missing:         ['Database Unreachable', 'The SQLite database file is missing'],
+          db_error:           ['Database Unreachable', 'The database engine encountered an error'],
           remote_unreachable: ['Connection Failed', health.detail || 'Cannot reach the remote database'],
           auth_error:         ['Authentication Error', health.detail || 'The database rejected the connection'],
         };

@@ -40,7 +40,7 @@ export function getSharedHTML() {
   <div id="loading-action">
     <button id="loading-action-btn" type="button">
       <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      <span id="loading-action-label">${t('loading.startDocker')}</span>
+      <span id="loading-action-label">${t('loading.startServer')}</span>
     </button>
     <div id="loading-action-status"></div>
   </div>
@@ -82,6 +82,77 @@ export function getSharedHTML() {
 
     <!-- OS-style menubar -->
     <div class="menubar">
+
+      <!-- Apps menu -->
+      <div class="menubar-item" data-menu="apps">
+        <button class="menubar-label">${t('nav.apps')}</button>
+        <div class="menubar-dropdown glass">
+          <div class="menu-item" id="menu-terminal-claude">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg></span> ${t('menu.apps.claudeCode')}</span>
+            <span class="menu-shortcut" data-keybind-for="launch-claude"></span>
+          </div>
+          <div class="menu-item" id="menu-terminal-codex">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z"/></svg></span> ${t('menu.apps.codexCli')}</span>
+            <span class="menu-shortcut" data-keybind-for="launch-codex"></span>
+          </div>
+          <div class="menu-item" id="menu-terminal-gemini">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"/></svg></span> ${t('menu.apps.geminiCli')}</span>
+            <span class="menu-shortcut" data-keybind-for="launch-gemini"></span>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" id="menu-terminal-shell">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span> ${t('menu.apps.shell')}</span>
+          </div>
+          <div class="menu-item" id="menu-terminal-browser">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><ellipse cx="12" cy="12" rx="4" ry="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M4.5 7h15M4.5 17h15" stroke-width="1"/></svg></span> ${t('menu.apps.browser')}</span>
+            <span class="menu-shortcut" data-keybind-for="launch-browser"></span>
+          </div>
+          <div class="menu-item" id="menu-terminal-youtube">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg></span> ${t('menu.apps.youtube')}</span>
+            <span class="menu-shortcut" data-keybind-for="launch-youtube"></span>
+          </div>
+          <div class="menu-item" id="menu-terminal-discord">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg></span> Discord</span>
+          </div>
+          <div class="menu-item" id="menu-terminal-x">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></span> X</span>
+          </div>
+          <div class="menu-item" id="menu-terminal-whatsapp">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></span> WhatsApp</span>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" id="menu-command-runner">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg></span> Command Runner</span>
+          </div>
+          <div class="menu-item" id="menu-terminal-link">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span> Link Terminals</span>
+          </div>
+          <div class="menu-item menu-toggle" id="menu-terminal-toggle">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">${t('menu.apps.showTerminal')}</span>
+            <span class="menu-shortcut">T</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Resume menu -->
+      <div class="menubar-item" data-menu="resume">
+        <button class="menubar-label">Resume</button>
+        <div class="menubar-dropdown glass menubar-dropdown--resume">
+          <div id="resume-list"></div>
+        </div>
+      </div>
 
       <!-- View menu -->
       <div class="menubar-item" data-menu="view">
@@ -133,6 +204,28 @@ export function getSharedHTML() {
           </div>
           <div id="menu-link-types-slot"></div>
           <div class="menu-sep"></div>
+          <div class="menu-group-label">${t('menu.graph.nodeLimitGroup')}</div>
+          <div class="menu-item menu-radio" data-group="node-limit" data-value="500">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">500</span>
+          </div>
+          <div class="menu-item menu-radio" data-group="node-limit" data-value="1000">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">1,000</span>
+          </div>
+          <div class="menu-item menu-radio" data-group="node-limit" data-value="2000">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">2,000</span>
+          </div>
+          <div class="menu-item menu-radio" data-group="node-limit" data-value="4000">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">4,000</span>
+          </div>
+          <div class="menu-item menu-radio active" data-group="node-limit" data-value="0">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">All</span>
+          </div>
+          <div class="menu-sep"></div>
           <div class="menu-item" id="menu-reset-layout">
             <span class="menu-check"></span>
             <span class="menu-text">${t('menu.graph.resetLayout')}</span>
@@ -161,35 +254,34 @@ export function getSharedHTML() {
         </div>
       </div>
 
-      <!-- Terminal menu -->
-      <div class="menubar-item" data-menu="terminal">
-        <button class="menubar-label">${t('nav.terminal')}</button>
+      <!-- Automations menu -->
+      <div class="menubar-item" data-menu="automations">
+        <button class="menubar-label">${t('nav.automations')}</button>
         <div class="menubar-dropdown glass">
-          <div class="menu-item" id="menu-terminal-claude">
+          <div class="menu-item" id="menu-open-automation-studio">
             <span class="menu-check"></span>
-            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg></span> ${t('menu.terminal.claudeCode')}</span>
-            <span class="menu-shortcut" data-keybind-for="launch-claude"></span>
-          </div>
-          <div class="menu-item" id="menu-terminal-codex">
-            <span class="menu-check"></span>
-            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z"/></svg></span> ${t('menu.terminal.codexCli')}</span>
-            <span class="menu-shortcut" data-keybind-for="launch-codex"></span>
-          </div>
-          <div class="menu-item" id="menu-terminal-gemini">
-            <span class="menu-check"></span>
-            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"/></svg></span> ${t('menu.terminal.geminiCli')}</span>
-            <span class="menu-shortcut" data-keybind-for="launch-gemini"></span>
+            <span class="menu-text">${t('menu.automations.studio')}</span>
+            <span class="menu-shortcut">A</span>
           </div>
           <div class="menu-sep"></div>
-          <div class="menu-item" id="menu-terminal-shell">
+          <div class="menu-item" id="menu-automations-new">
             <span class="menu-check"></span>
-            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span> ${t('menu.terminal.shell')}</span>
+            <span class="menu-text">${t('menu.automations.newAutomation')}</span>
           </div>
-          <div class="menu-sep"></div>
-          <div class="menu-item menu-toggle" id="menu-terminal-toggle">
-            <span class="menu-check">&#10003;</span>
-            <span class="menu-text">${t('menu.terminal.showTerminal')}</span>
-            <span class="menu-shortcut">T</span>
+          <div class="menu-item" id="menu-automations-import">
+            <span class="menu-check"></span>
+            <span class="menu-text">${t('menu.automations.import')}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Games menu -->
+      <div class="menubar-item" data-menu="games">
+        <button class="menubar-label">${t('nav.games')}</button>
+        <div class="menubar-dropdown glass">
+          <div class="menu-item" id="menu-game-tictactoe">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="2" x2="8" y2="22"/><line x1="16" y1="2" x2="16" y2="22"/><line x1="2" y1="8" x2="22" y2="8"/><line x1="2" y1="16" x2="22" y2="16"/></svg></span> ${t('menu.games.ticTacToe')}</span>
           </div>
         </div>
       </div>
@@ -217,6 +309,7 @@ export function getSharedHTML() {
   </div>
 
   <div class="bar-right">
+    <button id="titlebar-tutorial-btn" class="bar-icon" data-tooltip="Toggle Tutorial"><svg viewBox="0 0 24 24"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor"/></svg></button>
     <button id="titlebar-viz-toggle" class="bar-icon active" data-tooltip="${t('tooltip.toggleViz')}"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg></button>
     <button id="titlebar-fullscreen-btn" class="bar-icon" data-tooltip="${t('tooltip.fullscreen')}"><svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
     <div class="bar-sep"></div>
@@ -246,7 +339,7 @@ export function getSharedHTML() {
       <button id="ws-quick-save" class="ws-quick-save" data-tooltip="Quick save"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
       <svg class="ws-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
     </div>
-    <div id="ws-dropdown" class="glass" style="display:none;">
+    <div id="ws-dropdown" style="display:none;">
       <div class="ws-save-bar">
         <input type="text" id="ws-name-input" placeholder="Save workspace..." autocomplete="off" spellcheck="false">
         <button id="ws-save-btn" data-tooltip="Save"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
@@ -261,6 +354,13 @@ export function getSharedHTML() {
       </div>
       <input type="file" id="ws-import-file" accept=".json" style="display:none;">
     </div>
+  </div>
+  <div id="invite-overlay">
+    <button id="invite-btn" class="topright-icon-btn" data-tooltip="Share / Invite">
+      <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+      <span class="count-badge count-badge--blue" id="invite-session-count" style="display:none"></span>
+    </button>
+    <div id="invite-dropdown" style="display:none;"></div>
   </div>
   <div id="term-minimized-tray"></div>
 </div>
@@ -381,6 +481,75 @@ export function getSharedHTML() {
 <div id="static-bg">
   <div class="focus-breathe"></div>
   <img src="synabun.png?v=2" alt="SynaBun" class="static-bg-logo">
+
+  <!-- Whiteboard (Focus Mode canvas) -->
+  <div id="wb-root">
+    <div id="wb-toolbar" class="glass">
+      <button class="wb-tool active" data-tool="select" data-tooltip="Select">
+        <svg viewBox="0 0 24 24"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>
+      </button>
+      <button class="wb-tool" id="wb-multiselect" data-tooltip="Multi-select (drag to select)">
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="1" fill="none" stroke-dasharray="3 2"/><path d="M8 2v2M14 2v2M20 8h2M20 14h2M8 20v2M14 20v2M2 8h2M2 14h2"/></svg>
+      </button>
+      <button class="wb-tool" data-tool="text" data-tooltip="Text · hold Ctrl = multi">
+        <svg viewBox="0 0 24 24"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+      </button>
+      <button class="wb-tool" data-tool="list" data-tooltip="List · hold Ctrl = multi">
+        <svg viewBox="0 0 24 24"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor"/><circle cx="4" cy="12" r="1.5" fill="currentColor"/><circle cx="4" cy="18" r="1.5" fill="currentColor"/></svg>
+      </button>
+      <button class="wb-tool" data-tool="arrow" data-tooltip="Arrow · hold Ctrl = multi">
+        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </button>
+      <button class="wb-tool" data-tool="shape" data-tooltip="Shape · hold Ctrl = multi">
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="none"/><circle cx="12" cy="12" r="4" fill="none"/></svg>
+      </button>
+      <button class="wb-tool" data-tool="pen" data-tooltip="Pencil · hold Ctrl = multi">
+        <svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+      </button>
+      <div class="wb-tool-sep"></div>
+      <button class="wb-tool" id="wb-color-btn" data-tooltip="Color">
+        <span id="wb-color-dot"></span>
+      </button>
+      <div id="wb-color-picker" class="glass" style="display:none;"></div>
+      <div class="wb-tool-sep"></div>
+      <button class="wb-tool" id="wb-undo" data-tooltip="Undo (Ctrl+Z)">
+        <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+      </button>
+      <button class="wb-tool" id="wb-redo" data-tooltip="Redo (Ctrl+Shift+Z)">
+        <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      </button>
+      <div class="wb-tool-sep"></div>
+      <button class="wb-tool" id="wb-delete" data-tooltip="Delete (Del)">
+        <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      </button>
+      <div class="wb-tool-sep"></div>
+      <button class="wb-tool wb-tool-sm" id="wb-toggle-logo" data-tooltip="Toggle logo">
+        <img src="logo-synabun.png" alt="" style="width:18px;height:auto;opacity:0.6;">
+      </button>
+    </div>
+
+    <div id="wb-canvas">
+      <svg id="wb-arrows" class="wb-arrow-layer">
+        <defs>
+          <marker id="wb-arrowhead" markerWidth="42" markerHeight="44" refX="4" refY="22" orient="auto" markerUnits="userSpaceOnUse" overflow="visible">
+            <path d="M 4 4 L 40 22 L 4 40 Z" fill="rgba(255,255,255,0.9)" stroke="none"/>
+          </marker>
+          <marker id="wb-arrowhead-sel" markerWidth="42" markerHeight="44" refX="4" refY="22" orient="auto" markerUnits="userSpaceOnUse" overflow="visible">
+            <path d="M 4 4 L 40 22 L 4 40 Z" fill="var(--accent-blue, #60a5fa)" stroke="none"/>
+          </marker>
+        </defs>
+      </svg>
+      <div id="wb-elements"></div>
+    </div>
+
+    <svg id="wb-arrow-preview" class="wb-arrow-preview">
+      <defs>
+        <marker id="wb-arrowhead-preview" markerWidth="42" markerHeight="44" refX="4" refY="22" orient="auto" markerUnits="userSpaceOnUse" overflow="visible">
+          <path d="M 4 4 L 40 22 L 4 40 Z" fill="rgba(255,255,255,0.3)" stroke="none"/>
+        </marker>
+      </defs>
+    </svg>
+  </div>
 </div>
 
 <!-- Graph Container -->

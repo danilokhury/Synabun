@@ -14,21 +14,21 @@ related_files:
 
 - **GET /api/categories**: All categories with tree structure from `custom-categories.json`
 - **POST /api/categories**: Create category (validates name pattern, color format, parent existence)
-- **PUT /api/categories/:name**: Update category. Special behavior: auto-creates category if it exists in Qdrant memories but not in JSON file. On rename, batch-updates all Qdrant memories in that category.
+- **PUT /api/categories/:name**: Update category. Special behavior: auto-creates category if it exists in database memories but not in JSON file. On rename, batch-updates all SQLite memories in that category.
 - **PATCH /api/categories/:name**: Update description only (lightweight update)
 - **DELETE /api/categories/:name**: Delete with reassignment. Checks for child categories and existing memories. Requires reassign targets if either exist.
 
 ## Connection Endpoints (4)
 
-- **GET /api/connections**: Lists all connections from `connections.json` with LIVE point counts. Pings each Qdrant instance to get current memory count and reachability status.
-- **POST /api/connections**: Add new Qdrant connection. Verifies reachability before saving. Body: `{ id, label, url, apiKey, collection }`.
+- **GET /api/connections**: Lists all connections from `connections.json` with LIVE memory counts. Checks each SQLite database to get current memory count and availability status.
+- **POST /api/connections**: Add new database connection. Verifies path accessibility before saving. Body: `{ id, label, dbPath }`.
 - **PUT /api/connections/active**: Switch active connection. Body: `{ id }`. Updates runtime variables immediately.
 - **DELETE /api/connections/:id**: Remove a connection. Prevents deleting the currently active connection.
 
 ## Settings Endpoints (2)
 
-- **GET /api/settings**: Current configuration with MASKED API keys (shows first 4 + last 4 chars only). Returns Qdrant URL, collection, embedding model, dimensions, Neural Interface port.
-- **PUT /api/settings**: Save configuration. Writes Qdrant settings to `connections.json`, embedding settings to `.env` file. Reloads runtime config.
+- **GET /api/settings**: Current configuration. Returns database path, embedding model, dimensions, Neural Interface port.
+- **PUT /api/settings**: Save configuration. Writes database settings to `connections.json`, embedding settings to `.env` file. Reloads runtime config.
 
 ## Sync Endpoints (1)
 

@@ -13,7 +13,7 @@ related_files:
 
 Defined in `mcp-server/src/types.ts` (36 lines). These TypeScript interfaces define the data model for all memory operations.
 
-## MemoryPayload (stored in Qdrant as point payload)
+## MemoryPayload (stored in SQLite as record payload)
 
 | Field | Type | Description |
 |-------|------|-------------|

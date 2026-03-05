@@ -24,9 +24,10 @@
  *   - Otherwise: {} (side effects only)
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadCategories, buildCategoryReference, detectProject } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
@@ -62,6 +63,7 @@ async function main() {
   const sessionId = input.session_id || '';
   const toolName = input.tool_name || '';
   const toolInput = input.tool_input || {};
+  const cwd = input.cwd || '';
 
   if (!sessionId) {
     process.stdout.write(JSON.stringify({}));
@@ -106,6 +108,19 @@ async function main() {
       } else {
         nudgeText = `SynaBun: ${flag.editCount} file edits — this is significant work. You MUST call \`remember\` before continuing.`;
       }
+
+      // On first threshold hit, append the full category reference (lazy injection)
+      if (!flag.categoryTreeInjected) {
+        try {
+          const categories = loadCategories();
+          const project = detectProject(cwd);
+          const categoryRef = buildCategoryReference(categories, project);
+          nudgeText += `\n\n${categoryRef}`;
+          flag.categoryTreeInjected = true;
+          writeFileSync(flagPath, JSON.stringify(flag));
+        } catch { /* category tree optional — nudge still works without it */ }
+      }
+
       process.stdout.write(JSON.stringify({ additionalContext: nudgeText }));
     } else {
       process.stdout.write(JSON.stringify({}));
@@ -118,11 +133,14 @@ async function main() {
     const category = toolInput.category || '';
 
     if (category === 'conversations') {
-      // Clear pending-compact flag (compaction enforcement)
-      const compactFlagPath = join(PENDING_COMPACT_DIR, `${sessionId}.json`);
-      if (existsSync(compactFlagPath)) {
-        try { unlinkSync(compactFlagPath); } catch { /* ok */ }
-      }
+      // Clear ALL pending-compact flags (session ID may differ after compaction)
+      try {
+        if (existsSync(PENDING_COMPACT_DIR)) {
+          for (const f of readdirSync(PENDING_COMPACT_DIR).filter(f => f.endsWith('.json'))) {
+            try { unlinkSync(join(PENDING_COMPACT_DIR, f)); } catch { /* ok */ }
+          }
+        }
+      } catch { /* ok */ }
       // Also reset pending-remember flag (conversations remember counts too)
       const rememberFlagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
       if (existsSync(rememberFlagPath)) {
