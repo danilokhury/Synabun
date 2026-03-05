@@ -5737,8 +5737,8 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    width: 320px;
-    min-width: 160px;
+    width: 380px;
+    min-width: 200px;
     min-height: 100px;
   }
   #category-sidebar-body {
