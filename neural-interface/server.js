@@ -3787,15 +3787,11 @@ const SYNABUN_TOOL_PERMISSIONS = [
   'mcp__SynaBun__card_screenshot',
 ];
 
+// No-op — permissions are OFF by default.
+// Users enable them via Settings → Permissions toggles.
 function ensureSynaBunPermissions(settings) {
   if (!settings.permissions) settings.permissions = {};
   if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
-  const existing = new Set(settings.permissions.allow);
-  for (const tool of SYNABUN_TOOL_PERMISSIONS) {
-    if (!existing.has(tool)) {
-      settings.permissions.allow.push(tool);
-    }
-  }
   return settings;
 }
 
