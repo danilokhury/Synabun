@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "categories": [
+    {
+      "name": "conversations",
+      "description": "Session summaries and conversation indexing",
+      "created_at": "2026-03-05T18:38:57.930Z"
+    },
+    {
+      "name": "communication-style",
+      "description": "User communication patterns and preferences",
+      "created_at": "2026-03-05T18:38:57.930Z"
+    },
+    {
+      "name": "plans",
+      "description": "Implementation plans stored after plan mode approval",
+      "created_at": "2026-03-05T18:38:57.930Z",
+      "is_parent": true,
+      "color": "#06d6a0"
+    },
+    {
+      "name": "synabunwebsite",
+      "description": "Knowledge and context for the SynaBunWebsite project",
+      "is_parent": true,
+      "created_at": "2026-03-05T18:38:57.930Z"
+    },
+    {
+      "name": "synabunwebsite-project",
+      "description": "General project knowledge, decisions, and milestones for SynaBunWebsite",
+      "parent": "synabunwebsite",
+      "created_at": "2026-03-05T18:38:57.930Z"
+    },
+    {
+      "name": "synabunwebsite-architecture",
+      "description": "System design, tech stack, data flow, and component architecture for SynaBunWebsite",
+      "parent": "synabunwebsite",
+      "created_at": "2026-03-05T18:38:57.930Z"
+    },
+    {
+      "name": "synabunwebsite-bugs",
+      "description": "Bug fixes, debugging sessions, and known issues for SynaBunWebsite",
+      "parent": "synabunwebsite",
+      "created_at": "2026-03-05T18:38:57.930Z"
+    },
+    {
+      "name": "synabunwebsite-config",
+      "description": "Configuration, deployment, environment, and infrastructure for SynaBunWebsite",
+      "parent": "synabunwebsite",
+      "created_at": "2026-03-05T18:38:57.930Z"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "_version": 1,
+  "_updated": "2026-03-05T18:40:16.790Z",
+  "synabun-2d-minimap-pos": {
+    "left": "18px",
+    "top": "90px"
+  },
+  "neural-interface-config": {
+    "visualizationEnabled": true,
+    "scale": 1,
+    "glassOpacity": 0.72,
+    "glassBlur": 40,
+    "glassSaturate": 1.4,
+    "glassBorderOpacity": 0.06,
+    "glassShadowOpacity": 0.4,
+    "glassShadowSpread": 20,
+    "glassRadius": 14,
+    "fontScale": 1,
+    "accentHue": 0,
+    "accentSaturation": 0,
+    "accentLightness": 80
+  },
+  "neural-ui-scale": 1,
+  "neural-tutorial-started": true,
+  "neural-onboarding-explore": "no",
+  "neural-panel-settings-panel": {
+    "left": "634px",
+    "top": "158px",
+    "right": "auto",
+    "width": "1147px",
+    "height": "886px",
+    "maxHeight": "1140px"
+  },
+  "neural-tutorial-skipped": true,
+  "synabun-layout-version": "v6-polished",
+  "neural-explorer-visible": false,
+  "synabun-node-positions": {},
+  "neural-panel-category-sidebar": {
+    "left": "2282px",
+    "top": "233px",
+    "right": "auto",
+    "width": null,
+    "height": null,
+    "maxHeight": null
+  },
+  "neural-categories-visible": 0
+}
