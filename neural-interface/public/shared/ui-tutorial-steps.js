@@ -1391,15 +1391,82 @@ export const TUTORIAL_STEPS = [
     },
   },
 
-  // ── Step 17: View menu ────────────────────────────────
+  // ── Step 17: Resume menu ─────────────────────────────
   {
-    id: 'explain-view',
+    id: 'explain-resume',
     whiteboardMode: true,
 
     render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
       // Close apps dropdown if still open
       const appsMenu = document.querySelector('.menubar-item[data-menu="apps"]');
       if (appsMenu) appsMenu.classList.remove('open');
+
+      const menuItem = document.querySelector('.menubar-item[data-menu="resume"]');
+      if (menuItem) menuItem.classList.add('open');
+
+      const dropdown = menuItem?.querySelector('.menubar-dropdown');
+      if (dropdown) dropdown.offsetHeight;
+      const ddRect = dropdown?.getBoundingClientRect();
+      if (!ddRect || ddRect.width === 0) return;
+
+      const ddCx = ddRect.left + ddRect.width / 2;
+      const textX = Math.max(180, Math.min(ddCx, vw - 180));
+      const textY = ddRect.bottom + 60;
+
+      seq.add(() => createAnimatedArrow(svg, {
+        from: { x: textX, y: textY - 15 },
+        to: { x: ddCx, y: ddRect.bottom + 12 },
+        color: 'rgba(255, 255, 255, 0.3)',
+        wobbleSeed: 'resume-arrow', duration: 300,
+      }), 100);
+
+      seq.add(() => handwrittenLabel(svg, 'Pick up where you left off — your recent sessions live here', {
+        x: textX, y: textY,
+        textAnchor: 'middle', maxWidth: 500,
+        color: 'rgba(255, 255, 255, 0.5)',
+        fontSize: 25, duration: 300,
+      }), 200);
+
+      seq.add(() => {
+        const navY = textY + 100;
+        const backEl = createButton(dom, 'Back', {
+          x: textX - 90, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
+            if (menuItem) menuItem.classList.remove('open');
+            prevStep();
+          },
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 18,
+          color: 'rgba(255, 255, 255, 0.3)', onClick: () => {
+            if (menuItem) menuItem.classList.remove('open');
+            skipTutorial();
+          },
+        });
+        const nextEl = createButton(dom, 'Next', {
+          x: textX + 90, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
+            if (menuItem) menuItem.classList.remove('open');
+            nextStep();
+          },
+        });
+        return { destroy() {
+          backEl.remove(); endEl.remove(); nextEl.remove();
+          if (menuItem) menuItem.classList.remove('open');
+        } };
+      }, 150);
+    },
+  },
+
+  // ── Step 18: View menu ────────────────────────────────
+  {
+    id: 'explain-view',
+    whiteboardMode: true,
+
+    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
+      // Close resume dropdown if still open
+      const resumeMenu = document.querySelector('.menubar-item[data-menu="resume"]');
+      if (resumeMenu) resumeMenu.classList.remove('open');
 
       const menuItem = document.querySelector('.menubar-item[data-menu="view"]');
       if (menuItem) menuItem.classList.add('open');
