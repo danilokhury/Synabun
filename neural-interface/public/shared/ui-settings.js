@@ -10,6 +10,8 @@ import { state, emit, on } from './state.js';
 import { getSettingsTabs } from './registry.js';
 import { escapeHtml } from './utils.js';
 import { storage } from './storage.js';
+import { createTerminalSession } from './api.js';
+import { buildExplorePrompt } from './ui-tutorial-steps.js';
 
 // ── SVG icon constants ──
 
@@ -1223,7 +1225,10 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
         <div class="iface-section collapsed" data-collapsible id="cc-greeting-config">
           <div class="gfx-group-title" style="justify-content:space-between">
             <span style="display:flex;align-items:center;gap:6px">${chevron} Greeting</span>
-            ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
+            <div style="display:flex;align-items:center;gap:8px">
+              ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
+              <button class="cc-toggle${grOn ? ' on' : ''}" data-cc-feature="greeting"></button>
+            </div>
           </div>
           <div class="cc-section-body" id="cc-greeting-body" style="display:${grOn ? 'block' : 'none'}">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
@@ -1240,7 +1245,6 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
                 </div>
                 <input type="hidden" id="cc-greeting-project" value="${firstKey}">
               </div>
-              <button class="cc-toggle${grOn ? ' on' : ''}" data-cc-feature="greeting"></button>
             </div>
             <div class="cc-greeting-field">
               <label class="cc-greeting-label">Template</label>
@@ -1454,6 +1458,7 @@ function buildProjectsTab(ccIntegrations) {
                     <span class="cc-panel-row-value" title="${p.path.replace(/\\/g, '/').replace(/"/g, '&quot;')}">${p.path.replace(/\\/g, '/')}</span>
                   </div>
                   <div class="cc-panel-actions">
+                    <button class="cc-explore-btn" data-cc-explore="${i}" style="background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Learn it</button>
                     <button class="cc-enable-btn${p.installed ? ' on' : ''}" data-cc-project-toggle="${i}">${p.installed ? 'Enabled' : 'Enable'}</button>
                     <button class="cc-remove-panel-btn" data-cc-remove="${i}">Remove</button>
                   </div>
@@ -3881,6 +3886,153 @@ export async function openSettingsModal() {
   // ══════════════════════════════════════
   // Projects tab handlers
   // ══════════════════════════════════════
+
+  // Explore project
+  function openExploreModal(projectPath, projectLabel) {
+    const CLI_MODELS = {
+      'claude-code': [
+        { id: 'claude-opus-4-6',   label: 'Opus 4.6',   desc: 'Most capable',  tier: 'top' },
+        { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6',  desc: 'Balanced',      tier: 'default' },
+        { id: 'claude-haiku-4-5',  label: 'Haiku 4.5',   desc: 'Fastest',       tier: 'light' },
+      ],
+      'codex': [
+        { id: 'o3',      label: 'o3',      desc: 'Deep reasoning',  tier: 'top' },
+        { id: 'o4-mini', label: 'o4-mini', desc: 'Fast reasoning',  tier: 'default' },
+      ],
+      'gemini': [
+        { id: 'gemini-2.5-pro',   label: '2.5 Pro',   desc: 'Most capable',  tier: 'default' },
+        { id: 'gemini-2.5-flash', label: '2.5 Flash', desc: 'Lightweight',   tier: 'light' },
+      ],
+    };
+    const CLI_OPTIONS = [
+      { id: 'claude-code', label: 'Claude Code' },
+      { id: 'codex',       label: 'Codex CLI' },
+      { id: 'gemini',      label: 'Gemini CLI' },
+    ];
+
+    let selectedCli = 'claude-code';
+    let selectedModel = CLI_MODELS['claude-code'][0].id;
+
+    const exploreOverlay = document.createElement('div');
+    exploreOverlay.className = 'tag-delete-overlay';
+    exploreOverlay.style.zIndex = '10001';
+
+    function tierColor(tier) {
+      return tier === 'top' ? 'rgba(255, 180, 80, 0.7)'
+        : tier === 'light' ? 'rgba(130, 200, 255, 0.7)'
+        : 'rgba(255, 255, 255, 0.6)';
+    }
+
+    function renderCliCards() {
+      return CLI_OPTIONS.map(c => `
+        <div class="explore-cli-card" data-cli="${c.id}" style="
+          flex:1;padding:14px 12px;text-align:center;border-radius:8px;cursor:pointer;
+          background:${c.id === selectedCli ? 'var(--accent-blue-bg)' : 'var(--s-medium)'};
+          border:1px solid ${c.id === selectedCli ? 'var(--accent-blue-border)' : 'var(--s-light)'};
+          color:${c.id === selectedCli ? 'var(--accent-blue)' : 'var(--t-primary)'};
+          transition:border-color 0.15s,background 0.15s;
+        ">
+          <div style="font-size:13px;font-weight:600">${c.label}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderModelCards() {
+      const models = CLI_MODELS[selectedCli] || CLI_MODELS['claude-code'];
+      if (!models.find(m => m.id === selectedModel)) selectedModel = models[0].id;
+      return models.map(m => `
+        <div class="explore-model-card" data-model="${m.id}" style="
+          flex:1;padding:14px 12px;text-align:center;border-radius:8px;cursor:pointer;
+          background:${m.id === selectedModel ? 'var(--accent-blue-bg)' : 'var(--s-medium)'};
+          border:1px solid ${m.id === selectedModel ? 'var(--accent-blue-border)' : 'var(--s-light)'};
+          transition:border-color 0.15s,background 0.15s;
+        ">
+          <div style="font-size:13px;font-weight:600;color:${tierColor(m.tier)}">${m.label}</div>
+          <div style="font-size:11px;color:var(--t-muted);margin-top:4px">${m.desc}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderModal() {
+      exploreOverlay.innerHTML = `
+        <div class="tag-delete-modal settings-modal" style="max-width:520px;padding:24px 28px">
+          <h3 style="margin:0 0 20px;font-size:16px;font-weight:600;color:var(--t-primary)">
+            <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:var(--accent-blue);stroke-width:2;fill:none;vertical-align:-2px;margin-right:6px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            Explore: ${escapeHtml(projectLabel)}
+          </h3>
+          <div style="margin-bottom:18px">
+            <div style="font-size:12px;color:var(--t-muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">CLI</div>
+            <div id="explore-cli-cards" style="display:flex;gap:8px">${renderCliCards()}</div>
+          </div>
+          <div style="margin-bottom:22px">
+            <div style="font-size:12px;color:var(--t-muted);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Model</div>
+            <div id="explore-model-cards" style="display:flex;gap:8px">${renderModelCards()}</div>
+          </div>
+          <div class="settings-actions" style="margin-top:0;display:flex;justify-content:flex-end;gap:8px">
+            <button class="settings-btn-cancel" id="explore-cancel">Cancel</button>
+            <button class="settings-btn-save" id="explore-begin">Begin Exploration</button>
+          </div>
+        </div>`;
+      wireModalEvents();
+    }
+
+    function wireModalEvents() {
+      exploreOverlay.querySelectorAll('.explore-cli-card').forEach(card => {
+        card.addEventListener('click', () => {
+          selectedCli = card.dataset.cli;
+          renderModal();
+        });
+      });
+      exploreOverlay.querySelectorAll('.explore-model-card').forEach(card => {
+        card.addEventListener('click', () => {
+          selectedModel = card.dataset.model;
+          renderModal();
+        });
+      });
+      exploreOverlay.querySelector('#explore-cancel').addEventListener('click', closeExplore);
+      exploreOverlay.addEventListener('click', e => { if (e.target === exploreOverlay) closeExplore(); });
+      exploreOverlay.querySelector('#explore-begin').addEventListener('click', async () => {
+        const beginBtn = exploreOverlay.querySelector('#explore-begin');
+        beginBtn.textContent = 'Launching...';
+        beginBtn.disabled = true;
+        try {
+          const slug = projectLabel.toLowerCase().replace(/[^a-z0-9]+/g, '');
+          const prompt = buildExplorePrompt(slug);
+          const result = await createTerminalSession(selectedCli, 120, 30, projectPath,
+            selectedModel ? { model: selectedModel } : {});
+          if (result?.sessionId) {
+            emit('terminal:attach-floating', {
+              terminalSessionId: result.sessionId,
+              profile: selectedCli,
+              initialMessage: prompt,
+              autoSubmit: true,
+            });
+          }
+          closeExplore();
+        } catch (err) {
+          alert('Exploration launch failed: ' + err.message);
+          beginBtn.textContent = 'Begin Exploration';
+          beginBtn.disabled = false;
+        }
+      });
+    }
+
+    function closeExplore() { exploreOverlay.remove(); }
+
+    renderModal();
+    document.body.appendChild(exploreOverlay);
+  }
+
+  overlay.querySelectorAll('.cc-explore-btn[data-cc-explore]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = btn.dataset.ccExplore;
+      const panel = overlay.querySelector(`.cc-panel[data-cc-idx="${idx}"]`);
+      const projectPath = panel?.dataset.ccPath;
+      const projectLabel = panel?.querySelector('.cc-panel-title')?.textContent || 'Project';
+      if (projectPath) openExploreModal(projectPath, projectLabel);
+    });
+  });
 
   // Remove project
   overlay.querySelectorAll('.cc-remove-panel-btn[data-cc-remove]').forEach(btn => {

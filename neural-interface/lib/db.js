@@ -86,9 +86,90 @@ export function getDb() {
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA foreign_keys = ON');
     db.exec('PRAGMA busy_timeout = 5000');
+
+    // Ensure schema exists (same tables as MCP server)
+    db.exec(SCHEMA_SQL);
+    try { db.exec(FTS_SQL); } catch { /* FTS5 may already exist */ }
   }
   return db;
 }
+
+const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS memories (
+  id              TEXT PRIMARY KEY,
+  vector          BLOB NOT NULL,
+  content         TEXT NOT NULL,
+  category        TEXT NOT NULL,
+  subcategory     TEXT,
+  project         TEXT NOT NULL,
+  tags            TEXT NOT NULL DEFAULT '[]',
+  importance      INTEGER NOT NULL DEFAULT 5,
+  source          TEXT NOT NULL DEFAULT 'self-discovered',
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  accessed_at     TEXT NOT NULL,
+  access_count    INTEGER NOT NULL DEFAULT 0,
+  related_files   TEXT,
+  related_memory_ids TEXT,
+  file_checksums  TEXT,
+  trashed_at      TEXT,
+  source_session_chunks TEXT
+);
+
+CREATE TABLE IF NOT EXISTS session_chunks (
+  id              TEXT PRIMARY KEY,
+  vector          BLOB NOT NULL,
+  content         TEXT NOT NULL,
+  summary         TEXT,
+  session_id      TEXT,
+  project         TEXT,
+  git_branch      TEXT,
+  cwd             TEXT,
+  chunk_index     INTEGER DEFAULT 0,
+  start_timestamp TEXT,
+  end_timestamp   TEXT,
+  tools_used      TEXT DEFAULT '[]',
+  files_modified  TEXT DEFAULT '[]',
+  files_read      TEXT DEFAULT '[]',
+  user_messages   TEXT DEFAULT '[]',
+  turn_count      INTEGER DEFAULT 0,
+  related_memory_ids TEXT DEFAULT '[]',
+  dedup_memory_id TEXT,
+  indexed_at      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+  name            TEXT PRIMARY KEY,
+  description     TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  parent          TEXT,
+  color           TEXT,
+  is_parent       INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_category ON memories(category);
+CREATE INDEX IF NOT EXISTS idx_mem_project ON memories(project);
+CREATE INDEX IF NOT EXISTS idx_mem_importance ON memories(importance);
+CREATE INDEX IF NOT EXISTS idx_mem_trashed ON memories(trashed_at);
+CREATE INDEX IF NOT EXISTS idx_mem_created ON memories(created_at);
+CREATE INDEX IF NOT EXISTS idx_mem_source ON memories(source);
+CREATE INDEX IF NOT EXISTS idx_sc_session ON session_chunks(session_id);
+CREATE INDEX IF NOT EXISTS idx_sc_project ON session_chunks(project);
+CREATE INDEX IF NOT EXISTS idx_sc_branch ON session_chunks(git_branch);
+
+CREATE TABLE IF NOT EXISTS kv_config (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+`;
+
+const FTS_SQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+  content, category, project, tags,
+  content=memories, content_rowid=rowid,
+  tokenize='porter unicode61'
+);
+`;
 
 export function closeDb() {
   if (db) {

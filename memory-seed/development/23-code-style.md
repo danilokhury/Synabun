@@ -1,12 +1,13 @@
 ---
 category: development
-tags: [contributing, code-style, testing, es-modules, typescript]
+tags: [contributing, code-style, testing, es-modules, typescript, vitest]
 importance: 7
 project: synabun
 source: self-discovered
 related_files:
   - CONTRIBUTING.md
   - README.md
+  - .tests/vitest.config.ts
 ---
 
 # SynaBun Code Style & Contributing Guidelines
@@ -21,11 +22,20 @@ related_files:
 - **Single quotes** for strings
 - No linter or formatter configured — relies on consistent style through convention
 
-## Testing (manual only — no automated test suite)
+## Testing (Vitest)
+
+Automated test suite at `.tests/` using Vitest:
+
+- **Unit tests** (`unit/`): Category tools, memory operations, individual tool logic
+- **Integration tests** (`integration/`): Hook behaviors, end-to-end flows
+- Run: `npx vitest` or `npm test` from project root
+
+### Manual Testing
 
 1. **MCP Tools**: Restart Claude Code → run `/mcp` to verify tools are listed → test remember, recall, forget, reflect, memories
 2. **Neural Interface**: Open `http://localhost:3344` → verify 3D graph renders → test search, category management, memory editing
-3. **Hooks**: Start new Claude Code session → verify category tree appears in system context
+3. **Hooks**: Start new Claude Code session → verify greeting and context injection
+4. **Browser tools**: Open Neural Interface → browser settings → test browser_navigate
 
 ## Development Modes
 
@@ -37,14 +47,16 @@ related_files:
 
 | Change type | Where |
 |------------|-------|
-| New MCP tool | `mcp-server/src/tools/` (TypeScript) |
+| New MCP tool | `mcp-server/src/tools/` (TypeScript), register in `index.ts` |
 | Database queries | `mcp-server/src/services/sqlite.ts` |
 | Embedding logic | `mcp-server/src/services/local-embeddings.ts` |
 | Category management | `mcp-server/src/services/categories.ts` |
 | Neural Interface API | `neural-interface/server.js` |
-| 3D visualization | `neural-interface/public/index.html` |
+| 3D visualization | `neural-interface/public/index.html` or `public/variant/3d/` |
 | Setup wizard | `neural-interface/public/onboarding.html` |
-| Claude Code hooks | `hooks/claude-code/` |
+| Claude Code hooks | `hooks/claude-code/` (shared utils in `shared.mjs`) |
+| Skills | `skills/synabun/` or `skills/synabun/modules/` |
+| Tests | `.tests/unit/` or `.tests/integration/` |
 
 ## Contributions
 
