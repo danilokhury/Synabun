@@ -22,6 +22,8 @@
 
 ---
 
+This is just a bunch of stuff i have been fine tunning for myself over the course of a few months and decided tobundle it up into one single MCP tool to MCP them all. More features to come.
+
 Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and retain knowledge across sessions through semantic vector search. Memories are stored in a local SQLite database with built-in vector search — no external services, no API keys, no Docker.
 
 ## Features
