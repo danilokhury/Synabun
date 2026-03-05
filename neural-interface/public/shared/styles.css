@@ -5728,16 +5728,16 @@
      ═══════════════════════════════════════════ */
   #category-sidebar {
     position: fixed;
-    top: 52px;
+    top: 100px;
     right: 20px;
     left: auto;
     z-index: 100;
     padding: 0;
-    max-height: calc(100vh - 80px);
+    max-height: calc(100vh - 120px);
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    width: 260px;
+    width: 320px;
     min-width: 160px;
     min-height: 100px;
   }
