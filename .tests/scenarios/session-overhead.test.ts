@@ -6,7 +6,7 @@ import { createToolStats, aggregateSession } from '../utils/call-tracker.js';
  * Models the mandatory token cost at session start.
  *
  * Per SynaBun's session-start.mjs directives, every session begins with:
- * 1. recall "last conversation session" (category=conversations, project=criticalpixel)
+ * 1. recall "last conversation session" (category=conversations, project=my-project)
  * 2. recall about ongoing work, recent decisions, known issues (no category filter)
  * 3. Optional: prompt-submit.mjs triggers additional recall on first user message
  *
@@ -16,12 +16,12 @@ import { createToolStats, aggregateSession } from '../utils/call-tracker.js';
 // Realistic query strings from session-start.mjs
 const SESSION_START_QUERIES = [
   'last conversation session',
-  'ongoing work recent decisions known issues for criticalpixel',
+  'ongoing work recent decisions known issues for my-project',
 ];
 
 // prompt-submit.mjs triggers on first user message (typical patterns)
 const PROMPT_TRIGGER_QUERIES = [
-  'context about current project criticalpixel',
+  'context about current project my-project',
 ];
 
 const DEFAULT_RECALL_LIMIT = 5;
