@@ -17,6 +17,7 @@ import AdmZip from 'adm-zip';
 import { chromium } from 'playwright-core';
 import { VTermBuffer } from './public/shared/vterm-buffer.js';
 import { startIndexing, getIndexingStatus, mirrorExistingChunks } from './lib/session-indexer.js';
+import { ensureProjectCategories } from '../hooks/claude-code/shared.mjs';
 import {
   getDb, closeDb, getDbPath, getEmbedding, getEmbeddingBatch, getEmbeddingDims, warmupEmbeddings,
   encodeVector, decodeVector, cosineSimilarity,
@@ -136,8 +137,9 @@ const PORT = process.env.NEURAL_PORT || 3344;
 const EMBEDDING_DIMS = getEmbeddingDims();
 const PROJECT_ROOT = resolve(__dirname, '..');
 
-// Reload config — SQLite + local embeddings, no external services needed
+// Reload config — close cached DB so getDb() reopens at the current SQLITE_DB_PATH
 function reloadConfig() {
+  closeDb();
   console.log(`  Config reloaded — SQLite: ${getDbPath()}, Embedding: local (${EMBEDDING_DIMS}d)`);
 }
 
@@ -152,6 +154,7 @@ const NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
 const CATEGORIES_POINT_ID = '00000000-0000-0000-0000-000000000000';
 
 // Default categories seeded on first startup (new connection)
+// Must stay in sync with hooks/claude-code/shared.mjs STANDALONE_DEFAULTS
 const DEFAULT_CATEGORIES = [
   {
     name: 'uncategorized',
@@ -162,6 +165,16 @@ const DEFAULT_CATEGORIES = [
     name: 'conversations',
     description: 'Indexed conversation sessions with compacted summaries for cross-session recall. Stores session metadata (date, branch, session ID, file path) and topic summaries so users can search and retrieve past conversations naturally — e.g. "what did we work on yesterday?" or "remember that conversation about auth?"',
     color: '#a855f7',
+    is_parent: true,
+  },
+  {
+    name: 'communication-style',
+    description: 'User communication patterns and preferences.',
+  },
+  {
+    name: 'plans',
+    description: 'Implementation plans stored after plan mode approval.',
+    color: '#06d6a0',
     is_parent: true,
   },
   {
@@ -1286,6 +1299,8 @@ app.delete('/api/categories/:name', async (req, res) => {
 // GET /api/settings — Current config (SQLite + local embeddings)
 app.get('/api/settings', (req, res) => {
   try {
+    // Ensure DB + schema exist at the configured path before checking
+    getDb();
     const dbPath = getDbPath();
     const dbExists = existsSync(dbPath);
     let dbSizeBytes = 0;
@@ -3367,13 +3382,13 @@ app.post('/api/browse-folder', (req, res) => {
     if (process.platform === 'win32') {
       const escaped = prompt.replace(/'/g, "''");
       const pickerScript = resolve(__dirname, 'lib', 'folder-picker.ps1');
-      cmd = `powershell -NoProfile -STA -ExecutionPolicy Bypass -File "${pickerScript}" -Title "${escaped}"`;
+      cmd = `powershell -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "${pickerScript}" -Title "${escaped}"`;
     } else if (process.platform === 'darwin') {
       cmd = `osascript -e 'POSIX path of (choose folder with prompt "${prompt}")'`;
     } else {
       cmd = `zenity --file-selection --directory --title="${prompt}" 2>/dev/null`;
     }
-    const result = execSync(cmd, { encoding: 'utf8', timeout: 60000 }).trim();
+    const result = execSync(cmd, { encoding: 'utf8', timeout: 60000, windowsHide: true }).trim();
     if (result) {
       res.json({ path: result.replace(/\\/g, '/') });
     } else {
@@ -4273,6 +4288,9 @@ app.post('/api/claude-code/integrations', (req, res) => {
         projects.push({ path: normalized, label: label || basename(normalized) });
         saveHookProjects(projects);
       }
+
+      // Create default category tree for the project (parent + children)
+      try { ensureProjectCategories(); } catch {}
 
       return res.json({ ok: true, message: `Hook enabled for ${basename(normalized)}.` });
     }
@@ -5688,11 +5706,8 @@ app.post('/api/skills-studio/import', (req, res) => {
 // GET /api/health — Check if SQLite database is accessible
 app.get('/api/health', (req, res) => {
   try {
-    const dbPath = getDbPath();
-    if (!existsSync(dbPath)) {
-      return res.json({ ok: false, reason: 'db_missing', detail: `Database not found at ${dbPath}` });
-    }
-    // Quick read test
+    // getDb() auto-creates the directory, file, and schema if missing
+    getDb();
     const count = countMemories();
     res.json({ ok: true, storage: 'sqlite', memories: count });
   } catch (err) {
@@ -6188,12 +6203,19 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
   const sessionId = randomBytes(16).toString('hex');
   const profileCfg = getTerminalProfile(profile, opts);
 
+  // Strip VSCode env vars so spawned CLIs (e.g. claude) don't think they're inside VSCode
+  const cleanEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) =>
+      !k.startsWith('VSCODE_') && k !== 'TERM_PROGRAM' && k !== 'TERM_PROGRAM_VERSION'
+    )
+  );
+
   const ptyProcess = pty.spawn(profileCfg.shell, profileCfg.args, {
     name: 'xterm-256color',
     cols: cols || 120,
     rows: rows || 30,
     cwd: cwd || process.env.USERPROFILE || process.env.HOME || process.cwd(),
-    env: { ...process.env, ...profileCfg.env },
+    env: { ...cleanEnv, ...profileCfg.env },
     useConpty: IS_WIN,
   });
 
@@ -8504,13 +8526,13 @@ app.post('/api/browser/browse-folder', async (req, res) => {
     let cmd;
     if (IS_WIN) {
       const pickerScript = resolve(__dirname, 'lib', 'folder-picker.ps1');
-      cmd = `powershell -NoProfile -STA -ExecutionPolicy Bypass -File "${pickerScript}" -Title "Select Chrome profile directory"`;
+      cmd = `powershell -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "${pickerScript}" -Title "Select Chrome profile directory"`;
     } else if (process.platform === 'darwin') {
       cmd = "osascript -e 'POSIX path of (choose folder with prompt \"Select Chrome profile directory\")'";
     } else {
       cmd = 'zenity --file-selection --directory --title="Select Chrome profile directory" 2>/dev/null';
     }
-    const result = execSync(cmd, { encoding: 'utf8', timeout: 60000 }).trim();
+    const result = execSync(cmd, { encoding: 'utf8', timeout: 60000, windowsHide: true }).trim();
     if (result) {
       res.json({ path: result.replace(/\\/g, '/') });
     } else {
