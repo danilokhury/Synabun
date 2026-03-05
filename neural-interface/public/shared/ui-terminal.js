@@ -3583,6 +3583,9 @@ async function runCommandInNewTab({ command, cwd, label }) {
 /** Attach to a pre-created terminal session and detach as floating window */
 async function attachDetached(terminalSessionId, profile, initialMessage, autoSubmit) {
   const p = profile || 'claude-code';
+  // Guard against the sync:terminal:created handler creating a duplicate session
+  // for the same ID while we're setting up our own connection.
+  _pendingSessionIds.add(terminalSessionId);
   try {
     // CLI profiles (claude-code, codex, gemini) use the HTML term renderer,
     // not xterm.js. Route through reconnectHtmlTermSession to match the
@@ -3592,13 +3595,16 @@ async function attachDetached(terminalSessionId, profile, initialMessage, autoSu
     } else {
       await openSession(p, null, terminalSessionId);
     }
+    _pendingSessionIds.delete(terminalSessionId);
     const idx = _sessions.length - 1;
     if (idx >= 0) detachTab(idx);
 
     if (initialMessage && idx >= 0) {
+      console.log('[SynaBun] attachDetached: calling _sendOnceReady, session.id =', _sessions[idx]?.id, ', hasWs =', !!_sessions[idx]?.ws);
       _sendOnceReady(_sessions[idx], initialMessage, !!autoSubmit);
     }
   } catch (err) {
+    _pendingSessionIds.delete(terminalSessionId);
     console.error('[SynaBun] attachDetached failed:', err);
     showTermToast(`Failed to attach terminal: ${err.message || 'unknown error'}`);
   }
@@ -3609,7 +3615,12 @@ async function attachDetached(terminalSessionId, profile, initialMessage, autoSu
  *  instead of using a blind timeout — prevents input from being swallowed by the
  *  shell (cmd.exe) before the CLI is ready. Falls back to 15s timeout. */
 function _sendOnceReady(session, message, autoSubmit) {
-  if (!session?.ws) return;
+  if (!session?.ws) {
+    console.warn('[SynaBun] _sendOnceReady: no session.ws — aborting');
+    return;
+  }
+
+  console.log('[SynaBun] _sendOnceReady: starting, ws.readyState =', session.ws.readyState, ', msg length =', message?.length);
 
   // Strip ANSI escape sequences so color codes around prompts don't block matching.
   // ConPTY on Windows sends private-mode CSI like \x1b[?25h (show cursor) after prompts.
@@ -3637,18 +3648,37 @@ function _sendOnceReady(session, message, autoSubmit) {
     // Clean up listener and timer
     if (_listener && session.ws) session.ws.removeEventListener('message', _listener);
     if (_fallbackTimer) clearTimeout(_fallbackTimer);
+    console.log('[SynaBun] _sendOnceReady: doSend triggered, ws.readyState =', session.ws?.readyState);
     // Small delay after detecting ready — let the CLI fully settle
     setTimeout(() => {
-      if (session.ws?.readyState === WebSocket.OPEN) {
-        session.ws.send(JSON.stringify({ type: 'input', data: message + '\r' }));
-        if (autoSubmit) {
-          // Send a second Enter after delay to auto-confirm Claude Code's prompt
-          setTimeout(() => {
-            if (session.ws?.readyState === WebSocket.OPEN) {
-              session.ws.send(JSON.stringify({ type: 'input', data: '\r' }));
-            }
-          }, 4000);
-        }
+      if (session.ws?.readyState !== WebSocket.OPEN) {
+        console.warn('[SynaBun] _sendOnceReady: WS not OPEN at send time, readyState =', session.ws?.readyState);
+        return;
+      }
+      // Chunk the input to avoid ConPTY input buffer overflow on Windows.
+      // Writing 1000+ chars in a single pty.write() can silently drop data.
+      const full = message + '\r';
+      const CHUNK = 256;
+      const DELAY = 30; // ms between chunks
+      console.log('[SynaBun] _sendOnceReady: sending prompt in chunks (' + message.length + ' chars, ' + Math.ceil(full.length / CHUNK) + ' chunks)');
+      for (let i = 0; i < full.length; i += CHUNK) {
+        const chunk = full.slice(i, i + CHUNK);
+        const delay = (i / CHUNK) * DELAY;
+        setTimeout(() => {
+          if (session.ws?.readyState === WebSocket.OPEN) {
+            session.ws.send(JSON.stringify({ type: 'input', data: chunk }));
+          }
+        }, delay);
+      }
+      if (autoSubmit) {
+        // Send a second Enter after all chunks + extra delay to auto-confirm Claude Code's prompt
+        const totalChunkTime = Math.ceil(full.length / CHUNK) * DELAY;
+        setTimeout(() => {
+          if (session.ws?.readyState === WebSocket.OPEN) {
+            console.log('[SynaBun] _sendOnceReady: sending auto-submit Enter');
+            session.ws.send(JSON.stringify({ type: 'input', data: '\r' }));
+          }
+        }, totalChunkTime + 4000);
       }
     }, 500);
   }
@@ -3661,6 +3691,7 @@ function _sendOnceReady(session, message, autoSubmit) {
         // Strip ANSI codes before matching — CLI prompts are colorized
         const clean = _outputBuf.replace(ANSI_RE, '');
         if (READY_PATTERNS.some(p => p.test(clean))) {
+          console.log('[SynaBun] _sendOnceReady: ready pattern matched');
           doSend();
         }
       }
@@ -3668,6 +3699,7 @@ function _sendOnceReady(session, message, autoSubmit) {
   }
 
   function attach() {
+    console.log('[SynaBun] _sendOnceReady: attach() — adding message listener');
     _listener = onMessage;
     session.ws.addEventListener('message', _listener);
     // Fallback: if no prompt detected within MAX_WAIT, send anyway
@@ -3678,7 +3710,16 @@ function _sendOnceReady(session, message, autoSubmit) {
   }
 
   if (session.ws.readyState === WebSocket.OPEN) attach();
-  else session.ws.addEventListener('open', attach, { once: true });
+  else {
+    session.ws.addEventListener('open', attach, { once: true });
+    // Safety net: if the WS never opens, force-send after MAX_WAIT to avoid silent failure
+    setTimeout(() => {
+      if (!_sent) {
+        console.warn('[SynaBun] _sendOnceReady: WS never opened — forcing send attempt');
+        doSend();
+      }
+    }, MAX_WAIT + 2000);
+  }
 }
 
 /** Snapshot terminal state for workspace save */

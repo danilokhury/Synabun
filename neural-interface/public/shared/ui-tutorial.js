@@ -246,6 +246,10 @@ export function startTutorial(fromBeginning = false) {
     storage.removeItem(KEYS.TUTORIAL_COMPLETED);
     storage.removeItem(KEYS.TUTORIAL_SKIPPED);
     storage.removeItem(KEYS.TUTORIAL_STARTED);
+    storage.removeItem(KEYS.ONBOARDING_EXPLORE);
+    storage.removeItem(KEYS.ONBOARDING_CLI);
+    storage.removeItem(KEYS.ONBOARDING_MODEL);
+    storage.removeItem(KEYS.ONBOARDING_PROJECT);
   }
   storage.removeItem(KEYS.TUTORIAL_STEP);
 
@@ -429,6 +433,16 @@ function prevStep() {
   });
 }
 
+function goToStep(targetIndex) {
+  if (_isSkipAnimating) return;
+  if (targetIndex < 0 || targetIndex >= _steps.length) return;
+  _exitStep(() => {
+    _currentStep = targetIndex;
+    emit('tutorial:step', { index: _currentStep, id: _steps[_currentStep].id });
+    _renderStep(_currentStep);
+  });
+}
+
 
 // ═══════════════════════════════════════════
 // STEP RENDERING (ROUTER)
@@ -478,6 +492,7 @@ function _renderWhiteboardStep(step, index) {
     vh: window.innerHeight,
     nextStep,
     prevStep,
+    goToStep,
     skipTutorial,
     onSkipWithArrow: _animateSkipArrow,
     createButton: _createHandDrawnButton,
@@ -942,9 +957,9 @@ function _installKeyHandler() {
     if (e.key === 'Escape') {
       e.stopPropagation();
       if (_isSkipAnimating) return;
-      if (_currentStep === 0 && step?.whiteboardMode) {
+      if (step?.id === 'welcome' && step?.whiteboardMode) {
         _animateSkipArrow();
-      } else if (_currentStep === 0) {
+      } else if (_currentStep <= 5) {
         skipTutorial();
       } else {
         prevStep();

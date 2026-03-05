@@ -989,8 +989,27 @@
       <button class="action-btn" id="buildBtn">Build</button>
     </div>
 
-    <!-- Step 4: AI Tool Integration -->
+    <!-- Step 4: Add Projects -->
     <div class="step right" data-step="4">
+      <div class="step-eyes"></div>
+      <h2>Add Projects</h2>
+      <p class="subtitle">Register your coding projects so SynaBun can organize memories per-project.</p>
+      <div id="onboardProjectList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+        <div id="onboardProjectEmpty" style="text-align:center;padding:16px 10px;color:var(--t-secondary);font-size:13px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.06);border-radius:8px;line-height:1.6">
+          Each project gets its own memory categories<br>
+          <span style="font-size:11px;opacity:0.6">(architecture, bugs, config, and more)</span>
+        </div>
+      </div>
+      <div class="error-text" id="onboardProjectError" style="margin-bottom:6px"></div>
+      <button class="action-btn" id="onboardProjectAdd" style="width:100%;padding:12px 14px;font-size:13px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:8px">
+        <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;flex-shrink:0"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Browse for Project Folder
+      </button>
+      <div class="hint" style="margin-top:10px;text-align:center;opacity:0.5">You can skip this and add projects later in Settings.</div>
+    </div>
+
+    <!-- Step 5: AI Tool Integration -->
+    <div class="step right" data-step="5">
       <div style="position:relative;display:flex;justify-content:center;align-items:center;">
         <div class="step-eyes"></div>
         <span class="mascot-toast" id="mascotToast"></span>
@@ -1008,8 +1027,8 @@
       </div>
     </div>
 
-    <!-- Step 5: Complete -->
-    <div class="step right" data-step="5">
+    <!-- Step 6: Complete -->
+    <div class="step right" data-step="6">
       <div class="step-eyes"></div>
       <h2 style="text-align:center;margin-bottom:12px;">Setup Complete!</h2>
       <ul class="checklist" id="checklist"></ul>
@@ -1128,7 +1147,7 @@
 // STATE
 // ═══════════════════════════════════════════
 
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 7;
 let currentStep = 0;
 
 const wizardState = {
@@ -1139,6 +1158,7 @@ const wizardState = {
   projectRoot: '',
   buildReady: false,
   mcpWritten: false,
+  projects: [],
 };
 
 const TOOLS = [
@@ -1180,6 +1200,8 @@ function updateDots() {
 // ═══════════════════════════════════════════
 
 function resizeViewport(stepIndex) {
+  // Only resize for the currently active step — ignore stale async callbacks
+  if (stepIndex !== currentStep) return;
   const step = $steps[stepIndex];
   if (!step) return;
   const pb = parseFloat(getComputedStyle(step).paddingBottom) || 36;
@@ -1212,16 +1234,19 @@ function goToStep(n) {
   });
 
   currentStep = n;
-  resizeViewport(n);
   updateDots();
   updateNav();
-  onStepEnter(n);
+  // Defer viewport resize to after browser reflow so offsetTop/offsetHeight are accurate
+  requestAnimationFrame(() => {
+    resizeViewport(n);
+    onStepEnter(n);
+  });
 }
 
 function updateNav() {
   $prevBtn.disabled = currentStep === 0;
 
-  const labels = ['', 'Next', 'Next', 'Next', 'Next', 'Finish'];
+  const labels = ['', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
   $nextBtn.textContent = (labels[currentStep] || 'Next') + ' \u2192';
 
   if (currentStep === 0 || currentStep === TOTAL_STEPS - 1) {
@@ -1263,7 +1288,7 @@ function validateStep(n) {
       wizardState.dbLocationPath = dbPath || null;
       return true;
     }
-    case 4: {
+    case 5: {
       if (!wizardState.selectedTool) return false;
       return true;
     }
@@ -1292,9 +1317,9 @@ async function onStepEnter(n) {
     }
   }
   if (n === 3) await onBuildStep();
-  if (n === 5) await onCompleteStep();
-  // Re-measure after async content loads
-  resizeViewport(n);
+  if (n === 6) await onCompleteStep();
+  // Re-measure after async content loads — but only if user is still on this step
+  if (currentStep === n) resizeViewport(n);
 }
 
 // ═══════════════════════════════════════════
@@ -1866,7 +1891,111 @@ document.getElementById('buildBtn').addEventListener('click', async () => {
 });
 
 // ═══════════════════════════════════════════
-// STEP 4: Tool Selection
+// STEP 4: Add Projects
+// ═══════════════════════════════════════════
+
+{
+  const $list = document.getElementById('onboardProjectList');
+  const $empty = document.getElementById('onboardProjectEmpty');
+  const $addBtn = document.getElementById('onboardProjectAdd');
+  const $error = document.getElementById('onboardProjectError');
+
+  function renderProjectList() {
+    $list.querySelectorAll('.onboard-project-card').forEach(c => c.remove());
+    if (wizardState.projects.length === 0) {
+      $empty.style.display = '';
+    } else {
+      $empty.style.display = 'none';
+      wizardState.projects.forEach((p, i) => {
+        const card = document.createElement('div');
+        card.className = 'onboard-project-card';
+        card.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(109,213,140,0.06);border:1px solid rgba(109,213,140,0.2);border-radius:8px;font-size:12px';
+        card.innerHTML = `
+          <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:none;stroke:rgba(109,213,140,0.8);stroke-width:2;flex-shrink:0"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          <div style="flex:1;min-width:0">
+            <div style="color:var(--t-bright);font-weight:500">${p.label}</div>
+            <div style="color:var(--t-muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.path.replace(/\\/g, '/')}">${p.path.replace(/\\/g, '/')}</div>
+          </div>
+          <button class="onboard-project-remove" style="background:none;border:none;color:var(--t-muted);cursor:pointer;font-size:16px;padding:2px 6px;line-height:1;opacity:0.5" title="Remove">&times;</button>
+        `;
+        card.querySelector('.onboard-project-remove').addEventListener('click', () => {
+          wizardState.projects.splice(i, 1);
+          renderProjectList();
+          resizeViewport(currentStep);
+        });
+        $list.appendChild(card);
+      });
+    }
+    resizeViewport(currentStep);
+  }
+
+  // Single-click: browse → auto-label → register → done
+  $addBtn.addEventListener('click', async () => {
+    $error.textContent = '';
+    $addBtn.disabled = true;
+    const origHTML = $addBtn.innerHTML;
+    $addBtn.innerHTML = '<div class="spinner" style="width:14px;height:14px"></div> Waiting for folder picker...';
+
+    let folderPath;
+    try {
+      const res = await fetch('/api/browse-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'Select project folder' }),
+      });
+      const data = await res.json();
+      folderPath = data.path;
+    } catch {}
+
+    if (!folderPath) {
+      $addBtn.disabled = false;
+      $addBtn.innerHTML = origHTML;
+      return;
+    }
+
+    // Deduplicate
+    const normalized = folderPath.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (wizardState.projects.some(p => p.path.replace(/\\/g, '/').replace(/\/+$/, '') === normalized)) {
+      $error.textContent = 'This project is already added.';
+      $addBtn.disabled = false;
+      $addBtn.innerHTML = origHTML;
+      return;
+    }
+
+    // Auto-label from folder name
+    const label = folderPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'Project';
+
+    // Register via API
+    $addBtn.innerHTML = '<div class="spinner" style="width:14px;height:14px"></div> Registering...';
+    try {
+      const res = await fetch('/api/claude-code/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: 'project', projectPath: folderPath, label }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        $error.textContent = data.error || 'Failed to register project.';
+        $addBtn.disabled = false;
+        $addBtn.innerHTML = origHTML;
+        return;
+      }
+    } catch (err) {
+      $error.textContent = 'Failed: ' + err.message;
+      $addBtn.disabled = false;
+      $addBtn.innerHTML = origHTML;
+      return;
+    }
+
+    wizardState.projects.push({ path: folderPath, label });
+    $addBtn.disabled = false;
+    $addBtn.innerHTML = origHTML;
+    renderProjectList();
+  });
+}
+
+// ═══════════════════════════════════════════
+// STEP 5: Tool Selection
 // ═══════════════════════════════════════════
 
 const $toolGrid = document.getElementById('toolGrid');
@@ -1950,7 +2079,7 @@ document.getElementById('mcpCodeWrap').addEventListener('click', () => {
 });
 
 // ═══════════════════════════════════════════
-// STEP 5: Complete
+// STEP 6: Complete
 // ═══════════════════════════════════════════
 
 async function onCompleteStep() {
@@ -1962,6 +2091,7 @@ async function onCompleteStep() {
   const items = [
     { label: 'Memory name set', done: !!wizardState.collectionName },
     { label: 'MCP server built', done: wizardState.buildReady },
+    { label: 'Projects registered', done: (wizardState.projects || []).length > 0 },
     { label: 'MCP config copied', done: wizardState.mcpWritten },
   ];
 

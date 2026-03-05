@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ensureDatabase, closeDatabase } from './services/sqlite.js';
+import { ensureDatabase, closeDatabase, reopenDatabase } from './services/sqlite.js';
 import { warmupEmbeddings } from './services/local-embeddings.js';
 import { rememberSchema, rememberDescription, handleRemember, buildRememberSchema } from './tools/remember.js';
 import { recallSchema, recallDescription, handleRecall, buildRecallSchema } from './tools/recall.js';
@@ -16,6 +16,8 @@ import { registerWhiteboardTools } from './tools/whiteboard.js';
 import { registerCardTools } from './tools/card.js';
 import { registerTicTacToeTools } from './tools/tictactoe.js';
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, initCategoryCache } from './services/categories.js';
+import { getEnvPath } from './config.js';
+import { readFileSync, watch, existsSync } from 'fs';
 
 function buildServerInstructions(): string {
   return `SynaBun — persistent vector memory system for Claude Code sessions.
@@ -110,15 +112,66 @@ async function main() {
   });
   startWatchingCategories();
 
-  // No .env watcher needed — SQLite uses a single local database file
+  // Watch .env for SQLITE_DB_PATH changes (e.g. from onboarding or settings)
+  const envPath = getEnvPath();
+  let envWatcher: ReturnType<typeof watch> | null = null;
+  if (existsSync(envPath)) {
+    startEnvWatcher();
+  } else {
+    // .env doesn't exist yet — poll until it appears, then start watching
+    const envPollInterval = setInterval(() => {
+      if (existsSync(envPath)) {
+        clearInterval(envPollInterval);
+        startEnvWatcher();
+      }
+    }, 5000);
+    envPollInterval.unref();
+  }
+
+  function startEnvWatcher() {
+    try {
+      let debounce: ReturnType<typeof setTimeout> | null = null;
+      envWatcher = watch(envPath, () => {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          try {
+            const content = readFileSync(envPath, 'utf-8');
+            const vars: Record<string, string> = {};
+            for (const line of content.split('\n')) {
+              const trimmed = line.trim();
+              if (!trimmed || trimmed.startsWith('#')) continue;
+              const eq = trimmed.indexOf('=');
+              if (eq === -1) continue;
+              vars[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
+            }
+            const newDbPath = vars['SQLITE_DB_PATH'];
+            const currentDbPath = process.env.SQLITE_DB_PATH || '';
+            if (newDbPath && newDbPath !== currentDbPath) {
+              console.error(`SQLITE_DB_PATH changed: ${currentDbPath || '(default)'} → ${newDbPath}`);
+              process.env.SQLITE_DB_PATH = newDbPath;
+              reopenDatabase().catch((err) => {
+                console.error('Failed to reopen database at new path:', err);
+              });
+            }
+          } catch (err) {
+            console.error('.env reload error:', err);
+          }
+        }, 500);
+      });
+    } catch (err) {
+      console.error('Failed to watch .env:', err);
+    }
+  }
 
   // Clean up on exit
   process.on('SIGINT', () => {
+    if (envWatcher) envWatcher.close();
     stopWatchingCategories();
     closeDatabase();
     process.exit(0);
   });
   process.on('SIGTERM', () => {
+    if (envWatcher) envWatcher.close();
     stopWatchingCategories();
     closeDatabase();
     process.exit(0);
