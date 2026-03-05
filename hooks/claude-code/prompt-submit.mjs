@@ -308,11 +308,7 @@ function checkUserLearning(features, sessionId) {
     if (nudgeCount === 0) {
       return NUDGE.userLearning;
     }
-<<<<<<< HEAD
-    return `SynaBun User Learning reminder: You've had ${msgCount} exchanges. If you've noticed new communication patterns or work preferences, call \`recall\` category \`user-profile\` then \`remember\` if genuinely new. Max 1-2 per session.`;
-=======
     return `SynaBun User Learning reminder: You've had ${msgCount} exchanges. If you've noticed new communication patterns or work preferences, call \`recall\` category \`communication-style\` then \`remember\` if genuinely new. Max 1-2 per session.`;
->>>>>>> Dev
   } catch { return ''; }
 }
 
