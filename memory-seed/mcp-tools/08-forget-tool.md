@@ -10,7 +10,7 @@ related_files:
 
 # SynaBun forget Tool — Delete Memories
 
-The forget tool (`mcp-server/src/tools/forget.ts`, 42 lines) permanently deletes a memory from Qdrant.
+The forget tool (`mcp-server/src/tools/forget.ts`, 42 lines) permanently deletes a memory from the database.
 
 ## Parameters
 
@@ -18,9 +18,9 @@ The forget tool (`mcp-server/src/tools/forget.ts`, 42 lines) permanently deletes
 
 ## Process
 
-1. Retrieve the memory from Qdrant via `getMemory(id)` to verify it exists
+1. Retrieve the memory from SQLite via `getMemory(id)` to verify it exists
 2. If not found, return error "Memory not found"
-3. Delete the point from Qdrant via `deleteMemory(id)`
+3. Delete the record from SQLite via `deleteMemory(id)`
 4. Return confirmation with shortened ID and content preview (first ~100 chars)
 
 ## Notes

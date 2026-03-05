@@ -1,56 +1,107 @@
 ---
 category: architecture
-tags: [multi-connection, qdrant, runtime-switching, connections-json]
+tags: [database, sqlite, fts5, session-chunks, trash, soft-delete]
 importance: 8
 project: synabun
 source: self-discovered
 subcategory: architecture
 related_files:
+  - mcp-server/src/services/sqlite.ts
   - mcp-server/src/config.ts
-  - neural-interface/server.js
 ---
 
-# SynaBun Multi-Connection Support
+# SynaBun Database Architecture
 
-SynaBun supports multiple Qdrant instances with runtime switching.
+SynaBun uses a single SQLite database file (`data/memory.db`) with Node.js built-in `node:sqlite` (requires Node >= 22.5.0). No multi-connection switching — one database per installation.
 
-## connections.json Format
+## Tables
 
-```json
-{
-  "active": "default",
-  "connections": {
-    "default": {
-      "label": "Local Development",
-      "url": "http://localhost:6333",
-      "apiKey": "your-api-key",
-      "collection": "claude_memory"
-    },
-    "production": {
-      "label": "Production Server",
-      "url": "https://qdrant.example.com:6333",
-      "apiKey": "prod-key",
-      "collection": "claude_memory"
-    }
-  }
-}
-```
+### memories (core storage)
 
-## Runtime Switching
+| Column | Type | Notes |
+|--------|------|-------|
+| id | TEXT PK | UUID v4 |
+| vector | BLOB | Float32Array, 384 dimensions |
+| content | TEXT | Memory content |
+| category | TEXT | Validated against categories |
+| subcategory | TEXT | Optional refinement |
+| project | TEXT | Project identifier |
+| tags | TEXT | JSON array |
+| importance | INTEGER | 1-10 scale |
+| source | TEXT | user-told, self-discovered, auto-saved |
+| created_at | TEXT | ISO timestamp |
+| updated_at | TEXT | ISO timestamp |
+| accessed_at | TEXT | Updated on recall |
+| access_count | INTEGER | Recall hit counter |
+| related_files | TEXT | JSON array of file paths |
+| related_memory_ids | TEXT | JSON array of UUIDs |
+| file_checksums | TEXT | JSON object {path: SHA-256} |
+| trashed_at | TEXT | Soft delete timestamp (null = active) |
+| source_session_chunks | TEXT | Links to session chunks |
 
-- **MCP server**: `getActiveConnection()` reads `connections.json` on every call — no restart needed
-- **Neural Interface**: `PUT /api/connections/active` switches the active connection, updates runtime vars
-- **Qdrant client**: Singleton detects URL/key changes and recreates client automatically
+**Indexes:** category, project, importance, trashed_at, created_at, source
 
-## Neural Interface Connection Management
+### session_chunks (conversation indexing)
 
-- `GET /api/connections`: Lists all connections with LIVE point counts (pings each Qdrant instance)
-- `POST /api/connections`: Add new connection (verifies reachability first)
-- `PUT /api/connections/active`: Switch active connection
-- `DELETE /api/connections/:id`: Remove connection (prevents deleting the active one)
+Stores parsed conversation transcript segments for semantic search across past sessions.
 
-## Use Cases
+| Column | Type | Notes |
+|--------|------|-------|
+| id | TEXT PK | UUID |
+| vector | BLOB | Float32Array embedding |
+| content | TEXT | Chunk content |
+| summary | TEXT | Optional summary |
+| session_id | TEXT | Claude Code session ID |
+| project | TEXT | Project identifier |
+| git_branch | TEXT | Branch at time of session |
+| cwd | TEXT | Working directory |
+| chunk_index | INTEGER | Position in session |
+| start_timestamp | TEXT | Chunk start time |
+| end_timestamp | TEXT | Chunk end time |
+| tools_used | TEXT | JSON array |
+| files_modified | TEXT | JSON array |
+| files_read | TEXT | JSON array |
+| user_messages | TEXT | JSON array |
+| turn_count | INTEGER | Number of turns |
+| related_memory_ids | TEXT | JSON array |
+| dedup_memory_id | TEXT | Dedup reference |
+| indexed_at | TEXT | When indexed |
 
-- Separate dev/staging/prod Qdrant instances
-- Per-team or per-project Qdrant databases
-- Qdrant Cloud + local Docker instances side by side
+**Indexes:** session_id, project, git_branch
+
+### categories
+
+Mirrors `data/custom-categories.json`. Kept in sync by MCP server.
+
+| Column | Type |
+|--------|------|
+| name | TEXT PK |
+| description | TEXT |
+| created_at | TEXT |
+| parent | TEXT |
+| color | TEXT |
+| is_parent | INTEGER |
+
+### memories_fts (Full-Text Search)
+
+FTS5 virtual table for fast keyword search: `content`, `category`, `project`, `tags`. Uses porter tokenizer with unicode61.
+
+### kv_config
+
+Simple key-value store for runtime configuration.
+
+## Soft Delete (Trash)
+
+Memories are soft-deleted by setting `trashed_at` to current timestamp. The `restore` MCP tool clears `trashed_at` to recover. Neural Interface exposes `/api/trash` endpoints for browsing and managing trashed items.
+
+## Vector Search
+
+Cosine similarity is computed in-process (JavaScript), not via an external index. All memory vectors are loaded and scored — no approximate nearest neighbor. Score threshold default: 0.3.
+
+## Config
+
+`config.ts` is minimal:
+- `dataDir` — resolves to `../data` relative to MCP server dist
+- `sqlite.dbPath` — lazily resolved from dataDir
+- `embedding.model` = `'Xenova/all-MiniLM-L6-v2'`
+- `embedding.dimensions` = 384
