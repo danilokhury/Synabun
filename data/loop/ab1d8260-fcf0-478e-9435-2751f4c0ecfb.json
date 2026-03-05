@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "Task:\n\nYour task is to navigate thru twitter trending tags related to vibe coding, automation, AI, AI memory and multi model memory, no code and AI automation, find some relevant discussions and engage with users, be friendly, not so technical, insightful and brief when engagin in active discussions. Only plug https://synabun.ai/ if the user is complaining about AI memory.\n\n\n=====================================\nWork in bulks\n-1 Explore multiple URLS with discussions, store on a specific memory vector under research using synabun \n-2 Store the URL for the discusion and the response you want to give\n-3 Store up to 20 discussions you will reply to\n-4 After storing, start the fetch and respond phase. Just access the stored discussions and reply to them\n-5 Clear the research\n-6 Repeat\n=====================================\n\nRules:\n\n- Double check how you access the \"publish\" button, you are not publishing the replies or content, usually drafting or skipping\n- You are here to chat about AI, only plug https://synabun.ai/ if it actually calls for\n- look mostly for english and portuguese speaking threads and hashtags\n- Dont use -- dashes on text\n- Don't over use emojis\n\nBROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_wait, browser_go_back, browser_go_forward, browser_evaluate. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_extract_tweets, browser_go_back, browser_go_forward, browser_evaluate. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 3,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-02T06:33:27.172Z",
+  "lastIterationAt": "2026-03-02T06:52:41.091Z",
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "8ed1c34de742465976606d7d7930fada",
+  "profile": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "stopped": true,
+  "finishedAt": "2026-03-02T19:20:53.956Z"
+}

@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "Task:\n\nYour task is to navigate thru twitter trending tags related to gaming, PC gaming and for people looking for deals or complaining about game prices and engage with them. Be helpful, respectful and try to plug https://criticalpixel.gg/deals when someone is talking about game prices. Overall, try just to engage with users, make friends, have legit conversations. Find only high engagement value hashtags. Be friendly, try to get engagement out of the targets.\n\n\n=====================================\n\nRules:\n\n- Double check how you access the \"publish\" button, you are not publishing the replies or content, usually drafting or skipping\n- Look only for activities in the last 24 hours, dont interact with old posts\n- You are here to chat about games, only plug https://criticalpixel.gg/deals if it actually calls for\n- look mostly for english and portuguese speaking threads and hashtags\n- Dont use -- dashes on text\n- Don't over use emojis\n\nBROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_wait, browser_go_back, browser_go_forward, browser_evaluate. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_wait, browser_go_back, browser_go_forward, browser_evaluate. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 0,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-01T23:55:52.943Z",
+  "lastIterationAt": null,
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "21723cffb1568b8bfd5e663f94d18575",
+  "profile": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "stopped": true,
+  "finishedAt": "2026-03-02T00:14:19.838Z"
+}

@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile, access the game related groups and post our Crimson Desert Campaign. Create a catch call to action and tell users they will always find the best deals on criticalpixel.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/resident-evil-requiem-2026-6189?currency=BRL\nhttps://criticalpixel.gg/games/resident-evil-requiem-2026-6189?currency=USD\nhttps://criticalpixel.gg/games/resident-evil-requiem-2026-6189?currency=TRY\n=====================================\n\nRules:\n\n- Facebook Groups are in English, Portuguese and Turkish. Post the links related to the region. \n- Post the promo on the gorups language\n- Do not change profiles\n- Dont use -- dashes on text\n- Don't over use emojis",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_extract_tweets, browser_extract_fb_posts, browser_go_back, browser_go_forward, browser_evaluate. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 0,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-04T05:56:32.438Z",
+  "lastIterationAt": null,
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "49622a11cabe13f4049019526e1bc62f",
+  "profile": "claude-code",
+  "model": "claude-haiku-4-5",
+  "stopped": true,
+  "finishedAt": "2026-03-04T05:58:36.199Z"
+}
