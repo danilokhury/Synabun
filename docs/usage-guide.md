@@ -114,7 +114,7 @@ forget({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
 restore({ memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2" })
 ```
 
-`forget` is a soft delete that sets a `trashed_at` timestamp. The memory remains in Qdrant but is excluded from search results. Use `restore` to undo, or permanently purge from the Neural Interface (Settings > Trash > Purge All).
+`forget` is a soft delete that sets a `trashed_at` timestamp. The memory remains in SQLite but is excluded from search results. Use `restore` to undo, or permanently purge from the Neural Interface (Settings > Trash > Purge All).
 
 ### Detecting stale memories
 
@@ -174,11 +174,11 @@ When fixing a hard bug, document it with high importance:
 
 ```javascript
 remember({
-  content: "Bug: Qdrant batch upsert fails silently when batch size exceeds 500 points. Error is swallowed by Qdrant client. Solution: Split batches into chunks of 100 points max. Fixed in services/qdrant.ts upsertBatch().",
+  content: "Bug: SQLite WAL checkpoint stalls under heavy concurrent writes. Solution: Set PRAGMA busy_timeout = 5000 and use WAL mode. Fixed in services/sqlite.ts getDb().",
   category: "learning",
   subcategory: "bug-fix",
   importance: 8,
-  related_files: ["src/services/qdrant.ts"]
+  related_files: ["src/services/sqlite.ts"]
 })
 ```
 
@@ -188,11 +188,11 @@ Document important decisions with their rationale:
 
 ```javascript
 remember({
-  content: "Decision: Use single Qdrant collection for all projects instead of per-project collections. Reasoning: Enables cross-project knowledge sharing, simpler maintenance, project-based filtering via payload. Trade-off: Slightly slower queries (mitigated by indexes).",
+  content: "Decision: Use single SQLite database for all projects instead of per-project databases. Reasoning: Enables cross-project knowledge sharing, simpler maintenance, project-based filtering via columns. Trade-off: Slightly larger DB file (mitigated by indexes).",
   category: "project",
   subcategory: "architecture",
   importance: 9,
-  tags: ["qdrant", "architecture", "collections"]
+  tags: ["sqlite", "architecture", "storage"]
 })
 ```
 
@@ -324,7 +324,7 @@ recall({
 
 ### `forget` and `restore` tools
 
-`forget` performs a **soft delete** — it sets a `trashed_at` timestamp on the memory. The memory remains in Qdrant but is excluded from `recall` search results.
+`forget` performs a **soft delete** — it sets a `trashed_at` timestamp on the memory. The memory remains in SQLite but is excluded from `recall` search results.
 
 **Best practice:** Always verify the memory content before deletion:
 
@@ -513,15 +513,15 @@ memories({ action: "by-project", project: "myproject", limit: 20 })
 
 ---
 
-### Problem: Qdrant connection refused
+### Problem: Database errors
 
-**Symptoms:** `fetch failed`, `connection refused`, `ECONNREFUSED`
+**Symptoms:** `SQLITE_BUSY`, `database is locked`, `no such table`
 
 **Checklist:**
-1. Is Qdrant container running? `docker ps | grep synabun-qdrant`
-2. Start if not: `docker compose up -d`
-3. Check logs: `docker compose logs -f`
-4. Test connection: `curl -H "api-key: YOUR_KEY" http://localhost:6333/collections`
+1. Is Node.js 22.5+? `node --version` (built-in `node:sqlite` requires 22.5+)
+2. Does the database file exist? `ls mcp-server/data/memory.db`
+3. Run `npm start` to initialize the database if missing
+4. If locked, check for other processes using the database
 
 ---
 
@@ -682,18 +682,18 @@ When storing memories, format the `content` field using Markdown for readability
 **Good - Markdown formatted:**
 ```javascript
 remember({
-  content: `## Bug Fix: Qdrant Batch Upsert Limit
+  content: `## Bug Fix: SQLite WAL Checkpoint Stall
 
-**Problem:** Batch upsert fails silently when exceeding 500 points.
+**Problem:** Database stalls under heavy concurrent writes.
 
-**Root Cause:** Qdrant client swallows error, no validation on batch size.
+**Root Cause:** Missing busy_timeout pragma, default WAL mode not enabled.
 
-**Solution:** Split batches into chunks of 100 points max.
+**Solution:** Set PRAGMA busy_timeout = 5000 and enable WAL mode on init.
 
 **Files Modified:**
-- \`src/services/qdrant.ts\` (upsertBatch function)
+- \`src/services/sqlite.ts\` (getDb function)
 
-**Testing:** Verified with 1000-point batch, success rate 100%.`,
+**Testing:** Verified with concurrent write stress test, zero stalls.`,
   category: "learning",
   subcategory: "bug-fix",
   importance: 8
@@ -703,7 +703,7 @@ remember({
 **Bad - Plain text:**
 ```javascript
 remember({
-  content: "Bug fix: Qdrant batch upsert fails when batch size exceeds 500 points. Solution: split into chunks of 100. Fixed in services/qdrant.ts",
+  content: "Bug fix: SQLite WAL checkpoint stalls under heavy writes. Solution: set busy_timeout = 5000 and enable WAL mode. Fixed in services/sqlite.ts",
   category: "learning"
 })
 ```

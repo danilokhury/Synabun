@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { softDeleteMemory, getMemory } from '../services/qdrant.js';
+import { softDeleteMemory, getMemory } from '../services/sqlite.js';
 import type { MemoryPayload } from '../types.js';
+import { invalidateCache } from '../services/neural-interface.js';
 
 export const forgetSchema = {
   memory_id: z
@@ -42,6 +43,9 @@ export async function handleForget(args: { memory_id: string }) {
   }
 
   await softDeleteMemory(memoryId);
+
+  // Invalidate Neural Interface link cache (fire-and-forget)
+  invalidateCache('forget');
 
   return {
     content: [

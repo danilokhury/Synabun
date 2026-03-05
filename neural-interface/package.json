@@ -3,17 +3,20 @@
   "version": "1.0.0",
   "description": "3D neural visualization of Claude's memory system",
   "type": "module",
+  "engines": { "node": ">=22.5.0" },
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.0.0",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "node-pty": "^1.1.0",
+    "playwright-core": "^1.58.2",
     "ws": "^8.19.0"
   }
 }
