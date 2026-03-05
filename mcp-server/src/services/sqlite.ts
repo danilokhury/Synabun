@@ -746,3 +746,12 @@ export function closeDatabase(): void {
     db = null;
   }
 }
+
+/**
+ * Reopen the database at the current SQLITE_DB_PATH.
+ * Call after updating process.env.SQLITE_DB_PATH to switch databases.
+ */
+export async function reopenDatabase(): Promise<void> {
+  closeDatabase();
+  await ensureDatabase();
+}

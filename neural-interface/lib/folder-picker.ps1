@@ -1,8 +1,11 @@
 param([string]$Title = 'Select a folder')
 
+Add-Type -AssemblyName System.Windows.Forms
+
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Windows.Forms;
 
 [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
 class FileOpenDialogRCW {}
@@ -49,11 +52,17 @@ interface IFileOpenDialog {
 }
 
 public static class FolderPicker {
+    [DllImport("user32.dll")]
+    static extern IntPtr GetForegroundWindow();
+
     public static string Pick(string title) {
+        // Grab the currently focused window (the browser) so the dialog opens on top of it
+        IntPtr foreground = GetForegroundWindow();
+
         var dlg = (IFileOpenDialog)new FileOpenDialogRCW();
         dlg.SetOptions(0x20); // FOS_PICKFOLDERS
         if (!string.IsNullOrEmpty(title)) dlg.SetTitle(title);
-        uint hr = dlg.Show(IntPtr.Zero);
+        uint hr = dlg.Show(foreground);
         if (hr != 0) return string.Empty;
         IShellItem item;
         dlg.GetResult(out item);
@@ -62,7 +71,7 @@ public static class FolderPicker {
         return path ?? string.Empty;
     }
 }
-'@
+'@ -ReferencedAssemblies System.Windows.Forms
 
 $result = [FolderPicker]::Pick($Title)
 if ($result) { Write-Output $result }
