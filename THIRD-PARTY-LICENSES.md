@@ -14,19 +14,12 @@ its license type, copyright holder, and project URL.
 - **Copyright:** Copyright (c) 2024 Anthropic, PBC
 - **URL:** https://github.com/modelcontextprotocol/typescript-sdk
 
-### @qdrant/js-client-rest
+### @huggingface/transformers
 
-- **Version:** ^1.13.0
+- **Version:** ^3.0.0
 - **License:** Apache-2.0
-- **Copyright:** Copyright 2021-2023 Qdrant Solutions GmbH
-- **URL:** https://github.com/qdrant/js-client-rest
-
-### openai
-
-- **Version:** ^4.77.0
-- **License:** Apache-2.0
-- **Copyright:** Copyright 2025 OpenAI
-- **URL:** https://github.com/openai/openai-node
+- **Copyright:** Copyright 2023-2025 Hugging Face
+- **URL:** https://github.com/huggingface/transformers.js
 
 ### express
 
@@ -156,19 +149,12 @@ its license type, copyright holder, and project URL.
 
 ## Infrastructure
 
-### Qdrant
+### Xenova/all-MiniLM-L6-v2
 
 - **License:** Apache-2.0
-- **Copyright:** Copyright 2021-present Qdrant Solutions GmbH
-- **URL:** https://github.com/qdrant/qdrant
-- **Role:** Vector database (runs as Docker container)
-
-### Docker Engine (Moby)
-
-- **License:** Apache-2.0
-- **Copyright:** Copyright 2012-2024 Docker, Inc.
-- **URL:** https://github.com/moby/moby
-- **Role:** Container runtime for Qdrant
+- **Copyright:** Copyright 2023-2025 Hugging Face / Xenova
+- **URL:** https://huggingface.co/Xenova/all-MiniLM-L6-v2
+- **Role:** Local embedding model (384 dimensions, ONNX runtime)
 
 ---
 

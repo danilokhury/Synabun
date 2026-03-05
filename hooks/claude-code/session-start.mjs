@@ -3,11 +3,11 @@
 /**
  * SynaBun SessionStart Hook for Claude Code
  *
- * Injects persistent memory context (category tree, project detection,
- * behavioral rules) into every Claude Code session via additionalContext.
+ * Injects a lean session-start context: greeting, single recall directive,
+ * and (when applicable) compaction indexing instructions.
  *
- * When source is "compact", also injects pre-cached session data from
- * the PreCompact hook so Claude can auto-index the conversation.
+ * Heavy reference data (category tree, user-learning rules) is deferred
+ * to prompt-submit and post-remember hooks to keep boot fast and clean.
  *
  * Enable in any project's .claude/settings.json:
  * {
@@ -24,67 +24,17 @@
  * }
  */
 
-import { readFileSync, existsSync, unlinkSync } from 'node:fs';
+import { readFileSync, existsSync, unlinkSync, readdirSync, statSync, appendFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { dirname, join, basename } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getHookFeatures, detectProject, ensureProjectCategories } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', '..', 'mcp-server', 'data');
-const ENV_PATH = join(__dirname, '..', '..', '.env');
-const HOOK_FEATURES_PATH = join(__dirname, '..', '..', 'data', 'hook-features.json');
 const PRECOMPACT_DIR = join(__dirname, '..', '..', 'data', 'precompact');
+const DEBUG_LOG = join(__dirname, '..', '..', 'data', 'compact-debug.log');
+const LOOP_DIR = join(__dirname, '..', '..', 'data', 'loop');
 const GREETING_CONFIG_PATH = join(__dirname, '..', '..', 'data', 'greeting-config.json');
-
-function getHookFeatures() {
-  try {
-    if (!existsSync(HOOK_FEATURES_PATH)) return {};
-    return JSON.parse(readFileSync(HOOK_FEATURES_PATH, 'utf-8'));
-  } catch { return {}; }
-}
-
-function parseEnvFile(filePath) {
-  try {
-    const content = readFileSync(filePath, 'utf-8');
-    const vars = {};
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq === -1) continue;
-      vars[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
-    }
-    return vars;
-  } catch { return {}; }
-}
-
-function getActiveConnectionId() {
-  const vars = parseEnvFile(ENV_PATH);
-  return vars.QDRANT_ACTIVE || 'default';
-}
-
-function getCategoriesPath() {
-  const connId = getActiveConnectionId();
-  return join(DATA_DIR, `custom-categories-${connId}.json`);
-}
-
-// --- Project detection (mirrors mcp-server/src/config.ts) ---
-
-const PROJECT_MAP = {
-  // Add your project keywords here. Example:
-  // 'my-app': 'my-app',
-  // 'client-site': 'client-project',
-};
-
-function detectProject(cwd) {
-  if (!cwd) return 'global';
-  const lower = cwd.toLowerCase().replace(/\\/g, '/');
-  for (const [key, value] of Object.entries(PROJECT_MAP)) {
-    if (lower.includes(key)) return value;
-  }
-  const base = basename(cwd).toLowerCase().replace(/[^a-z0-9-]/g, '-');
-  return base || 'global';
-}
 
 // --- Greeting helpers ---
 
@@ -151,39 +101,6 @@ function readStdin() {
   });
 }
 
-// --- Build category tree string ---
-
-function buildCategoryTree(categories) {
-  if (!categories || categories.length === 0) {
-    return '(No categories defined yet. Use category_create to set up your first category.)';
-  }
-
-  const parents = categories.filter((c) => c.is_parent);
-  const children = categories.filter((c) => c.parent);
-  const standalone = categories.filter((c) => !c.is_parent && !c.parent);
-
-  const lines = [];
-
-  for (const parent of parents) {
-    const kids = children.filter((c) => c.parent === parent.name);
-    lines.push(`${parent.name} (PARENT) — ${parent.description}`);
-    for (const kid of kids) {
-      lines.push(`  └─ ${kid.name} — ${kid.description}`);
-    }
-    if (kids.length === 0) {
-      lines.push(`  (no children yet)`);
-    }
-  }
-
-  if (standalone.length > 0) {
-    for (const cat of standalone) {
-      lines.push(`${cat.name} — ${cat.description}`);
-    }
-  }
-
-  return lines.join('\n');
-}
-
 // --- Read precompact cache ---
 
 function readPrecompactCache(sessionId) {
@@ -219,20 +136,16 @@ async function main() {
   const features = getHookFeatures();
   const isCompactRestart = source === 'compact';
 
-  let categories = [];
-  try {
-    const data = JSON.parse(readFileSync(getCategoriesPath(), 'utf-8'));
-    if (data.version === 1 && Array.isArray(data.categories)) {
-      categories = data.categories;
-    }
-  } catch { /* no categories available */ }
+  // Ensure all registered projects have their default category trees
+  try { ensureProjectCategories(); } catch { /* non-critical */ }
 
-  const categoryTree = buildCategoryTree(categories);
-  const allCategoryNames = categories.map((c) => c.name).join(', ');
+  // Debug logging
+  try {
+    const cacheExists = sessionId ? existsSync(join(PRECOMPACT_DIR, `${sessionId}.json`)) : false;
+    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] SESSION-START source=${source} session_id=${sessionId} isCompactRestart=${isCompactRestart} cacheExists=${cacheExists} convMemory=${features.conversationMemory}\n`);
+  } catch { /* ok */ }
 
   // --- Build context ---
-  // STRUCTURE: Directives FIRST (highest authority), then reference data.
-  // This ordering is intentional — Claude prioritizes early context.
 
   const precompactData = (features.conversationMemory !== false && isCompactRestart)
     ? readPrecompactCache(sessionId)
@@ -241,8 +154,50 @@ async function main() {
   const context = [];
 
   // ============================================================
-  // BLOCK 0: GREETING (highest attention, unless compaction)
+  // BLOCK 0: GREETING (highest attention, unless compaction or loop)
   // ============================================================
+
+  // Detect pending loop — skip greeting + recall for autonomous loop sessions
+  // Only count pending files younger than 10 minutes to avoid stale leftovers
+  // from finished/stalled loops hijacking interactive sessions.
+  const LOOP_STALE_MS = 10 * 60 * 1000;
+  let isLoopSession = false;
+  try {
+    if (existsSync(LOOP_DIR)) {
+      const now = Date.now();
+      const pendingFiles = readdirSync(LOOP_DIR).filter(f => {
+        if (!f.startsWith('pending-') || !f.endsWith('.json')) return false;
+        try {
+          const mtime = statSync(join(LOOP_DIR, f)).mtimeMs;
+          return (now - mtime) < LOOP_STALE_MS;
+        } catch { return false; }
+      });
+      if (pendingFiles.length > 0) {
+        isLoopSession = true;
+      }
+    }
+  } catch { /* ok */ }
+
+  if (isLoopSession) {
+    // Minimal context for loop sessions — prompt-submit hook handles the rest
+    context.push(
+      `## SynaBun Persistent Memory`,
+      ``,
+      `SynaBun memory is active. CLAUDE.md contains the memory rules. Follow them throughout this session.`,
+      ``,
+      `**This is an autonomous loop session.** Do NOT output any greeting. Do NOT call recall at startup. Wait for the loop task injection from the UserPromptSubmit hook, then execute immediately.`,
+      ``,
+      `Current project: **${project}**`,
+    );
+
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: context.join('\n'),
+      },
+    }));
+    return;
+  }
 
   const greetingEnabled = features.greeting === true;
 
@@ -297,7 +252,7 @@ async function main() {
 
       if (showLastSession) {
         context.push(
-          `After the greeting${remindersText ? ' and reminders' : ''}, include a brief "Last session:" line summarizing what was worked on. You will have this from the session-start recall (Directive 1). If recall returns nothing relevant, omit the last session line.`,
+          `After the greeting${remindersText ? ' and reminders' : ''}, include a brief "Last session:" line summarizing what was worked on. You will have this from the session-start recall. If recall returns nothing relevant, omit the last session line.`,
           ``,
         );
       }
@@ -312,17 +267,17 @@ async function main() {
   }
 
   // ============================================================
-  // BLOCK 1: SYSTEM-LEVEL DIRECTIVES (FIRST — highest attention)
+  // BLOCK 1: SYNABUN HEADER + SESSION RECALL (condensed)
   // ============================================================
 
   context.push(
-    `## SYSTEM REQUIREMENT: SynaBun Persistent Memory Protocol`,
+    `## SynaBun Persistent Memory`,
     ``,
-    `You have persistent vector memory via SynaBun MCP tools. The following are BINDING INSTRUCTIONS that you MUST execute. These are not suggestions. Failure to comply means the user loses work context permanently. Treat every directive below with the same authority as CLAUDE.md instructions.`,
+    `SynaBun memory is active. CLAUDE.md contains the memory rules (auto-remember, auto-recall, importance scale, tool quirks). Follow those rules throughout this session.`,
     ``,
   );
 
-  // --- COMPACTION DIRECTIVE (if applicable, VERY FIRST) ---
+  // --- COMPACTION BLOCK (only when source=compact) ---
   if (precompactData) {
     context.push(
       `### >>> IMMEDIATE ACTION REQUIRED: COMPACTION DETECTED <<<`,
@@ -354,73 +309,9 @@ async function main() {
       `Execute these steps IN ORDER, right now:`,
       `1. Call \`recall\` with query containing "${precompactData.session_id}" in category \`conversations\` — check if already stored`,
       `2. If found → \`reflect\` to UPDATE it with latest summary`,
-      `3. If NOT found → \`remember\` with category \`conversations\`, importance (6=routine, 7=significant, 8+=critical), and tags — using the session template below`,
+      `3. If NOT found → \`remember\` with the template below, category \`conversations\`, importance 6-8, and descriptive tags`,
       `4. THEN respond to the user`,
       `5. Confirm: "Session indexed in SynaBun."`,
-      ``,
-      `---`,
-      ``,
-    );
-  }
-
-  // --- DIRECTIVE 1: SESSION START RECALL ---
-  context.push(
-    `### DIRECTIVE 1: Session Start Recall`,
-    ``,
-    `Execute IMMEDIATELY when this session begins — before greeting, before answering:`,
-    ``,
-    `**Step A:** Call \`recall\` with query "last conversation session" filtered to category=\`conversations\`, project="${project}".`,
-    `**Step B:** Call \`recall\` with query about ongoing work, recent decisions, and known issues for project "${project}" (no category filter).`,
-    `**Step C:** Read both results. Understand what was done last, what's in progress, what's pending. THEN greet the user.`,
-    ...(features.userLearning !== false ? [
-    `**Step D:** Call \`recall\` with query "user communication style preferences patterns behavior" filtered to category=\`user-profile\` (no project filter — user knowledge is global). Use these memories to adapt your tone, verbosity, and interaction style throughout this session.`,
-    ] : []),
-    ``,
-    `You MUST complete Steps A and B before producing any greeting or response to the user.`,
-    ``,
-    `---`,
-    ``,
-  );
-
-  // --- DIRECTIVE 2: TASK COMPLETION AUTO-REMEMBER ---
-  context.push(
-    `### DIRECTIVE 2: Auto-Remember on Task Completion`,
-    ``,
-    `After you complete ANY discrete piece of work, you MUST immediately store it in memory. Execute this the moment a task finishes — not later, not at session end, not in a batch.`,
-    ``,
-    `**Trigger:** Bug fix, feature, refactor, config change, investigation, migration, cleanup, documentation, architecture decision, guidance/walkthrough conversation (5+ exchanges), configuration assistance, troubleshooting session, or user says "remember this".`,
-    `**NOT triggered by:** Trivial 1-2 message exchanges, reading files with no findings, trivial typo fixes.`,
-    ``,
-    `**Steps:**`,
-    `1. \`remember\` — content: summary of what+why+how. category: use the Category Reference below. project: "${project}" (or "global"/"shared"). related_files: paths modified. importance: (5=routine, 6-7=significant, 8+=critical). tags: 3-5 lowercase descriptive tags.`,
-    ``,
-    `\`remember\` returns the full UUID and accepts all fields (tags, importance) directly. No recall+reflect needed.`,
-    ``,
-    `One task = one memory. Do NOT batch. Do NOT skip. Do NOT defer.`,
-    ``,
-    `---`,
-    ``,
-  );
-
-  // --- DIRECTIVE 3: PRE-DECISION RECALL ---
-  context.push(
-    `### DIRECTIVE 3: Recall Before Decisions`,
-    ``,
-    `Before making any architecture, design, or implementation decision, call \`recall\` to check for prior context.`,
-    ``,
-    `---`,
-    ``,
-  );
-
-  // --- DIRECTIVE 4: COMPACTION AUTO-STORE (general rules) ---
-  if (features.conversationMemory !== false) {
-    context.push(
-      `### DIRECTIVE 4: Compaction Auto-Store`,
-      ``,
-      `When context compaction occurs (auto or /compact), index the session in SynaBun as your FIRST action — before responding to the user.`,
-      ``,
-      `**Detection:** Compaction summary text at start of context, or source="compact" in session metadata.`,
-      `**Steps:** 1) \`recall\` session ID in category \`conversations\` to check dedup. 2) If exists → \`reflect\` to update. 3) If new → \`remember\` with template below (include importance and tags directly). 4) Respond. 5) Confirm: "Session indexed."`,
       ``,
       `Session template:`,
       '```',
@@ -443,103 +334,33 @@ async function main() {
     );
   }
 
-  // --- DIRECTIVE 5: USER LEARNING ---
-  if (features.userLearning !== false) {
+  // --- SESSION BOOT SEQUENCE (fresh sessions only — skip on compaction) ---
+  if (!isCompactRestart) {
     context.push(
-      `### DIRECTIVE 5: User Learning (Autonomous)`,
+      `### Session Boot Sequence (MANDATORY ORDER)`,
       ``,
-      `Observe the user as a person throughout this session. You are building a long-term model of who they are — not what they're coding, but how they think and communicate.`,
+      `Your first response MUST follow this exact sequence:`,
+      `1. Call \`recall\` ONCE (no category filter) — query: recent sessions, ongoing work, known issues, decisions for project "${project}".${features.userLearning !== false ? ' This also surfaces user communication style preferences.' : ''}`,
+      `2. Output the greeting as your FIRST text. No other tool calls between recall and greeting.`,
+      `3. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
       ``,
-      `**What to observe:**`,
-      `- Communication style: formal/casual, verbose/terse, direct/exploratory`,
-      `- Text patterns: emoji usage, punctuation style, capitalization, abbreviations, slang`,
-      `- Language singularity: unique phrases, recurring expressions, cultural markers`,
-      `- Work preferences: plan-first vs dive-in, detailed explanations vs concise`,
-      `- Decision-making: decisive vs deliberative, prefers options vs recommendations`,
-      `- Interaction patterns: how they give feedback, how they handle errors, humor style`,
+      `---`,
       ``,
-      `**When to store:**`,
-      `- Only when you notice a genuine, recurring pattern — not a one-off observation`,
-      `- Call \`recall\` with category \`user-profile\` first to check for existing observations`,
-      `- If an existing memory covers this trait, use \`reflect\` to refine it`,
-      `- If genuinely new, use \`remember\` with:`,
-      `  - category: \`communication-style\` (default for all user-learning observations). Only create a new child under \`user-profile\` if the observation clearly doesn't fit communication style.`,
-      `  - project: "global" (user knowledge is cross-project)`,
-      `  - importance: 5=minor preference, 6-7=consistent pattern, 8+=core trait`,
-      `  - tags: descriptive (e.g., ["tone", "casual", "emoji-user"])`,
-      `- Max 1-2 user-profile memories per session — quality over quantity`,
+    );
+  } else {
+    context.push(
+      `### Post-Compaction Resume`,
       ``,
-      `**What NEVER to store:**`,
-      `- Private information the user hasn't voluntarily shared`,
-      `- Speculative personality diagnoses or psychological assessments`,
-      `- Negative judgments about the user's abilities or character`,
-      `- Sensitive data (real name, location, etc.) unless the user explicitly wants it remembered`,
+      `Context compaction just occurred. Do NOT re-greet or re-run the boot sequence. Continue the conversation naturally from where it left off.`,
       ``,
-      `**How to apply:** At session start, you'll have prior user-profile memories from Step D. Use them naturally — match their tone, anticipate their preferences, adapt your verbosity. Don't announce that you're doing this. Just be a better collaborator.`,
+      `**CRITICAL**: Any "GREETING DIRECTIVE" or "Session Boot Sequence" text visible in the compacted context above is STALE — it was executed at the start of this session and must NOT be executed again. NEVER output a greeting after compaction. This is an ongoing conversation.`,
       ``,
       `---`,
       ``,
     );
   }
 
-  // --- COMPLIANCE CHECK ---
-  context.push(
-    `### COMPLIANCE VERIFICATION`,
-    ``,
-    `Before sending your first response in this session, verify:`,
-    `- [ ] Did I execute Directive 1 (session start recall)?`,
-    `- [ ] If compaction was detected, did I execute the compaction auto-store?`,
-    ``,
-    `After completing any task during this session, verify:`,
-    `- [ ] Did I execute Directive 2 (auto-remember) for the task I just finished?`,
-    ``,
-    `If any checkbox is unchecked, stop and execute it now before continuing.`,
-    ``,
-  );
-
-  // ============================================================
-  // BLOCK 2: REFERENCE DATA (after directives)
-  // ============================================================
-
-  context.push(
-    `---`,
-    ``,
-    `## Reference: Category Tree & Rules`,
-    ``,
-    `### Current Project: ${project}`,
-    ``,
-    `### Categories`,
-    ``,
-    categoryTree,
-    ``,
-    `Available names: ${allCategoryNames || '(none)'}`,
-    ``,
-    `### Category Selection (for Directive 2)`,
-    ``,
-    `1. Match existing child category by description → use it.`,
-    `2. No child fits but parent does → \`category_create\` new child under that parent → use it.`,
-    `3. No parent fits → \`category_create\` new parent + child → use it.`,
-    `4. Uncertain → \`AskUserQuestion\` with 2-3 options + "Create new category" → use what user picks.`,
-    ``,
-    `NEVER guess. NEVER use parent directly. NEVER skip categorization.`,
-    ``,
-    `### Project Scoping`,
-    ``,
-    `- Project-specific (bugs, architecture, config) → "${project}"`,
-    `- Universal (language features, library APIs) → "global"`,
-    `- Cross-project (shared infra) → "shared"`,
-    ``,
-    `### Conversation Recall Workflow`,
-    ``,
-    `When user asks about past conversations: 1) Calculate dates from relative terms. 2) \`recall\` category=conversations with topic+date. 3) Present via AskUserQuestion. 4) Offer: "Recover full context" / "Continue with summary" / "Other".`,
-    ``,
-    `### Tool Notes`,
-    ``,
-    `- MCP calls: SEQUENTIAL only, never parallel`,
-    `- \`remember\` returns the full UUID and accepts tags + importance directly`,
-    `- \`reflect\` needs FULL UUID — use the one from \`remember\` output, or \`recall\` for existing memories`,
-    `- Importance: 1-2=trivial, 3-4=low, 5=normal, 6-7=significant, 8-9=critical, 10=foundational`,
-  );
+  context.push(`Current project: **${project}**`);
 
   const joined = context.join('\n');
 
@@ -558,7 +379,7 @@ main().catch(() => {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: 'SynaBun memory is available but the session hook encountered an error loading categories. Use recall and remember tools manually.',
+      additionalContext: 'SynaBun memory is available but the session hook encountered an error. Follow CLAUDE.md memory rules and use recall/remember tools manually.',
     },
   }));
 });
