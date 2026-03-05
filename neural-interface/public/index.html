@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <link href="https://db.onlinewebfonts.com/c/3284c3a32cf946466fb963369b3c5b2d?family=Disket+Mono" rel="stylesheet">
 <link rel="stylesheet" href="/shared/styles.css">
 <style>
@@ -171,27 +171,35 @@
   </div>
 </div>
 
+<!-- html2canvas for card screenshot MCP tool -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
+
 <!-- 3D CDN dependencies (loaded as globals before module) -->
 <script type="importmap">
 {
   "imports": {
     "three": "https://esm.sh/three@0.169.0",
     "three/addons/": "https://esm.sh/three@0.169.0/examples/jsm/",
-    "3d-force-graph": "https://esm.sh/3d-force-graph@1.73.4?deps=three@0.169.0",
     "@tweenjs/tween.js": "https://esm.sh/@tweenjs/tween.js@23.1.3"
   }
 }
 </script>
 <script type="module">
-  // Load 3D deps as globals (variant modules expect THREE, TWEEN, ForceGraph3D, UnrealBloomPass)
+  // Load 3D deps as globals (variant modules expect THREE, TWEEN, OrbitControls, etc.)
   import * as THREE from 'three';
   import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-  import ForceGraph3D from '3d-force-graph';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+  import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+  import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
   import TWEEN from '@tweenjs/tween.js';
 
   window.THREE = THREE;
   window.UnrealBloomPass = UnrealBloomPass;
-  window.ForceGraph3D = ForceGraph3D;
+  window.OrbitControls = OrbitControls;
+  window.EffectComposer = EffectComposer;
+  window.RenderPass = RenderPass;
+  window.OutputPass = OutputPass;
   window.TWEEN = TWEEN;
 
   // Boot the 3D variant

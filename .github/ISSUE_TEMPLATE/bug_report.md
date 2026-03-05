@@ -28,9 +28,8 @@ What actually happened.
 
 - **OS:** (e.g., Windows 11, macOS 14, Ubuntu 22.04)
 - **Node.js version:** (`node --version`)
-- **Docker version:** (`docker --version`)
 - **SynaBun version:** (check `package.json` or `CHANGELOG.md`)
-- **Embedding provider:** (e.g., OpenAI, Ollama, Gemini)
+- **Embeddings:** Local (Transformers.js)
 
 ## Error Output
 

@@ -30,8 +30,10 @@ export function clampPanelsToViewport() {
 
     if (el.style.top) {
       const currentTop = parseInt(el.style.top);
-      const maxTop = Math.max(0, window.innerHeight - rect.height - 10);
-      if (currentTop > maxTop) {
+      const maxTop = Math.max(48, window.innerHeight - rect.height - 10);
+      if (currentTop < 48) {
+        el.style.top = '48px';
+      } else if (currentTop > maxTop) {
         el.style.top = maxTop + 'px';
       }
     }
@@ -83,7 +85,7 @@ export function restorePanelLayout(el, sizeOnly) {
     const data = JSON.parse(saved);
     if (!sizeOnly) {
       if (data.left && data.left !== 'auto') el.style.left = data.left;
-      if (data.top) el.style.top = data.top;
+      if (data.top) el.style.top = Math.max(48, parseInt(data.top)) + 'px';
       if (data.right) el.style.right = data.right;
     }
     if (data.width) el.style.width = data.width;

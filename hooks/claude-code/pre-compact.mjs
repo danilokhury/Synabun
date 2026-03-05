@@ -28,13 +28,14 @@
  * }
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync, statSync, appendFileSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR = join(__dirname, '..', '..', 'data', 'precompact');
 const PENDING_DIR = join(__dirname, '..', '..', 'data', 'pending-compact');
+const DEBUG_LOG = join(__dirname, '..', '..', 'data', 'compact-debug.log');
 
 // --- Stdin ---
 
@@ -201,6 +202,11 @@ async function main() {
     created_at: new Date().toISOString(),
     retries: 0,
   }));
+
+  // Debug logging
+  try {
+    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] PRE-COMPACT session_id=${sessionId} trigger=${trigger} cwd=${cwd}\n`);
+  } catch { /* ok */ }
 
   // Cleanup old files
   cleanupOldCache();

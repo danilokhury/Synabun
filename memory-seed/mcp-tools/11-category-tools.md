@@ -33,7 +33,7 @@ Four MCP tools manage the category system. ALL changes trigger `refreshCategoryS
 
 - **Required**: `name` (category to delete)
 - **Optional**: `reassign_to` (REQUIRED if memories exist in this category), `reassign_children_to` (REQUIRED if category has children — empty string `""` makes them top-level)
-- Process: reassign children → batch-update Qdrant memories → remove from `custom-categories.json`
+- Process: reassign children → batch-update SQLite memories → remove from `custom-categories.json`
 - Cannot reassign to self
 
 ## category_list (109 lines)

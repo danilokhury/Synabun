@@ -9,6 +9,7 @@ import { getVariant } from './registry.js';
 import { KEYS } from './constants.js';
 import { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig } from './ui-settings.js';
 import { registerAction } from './ui-keybinds.js';
+import { startTutorial } from './ui-tutorial.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -77,6 +78,12 @@ export function initNavbar() {
     });
 
     registerAction('toggle-focus-mode', () => vizBtn.click());
+  }
+
+  // ── Tutorial toggle (?) ──
+  const tutBtn = $('titlebar-tutorial-btn');
+  if (tutBtn) {
+    tutBtn.addEventListener('click', () => startTutorial(true));
   }
 
   // ── Fullscreen button ──

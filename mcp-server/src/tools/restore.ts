@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { restoreMemory, getMemory } from '../services/qdrant.js';
+import { restoreMemory, getMemory } from '../services/sqlite.js';
 import type { MemoryPayload } from '../types.js';
 
 export const restoreSchema = {

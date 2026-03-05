@@ -5,12 +5,11 @@
  *
  * Usage: node setup.js   (or: npm start)
  *
- * 1. Checks Node.js version (>=18)
- * 2. Checks if Docker is available (warns if not)
- * 3. Installs npm deps for neural-interface/ and mcp-server/
- * 4. Builds the MCP server TypeScript (if dist/ is missing or stale)
- * 5. Starts the Neural Interface Express server
- * 6. Auto-opens browser to onboarding wizard (or main page if setup complete)
+ * 1. Checks Node.js version (>=22)
+ * 2. Installs npm deps for neural-interface/ and mcp-server/
+ * 3. Builds the MCP server TypeScript (if dist/ is missing or stale)
+ * 4. Starts the Neural Interface Express server
+ * 5. Auto-opens browser to onboarding wizard (or main page if setup complete)
  */
 
 import { execSync, spawn, exec } from 'node:child_process';
@@ -42,39 +41,11 @@ function info(msg) { console.log(`  ${c.cyan}\u2192${c.reset} ${msg}`); }
 
 function checkNodeVersion() {
   const [major] = process.versions.node.split('.').map(Number);
-  if (major < 18) {
-    fail(`Node.js 18+ required, found v${process.versions.node}`);
+  if (major < 22) {
+    fail(`Node.js 22+ required, found v${process.versions.node}`);
     process.exit(1);
   }
   ok(`Node.js v${process.versions.node}`);
-}
-
-function checkDocker() {
-  try {
-    execSync('docker --version', { stdio: 'pipe' });
-    ok('Docker found');
-    return true;
-  } catch {
-    // On Windows, Docker Desktop might not be in PATH
-    if (platform() === 'win32') {
-      const winPaths = [
-        'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe',
-        `${process.env.LOCALAPPDATA}\\Docker\\resources\\bin\\docker.exe`,
-        `${process.env.ProgramFiles}\\Docker\\Docker\\resources\\bin\\docker.exe`,
-      ];
-      for (const p of winPaths) {
-        if (existsSync(p)) {
-          ok(`Docker found at ${p}`);
-          warn('Docker is not in PATH \u2014 the onboarding wizard will handle Docker startup');
-          return true;
-        }
-      }
-    }
-
-    warn('Docker not found \u2014 you will need Docker to run Qdrant');
-    warn('Install from: https://docs.docker.com/get-docker/');
-    return false;
-  }
 }
 
 // ── Phase 2: Dependency installation ──
@@ -235,7 +206,6 @@ function main() {
 
   // Prerequisites
   checkNodeVersion();
-  checkDocker();
   console.log('');
 
   // Dependencies

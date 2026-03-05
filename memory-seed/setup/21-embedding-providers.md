@@ -1,48 +1,48 @@
 ---
 category: setup
-tags: [embeddings, providers, openai, gemini, ollama, mistral, model-migration, breaking-change]
+tags: [embeddings, local, transformers-js, all-minilm, model]
 importance: 8
 project: synabun
 source: self-discovered
 subcategory: config
 related_files:
-  - mcp-server/src/services/embeddings.ts
+  - mcp-server/src/services/local-embeddings.ts
   - mcp-server/src/config.ts
-  - .env.example
 ---
 
-# SynaBun Embedding Providers — 11 Supported Providers
+# SynaBun Local Embeddings — Transformers.js
 
-SynaBun supports any OpenAI-compatible embedding API. The embeddings service (`mcp-server/src/services/embeddings.ts`, 29 lines) uses a lazy-initialized OpenAI client singleton.
+SynaBun uses local embeddings via Transformers.js. The embeddings service (`mcp-server/src/services/local-embeddings.ts`) runs the model entirely in-process — no external API calls, no API keys required.
 
-## Supported Providers & Default Models
+## Embedding Model
 
-| # | Provider | Model | Dimensions |
-|---|----------|-------|------------|
-| 1 | OpenAI | text-embedding-3-small | 1536 |
-| 2 | Google Gemini | text-embedding-004 | 768 |
-| 3 | Ollama | nomic-embed-text | 768 |
-| 4 | Mistral | mistral-embed | 1024 |
-| 5 | Cohere | embed-english-v3.0 | 1024 |
-| 6 | Voyage AI | voyage-2 | 1024 |
-| 7 | Together AI | m2-bert-80M-8k-retrieval | 768 |
-| 8 | Fireworks | nomic-embed-text-v1.5 | 768 |
-| 9 | Azure OpenAI | Custom endpoint | Varies |
-| 10 | AWS Bedrock | Via gateway | Varies |
-| 11 | Custom | Any endpoint | Varies |
+| Property | Value |
+|----------|-------|
+| Library | Transformers.js (@huggingface/transformers) |
+| Model | all-MiniLM-L6-v2 |
+| Dimensions | 384 |
+| Runtime | Local (Node.js, in-process) |
+| Download size | ~23 MB (cached after first run) |
 
-## Configuration (env vars)
+## How It Works
 
-- `OPENAI_EMBEDDING_API_KEY`: API key for the chosen provider (REQUIRED)
-- `EMBEDDING_BASE_URL`: Provider's API endpoint (default: `https://api.openai.com/v1`)
-- `EMBEDDING_MODEL`: Model name (default: `text-embedding-3-small`)
-- `EMBEDDING_DIMENSIONS`: Vector dimensions (default: 1536)
+- On first use, the model is downloaded from Hugging Face and cached locally
+- Subsequent runs load the model from cache — no network required
+- Embeddings are computed synchronously in the Node.js process
+- No API keys, no rate limits, no external dependencies
 
-## CRITICAL WARNING — Model Migration is Breaking
+## Configuration
 
-Changing the embedding model (even same provider, different model) makes ALL existing vectors incompatible. Cosine similarity between vectors from different models is meaningless. You must either:
+No configuration needed. The embedding model and dimensions are fixed:
 
-1. Re-embed the entire collection (delete and recreate all memories)
-2. Start with a fresh collection
+- **Model:** `Xenova/all-MiniLM-L6-v2` (384 dimensions)
+- **Similarity metric:** Cosine distance (computed in application code)
+
+## CRITICAL WARNING — Model Changes Are Breaking
+
+Changing the embedding model makes ALL existing vectors incompatible. Cosine similarity between vectors from different models is meaningless. You must either:
+
+1. Re-embed the entire database (delete and recreate all memories)
+2. Start with a fresh database file
 
 There is no migration path that preserves existing memories across model changes.

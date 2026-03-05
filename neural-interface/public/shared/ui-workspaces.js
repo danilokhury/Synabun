@@ -30,6 +30,11 @@ import {
   getTerminalSnapshot,
   restoreTerminalSnapshot,
 } from './ui-terminal.js';
+import {
+  getWhiteboardSnapshot,
+  restoreWhiteboardSnapshot,
+  clearWhiteboard,
+} from './ui-whiteboard.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -95,6 +100,7 @@ function saveWorkspace(name) {
 
     const cards = getOpenCardsSnapshot();
     const terminal = getTerminalSnapshot();
+    const whiteboard = getWhiteboardSnapshot();
 
     // Check if updating an existing workspace — preserve other variant's positions
     const list = getWorkspaces();
@@ -119,6 +125,7 @@ function saveWorkspace(name) {
       variant: currentVariant,
       cards,
       terminal,
+      whiteboard,
       nodePositions2d: pos2d,
       nodePositions3d: pos3d,
       camera: currentVariant === '3d' ? (camera || null) : (existing?.camera || null),
@@ -211,6 +218,9 @@ function loadWorkspace(workspace) {
       restoreTerminalSnapshot(workspace.terminal);
     }
 
+    // Restore whiteboard state (pass null for old workspaces — clears the board)
+    restoreWhiteboardSnapshot(workspace.whiteboard || null);
+
     setActiveId(workspace.id);
     updateIndicator();
     emit('workspace:loaded', workspace);
@@ -226,6 +236,7 @@ function loadWorkspace(workspace) {
 
 function performClear() {
   closeAllCards();
+  clearWhiteboard();
   setActiveId(null);
   updateIndicator();
   emit('layout:reset');
@@ -684,6 +695,9 @@ export function initWorkspaces() {
 
   // Close on global dropdown close event
   on('panel:close-all-dropdowns', () => closeDropdown());
+  on('panel:close-all-dropdowns-except', (name) => {
+    if (name !== 'workspace') closeDropdown();
+  });
 
   // Dim when visualization is toggled off
   on('viz:toggled', (visible) => {

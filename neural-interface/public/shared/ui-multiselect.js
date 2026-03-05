@@ -84,4 +84,10 @@ export function initMultiSelect() {
   }
 
   on('multiselect:update', updateMultiSelectBar);
+
+  // Focus mode — clear selection when entering focus
+  on('focus:enter', () => {
+    state.multiSelected.clear();
+    updateMultiSelectBar();
+  });
 }

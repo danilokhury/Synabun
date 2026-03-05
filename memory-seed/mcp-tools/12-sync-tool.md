@@ -21,7 +21,7 @@ The sync tool (`mcp-server/src/tools/sync.ts`) detects memories whose `related_f
 
 ## Process
 
-1. Scroll all memories from Qdrant (up to 1000)
+1. Scroll all memories from SQLite (up to 1000)
 2. Filter to memories that have non-empty `related_files` arrays
 3. Optionally filter by project if specified
 4. For each memory, compute current SHA-256 hash of each related file via `hashFile()`
