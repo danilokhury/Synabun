@@ -25,8 +25,9 @@ export function initTooltip() {
     const gap = 8;
     const preferred = el.getAttribute('data-tooltip-pos');
 
-    // Right-side placement (used inside explorer sidebar)
-    if (preferred === 'right' && r.right + gap + tw < window.innerWidth - 4) {
+    // Right-side placement (explorer sidebar, whiteboard toolbar)
+    const inWbToolbar = !!el.closest('#wb-toolbar');
+    if ((preferred === 'right' || inWbToolbar) && r.right + gap + tw < window.innerWidth - 4) {
       tip.className = 'ui-tooltip right';
       tip.style.top = (r.top + r.height / 2 - th / 2) + 'px';
       tip.style.left = (r.right + gap) + 'px';
@@ -90,7 +91,7 @@ export function initTooltip() {
       hide();
       show(el);
     } else {
-      showTimer = setTimeout(() => show(el), 120);
+      showTimer = setTimeout(() => show(el), 20);
     }
   });
 

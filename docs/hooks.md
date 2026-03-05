@@ -10,6 +10,7 @@ SynaBun ships with 5 [Claude Code hooks](https://docs.anthropic.com/en/docs/agen
   - [PromptSubmit Hook](#promptsubmit-hook)
   - [PreCompact Hook](#precompact-hook)
   - [Stop Hook](#stop-hook)
+  - [PreToolUse Hook](#pretooluse-hook)
   - [PostToolUse Hook](#posttooluse-hook)
 - [Hook Feature Flags](#hook-feature-flags)
 - [Installation](#installation)
@@ -22,7 +23,7 @@ SynaBun ships with 5 [Claude Code hooks](https://docs.anthropic.com/en/docs/agen
 
 ## Overview
 
-SynaBun provides 5 hooks that work together to create a complete memory automation pipeline:
+SynaBun provides 6 hooks that work together to create a complete memory automation pipeline:
 
 | Hook | Event | Timeout | Purpose |
 |------|-------|---------|---------|
@@ -30,6 +31,7 @@ SynaBun provides 5 hooks that work together to create a complete memory automati
 | `prompt-submit.mjs` | `UserPromptSubmit` | 3s | Multi-tier recall trigger system with non-English detection and user learning nudges |
 | `pre-compact.mjs` | `PreCompact` | 10s | Captures session transcript before context compaction |
 | `stop.mjs` | `Stop` | 3s | Enforces memory storage — blocks if session isn't indexed or edits aren't remembered |
+| `pre-websearch.mjs` | `PreToolUse` | 3s | Blocks WebSearch/WebFetch during active browser automations (loops with usesBrowser) |
 | `post-remember.mjs` | `PostToolUse` | 3s | Tracks edit count and clears enforcement flags when memories are stored |
 
 Together, these hooks ensure the AI:
@@ -216,6 +218,43 @@ Fires when Claude finishes generating a response. Checks enforcement flags and b
 
 ---
 
+### PreToolUse Hook
+
+**File:** `hooks/claude-code/pre-websearch.mjs`
+
+Fires before `WebSearch` and `WebFetch` tool calls. Blocks these tools when an active browser automation loop (`usesBrowser: true`) exists.
+
+**Why:** Text-based instructions telling the agent not to use WebSearch during browser automations are unreliable — the model ignores them when it hits login walls, CAPTCHAs, or other obstacles. This hook enforces the rule mechanically at the tool level.
+
+**How it works:**
+1. Reads all loop state files from `data/loop/*.json`
+2. If any loop has `active: true` and `usesBrowser: true`, returns a `block` decision
+3. Otherwise returns `{}` (allow)
+
+**Input (stdin):**
+```json
+{
+  "session_id": "abc123",
+  "tool_name": "WebSearch",
+  "tool_input": { "query": "..." }
+}
+```
+
+**Output when blocked (stdout):**
+```json
+{
+  "decision": "block",
+  "reason": "BLOCKED: WebSearch is not allowed during browser automations. You MUST use the SynaBun browser tools instead..."
+}
+```
+
+**Output when allowed (stdout):**
+```json
+{}
+```
+
+---
+
 ### PostToolUse Hook
 
 **File:** `hooks/claude-code/post-remember.mjs`
@@ -351,6 +390,18 @@ Add the following to your `.claude/settings.json` file:
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "^WebSearch$|^WebFetch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/path/to/Synabun/hooks/claude-code/pre-websearch.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "^Edit$|^Write$|^NotebookEdit$|SynaBun__remember",
@@ -369,7 +420,7 @@ Add the following to your `.claude/settings.json` file:
 
 **Per-project** (`<project>/.claude/settings.json`): Same structure, but scoped to that project only.
 
-Replace `/path/to/Synabun` with your actual SynaBun installation path. On Windows, use forward slashes (e.g., `C:/Users/me/Synabun`).
+Replace `/path/to/Synabun` with your actual SynaBun installation path. On Windows, use forward slashes (e.g., `D:/Apps/Synabun`).
 
 ---
 
@@ -378,7 +429,7 @@ Replace `/path/to/Synabun` with your actual SynaBun installation path. On Window
 ### Lifecycle
 
 ```
-1. Claude Code fires a lifecycle event (SessionStart, UserPromptSubmit, PreCompact, Stop, or PostToolUse)
+1. Claude Code fires a lifecycle event (SessionStart, UserPromptSubmit, PreCompact, Stop, PreToolUse, or PostToolUse)
 2. Claude Code spawns the hook script as a child process
 3. Event data is piped to the script via stdin as JSON
 4. The script processes the input and writes JSON to stdout
@@ -387,6 +438,8 @@ Replace `/path/to/Synabun` with your actual SynaBun installation path. On Window
    that text is injected into the AI's system context
 7. For Stop events: if output contains { decision: "block" },
    Claude's response is blocked and it must retry
+7b. For PreToolUse events: if output contains { decision: "block" },
+    the tool call is denied before execution
 8. If the script times out or crashes, the output is silently ignored
 ```
 
@@ -400,6 +453,7 @@ The hook receives JSON on **stdin** with event-specific fields:
 | `UserPromptSubmit` | `{ prompt: string }` |
 | `PreCompact` | `{ transcript: string }` (path to JSONL) |
 | `Stop` | `{ stop_reason: string }` |
+| `PreToolUse` | `{ session_id: string, tool_name: string, tool_input: object }` |
 | `PostToolUse` | `{ tool_name: string, tool_input: object }` |
 
 **Important:** stdin may be a TTY (no data) in some environments. Always handle this gracefully:
@@ -513,9 +567,8 @@ The SessionStart hook auto-detects the current project from the working director
 ```javascript
 // hooks/claude-code/session-start.mjs (line 33)
 const PROJECT_MAP = {
-  // Add your project keywords here. Example:
-  // 'my-app': 'my-app',
-  // 'client-site': 'client-project',
+  criticalpixel: 'criticalpixel',
+  ellacred: 'ellacred',
 };
 ```
 
