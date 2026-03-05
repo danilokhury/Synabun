@@ -16,7 +16,7 @@ SynaBun is designed as a **local-first** tool. All components run on your machin
 
 | Component | Default Binding | Auth |
 |-----------|----------------|------|
-| Qdrant (Docker) | `localhost:6333` | API key |
+| SQLite Database | File-based (`data/memory.db`) | N/A (filesystem) |
 | Neural Interface | `0.0.0.0:3344` | None |
 | MCP Server | stdio (no network) | N/A |
 
@@ -26,7 +26,7 @@ SynaBun is designed as a **local-first** tool. All components run on your machin
 
 | File | Contains | Gitignored? |
 |------|----------|:-----------:|
-| `.env` | Embedding API keys, Qdrant API keys, bridge config | Yes |
+| `.env` | Configuration overrides, bridge config | Yes |
 | `data/mcp-api-key.json` | API key for HTTP MCP transport | Yes |
 | `mcp-server/data/custom-categories-*.json` | Category names and descriptions only | No (safe) |
 | `data/hook-features.json` | Feature flags only | No (safe) |
@@ -47,17 +47,14 @@ The Neural Interface blocks all Cloudflare tunnel traffic (detected via `cf-conn
 
 ## Recommendations
 
-1. **Use a strong Qdrant API key.** The setup wizard generates a random 32-character hex key. Do not use the default placeholder.
-2. **Restrict Qdrant port access.** If running on a shared network, use a firewall to block external access to port 6333.
-3. **Do not expose the Neural Interface to the public internet.** It has no authentication. Use it only on localhost or behind a VPN/reverse proxy with auth.
-4. **Use `.env.example` as a template.** Copy it to `.env` and fill in your values. The example file contains only placeholders.
-5. **Review `.env` before sharing.** If you export your SynaBun configuration, strip API keys from the `.env` file first. Use `.env.example` as a safe template.
+1. **Protect the database file.** The SQLite database (`data/memory.db`) contains all your memories. Use filesystem permissions to restrict access.
+2. **Do not expose the Neural Interface to the public internet.** It has no authentication. Use it only on localhost or behind a VPN/reverse proxy with auth.
+3. **Back up regularly.** Copy `data/memory.db` to a safe location. The database file contains all memories and vectors.
 
 ## Dependency Security
 
 SynaBun depends on:
-- **Qdrant** (Docker image) — check [Qdrant security advisories](https://github.com/qdrant/qdrant/security)
-- **OpenAI Node SDK** — for embedding generation
+- **@huggingface/transformers** — for local embedding generation (ONNX runtime)
 - **Express.js** — for the Neural Interface server
 - **@modelcontextprotocol/sdk** — for MCP protocol communication
 

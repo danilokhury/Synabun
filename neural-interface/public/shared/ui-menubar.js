@@ -8,6 +8,7 @@ import { state, emit, on } from './state.js';
 import { getMenuItems } from './registry.js';
 import { openHelp } from './ui-help.js';
 import { registerAction } from './ui-keybinds.js';
+import { isGuest, hasPermission } from './ui-sync.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -101,9 +102,39 @@ export function initMenubar() {
   wireViewMenu();
   wireGraphMenu();
   wireSkillsMenu();
+  wireAutomationsMenu();
   wireTerminalMenu();
   injectVariantMenuItems();
   populateLinkTypes();
+
+  // ── Guest permission visual feedback on menu items ──
+  const MENU_PERM_MAP = {
+    'menu-open-skills-studio': 'skills',
+    'menu-skills-new': 'skills',
+    'menu-skills-import': 'skills',
+    'menu-open-automation-studio': 'automations',
+    'menu-automations-new': 'automations',
+    'menu-automations-import': 'automations',
+    'menu-terminal-claude': 'terminal',
+    'menu-terminal-codex': 'terminal',
+    'menu-terminal-gemini': 'terminal',
+    'menu-terminal-shell': 'terminal',
+    'menu-terminal-browser': 'browser',
+    'menu-terminal-youtube': 'browser',
+    'menu-game-tictactoe': 'whiteboard',
+  };
+  function updateMenuPermVisuals() {
+    const guest = isGuest();
+    Object.entries(MENU_PERM_MAP).forEach(([id, perm]) => {
+      const el = $(id);
+      if (!el) return;
+      const blocked = guest && !hasPermission(perm);
+      el.style.opacity = blocked ? '0.35' : '';
+      el.style.pointerEvents = blocked ? 'none' : '';
+    });
+  }
+  on('session:info', updateMenuPermVisuals);
+  on('permissions:changed', updateMenuPermVisuals);
 }
 
 export function closeMenubar() {
@@ -132,6 +163,7 @@ function openMenuById(menuId) {
     // Trigger content rendering for data-driven panels
     if (menuId === 'bookmarks') emit('bookmarks:render');
     if (menuId === 'layouts') emit('layouts:render');
+    if (menuId === 'resume') emit('resume:render');
   }
 }
 
@@ -200,6 +232,22 @@ function wireGraphMenu() {
     });
   });
 
+  // Node limit radio group
+  const limitRadios = document.querySelectorAll('.menu-radio[data-group="node-limit"]');
+  if (limitRadios.length > 0) {
+    // Restore saved selection on load
+    const saved = localStorage.getItem('neural-node-limit') || '0';
+    limitRadios.forEach(r => r.classList.toggle('active', r.dataset.value === saved));
+
+    limitRadios.forEach(item => {
+      item.addEventListener('click', () => {
+        const value = parseInt(item.dataset.value, 10) || 0;
+        limitRadios.forEach(r => r.classList.toggle('active', r.dataset.value === item.dataset.value));
+        emit('node-limit-changed', value);
+      });
+    });
+  }
+
   // Reset Layout
   const resetItem = $('menu-reset-layout');
   if (resetItem) {
@@ -239,7 +287,35 @@ function wireSkillsMenu() {
   registerAction('open-skills', () => emit('skills:open'));
 }
 
-// ── Terminal Menu ──
+// ── Automations Menu ──
+
+function wireAutomationsMenu() {
+  const openItem = $('menu-open-automation-studio');
+  if (openItem) {
+    openItem.addEventListener('click', () => {
+      closeAll();
+      emit('automations:open');
+    });
+  }
+  const newItem = $('menu-automations-new');
+  if (newItem) {
+    newItem.addEventListener('click', () => {
+      closeAll();
+      emit('automations:open-wizard');
+    });
+  }
+  const importItem = $('menu-automations-import');
+  if (importItem) {
+    importItem.addEventListener('click', () => {
+      closeAll();
+      emit('automations:import');
+    });
+  }
+
+  registerAction('open-automations', () => emit('automations:open'));
+}
+
+// ── Apps Menu (formerly Terminal) ──
 
 function wireTerminalMenu() {
   const items = {
@@ -247,6 +323,13 @@ function wireTerminalMenu() {
     'menu-terminal-codex':   () => emit('terminal:open', { profile: 'codex' }),
     'menu-terminal-gemini':  () => emit('terminal:open', { profile: 'gemini' }),
     'menu-terminal-shell':   () => emit('terminal:open', { profile: 'shell' }),
+    'menu-terminal-browser': () => emit('browser:open'),
+    'menu-terminal-youtube': () => emit('browser:open', { url: 'https://www.youtube.com' }),
+    'menu-terminal-discord': () => emit('browser:open', { url: 'https://discord.com/app' }),
+    'menu-terminal-x':       () => emit('browser:open', { url: 'https://x.com' }),
+    'menu-terminal-whatsapp': () => emit('browser:open', { url: 'https://web.whatsapp.com' }),
+    'menu-command-runner':   () => emit('command-runner:open'),
+    'menu-terminal-link':    () => emit('link:toggle'),
     'menu-terminal-toggle':  () => emit('terminal:toggle'),
   };
   Object.entries(items).forEach(([id, handler]) => {
