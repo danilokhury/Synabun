@@ -119,6 +119,8 @@
     transform: scale(var(--ui-scale, 1));
     transform-origin: top left;
   }
+  /* Category sidebar scales from top-right since it's right-aligned */
+  #category-sidebar { transform-origin: top right; }
   /* Detail cards default transform origin */
   .detail-card { transform-origin: top left; }
 
@@ -5722,21 +5724,21 @@
   .skills-studio-panel > .resize-handle-tr { top: 0; z-index: 25; }
 
   /* ═══════════════════════════════════════════
-     CATEGORY SIDEBAR (left)
+     CATEGORY SIDEBAR (right)
      ═══════════════════════════════════════════ */
   #category-sidebar {
     position: fixed;
-    top: 52px;
-    left: calc(var(--explorer-width, 0px) + 20px);
-    transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+    top: 100px;
+    right: 20px;
+    left: auto;
     z-index: 100;
     padding: 0;
-    max-height: calc(100vh - 80px);
+    max-height: calc(100vh - 120px);
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    width: 220px;
-    min-width: 160px;
+    width: 380px;
+    min-width: 200px;
     min-height: 100px;
   }
   #category-sidebar-body {
