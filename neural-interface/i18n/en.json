@@ -48,7 +48,9 @@
     "view": "View",
     "graph": "Graph",
     "skills": "Skills",
-    "terminal": "Terminal",
+    "automations": "Automations",
+    "games": "Games",
+    "apps": "Apps",
     "bookmarks": "Bookmarks",
     "layouts": "Layouts",
     "trash": "Trash",
@@ -70,6 +72,7 @@
       "linksAll": "All Links",
       "linkTypeGroup": "Link Type",
       "allTypes": "All Types",
+      "nodeLimitGroup": "Node Limit",
       "resetLayout": "Reset Layout"
     },
     "skills": {
@@ -77,11 +80,21 @@
       "newSkill": "New Skill...",
       "import": "Import..."
     },
-    "terminal": {
+    "automations": {
+      "studio": "Automation Studio",
+      "newAutomation": "New Automation...",
+      "import": "Import..."
+    },
+    "games": {
+      "ticTacToe": "Tic Tac Toe"
+    },
+    "apps": {
       "claudeCode": "Claude Code",
       "codexCli": "Codex CLI",
       "geminiCli": "Gemini CLI",
       "shell": "Shell",
+      "browser": "Browser",
+      "youtube": "YouTube",
       "showTerminal": "Show Terminal"
     }
   },
@@ -107,7 +120,7 @@
   "loading": {
     "connecting": "Connecting",
     "initializingNeural": "Initializing neural pathways...",
-    "startDocker": "Start Docker",
+    "startServer": "Start Server",
     "starting": "Starting...",
     "takeMoment": "This may take a moment...",
     "couldNotStart": "Could not start. Try again.",
@@ -123,17 +136,9 @@
     "serverNotRunning": "The Neural Interface server is not running",
     "connectionFailed": "Connection Failed",
     "health": {
-      "dockerNotRunning": {
-        "title": "Database Offline",
-        "sub": "The memory database needs to be started"
-      },
-      "containerStopped": {
-        "title": "Database Stopped",
-        "sub": "The memory database was stopped"
-      },
-      "qdrantUnreachable": {
+      "databaseUnreachable": {
         "title": "Database Unreachable",
-        "sub": "The database engine is not responding"
+        "sub": "The SQLite database file is missing or inaccessible"
       },
       "remoteUnreachable": {
         "title": "Connection Failed",
@@ -374,7 +379,7 @@
       "interface": "Interface"
     },
     "server": {
-      "qdrantUrl": "Qdrant URL",
+      "databasePath": "Database Path",
       "apiKey": "API Key",
       "collection": "Collection",
       "status": "Status",
@@ -393,7 +398,7 @@
       "active": "Active",
       "switch": "Switch",
       "remove": "Remove",
-      "offline": "This connection is offline. Start the container first.",
+      "offline": "This connection is offline. Start the server first.",
       "removeConfirm": "Remove connection '{name}'? This will delete all local data for this connection.",
       "failedSwitch": "Failed to switch connection",
       "failedRemove": "Failed to remove connection",
@@ -405,7 +410,7 @@
       "title": "Collections",
       "restoreCollection": "Restore Collection",
       "restoreFromBackup": "Restore from Backup",
-      "qdrantUrl": "Qdrant URL",
+      "databasePath": "Database Path",
       "apiKey": "API Key",
       "collectionName": "Collection Name",
       "labelOptional": "Label (optional)",
@@ -417,23 +422,21 @@
     },
     "addCollection": {
       "title": "New Collection",
-      "newDocker": "New Docker Instance",
-      "newDockerDesc": "Spin up a fresh Qdrant container",
-      "existingInstance": "Existing Instance",
-      "existingInstanceDesc": "Connect to a running Qdrant server",
-      "configureContainer": "Configure Container",
+      "newDatabase": "New Database",
+      "newDatabaseDesc": "Create a new SQLite database file",
+      "existingDatabase": "Existing Database",
+      "existingDatabaseDesc": "Connect to an existing SQLite database",
+      "configureDatabase": "Configure Database",
       "instanceDetails": "Instance Details",
       "label": "Label",
       "collectionName": "Collection Name",
-      "httpPort": "HTTP Port",
-      "grpcPort": "gRPC Port",
       "apiKeyOptional": "API Key (optional)",
       "placeholderLabel": "My Memory",
       "placeholderCollection": "claude_memory",
-      "startContainer": "Start Container",
+      "startDatabase": "Start Database",
       "createCollection": "Create Collection",
       "testAndCreate": "Test & Create",
-      "startingDocker": "Starting Docker container...",
+      "startingDatabase": "Initializing database...",
       "creatingCollection": "Creating collection...",
       "testingConnection": "Testing connection...",
       "confirmAndSave": "Confirm & Save",
@@ -736,8 +739,8 @@
       "optional": "Optional"
     },
     "apiKey": {
-      "title": "Qdrant API Key",
-      "subtitle": "Secure your local Qdrant instance with a password.",
+      "title": "Database Setup",
+      "subtitle": "Configure your local SQLite database.",
       "show": "Show",
       "hide": "Hide",
       "generate": "Generate",
@@ -763,23 +766,17 @@
       "notRequired": "Not required for local providers.",
       "apiKeyLabel": "API Key"
     },
-    "qdrant": {
-      "title": "Spin Up Qdrant",
-      "localDocker": "Local (Docker)",
-      "remoteCloud": "Remote / Cloud",
+    "database": {
+      "title": "Set Up Database",
+      "localFile": "Local (File)",
       "advanced": "Advanced",
-      "hidePorts": "Hide Ports",
-      "waiting": "Waiting to start...",
-      "startQdrant": "Start Qdrant",
-      "qdrantUrl": "Qdrant URL",
-      "apiKey": "API Key",
-      "clusterName": "Cluster Name",
-      "testConnection": "Test Connection",
-      "detected": "Qdrant detected on port {port}!",
-      "notDetected": "No Qdrant on port {port}",
-      "cloudConnected": "Connected to Qdrant Cloud!",
-      "dockerNotResponding": "Docker started but Qdrant not responding yet...",
-      "dockerFailed": "Failed to start Docker container"
+      "waiting": "Waiting to initialize...",
+      "startDatabase": "Initialize Database",
+      "databasePath": "Database Path",
+      "testConnection": "Test Database",
+      "detected": "Database ready at {path}!",
+      "notDetected": "Database not found at {path}",
+      "initFailed": "Failed to initialize database"
     },
     "build": {
       "title": "Build MCP Server",
@@ -801,12 +798,9 @@
     },
     "complete": {
       "title": "Setup Complete!",
-      "qdrantKeyConfigured": "Qdrant API key configured",
-      "qdrantCloudConnected": "Qdrant Cloud connected",
+      "databaseReady": "SQLite database initialized",
       "memoryNameSet": "Memory name set: {name}",
-      "embeddingProvider": "Embedding provider: {provider}",
-      "qdrantRunning": "Qdrant running on port {port}",
-      "connectedToCloud": "Connected to Qdrant Cloud",
+      "embeddingProvider": "Local embeddings (Transformers.js)",
       "mcpBuilt": "MCP server built",
       "toolConfigured": "Tool configured: {tool}",
       "restartWarning": "Restart required \u2014 restart your AI tool to load the new MCP server",

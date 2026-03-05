@@ -3,9 +3,9 @@ import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, dirname, extname, join, resolve } from 'path';
 import { config as dotenvConfig } from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, renameSync, cpSync, appendFileSync } from 'fs';
-import { randomBytes, createHash } from 'crypto';
-import { exec, execSync, spawn } from 'child_process';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, renameSync, cpSync, appendFileSync, openSync, readSync, closeSync } from 'fs';
+import { randomBytes, randomUUID, createHash } from 'crypto';
+import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
 import { Readable } from 'stream';
 import { createConnection as netConnect } from 'net';
@@ -14,6 +14,22 @@ import os from 'node:os';
 import pty from 'node-pty';
 import archiver from 'archiver';
 import AdmZip from 'adm-zip';
+import { chromium } from 'playwright-core';
+import { VTermBuffer } from './public/shared/vterm-buffer.js';
+import { startIndexing, getIndexingStatus, mirrorExistingChunks } from './lib/session-indexer.js';
+import { ensureProjectCategories } from '../hooks/claude-code/shared.mjs';
+import {
+  getDb, closeDb, getDbPath, getEmbedding, getEmbeddingBatch, getEmbeddingDims, warmupEmbeddings,
+  encodeVector, decodeVector, cosineSimilarity,
+  searchMemories as dbSearchMemories, getAllMemories, getAllMemoriesWithVectors,
+  getMemoryById, getMemoryWithVector, updateMemoryPayload,
+  softDeleteMemory, hardDeleteMemory, restoreMemory as dbRestoreMemory,
+  getTrashedMemories, purgeTrash, countMemories, getMemoryStats,
+  getMemoriesByCategory, updateMemoriesCategory,
+  getCategories as dbGetCategories, saveCategories as dbSaveCategories,
+  countSessionChunks, searchSessionChunks as dbSearchSessionChunks,
+  getKvConfig, setKvConfig, EMBEDDING_MODEL,
+} from './lib/db.js';
 
 const execAsync = promisify(exec);
 
@@ -24,64 +40,111 @@ const __dirname = dirname(__filename);
 dotenvConfig({ path: resolve(__dirname, '..', '.env') });
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 
-// Block tunnel traffic from accessing anything except /mcp
+// Block tunnel traffic from accessing anything except /mcp and /invite
 // Cloudflared adds CF-Connecting-IP header on proxied requests
-const TUNNEL_ALLOWED = ['/mcp'];
+const TUNNEL_ALLOWED = ['/mcp', '/invite'];
+
+// Simple cookie parser (no dependency)
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  if (!cookieHeader) return cookies;
+  cookieHeader.split(';').forEach(part => {
+    const [k, ...v] = part.trim().split('=');
+    if (k) cookies[k.trim()] = decodeURIComponent(v.join('=').trim());
+  });
+  return cookies;
+}
+
+// Check if request has a valid invite session cookie
+function isValidInviteSession(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies['synabun_invite'];
+  if (!token) return false;
+  const session = inviteSessions.get(token);
+  if (!session) return false;
+  // 24-hour TTL
+  if (Date.now() - session.createdAt > 24 * 60 * 60 * 1000) {
+    inviteSessions.delete(token);
+    persistInviteSessions();
+    return false;
+  }
+  session.lastSeen = Date.now();
+  return true;
+}
+
 app.use((req, res, next) => {
-  if (req.headers['cf-connecting-ip'] && !TUNNEL_ALLOWED.some(p => req.path.startsWith(p))) {
+  if (req.headers['cf-connecting-ip']) {
+    // Allow explicitly permitted paths
+    if (TUNNEL_ALLOWED.some(p => req.path.startsWith(p))) return next();
+    // Allow cookie-authenticated invite sessions (full UI access)
+    if (isValidInviteSession(req)) return next();
     return res.status(403).json({ error: 'Forbidden' });
   }
   next();
 });
 
+// Guest detection — works for both Cloudflare tunnel and custom proxy
+function isGuestRequest(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies['synabun_invite'];
+  return !!token && inviteSessions.has(token);
+}
+
+// Admin-only protection — block guests from sensitive endpoints
+const ADMIN_ONLY_PREFIXES = [
+  '/api/settings', '/api/display-settings',
+  '/api/connections', '/api/setup', '/api/system',
+  '/api/invite/key', '/api/invite/sessions', '/api/invite/proxy', '/api/invite/permissions',
+  '/api/claude-code', '/api/mcp-key',
+  '/api/tunnel/start', '/api/tunnel/stop',
+  '/api/bridges', '/api/keybinds',
+  '/api/cli',
+];
+
+app.use((req, res, next) => {
+  if (isGuestRequest(req) && ADMIN_ONLY_PREFIXES.some(p => req.path.startsWith(p))) {
+    return res.status(403).json({ error: 'Admin only' });
+  }
+  next();
+});
+
+// Feature permission enforcement — block guest mutations for disabled features
+const FEATURE_PERMISSION_MAP = [
+  { prefix: '/api/terminal',      perm: 'terminal' },
+  { prefix: '/api/whiteboard',    perm: 'whiteboard' },
+  { prefix: '/api/memory',        perm: 'memories' },
+  { prefix: '/api/categories',    perm: 'memories' },
+  { prefix: '/api/trash',         perm: 'memories' },
+  { prefix: '/api/skills-studio', perm: 'skills' },
+  { prefix: '/api/browser',       perm: 'browser' },
+  { prefix: '/api/cards',         perm: 'cards' },
+];
+
+app.use((req, res, next) => {
+  if (req.method !== 'GET' && isGuestRequest(req)) {
+    const match = FEATURE_PERMISSION_MAP.find(m => req.path.startsWith(m.prefix));
+    if (match && !invitePermissions[match.perm]) {
+      return res.status(403).json({ error: 'Feature not enabled' });
+    }
+  }
+  next();
+});
+
 const PORT = process.env.NEURAL_PORT || 3344;
-let QDRANT_URL = process.env.QDRANT_MEMORY_URL || `http://localhost:${process.env.QDRANT_PORT || '6333'}`;
-let QDRANT_KEY = process.env.QDRANT_MEMORY_API_KEY || 'claude-memory-local-key';
-let COLLECTION = process.env.QDRANT_MEMORY_COLLECTION || 'claude_memory';
-let OPENAI_KEY = process.env.OPENAI_EMBEDDING_API_KEY || process.env.OPENAI_API_KEY || '';
-let EMBEDDING_BASE_URL = process.env.EMBEDDING_BASE_URL || 'https://api.openai.com/v1';
-let EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
-let EMBEDDING_DIMS = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10);
+// SQLite database is used directly via lib/db.js
+const EMBEDDING_DIMS = getEmbeddingDims();
 const PROJECT_ROOT = resolve(__dirname, '..');
 
-// Reload config vars from .env (single source of truth for everything)
+// Reload config — close cached DB so getDb() reopens at the current SQLITE_DB_PATH
 function reloadConfig() {
-  const vars = parseEnvFile(ENV_PATH); // Returns {} if .env doesn't exist yet
-
-  // Embedding config: prefer namespaced, fall back to flat keys
-  const embActiveId = vars.EMBEDDING_ACTIVE;
-  if (embActiveId && vars[`EMBEDDING__${embActiveId}__API_KEY`]) {
-    OPENAI_KEY = vars[`EMBEDDING__${embActiveId}__API_KEY`];
-    EMBEDDING_BASE_URL = vars[`EMBEDDING__${embActiveId}__BASE_URL`] || 'https://api.openai.com/v1';
-    EMBEDDING_MODEL = vars[`EMBEDDING__${embActiveId}__MODEL`] || 'text-embedding-3-small';
-    EMBEDDING_DIMS = parseInt(vars[`EMBEDDING__${embActiveId}__DIMENSIONS`] || '1536', 10);
-  } else {
-    // Backward compat with flat keys
-    OPENAI_KEY = vars.OPENAI_EMBEDDING_API_KEY || vars.OPENAI_API_KEY || '';
-    EMBEDDING_BASE_URL = vars.EMBEDDING_BASE_URL || 'https://api.openai.com/v1';
-    EMBEDDING_MODEL = vars.EMBEDDING_MODEL || 'text-embedding-3-small';
-    EMBEDDING_DIMS = parseInt(vars.EMBEDDING_DIMENSIONS || '1536', 10);
-  }
-
-  // Qdrant config: from QDRANT_ACTIVE + QDRANT__<id>__* entries in .env
-  const connData = loadQdrantConnections();
-  const activeConn = connData.active ? connData.connections[connData.active] : null;
-  if (activeConn?.url && activeConn?.apiKey && activeConn?.collection) {
-    QDRANT_URL = activeConn.url;
-    QDRANT_KEY = activeConn.apiKey;
-    COLLECTION = activeConn.collection;
-  } else {
-    // Final fallback to legacy flat keys
-    const port = vars.QDRANT_PORT || '6333';
-    QDRANT_URL = vars.QDRANT_MEMORY_URL || `http://localhost:${port}`;
-    QDRANT_KEY = vars.QDRANT_MEMORY_API_KEY || 'claude-memory-local-key';
-    COLLECTION = vars.QDRANT_MEMORY_COLLECTION || 'claude_memory';
-  }
-
-  console.log(`  Config reloaded — Qdrant: ${QDRANT_URL}, Collection: ${COLLECTION}`);
+  closeDb();
+  console.log(`  Config reloaded — SQLite: ${getDbPath()}, Embedding: local (${EMBEDDING_DIMS}d)`);
 }
+
+// --- Reindex Job State ---
+let _reindexJob = null;
 
 // --- Category Helpers (per-connection) ---
 
@@ -91,6 +154,7 @@ const NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
 const CATEGORIES_POINT_ID = '00000000-0000-0000-0000-000000000000';
 
 // Default categories seeded on first startup (new connection)
+// Must stay in sync with hooks/claude-code/shared.mjs STANDALONE_DEFAULTS
 const DEFAULT_CATEGORIES = [
   {
     name: 'uncategorized',
@@ -104,6 +168,16 @@ const DEFAULT_CATEGORIES = [
     is_parent: true,
   },
   {
+    name: 'communication-style',
+    description: 'User communication patterns and preferences.',
+  },
+  {
+    name: 'plans',
+    description: 'Implementation plans stored after plan mode approval.',
+    color: '#06d6a0',
+    is_parent: true,
+  },
+  {
     name: 'ideas',
     description: 'Feature ideas, product concepts, brainstorms, and future plans. A general-purpose category for capturing forward-looking thoughts that haven\'t been implemented yet — new features to build, architectural experiments to try, UX improvements to explore, or any creative concept worth revisiting later.',
     color: '#f59e0b',
@@ -111,17 +185,14 @@ const DEFAULT_CATEGORIES = [
 ];
 
 function getCategoriesPath() {
-  const activeId = getActiveConnectionIdFromEnv() || 'default';
-  const perConnPath = resolve(CATEGORIES_DATA_DIR, `custom-categories-${activeId}.json`);
-
-  // If per-connection file doesn't exist, seed with defaults (Qdrant is source of truth)
-  if (!existsSync(perConnPath)) {
-    const dir = resolve(perConnPath, '..');
+  // Single categories file — no per-connection paths needed with SQLite
+  if (!existsSync(GLOBAL_CATEGORIES_PATH)) {
+    const dir = resolve(GLOBAL_CATEGORIES_PATH, '..');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(perConnPath, JSON.stringify({ version: 1, categories: DEFAULT_CATEGORIES }, null, 2), 'utf-8');
+    writeFileSync(GLOBAL_CATEGORIES_PATH, JSON.stringify({ version: 1, categories: DEFAULT_CATEGORIES }, null, 2), 'utf-8');
   }
 
-  return perConnPath;
+  return GLOBAL_CATEGORIES_PATH;
 }
 
 function loadCategories() {
@@ -143,52 +214,15 @@ function saveCategories(categories) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(filePath, JSON.stringify({ version: 1, categories }, null, 2), 'utf-8');
 
-  // Fire-and-forget write-through to Qdrant (source of truth)
-  saveCategoriesToQdrant(categories).catch(err => {
-    console.error('Failed to sync categories to Qdrant:', err.message);
-  });
+  // Write-through to SQLite categories table
+  try {
+    dbSaveCategories(categories);
+  } catch (err) {
+    console.error('Failed to sync categories to SQLite:', err.message);
+  }
 }
 
-async function saveCategoriesToQdrant(categories) {
-  const zeroVector = new Array(EMBEDDING_DIMS).fill(0);
-  await qdrantFetch('/points', {
-    method: 'PUT',
-    body: JSON.stringify({
-      points: [{
-        id: CATEGORIES_POINT_ID,
-        vector: zeroVector,
-        payload: {
-          _type: 'system_metadata',
-          metadata_key: 'categories',
-          categories,
-          updated_at: new Date().toISOString(),
-        },
-      }],
-    }),
-  });
-}
-
-// System metadata + trash exclusion filter for Qdrant queries
-// Uses is_empty (matches missing, null, and empty) since existing memories lack the trashed_at field
-const SYSTEM_METADATA_FILTER = {
-  must_not: [{ key: '_type', match: { value: 'system_metadata' } }],
-  must: [{ is_empty: { key: 'trashed_at' } }],
-};
-
-// Filter for viewing ONLY trashed items (inverted: must_not is_empty = field must be present and non-null)
-const TRASH_FILTER = {
-  must_not: [
-    { key: '_type', match: { value: 'system_metadata' } },
-    { is_empty: { key: 'trashed_at' } },
-  ],
-};
-
-function mergeExclusionFilter(existingFilter) {
-  if (!existingFilter) return { ...SYSTEM_METADATA_FILTER };
-  const mustNot = [...(existingFilter.must_not || []), ...SYSTEM_METADATA_FILTER.must_not];
-  const must = [...(existingFilter.must || []), ...SYSTEM_METADATA_FILTER.must];
-  return { ...existingFilter, must_not: mustNot, must };
-}
+// SQLite queries use direct WHERE clauses
 
 // --- .env Helpers ---
 
@@ -213,20 +247,13 @@ function parseEnvFile(filePath) {
 
 function writeEnvFile(filePath, vars) {
   const globalVars = {};
-  const qdrantVars = {};    // { connectionId: { FIELD: value } }
-  const embeddingVars = {}; // { providerId: { FIELD: value } }
   const bridgeVars = {};    // { bridgeId: { FIELD: value } }
 
   for (const [key, value] of Object.entries(vars)) {
     let match;
-    if ((match = key.match(/^QDRANT__([a-z0-9_]+)__(.+)$/))) {
-      const [, id, field] = match;
-      if (!qdrantVars[id]) qdrantVars[id] = {};
-      qdrantVars[id][field] = value;
-    } else if ((match = key.match(/^EMBEDDING__([a-z0-9_]+)__(.+)$/))) {
-      const [, id, field] = match;
-      if (!embeddingVars[id]) embeddingVars[id] = {};
-      embeddingVars[id][field] = value;
+    // Skip legacy env vars
+    if (key.match(/^QDRANT__|^EMBEDDING__|^QDRANT_ACTIVE$|^EMBEDDING_ACTIVE$|^OPENAI_EMBEDDING_API_KEY$|^OPENAI_API_KEY$/)) {
+      continue;
     } else if ((match = key.match(/^BRIDGE__([a-z0-9_]+)__(.+)$/))) {
       const [, id, field] = match;
       if (!bridgeVars[id]) bridgeVars[id] = {};
@@ -237,56 +264,6 @@ function writeEnvFile(filePath, vars) {
   }
 
   const lines = [];
-
-  // Section: Embedding providers (namespaced)
-  const embIds = Object.keys(embeddingVars).sort();
-  if (embIds.length > 0) {
-    for (const id of embIds) {
-      const fields = embeddingVars[id];
-      const label = fields.LABEL || id.replace(/_/g, ' ');
-      lines.push(`# -- Embedding: ${id} (${label}) --`);
-      for (const field of ['API_KEY', 'BASE_URL', 'MODEL', 'DIMENSIONS', 'LABEL']) {
-        if (fields[field] !== undefined) lines.push(`EMBEDDING__${id}__${field}=${fields[field]}`);
-      }
-      lines.push('');
-    }
-  }
-
-  // EMBEDDING_ACTIVE selector
-  if (globalVars.EMBEDDING_ACTIVE) {
-    lines.push(`EMBEDDING_ACTIVE=${globalVars.EMBEDDING_ACTIVE}`);
-    lines.push('');
-    delete globalVars.EMBEDDING_ACTIVE;
-  }
-
-  // Legacy flat embedding keys (backward compat)
-  const legacyEmbeddingKeys = ['OPENAI_EMBEDDING_API_KEY', 'OPENAI_API_KEY', 'EMBEDDING_BASE_URL', 'EMBEDDING_MODEL', 'EMBEDDING_DIMENSIONS'];
-  const hasLegacy = legacyEmbeddingKeys.some(k => globalVars[k] !== undefined);
-  if (hasLegacy) {
-    for (const k of legacyEmbeddingKeys) {
-      if (globalVars[k] !== undefined) { lines.push(`${k}=${globalVars[k]}`); delete globalVars[k]; }
-    }
-    lines.push('');
-  }
-
-  // QDRANT_ACTIVE selector
-  if (globalVars.QDRANT_ACTIVE) {
-    lines.push(`QDRANT_ACTIVE=${globalVars.QDRANT_ACTIVE}`);
-    lines.push('');
-    delete globalVars.QDRANT_ACTIVE;
-  }
-
-  // Section: Per-connection Qdrant entries
-  const connIds = Object.keys(qdrantVars).sort();
-  for (const connId of connIds) {
-    const fields = qdrantVars[connId];
-    const label = fields.LABEL || connId.replace(/_/g, '-');
-    lines.push(`# -- Qdrant: ${connId} (${label}) --`);
-    for (const field of ['URL', 'PORT', 'GRPC_PORT', 'API_KEY', 'COLLECTION', 'LABEL']) {
-      if (fields[field] !== undefined) lines.push(`QDRANT__${connId}__${field}=${fields[field]}`);
-    }
-    lines.push('');
-  }
 
   // Section: Bridges
   const bridgeIds = Object.keys(bridgeVars).sort();
@@ -310,107 +287,7 @@ function writeEnvFile(filePath, vars) {
   writeFileSync(filePath, lines.join('\n'), 'utf-8');
 }
 
-function extractPort(url) {
-  try {
-    const parsed = new URL(url);
-    return parseInt(parsed.port, 10) || 6333;
-  } catch {
-    const m = (url || '').match(/:(\d+)\/?$/);
-    return m ? parseInt(m[1], 10) : 6333;
-  }
-}
-
-// --- .env-based Config Layer (replaces connections.json) ---
-
-/**
- * Parse all QDRANT__<id>__<FIELD> entries from .env into a connections structure.
- */
-function loadQdrantConnections() {
-  const vars = parseEnvFile(ENV_PATH);
-  const active = vars.QDRANT_ACTIVE || null;
-  const connections = {};
-
-  for (const [key, value] of Object.entries(vars)) {
-    const match = key.match(/^QDRANT__([a-z0-9_]+)__(.+)$/);
-    if (!match) continue;
-    const connId = match[1];
-    const field = match[2];
-    if (!connections[connId]) connections[connId] = {};
-    connections[connId][field] = value;
-  }
-
-  const result = {};
-  for (const [id, fields] of Object.entries(connections)) {
-    const port = parseInt(fields.PORT || '6333', 10);
-    result[id] = {
-      label: fields.LABEL || id.replace(/_/g, ' '),
-      url: fields.URL || `http://localhost:${port}`,
-      apiKey: fields.API_KEY || '',
-      collection: fields.COLLECTION || 'claude_memory',
-      port,
-      grpcPort: parseInt(fields.GRPC_PORT || String(port + 1), 10),
-    };
-  }
-
-  return { active, connections: result };
-}
-
-/**
- * Save a Qdrant connection to .env by writing/updating QDRANT__<id>__* entries.
- */
-function saveQdrantConnection(id, conn, setActive = false) {
-  const vars = parseEnvFile(ENV_PATH);
-  const envId = id.replace(/-/g, '_');
-  const port = conn.port || extractPort(conn.url);
-
-  vars[`QDRANT__${envId}__PORT`] = String(port);
-  vars[`QDRANT__${envId}__GRPC_PORT`] = String(conn.grpcPort || port + 1);
-  vars[`QDRANT__${envId}__API_KEY`] = conn.apiKey;
-  vars[`QDRANT__${envId}__COLLECTION`] = conn.collection;
-  vars[`QDRANT__${envId}__LABEL`] = conn.label || id;
-  // Store explicit URL for remote instances (not just localhost)
-  if (conn.url && !conn.url.match(/^https?:\/\/localhost:\d+\/?$/)) {
-    vars[`QDRANT__${envId}__URL`] = conn.url;
-  }
-
-  if (setActive) {
-    vars.QDRANT_ACTIVE = envId;
-  }
-
-  writeEnvFile(ENV_PATH, vars);
-}
-
-/**
- * Remove a Qdrant connection from .env.
- */
-function removeQdrantConnection(id) {
-  const vars = parseEnvFile(ENV_PATH);
-  const envId = id.replace(/-/g, '_');
-  const prefix = `QDRANT__${envId}__`;
-
-  for (const key of Object.keys(vars)) {
-    if (key.startsWith(prefix)) delete vars[key];
-  }
-
-  writeEnvFile(ENV_PATH, vars);
-}
-
-/**
- * Set the active Qdrant connection ID in .env.
- */
-function setActiveQdrantConnection(id) {
-  const vars = parseEnvFile(ENV_PATH);
-  vars.QDRANT_ACTIVE = id.replace(/-/g, '_');
-  writeEnvFile(ENV_PATH, vars);
-}
-
-/**
- * Get the active connection ID from .env.
- */
-function getActiveConnectionIdFromEnv() {
-  const vars = parseEnvFile(ENV_PATH);
-  return vars.QDRANT_ACTIVE || null;
-}
+// --- Connection management removed (SQLite uses a single local file) ---
 
 // --- Bridge Helpers (read/write BRIDGE__<id>__* in .env) ---
 
@@ -458,75 +335,7 @@ function removeBridgeConfig(bridgeId) {
   writeEnvFile(ENV_PATH, vars);
 }
 
-// --- Migration: connections.json → .env ---
-
-function migrateConnectionsJsonToEnv() {
-  const connectionsPath = resolve(__dirname, '..', 'connections.json');
-  if (!existsSync(connectionsPath)) return;
-
-  console.log('  Migrating connections.json → .env ...');
-
-  try {
-    const data = JSON.parse(readFileSync(connectionsPath, 'utf-8'));
-    const vars = parseEnvFile(ENV_PATH);
-
-    // 1. Migrate Qdrant connections
-    if (data.connections) {
-      for (const [id, conn] of Object.entries(data.connections)) {
-        const envId = id.replace(/-/g, '_');
-        const port = extractPort(conn.url);
-        vars[`QDRANT__${envId}__PORT`] = String(port);
-        vars[`QDRANT__${envId}__GRPC_PORT`] = String(port + 1);
-        vars[`QDRANT__${envId}__API_KEY`] = conn.apiKey;
-        vars[`QDRANT__${envId}__COLLECTION`] = conn.collection;
-        vars[`QDRANT__${envId}__LABEL`] = conn.label || id;
-        if (conn.url && !conn.url.match(/^https?:\/\/localhost:\d+\/?$/)) {
-          vars[`QDRANT__${envId}__URL`] = conn.url;
-        }
-      }
-    }
-
-    // 2. Migrate active connection
-    if (data.active) {
-      vars.QDRANT_ACTIVE = data.active.replace(/-/g, '_');
-    }
-
-    // 3. Migrate bridges
-    if (data.bridges) {
-      for (const [bridgeId, bridge] of Object.entries(data.bridges)) {
-        vars[`BRIDGE__${bridgeId}__ENABLED`] = String(bridge.enabled ?? false);
-        if (bridge.workspacePath) vars[`BRIDGE__${bridgeId}__WORKSPACE_PATH`] = bridge.workspacePath;
-        if (bridge.lastSync) vars[`BRIDGE__${bridgeId}__LAST_SYNC`] = bridge.lastSync;
-      }
-    }
-
-    // 4. Migrate flat embedding keys to namespaced format
-    if (vars.OPENAI_EMBEDDING_API_KEY && !Object.keys(vars).some(k => k.startsWith('EMBEDDING__'))) {
-      const embId = 'openai_main';
-      vars.EMBEDDING_ACTIVE = embId;
-      vars[`EMBEDDING__${embId}__API_KEY`] = vars.OPENAI_EMBEDDING_API_KEY;
-      if (vars.EMBEDDING_BASE_URL) vars[`EMBEDDING__${embId}__BASE_URL`] = vars.EMBEDDING_BASE_URL;
-      if (vars.EMBEDDING_MODEL) vars[`EMBEDDING__${embId}__MODEL`] = vars.EMBEDDING_MODEL;
-      if (vars.EMBEDDING_DIMENSIONS) vars[`EMBEDDING__${embId}__DIMENSIONS`] = vars.EMBEDDING_DIMENSIONS;
-      vars[`EMBEDDING__${embId}__LABEL`] = 'OpenAI Main';
-    }
-
-    // 5. Clean up legacy flat Qdrant keys
-    delete vars.QDRANT_PORT;
-    delete vars.QDRANT_GRPC_PORT;
-    delete vars.QDRANT_MEMORY_API_KEY;
-    delete vars.QDRANT_MEMORY_URL;
-    delete vars.QDRANT_MEMORY_COLLECTION;
-
-    writeEnvFile(ENV_PATH, vars);
-
-    // 6. Rename connections.json to connections.json.bak
-    renameSync(connectionsPath, connectionsPath + '.bak');
-    console.log(`  Migration complete — ${Object.keys(data.connections || {}).length} connections migrated. connections.json renamed to .bak`);
-  } catch (err) {
-    console.error('  Migration failed:', err.message);
-  }
-}
+// migrateConnectionsJsonToEnv() removed
 
 function maskKey(value) {
   if (!value) return '';
@@ -538,106 +347,212 @@ function maskKey(value) {
 app.get('/', (req, res, next) => {
   const vars = parseEnvFile(ENV_PATH);
   if (vars.SETUP_COMPLETE === 'true') return next();
-  // Also allow through if .env has an active connection + embedding key
-  const connData = loadQdrantConnections();
-  const activeConn = connData.active ? connData.connections[connData.active] : null;
-  const hasConnection = !!(activeConn?.apiKey);
-  const hasEmbed = !!(vars.OPENAI_EMBEDDING_API_KEY || vars.EMBEDDING_ACTIVE);
-  if (hasConnection && hasEmbed) return next();
+  // SQLite + local embeddings need no external config — check if DB exists
+  if (existsSync(getDbPath())) return next();
   res.redirect('/onboarding.html');
 });
 
 app.use('/i18n', express.static(join(__dirname, 'i18n')));
-app.use(express.static(join(__dirname, 'public')));
+app.use('/games', express.static(join(__dirname, 'games')));
+app.use(express.static(join(__dirname, 'public'), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'),
+}));
 
 // --- Helpers ---
 
-function qdrantHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    'api-key': QDRANT_KEY,
-  };
+// cosineSimilarity and getEmbedding imported from lib/db.js
+
+// --- Link cache ---
+let _linkCache = null;   // { links, pointCount, timestamp }
+const _LINK_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function invalidateMemoriesCache(reason) {
+  if (_linkCache) {
+    _linkCache = null;
+    console.log(`[cache] Link cache invalidated (${reason})`);
+  }
 }
 
-async function qdrantFetch(path, options = {}) {
-  const url = `${QDRANT_URL}/collections/${COLLECTION}${path}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: { ...qdrantHeaders(), ...(options.headers || {}) },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Qdrant ${res.status}: ${text}`);
-  }
-  return res.json();
-}
+/**
+ * Compute links between nodes. Uses pre-computed magnitudes and inverted indexes
+ * for file/tag overlap instead of O(n² × m) array intersections.
+ */
+function computeLinks(nodes) {
+  const SIM_THRESHOLD = 0.65;
+  const MAX_LINKS_PER_NODE = 8;
 
-function cosineSimilarity(a, b) {
-  let dot = 0, magA = 0, magB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    magA += a[i] * a[i];
-    magB += b[i] * b[i];
+  // Load categories to build parent lookup
+  let categoryParentMap = {};
+  try {
+    const catData = JSON.parse(readFileSync(getCategoriesPath(), 'utf-8'));
+    for (const cat of catData.categories) {
+      categoryParentMap[cat.name] = cat.parent || cat.name;
+    }
+  } catch (e) {
+    console.warn('Could not load categories for parent lookup:', e.message);
   }
-  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
-}
+  for (const cat of _openclawCategories) {
+    categoryParentMap[cat.name] = cat.parent || cat.name;
+  }
 
-async function getEmbedding(text) {
-  const res = await fetch(`${EMBEDDING_BASE_URL}/embeddings`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_KEY}`,
-    },
-    body: JSON.stringify({
-      model: EMBEDDING_MODEL,
-      input: text,
-      dimensions: EMBEDDING_DIMS,
-    }),
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Embedding API ${res.status}: ${errText}`);
+  const linkMap = new Map();
+  function addLink(idA, idB, str, type) {
+    const key = idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
+    const existing = linkMap.get(key);
+    if (existing) {
+      existing.strength = Math.max(existing.strength, str);
+      if (!existing.types.includes(type)) existing.types.push(type);
+    } else {
+      linkMap.set(key, { source: idA, target: idB, strength: str, types: [type] });
+    }
   }
-  const data = await res.json();
-  return data.data[0].embedding;
+
+  // Pre-compute vector magnitudes (halves cosine computation)
+  const magnitudes = new Float64Array(nodes.length);
+  for (let i = 0; i < nodes.length; i++) {
+    if (!nodes[i].vector) continue;
+    const v = nodes[i].vector;
+    let sum = 0;
+    for (let k = 0; k < v.length; k++) sum += v[k] * v[k];
+    magnitudes[i] = Math.sqrt(sum);
+  }
+
+  // Build inverted indexes for shared files and tags (O(n) instead of O(n²×m))
+  const fileIndex = new Map();  // filename → [nodeIndex, ...]
+  const tagIndex = new Map();   // tag → [nodeIndex, ...]
+  const nodeIdIndex = new Map(); // id → nodeIndex
+  for (let i = 0; i < nodes.length; i++) {
+    nodeIdIndex.set(nodes[i].id, i);
+    const p = nodes[i].payload;
+    if (p.related_files) {
+      for (const f of p.related_files) {
+        let arr = fileIndex.get(f);
+        if (!arr) { arr = []; fileIndex.set(f, arr); }
+        arr.push(i);
+      }
+    }
+    if (p.tags) {
+      for (const t of p.tags) {
+        let arr = tagIndex.get(t);
+        if (!arr) { arr = []; tagIndex.set(t, arr); }
+        arr.push(i);
+      }
+    }
+  }
+
+  // Cosine similarity + same-parent-category (still O(n²) for cosine, but optimized)
+  const t0 = Date.now();
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+
+      // Cosine similarity with pre-computed magnitudes
+      if (a.vector && b.vector && magnitudes[i] > 0 && magnitudes[j] > 0) {
+        let dot = 0;
+        const va = a.vector, vb = b.vector;
+        for (let k = 0; k < va.length; k++) dot += va[k] * vb[k];
+        const sim = dot / (magnitudes[i] * magnitudes[j]);
+        if (sim > SIM_THRESHOLD) {
+          addLink(a.id, b.id, (sim - SIM_THRESHOLD) / (1 - SIM_THRESHOLD), 'similarity');
+        }
+      }
+
+      // Same parent category
+      const parentA = categoryParentMap[a.payload.category];
+      const parentB = categoryParentMap[b.payload.category];
+      if (parentA && parentB && parentA === parentB) {
+        const pairKey = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
+        const existing = linkMap.get(pairKey);
+        if (!existing || existing.strength < 0.3) {
+          addLink(a.id, b.id, 0.2, 'family');
+        }
+      }
+    }
+
+    // Explicit related_memory_ids
+    if (a.payload.related_memory_ids) {
+      for (const relId of a.payload.related_memory_ids) {
+        if (nodeIdIndex.has(relId)) {
+          addLink(a.id, relId, 0.9, 'manual');
+        }
+      }
+    }
+  }
+
+  // Shared files via inverted index (O(pairs) not O(n²×m))
+  for (const [, indices] of fileIndex) {
+    if (indices.length < 2) continue;
+    for (let x = 0; x < indices.length; x++) {
+      for (let y = x + 1; y < indices.length; y++) {
+        const a = nodes[indices[x]], b = nodes[indices[y]];
+        // Count total shared files between this pair
+        const aFiles = new Set(a.payload.related_files);
+        const shared = b.payload.related_files.filter(f => aFiles.has(f)).length;
+        if (shared > 0) addLink(a.id, b.id, 0.3 + shared * 0.15, 'files');
+      }
+    }
+  }
+
+  // Shared tags via inverted index
+  for (const [, indices] of tagIndex) {
+    if (indices.length < 2) continue;
+    for (let x = 0; x < indices.length; x++) {
+      for (let y = x + 1; y < indices.length; y++) {
+        const a = nodes[indices[x]], b = nodes[indices[y]];
+        const aTags = new Set(a.payload.tags);
+        const shared = b.payload.tags.filter(t => aTags.has(t)).length;
+        if (shared > 0) addLink(a.id, b.id, 0.25 + shared * 0.1, 'tags');
+      }
+    }
+  }
+
+  const elapsed = Date.now() - t0;
+  console.log(`[links] Computed ${linkMap.size} raw links from ${nodes.length} nodes in ${elapsed}ms`);
+
+  // Filter and cap per node
+  const allCandidates = [];
+  for (const link of linkMap.values()) {
+    if (link.strength > 0.1) {
+      allCandidates.push({ source: link.source, target: link.target, strength: Math.min(link.strength, 1), types: link.types });
+    }
+  }
+  allCandidates.sort((a, b) => b.strength - a.strength);
+  const nodeLinkCount = new Map();
+  const links = [];
+  for (const link of allCandidates) {
+    const sc = nodeLinkCount.get(link.source) || 0;
+    const tc = nodeLinkCount.get(link.target) || 0;
+    const isManual = link.types.includes('manual');
+    if (!isManual && sc >= MAX_LINKS_PER_NODE && tc >= MAX_LINKS_PER_NODE) continue;
+    links.push(link);
+    nodeLinkCount.set(link.source, sc + 1);
+    nodeLinkCount.set(link.target, tc + 1);
+  }
+
+  return links;
 }
 
 // --- Routes ---
 
-// GET /api/memories — All memories with pre-computed graph edges
+// GET /api/memories — All memories, optionally with pre-computed graph edges
+// Use ?links=false to skip the expensive link computation (default for initial 3D load)
 app.get('/api/memories', async (req, res) => {
   try {
-    const allPoints = [];
-    let offset = null;
+    const includeLinks = req.query.links !== 'false';
 
-    // Paginated scroll to get all points
-    do {
-      const body = {
-        limit: 100,
-        with_payload: true,
-        with_vector: true,
-        filter: SYSTEM_METADATA_FILTER,
-      };
-      if (offset) body.offset = offset;
-
-      const result = await qdrantFetch('/points/scroll', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-
-      allPoints.push(...result.result.points);
-      offset = result.result.next_page_offset ?? null;
-    } while (offset);
+    const allPoints = includeLinks ? getAllMemoriesWithVectors() : getAllMemories();
 
     // Build nodes
     const nodes = allPoints.map(p => ({
       id: p.id,
-      payload: p.payload,
-      vector: p.vector,
+      payload: { content: p.content, category: p.category, subcategory: p.subcategory, project: p.project, tags: p.tags, importance: p.importance, source: p.source, created_at: p.created_at, updated_at: p.updated_at, accessed_at: p.accessed_at, access_count: p.access_count, related_files: p.related_files, related_memory_ids: p.related_memory_ids, file_checksums: p.file_checksums, trashed_at: p.trashed_at, source_session_chunks: p.source_session_chunks },
+      vector: p.vector || null,
     }));
 
-    // --- Merge OpenClaw bridge nodes (no vectors, no cosine links) ---
+    // Merge OpenClaw bridge nodes
     const ocBridge = loadBridgeConfig('openclaw');
     if (ocBridge?.enabled && _openclawNodes.length > 0) {
       for (const ocNode of _openclawNodes) {
@@ -645,95 +560,19 @@ app.get('/api/memories', async (req, res) => {
       }
     }
 
-    // Build links via cosine similarity + shared related files + parent category + shared tags + manual links
-    const SIM_THRESHOLD = 0.65;
-
-    // Load categories to build parent lookup
-    let categoryParentMap = {};
-    try {
-      const catData = JSON.parse(readFileSync(getCategoriesPath(), 'utf-8'));
-      for (const cat of catData.categories) {
-        // Map each category to its parent (or itself if it's a top-level parent)
-        categoryParentMap[cat.name] = cat.parent || cat.name;
-      }
-    } catch (e) {
-      console.warn('Could not load categories for parent lookup:', e.message);
-    }
-    // Add ephemeral OpenClaw categories to parent map
-    for (const cat of _openclawCategories) {
-      categoryParentMap[cat.name] = cat.parent || cat.name;
-    }
-
-    // Track link pairs to merge types when multiple methods connect the same pair
-    const linkMap = new Map(); // "idA|idB" → { source, target, strength, types[] }
-    function addLink(idA, idB, str, type) {
-      const key = idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
-      const existing = linkMap.get(key);
-      if (existing) {
-        existing.strength = Math.max(existing.strength, str);
-        if (!existing.types.includes(type)) existing.types.push(type);
+    // Compute or skip links
+    let links = [];
+    if (includeLinks) {
+      if (_linkCache && _linkCache.pointCount === allPoints.length && (Date.now() - _linkCache.timestamp < _LINK_CACHE_TTL)) {
+        links = _linkCache.links;
+        console.log(`[cache] Serving ${links.length} cached links`);
       } else {
-        linkMap.set(key, { source: idA, target: idB, strength: str, types: [type] });
+        links = computeLinks(nodes);
+        _linkCache = { links, pointCount: allPoints.length, timestamp: Date.now() };
       }
     }
 
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i];
-        const b = nodes[j];
-
-        // Cosine similarity — "Similar Content"
-        if (a.vector && b.vector) {
-          const sim = cosineSimilarity(a.vector, b.vector);
-          if (sim > SIM_THRESHOLD) {
-            const str = (sim - SIM_THRESHOLD) / (1 - SIM_THRESHOLD);
-            addLink(a.id, b.id, str, 'similarity');
-          }
-        }
-
-        // Shared related files — "Shared Files"
-        if (a.payload.related_files && b.payload.related_files) {
-          const shared = a.payload.related_files.filter(f => b.payload.related_files.includes(f));
-          if (shared.length > 0) {
-            addLink(a.id, b.id, 0.3 + shared.length * 0.15, 'files');
-          }
-        }
-
-        // Same parent category — "Same Family"
-        const parentA = categoryParentMap[a.payload.category];
-        const parentB = categoryParentMap[b.payload.category];
-        if (parentA && parentB && parentA === parentB) {
-          addLink(a.id, b.id, 0.2, 'family');
-        }
-
-        // Shared tags — "Shared Tags"
-        if (a.payload.tags && b.payload.tags) {
-          const sharedTags = a.payload.tags.filter(t => b.payload.tags.includes(t));
-          if (sharedTags.length > 0) {
-            addLink(a.id, b.id, 0.25 + sharedTags.length * 0.1, 'tags');
-          }
-        }
-      }
-
-      // Explicit related_memory_ids — "Manually Linked"
-      if (nodes[i].payload.related_memory_ids) {
-        for (const relId of nodes[i].payload.related_memory_ids) {
-          if (nodes.some(n => n.id === relId)) {
-            addLink(nodes[i].id, relId, 0.9, 'manual');
-          }
-        }
-      }
-    }
-
-    // Filter to only links above threshold
-    const links = [];
-    for (const link of linkMap.values()) {
-      if (link.strength > 0.1) {
-        links.push({ source: link.source, target: link.target, strength: Math.min(link.strength, 1), types: link.types });
-      }
-    }
-
-    // Strip vectors from response (too large for client)
+    // Strip vectors from response
     const clientNodes = nodes.map(({ vector, ...rest }) => rest);
 
     res.json({ nodes: clientNodes, links, totalVectors: allPoints.length, openclawNodes: ocBridge?.enabled ? _openclawNodes.length : 0 });
@@ -743,6 +582,41 @@ app.get('/api/memories', async (req, res) => {
   }
 });
 
+// GET /api/links — Fetch only the links (lazy-loaded by client when user enables link mode)
+app.get('/api/links', async (req, res) => {
+  try {
+    if (_linkCache && (Date.now() - _linkCache.timestamp < _LINK_CACHE_TTL)) {
+      console.log(`[cache] Serving ${_linkCache.links.length} cached links (dedicated endpoint)`);
+      return res.json({ links: _linkCache.links });
+    }
+
+    const allPoints = getAllMemoriesWithVectors();
+    const nodes = allPoints.map(p => ({
+      id: p.id,
+      payload: { content: p.content, category: p.category, project: p.project, tags: p.tags, importance: p.importance, related_files: p.related_files, related_memory_ids: p.related_memory_ids },
+      vector: p.vector,
+    }));
+    const ocBridge = loadBridgeConfig('openclaw');
+    if (ocBridge?.enabled && _openclawNodes.length > 0) {
+      for (const ocNode of _openclawNodes) nodes.push({ ...ocNode, vector: null });
+    }
+
+    const links = computeLinks(nodes);
+    _linkCache = { links, pointCount: allPoints.length, timestamp: Date.now() };
+
+    res.json({ links });
+  } catch (err) {
+    console.error('GET /api/links error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/cache/invalidate — External cache invalidation (called by MCP server)
+app.post('/api/cache/invalidate', (req, res) => {
+  invalidateMemoriesCache(req.body?.reason || 'external');
+  res.json({ ok: true });
+});
+
 // POST /api/search — Semantic vector search
 app.post('/api/search', async (req, res) => {
   try {
@@ -750,23 +624,13 @@ app.post('/api/search', async (req, res) => {
     if (!query) return res.status(400).json({ error: 'query required' });
 
     const embedding = await getEmbedding(query);
-
-    const result = await qdrantFetch('/points/search', {
-      method: 'POST',
-      body: JSON.stringify({
-        vector: embedding,
-        limit,
-        with_payload: true,
-        score_threshold: 0.3,
-        filter: SYSTEM_METADATA_FILTER,
-      }),
-    });
+    const results = dbSearchMemories(embedding, limit, { scoreThreshold: 0.3 });
 
     res.json({
-      results: result.result.map(r => ({
+      results: results.map(r => ({
         id: r.id,
         score: r.score,
-        payload: r.payload,
+        payload: { content: r.content, category: r.category, subcategory: r.subcategory, project: r.project, tags: r.tags, importance: r.importance, source: r.source, created_at: r.created_at, updated_at: r.updated_at, accessed_at: r.accessed_at, access_count: r.access_count, related_files: r.related_files, related_memory_ids: r.related_memory_ids, trashed_at: r.trashed_at },
       })),
       query,
     });
@@ -776,29 +640,17 @@ app.post('/api/search', async (req, res) => {
   }
 });
 
-// GET /api/stats — Collection count including trash count
+// GET /api/stats — Memory count including trash count
 app.get('/api/stats', async (req, res) => {
   try {
-    const result = await fetch(`${QDRANT_URL}/collections/${COLLECTION}`, {
-      headers: qdrantHeaders(),
-    });
-    const data = await result.json();
-
-    // Count trashed items
-    let trash_count = 0;
-    try {
-      const trashResult = await qdrantFetch('/points/count', {
-        method: 'POST',
-        body: JSON.stringify({ filter: TRASH_FILTER, exact: true }),
-      });
-      trash_count = trashResult.result.count;
-    } catch {}
+    const stats = getMemoryStats();
+    const sessionChunks = countSessionChunks();
 
     res.json({
-      count: data.result.points_count,
-      vectors: data.result.vectors_count,
-      status: data.result.status,
-      trash_count,
+      count: stats.total,
+      vectors: stats.total + sessionChunks,
+      status: 'green',
+      trash_count: stats.trashedCount,
     });
   } catch (err) {
     console.error('GET /api/stats error:', err.message);
@@ -809,19 +661,11 @@ app.get('/api/stats', async (req, res) => {
 // GET /api/memory/:id — Single memory detail
 app.get('/api/memory/:id', async (req, res) => {
   try {
-    const result = await qdrantFetch('/points', {
-      method: 'POST',
-      body: JSON.stringify({
-        ids: [req.params.id],
-        with_payload: true,
-      }),
-    });
+    const mem = getMemoryById(req.params.id);
+    if (!mem) return res.status(404).json({ error: 'Memory not found' });
 
-    if (!result.result || result.result.length === 0) {
-      return res.status(404).json({ error: 'Memory not found' });
-    }
-
-    res.json(result.result[0]);
+    // Return in standard format for UI compatibility
+    res.json({ id: mem.id, payload: { content: mem.content, category: mem.category, subcategory: mem.subcategory, project: mem.project, tags: mem.tags, importance: mem.importance, source: mem.source, created_at: mem.created_at, updated_at: mem.updated_at, accessed_at: mem.accessed_at, access_count: mem.access_count, related_files: mem.related_files, related_memory_ids: mem.related_memory_ids, file_checksums: mem.file_checksums, trashed_at: mem.trashed_at, source_session_chunks: mem.source_session_chunks } });
   } catch (err) {
     console.error('GET /api/memory/:id error:', err.message);
     res.status(500).json({ error: err.message });
@@ -850,7 +694,6 @@ app.patch('/api/memory/:id', async (req, res) => {
       if (!Array.isArray(tags)) {
         return res.status(400).json({ error: 'tags must be an array of strings' });
       }
-      // Sanitize: lowercase, trim, deduplicate, remove empties
       const clean = [...new Set(tags.map(t => String(t).trim().toLowerCase()).filter(Boolean))];
       payload.tags = clean;
     }
@@ -862,15 +705,11 @@ app.patch('/api/memory/:id', async (req, res) => {
       payload.content = content;
     }
 
-    await qdrantFetch('/points/payload', {
-      method: 'POST',
-      body: JSON.stringify({
-        payload,
-        points: [req.params.id],
-      }),
-    });
+    updateMemoryPayload(req.params.id, payload);
 
     res.json({ ok: true, id: req.params.id, ...payload });
+    invalidateMemoriesCache('memory:updated');
+    broadcastSync({ type: 'memory:updated', id: req.params.id });
   } catch (err) {
     console.error('PATCH /api/memory/:id error:', err.message);
     res.status(500).json({ error: err.message });
@@ -953,6 +792,8 @@ app.post('/api/categories', (req, res) => {
       categories: categories,
       message: `Created "${name}"` + (parent ? ` under "${parent}"` : '') + (color ? ` with color ${color}` : '')
     });
+    invalidateMemoriesCache('category:created');
+    broadcastSync({ type: 'category:created', name });
   } catch (err) {
     console.error('POST /api/categories error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1015,7 +856,7 @@ app.put('/api/categories/:name', async (req, res) => {
 
     const cat = categories[catIndex];
 
-    // If renaming, update all children that reference this category as parent AND update memories in Qdrant
+    // If renaming, update all children that reference this category as parent AND update memories in SQLite
     if (new_name && new_name !== oldName) {
       categories.forEach(c => {
         if (c.parent === oldName) {
@@ -1036,36 +877,15 @@ app.put('/api/categories/:name', async (req, res) => {
         }
       }
 
-      // Update all memories in Qdrant that use the old category name
+      // Update all memories in SQLite that use the old category name
       try {
-        // First, find all points with the old category
-        const scrollBody = {
-          limit: 100,
-          with_payload: true,
-          filter: mergeExclusionFilter({ must: [{ key: 'category', match: { value: oldName } }] })
-        };
-
-        const scrollResult = await qdrantFetch('/points/scroll', {
-          method: 'POST',
-          body: JSON.stringify(scrollBody),
-        });
-
-        const matchingPoints = scrollResult.result.points || [];
-        if (matchingPoints.length > 0) {
-          const pointIds = matchingPoints.map(p => p.id);
-          // Update all matching points with the new category name
-          await qdrantFetch('/points/payload', {
-            method: 'POST',
-            body: JSON.stringify({
-              payload: { category: new_name, updated_at: new Date().toISOString() },
-              points: pointIds,
-            }),
-          });
-          console.log(`✓ Updated ${matchingPoints.length} memories from "${oldName}" to "${new_name}"`);
+        const matchingMems = getMemoriesByCategory(oldName);
+        if (matchingMems.length > 0) {
+          updateMemoriesCategory(matchingMems.map(m => m.id), new_name);
+          console.log(`✓ Updated ${matchingMems.length} memories from "${oldName}" to "${new_name}"`);
         }
       } catch (err) {
         console.error('Error updating memories during category rename:', err.message);
-        // Don't fail the request, just log the error
       }
     }
 
@@ -1104,6 +924,8 @@ app.put('/api/categories/:name', async (req, res) => {
       categories: categories,
       message: `Updated "${oldName}"${new_name ? ` → "${new_name}"` : ''}: ${changes.join(', ')}`
     });
+    invalidateMemoriesCache('category:updated');
+    broadcastSync({ type: 'category:updated', name: new_name || oldName });
   } catch (err) {
     console.error('PUT /api/categories error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1117,23 +939,14 @@ app.delete('/api/memory/:id', async (req, res) => {
     const permanent = req.query.permanent === 'true';
 
     if (permanent) {
-      // Hard delete — permanently remove from Qdrant (used by trash purge)
-      await qdrantFetch('/points/delete', {
-        method: 'POST',
-        body: JSON.stringify({ points: [id] }),
-      });
+      hardDeleteMemory(id);
     } else {
-      // Soft delete — set trashed_at timestamp
-      await qdrantFetch('/points/payload', {
-        method: 'POST',
-        body: JSON.stringify({
-          payload: { trashed_at: new Date().toISOString() },
-          points: [id],
-        }),
-      });
+      softDeleteMemory(id);
     }
 
     res.json({ ok: true, id, permanent: !!permanent });
+    invalidateMemoriesCache(permanent ? 'memory:deleted' : 'memory:trashed');
+    broadcastSync({ type: permanent ? 'memory:deleted' : 'memory:trashed', id });
   } catch (err) {
     console.error('DELETE /api/memory/:id error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1147,32 +960,12 @@ app.delete('/api/memory/:id', async (req, res) => {
 // GET /api/trash — List all trashed memories
 app.get('/api/trash', async (req, res) => {
   try {
-    reloadConfig();
-    const allPoints = [];
-    let offset = null;
-
-    do {
-      const body = {
-        limit: 100,
-        with_payload: true,
-        with_vector: false,
-        filter: TRASH_FILTER,
-      };
-      if (offset) body.offset = offset;
-
-      const result = await qdrantFetch('/points/scroll', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-
-      allPoints.push(...result.result.points);
-      offset = result.result.next_page_offset ?? null;
-    } while (offset);
-
-    // Sort by trashed_at descending (most recently trashed first)
-    allPoints.sort((a, b) => (b.payload.trashed_at || '').localeCompare(a.payload.trashed_at || ''));
-
-    res.json({ items: allPoints, count: allPoints.length });
+    const trashed = getTrashedMemories();
+    const items = trashed.map(m => ({
+      id: m.id,
+      payload: { content: m.content, category: m.category, project: m.project, tags: m.tags, importance: m.importance, source: m.source, created_at: m.created_at, trashed_at: m.trashed_at },
+    }));
+    res.json({ items, count: items.length });
   } catch (err) {
     console.error('GET /api/trash error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1182,15 +975,10 @@ app.get('/api/trash', async (req, res) => {
 // POST /api/trash/:id/restore — Restore a trashed memory
 app.post('/api/trash/:id/restore', async (req, res) => {
   try {
-    reloadConfig();
     const id = req.params.id;
-    await qdrantFetch('/points/payload', {
-      method: 'POST',
-      body: JSON.stringify({
-        payload: { trashed_at: null },
-        points: [id],
-      }),
-    });
+    dbRestoreMemory(id);
+    invalidateMemoriesCache('memory:restored');
+    broadcastSync({ type: 'memory:restored', id });
     res.json({ ok: true, id });
   } catch (err) {
     console.error('POST /api/trash/:id/restore error:', err.message);
@@ -1201,38 +989,15 @@ app.post('/api/trash/:id/restore', async (req, res) => {
 // DELETE /api/trash/purge — Permanently delete all trashed memories
 app.delete('/api/trash/purge', async (req, res) => {
   try {
-    reloadConfig();
+    const purgedIds = purgeTrash();
 
-    // Scroll all trashed points
-    const allTrashed = [];
-    let offset = null;
-    do {
-      const body = {
-        limit: 100,
-        with_payload: true,
-        with_vector: false,
-        filter: TRASH_FILTER,
-      };
-      if (offset) body.offset = offset;
-      const result = await qdrantFetch('/points/scroll', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      allTrashed.push(...result.result.points);
-      offset = result.result.next_page_offset ?? null;
-    } while (offset);
-
-    if (allTrashed.length === 0) {
+    if (purgedIds.length === 0) {
       return res.json({ ok: true, purged: 0 });
     }
 
-    const pointIds = allTrashed.map(p => p.id);
-    await qdrantFetch('/points/delete', {
-      method: 'POST',
-      body: JSON.stringify({ points: pointIds }),
-    });
-
-    res.json({ ok: true, purged: pointIds.length });
+    invalidateMemoriesCache('trash:purged');
+    broadcastSync({ type: 'trash:purged', count: purgedIds.length });
+    res.json({ ok: true, purged: purgedIds.length });
   } catch (err) {
     console.error('DELETE /api/trash/purge error:', err.message);
     res.status(500).json({ error: err.message });
@@ -1253,25 +1018,12 @@ function hashFileContent(filePath) {
 // GET /api/sync/check — Detect memories whose related files changed via content hash comparison
 app.get('/api/sync/check', async (req, res) => {
   try {
-    const allPoints = [];
-    let offset = null;
-
-    // Scroll all memories
-    do {
-      const body = { limit: 100, with_payload: true, with_vector: false, filter: SYSTEM_METADATA_FILTER };
-      if (offset) body.offset = offset;
-      const result = await qdrantFetch('/points/scroll', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      allPoints.push(...result.result.points);
-      offset = result.result.next_page_offset ?? null;
-    } while (offset);
+    const allMems = getAllMemories();
 
     // Filter to memories with related_files
-    const withFiles = allPoints.filter(
-      p => p.payload.related_files && p.payload.related_files.length > 0
-    );
+    const withFiles = allMems.filter(
+      m => m.related_files && m.related_files.length > 0
+    ).map(m => ({ id: m.id, payload: m }));
 
     const stale = [];
     for (const point of withFiles) {
@@ -1303,7 +1055,7 @@ app.get('/api/sync/check', async (req, res) => {
 
     res.json({
       stale,
-      total_checked: allPoints.length,
+      total_checked: allMems.length,
       total_with_files: withFiles.length,
       total_stale: stale.length,
     });
@@ -1331,6 +1083,8 @@ app.patch('/api/categories/:name', (req, res) => {
     cat.description = description.trim();
     saveCategories(categories);
 
+    invalidateMemoriesCache('category:updated');
+    broadcastSync({ type: 'category:updated', name });
     res.json({
       categories: categories.map(c => ({ name: c.name, description: c.description })),
     });
@@ -1370,6 +1124,8 @@ app.post('/api/categories/:name/logo',
       cat.logo = `/${fileName}`;
       saveCategories(categories);
 
+      invalidateMemoriesCache('category:updated');
+    broadcastSync({ type: 'category:updated', name });
       res.json({ ok: true, logo: cat.logo, categories });
     } catch (err) {
       console.error('POST /api/categories/:name/logo error:', err.message);
@@ -1394,6 +1150,8 @@ app.delete('/api/categories/:name/logo', (req, res) => {
     delete cat.logo;
     saveCategories(categories);
 
+    invalidateMemoriesCache('category:updated');
+    broadcastSync({ type: 'category:updated', name });
     res.json({ ok: true, categories });
   } catch (err) {
     console.error('DELETE /api/categories/:name/logo error:', err.message);
@@ -1404,52 +1162,28 @@ app.delete('/api/categories/:name/logo', (req, res) => {
 // GET /api/categories/:name/export — Export all memories in a category as Markdown
 app.get('/api/categories/:name/export', async (req, res) => {
   try {
-    reloadConfig();
     const { name } = req.params;
+    const memories = getMemoriesByCategory(name);
 
-    // Scroll all memories in this category (paginated to handle large categories)
-    let allPoints = [];
-    let offset = null;
-    do {
-      const scrollBody = {
-        limit: 100,
-        with_payload: true,
-        filter: mergeExclusionFilter({ must: [{ key: 'category', match: { value: name } }] }),
-      };
-      if (offset) scrollBody.offset = offset;
-      const scrollResult = await qdrantFetch('/points/scroll', { method: 'POST', body: JSON.stringify(scrollBody) });
-      const points = scrollResult.result.points || [];
-      allPoints.push(...points);
-      offset = scrollResult.result.next_page_offset || null;
-    } while (offset);
-
-    if (allPoints.length === 0) {
+    if (memories.length === 0) {
       return res.status(404).json({ error: `No memories found in category "${name}".` });
     }
 
-    // Sort by created_at descending (newest first)
-    allPoints.sort((a, b) => {
-      const da = a.payload.created_at || '';
-      const db = b.payload.created_at || '';
-      return db.localeCompare(da);
-    });
-
     // Build markdown
     let md = `# Memories — ${name}\n\n`;
-    md += `> Exported ${allPoints.length} memor${allPoints.length === 1 ? 'y' : 'ies'} on ${new Date().toISOString().split('T')[0]}\n\n---\n\n`;
+    md += `> Exported ${memories.length} memor${memories.length === 1 ? 'y' : 'ies'} on ${new Date().toISOString().split('T')[0]}\n\n---\n\n`;
 
-    for (const point of allPoints) {
-      const p = point.payload;
-      md += `## ${(p.content || '').split('\n')[0].substring(0, 80)}\n\n`;
+    for (const mem of memories) {
+      md += `## ${(mem.content || '').split('\n')[0].substring(0, 80)}\n\n`;
       md += `| Field | Value |\n|---|---|\n`;
-      md += `| **ID** | \`${point.id}\` |\n`;
-      if (p.importance) md += `| **Importance** | ${p.importance} |\n`;
-      if (p.project) md += `| **Project** | ${p.project} |\n`;
-      if (p.tags && p.tags.length) md += `| **Tags** | ${p.tags.join(', ')} |\n`;
-      if (p.created_at) md += `| **Created** | ${p.created_at} |\n`;
-      if (p.updated_at) md += `| **Updated** | ${p.updated_at} |\n`;
-      if (p.related_files && p.related_files.length) md += `| **Files** | ${p.related_files.join(', ')} |\n`;
-      md += `\n${p.content || '(empty)'}\n\n---\n\n`;
+      md += `| **ID** | \`${mem.id}\` |\n`;
+      if (mem.importance) md += `| **Importance** | ${mem.importance} |\n`;
+      if (mem.project) md += `| **Project** | ${mem.project} |\n`;
+      if (mem.tags && mem.tags.length) md += `| **Tags** | ${mem.tags.join(', ')} |\n`;
+      if (mem.created_at) md += `| **Created** | ${mem.created_at} |\n`;
+      if (mem.updated_at) md += `| **Updated** | ${mem.updated_at} |\n`;
+      if (mem.related_files && mem.related_files.length) md += `| **Files** | ${mem.related_files.join(', ')} |\n`;
+      md += `\n${mem.content || '(empty)'}\n\n---\n\n`;
     }
 
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
@@ -1471,13 +1205,11 @@ app.delete('/api/categories/:name', async (req, res) => {
     const categories = loadCategories();
     const existsInConfig = categories.some(c => c.name === name);
 
-    // Check Qdrant for memories using this category (needed for both config and orphan categories)
-    const scrollBody = { limit: 100, with_payload: true, filter: mergeExclusionFilter({ must: [{ key: 'category', match: { value: name } }] }) };
-    const scrollResult = await qdrantFetch('/points/scroll', { method: 'POST', body: JSON.stringify(scrollBody) });
-    const matchingPoints = scrollResult.result.points || [];
+    // Check SQLite for memories using this category
+    const matchingMemories = getMemoriesByCategory(name);
 
     // If not in config and no memories exist, it truly doesn't exist
-    if (!existsInConfig && matchingPoints.length === 0) {
+    if (!existsInConfig && matchingMemories.length === 0) {
       return res.status(404).json({ error: `Category "${name}" not found.` });
     }
 
@@ -1514,38 +1246,24 @@ app.delete('/api/categories/:name', async (req, res) => {
     }
 
     let deletedCount = 0;
+    const memIds = matchingMemories.map(m => m.id);
 
-    if (matchingPoints.length > 0 && delete_memories) {
+    if (matchingMemories.length > 0 && delete_memories) {
       // Soft-delete: move all memories to trash
-      const pointIds = matchingPoints.map(p => p.id);
-      await qdrantFetch('/points/payload', {
-        method: 'POST',
-        body: JSON.stringify({
-          payload: { trashed_at: new Date().toISOString() },
-          points: pointIds,
-        }),
-      });
-      deletedCount = pointIds.length;
-    } else if (matchingPoints.length > 0 && reassignTo) {
+      for (const id of memIds) softDeleteMemory(id);
+      deletedCount = memIds.length;
+    } else if (matchingMemories.length > 0 && reassignTo) {
       // Reassign memories
       const allNames = new Set(categories.map(c => c.name));
       allNames.delete(name);
       if (!allNames.has(reassignTo)) {
         return res.status(400).json({ error: `Reassign target "${reassignTo}" is not a valid category.` });
       }
-
-      const pointIds = matchingPoints.map(p => p.id);
-      await qdrantFetch('/points/payload', {
-        method: 'POST',
-        body: JSON.stringify({
-          payload: { category: reassignTo },
-          points: pointIds,
-        }),
-      });
-    } else if (matchingPoints.length > 0) {
+      updateMemoriesCategory(memIds, reassignTo);
+    } else if (matchingMemories.length > 0) {
       return res.status(409).json({
-        error: `${matchingPoints.length} memories use this category. Provide reassign_to to move them or delete_memories to remove them.`,
-        count: matchingPoints.length,
+        error: `${matchingMemories.length} memories use this category. Provide reassign_to to move them or delete_memories to remove them.`,
+        count: matchingMemories.length,
       });
     }
 
@@ -1562,12 +1280,14 @@ app.delete('/api/categories/:name', async (req, res) => {
     let message = `Deleted "${name}".`;
     if (childrenMsg) message += childrenMsg;
     if (deletedCount > 0) message += ` ${deletedCount} memor${deletedCount === 1 ? 'y' : 'ies'} moved to trash.`;
-    if (matchingPoints.length > 0 && reassignTo) message += ` ${matchingPoints.length} memor${matchingPoints.length === 1 ? 'y' : 'ies'} reassigned to "${reassignTo}".`;
+    if (matchingMemories.length > 0 && reassignTo) message += ` ${matchingMemories.length} memor${matchingMemories.length === 1 ? 'y' : 'ies'} reassigned to "${reassignTo}".`;
 
+    invalidateMemoriesCache('category:deleted');
+    broadcastSync({ type: 'category:deleted', name });
     res.json({
       categories: updated,
       message,
-      reassigned: reassignTo ? matchingPoints.length : 0,
+      reassigned: reassignTo ? matchingMemories.length : 0,
       deleted: deletedCount,
     });
   } catch (err) {
@@ -1576,28 +1296,36 @@ app.delete('/api/categories/:name', async (req, res) => {
   }
 });
 
-// GET /api/settings — Current config with masked keys
+// GET /api/settings — Current config (SQLite + local embeddings)
 app.get('/api/settings', (req, res) => {
   try {
-    const vars = parseEnvFile(ENV_PATH);
+    // Ensure DB + schema exist at the configured path before checking
+    getDb();
+    const dbPath = getDbPath();
+    const dbExists = existsSync(dbPath);
+    let dbSizeBytes = 0;
+    if (dbExists) {
+      try { dbSizeBytes = statSync(dbPath).size; } catch {}
+    }
 
-    // Qdrant config from .env
-    const connData = loadQdrantConnections();
-    const activeConn = connData.active ? connData.connections[connData.active] : null;
-    const qdrantUrl = activeConn?.url || `http://localhost:${vars.QDRANT_PORT || '6333'}`;
-    const qdrantApiKey = activeConn?.apiKey || '';
-    const collection = activeConn?.collection || 'claude_memory';
-    const openaiApiKey = vars.OPENAI_EMBEDDING_API_KEY || '';
+    // Check embedding model mismatch
+    let embeddingMismatch = false;
+    try {
+      const storedModel = getKvConfig('embedding_model');
+      if (storedModel && storedModel !== EMBEDDING_MODEL) {
+        embeddingMismatch = true;
+      }
+    } catch {}
 
     res.json({
-      qdrantUrl,
-      qdrantApiKey: maskKey(qdrantApiKey),
-      qdrantApiKeySet: !!qdrantApiKey,
-      collection,
-      openaiApiKey: maskKey(openaiApiKey),
-      openaiApiKeySet: !!openaiApiKey,
-      qdrantPort: activeConn?.port ? String(activeConn.port) : '6333',
-      qdrantGrpcPort: activeConn?.grpcPort ? String(activeConn.grpcPort) : '6334',
+      storage: 'sqlite',
+      dbPath,
+      dbExists,
+      dbSizeBytes,
+      embedding: 'local',
+      embeddingModel: EMBEDDING_MODEL,
+      embeddingDims: EMBEDDING_DIMS,
+      embeddingMismatch,
     });
   } catch (err) {
     console.error('GET /api/settings error:', err.message);
@@ -1605,39 +1333,225 @@ app.get('/api/settings', (req, res) => {
   }
 });
 
-// PUT /api/settings — Save settings to .env
+// PUT /api/settings — No external config needed with SQLite + local embeddings
 app.put('/api/settings', (req, res) => {
   try {
-    const { qdrantUrl, qdrantApiKey, collection, openaiApiKey, qdrantPort, qdrantGrpcPort } = req.body;
-
-    // Embedding config
-    const vars = parseEnvFile(ENV_PATH);
-    if (openaiApiKey) {
-      vars.OPENAI_EMBEDDING_API_KEY = openaiApiKey;
-      // Also update namespaced embedding if it exists
-      const embId = vars.EMBEDDING_ACTIVE;
-      if (embId) vars[`EMBEDDING__${embId}__API_KEY`] = openaiApiKey;
-    }
-    writeEnvFile(ENV_PATH, vars);
-
-    // Update active Qdrant connection in .env
-    const connData = loadQdrantConnections();
-    if (connData.active && connData.connections[connData.active]) {
-      const conn = connData.connections[connData.active];
-      if (qdrantUrl) conn.url = qdrantUrl;
-      if (qdrantApiKey) conn.apiKey = qdrantApiKey;
-      if (collection) conn.collection = collection;
-      if (qdrantPort) conn.port = parseInt(qdrantPort, 10);
-      if (qdrantGrpcPort) conn.grpcPort = parseInt(qdrantGrpcPort, 10);
-      saveQdrantConnection(connData.active, conn);
-    }
-
+    // Nothing to configure externally — SQLite + local embeddings are self-contained
     reloadConfig();
-    res.json({ ok: true, message: 'Settings saved. Neural Interface reloaded — restart your AI tool for MCP changes.' });
+    res.json({ ok: true, message: 'Settings reloaded.' });
   } catch (err) {
     console.error('PUT /api/settings error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// POST /api/settings/move-db — Move SQLite database to a new directory
+app.post('/api/settings/move-db', (req, res) => {
+  try {
+    const { newPath } = req.body || {};
+    if (!newPath) return res.status(400).json({ error: 'newPath is required' });
+
+    const currentDbPath = getDbPath();
+    const newDir = resolve(newPath);
+    const newDbPath = resolve(newDir, 'memory.db');
+
+    // Must be a different location
+    if (resolve(currentDbPath) === newDbPath) {
+      return res.status(400).json({ error: 'New path is the same as the current path' });
+    }
+
+    // Validate writability
+    try {
+      mkdirSync(newDir, { recursive: true });
+      const testFile = resolve(newDir, '.synabun-write-test');
+      writeFileSync(testFile, 'test');
+      unlinkSync(testFile);
+    } catch (err) {
+      return res.status(400).json({ error: `Cannot write to new location: ${err.message}` });
+    }
+
+    // Checkpoint WAL to flush pending writes, then close
+    try {
+      const d = getDb();
+      d.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {}
+    closeDb();
+
+    // Copy database files
+    const suffixes = ['', '-wal', '-shm'];
+    for (const suffix of suffixes) {
+      const src = currentDbPath + suffix;
+      const dst = newDbPath + suffix;
+      if (existsSync(src)) cpSync(src, dst);
+    }
+
+    // Update .env and runtime
+    const vars = parseEnvFile(ENV_PATH);
+    vars['SQLITE_DB_PATH'] = newDbPath;
+    writeEnvFile(ENV_PATH, vars);
+    process.env['SQLITE_DB_PATH'] = newDbPath;
+
+    // Reopen from new location
+    getDb();
+    reloadConfig();
+
+    res.json({ ok: true, oldDbPath: currentDbPath, newDbPath, mcpRestartRequired: true });
+  } catch (err) {
+    console.error('POST /api/settings/move-db error:', err.message);
+    // Try to reopen at original location on failure
+    try { getDb(); } catch {}
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/settings/move-db/cleanup — Delete old database files after move
+app.post('/api/settings/move-db/cleanup', (req, res) => {
+  try {
+    const { oldPath } = req.body || {};
+    if (!oldPath) return res.status(400).json({ error: 'oldPath is required' });
+
+    const resolvedOldPath = resolve(oldPath);
+
+    // Safety: never delete the active database
+    if (resolvedOldPath === resolve(getDbPath())) {
+      return res.status(400).json({ error: 'Cannot delete the currently active database' });
+    }
+
+    for (const suffix of ['', '-wal', '-shm']) {
+      const f = resolvedOldPath + suffix;
+      try { if (existsSync(f)) unlinkSync(f); } catch {}
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Reindex Endpoints ---
+
+const REINDEX_BATCH_SIZE = 50;
+
+async function runReindex(job) {
+  const d = getDb();
+
+  // Count total work
+  const memCount = d.prepare('SELECT COUNT(*) as cnt FROM memories WHERE trashed_at IS NULL').get().cnt;
+  const chunkCount = d.prepare('SELECT COUNT(*) as cnt FROM session_chunks').get().cnt;
+  job.total = memCount;
+  job.totalChunks = chunkCount;
+
+  // Phase 1: Reindex memories
+  let offset = 0;
+  while (offset < memCount) {
+    if (job.cancelled) { job.running = false; return; }
+
+    const rows = d.prepare('SELECT id, content FROM memories WHERE trashed_at IS NULL LIMIT ? OFFSET ?')
+                  .all(REINDEX_BATCH_SIZE, offset);
+    if (rows.length === 0) break;
+
+    try {
+      const texts = rows.map(r => r.content);
+      const vectors = await getEmbeddingBatch(texts);
+      const updateStmt = d.prepare('UPDATE memories SET vector = ? WHERE id = ?');
+      for (let i = 0; i < rows.length; i++) {
+        try {
+          updateStmt.run(encodeVector(vectors[i]), rows[i].id);
+          job.completed++;
+        } catch {
+          job.errors++;
+        }
+      }
+    } catch {
+      job.errors += rows.length;
+    }
+
+    offset += REINDEX_BATCH_SIZE;
+  }
+
+  // Phase 2: Reindex session chunks
+  offset = 0;
+  while (offset < chunkCount) {
+    if (job.cancelled) { job.running = false; return; }
+
+    const rows = d.prepare('SELECT id, content FROM session_chunks LIMIT ? OFFSET ?')
+                  .all(REINDEX_BATCH_SIZE, offset);
+    if (rows.length === 0) break;
+
+    try {
+      const texts = rows.map(r => r.content || '');
+      const vectors = await getEmbeddingBatch(texts);
+      const updateStmt = d.prepare('UPDATE session_chunks SET vector = ? WHERE id = ?');
+      for (let i = 0; i < rows.length; i++) {
+        try {
+          updateStmt.run(encodeVector(vectors[i]), rows[i].id);
+          job.chunks++;
+        } catch {
+          job.errors++;
+        }
+      }
+    } catch {
+      job.errors += rows.length;
+    }
+
+    offset += REINDEX_BATCH_SIZE;
+  }
+
+  // Update stored model metadata
+  try {
+    setKvConfig('embedding_model', EMBEDDING_MODEL);
+    setKvConfig('embedding_dims', String(EMBEDDING_DIMS));
+  } catch {}
+
+  job.running = false;
+
+  try {
+    broadcastSync({ type: 'reindex:complete', jobId: job.jobId, completed: job.completed, chunks: job.chunks, errors: job.errors });
+  } catch {}
+}
+
+// POST /api/settings/reindex — Start a full embedding reindex
+app.post('/api/settings/reindex', async (req, res) => {
+  if (_reindexJob && _reindexJob.running) {
+    return res.status(409).json({ error: 'Reindex already in progress', jobId: _reindexJob.jobId });
+  }
+
+  const jobId = `reindex-${Date.now()}`;
+  _reindexJob = { jobId, running: true, cancelled: false, completed: 0, total: 0, totalChunks: 0, chunks: 0, errors: 0 };
+
+  res.json({ ok: true, jobId });
+
+  // Run async — don't await
+  runReindex(_reindexJob).catch(err => {
+    console.error('[reindex] Fatal error:', err.message);
+    if (_reindexJob) { _reindexJob.running = false; _reindexJob.errors++; }
+  });
+});
+
+// GET /api/settings/reindex/status — Poll reindex progress
+app.get('/api/settings/reindex/status', (req, res) => {
+  if (!_reindexJob) {
+    return res.json({ running: false, completed: 0, total: 0, chunks: 0, totalChunks: 0, errors: 0 });
+  }
+  res.json({
+    running: _reindexJob.running,
+    cancelled: _reindexJob.cancelled || false,
+    jobId: _reindexJob.jobId,
+    completed: _reindexJob.completed,
+    total: _reindexJob.total,
+    chunks: _reindexJob.chunks,
+    totalChunks: _reindexJob.totalChunks,
+    errors: _reindexJob.errors,
+  });
+});
+
+// POST /api/settings/reindex/cancel — Cancel in-progress reindex
+app.post('/api/settings/reindex/cancel', (req, res) => {
+  if (!_reindexJob || !_reindexJob.running) {
+    return res.status(404).json({ error: 'No active reindex job' });
+  }
+  _reindexJob.cancelled = true;
+  res.json({ ok: true });
 });
 
 // --- Display Settings Routes (MCP response control) ---
@@ -1789,12 +1703,625 @@ app.post('/api/ui-state', (req, res) => {
 });
 
 
-// --- Connection Management Routes (multi-instance Qdrant) ---
-// All connection/bridge config is stored in .env (single source of truth).
-// Functions: loadQdrantConnections(), saveQdrantConnection(), removeQdrantConnection(),
-//            setActiveQdrantConnection(), getActiveConnectionIdFromEnv()
-//            loadBridgeConfig(), saveBridgeConfig(), removeBridgeConfig()
-// (Defined above near writeEnvFile)
+// ═══════════════════════════════════════════
+// WHITEBOARD API — Claude MCP integration
+// ═══════════════════════════════════════════
+
+// Layout engine for whiteboard auto-positioning
+function applyWhiteboardLayout(elements, layout, vp) {
+  const gap = 40;
+  const pad = 60;
+  const n = elements.length;
+  if (!n) return;
+
+  if (layout === 'center') {
+    const totalH = elements.reduce((s, el) => s + (el.height || 100), 0) + gap * (n - 1);
+    let y = (vp.height - totalH) / 2;
+    for (const el of elements) {
+      el.x = Math.round((vp.width - (el.width || 200)) / 2);
+      el.y = Math.round(y);
+      y += (el.height || 100) + gap;
+    }
+  } else if (layout === 'row') {
+    const totalW = elements.reduce((s, el) => s + (el.width || 200), 0) + gap * (n - 1);
+    let x = (vp.width - totalW) / 2;
+    for (const el of elements) {
+      el.x = Math.round(x);
+      el.y = Math.round((vp.height - (el.height || 100)) / 2);
+      x += (el.width || 200) + gap;
+    }
+  } else if (layout === 'column') {
+    const totalH = elements.reduce((s, el) => s + (el.height || 100), 0) + gap * (n - 1);
+    let y = (vp.height - totalH) / 2;
+    for (const el of elements) {
+      el.x = Math.round((vp.width - (el.width || 200)) / 2);
+      el.y = Math.round(y);
+      y += (el.height || 100) + gap;
+    }
+  } else if (layout === 'grid') {
+    const cols = n <= 2 ? 2 : n <= 6 ? 3 : 4;
+    const rows = Math.ceil(n / cols);
+    const cellW = (vp.width - pad * 2 - gap * (cols - 1)) / cols;
+    const cellH = (vp.height - pad * 2 - gap * (rows - 1)) / rows;
+    elements.forEach((el, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      el.x = Math.round(pad + col * (cellW + gap) + (cellW - (el.width || 200)) / 2);
+      el.y = Math.round(pad + row * (cellH + gap) + (cellH - (el.height || 100)) / 2);
+    });
+  }
+}
+
+// GET /api/whiteboard — Read current whiteboard state from ui-state storage
+app.get('/api/whiteboard', (req, res) => {
+  try {
+    const state = loadUiState();
+    const wb = state['neural-whiteboard'];
+    if (!wb || !wb.elements) {
+      return res.json({ ok: true, elements: [], nextZIndex: 1, viewport: whiteboardViewport });
+    }
+    res.json({ ok: true, elements: wb.elements, nextZIndex: wb.nextZIndex || 1, viewport: whiteboardViewport });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/whiteboard/elements — Add one or more elements
+app.post('/api/whiteboard/elements', (req, res) => {
+  try {
+    const { elements, coordMode, layout } = req.body;
+    if (!Array.isArray(elements) || elements.length === 0) {
+      return res.status(400).json({ error: 'elements must be a non-empty array' });
+    }
+
+    // Auto-layout or percentage coordinate conversion
+    if (layout && whiteboardViewport) {
+      applyWhiteboardLayout(elements, layout, whiteboardViewport);
+    } else if (coordMode === 'pct' && whiteboardViewport) {
+      for (const el of elements) {
+        if (el.x != null) el.x = Math.round((el.x / 100) * whiteboardViewport.width);
+        if (el.y != null) el.y = Math.round((el.y / 100) * whiteboardViewport.height);
+        if (el.width != null) el.width = Math.round((el.width / 100) * whiteboardViewport.width);
+        if (el.height != null) el.height = Math.round((el.height / 100) * whiteboardViewport.height);
+      }
+    }
+
+    const state = loadUiState();
+    const wb = state['neural-whiteboard'] || { elements: [], nextZIndex: 1 };
+    if (!Array.isArray(wb.elements)) wb.elements = [];
+
+    const added = [];
+    for (const el of elements) {
+      // Resolve image URL to base64 dataUrl (for MCP image type)
+      if (el.type === 'image' && el.url && !el.dataUrl) {
+        try {
+          const filePath = join(__dirname, el.url.replace(/^\//, ''));
+          if (existsSync(filePath)) {
+            const buf = readFileSync(filePath);
+            const ext = extname(filePath).toLowerCase();
+            const mime = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : 'image/jpeg';
+            el.dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
+          }
+        } catch { /* ignore — element will just have no dataUrl */ }
+      }
+      if (!el.id) el.id = 'wb-' + Date.now() + '-' + randomBytes(2).toString('hex').slice(0, 3);
+      el.zIndex = wb.nextZIndex++;
+      wb.elements.push(el);
+      added.push(el);
+    }
+
+    state['neural-whiteboard'] = wb;
+    saveUiState(state);
+    broadcastToWhiteboard({ type: 'add', elements: added });
+
+    res.json({ ok: true, added: added.map(e => ({ id: e.id, type: e.type, zIndex: e.zIndex })) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/whiteboard/elements/:id — Update an element
+app.put('/api/whiteboard/elements/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const { updates, coordMode } = req.body.updates ? req.body : { updates: req.body, coordMode: req.body.coordMode };
+
+    // Percentage coordinate conversion for updates
+    if (coordMode === 'pct' && whiteboardViewport) {
+      if (updates.x != null) updates.x = Math.round((updates.x / 100) * whiteboardViewport.width);
+      if (updates.y != null) updates.y = Math.round((updates.y / 100) * whiteboardViewport.height);
+      if (updates.width != null) updates.width = Math.round((updates.width / 100) * whiteboardViewport.width);
+      if (updates.height != null) updates.height = Math.round((updates.height / 100) * whiteboardViewport.height);
+    }
+
+    const state = loadUiState();
+    const wb = state['neural-whiteboard'];
+    if (!wb || !wb.elements) return res.status(404).json({ error: 'Whiteboard is empty' });
+
+    const idx = wb.elements.findIndex(e => e.id === id);
+    if (idx === -1) return res.status(404).json({ error: `Element ${id} not found` });
+
+    const el = wb.elements[idx];
+    for (const [key, value] of Object.entries(updates)) {
+      if (key === 'id' || key === 'type' || key === 'coordMode') continue;
+      el[key] = value;
+    }
+
+    state['neural-whiteboard'] = wb;
+    saveUiState(state);
+    broadcastToWhiteboard({ type: 'update', id, updates });
+
+    res.json({ ok: true, element: el });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/whiteboard/elements/:id — Remove an element
+app.delete('/api/whiteboard/elements/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const state = loadUiState();
+    const wb = state['neural-whiteboard'];
+    if (!wb || !wb.elements) return res.status(404).json({ error: 'Whiteboard is empty' });
+
+    const idx = wb.elements.findIndex(e => e.id === id);
+    if (idx === -1) return res.status(404).json({ error: `Element ${id} not found` });
+
+    const removed = wb.elements.splice(idx, 1)[0];
+
+    // Detach arrows anchored to this element
+    for (const a of wb.elements) {
+      if (a.type !== 'arrow') continue;
+      if (a.startAnchor === id) a.startAnchor = null;
+      if (a.endAnchor === id) a.endAnchor = null;
+    }
+
+    state['neural-whiteboard'] = wb;
+    saveUiState(state);
+    broadcastToWhiteboard({ type: 'remove', id });
+
+    res.json({ ok: true, removed: { id: removed.id, type: removed.type } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/whiteboard/clear — Clear all elements
+app.post('/api/whiteboard/clear', (req, res) => {
+  try {
+    const state = loadUiState();
+    state['neural-whiteboard'] = { elements: [], nextZIndex: 1 };
+    saveUiState(state);
+    broadcastToWhiteboard({ type: 'clear' });
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/whiteboard/screenshot — Request screenshot from connected browser
+app.get('/api/whiteboard/screenshot', async (req, res) => {
+  if (whiteboardClients.size === 0) {
+    return res.status(503).json({ error: 'No browser connected to whiteboard. Open the Neural Interface and enter Focus mode.' });
+  }
+
+  const requestId = randomBytes(8).toString('hex');
+  try {
+    const data = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        whiteboardPendingScreenshots.delete(requestId);
+        reject(new Error('Screenshot timed out after 10s'));
+      }, 10000);
+
+      whiteboardPendingScreenshots.set(requestId, { resolve, reject, timer });
+      broadcastToWhiteboard({ type: 'screenshot:request', requestId });
+    });
+
+    res.json({ ok: true, data }); // data is base64 JPEG
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ══════════════════════════════════════════════════
+// TIC TAC TOE — REST API (dedicated game endpoints)
+// ══════════════════════════════════════════════════
+
+const TTT_BOARD_SIZE = 500;
+const TTT_CELL_SIZE = Math.round(TTT_BOARD_SIZE / 3);
+const TTT_PIECE_SIZE = 120;
+const TTT_PIECE_OFFSET = Math.round((TTT_CELL_SIZE - TTT_PIECE_SIZE) / 2);
+const TTT_NUMBER_SIZE = 60;
+const TTT_NUMBER_OFFSET = Math.round((TTT_CELL_SIZE - TTT_NUMBER_SIZE) / 2);
+
+const TTT_WIN_LINES = [
+  [0,1,2], [3,4,5], [6,7,8], // rows
+  [0,3,6], [1,4,7], [2,5,8], // columns
+  [0,4,8], [2,4,6],          // diagonals
+];
+
+function tttCheckResult(board) {
+  for (const [a,b,c] of TTT_WIN_LINES) {
+    if (board[a] && board[a] === board[b] && board[b] === board[c]) return board[a];
+  }
+  return board.every(c => c !== null) ? 'draw' : null;
+}
+
+function tttBoardAscii(board) {
+  const display = board.map((c, i) => c || String(i + 1));
+  return [
+    `  ${display[0]} | ${display[1]} | ${display[2]}`,
+    '  ---------',
+    `  ${display[3]} | ${display[4]} | ${display[5]}`,
+    '  ---------',
+    `  ${display[6]} | ${display[7]} | ${display[8]}`,
+  ].join('\n');
+}
+
+function tttLoadAsset(name) {
+  const filePath = join(__dirname, 'games', 'TicTacToe', `${name}.svg`);
+  if (!existsSync(filePath)) return null;
+  const buf = readFileSync(filePath);
+  return `data:image/svg+xml;base64,${buf.toString('base64')}`;
+}
+
+function tttCellPosition(cellNum, boardX, boardY, size, offset) {
+  const idx = cellNum - 1;
+  const col = idx % 3;
+  const row = Math.floor(idx / 3);
+  return {
+    x: boardX + col * TTT_CELL_SIZE + offset,
+    y: boardY + row * TTT_CELL_SIZE + offset,
+  };
+}
+
+// POST /api/games/tictactoe/start — Set up board and initialize game
+app.post('/api/games/tictactoe/start', (req, res) => {
+  try {
+    const piece = (req.body.piece || 'X').toUpperCase();
+    if (piece !== 'X' && piece !== 'O') {
+      return res.status(400).json({ error: 'piece must be "X" or "O"' });
+    }
+
+    // Clear whiteboard first
+    const state = loadUiState();
+    state['neural-whiteboard'] = { elements: [], nextZIndex: 1 };
+
+    // Calculate centered board position
+    const vp = whiteboardViewport || { width: 1920, height: 937 };
+    const boardX = Math.round((vp.width - TTT_BOARD_SIZE) / 2);
+    const boardY = Math.round((vp.height - TTT_BOARD_SIZE) / 2);
+
+    // Build board elements
+    const wb = state['neural-whiteboard'];
+    const elements = [];
+
+    // Board grid
+    const boardDataUrl = tttLoadAsset('Board');
+    elements.push({
+      id: 'ttt-board',
+      type: 'image',
+      x: boardX,
+      y: boardY,
+      width: TTT_BOARD_SIZE,
+      height: TTT_BOARD_SIZE,
+      dataUrl: boardDataUrl,
+      zIndex: wb.nextZIndex++,
+    });
+
+    // Number markers (1-9)
+    for (let i = 1; i <= 9; i++) {
+      const pos = tttCellPosition(i, boardX, boardY, TTT_NUMBER_SIZE, TTT_NUMBER_OFFSET);
+      const dataUrl = tttLoadAsset(String(i));
+      elements.push({
+        id: `ttt-cell-${i}`,
+        type: 'image',
+        x: pos.x,
+        y: pos.y,
+        width: TTT_NUMBER_SIZE,
+        height: TTT_NUMBER_SIZE,
+        dataUrl,
+        zIndex: wb.nextZIndex++,
+      });
+    }
+
+    wb.elements = elements;
+
+    // Initialize game state
+    const gameState = {
+      board: [null,null,null, null,null,null, null,null,null],
+      turn: 'X',
+      status: 'playing',
+      winner: null,
+      piece,
+      boardX,
+      boardY,
+    };
+    state['tictactoe-game'] = gameState;
+    saveUiState(state);
+
+    // Broadcast to whiteboard clients
+    broadcastToWhiteboard({ type: 'clear' });
+    broadcastToWhiteboard({ type: 'add', elements });
+    broadcastToWhiteboard({ type: 'ttt-started', boardX, boardY });
+
+    res.json({
+      ok: true,
+      board: gameState.board,
+      ascii: tttBoardAscii(gameState.board),
+      turn: gameState.turn,
+      status: gameState.status,
+      piece,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/games/tictactoe/move — Make a move
+app.post('/api/games/tictactoe/move', (req, res) => {
+  try {
+    const cell = parseInt(req.body.cell, 10);
+    if (isNaN(cell) || cell < 1 || cell > 9) {
+      return res.status(400).json({ error: 'cell must be a number 1-9' });
+    }
+
+    const state = loadUiState();
+    const game = state['tictactoe-game'];
+    if (!game) {
+      return res.status(400).json({ error: 'No active TicTacToe game. Use start first.' });
+    }
+    if (game.status !== 'playing') {
+      return res.status(400).json({ error: `Game is over: ${game.status}${game.winner ? ' — ' + game.winner + ' wins' : ''}` });
+    }
+
+    const idx = cell - 1;
+    if (game.board[idx] !== null) {
+      return res.status(400).json({ error: `Cell ${cell} is already taken by ${game.board[idx]}` });
+    }
+
+    // Place the piece
+    const currentPiece = game.turn;
+    game.board[idx] = currentPiece;
+
+    // Update whiteboard: remove number marker, add piece
+    const wb = state['neural-whiteboard'];
+    if (wb && wb.elements) {
+      // Remove number marker
+      const markerIdx = wb.elements.findIndex(e => e.id === `ttt-cell-${cell}`);
+      let removedMarker = null;
+      if (markerIdx !== -1) {
+        removedMarker = wb.elements.splice(markerIdx, 1)[0];
+      }
+
+      // Add piece at correct position
+      const assetName = currentPiece === 'X' ? 'Cross' : 'Circle';
+      const dataUrl = tttLoadAsset(assetName);
+      const pos = tttCellPosition(cell, game.boardX, game.boardY, TTT_PIECE_SIZE, TTT_PIECE_OFFSET);
+      const pieceEl = {
+        id: `ttt-piece-${cell}`,
+        type: 'image',
+        x: pos.x,
+        y: pos.y,
+        width: TTT_PIECE_SIZE,
+        height: TTT_PIECE_SIZE,
+        dataUrl,
+        zIndex: wb.nextZIndex++,
+      };
+      wb.elements.push(pieceEl);
+
+      // Broadcast whiteboard changes
+      if (removedMarker) broadcastToWhiteboard({ type: 'remove', id: `ttt-cell-${cell}` });
+      broadcastToWhiteboard({ type: 'add', elements: [pieceEl] });
+    }
+
+    // Check for win/draw
+    const result = tttCheckResult(game.board);
+    if (result === 'draw') {
+      game.status = 'draw';
+    } else if (result) {
+      game.status = 'won';
+      game.winner = result;
+    } else {
+      // Toggle turn
+      game.turn = game.turn === 'X' ? 'O' : 'X';
+    }
+
+    state['tictactoe-game'] = game;
+    saveUiState(state);
+
+    const response = {
+      ok: true,
+      board: game.board,
+      ascii: tttBoardAscii(game.board),
+      turn: game.turn,
+      status: game.status,
+    };
+    if (game.winner) response.winner = game.winner;
+
+    res.json(response);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/games/tictactoe/state — Get current game state
+app.get('/api/games/tictactoe/state', (req, res) => {
+  try {
+    const state = loadUiState();
+    const game = state['tictactoe-game'];
+    if (!game) {
+      return res.json({ ok: true, active: false, message: 'No active game' });
+    }
+
+    const response = {
+      ok: true,
+      active: true,
+      board: game.board,
+      ascii: tttBoardAscii(game.board),
+      turn: game.turn,
+      status: game.status,
+      piece: game.piece,
+    };
+    if (game.winner) response.winner = game.winner;
+
+    res.json(response);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/games/tictactoe/end — Tear down game
+app.post('/api/games/tictactoe/end', (req, res) => {
+  try {
+    const state = loadUiState();
+    delete state['tictactoe-game'];
+    state['neural-whiteboard'] = { elements: [], nextZIndex: 1 };
+    saveUiState(state);
+
+    broadcastToWhiteboard({ type: 'clear' });
+    broadcastToWhiteboard({ type: 'ttt-ended' });
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ══════════════════════════════════════════════
+// CARDS — REST API (Claude MCP integration)
+// ══════════════════════════════════════════════
+
+// Helper: send a WS request to the browser and await the ACK response
+function requestCardOp(message, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    if (cardsClients.size === 0) {
+      return reject(new Error('No browser connected. Open the Neural Interface.'));
+    }
+    const requestId = randomBytes(8).toString('hex');
+    message.requestId = requestId;
+    const timer = setTimeout(() => {
+      cardsPendingOps.delete(requestId);
+      reject(new Error('Browser did not respond within 10 seconds'));
+    }, timeoutMs);
+    cardsPendingOps.set(requestId, { resolve, reject, timer });
+    broadcastToCards(message);
+  });
+}
+
+// GET /api/cards — Read all open cards from persisted ui-state
+app.get('/api/cards', (req, res) => {
+  try {
+    const state = loadUiState();
+    const raw = state['neural-open-cards'];
+    const cards = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
+
+    // Enrich each card with pin state
+    for (const card of cards) {
+      const pinKey = 'neural-pinned-' + card.panelId;
+      card.isPinned = state[pinKey] === 'true' || state[pinKey] === true;
+    }
+
+    res.json({ ok: true, cards, count: cards.length, viewport: cardsViewport });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/cards/open — Open a memory card (WS round-trip to browser)
+app.post('/api/cards/open', async (req, res) => {
+  const { memoryId, left, top, compact, coordMode } = req.body || {};
+  if (!memoryId) return res.status(400).json({ error: 'memoryId is required' });
+
+  // Percentage coordinate conversion
+  let resolvedLeft = left, resolvedTop = top;
+  if (coordMode === 'pct' && cardsViewport) {
+    if (left != null) resolvedLeft = Math.round((left / 100) * cardsViewport.width);
+    if (top != null) resolvedTop = Math.round((top / 100) * cardsViewport.height);
+  }
+
+  try {
+    const result = await requestCardOp({
+      type: 'card:open-request',
+      memoryId,
+      ...(resolvedLeft !== undefined && { left: resolvedLeft }),
+      ...(resolvedTop !== undefined && { top: resolvedTop }),
+      ...(compact !== undefined && { compact }),
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    const status = err.message.includes('No browser') || err.message.includes('did not respond') ? 503 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// POST /api/cards/close — Close one card or all cards (WS round-trip)
+app.post('/api/cards/close', async (req, res) => {
+  const { memoryId } = req.body || {};
+
+  try {
+    const result = await requestCardOp({
+      type: 'card:close-request',
+      ...(memoryId && { memoryId }),
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    const status = err.message.includes('No browser') || err.message.includes('did not respond') ? 503 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// PUT /api/cards/:memoryId — Update card state (WS round-trip)
+app.put('/api/cards/:memoryId', async (req, res) => {
+  const { memoryId } = req.params;
+  const { coordMode, ...updates } = req.body || {};
+
+  // Percentage coordinate conversion
+  if (coordMode === 'pct' && cardsViewport) {
+    if (updates.left != null) updates.left = Math.round((updates.left / 100) * cardsViewport.width);
+    if (updates.top != null) updates.top = Math.round((updates.top / 100) * cardsViewport.height);
+    if (updates.width != null) updates.width = Math.round((updates.width / 100) * cardsViewport.width);
+    if (updates.height != null) updates.height = Math.round((updates.height / 100) * cardsViewport.height);
+  }
+
+  // Check at least one valid update field
+  const validFields = ['left', 'top', 'width', 'height', 'compact', 'pinned'];
+  const hasUpdate = validFields.some(f => updates[f] !== undefined);
+  if (!hasUpdate) {
+    return res.status(400).json({ error: 'No update fields provided. Use: left, top, width, height, compact, pinned' });
+  }
+
+  try {
+    const result = await requestCardOp({
+      type: 'card:update-request',
+      memoryId,
+      updates,
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    const status = err.message.includes('No browser') || err.message.includes('did not respond') ? 503 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// GET /api/cards/screenshot — Capture viewport screenshot (WS round-trip, 15s timeout)
+app.get('/api/cards/screenshot', async (req, res) => {
+  try {
+    const result = await requestCardOp({ type: 'screenshot:request' }, 15000);
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    const status = err.message.includes('No browser') || err.message.includes('did not respond') ? 503 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+
+// --- Bridge config helpers (read/write BRIDGE__<id>__* in .env) ---
+// loadBridgeConfig(), saveBridgeConfig(), removeBridgeConfig() defined above near writeEnvFile
 
 // --- OpenClaw Bridge: Markdown Parsers ---
 
@@ -2073,366 +2600,449 @@ function syncOpenClawBridge() {
   };
 }
 
-// GET /api/connections — List all configured connections with live point counts
-app.get('/api/connections', async (req, res) => {
+// GET /api/connections — Returns SQLite database info (legacy endpoint for UI compat)
+app.get('/api/connections', (req, res) => {
   try {
-    const data = loadQdrantConnections();
-    const entries = [];
-
-    for (const [id, conn] of Object.entries(data.connections)) {
-      let points = 0;
-      let reachable = false;
-      try {
-        const infoRes = await fetch(`${conn.url}/collections/${conn.collection}`, {
-          headers: { 'Content-Type': 'application/json', 'api-key': conn.apiKey },
-          signal: AbortSignal.timeout(3000),
-        });
-        if (infoRes.ok) {
-          const info = await infoRes.json();
-          points = info.result?.points_count ?? 0;
-          reachable = true;
-        }
-      } catch {}
-      entries.push({
-        id,
-        label: conn.label || id,
-        url: conn.url,
-        collection: conn.collection,
-        points,
-        reachable,
-        active: id === data.active,
-      });
-    }
-
-    res.json({ connections: entries, active: data.active });
+    const dbPath = getDbPath();
+    const dbExists = existsSync(dbPath);
+    const memCount = dbExists ? countMemories() : 0;
+    res.json({
+      connections: [{
+        id: 'sqlite',
+        label: 'Local SQLite',
+        url: dbPath,
+        collection: 'memories',
+        points: memCount,
+        reachable: dbExists,
+        active: true,
+      }],
+      active: 'sqlite',
+    });
   } catch (err) {
     console.error('GET /api/connections error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/connections/suggest-port — Suggest the next available port based on existing connections
-app.get('/api/connections/suggest-port', (req, res) => {
+// ═══════════════════════════════════════════
+// LOOP TEMPLATES
+// ═══════════════════════════════════════════
+
+const LOOP_TEMPLATES_PATH = resolve(PROJECT_ROOT, 'data', 'loop-templates.json');
+const LOOP_DIR = resolve(PROJECT_ROOT, 'data', 'loop');
+
+function readLoopTemplates() {
   try {
-    const data = loadQdrantConnections();
-    let maxPort = 6333;
-    for (const conn of Object.values(data.connections)) {
-      const port = conn.port || extractPort(conn.url);
-      maxPort = Math.max(maxPort, port);
+    if (existsSync(LOOP_TEMPLATES_PATH)) {
+      return JSON.parse(readFileSync(LOOP_TEMPLATES_PATH, 'utf-8'));
     }
-    // Round up to next 10 boundary, then add 10 for clean spacing
-    const suggested = maxPort + 10 - (maxPort % 10) + (maxPort % 10 === 0 ? 0 : 10);
-    res.json({ port: suggested, grpcPort: suggested + 1 });
-  } catch (err) {
-    res.json({ port: 6333, grpcPort: 6334 });
+  } catch { /* corrupt file */ }
+  return [];
+}
+
+function writeLoopTemplates(templates) {
+  writeFileSync(LOOP_TEMPLATES_PATH, JSON.stringify(templates, null, 2));
+}
+
+// GET /api/loop/templates — list all saved templates
+app.get('/api/loop/templates', (req, res) => {
+  res.json(readLoopTemplates());
+});
+
+// POST /api/loop/templates — create a template
+app.post('/api/loop/templates', (req, res) => {
+  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser } = req.body;
+  if (!name?.trim() || !task?.trim()) {
+    return res.status(400).json({ error: 'name and task are required' });
   }
+  const templates = readLoopTemplates();
+  const id = randomBytes(12).toString('hex');
+  const template = {
+    id,
+    name: name.trim(),
+    description: (description || '').trim(),
+    task: task.trim(),
+    context: (context || '').trim() || null,
+    iterations: Math.min(Math.max(iterations || 10, 1), 50),
+    maxMinutes: Math.min(Math.max(maxMinutes || 30, 1), 120),
+    usesBrowser: usesBrowser || false,
+    icon: icon || '\u{1F504}',
+    category: category || 'custom',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  templates.push(template);
+  writeLoopTemplates(templates);
+  res.json(template);
 });
 
-// POST /api/connections — Add a new connection
-app.post('/api/connections', async (req, res) => {
-  try {
-    const { id, label, url, apiKey, collection } = req.body;
-    if (!id || !url || !apiKey || !collection) {
-      return res.status(400).json({ error: 'id, url, apiKey, and collection are required' });
-    }
+// GET /api/loop/templates/export — export all templates as JSON (must be before /:id)
+app.get('/api/loop/templates/export', (req, res) => {
+  const templates = readLoopTemplates();
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', 'attachment; filename="synabun-loop-templates.json"');
+  res.json({
+    version: 1,
+    type: 'synabun-loop-templates',
+    exportedAt: new Date().toISOString(),
+    templates,
+  });
+});
 
-    const envId = id.replace(/-/g, '_');
-    const data = loadQdrantConnections();
-    if (data.connections[envId]) {
-      return res.status(409).json({ error: `Connection "${id}" already exists` });
-    }
-
-    // Verify we can reach Qdrant
-    try {
-      const pingRes = await fetch(`${url}/collections`, {
-        headers: { 'Content-Type': 'application/json', 'api-key': apiKey },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!pingRes.ok) {
-        return res.status(400).json({ error: `Cannot reach Qdrant at ${url} (HTTP ${pingRes.status})` });
-      }
-    } catch (err) {
-      return res.status(400).json({ error: `Cannot reach Qdrant at ${url}: ${err.message}` });
-    }
-
-    saveQdrantConnection(id, { label: label || id, url, apiKey, collection });
-
-    res.json({ ok: true, message: `Connection "${label || id}" added` });
-  } catch (err) {
-    console.error('POST /api/connections error:', err.message);
-    res.status(500).json({ error: err.message });
+// POST /api/loop/templates/import — import templates from JSON
+app.post('/api/loop/templates/import', (req, res) => {
+  const { templates: incoming, template: single } = req.body;
+  const toImport = incoming || (single ? [single] : null);
+  if (!toImport || !Array.isArray(toImport)) {
+    return res.status(400).json({ error: 'Invalid import format: expected templates array or template object' });
   }
-});
-
-// PUT /api/connections/active — Switch active connection
-app.put('/api/connections/active', async (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id || typeof id !== 'string') {
-      return res.status(400).json({ error: 'Connection id is required' });
+  const existing = readLoopTemplates();
+  let added = 0;
+  let updated = 0;
+  for (const t of toImport) {
+    if (!t.name?.trim() || !t.task?.trim()) continue;
+    const existingIdx = existing.findIndex(e => e.name === t.name);
+    const template = {
+      id: t.id || randomBytes(12).toString('hex'),
+      name: t.name.trim(),
+      description: (t.description || '').trim(),
+      task: t.task.trim(),
+      context: (t.context || '').trim() || null,
+      iterations: Math.min(Math.max(t.iterations || 10, 1), 50),
+      maxMinutes: Math.min(Math.max(t.maxMinutes || 30, 1), 120),
+      usesBrowser: t.usesBrowser || false,
+      icon: t.icon || '\u{1F504}',
+      category: t.category || 'custom',
+      createdAt: t.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    if (existingIdx >= 0) {
+      template.id = existing[existingIdx].id; // keep original id
+      existing[existingIdx] = template;
+      updated++;
+    } else {
+      existing.push(template);
+      added++;
     }
-
-    const data = loadQdrantConnections();
-    const conn = data.connections[id];
-    if (!conn) {
-      return res.status(404).json({ error: `Connection "${id}" not found` });
-    }
-
-    // Verify we can reach it before switching
-    try {
-      const checkRes = await fetch(`${conn.url}/collections/${conn.collection}`, {
-        headers: { 'Content-Type': 'application/json', 'api-key': conn.apiKey },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!checkRes.ok) {
-        return res.status(400).json({ error: `Cannot reach collection "${conn.collection}" at ${conn.url}` });
-      }
-    } catch (err) {
-      return res.status(400).json({ error: `Cannot reach Qdrant at ${conn.url}: ${err.message}` });
-    }
-
-    setActiveQdrantConnection(id);
-
-    // Also update the runtime variables so the neural interface uses the new connection
-    QDRANT_URL = conn.url;
-    QDRANT_KEY = conn.apiKey;
-    COLLECTION = conn.collection;
-    console.log(`  Connection switched — ${conn.label || id}: ${conn.url}/collections/${conn.collection}`);
-
-    res.json({ ok: true, message: `Switched to "${conn.label || id}"`, active: id });
-  } catch (err) {
-    console.error('PUT /api/connections/active error:', err.message);
-    res.status(500).json({ error: err.message });
   }
+  writeLoopTemplates(existing);
+  res.json({ ok: true, added, updated, total: existing.length });
 });
 
-// DELETE /api/connections/:id — Remove a connection
-app.delete('/api/connections/:id', async (req, res) => {
+// PUT /api/loop/templates/:id — update a template
+app.put('/api/loop/templates/:id', (req, res) => {
+  const templates = readLoopTemplates();
+  const idx = templates.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Template not found' });
+  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser } = req.body;
+  if (name !== undefined) templates[idx].name = name.trim();
+  if (description !== undefined) templates[idx].description = description.trim();
+  if (task !== undefined) templates[idx].task = task.trim();
+  if (context !== undefined) templates[idx].context = context.trim() || null;
+  if (iterations !== undefined) templates[idx].iterations = Math.min(Math.max(iterations, 1), 50);
+  if (maxMinutes !== undefined) templates[idx].maxMinutes = Math.min(Math.max(maxMinutes, 1), 120);
+  if (icon !== undefined) templates[idx].icon = icon;
+  if (category !== undefined) templates[idx].category = category;
+  if (usesBrowser !== undefined) templates[idx].usesBrowser = !!usesBrowser;
+  templates[idx].updatedAt = new Date().toISOString();
+  writeLoopTemplates(templates);
+  res.json(templates[idx]);
+});
+
+// DELETE /api/loop/templates/:id — delete a template
+app.delete('/api/loop/templates/:id', (req, res) => {
+  const templates = readLoopTemplates();
+  const idx = templates.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Template not found' });
+  templates.splice(idx, 1);
+  writeLoopTemplates(templates);
+  res.json({ ok: true });
+});
+
+// GET /api/loop/active — scan for active loop status
+app.get('/api/loop/active', (req, res) => {
   try {
-    const { id } = req.params;
-
-    const data = loadQdrantConnections();
-    if (!data.connections[id]) {
-      return res.status(404).json({ error: `Connection "${id}" not found` });
-    }
-    if (id === data.active) {
-      return res.status(400).json({ error: 'Cannot delete the active connection. Switch to another first.' });
-    }
-
-    removeQdrantConnection(id);
-
-    res.json({ ok: true, message: `Connection "${id}" removed` });
-  } catch (err) {
-    console.error('DELETE /api/connections/:id error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/connections/sync-env — DEPRECATED: .env is now the single source of truth
-app.post('/api/connections/sync-env', (req, res) => {
-  const data = loadQdrantConnections();
-  const count = Object.keys(data.connections).length;
-  res.json({ ok: true, message: `.env is the single source of truth. ${count} connections configured.` });
-});
-
-// POST /api/connections/start-container — Start a stopped Docker container for a connection
-app.post('/api/connections/start-container', async (req, res) => {
-  try {
-    const { id } = req.body;
-    if (!id) return res.status(400).json({ error: 'Connection id is required' });
-
-    const data = loadQdrantConnections();
-    const conn = data.connections[id];
-    if (!conn) return res.status(404).json({ error: `Connection "${id}" not found` });
-
-    const port = conn.port || extractPort(conn.url);
-    const containerName = 'synabun-qdrant-' + id.replace(/[^a-z0-9]/g, '-');
-
-    // Try to start by exact container name first
-    let started = false;
-    try {
-      await execAsync(`docker start ${containerName}`, { timeout: 15000 });
-      started = true;
-    } catch {
-      // Fall back: search by port binding
+    if (!existsSync(LOOP_DIR)) return res.json({ active: false });
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
+    for (const f of files) {
       try {
-        const { stdout } = await execAsync(
-          `docker ps -a --filter "publish=${port}" --format "{{.Names}}"`,
-          { timeout: 5000 }
-        );
-        const name = stdout.trim().split('\n')[0];
-        if (name) {
-          await execAsync(`docker start ${name}`, { timeout: 15000 });
-          started = true;
+        const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
+        if (data?.active) {
+          const elapsed = Date.now() - new Date(data.startedAt).getTime();
+          const maxMs = (data.maxMinutes || 30) * 60 * 1000;
+          return res.json({
+            active: true,
+            sessionId: f.replace('.json', ''),
+            task: data.task,
+            context: data.context,
+            currentIteration: data.currentIteration || 0,
+            totalIterations: data.totalIterations || 10,
+            maxMinutes: data.maxMinutes || 30,
+            elapsedMinutes: Math.round(elapsed / 60000),
+            remainingMinutes: Math.max(0, Math.round((maxMs - elapsed) / 60000)),
+            startedAt: data.startedAt,
+            lastIterationAt: data.lastIterationAt,
+          });
         }
-      } catch {}
+      } catch { /* skip corrupt */ }
+    }
+    return res.json({ active: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/loop/launch — create loop state + terminal session atomically
+app.post('/api/loop/launch', async (req, res) => {
+  try {
+    const { task, context, iterations, maxMinutes, usesBrowser, cwd, profile, model } = req.body;
+    if (!task?.trim()) return res.status(400).json({ error: 'task is required' });
+
+    // Validate profile if provided
+    const cliProfile = profile || 'claude-code';
+    const validProfiles = Object.keys(loadCliConfig());
+    if (!validProfiles.includes(cliProfile) && cliProfile !== 'shell') {
+      return res.status(400).json({ error: `Invalid profile: ${cliProfile}. Valid: ${validProfiles.join(', ')}` });
     }
 
-    if (!started) {
-      return res.status(404).json({ error: `No Docker container found for "${id}" (port ${port}). Create a new one from the wizard.` });
-    }
+    // 1. Ensure loop directory exists
+    if (!existsSync(LOOP_DIR)) mkdirSync(LOOP_DIR, { recursive: true });
 
-    // Wait for Qdrant to be ready (up to 15s)
-    let ready = false;
-    for (let i = 0; i < 15; i++) {
+    // 1b. Prevent duplicate launches — stop any active/pending loops first
+    const existing = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
+    for (const f of existing) {
       try {
-        const ping = await fetch(`${conn.url}/collections`, {
-          headers: { 'api-key': conn.apiKey },
-          signal: AbortSignal.timeout(2000),
-        });
-        if (ping.ok) { ready = true; break; }
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
+        const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
+        if (data.active || data.pending) {
+          if (data.terminalSessionId && terminalSessions.has(data.terminalSessionId)) {
+            try { terminalSessions.get(data.terminalSessionId).pty.kill(); } catch {}
+            terminalSessions.delete(data.terminalSessionId);
+          }
+          data.active = false; delete data.pending; data.stopped = true;
+          data.finishedAt = new Date().toISOString();
+          writeFileSync(resolve(LOOP_DIR, f), JSON.stringify(data, null, 2));
+        }
+      } catch { /* skip corrupt */ }
     }
 
-    res.json({ ok: ready, message: ready ? 'Container started' : 'Container started but Qdrant not responding yet' });
+    // 1c. Reuse existing browser session opened by the UI.
+    // The UI opens the browser BEFORE calling this endpoint (same path as Apps menu),
+    // which creates the viewport + WebSocket screencast that keeps the session alive.
+    // We only reuse here — never create server-side (no viewer = grace timer kills it).
+    let browserSessionId = null;
+    if (usesBrowser) {
+      const existingIds = [...browserSessions.keys()];
+      if (existingIds.length > 0) {
+        browserSessionId = existingIds[0];
+        // Cancel any pending grace timer — this session is needed by the loop
+        const reusedSession = browserSessions.get(browserSessionId);
+        if (reusedSession?.graceTimer) {
+          clearTimeout(reusedSession.graceTimer);
+          reusedSession.graceTimer = null;
+          console.log(`[loop] Cleared grace timer on session ${browserSessionId}`);
+        }
+        console.log(`[loop] Reusing existing browser session ${browserSessionId}`);
+      } else {
+        console.warn('[loop] usesBrowser=true but no browser session found — UI should have opened one');
+      }
+    }
+
+    // 2. Create terminal PTY session with selected CLI profile + optional model flag
+    // Default CWD to Synabun project root — it has no .mcp.json, so no auth-requiring
+    // MCP servers (e.g. supabase OAuth) trigger the "needs auth" prompt that blocks loops.
+    // The SynaBun MCP server is registered globally in ~/.claude.json, so it's always available.
+    const loopCwd = cwd || PROJECT_ROOT;
+    const terminalSessionId = createTerminalSession(cliProfile, 120, 30, loopCwd, { model });
+
+    // 3. Create pending loop state file (placeholder — prompt-submit hook will rename)
+    const pendingId = 'pending-' + randomBytes(8).toString('hex');
+    const loopState = {
+      active: true,
+      task: task.trim(),
+      context: context?.trim() || null,
+      totalIterations: Math.min(Math.max(iterations || 10, 1), 50),
+      currentIteration: 0,
+      maxMinutes: Math.min(Math.max(maxMinutes || 30, 1), 60),
+      startedAt: new Date().toISOString(),
+      lastIterationAt: null,
+      retries: 0,
+      pending: true,
+      terminalSessionId,
+      usesBrowser: !!usesBrowser,
+      browserSessionId,
+      profile: cliProfile,
+      model: model || null,
+    };
+    writeFileSync(resolve(LOOP_DIR, `${pendingId}.json`), JSON.stringify(loopState, null, 2));
+
+    broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile: cliProfile });
+
+    res.json({ ok: true, pendingId, terminalSessionId, browserSessionId });
   } catch (err) {
-    console.error('POST /api/connections/start-container error:', err.message);
+    console.error('POST /api/loop/launch error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/connections/:id/backup — Create and download a Qdrant snapshot
-app.post('/api/connections/:id/backup', async (req, res) => {
+// POST /api/loop/stop — force-stop active/pending loops and clean up PTY sessions
+app.post('/api/loop/stop', (req, res) => {
   try {
-    const { id } = req.params;
-    const data = loadQdrantConnections();
-    const conn = data.connections[id];
-    if (!conn) return res.status(404).json({ error: `Connection "${id}" not found` });
-
-    const { url, apiKey, collection } = conn;
-    const headers = { 'api-key': apiKey };
-
-    // 1. Create snapshot
-    const snapRes = await fetch(`${url}/collections/${collection}/snapshots`, {
-      method: 'POST',
-      headers,
-      signal: AbortSignal.timeout(120000),
-    });
-    if (!snapRes.ok) {
-      const text = await snapRes.text();
-      throw new Error(`Snapshot creation failed: ${text}`);
+    if (!existsSync(LOOP_DIR)) return res.json({ ok: true, stopped: 0 });
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
+    let stopped = 0;
+    for (const f of files) {
+      try {
+        const filePath = resolve(LOOP_DIR, f);
+        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+        if (data.active || data.pending) {
+          // Kill PTY session if still alive
+          if (data.terminalSessionId && terminalSessions.has(data.terminalSessionId)) {
+            const session = terminalSessions.get(data.terminalSessionId);
+            try { session.pty.kill(); } catch {}
+            terminalSessions.delete(data.terminalSessionId);
+          }
+          // Mark as stopped
+          data.active = false;
+          delete data.pending;
+          data.stopped = true;
+          data.finishedAt = new Date().toISOString();
+          writeFileSync(filePath, JSON.stringify(data, null, 2));
+          stopped++;
+        }
+      } catch { /* skip corrupt */ }
     }
-    const snapData = await snapRes.json();
-    const snapName = snapData.result?.name;
-    if (!snapName) throw new Error('Snapshot created but no name returned');
-
-    // 2. Download snapshot binary
-    const dlRes = await fetch(`${url}/collections/${collection}/snapshots/${snapName}`, {
-      headers,
-      signal: AbortSignal.timeout(300000),
-    });
-    if (!dlRes.ok) {
-      const text = await dlRes.text();
-      throw new Error(`Snapshot download failed: ${text}`);
-    }
-
-    // 3. Stream to client
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${collection}-${timestamp}.snapshot"`);
-    if (dlRes.headers.get('content-length')) {
-      res.setHeader('Content-Length', dlRes.headers.get('content-length'));
-    }
-
-    const nodeStream = Readable.fromWeb(dlRes.body);
-    nodeStream.pipe(res);
-
-    nodeStream.on('end', () => {
-      // 4. Cleanup: delete the snapshot from Qdrant (fire-and-forget)
-      fetch(`${url}/collections/${collection}/snapshots/${snapName}`, {
-        method: 'DELETE',
-        headers,
-        signal: AbortSignal.timeout(10000),
-      }).catch(() => {});
-    });
-
-    nodeStream.on('error', (err) => {
-      console.error('Snapshot stream error:', err.message);
-      if (!res.headersSent) res.status(500).json({ error: err.message });
-    });
+    res.json({ ok: true, stopped });
   } catch (err) {
-    console.error('POST /api/connections/:id/backup error:', err.message);
-    if (!res.headersSent) res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/connections/:id/restore — Upload a .snapshot file to restore a collection
-app.post('/api/connections/:id/restore', express.raw({ type: 'application/octet-stream', limit: '500mb' }), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const data = loadQdrantConnections();
-    const conn = data.connections[id];
-    if (!conn) return res.status(404).json({ error: `Connection "${id}" not found` });
-
-    if (!req.body || req.body.length === 0) {
-      return res.status(400).json({ error: 'No snapshot data received' });
-    }
-
-    const { url, apiKey, collection } = conn;
-
-    // Build multipart form data with the snapshot buffer
-    const form = new FormData();
-    form.append('snapshot', new Blob([req.body]), 'restore.snapshot');
-
-    const uploadRes = await fetch(`${url}/collections/${collection}/snapshots/upload?priority=snapshot`, {
-      method: 'POST',
-      headers: { 'api-key': apiKey },
-      body: form,
-      signal: AbortSignal.timeout(300000),
-    });
-
-    if (!uploadRes.ok) {
-      const text = await uploadRes.text();
-      throw new Error(`Restore failed: ${text}`);
-    }
-
-    res.json({ ok: true, message: `Collection "${collection}" restored successfully` });
-  } catch (err) {
-    console.error('POST /api/connections/:id/restore error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/connections/restore-standalone — Restore a snapshot to any Qdrant instance (not necessarily in connections.json)
-// Expects URL query params: ?url=...&apiKey=...&collection=...&label=...
-// Body: raw snapshot bytes (application/octet-stream)
-app.post('/api/connections/restore-standalone', express.raw({ type: 'application/octet-stream', limit: '500mb' }), async (req, res) => {
+// GET /api/loop/history — list completed, stopped, and stale loop runs
+app.get('/api/loop/history', (req, res) => {
   try {
-    const { url, apiKey, collection, label } = req.query;
-    if (!url || !apiKey || !collection) {
-      return res.status(400).json({ error: 'url, apiKey, and collection query params are required' });
+    if (!existsSync(LOOP_DIR)) return res.json([]);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 200);
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
+    const completed = [];
+    const now = Date.now();
+    for (const f of files) {
+      try {
+        const filePath = resolve(LOOP_DIR, f);
+        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+        if (!data) continue;
+
+        // Skip pending files that haven't been claimed yet (still waiting for Claude Code)
+        if (data.pending) continue;
+
+        // Include: inactive loops, OR stale active loops (past time cap + 5min grace)
+        let isStale = false;
+        if (data.active && data.startedAt) {
+          const elapsed = now - new Date(data.startedAt).getTime();
+          const maxMs = ((data.maxMinutes || 30) + 5) * 60 * 1000;
+          if (elapsed > maxMs) {
+            isStale = true;
+            // Auto-mark stale loops as stopped
+            data.active = false;
+            data.stopped = true;
+            data.stale = true;
+            data.finishedAt = data.lastIterationAt || new Date(new Date(data.startedAt).getTime() + (data.maxMinutes || 30) * 60000).toISOString();
+            try { writeFileSync(filePath, JSON.stringify(data, null, 2)); } catch { /* ok */ }
+          }
+        }
+
+        if (!data.active || isStale) {
+          completed.push({
+            sessionId: f.replace('.json', ''),
+            task: data.task,
+            context: data.context,
+            totalIterations: data.totalIterations || 10,
+            completedIterations: data.currentIteration || 0,
+            maxMinutes: data.maxMinutes || 30,
+            startedAt: data.startedAt,
+            finishedAt: data.finishedAt || data.lastIterationAt,
+            stopped: !!data.stopped,
+            stale: !!data.stale,
+            usesBrowser: !!data.usesBrowser,
+            template: data.template || null,
+          });
+        }
+      } catch { /* skip corrupt */ }
     }
-    if (!req.body || req.body.length === 0) {
-      return res.status(400).json({ error: 'No snapshot data received' });
-    }
-
-    // Upload snapshot to Qdrant (creates collection if it doesn't exist)
-    const form = new FormData();
-    form.append('snapshot', new Blob([req.body]), 'restore.snapshot');
-
-    const uploadRes = await fetch(`${url}/collections/${collection}/snapshots/upload?priority=snapshot`, {
-      method: 'POST',
-      headers: { 'api-key': apiKey },
-      body: form,
-      signal: AbortSignal.timeout(300000),
-    });
-
-    if (!uploadRes.ok) {
-      const text = await uploadRes.text();
-      throw new Error(`Restore failed: ${text}`);
-    }
-
-    // Add to .env if not already there
-    const envId = (label || collection).toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'restored';
-    const data = loadQdrantConnections();
-    if (!data.connections[envId]) {
-      saveQdrantConnection(envId, { label: label || collection, url, apiKey, collection });
-    }
-
-    res.json({ ok: true, message: `Collection "${collection}" restored successfully`, connectionId: id });
+    // Sort by finishedAt descending (newest first)
+    completed.sort((a, b) => new Date(b.finishedAt || 0) - new Date(a.finishedAt || 0));
+    res.json(completed.slice(0, limit));
   } catch (err) {
-    console.error('POST /api/connections/restore-standalone error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/loop/history/:id — delete a single history entry
+app.delete('/api/loop/history/:id', (req, res) => {
+  try {
+    const filePath = resolve(LOOP_DIR, `${req.params.id}.json`);
+    if (!existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
+    unlinkSync(filePath);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/loop/complete — store a completed loop as a SQLite memory
+app.post('/api/loop/complete', async (req, res) => {
+  try {
+    const { task, context, template, iterations, duration, result, tags } = req.body;
+    if (!task) return res.status(400).json({ error: 'task is required' });
+
+    const content = [
+      `Automation: ${task}`,
+      context ? `Context: ${context}` : null,
+      template ? `Template: ${template}` : null,
+      `Iterations: ${iterations || '?'}`,
+      `Duration: ${duration || '?'}`,
+      result ? `Result: ${result}` : null,
+    ].filter(Boolean).join('\n');
+
+    const embedding = await getEmbedding(content);
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const d = getDb();
+
+    d.prepare(`INSERT OR REPLACE INTO memories (id, vector, content, category, subcategory, project, importance, tags, source, created_at, updated_at, accessed_at, access_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id, encodeVector(embedding), content, 'automations', 'loop-result', 'synabun',
+      6, JSON.stringify(tags || ['automation', 'loop']), 'auto-saved',
+      now, now, now, 0
+    );
+
+    invalidateMemoriesCache('loop:complete');
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error('POST /api/loop/complete error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/search/memories — category-filtered semantic search
+app.post('/api/search/memories', async (req, res) => {
+  try {
+    const { query, category, limit = 15 } = req.body;
+    if (!query) return res.status(400).json({ error: 'query required' });
+
+    const embedding = await getEmbedding(query);
+    const results = dbSearchMemories(embedding, Math.min(limit, 50), { category, scoreThreshold: 0.3 });
+
+    res.json({
+      results: results.map(r => ({
+        id: r.id,
+        score: r.score,
+        payload: { content: r.content, category: r.category, subcategory: r.subcategory, project: r.project, tags: r.tags, importance: r.importance, source: r.source, created_at: r.created_at, updated_at: r.updated_at, accessed_at: r.accessed_at, access_count: r.access_count, related_files: r.related_files, related_memory_ids: r.related_memory_ids, trashed_at: r.trashed_at },
+      })),
+      query,
+      category,
+    });
+  } catch (err) {
+    console.error('POST /api/search/memories error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2458,11 +3068,11 @@ app.get('/api/system/backup', async (req, res) => {
     archive.pipe(res);
 
     const manifest = {
-      version: 1,
+      version: 2,
       created: new Date().toISOString(),
       hostname: os.hostname(),
-      connections: {},
-      unreachableConnections: [],
+      storage: 'sqlite',
+      database: null,
       files: [],
       checksums: {},
     };
@@ -2515,11 +3125,14 @@ app.get('/api/system/backup', async (req, res) => {
     // 2. data/ directory
     const dataDir = resolve(PROJECT_ROOT, 'data');
     for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
-                      'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json']) {
+                      'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json',
+                      'invite-key.json', 'invite-proxy.json', 'invite-permissions.json',
+                      'loop-templates.json']) {
       addFile(`data/${f}`, resolve(dataDir, f));
     }
     addJsonDir('data/pending-remember', resolve(dataDir, 'pending-remember'));
     addJsonDir('data/pending-compact', resolve(dataDir, 'pending-compact'));
+    addJsonDir('data/loop', resolve(dataDir, 'loop'));
 
     // 3. mcp-server/data/
     if (existsSync(CATEGORIES_DATA_DIR)) {
@@ -2558,66 +3171,19 @@ app.get('/api/system/backup', async (req, res) => {
       }
     }
 
-    // 7. Qdrant snapshots — one per reachable connection
-    const connData = loadQdrantConnections();
-    for (const [id, conn] of Object.entries(connData.connections)) {
+    // 7. SQLite database file
+    const dbPath = getDbPath();
+    if (existsSync(dbPath)) {
       try {
-        const baseUrl = conn.url || `http://localhost:${conn.port || 6333}`;
-        const headers = { 'api-key': conn.apiKey };
-
-        // Health check
-        const healthRes = await fetch(`${baseUrl}/healthz`, {
-          headers, signal: AbortSignal.timeout(5000),
-        });
-        if (!healthRes.ok) throw new Error('unreachable');
-
-        // Get point count
-        let pointCount = 0;
-        try {
-          const infoRes = await fetch(`${baseUrl}/collections/${conn.collection}`, {
-            headers, signal: AbortSignal.timeout(5000),
-          });
-          if (infoRes.ok) {
-            const info = await infoRes.json();
-            pointCount = info?.result?.points_count ?? 0;
-          }
-        } catch { /* non-critical */ }
-
-        // Create snapshot
-        const snapRes = await fetch(`${baseUrl}/collections/${conn.collection}/snapshots`, {
-          method: 'POST', headers, signal: AbortSignal.timeout(120000),
-        });
-        if (!snapRes.ok) throw new Error('snapshot creation failed');
-        const snapData = await snapRes.json();
-        const snapName = snapData.result?.name;
-        if (!snapName) throw new Error('no snapshot name returned');
-
-        // Download snapshot
-        const dlRes = await fetch(`${baseUrl}/collections/${conn.collection}/snapshots/${snapName}`, {
-          headers, signal: AbortSignal.timeout(300000),
-        });
-        if (!dlRes.ok) throw new Error('snapshot download failed');
-
-        const snapBuffer = Buffer.from(await dlRes.arrayBuffer());
-        const archiveName = `snapshots/${id}.snapshot`;
-        archive.append(snapBuffer, { name: `${prefix}/${archiveName}` });
-
-        manifest.connections[id] = {
-          collection: conn.collection,
-          label: conn.label,
-          snapshotFile: archiveName,
-          snapshotSizeBytes: snapBuffer.length,
-          pointCount,
+        const dbContent = readFileSync(dbPath);
+        archive.append(dbContent, { name: `${prefix}/database/memory.db` });
+        manifest.database = {
+          file: 'database/memory.db',
+          sizeBytes: dbContent.length,
+          memoryCount: countMemories(),
         };
-
-        // Cleanup: delete snapshot from Qdrant (fire-and-forget)
-        fetch(`${baseUrl}/collections/${conn.collection}/snapshots/${snapName}`, {
-          method: 'DELETE', headers, signal: AbortSignal.timeout(10000),
-        }).catch(() => {});
-
       } catch (err) {
-        console.warn(`  Backup: skipping connection "${id}": ${err.message}`);
-        manifest.unreachableConnections.push(id);
+        console.warn(`  Backup: failed to include database: ${err.message}`);
       }
     }
 
@@ -2672,7 +3238,7 @@ app.post('/api/system/restore',
       return res.status(400).json({ error: 'Invalid backup: manifest.json not found' });
     }
     const manifest = JSON.parse(manifestEntry.getData().toString('utf-8'));
-    if (manifest.version !== 1) {
+    if (manifest.version !== 1 && manifest.version !== 2) {
       return res.status(400).json({ error: `Unsupported backup version: ${manifest.version}` });
     }
 
@@ -2691,7 +3257,7 @@ app.post('/api/system/restore',
       // data/ files
       const dataDir = resolve(PROJECT_ROOT, 'data');
       mkdirSync(dataDir, { recursive: true });
-      for (const subdir of ['pending-remember', 'pending-compact']) {
+      for (const subdir of ['pending-remember', 'pending-compact', 'loop']) {
         mkdirSync(resolve(dataDir, subdir), { recursive: true });
       }
 
@@ -2745,60 +3311,32 @@ app.post('/api/system/restore',
       }
     }
 
-    // Reload server config after config files are restored (so globals like QDRANT_URL are fresh)
+    // Reload server config after config files are restored
     if (mode === 'full' || mode === 'config-only') {
       reloadConfig();
     }
 
-    // Restore Qdrant snapshots
+    // Restore SQLite database
     if (mode === 'full' || mode === 'snapshots-only') {
-      // Reload connections (may have changed from .env restore above)
-      reloadConfig();
-      const connData = loadQdrantConnections();
-
-      for (const [connId, snapInfo] of Object.entries(manifest.connections || {})) {
-        const snapshotEntry = entries.find(e =>
-          e.entryName === `${prefix}/${snapInfo.snapshotFile}`
-        );
-        if (!snapshotEntry) {
-          results.errors.push(`Snapshot for "${connId}" not found in ZIP`);
-          continue;
-        }
-
-        const conn = connData.connections[connId];
-        if (!conn) {
-          results.errors.push(`Connection "${connId}" (${snapInfo.collection}) not found in current config — skipped`);
-          continue;
-        }
-
+      const dbEntry = entries.find(e => e.entryName === `${prefix}/database/memory.db`);
+      if (dbEntry) {
         try {
-          const baseUrl = conn.url || `http://localhost:${conn.port || 6333}`;
-          const form = new FormData();
-          form.append('snapshot', new Blob([snapshotEntry.getData()]), 'restore.snapshot');
-
-          const uploadRes = await fetch(
-            `${baseUrl}/collections/${conn.collection}/snapshots/upload?priority=snapshot`,
-            {
-              method: 'POST',
-              headers: { 'api-key': conn.apiKey },
-              body: form,
-              signal: AbortSignal.timeout(300000),
-            }
-          );
-
-          if (!uploadRes.ok) {
-            const text = await uploadRes.text();
-            throw new Error(text);
-          }
-
-          results.snapshots.push({
-            id: connId,
-            collection: snapInfo.collection,
-            pointCount: snapInfo.pointCount,
-          });
+          // Close existing database connection before replacing
+          closeDb();
+          const dbPath = getDbPath();
+          const dbDir = dirname(dbPath);
+          mkdirSync(dbDir, { recursive: true });
+          writeFileSync(dbPath, dbEntry.getData());
+          // Remove WAL/SHM files if they exist
+          try { if (existsSync(dbPath + '-wal')) unlinkSync(dbPath + '-wal'); } catch {}
+          try { if (existsSync(dbPath + '-shm')) unlinkSync(dbPath + '-shm'); } catch {}
+          results.files.push('database/memory.db');
         } catch (err) {
-          results.errors.push(`Failed to restore "${connId}": ${err.message}`);
+          results.errors.push(`Failed to restore database: ${err.message}`);
         }
+      } else if (manifest.connections && Object.keys(manifest.connections).length > 0) {
+        // Old Qdrant-format backup detected
+        results.errors.push('This backup contains Qdrant snapshots (old format). Run the migration script to convert to SQLite first.');
       }
     }
 
@@ -2832,6 +3370,32 @@ app.get('/api/browse-directory', (req, res) => {
     res.json({ ok: true, current: dir, parent: parent !== dir ? parent : null, directories: dirs });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/browse-folder — Open native OS folder picker dialog
+app.post('/api/browse-folder', (req, res) => {
+  try {
+    const { description } = req.body || {};
+    const prompt = description || 'Select a folder';
+    let cmd;
+    if (process.platform === 'win32') {
+      const escaped = prompt.replace(/'/g, "''");
+      const pickerScript = resolve(__dirname, 'lib', 'folder-picker.ps1');
+      cmd = `powershell -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "${pickerScript}" -Title "${escaped}"`;
+    } else if (process.platform === 'darwin') {
+      cmd = `osascript -e 'POSIX path of (choose folder with prompt "${prompt}")'`;
+    } else {
+      cmd = `zenity --file-selection --directory --title="${prompt}" 2>/dev/null`;
+    }
+    const result = execSync(cmd, { encoding: 'utf8', timeout: 60000, windowsHide: true }).trim();
+    if (result) {
+      res.json({ path: result.replace(/\\/g, '/') });
+    } else {
+      res.json({ path: null, cancelled: true });
+    }
+  } catch {
+    res.json({ path: null, cancelled: true });
   }
 });
 
@@ -2964,21 +3528,7 @@ app.get('/api/setup/check-deps', async (req, res) => {
     deps.push({ id: 'npm', name: 'npm', ok: false, version: null, detail: 'Not found', url: 'https://nodejs.org/' });
   }
 
-  // Docker
-  try {
-    const { stdout } = await execAsync('docker --version', { timeout: 5000 });
-    const ver = stdout.trim().match(/Docker version ([\d.]+)/)?.[1] || stdout.trim();
-    // CLI exists — now check if daemon is running
-    try {
-      await execAsync('docker info', { timeout: 8000 });
-      deps.push({ id: 'docker', name: 'Docker', ok: true, version: ver, detail: `v${ver} (running)`, url: 'https://docs.docker.com/get-docker/' });
-    } catch {
-      deps.push({ id: 'docker', name: 'Docker', ok: false, warn: true, version: ver, detail: `v${ver} (not running)`, url: 'https://docs.docker.com/get-docker/' });
-    }
-  } catch {
-    deps.push({ id: 'docker', name: 'Docker', ok: false, warn: true, version: null, detail: 'Not found (optional if using Qdrant Cloud)', url: 'https://docs.docker.com/get-docker/' });
-  }
-
+  // Docker no longer required — SQLite is built-in
 
   res.json({ deps });
 });
@@ -2988,33 +3538,18 @@ app.get('/api/setup/onboarding', async (req, res) => {
   try {
     const vars = parseEnvFile(ENV_PATH);
     const setupComplete = vars.SETUP_COMPLETE === 'true';
-    const hasEmbeddingKey = !!vars.OPENAI_EMBEDDING_API_KEY;
-
-    // Check .env for Qdrant config
-    const connData = loadQdrantConnections();
-    const activeConn = connData.active ? connData.connections[connData.active] : null;
-    const hasQdrantKey = !!(activeConn?.apiKey) ||
-      Object.keys(vars).some(k => k.match(/^QDRANT__[a-z0-9_]+__API_KEY$/));
-
-    let dockerRunning = false;
-    try {
-      const qdrantRes = await fetch(`${QDRANT_URL}/collections`, {
-        headers: { 'api-key': QDRANT_KEY },
-        signal: AbortSignal.timeout(3000),
-      });
-      dockerRunning = qdrantRes.ok;
-    } catch {}
-
+    const dbExists = existsSync(getDbPath());
     const mcpBuilt = existsSync(resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'index.js'));
 
     res.json({
       setupComplete,
-      hasQdrantKey,
-      hasEmbeddingKey,
-      dockerRunning,
+      storage: 'sqlite',
+      dbExists,
+      embedding: 'local',
       mcpBuilt,
       projectDir: PROJECT_ROOT,
       platform: process.platform,
+      defaultDbDir: dirname(getDbPath()),
     });
   } catch (err) {
     console.error('GET /api/setup/onboarding error:', err.message);
@@ -3022,54 +3557,26 @@ app.get('/api/setup/onboarding', async (req, res) => {
   }
 });
 
-// POST /api/setup/save-config — Write all config to .env (single source of truth)
+// POST /api/setup/save-config — Write config to .env
 app.post('/api/setup/save-config', (req, res) => {
   try {
-    const { qdrantApiKey, qdrantUrl, collectionName, collectionDisplayName, embeddingApiKey, embeddingBaseUrl, embeddingModel, embeddingDimensions, qdrantPort, qdrantGrpcPort } = req.body;
+    const { dbLocationPath } = req.body || {};
+    const vars = parseEnvFile(ENV_PATH);
 
-    const vars = parseEnvFile(ENV_PATH); // Returns {} on fresh install
-
-    // --- Embedding config ---
-    const embId = vars.EMBEDDING_ACTIVE || 'openai_main';
-    if (embeddingApiKey) {
-      vars.EMBEDDING_ACTIVE = embId;
-      vars[`EMBEDDING__${embId}__API_KEY`] = embeddingApiKey;
-      vars[`EMBEDDING__${embId}__LABEL`] = 'OpenAI Main';
-      // Also keep legacy key for backward compat
-      vars.OPENAI_EMBEDDING_API_KEY = embeddingApiKey;
-    }
-    if (embeddingBaseUrl && embeddingBaseUrl !== 'https://api.openai.com/v1') {
-      vars[`EMBEDDING__${embId}__BASE_URL`] = embeddingBaseUrl;
-    }
-    if (embeddingModel && embeddingModel !== 'text-embedding-3-small') {
-      vars[`EMBEDDING__${embId}__MODEL`] = embeddingModel;
-    }
-    if (embeddingDimensions && String(embeddingDimensions) !== '1536') {
-      vars[`EMBEDDING__${embId}__DIMENSIONS`] = String(embeddingDimensions);
-    }
-
-    // Remove legacy flat Qdrant keys
-    delete vars.QDRANT_PORT;
-    delete vars.QDRANT_GRPC_PORT;
-    delete vars.QDRANT_MEMORY_API_KEY;
-
-    // --- Qdrant connection ---
-    if (qdrantUrl && qdrantApiKey && collectionName) {
-      const connId = collectionName.replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'default';
-      const connLabel = collectionDisplayName || collectionName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-      const port = qdrantPort || extractPort(qdrantUrl);
-      const grpc = qdrantGrpcPort || (parseInt(port, 10) + 1);
-
-      vars[`QDRANT__${connId}__PORT`] = String(port);
-      vars[`QDRANT__${connId}__GRPC_PORT`] = String(grpc);
-      vars[`QDRANT__${connId}__API_KEY`] = qdrantApiKey;
-      vars[`QDRANT__${connId}__COLLECTION`] = collectionName;
-      vars[`QDRANT__${connId}__LABEL`] = connLabel;
-      if (qdrantUrl && !qdrantUrl.match(/^https?:\/\/localhost:\d+\/?$/)) {
-        vars[`QDRANT__${connId}__URL`] = qdrantUrl;
+    if (dbLocationPath) {
+      const resolvedDir = resolve(dbLocationPath);
+      const resolvedPath = resolve(resolvedDir, 'memory.db');
+      // Validate: create directory and test writability
+      try {
+        mkdirSync(resolvedDir, { recursive: true });
+        const testFile = resolve(resolvedDir, '.synabun-write-test');
+        writeFileSync(testFile, 'test');
+        unlinkSync(testFile);
+      } catch (err) {
+        return res.status(400).json({ ok: false, error: `Cannot write to path: ${err.message}` });
       }
-
-      if (!vars.QDRANT_ACTIVE) vars.QDRANT_ACTIVE = connId;
+      vars['SQLITE_DB_PATH'] = resolvedPath;
+      process.env['SQLITE_DB_PATH'] = resolvedPath;
     }
 
     writeEnvFile(ENV_PATH, vars);
@@ -3081,404 +3588,12 @@ app.post('/api/setup/save-config', (req, res) => {
   }
 });
 
-// POST /api/setup/start-docker-desktop — Launch Docker Desktop and wait for daemon (does NOT start containers)
-app.post('/api/setup/start-docker-desktop', async (req, res) => {
-  try {
-    // Try to launch Docker Desktop (Windows)
-    const dockerDesktopPaths = [
-      'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe',
-      `${process.env.LOCALAPPDATA}\\Docker\\Docker Desktop.exe`,
-    ];
-
-    let launched = false;
-    for (const p of dockerDesktopPaths) {
-      try {
-        if (existsSync(p)) {
-          await execAsync(`start "" "${p}"`, { timeout: 5000, shell: true });
-          launched = true;
-          break;
-        }
-      } catch {}
-    }
-
-    if (!launched) {
-      try {
-        await execAsync('start "" "Docker Desktop"', { timeout: 5000, shell: true });
-        launched = true;
-      } catch {}
-    }
-
-    if (!launched) {
-      return res.status(400).json({ error: 'Could not find Docker Desktop. Please start it manually.' });
-    }
-
-    // Wait for Docker daemon to be ready (up to 45s)
-    let daemonReady = false;
-    for (let i = 0; i < 45; i++) {
-      try {
-        await execAsync('docker info', { timeout: 3000 });
-        daemonReady = true;
-        break;
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    if (!daemonReady) {
-      return res.json({ ok: false, error: 'Docker Desktop launched but daemon not ready after 45s. Try again.' });
-    }
-
-    res.json({ ok: true, daemonReady: true });
-  } catch (err) {
-    console.error('POST /api/setup/start-docker-desktop error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/setup/docker — Start a Qdrant Docker container (plug-and-play, unique per collection)
-app.post('/api/setup/docker', async (req, res) => {
-  try {
-    // Derive unique container/volume names from the collection name
-    const collSafe = COLLECTION.replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-    const containerName = 'synabun-qdrant-' + collSafe;
-    const volumeName = containerName + '-data';
-    let port = parseInt(new URL(QDRANT_URL).port, 10) || 6333;
-    let grpcPort = port + 1;
-
-    // Helper: check if a port is free by attempting a TCP connection
-    async function isPortFree(p) {
-      return new Promise(resolve => {
-        const sock = netConnect({ port: p, host: '127.0.0.1' }, () => {
-          sock.destroy();
-          resolve(false); // something is listening — port is taken
-        });
-        sock.on('error', () => resolve(true)); // nothing listening — port is free
-        sock.setTimeout(1000, () => { sock.destroy(); resolve(true); });
-      });
-    }
-
-    // Helper: find the next free port starting from a given port
-    async function findFreePort(startPort) {
-      let p = startPort;
-      for (let i = 0; i < 20; i++) {
-        const httpFree = await isPortFree(p);
-        const grpcFree = await isPortFree(p + 1);
-        if (httpFree && grpcFree) return p;
-        p += 10; // jump in increments of 10 for clean spacing
-      }
-      return null;
-    }
-
-    // ── Helper: get the real host port a container is mapped to ──
-    async function getContainerPort(name) {
-      try {
-        const result = await execAsync(`docker port ${name} 6333`, { timeout: 5000 });
-        // Output like "0.0.0.0:6333" or ":::6333"
-        const m = (result.stdout || '').match(/:(\d+)\s*$/m);
-        return m ? parseInt(m[1], 10) : null;
-      } catch { return null; }
-    }
-
-    // ── Check if our container already exists (running or stopped) ──
-    let containerExists = false;
-    let containerRunning = false;
-    try {
-      const inspect = await execAsync(
-        `docker inspect --format={{.State.Running}} ${containerName}`,
-        { timeout: 5000 }
-      );
-      containerExists = true;
-      containerRunning = (inspect.stdout || '').trim() === 'true';
-    } catch {} // container doesn't exist — will create fresh
-
-    let stdout = '', stderr = '';
-
-    if (containerExists) {
-      // Container exists — get its REAL port mapping (can't be changed after creation)
-      const realPort = containerRunning ? await getContainerPort(containerName) : null;
-
-      if (containerRunning && realPort) {
-        // Already running — use its actual port
-        port = realPort;
-        grpcPort = realPort + 1;
-        stdout = `Container "${containerName}" is already running on port ${port}.`;
-      } else if (containerRunning) {
-        // Running but can't determine port — trust configured port
-        stdout = `Container "${containerName}" is already running.`;
-      } else {
-        // Stopped — need to check if its port mapping matches what we want
-        // Get the port from the container's config (works even when stopped)
-        let mappedPort = null;
-        try {
-          const inspectPorts = await execAsync(
-            `docker inspect --format={{json .HostConfig.PortBindings}} ${containerName}`,
-            { timeout: 5000 }
-          );
-          const bindings = JSON.parse((inspectPorts.stdout || '').trim());
-          const httpBinding = bindings['6333/tcp'];
-          if (httpBinding && httpBinding[0]) {
-            mappedPort = parseInt(httpBinding[0].HostPort, 10);
-          }
-        } catch {}
-
-        if (mappedPort && mappedPort !== port) {
-          // Container was created with a different port — check if that port is free
-          if (await isPortFree(mappedPort) && await isPortFree(mappedPort + 1)) {
-            // Original port is free — start on it and update our port var
-            port = mappedPort;
-            grpcPort = mappedPort + 1;
-          } else {
-            // Original port is taken — remove old container and recreate with new port
-            await execAsync(`docker rm ${containerName}`, { timeout: 10000 });
-            containerExists = false; // fall through to fresh creation below
-          }
-        }
-
-        if (containerExists) {
-          // Start the existing container on its original port
-          const startResult = await execAsync(`docker start ${containerName}`, { timeout: 15000 });
-          stdout = `Starting container "${containerName}" on port ${port}...\n` + (startResult.stdout || '');
-          stderr = startResult.stderr || '';
-        }
-      }
-    }
-
-    if (!containerExists) {
-      // Container doesn't exist — check ports and create fresh
-      if (!(await isPortFree(port)) || !(await isPortFree(grpcPort))) {
-        const freePort = await findFreePort(port + 10);
-        if (!freePort) {
-          return res.status(409).json({
-            error: `Port ${port} is in use and no free port found in range ${port + 10}-${port + 210}. Change the port above and try again.`,
-            portConflict: true,
-            port: String(port),
-            output: `Scanned ports ${port + 10} to ${port + 210}, all busy.`,
-          });
-        }
-        port = freePort;
-        grpcPort = freePort + 1;
-      }
-
-      const cmd = [
-        'docker run -d',
-        `--name ${containerName}`,
-        '--restart unless-stopped',
-        `-p ${port}:6333`,
-        `-p ${grpcPort}:6334`,
-        `-v ${volumeName}:/qdrant/storage`,
-        `-e QDRANT__SERVICE__API_KEY=${QDRANT_KEY}`,
-        `-e QDRANT__LOG_LEVEL=WARN`,
-        'qdrant/qdrant:latest',
-      ].join(' ');
-
-      const result = await execAsync(cmd, { timeout: 30000 });
-      stdout = result.stdout || '';
-      stderr = result.stderr || '';
-    }
-
-    // Wait for Qdrant to be ready on the ACTUAL port (up to 30s)
-    const resolvedUrl = `http://localhost:${port}`;
-    let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try {
-        const ping = await fetch(`${resolvedUrl}/collections`, {
-          headers: { 'api-key': QDRANT_KEY },
-          signal: AbortSignal.timeout(2000),
-        });
-        if (ping.ok) { ready = true; break; }
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    res.json({ ok: true, output: stdout + (stderr || ''), ready, port, grpcPort });
-  } catch (err) {
-    console.error('POST /api/setup/docker error:', err.message);
-    res.status(500).json({ error: err.message, output: err.stderr || '' });
-  }
-});
-
-// POST /api/setup/create-collection — Create Qdrant collection
-app.post('/api/setup/create-collection', async (req, res) => {
-  try {
-    // Use runtime vars (already set by reloadConfig after save-config)
-    const apiKey = QDRANT_KEY;
-    const qdrantUrl = QDRANT_URL;
-    const collection = COLLECTION;
-    const dims = EMBEDDING_DIMS;
-
-    // Check if collection already exists
-    const checkRes = await fetch(`${qdrantUrl}/collections/${collection}`, {
-      headers: { 'api-key': apiKey },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (checkRes.ok) {
-      return res.json({ ok: true, message: 'Collection already exists', existed: true });
-    }
-
-    // Create collection
-    const createRes = await fetch(`${qdrantUrl}/collections/${collection}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'api-key': apiKey },
-      body: JSON.stringify({
-        vectors: { size: dims, distance: 'Cosine' },
-      }),
-    });
-
-    if (!createRes.ok) {
-      const text = await createRes.text();
-      throw new Error(`Qdrant ${createRes.status}: ${text}`);
-    }
-
-    res.json({ ok: true, message: `Collection "${collection}" created (${dims}d vectors)`, existed: false });
-  } catch (err) {
-    console.error('POST /api/setup/create-collection error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/connections/docker-new — Spin up a new Qdrant Docker container on a specified port
-app.post('/api/connections/docker-new', async (req, res) => {
-  try {
-    const { port, grpcPort, apiKey, containerName, volumeName } = req.body;
-    if (!port || !apiKey || !containerName || !volumeName) {
-      return res.status(400).json({ error: 'port, apiKey, containerName, and volumeName are required' });
-    }
-
-    const httpPort = parseInt(port, 10);
-    const grpc = parseInt(grpcPort || (httpPort + 1), 10);
-
-    const cmd = [
-      'docker run -d',
-      `--name ${containerName}`,
-      '--restart unless-stopped',
-      `-p ${httpPort}:6333`,
-      `-p ${grpc}:6334`,
-      `-v ${volumeName}:/qdrant/storage`,
-      `-e QDRANT__SERVICE__API_KEY=${apiKey}`,
-      `-e QDRANT__LOG_LEVEL=WARN`,
-      'qdrant/qdrant:latest',
-    ].join(' ');
-
-    let stdout = '', stderr = '';
-    try {
-      const result = await execAsync(cmd, { timeout: 30000 });
-      stdout = result.stdout || '';
-      stderr = result.stderr || '';
-    } catch (err) {
-      const combined = (err.stderr || '') + (err.message || '');
-      if (combined.includes('port is already allocated') || combined.includes('address already in use')) {
-        return res.status(409).json({ error: `Port ${httpPort} is already in use`, portConflict: true, output: combined });
-      }
-      if (combined.includes('Conflict') || combined.includes('already in use by container')) {
-        return res.status(409).json({ error: `Container name "${containerName}" already exists`, nameConflict: true, output: combined });
-      }
-      throw err;
-    }
-
-    // Poll until Qdrant is ready (up to 30s)
-    const qdrantUrl = `http://localhost:${httpPort}`;
-    let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try {
-        const ping = await fetch(`${qdrantUrl}/collections`, {
-          headers: { 'api-key': apiKey },
-          signal: AbortSignal.timeout(2000),
-        });
-        if (ping.ok) { ready = true; break; }
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    res.json({ ok: true, url: qdrantUrl, ready, output: stdout + stderr });
-  } catch (err) {
-    console.error('POST /api/connections/docker-new error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/connections/create-collection — Create a Qdrant collection on any instance
-app.post('/api/connections/create-collection', async (req, res) => {
-  try {
-    const { url, apiKey, collection } = req.body;
-    if (!url || !apiKey || !collection) {
-      return res.status(400).json({ error: 'url, apiKey, and collection are required' });
-    }
-    const dims = EMBEDDING_DIMS;
-
-    // Check if collection already exists
-    const checkRes = await fetch(`${url}/collections/${collection}`, {
-      headers: { 'api-key': apiKey },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (checkRes.ok) {
-      return res.json({ ok: true, message: 'Collection already exists', existed: true });
-    }
-
-    // Create collection
-    const createRes = await fetch(`${url}/collections/${collection}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'api-key': apiKey },
-      body: JSON.stringify({ vectors: { size: dims, distance: 'Cosine' } }),
-    });
-    if (!createRes.ok) {
-      const text = await createRes.text();
-      throw new Error(`Qdrant ${createRes.status}: ${text}`);
-    }
-
-    res.json({ ok: true, message: `Collection "${collection}" created (${dims}d vectors)`, existed: false });
-  } catch (err) {
-    console.error('POST /api/connections/create-collection error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/setup/build — Build the MCP server
-app.post('/api/setup/build', async (req, res) => {
-  try {
-    const mcpDir = resolve(PROJECT_ROOT, 'mcp-server');
-    const { stdout, stderr } = await execAsync('npm install && npm run build', {
-      cwd: mcpDir,
-      timeout: 120000,
-    });
-    res.json({ ok: true, output: stdout + (stderr || '') });
-  } catch (err) {
-    console.error('POST /api/setup/build error:', err.message);
-    res.status(500).json({ error: err.message, output: err.stdout || '' });
-  }
-});
-
-// GET /api/setup/test-qdrant — Ping Qdrant (accepts ?port= to test a specific port)
-app.get('/api/setup/test-qdrant', async (req, res) => {
-  try {
-    const port = req.query.port ? parseInt(req.query.port, 10) : null;
-    const url = port ? `http://localhost:${port}` : QDRANT_URL;
-    const ping = await fetch(`${url}/collections`, {
-      headers: { 'api-key': QDRANT_KEY },
-      signal: AbortSignal.timeout(3000),
-    });
-    res.json({ ok: ping.ok });
-  } catch {
-    res.json({ ok: false });
-  }
-});
-
-// POST /api/setup/test-qdrant-cloud — Test connection to a remote Qdrant instance
-app.post('/api/setup/test-qdrant-cloud', async (req, res) => {
-  try {
-    const { url, apiKey } = req.body;
-    if (!url || !apiKey) return res.status(400).json({ error: 'url and apiKey required' });
-
-    const ping = await fetch(`${url.replace(/\/+$/, '')}/collections`, {
-      headers: { 'api-key': apiKey },
-    });
-    if (!ping.ok) {
-      const text = await ping.text();
-      return res.json({ ok: false, error: `Qdrant responded ${ping.status}: ${text.slice(0, 200)}` });
-    }
-    res.json({ ok: true });
-  } catch (err) {
-    res.json({ ok: false, error: err.message });
-  }
-});
+// Legacy setup stubs for UI compatibility
+app.post('/api/setup/start-docker-desktop', (req, res) => { res.json({ ok: true, message: 'Docker no longer required — using local SQLite.' }); });
+app.post('/api/setup/docker', (req, res) => { res.json({ ok: true, message: 'Docker no longer required — using local SQLite.' }); });
+app.post('/api/setup/create-collection', (req, res) => { res.json({ ok: true, message: 'SQLite database is created automatically.' }); });
+app.get('/api/setup/test-qdrant', (req, res) => { res.json({ ok: true, message: 'Using local SQLite — no Qdrant to test.' }); });
+app.post('/api/setup/test-qdrant-cloud', (req, res) => { res.json({ ok: true, message: 'Using local SQLite — no Qdrant to test.' }); });
 
 // POST /api/setup/write-mcp-json — Generate .mcp.json in target directory
 app.post('/api/setup/write-mcp-json', (req, res) => {
@@ -3562,7 +3677,9 @@ const HOOK_SCRIPTS = [
   { event: 'UserPromptSubmit',  script: 'prompt-submit.mjs', timeout: 3 },
   { event: 'PreCompact',        script: 'pre-compact.mjs',   timeout: 10 },
   { event: 'Stop',              script: 'stop.mjs',          timeout: 3 },
+  { event: 'PreToolUse',        script: 'pre-websearch.mjs', timeout: 3, matcher: '^WebSearch$|^WebFetch$' },
   { event: 'PostToolUse',       script: 'post-remember.mjs', timeout: 3, matcher: '^Edit$|^Write$|^NotebookEdit$|Syna[Bb]un__remember' },
+  { event: 'PostToolUse',       script: 'post-plan.mjs',     timeout: 15, matcher: '^ExitPlanMode$' },
 ];
 
 function getClaudeSettingsPath(projectPath) {
@@ -3603,17 +3720,163 @@ function isHookInstalled(settings) {
 
 function isSpecificHookInstalled(settings, hookEvent) {
   if (!settings?.hooks?.[hookEvent]) return false;
-  const def = HOOK_SCRIPTS.find(d => d.event === hookEvent);
-  if (!def) return false;
-  const cmd = hookCommandString(def.script);
-  return settings.hooks[hookEvent].some(entry =>
-    entry.hooks?.some(h => h.command === cmd)
-  );
+  const defs = HOOK_SCRIPTS.filter(d => d.event === hookEvent);
+  if (defs.length === 0) return false;
+  // All scripts for this event must be installed
+  return defs.every(def => {
+    const cmd = hookCommandString(def.script);
+    return settings.hooks[hookEvent].some(entry =>
+      entry.hooks?.some(h => h.command === cmd)
+    );
+  });
 }
+
+// Environment variables SynaBun enforces in Claude Code settings
+const SYNABUN_ENV_DEFAULTS = {
+  ENABLE_TOOL_SEARCH: 'true',   // Defer MCP tools not in active use — saves ~50%+ context tokens
+};
+
+function ensureSynaBunEnv(settings) {
+  if (!settings.env) settings.env = {};
+  for (const [key, value] of Object.entries(SYNABUN_ENV_DEFAULTS)) {
+    if (!(key in settings.env)) settings.env[key] = value;
+  }
+  return settings;
+}
+
+// MCP tool permissions SynaBun auto-injects so tools work without per-call prompts
+const SYNABUN_TOOL_PERMISSIONS = [
+  'mcp__SynaBun__recall',
+  'mcp__SynaBun__remember',
+  'mcp__SynaBun__reflect',
+  'mcp__SynaBun__forget',
+  'mcp__SynaBun__memories',
+  'mcp__SynaBun__restore',
+  'mcp__SynaBun__loop',
+  'mcp__SynaBun__category',
+  'mcp__SynaBun__sync',
+  'mcp__SynaBun__browser_navigate',
+  'mcp__SynaBun__browser_click',
+  'mcp__SynaBun__browser_fill',
+  'mcp__SynaBun__browser_type',
+  'mcp__SynaBun__browser_hover',
+  'mcp__SynaBun__browser_select',
+  'mcp__SynaBun__browser_press',
+  'mcp__SynaBun__browser_evaluate',
+  'mcp__SynaBun__browser_snapshot',
+  'mcp__SynaBun__browser_content',
+  'mcp__SynaBun__browser_screenshot',
+  'mcp__SynaBun__browser_session',
+  'mcp__SynaBun__browser_go_back',
+  'mcp__SynaBun__browser_go_forward',
+  'mcp__SynaBun__browser_reload',
+  'mcp__SynaBun__browser_wait',
+  'mcp__SynaBun__browser_scroll',
+  'mcp__SynaBun__browser_upload',
+  'mcp__SynaBun__browser_extract_tweets',
+  'mcp__SynaBun__browser_extract_fb_posts',
+  'mcp__SynaBun__whiteboard_read',
+  'mcp__SynaBun__whiteboard_add',
+  'mcp__SynaBun__whiteboard_update',
+  'mcp__SynaBun__whiteboard_remove',
+  'mcp__SynaBun__whiteboard_screenshot',
+  'mcp__SynaBun__card_list',
+  'mcp__SynaBun__card_open',
+  'mcp__SynaBun__card_close',
+  'mcp__SynaBun__card_update',
+  'mcp__SynaBun__card_screenshot',
+];
+
+// No-op — permissions are OFF by default.
+// Users enable them via Settings → Permissions toggles.
+function ensureSynaBunPermissions(settings) {
+  if (!settings.permissions) settings.permissions = {};
+  if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
+  return settings;
+}
+
+// Tool categories with human-readable labels for the Settings UI
+const SYNABUN_TOOL_CATEGORIES = [
+  {
+    id: 'memory', label: 'Memory',
+    tools: [
+      { key: 'mcp__SynaBun__recall', label: 'Search memories', desc: 'Find relevant memories by meaning' },
+      { key: 'mcp__SynaBun__remember', label: 'Save memory', desc: 'Store something new to remember' },
+      { key: 'mcp__SynaBun__reflect', label: 'Edit memory', desc: 'Update an existing memory' },
+      { key: 'mcp__SynaBun__forget', label: 'Delete memory', desc: 'Remove a memory (can be restored)' },
+      { key: 'mcp__SynaBun__memories', label: 'View memory list', desc: 'Browse recent memories and stats' },
+      { key: 'mcp__SynaBun__restore', label: 'Restore deleted', desc: 'Recover previously deleted memories' },
+      { key: 'mcp__SynaBun__sync', label: 'Fix stale data', desc: 'Detect and repair outdated memories' },
+    ],
+  },
+  {
+    id: 'browser', label: 'Browser',
+    tools: [
+      { key: 'mcp__SynaBun__browser_navigate', label: 'Open URL', desc: 'Go to a web address' },
+      { key: 'mcp__SynaBun__browser_click', label: 'Click', desc: 'Click on a page element' },
+      { key: 'mcp__SynaBun__browser_fill', label: 'Fill input', desc: 'Type into a form field' },
+      { key: 'mcp__SynaBun__browser_type', label: 'Type text', desc: 'Type character by character' },
+      { key: 'mcp__SynaBun__browser_hover', label: 'Hover', desc: 'Hover over an element' },
+      { key: 'mcp__SynaBun__browser_select', label: 'Select option', desc: 'Choose from a dropdown' },
+      { key: 'mcp__SynaBun__browser_press', label: 'Press key', desc: 'Press a keyboard key' },
+      { key: 'mcp__SynaBun__browser_evaluate', label: 'Run JavaScript', desc: 'Execute code on the page' },
+      { key: 'mcp__SynaBun__browser_snapshot', label: 'Read page structure', desc: 'Get the page layout and elements' },
+      { key: 'mcp__SynaBun__browser_content', label: 'Read page text', desc: 'Get the visible text content' },
+      { key: 'mcp__SynaBun__browser_screenshot', label: 'Take screenshot', desc: 'Capture what the page looks like' },
+      { key: 'mcp__SynaBun__browser_session', label: 'Manage sessions', desc: 'Open, close, or switch browser windows' },
+      { key: 'mcp__SynaBun__browser_go_back', label: 'Go back', desc: 'Navigate to the previous page' },
+      { key: 'mcp__SynaBun__browser_go_forward', label: 'Go forward', desc: 'Navigate to the next page' },
+      { key: 'mcp__SynaBun__browser_reload', label: 'Reload page', desc: 'Refresh the current page' },
+      { key: 'mcp__SynaBun__browser_wait', label: 'Wait for page', desc: 'Wait until an element or page finishes loading' },
+      { key: 'mcp__SynaBun__browser_scroll', label: 'Scroll', desc: 'Scroll the page or a specific area' },
+      { key: 'mcp__SynaBun__browser_upload', label: 'Upload file', desc: 'Upload a file through a form' },
+      { key: 'mcp__SynaBun__browser_extract_tweets', label: 'Extract tweets', desc: 'Pull tweet data from the page' },
+      { key: 'mcp__SynaBun__browser_extract_fb_posts', label: 'Extract FB posts', desc: 'Pull Facebook post data from the page' },
+    ],
+  },
+  {
+    id: 'whiteboard', label: 'Whiteboard',
+    tools: [
+      { key: 'mcp__SynaBun__whiteboard_read', label: 'Read board', desc: 'View whiteboard contents' },
+      { key: 'mcp__SynaBun__whiteboard_add', label: 'Add to board', desc: 'Place new items on the whiteboard' },
+      { key: 'mcp__SynaBun__whiteboard_update', label: 'Edit board items', desc: 'Modify items on the whiteboard' },
+      { key: 'mcp__SynaBun__whiteboard_remove', label: 'Remove from board', desc: 'Delete items from the whiteboard' },
+      { key: 'mcp__SynaBun__whiteboard_screenshot', label: 'Screenshot board', desc: 'Capture the whiteboard as an image' },
+    ],
+  },
+  {
+    id: 'cards', label: 'Cards',
+    tools: [
+      { key: 'mcp__SynaBun__card_list', label: 'List cards', desc: 'See all open memory cards' },
+      { key: 'mcp__SynaBun__card_open', label: 'Open card', desc: 'Open a memory card on screen' },
+      { key: 'mcp__SynaBun__card_close', label: 'Close card', desc: 'Dismiss open memory cards' },
+      { key: 'mcp__SynaBun__card_update', label: 'Arrange cards', desc: 'Move, resize, pin, or compact cards' },
+      { key: 'mcp__SynaBun__card_screenshot', label: 'Screenshot cards', desc: 'Capture open cards as an image' },
+    ],
+  },
+  {
+    id: 'automation', label: 'Automation',
+    tools: [
+      { key: 'mcp__SynaBun__loop', label: 'Autonomous loops', desc: 'Run, stop, or check background tasks' },
+      { key: 'mcp__SynaBun__category', label: 'Manage categories', desc: 'Create, edit, or remove memory categories' },
+      { key: 'mcp__SynaBun__tictactoe', label: 'Tic Tac Toe', desc: 'Play a game of tic-tac-toe with your AI' },
+    ],
+  },
+  {
+    id: 'thirdparty', label: 'Third Party',
+    tools: [
+      { key: 'WebSearch', label: 'Web search', desc: 'Search the internet for information' },
+    ],
+  },
+];
 
 function addHookToSettings(settings, onlyEvent) {
   if (!settings) settings = {};
   if (!settings.hooks) settings.hooks = {};
+
+  // Enforce SynaBun env defaults and tool permissions alongside hooks
+  ensureSynaBunEnv(settings);
+  ensureSynaBunPermissions(settings);
 
   const defs = onlyEvent ? HOOK_SCRIPTS.filter(d => d.event === onlyEvent) : HOOK_SCRIPTS;
   for (const def of defs) {
@@ -3663,6 +3926,260 @@ function saveHookProjects(projects) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(HOOK_PROJECTS_PATH, JSON.stringify(projects, null, 2), 'utf-8');
 }
+
+// ── Claude session index helpers ──
+
+/** Extract metadata from a .jsonl session file by reading its first user message.
+ *  Reads line-by-line (stops at first `type: user`) to avoid loading the whole file. */
+function extractSessionMeta(filePath) {
+  try {
+    const fd = openSync(filePath, 'r');
+    const buf = Buffer.alloc(8192); // read first 8KB — enough for metadata lines
+    const bytesRead = readSync(fd, buf, 0, buf.length, 0);
+    closeSync(fd);
+    const chunk = buf.toString('utf-8', 0, bytesRead);
+    const lines = chunk.split('\n');
+    let messageCount = 0;
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === 'user' || obj.type === 'assistant') messageCount++;
+        if (obj.type === 'user' && obj.message) {
+          const txt = obj.message.content;
+          const prompt = Array.isArray(txt)
+            ? (txt.find(b => b.type === 'text')?.text || '')
+            : (txt || '');
+          return {
+            sessionId: obj.sessionId || basename(filePath, '.jsonl'),
+            firstPrompt: prompt.slice(0, 200),
+            gitBranch: obj.gitBranch || null,
+            isSidechain: !!obj.isSidechain,
+            cwd: obj.cwd || null,
+          };
+        }
+      } catch {}
+    }
+    return null; // no user message found
+  } catch { return null; }
+}
+
+/** Build a complete session list for a project dir by merging the
+ *  (potentially stale) sessions-index.json with any JSONL files not in the index. */
+function buildSessionEntries(projDir) {
+  // 1. Load existing index
+  const indexPath = join(projDir, 'sessions-index.json');
+  let indexed = [];
+  try {
+    if (existsSync(indexPath)) {
+      const data = JSON.parse(readFileSync(indexPath, 'utf-8'));
+      indexed = data.entries || [];
+    }
+  } catch { indexed = []; }
+
+  const indexedIds = new Set(indexed.map(e => e.sessionId));
+
+  // 2. Scan for JSONL files not in the index
+  let allFiles;
+  try { allFiles = readdirSync(projDir); } catch { return indexed; }
+
+  const jsonlFiles = allFiles.filter(f => f.endsWith('.jsonl'));
+  const missing = jsonlFiles.filter(f => !indexedIds.has(f.replace('.jsonl', '')));
+
+  if (missing.length === 0) return indexed;
+
+  // 3. Extract metadata from missing files (sorted by mtime desc, cap at 200 newest)
+  const missingWithMtime = missing.map(f => {
+    try {
+      const stat = statSync(join(projDir, f));
+      return { file: f, mtime: stat.mtime };
+    } catch { return null; }
+  }).filter(Boolean).sort((a, b) => b.mtime - a.mtime).slice(0, 200);
+
+  const newEntries = [];
+  for (const { file, mtime } of missingWithMtime) {
+    const meta = extractSessionMeta(join(projDir, file));
+    if (!meta) continue;
+    newEntries.push({
+      sessionId: meta.sessionId,
+      firstPrompt: meta.firstPrompt,
+      messageCount: meta.messageCount || 0,
+      created: mtime.toISOString(),
+      modified: mtime.toISOString(),
+      gitBranch: meta.gitBranch,
+      isSidechain: meta.isSidechain,
+      projectPath: meta.cwd,
+    });
+  }
+
+  return [...indexed, ...newEntries];
+}
+
+// GET /api/claude-code/sessions — browse past Claude Code sessions across registered projects
+app.get('/api/claude-code/sessions', (req, res) => {
+  try {
+    const projects = loadHookProjects();
+    const targetProject = req.query.project;
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+    const offset = parseInt(req.query.offset) || 0;
+    const search = (req.query.search || '').toLowerCase().trim();
+
+    const homeDir = process.env.USERPROFILE || process.env.HOME;
+    const claudeProjectsDir = join(homeDir, '.claude', 'projects');
+
+    const result = [];
+
+    for (const proj of projects) {
+      if (targetProject && resolve(proj.path) !== resolve(targetProject)) continue;
+
+      // Convert project path to Claude's directory name format
+      // "D:\Projects\MyApp" -> "d--Projects-MyApp"
+      // Try both lowercase and uppercase drive letter (Claude is inconsistent)
+      const projKeyLower = proj.path
+        .replace(/\\/g, '-')
+        .replace(/:/g, '-')
+        .replace(/^([A-Z])/, (m) => m.toLowerCase());
+      const projKeyUpper = proj.path
+        .replace(/\\/g, '-')
+        .replace(/:/g, '-');
+
+      let projDir = join(claudeProjectsDir, projKeyLower);
+      if (!existsSync(projDir)) projDir = join(claudeProjectsDir, projKeyUpper);
+      if (!existsSync(projDir)) {
+        result.push({ path: proj.path, label: proj.label || basename(proj.path), total: 0, sessions: [] });
+        continue;
+      }
+
+      // Build complete session list (index + unindexed JSONL files)
+      let entries = buildSessionEntries(projDir);
+
+      // Filter out sidechains by default, sort by modified descending
+      entries = entries.filter(e => !e.isSidechain);
+      entries.sort((a, b) => new Date(b.modified) - new Date(a.modified));
+
+      // Apply text filter if search provided
+      if (search) {
+        entries = entries.filter(e =>
+          (e.firstPrompt || '').toLowerCase().includes(search) ||
+          (e.gitBranch || '').toLowerCase().includes(search) ||
+          (e.sessionId || '').toLowerCase().includes(search)
+        );
+      }
+
+      const total = entries.length;
+      const paginated = entries.slice(offset, offset + limit);
+
+      result.push({
+        path: proj.path,
+        label: proj.label || basename(proj.path),
+        total,
+        sessions: paginated.map(e => ({
+          sessionId: e.sessionId,
+          firstPrompt: (e.firstPrompt || '').slice(0, 200),
+          messageCount: e.messageCount || 0,
+          created: e.created,
+          modified: e.modified,
+          gitBranch: e.gitBranch || null,
+          isSidechain: e.isSidechain || false,
+        })),
+      });
+    }
+
+    res.json({ projects: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Session Indexing ---
+
+let _indexingJob = null; // { jobId, cancelled, promise }
+
+app.post('/api/session-indexing/start', (req, res) => {
+  if (_indexingJob && !_indexingJob.done) {
+    return res.status(409).json({ error: 'Indexing already in progress', jobId: _indexingJob.jobId });
+  }
+
+  const { project, reindex, sessionIds } = req.body || {};
+  const jobId = `idx-${Date.now()}`;
+  let cancelled = false;
+
+  const job = {
+    jobId,
+    done: false,
+    cancelled: false,
+    progress: { completed: 0, total: 0, chunks: 0 },
+  };
+
+  job.promise = startIndexing({
+    project,
+    reindex: !!reindex,
+    sessionIds: sessionIds || undefined,
+    onProgress: (event) => {
+      event.jobId = jobId;
+      // Track progress
+      if (event.type === 'indexing:started') {
+        job.progress.total = event.totalSessions;
+      } else if (event.type === 'indexing:session-complete') {
+        job.progress.completed = event.sessionIndex + 1;
+        job.progress.chunks += event.chunkCount;
+      }
+      // Broadcast to all connected WebSocket clients
+      try { broadcastSync(event); } catch {}
+    },
+    isCancelled: () => job.cancelled,
+  }).then((result) => {
+    job.done = true;
+    job.result = result;
+  }).catch((err) => {
+    job.done = true;
+    job.error = err.message;
+    try { broadcastSync({ type: 'indexing:error', jobId, error: err.message }); } catch {}
+  });
+
+  _indexingJob = job;
+  res.json({ ok: true, jobId, message: 'Indexing started' });
+});
+
+app.post('/api/session-indexing/cancel', (req, res) => {
+  if (!_indexingJob || _indexingJob.done) {
+    return res.status(404).json({ error: 'No active indexing job' });
+  }
+  _indexingJob.cancelled = true;
+  res.json({ ok: true, message: 'Cancellation requested' });
+});
+
+app.get('/api/session-indexing/status', (req, res) => {
+  try {
+    const status = getIndexingStatus();
+    const running = _indexingJob && !_indexingJob.done;
+    res.json({
+      running: !!running,
+      jobId: running ? _indexingJob.jobId : null,
+      progress: running ? _indexingJob.progress : null,
+      indexedSessions: status.indexedSessions,
+      totalChunks: status.totalChunks,
+      lastRun: status.lastRun,
+      // Convert Set to Array for JSON serialization
+      indexedSessionIds: [...(status.indexedSessionIds || [])],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/session-indexing/mirror — one-time migration of existing session_chunks to claude_memory
+app.post('/api/session-indexing/mirror', async (req, res) => {
+  res.json({ ok: true, message: 'Mirror started' });
+  try {
+    await mirrorExistingChunks((event) => {
+      try { broadcastSync(event); } catch {}
+    });
+  } catch (err) {
+    console.error('Mirror error:', err);
+    try { broadcastSync({ type: 'mirror:error', error: err.message }); } catch {}
+  }
+});
 
 // GET /api/claude-code/integrations — list all hook integration targets with status
 app.get('/api/claude-code/integrations', (req, res) => {
@@ -3767,6 +4284,9 @@ app.post('/api/claude-code/integrations', (req, res) => {
         projects.push({ path: normalized, label: label || basename(normalized) });
         saveHookProjects(projects);
       }
+
+      // Create default category tree for the project (parent + children)
+      try { ensureProjectCategories(); } catch {}
 
       return res.json({ ok: true, message: `Hook enabled for ${basename(normalized)}.` });
     }
@@ -3891,6 +4411,99 @@ app.put('/api/claude-code/hook-features/config', (req, res) => {
     features[key] = value;
     saveHookFeatures(features);
     res.json({ ok: true, features });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Tool Permissions (fine-grained control over which SynaBun tools are auto-allowed) ──
+
+// GET /api/claude-code/tool-categories — return categorized tool definitions for UI rendering
+app.get('/api/claude-code/tool-categories', (req, res) => {
+  res.json({ ok: true, categories: SYNABUN_TOOL_CATEGORIES });
+});
+
+// GET /api/claude-code/tool-permissions — current permission state for all SynaBun tools
+app.get('/api/claude-code/tool-permissions', (req, res) => {
+  try {
+    const globalPath = getGlobalClaudeSettingsPath();
+    const settings = readClaudeSettings(globalPath) || {};
+    const allowed = new Set(settings.permissions?.allow || []);
+
+    const tools = {};
+    for (const cat of SYNABUN_TOOL_CATEGORIES) {
+      for (const t of cat.tools) {
+        tools[t.key] = allowed.has(t.key);
+      }
+    }
+    res.json({ ok: true, tools });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/claude-code/tool-permissions — toggle individual tool or category group
+app.put('/api/claude-code/tool-permissions', (req, res) => {
+  try {
+    const { tool, category, enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled (boolean) is required.' });
+    }
+    if (!tool && !category) {
+      return res.status(400).json({ error: 'Provide tool (string) or category (string).' });
+    }
+
+    // Resolve which tool keys to toggle
+    let keys = [];
+    if (category) {
+      const cat = SYNABUN_TOOL_CATEGORIES.find(c => c.id === category);
+      if (!cat) return res.status(400).json({ error: `Unknown category: ${category}` });
+      keys = cat.tools.map(t => t.key);
+    } else {
+      keys = [tool];
+    }
+
+    // Apply to global settings
+    const globalPath = getGlobalClaudeSettingsPath();
+    let settings = readClaudeSettings(globalPath) || {};
+    if (!settings.permissions) settings.permissions = {};
+    if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
+
+    const allowSet = new Set(settings.permissions.allow);
+    for (const k of keys) {
+      if (enabled) allowSet.add(k);
+      else allowSet.delete(k);
+    }
+    settings.permissions.allow = [...allowSet];
+    writeClaudeSettings(globalPath, settings);
+
+    // Cascade to registered projects
+    const projects = loadHookProjects();
+    for (const p of projects) {
+      const projPath = getClaudeSettingsPath(p.path);
+      let projSettings = readClaudeSettings(projPath);
+      if (!projSettings) continue;
+      if (!projSettings.permissions) projSettings.permissions = {};
+      if (!Array.isArray(projSettings.permissions.allow)) projSettings.permissions.allow = [];
+
+      const projSet = new Set(projSettings.permissions.allow);
+      for (const k of keys) {
+        if (enabled) projSet.add(k);
+        else projSet.delete(k);
+      }
+      projSettings.permissions.allow = [...projSet];
+      writeClaudeSettings(projPath, projSettings);
+    }
+
+    // Return updated state
+    const updatedAllowed = new Set(settings.permissions.allow);
+    const tools = {};
+    for (const cat of SYNABUN_TOOL_CATEGORIES) {
+      for (const t of cat.tools) {
+        tools[t.key] = updatedAllowed.has(t.key);
+      }
+    }
+    res.json({ ok: true, tools });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4027,6 +4640,13 @@ app.post('/api/claude-code/mcp', (req, res) => {
       env: { DOTENV_PATH: envPath },
     };
     writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+
+    // Also inject tool permissions into global settings so tools work without prompts
+    const globalSettingsPath = getGlobalClaudeSettingsPath();
+    let globalSettings = readClaudeSettings(globalSettingsPath) || {};
+    ensureSynaBunPermissions(globalSettings);
+    writeClaudeSettings(globalSettingsPath, globalSettings);
+
     res.json({ ok: true, message: 'SynaBun MCP registered. Restart Claude Code to connect.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5079,140 +5699,21 @@ app.post('/api/skills-studio/import', (req, res) => {
   }
 });
 
-// Helper: detect if Docker Desktop is installed on Windows
-function detectDockerDesktop() {
-  const paths = [
-    'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe',
-    `${process.env.LOCALAPPDATA}\\Docker\\Docker Desktop.exe`,
-  ];
-  for (const p of paths) {
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
-
-// GET /api/health — Pre-flight check: is Qdrant reachable? Is Docker running?
-app.get('/api/health', async (req, res) => {
-  const isLocal = /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(QDRANT_URL);
-
-  // 1. Try reaching Qdrant directly
+// GET /api/health — Check if SQLite database is accessible
+app.get('/api/health', (req, res) => {
   try {
-    const ping = await fetch(`${QDRANT_URL}/collections`, {
-      headers: { 'api-key': QDRANT_KEY },
-      signal: AbortSignal.timeout(3000),
-    });
-    if (ping.ok) {
-      return res.json({ ok: true });
-    }
-    return res.json({ ok: false, reason: 'auth_error', detail: `Qdrant responded with HTTP ${ping.status}` });
-  } catch {
-    // Qdrant unreachable
+    // getDb() auto-creates the directory, file, and schema if missing
+    getDb();
+    const count = countMemories();
+    res.json({ ok: true, storage: 'sqlite', memories: count });
+  } catch (err) {
+    res.json({ ok: false, reason: 'db_error', detail: err.message });
   }
-
-  // If remote Qdrant, Docker doesn't matter
-  if (!isLocal) {
-    return res.json({ ok: false, reason: 'remote_unreachable', detail: `Cannot reach ${QDRANT_URL}` });
-  }
-
-  // 2. Check Docker daemon
-  let dockerRunning = false;
-  try {
-    await execAsync('docker info', { timeout: 5000 });
-    dockerRunning = true;
-  } catch {}
-
-  if (!dockerRunning) {
-    const desktopPath = detectDockerDesktop();
-    return res.json({
-      ok: false,
-      reason: 'docker_not_running',
-      canAutoStart: !!desktopPath,
-    });
-  }
-
-  // 3. Docker running — check container state
-  try {
-    const { stdout } = await execAsync('docker ps -a --filter "name=claude-memory" --format "{{.Status}}"', { timeout: 5000 });
-    const status = stdout.trim().toLowerCase();
-    if (status && !status.startsWith('up')) {
-      return res.json({ ok: false, reason: 'container_stopped', canAutoStart: true });
-    }
-  } catch {}
-
-  return res.json({ ok: false, reason: 'qdrant_unreachable', canAutoStart: true });
 });
 
-// POST /api/health/start — One-button fix: start Docker + containers + wait for Qdrant
-app.post('/api/health/start', async (req, res) => {
-  try {
-    // 1. If Docker daemon isn't running, try to launch Docker Desktop
-    let dockerRunning = false;
-    try {
-      await execAsync('docker info', { timeout: 3000 });
-      dockerRunning = true;
-    } catch {}
-
-    if (!dockerRunning) {
-      const desktopPath = detectDockerDesktop();
-      if (!desktopPath) {
-        return res.json({ ok: false, error: 'Docker is not installed. Install Docker Desktop or configure a remote Qdrant instance.' });
-      }
-
-      // Launch Docker Desktop
-      try {
-        await execAsync(`start "" "${desktopPath}"`, { timeout: 5000, shell: true });
-      } catch {}
-
-      // Wait for daemon (up to 60s — Docker Desktop can be slow on first launch)
-      for (let i = 0; i < 60; i++) {
-        try {
-          await execAsync('docker info', { timeout: 3000 });
-          dockerRunning = true;
-          break;
-        } catch {}
-        await new Promise(r => setTimeout(r, 1000));
-      }
-
-      if (!dockerRunning) {
-        return res.json({ ok: false, error: 'Docker Desktop was launched but the engine did not start in time. Try again.' });
-      }
-    }
-
-    // 2. Start containers — build env vars from active connection
-    const connData = loadQdrantConnections();
-    const activeConn = connData.active ? connData.connections[connData.active] : null;
-    const dcPort = activeConn ? (activeConn.port || extractPort(activeConn.url)) : 6333;
-    const dcApiKey = activeConn ? activeConn.apiKey : QDRANT_KEY;
-
-    await execAsync('docker compose up -d', {
-      cwd: PROJECT_ROOT,
-      timeout: 60000,
-      env: {
-        ...process.env,
-        QDRANT_PORT: String(dcPort),
-        QDRANT_GRPC_PORT: String(dcPort + 1),
-        QDRANT_MEMORY_API_KEY: dcApiKey,
-      },
-    });
-
-    // 3. Wait for Qdrant to respond (up to 30s)
-    let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try {
-        const ping = await fetch(`${QDRANT_URL}/collections`, {
-          headers: { 'api-key': QDRANT_KEY },
-          signal: AbortSignal.timeout(2000),
-        });
-        if (ping.ok) { ready = true; break; }
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    res.json({ ok: true, ready });
-  } catch (err) {
-    console.error('POST /api/health/start error:', err.message);
-    res.json({ ok: false, error: err.message });
-  }
+// POST /api/health/start — No-op for SQLite (no Docker to start)
+app.post('/api/health/start', (req, res) => {
+  res.json({ ok: true, ready: true, message: 'SQLite is always available — no startup needed.' });
 });
 
 // --- MCP API Key Management ---
@@ -5271,18 +5772,261 @@ app.delete('/api/mcp-key', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Invite Key & Session Management ---
+const INVITE_KEY_PATH = resolve(PROJECT_ROOT, 'data', 'invite-key.json');
+const INVITE_SESSIONS_PATH = resolve(PROJECT_ROOT, 'data', 'invite-sessions.json');
+const INVITE_PROXY_PATH = resolve(PROJECT_ROOT, 'data', 'invite-proxy.json');
+const INVITE_PERMISSIONS_PATH = resolve(PROJECT_ROOT, 'data', 'invite-permissions.json');
+
+const DEFAULT_PERMISSIONS = { terminal: false, whiteboard: false, memories: true, skills: false, cards: true, browser: false };
+
+let activeInviteKey = null;
+const inviteSessions = new Map(); // token → { createdAt, lastSeen, userAgent }
+
+function loadInviteKey() {
+  try {
+    if (existsSync(INVITE_KEY_PATH)) {
+      const data = JSON.parse(readFileSync(INVITE_KEY_PATH, 'utf8'));
+      activeInviteKey = data.key || null;
+      return data;
+    }
+  } catch {}
+  activeInviteKey = null;
+  return null;
+}
+
+function saveInviteKey(key) {
+  const dir = resolve(PROJECT_ROOT, 'data');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const data = { key, createdAt: new Date().toISOString() };
+  writeFileSync(INVITE_KEY_PATH, JSON.stringify(data, null, 2));
+  activeInviteKey = key;
+  return data;
+}
+
+function deleteInviteKey() {
+  try {
+    if (existsSync(INVITE_KEY_PATH)) writeFileSync(INVITE_KEY_PATH, JSON.stringify({}, null, 2));
+  } catch {}
+  activeInviteKey = null;
+}
+
+function loadInviteSessions() {
+  try {
+    if (existsSync(INVITE_SESSIONS_PATH)) {
+      const data = JSON.parse(readFileSync(INVITE_SESSIONS_PATH, 'utf8'));
+      if (Array.isArray(data.sessions)) {
+        const now = Date.now();
+        for (const s of data.sessions) {
+          if (s.token && s.createdAt && (now - s.createdAt) < 24 * 60 * 60 * 1000) {
+            inviteSessions.set(s.token, { createdAt: s.createdAt, lastSeen: s.lastSeen || s.createdAt, userAgent: s.userAgent });
+          }
+        }
+      }
+    }
+  } catch {}
+}
+
+function persistInviteSessions() {
+  const dir = resolve(PROJECT_ROOT, 'data');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const sessions = [...inviteSessions.entries()].map(([token, s]) => ({
+    token, createdAt: s.createdAt, lastSeen: s.lastSeen, userAgent: s.userAgent
+  }));
+  writeFileSync(INVITE_SESSIONS_PATH, JSON.stringify({ sessions }, null, 2));
+}
+
+function loadInviteProxy() {
+  try {
+    if (existsSync(INVITE_PROXY_PATH)) {
+      return JSON.parse(readFileSync(INVITE_PROXY_PATH, 'utf8'));
+    }
+  } catch {}
+  return { useProxy: false, proxyUrl: '' };
+}
+
+function saveInviteProxy(config) {
+  const dir = resolve(PROJECT_ROOT, 'data');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(INVITE_PROXY_PATH, JSON.stringify(config, null, 2));
+}
+
+let invitePermissions = { ...DEFAULT_PERMISSIONS };
+
+function loadInvitePermissions() {
+  try {
+    if (existsSync(INVITE_PERMISSIONS_PATH)) {
+      const data = JSON.parse(readFileSync(INVITE_PERMISSIONS_PATH, 'utf8'));
+      invitePermissions = { ...DEFAULT_PERMISSIONS, ...data };
+      return invitePermissions;
+    }
+  } catch {}
+  invitePermissions = { ...DEFAULT_PERMISSIONS };
+  return invitePermissions;
+}
+
+function saveInvitePermissions(perms) {
+  const dir = resolve(PROJECT_ROOT, 'data');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  invitePermissions = { ...DEFAULT_PERMISSIONS, ...perms };
+  writeFileSync(INVITE_PERMISSIONS_PATH, JSON.stringify(invitePermissions, null, 2));
+  return invitePermissions;
+}
+
+// Load on startup
+loadInviteKey();
+loadInviteSessions();
+loadInvitePermissions();
+
+// Invite status (local only — tunnel middleware blocks unauthenticated)
+app.get('/api/invite/status', (req, res) => {
+  const keyData = loadInviteKey();
+  const proxy = loadInviteProxy();
+  // Clean expired sessions
+  const now = Date.now();
+  for (const [token, session] of inviteSessions.entries()) {
+    if (now - session.createdAt > 24 * 60 * 60 * 1000) inviteSessions.delete(token);
+  }
+  const masked = keyData?.key ? '***' + keyData.key.slice(-8) : null;
+  res.json({
+    ok: true,
+    hasKey: !!activeInviteKey,
+    maskedKey: masked,
+    createdAt: keyData?.createdAt || null,
+    activeSessions: inviteSessions.size,
+    proxyConfig: proxy,
+  });
+});
+
+// Generate or rotate invite key (clears all sessions)
+app.post('/api/invite/key', (req, res) => {
+  const { custom } = req.body || {};
+  let key;
+  if (custom && typeof custom === 'string' && custom.trim().length >= 6) {
+    key = custom.trim();
+  } else {
+    key = 'synabun_inv_' + randomBytes(24).toString('hex');
+  }
+  const data = saveInviteKey(key);
+  inviteSessions.clear();
+  persistInviteSessions();
+  res.json({ ok: true, key, createdAt: data.createdAt });
+});
+
+// Revoke invite key + all sessions
+app.delete('/api/invite/key', (req, res) => {
+  deleteInviteKey();
+  inviteSessions.clear();
+  persistInviteSessions();
+  res.json({ ok: true });
+});
+
+// Revoke all sessions (keep key)
+app.delete('/api/invite/sessions', (req, res) => {
+  inviteSessions.clear();
+  persistInviteSessions();
+  res.json({ ok: true });
+});
+
+// Save custom proxy config
+app.put('/api/invite/proxy', (req, res) => {
+  const { useProxy, proxyUrl } = req.body || {};
+  const config = {
+    useProxy: !!useProxy,
+    proxyUrl: typeof proxyUrl === 'string' ? proxyUrl.trim() : '',
+  };
+  saveInviteProxy(config);
+  res.json({ ok: true });
+});
+
+// Get guest permissions
+app.get('/api/invite/permissions', (req, res) => {
+  res.json({ ok: true, permissions: { ...invitePermissions } });
+});
+
+// Update guest permissions (owner only — admin middleware blocks guests)
+app.put('/api/invite/permissions', (req, res) => {
+  const updates = req.body || {};
+  const validKeys = Object.keys(DEFAULT_PERMISSIONS);
+  const merged = { ...invitePermissions };
+  for (const k of validKeys) {
+    if (typeof updates[k] === 'boolean') merged[k] = updates[k];
+  }
+  const saved = saveInvitePermissions(merged);
+  broadcastSync({ type: 'permissions:changed', permissions: saved });
+  res.json({ ok: true, permissions: saved });
+});
+
+// Serve invite auth page (express.static won't match /invite -> invite.html)
+app.get('/invite', (req, res) => {
+  res.sendFile(join(__dirname, 'public', 'invite.html'));
+});
+
+// Invite auth — validate key, create session, set cookie
+app.post('/invite/auth', (req, res) => {
+  if (!activeInviteKey) {
+    return res.status(403).json({ error: 'Invitations are not enabled' });
+  }
+  const { key } = req.body || {};
+  if (!key || key !== activeInviteKey) {
+    return res.status(401).json({ error: 'Invalid invite key' });
+  }
+  const token = randomBytes(32).toString('hex');
+  const session = {
+    createdAt: Date.now(),
+    lastSeen: Date.now(),
+    userAgent: req.headers['user-agent'] || 'unknown',
+  };
+  inviteSessions.set(token, session);
+  persistInviteSessions();
+
+  const isSecure = !!req.headers['cf-connecting-ip'];
+  const cookieParts = [
+    `synabun_invite=${token}`,
+    'HttpOnly',
+    'Path=/',
+    'SameSite=None',
+    isSecure ? 'Secure' : '',
+    'Max-Age=86400',
+  ].filter(Boolean).join('; ');
+  res.setHeader('Set-Cookie', cookieParts);
+  res.json({ ok: true });
+});
+
+// Invite logout
+app.get('/invite/logout', (req, res) => {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies['synabun_invite'];
+  if (token) {
+    inviteSessions.delete(token);
+    persistInviteSessions();
+  }
+  res.setHeader('Set-Cookie', 'synabun_invite=; HttpOnly; Path=/; Max-Age=0');
+  res.redirect('/invite');
+});
+
 // --- Cloudflare Tunnel Management ---
 let tunnelProcess = null;
 let tunnelUrl = null;
 let tunnelStarting = false;
 
 function findCloudflared() {
-  const paths = [
-    'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
-    'C:\\Program Files\\cloudflared\\cloudflared.exe',
-    `${process.env.LOCALAPPDATA}\\cloudflared\\cloudflared.exe`,
-  ];
-  for (const p of paths) { if (existsSync(p)) return p; }
+  // Try PATH-based lookup first (cross-platform)
+  try {
+    const cmd = process.platform === 'win32' ? 'where cloudflared' : 'which cloudflared';
+    const result = execSync(cmd, { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    if (result) return result.split('\n')[0].trim();
+  } catch { /* not in PATH */ }
+
+  // Windows-specific fallback paths
+  if (process.platform === 'win32') {
+    const paths = [
+      `${process.env.LOCALAPPDATA}\\cloudflared\\cloudflared.exe`,
+      `${process.env.ProgramFiles}\\cloudflared\\cloudflared.exe`,
+      `${process.env['ProgramFiles(x86)']}\\cloudflared\\cloudflared.exe`,
+    ];
+    for (const p of paths) { if (p && existsSync(p)) return p; }
+  }
   return null;
 }
 
@@ -5415,16 +6159,34 @@ const SHELL_PROFILE = { shell: DEFAULT_SHELL, args: [], env: {} };
 /**
  * Build terminal profile config dynamically from cli-config.json.
  * Re-reads config each call so changes take effect without restart.
+ * @param {string} profileId - CLI profile ID (e.g. 'claude-code', 'codex', 'gemini', 'shell')
+ * @param {Object} [opts] - Optional overrides
+ * @param {string} [opts.model] - Model flag for CLIs that support it (e.g. claude --model sonnet)
  */
-function getTerminalProfile(profileId) {
+function getTerminalProfile(profileId, opts = {}) {
   if (profileId === 'shell') return SHELL_PROFILE;
 
   const config = loadCliConfig();
   const entry = config[profileId];
   if (!entry || !entry.command) return SHELL_PROFILE;
 
-  const cmd = entry.command.trim();
+  let cmd = entry.command.trim();
   if (!cmd) return SHELL_PROFILE;
+
+  // Append resume flag for Claude Code (mutually exclusive with model)
+  if (opts.resume && profileId === 'claude-code') {
+    cmd = `${cmd} --resume ${opts.resume}`;
+  }
+  // Append model flag for CLIs that support it
+  else if (opts.model) {
+    const modelMap = {
+      'claude-code': (m) => `${cmd} --model ${m}`,
+      'codex':       (m) => `${cmd} --model ${m}`,
+      'gemini':      (m) => `${cmd} --model ${m}`,
+    };
+    const builder = modelMap[profileId];
+    if (builder) cmd = builder(opts.model);
+  }
 
   return {
     shell: DEFAULT_SHELL,
@@ -5433,16 +6195,23 @@ function getTerminalProfile(profileId) {
   };
 }
 
-function createTerminalSession(profile, cols, rows, cwd) {
+function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
   const sessionId = randomBytes(16).toString('hex');
-  const profileCfg = getTerminalProfile(profile);
+  const profileCfg = getTerminalProfile(profile, opts);
+
+  // Strip VSCode env vars so spawned CLIs (e.g. claude) don't think they're inside VSCode
+  const cleanEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) =>
+      !k.startsWith('VSCODE_') && k !== 'TERM_PROGRAM' && k !== 'TERM_PROGRAM_VERSION'
+    )
+  );
 
   const ptyProcess = pty.spawn(profileCfg.shell, profileCfg.args, {
     name: 'xterm-256color',
     cols: cols || 120,
     rows: rows || 30,
     cwd: cwd || process.env.USERPROFILE || process.env.HOME || process.cwd(),
-    env: { ...process.env, ...profileCfg.env },
+    env: { ...cleanEnv, ...profileCfg.env },
     useConpty: IS_WIN,
   });
 
@@ -5463,10 +6232,16 @@ function createTerminalSession(profile, cols, rows, cwd) {
       session.outputBufferBytes -= session.outputBuffer.shift().length;
     }
 
+    // Live link capture hook — called when a live-mode link is capturing this session's output
+    if (session._linkCaptureCallback) {
+      session._linkCaptureCallback(data);
+    }
+
     const msg = JSON.stringify({ type: 'output', data });
     session.clients.forEach(ws => {
       if (ws.readyState === 1) ws.send(msg);
     });
+
   });
 
   ptyProcess.onExit(({ exitCode }) => {
@@ -5480,6 +6255,14 @@ function createTerminalSession(profile, cols, rows, cwd) {
     // Clean up temp files from image paste
     if (session.tempFiles) {
       session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
+    }
+    // Destroy any links involving this session
+    for (const [linkId, link] of terminalLinks) {
+      if (link.sessions.includes(sessionId)) {
+        const sessions = [...link.sessions];
+        destroyTerminalLink(linkId);
+        broadcastSync({ type: 'link:deleted', linkId, sessions, reason: 'session-exited' });
+      }
     }
     terminalSessions.delete(sessionId);
   });
@@ -5501,9 +6284,10 @@ app.get('/api/terminal/sessions', (req, res) => {
 });
 
 app.post('/api/terminal/sessions', (req, res) => {
-  const { profile = 'shell', cols = 120, rows = 30, cwd } = req.body;
+  const { profile = 'shell', cols = 120, rows = 30, cwd, resume, model } = req.body;
   try {
-    const sessionId = createTerminalSession(profile, cols, rows, cwd);
+    const sessionId = createTerminalSession(profile, cols, rows, cwd, { resume, model });
+    broadcastSync({ type: 'terminal:session-created', sessionId, profile });
     res.json({ sessionId, profile });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5519,6 +6303,7 @@ app.delete('/api/terminal/sessions/:id', (req, res) => {
     session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
   }
   terminalSessions.delete(req.params.id);
+  broadcastSync({ type: 'terminal:session-deleted', sessionId: req.params.id });
   res.json({ ok: true });
 });
 
@@ -5530,6 +6315,201 @@ app.get('/api/terminal/profiles', (req, res) => {
   });
   const projects = loadHookProjects().map(p => ({ path: p.path, label: p.label || basename(p.path) }));
   res.json({ profiles, projects });
+});
+
+// ── Terminal file tree ──
+
+/** Try to get git status for a directory. Returns { branch, statuses } or null. */
+function getGitInfo(dir) {
+  try {
+    // Check if inside a git work tree
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+
+    // Get branch name
+    let branch = '';
+    try {
+      branch = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+      if (!branch) {
+        // Detached HEAD — get short SHA
+        branch = execSync('git rev-parse --short HEAD', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+      }
+    } catch {}
+
+    // Get status for this directory (porcelain v1: XY <path>)
+    const raw = execSync('git status --porcelain -u .', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString();
+    const statuses = new Map(); // name → status code
+
+    for (const line of raw.split('\n')) {
+      if (!line || line.length < 4) continue;
+      const xy = line.substring(0, 2); // index + worktree status
+      let filePath = line.substring(3);
+      // Handle renames: "R  old -> new"
+      const arrowIdx = filePath.indexOf(' -> ');
+      if (arrowIdx !== -1) filePath = filePath.substring(arrowIdx + 4);
+
+      // Get the immediate child name relative to this directory
+      const sep = filePath.indexOf('/');
+      const childName = sep === -1 ? filePath : filePath.substring(0, sep);
+
+      // Map XY to a simplified status
+      let status;
+      const x = xy[0], y = xy[1];
+      if (xy === '??') status = 'untracked';
+      else if (xy === '!!') continue; // ignored
+      else if (x === 'U' || y === 'U' || xy === 'DD' || xy === 'AA') status = 'conflict';
+      else if (x === 'A') status = 'added';
+      else if (x === 'D' || y === 'D') status = 'deleted';
+      else if (x === 'R') status = 'renamed';
+      else if (x !== ' ' && y !== ' ') status = 'mixed'; // staged + unstaged changes
+      else if (x !== ' ') status = 'staged';
+      else if (y !== ' ') status = 'modified';
+      else continue;
+
+      // For directories: escalate priority (conflict > modified > staged > added > untracked)
+      const existing = statuses.get(childName);
+      if (!existing || gitStatusPriority(status) > gitStatusPriority(existing)) {
+        statuses.set(childName, status);
+      }
+    }
+
+    return { branch, statuses };
+  } catch {
+    return null;
+  }
+}
+
+const GIT_STATUS_PRIORITY = { untracked: 1, added: 2, renamed: 2, staged: 3, modified: 4, mixed: 5, deleted: 5, conflict: 6 };
+function gitStatusPriority(s) { return GIT_STATUS_PRIORITY[s] || 0; }
+
+app.get('/api/terminal/files', (req, res) => {
+  const dir = req.query.path;
+  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+  const search = (req.query.search || '').trim().toLowerCase();
+
+  // Recursive search mode — return flat list of matching files
+  if (search) {
+    const SKIP = new Set(['.git', 'node_modules', '__pycache__', '.next', '.cache', 'dist', 'build', '.turbo']);
+    const MAX_RESULTS = 80;
+    const results = [];
+
+    function walk(current, rel) {
+      if (results.length >= MAX_RESULTS) return;
+      let entries;
+      try { entries = readdirSync(current, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (results.length >= MAX_RESULTS) return;
+        if (e.name.startsWith('.') && SKIP.has(e.name)) continue;
+        if (SKIP.has(e.name)) continue;
+        const childRel = rel ? rel + '/' + e.name : e.name;
+        if (e.isDirectory()) {
+          if (e.name.toLowerCase().includes(search)) {
+            results.push({ name: childRel, type: 'dir' });
+          }
+          walk(resolve(current, e.name), childRel);
+        } else {
+          if (e.name.toLowerCase().includes(search)) {
+            results.push({ name: childRel, type: 'file' });
+          }
+        }
+      }
+    }
+
+    try {
+      walk(dir, '');
+      res.json({ path: dir, items: results, branch: null, search: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+    return;
+  }
+
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    const items = [];
+    for (const e of entries) {
+      // Skip hidden/system files
+      if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === '__pycache__') continue;
+      items.push({ name: e.name, type: e.isDirectory() ? 'dir' : 'file' });
+    }
+    // Sort: directories first, then alphabetical
+    items.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+
+    // Try git — gracefully ignored if unavailable
+    const git = getGitInfo(dir);
+    if (git) {
+      for (const item of items) {
+        const s = git.statuses.get(item.name);
+        if (s) item.git = s;
+      }
+    }
+
+    res.json({ path: dir, items, branch: git?.branch || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/terminal/branches', (req, res) => {
+  const dir = req.query.path;
+  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+  } catch {
+    return res.json({ branches: [], current: null });
+  }
+
+  try {
+    // Current branch
+    let current = '';
+    try {
+      current = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+    } catch {}
+
+    // All local branches
+    const raw = execSync('git branch --format="%(refname:short)"', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+    const branches = raw ? raw.split('\n').map(b => b.trim()).filter(Boolean) : [];
+
+    res.json({ branches, current });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/terminal/checkout', (req, res) => {
+  const { path: dir, branch } = req.body;
+  if (!dir || !branch) return res.status(400).json({ error: 'path and branch required' });
+
+  // Validate branch name — only allow safe characters (letters, digits, /, -, _, .)
+  if (!/^[\w.\-/]+$/.test(branch)) {
+    return res.status(400).json({ error: 'Invalid branch name' });
+  }
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+  } catch {
+    return res.status(400).json({ error: 'Not a git repository' });
+  }
+
+  // Use spawnSync to avoid shell injection — branch passed as argument, not interpolated
+  // No '--' separator — that would make git treat the branch name as a file pathspec
+  const result = spawnSync('git', ['checkout', branch], { cwd: dir, stdio: 'pipe', timeout: 10000 });
+
+  if (result.status !== 0) {
+    const stderr = result.stderr?.toString?.()?.trim() || 'Checkout failed';
+    return res.status(500).json({ error: stderr });
+  }
+
+  // Return confirmed branch name + git's own output
+  let current = '';
+  try {
+    current = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+  } catch {}
+  const output = result.stderr?.toString?.()?.trim() || `Switched to branch '${current}'`;
+  res.json({ ok: true, branch: current, output });
 });
 
 // ── CLI Config REST ──
@@ -5586,35 +6566,2002 @@ app.post('/api/cli/detect/:profileId', (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════
+// TERMINAL LINKS — Relay/Mediator between PTY sessions
+// ═══════════════════════════════════════════
+
+const terminalLinks = new Map(); // linkId → LinkState
+
+/**
+ * Strip ANSI escape sequences from raw PTY output for relay purposes.
+ * Covers CSI, OSC, DCS, charset designators, and C0 control chars.
+ * Keeps \n and \t for readable text.
+ */
+function stripAnsi(str) {
+  return str
+    .replace(/\x1b\[[\x20-\x3f]*[\x40-\x7e]/g, '')              // CSI sequences
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')          // OSC sequences (BEL or ST terminated)
+    .replace(/\x1b[P^_][\s\S]*?(?:\x1b\\|\x07)/g, '')           // DCS/PM/APC strings
+    .replace(/\x1b[()][AB012]/g, '')                              // Charset designators
+    .replace(/\x1b[=><78HMNOZcn]/g, '')                          // Simple ESC sequences
+    .replace(/\x1b./g, '')                                        // Stray ESC + char
+    .replace(/[^\n]*\r(?!\n)/g, '')                               // CR overwrite cleanup
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');          // Control chars (keep \n \t)
+}
+
+// ── Sidecar CLI config — non-interactive args for each profile ──
+// Spawns headless CLI processes for clean text relay (sidecar mode).
+//
+// stdin: true  — message piped to stdin (flag is a boolean mode switch)
+// stdin: false — message appended as the last CLI arg (flag takes a value)
+const CLI_SIDECAR_CONFIG = {
+  'claude-code': { args: ['-p', '--verbose'], stdin: true },   // -p = non-interactive mode; reads prompt from stdin
+  'gemini':      { args: ['-p'],              stdin: false },   // -p <value>; PowerShell passes correctly on Windows
+  'codex':       { args: ['-q'],              stdin: false },   // -q <msg>; flag takes a value
+  'shell':       null,
+};
+
+// ── Live PTY config — inject messages into the actual TUI terminal ──
+// User sees messages typed and agents responding in real-time.
+// Response captured from PTY output stream, ANSI-stripped, then relayed.
+const CLI_LIVE_CONFIG = {
+  'claude-code': {
+    promptPatterns: [/>\s*$/m],             // ">" at end of stripped output
+    idleMs: 3000,                           // 3s of no output → check prompt
+    maxIdleMs: 120000,                      // 2 min absolute max wait
+    useBracketedPaste: true,
+  },
+  'gemini': {
+    promptPatterns: [/>\s*$/m, /\u276F\s*$/m],
+    idleMs: 3000,
+    maxIdleMs: 120000,
+    useBracketedPaste: true,
+  },
+  'codex': {
+    promptPatterns: [/>\s*$/m],
+    idleMs: 3000,
+    maxIdleMs: 120000,
+    useBracketedPaste: true,
+  },
+  'shell': null,
+};
+
+const LIVE_CAPTURE_SETTLE_MS = 500; // delay after injection before starting capture
+
+const LINK_SIDECAR_TIMEOUT_MS = 5 * 60 * 1000; // 5 min max per sidecar process
+
+/**
+ * Create a terminal link (relay/mediator session between agents).
+ * mode: 'sidecar' (headless CLI processes) or 'live' (inject into TUI PTY).
+ */
+function createTerminalLink(sessionIds, config = {}) {
+  for (const sid of sessionIds) {
+    if (!terminalSessions.has(sid)) throw new Error(`Session ${sid} not found`);
+  }
+  for (const sid of sessionIds) {
+    for (const [, link] of terminalLinks) {
+      if (link.sessions.includes(sid)) throw new Error(`Session ${sid} is already linked`);
+    }
+  }
+
+  const mode = config.mode || 'sidecar';
+
+  // Validate live mode profiles
+  if (mode === 'live') {
+    for (const sid of sessionIds) {
+      const s = terminalSessions.get(sid);
+      if (!s || !CLI_LIVE_CONFIG[s.profile]) {
+        throw new Error(`Profile "${s?.profile}" does not support live mode`);
+      }
+    }
+  }
+
+  const linkId = randomBytes(16).toString('hex');
+  const link = {
+    id: linkId,
+    sessions: sessionIds,
+    status: 'idle',           // idle | running | paused
+    activeAgent: 0,           // index into sessions[]
+    history: [],              // { role, sessionId, content, timestamp }
+    mode,                     // 'sidecar' | 'live'
+    config: {
+      autoContinue: config.autoContinue !== false,
+      maxTurns: config.maxTurns || 0,
+      turnCount: 0,
+    },
+    // Sidecar-mode state
+    _sidecarProcess: null,
+    _sidecarSessionId: null,
+    // Live-mode state
+    _captureBuffer: '',
+    _captureVTerm: null,           // VTermBuffer for clean text extraction
+    _captureSessionId: null,
+    _idleTimer: null,
+    _maxIdleTimer: null,
+    _injectionEcho: '',
+    createdAt: Date.now(),
+  };
+
+  terminalLinks.set(linkId, link);
+  return linkId;
+}
+
+/**
+ * Destroy a terminal link — kill sidecar, remove from map.
+ */
+function destroyTerminalLink(linkId) {
+  const link = terminalLinks.get(linkId);
+  if (!link) return false;
+
+  // Clean up sidecar mode
+  if (link._sidecarProcess) {
+    try { link._sidecarProcess.kill('SIGTERM'); } catch {}
+    link._sidecarProcess = null;
+  }
+
+  // Clean up live mode
+  if (link._idleTimer) clearTimeout(link._idleTimer);
+  if (link._maxIdleTimer) clearTimeout(link._maxIdleTimer);
+  if (link._captureSessionId) {
+    const capSession = terminalSessions.get(link._captureSessionId);
+    if (capSession) capSession._linkCaptureCallback = null;
+  }
+  link._captureVTerm = null;
+
+  terminalLinks.delete(linkId);
+  return true;
+}
+
+/**
+ * Spawn a non-interactive sidecar CLI process for a linked agent.
+ * Instead of injecting into the TUI PTY, we spawn a separate headless
+ * process (e.g. `claude -p "message"`) and capture its clean stdout.
+ */
+function spawnSidecarProcess(linkId, sessionId, message) {
+  const link = terminalLinks.get(linkId);
+  if (!link) throw new Error('Link not found');
+
+  const session = terminalSessions.get(sessionId);
+  if (!session) throw new Error('Session not found');
+
+  const profile = session.profile;
+  const sidecarConfig = CLI_SIDECAR_CONFIG[profile];
+  if (!sidecarConfig) throw new Error(`No sidecar config for profile: ${profile}`);
+
+  // Get the CLI command from config (e.g. 'claude', 'gemini', 'codex')
+  const cliConfig = loadCliConfig();
+  const command = (cliConfig[profile]?.command || '').trim();
+  if (!command) throw new Error(`No CLI command configured for ${profile}`);
+
+  let spawnCmd = command;
+  let spawnArgs = [...sidecarConfig.args];
+  let useShell = IS_WIN;
+  let tmpFile = null;
+
+  if (sidecarConfig.stdin) {
+    // stdin-based: args are fixed, message piped after spawn (e.g. Claude Code)
+  } else if (IS_WIN) {
+    // Windows: cmd.exe shell quoting mangles multi-word args (splits by spaces),
+    // causing CLIs like Gemini to misparse -p "hello world" as -p + positional "hello" "world".
+    // Use PowerShell which correctly passes $msg as a single argument value.
+    tmpFile = join(os.tmpdir(), `synabun-relay-${randomBytes(4).toString('hex')}.txt`);
+    writeFileSync(tmpFile, message, 'utf-8');
+    const flag = spawnArgs[0]; // e.g. '-p', '-q'
+    spawnCmd = 'powershell.exe';
+    spawnArgs = ['-NoProfile', '-NonInteractive', '-Command',
+      `$msg = Get-Content -Raw '${tmpFile}'; & '${command}' ${flag} $msg`];
+    useShell = false;
+  } else {
+    // Unix: pass directly as the flag's value arg (no shell quoting issues)
+    spawnArgs.push(message);
+  }
+
+  console.log(`[link-sidecar] Spawning: ${spawnCmd} ${spawnArgs.join(' ').slice(0, 200)}... (${profile}, cwd: ${session.cwd || process.cwd()})`);
+
+  const child = spawn(spawnCmd, spawnArgs, {
+    cwd: session.cwd || process.cwd(),
+    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+    shell: useShell,
+    timeout: LINK_SIDECAR_TIMEOUT_MS,
+    windowsHide: true,
+  });
+
+  // Pipe message to stdin for CLIs that support it (e.g. Claude Code)
+  if (sidecarConfig.stdin) {
+    child.stdin.write(message);
+  }
+  child.stdin.end();
+
+  // Track on link state
+  link._sidecarProcess = child;
+  link._sidecarSessionId = sessionId;
+
+  let fullOutput = '';
+
+  child.stdout.on('data', (chunk) => {
+    const text = chunk.toString();
+    fullOutput += text;
+
+    // Broadcast streaming chunk to clients
+    broadcastSync({
+      type: 'link:chunk',
+      linkId,
+      sessionId,
+      profile,
+      content: text,
+    });
+  });
+
+  let stderrOutput = '';
+  child.stderr.on('data', (chunk) => {
+    const text = chunk.toString();
+    stderrOutput += text;
+    console.log(`[link-sidecar] ${profile} stderr: ${text.slice(0, 500)}`);
+  });
+
+  child.on('close', (code) => {
+    link._sidecarProcess = null;
+    link._sidecarSessionId = null;
+    if (tmpFile) { try { unlinkSync(tmpFile); } catch {} }
+
+    const cleanOutput = fullOutput.trim();
+
+    if (code !== 0 && code !== null) {
+      console.error(`[link-sidecar] ${profile} exited with code ${code}${stderrOutput ? ': ' + stderrOutput.slice(0, 500) : ''}`);
+      if (!cleanOutput) {
+        const errDetail = stderrOutput.trim().slice(0, 200) || `exited with code ${code}`;
+        broadcastSync({ type: 'link:error', linkId, error: `${profile}: ${errDetail}` });
+        link.status = 'idle';
+        return;
+      }
+    }
+
+    if (cleanOutput) {
+      onSidecarFinished(linkId, sessionId, cleanOutput);
+    } else {
+      link.status = 'idle';
+      broadcastSync({ type: 'link:agent-finished', linkId, sessionId, profile });
+    }
+  });
+
+  child.on('error', (err) => {
+    link._sidecarProcess = null;
+    link._sidecarSessionId = null;
+    console.error(`[link-sidecar] ${profile} spawn error:`, err.message);
+    broadcastSync({ type: 'link:error', linkId, error: `Failed to start ${profile}: ${err.message}` });
+    link.status = 'idle';
+  });
+
+  return child;
+}
+
+/**
+ * Called when a sidecar process finishes with output.
+ * Output is already clean text — no ANSI stripping needed.
+ */
+function onSidecarFinished(linkId, sessionId, cleanOutput) {
+  const link = terminalLinks.get(linkId);
+  if (!link) return;
+
+  const session = terminalSessions.get(sessionId);
+  const profile = session?.profile || 'unknown';
+
+  // Add to history
+  const entry = { role: profile, sessionId, content: cleanOutput, timestamp: Date.now() };
+  link.history.push(entry);
+
+  broadcastSync({ type: 'link:agent-finished', linkId, sessionId, profile });
+  broadcastSync({ type: 'link:message', linkId, ...entry, turnCount: link.config.turnCount });
+
+  // Auto-continue to next agent?
+  if (link.config.autoContinue && link.status === 'running') {
+    link.config.turnCount++;
+    if (link.config.maxTurns > 0 && link.config.turnCount >= link.config.maxTurns) {
+      link.status = 'idle';
+      broadcastSync({ type: 'link:paused', linkId, reason: 'max-turns' });
+      return;
+    }
+    relayToNextAgent(linkId, cleanOutput);
+  } else {
+    link.status = 'idle';
+  }
+}
+
+// ── Live PTY injection functions ──
+
+/**
+ * Inject a message into a live PTY terminal and capture the response.
+ * The message is typed directly into the TUI CLI's input prompt.
+ * Response is captured from PTY output, ANSI-stripped, and relayed.
+ */
+function injectIntoLivePty(linkId, sessionId, message) {
+  const link = terminalLinks.get(linkId);
+  if (!link) throw new Error('Link not found');
+  if (link.mode !== 'live') throw new Error('Link is not in live mode');
+
+  const session = terminalSessions.get(sessionId);
+  if (!session) throw new Error('Session not found');
+
+  const profile = session.profile;
+  const liveConfig = CLI_LIVE_CONFIG[profile];
+  if (!liveConfig) throw new Error(`No live config for profile: ${profile}`);
+
+  if (session._linkCaptureCallback) {
+    throw new Error(`Session ${sessionId.slice(0, 8)} already has a capture callback`);
+  }
+
+  console.log(`[link-live] Injecting into ${profile} (session ${sessionId.slice(0, 8)}), msg: ${message.slice(0, 200)}...`);
+
+  // Set up link capture state
+  link._captureBuffer = '';
+  link._captureSessionId = sessionId;
+  link._injectionEcho = message;
+
+  // Create VTermBuffer matching the session's PTY dimensions for clean text extraction.
+  // Unlike regex stripAnsi(), this properly handles TUI cursor positioning, spinners,
+  // and screen overwrites — only the final visual state is retained.
+  const ptyCols = session.pty.cols || 120;
+  const ptyRows = session.pty.rows || 30;
+  link._captureVTerm = new VTermBuffer(ptyCols, ptyRows);
+
+  broadcastSync({ type: 'link:agent-started', linkId, sessionId, profile });
+
+  // Inject message into PTY — send text first, then Enter after a short delay.
+  // TUI frameworks (Ink) process input per-frame; Enter must arrive as a separate
+  // keystroke or it gets swallowed when bundled with the text in one write.
+  const pty = session.pty;
+  const ENTER_DELAY_MS = 80;
+
+  if (liveConfig.useBracketedPaste && message.includes('\n')) {
+    pty.write('\x1b[200~' + message + '\x1b[201~');
+  } else {
+    pty.write(message);
+  }
+  // Send Enter separately after delay
+  setTimeout(() => pty.write('\r'), ENTER_DELAY_MS);
+
+  // Wait for settle delay, then start capturing output
+  setTimeout(() => {
+    if (!terminalLinks.has(linkId)) return;
+    if (link._captureSessionId !== sessionId) return;
+
+    session._linkCaptureCallback = (data) => {
+      link._captureBuffer += data;
+
+      // Feed raw data into VTermBuffer for proper terminal emulation
+      if (link._captureVTerm) {
+        try { link._captureVTerm.write(data); } catch {}
+      }
+
+      // Broadcast streaming chunk (ANSI-stripped for display)
+      const cleanChunk = stripAnsi(data);
+      if (cleanChunk.trim()) {
+        broadcastSync({
+          type: 'link:chunk',
+          linkId,
+          sessionId,
+          profile,
+          content: cleanChunk,
+        });
+      }
+
+      // Reset idle timer on each output chunk
+      if (link._idleTimer) clearTimeout(link._idleTimer);
+      link._idleTimer = setTimeout(() => {
+        _checkLiveCaptureComplete(linkId, sessionId);
+      }, liveConfig.idleMs);
+    };
+
+    // Absolute max wait safety net
+    link._maxIdleTimer = setTimeout(() => {
+      console.log(`[link-live] Max idle timeout for ${profile}`);
+      _finalizeLiveCapture(linkId, sessionId, 'max-idle-timeout');
+    }, liveConfig.maxIdleMs);
+
+  }, LIVE_CAPTURE_SETTLE_MS);
+}
+
+/**
+ * Called after idle timeout — check if the CLI prompt has reappeared.
+ */
+function _checkLiveCaptureComplete(linkId, sessionId) {
+  const link = terminalLinks.get(linkId);
+  if (!link || link._captureSessionId !== sessionId) return;
+
+  const session = terminalSessions.get(sessionId);
+  if (!session) {
+    _finalizeLiveCapture(linkId, sessionId, 'session-gone');
+    return;
+  }
+
+  const profile = session.profile;
+  const liveConfig = CLI_LIVE_CONFIG[profile];
+  if (!liveConfig) {
+    _finalizeLiveCapture(linkId, sessionId, 'no-config');
+    return;
+  }
+
+  // Check last 5 lines of ANSI-stripped output for prompt patterns
+  const stripped = stripAnsi(link._captureBuffer);
+  const lastLines = stripped.split('\n').slice(-5).join('\n');
+  const promptFound = liveConfig.promptPatterns.some(p => p.test(lastLines));
+
+  if (promptFound) {
+    console.log(`[link-live] Prompt detected for ${profile}, finalizing`);
+    _finalizeLiveCapture(linkId, sessionId, 'prompt-detected');
+  } else {
+    // No prompt found — set a short follow-up timer, then force finalize.
+    // The idle timeout already means no output for idleMs; if still nothing
+    // after another idleMs, the response is almost certainly done.
+    console.log(`[link-live] Idle but no prompt for ${profile}, will finalize in ${liveConfig.idleMs}ms`);
+    link._idleTimer = setTimeout(() => {
+      _finalizeLiveCapture(linkId, sessionId, 'idle-no-prompt');
+    }, liveConfig.idleMs);
+  }
+}
+
+/**
+ * Finalize a live PTY capture — strip ANSI, clean up, and relay.
+ * Reuses onSidecarFinished() for history and auto-continue logic.
+ */
+function _finalizeLiveCapture(linkId, sessionId, reason) {
+  const link = terminalLinks.get(linkId);
+  if (!link) return;
+
+  const session = terminalSessions.get(sessionId);
+  const profile = session?.profile || 'unknown';
+
+  console.log(`[link-live] Finalizing capture for ${profile}: ${reason}`);
+
+  // Remove capture callback
+  if (session) session._linkCaptureCallback = null;
+
+  // Clear timers
+  if (link._idleTimer) { clearTimeout(link._idleTimer); link._idleTimer = null; }
+  if (link._maxIdleTimer) { clearTimeout(link._maxIdleTimer); link._maxIdleTimer = null; }
+
+  // Extract clean text from VTermBuffer (proper terminal emulation).
+  // Unlike regex stripAnsi(), VTermBuffer correctly handles cursor positioning,
+  // spinner overwrites, and screen repaints — only the final visual state remains.
+  let cleanOutput = '';
+  const vterm = link._captureVTerm;
+  if (vterm) {
+    const sb = vterm.scrollbackLength;
+    const totalRows = sb + vterm.rows;
+    // Get all text: scrollback + visible screen
+    cleanOutput = vterm.getText(0, 0, totalRows - 1, vterm.cols - 1);
+    // Collapse excessive blank lines (TUI apps leave lots of empty rows)
+    cleanOutput = cleanOutput.replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // Fallback to regex stripping if VTermBuffer produced nothing
+  if (!cleanOutput) {
+    cleanOutput = stripAnsi(link._captureBuffer).trim();
+  }
+
+  console.log(`[link-live] Extracted text (${cleanOutput.length} chars, via ${vterm ? 'vterm' : 'regex'}): ${cleanOutput.slice(0, 300)}...`);
+
+  // Strip injected echo — TUI CLIs echo back what was typed
+  if (link._injectionEcho) {
+    const echoText = link._injectionEcho.trim();
+    // Strategy 1: prefix match
+    if (cleanOutput.startsWith(echoText)) {
+      cleanOutput = cleanOutput.slice(echoText.length).trim();
+    } else {
+      // Strategy 2: line-by-line match
+      const echoLines = echoText.split('\n');
+      const outputLines = cleanOutput.split('\n');
+      let matched = 0;
+      while (matched < echoLines.length && matched < outputLines.length) {
+        if (outputLines[matched].trim() === echoLines[matched].trim()) {
+          matched++;
+        } else break;
+      }
+      if (matched > 0) {
+        cleanOutput = outputLines.slice(matched).join('\n').trim();
+      }
+    }
+  }
+
+  // Strip trailing prompt patterns
+  const liveConfig = CLI_LIVE_CONFIG[profile];
+  if (liveConfig) {
+    for (const pattern of liveConfig.promptPatterns) {
+      cleanOutput = cleanOutput.replace(pattern, '').trim();
+    }
+  }
+
+  // Reset live capture state
+  link._captureBuffer = '';
+  link._captureVTerm = null;
+  link._captureSessionId = null;
+  link._injectionEcho = '';
+
+  if (cleanOutput) {
+    onSidecarFinished(linkId, sessionId, cleanOutput);
+  } else {
+    link.status = 'idle';
+    broadcastSync({ type: 'link:agent-finished', linkId, sessionId, profile });
+    if (reason === 'max-idle-timeout') {
+      broadcastSync({ type: 'link:error', linkId, error: `${profile}: No response detected (timed out)` });
+    }
+  }
+}
+
+/**
+ * Forward a message to the next agent in the link chain.
+ * Dispatches to sidecar or live mode based on link.mode.
+ */
+function relayToNextAgent(linkId, message) {
+  const link = terminalLinks.get(linkId);
+  if (!link) return;
+
+  // Advance to next agent (round-robin)
+  link.activeAgent = (link.activeAgent + 1) % link.sessions.length;
+  const nextSessionId = link.sessions[link.activeAgent];
+  const session = terminalSessions.get(nextSessionId);
+  if (!session) {
+    link.status = 'idle';
+    broadcastSync({ type: 'link:error', linkId, error: 'Target session not found' });
+    return;
+  }
+
+  link.status = 'running';
+
+  // Cap message length (16KB — more generous since it's a CLI arg, not PTY)
+  const MAX_RELAY_LEN = 16 * 1024;
+  let relayMsg = message;
+  if (relayMsg.length > MAX_RELAY_LEN) {
+    relayMsg = relayMsg.slice(0, MAX_RELAY_LEN) + '\n\n[... response truncated]';
+  }
+
+  try {
+    if (link.mode === 'live') {
+      injectIntoLivePty(linkId, nextSessionId, relayMsg);
+    } else {
+      broadcastSync({ type: 'link:agent-started', linkId, sessionId: nextSessionId, profile: session.profile });
+      spawnSidecarProcess(linkId, nextSessionId, relayMsg);
+    }
+  } catch (err) {
+    link.status = 'idle';
+    broadcastSync({ type: 'link:error', linkId, error: err.message });
+  }
+}
+
+/**
+ * User-initiated send — spawns sidecar for the specified (or first) agent.
+ */
+function sendToLink(linkId, message, targetIdx) {
+  const link = terminalLinks.get(linkId);
+  if (!link) throw new Error('Link not found');
+
+  // Kill any running sidecar / clean up live capture
+  if (link._sidecarProcess) {
+    try { link._sidecarProcess.kill('SIGTERM'); } catch {}
+    link._sidecarProcess = null;
+  }
+  if (link._captureSessionId) {
+    const capSession = terminalSessions.get(link._captureSessionId);
+    if (capSession) capSession._linkCaptureCallback = null;
+    if (link._idleTimer) { clearTimeout(link._idleTimer); link._idleTimer = null; }
+    if (link._maxIdleTimer) { clearTimeout(link._maxIdleTimer); link._maxIdleTimer = null; }
+    link._captureBuffer = '';
+    link._captureVTerm = null;
+    link._captureSessionId = null;
+  }
+
+  const agentIdx = (typeof targetIdx === 'number') ? targetIdx : link.activeAgent;
+  const sessionId = link.sessions[agentIdx];
+  const session = terminalSessions.get(sessionId);
+  if (!session) throw new Error('Target session not found');
+
+  // Record in history as user message
+  const entry = { role: 'user', sessionId: null, content: message, timestamp: Date.now() };
+  link.history.push(entry);
+  broadcastSync({ type: 'link:message', linkId, ...entry, turnCount: link.config.turnCount });
+
+  // Set link to running
+  link.activeAgent = agentIdx;
+  link.status = 'running';
+
+  // Dispatch based on mode
+  if (link.mode === 'live') {
+    injectIntoLivePty(linkId, sessionId, message);
+  } else {
+    broadcastSync({ type: 'link:agent-started', linkId, sessionId, profile: session.profile });
+    spawnSidecarProcess(linkId, sessionId, message);
+  }
+}
+
+// ── Terminal Link REST endpoints ──
+
+app.get('/api/terminal/links', (req, res) => {
+  const links = [...terminalLinks.entries()].map(([id, l]) => ({
+    id,
+    sessions: l.sessions.map(sid => {
+      const s = terminalSessions.get(sid);
+      return { id: sid, profile: s?.profile || 'unknown', cwd: s?.cwd };
+    }),
+    status: l.status,
+    activeAgent: l.activeAgent,
+    historyCount: l.history.length,
+    mode: l.mode,
+    config: { autoContinue: l.config.autoContinue, maxTurns: l.config.maxTurns, turnCount: l.config.turnCount },
+    createdAt: l.createdAt,
+  }));
+  res.json({ links });
+});
+
+app.get('/api/terminal/links/:id', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  res.json({
+    id: link.id,
+    sessions: link.sessions.map(sid => {
+      const s = terminalSessions.get(sid);
+      return { id: sid, profile: s?.profile || 'unknown', cwd: s?.cwd };
+    }),
+    status: link.status,
+    activeAgent: link.activeAgent,
+    mode: link.mode,
+    history: link.history,
+    config: { autoContinue: link.config.autoContinue, maxTurns: link.config.maxTurns, turnCount: link.config.turnCount },
+    createdAt: link.createdAt,
+  });
+});
+
+app.post('/api/terminal/links', (req, res) => {
+  const { sessions, autoContinue, maxTurns, mode } = req.body;
+  if (!Array.isArray(sessions) || sessions.length < 2) {
+    return res.status(400).json({ error: 'At least 2 session IDs required' });
+  }
+  try {
+    const linkId = createTerminalLink(sessions, { autoContinue, maxTurns, mode });
+    broadcastSync({ type: 'link:created', linkId, sessions, mode: mode || 'sidecar' });
+    res.json({ linkId });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/terminal/links/:id', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  const sessions = [...link.sessions];
+  destroyTerminalLink(req.params.id);
+  broadcastSync({ type: 'link:deleted', linkId: req.params.id, sessions });
+  res.json({ ok: true });
+});
+
+app.patch('/api/terminal/links/:id', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  const { autoContinue, maxTurns } = req.body;
+  if (typeof autoContinue === 'boolean') link.config.autoContinue = autoContinue;
+  if (typeof maxTurns === 'number') link.config.maxTurns = maxTurns;
+  res.json({ ok: true, config: link.config });
+});
+
+app.post('/api/terminal/links/:id/send', (req, res) => {
+  const { message, targetIdx } = req.body;
+  if (!message || typeof message !== 'string') {
+    return res.status(400).json({ error: 'message is required' });
+  }
+  try {
+    sendToLink(req.params.id, message, targetIdx);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/terminal/links/:id/pause', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  link.status = 'idle';
+  link.config.autoContinue = false;
+  // Kill any running sidecar process
+  if (link._sidecarProcess) {
+    try { link._sidecarProcess.kill('SIGTERM'); } catch {}
+    link._sidecarProcess = null;
+    link._sidecarSessionId = null;
+  }
+  // Clean up live capture
+  if (link._captureSessionId) {
+    const capSession = terminalSessions.get(link._captureSessionId);
+    if (capSession) capSession._linkCaptureCallback = null;
+    if (link._idleTimer) { clearTimeout(link._idleTimer); link._idleTimer = null; }
+    if (link._maxIdleTimer) { clearTimeout(link._maxIdleTimer); link._maxIdleTimer = null; }
+    link._captureBuffer = '';
+    link._captureVTerm = null;
+    link._captureSessionId = null;
+  }
+  broadcastSync({ type: 'link:paused', linkId: req.params.id, reason: 'manual' });
+  res.json({ ok: true });
+});
+
+app.post('/api/terminal/links/:id/resume', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  link.config.autoContinue = true;
+  broadcastSync({ type: 'link:resumed', linkId: req.params.id });
+  res.json({ ok: true });
+});
+
+app.post('/api/terminal/links/:id/nudge', (req, res) => {
+  const link = terminalLinks.get(req.params.id);
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+
+  // Kill current sidecar / clean up live capture
+  if (link._sidecarProcess) {
+    try { link._sidecarProcess.kill('SIGTERM'); } catch {}
+    link._sidecarProcess = null;
+    link._sidecarSessionId = null;
+  }
+  if (link._captureSessionId) {
+    const capSession = terminalSessions.get(link._captureSessionId);
+    if (capSession) capSession._linkCaptureCallback = null;
+    if (link._idleTimer) { clearTimeout(link._idleTimer); link._idleTimer = null; }
+    if (link._maxIdleTimer) { clearTimeout(link._maxIdleTimer); link._maxIdleTimer = null; }
+    link._captureBuffer = '';
+    link._captureVTerm = null;
+    link._captureSessionId = null;
+  }
+
+  // Get last agent message from history (or a nudge placeholder)
+  const lastAgentMsg = [...link.history].reverse().find(h => h.role !== 'user');
+  const relayContent = lastAgentMsg?.content || '[nudge — no previous response]';
+
+  link.status = 'running';
+  link.config.autoContinue = true;
+  relayToNextAgent(link.id, relayContent);
+  res.json({ ok: true });
+});
+
+
+// ═══════════════════════════════════════════
+// BROWSER — Playwright-core CDP Manager
+// ═══════════════════════════════════════════
+//
+// Manages headless/headed Chromium instances via playwright-core.
+// Streams viewport via CDP Page.screencastFrame over WebSocket.
+// Exposes CDP endpoint so Claude Code's Playwright MCP can connect.
+
+const browserSessions = new Map(); // sessionId → { browser, context, page, clients, cdpSession, screencastActive, ... }
+const BROWSER_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 min before orphaned browser is killed
+
+/** Check if a browser session is actively used by a running automation loop. */
+function isSessionUsedByActiveLoop(sessionId) {
+  if (!existsSync(LOOP_DIR)) return false;
+  try {
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
+    for (const f of files) {
+      try {
+        const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
+        if (data.active && data.browserSessionId === sessionId) return true;
+      } catch {}
+    }
+  } catch {}
+  return false;
+}
+
+// ── Real-time sync WebSocket (multi-client state broadcast) ──
+const syncClients = new Set(); // Set<WebSocket>
+
+function broadcastSync(message, excludeWs = null) {
+  const data = JSON.stringify(message);
+  let sent = 0;
+  for (const client of syncClients) {
+    if (client !== excludeWs && client.readyState === 1) { client.send(data); sent++; }
+  }
+  if (syncClients.size > 0) console.log(`[sync] broadcast "${message.type}" → ${sent}/${syncClients.size} clients`);
+}
+
+// Relayable message types (client → server → other clients)
+const RELAYABLE_TYPES = new Set([
+  'card:opened', 'card:closed', 'card:moved', 'card:resized', 'card:compacted', 'card:expanded',
+  'terminal:session-created', 'terminal:session-deleted',
+  'browser:session-created', 'browser:session-deleted',
+  'link:created', 'link:deleted', 'link:message', 'link:agent-started', 'link:agent-finished',
+  'link:paused', 'link:resumed', 'link:error', 'link:chunk',
+]);
+
+// Permission required per relay type prefix
+const RELAY_PERM_MAP = { 'card:': 'cards', 'terminal:': 'terminal', 'link:': 'terminal' };
+
+function handleSyncWebSocket(ws, req) {
+  const guest = isGuestRequest(req);
+  ws._isGuest = guest;
+  syncClients.add(ws);
+  console.log(`[sync] Client connected (${guest ? 'guest' : 'owner'}), total: ${syncClients.size}`);
+
+  // Send initial state with role + permissions
+  ws.send(JSON.stringify({
+    type: 'connected',
+    clients: syncClients.size,
+    isGuest: guest,
+    permissions: { ...invitePermissions },
+  }));
+  broadcastSync({ type: 'clients', count: syncClients.size });
+
+  // Bidirectional relay: client → server → other clients
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      if (!msg.type || !RELAYABLE_TYPES.has(msg.type)) return;
+
+      // Permission check for guest senders
+      if (ws._isGuest) {
+        const permKey = Object.entries(RELAY_PERM_MAP).find(([prefix]) => msg.type.startsWith(prefix));
+        if (permKey && !invitePermissions[permKey[1]]) return; // silently drop
+      }
+
+      broadcastSync(msg, ws); // relay to everyone except sender
+    } catch { /* ignore malformed */ }
+  });
+
+  ws.on('close', () => {
+    syncClients.delete(ws);
+    console.log(`[sync] Client disconnected (${ws._isGuest ? 'guest' : 'owner'}), total: ${syncClients.size}`);
+    broadcastSync({ type: 'clients', count: syncClients.size });
+  });
+}
+
+// ── Whiteboard WebSocket clients (Claude MCP integration) ──
+const whiteboardClients = new Set(); // Set<WebSocket>
+const whiteboardPendingScreenshots = new Map(); // requestId → { resolve, reject, timer }
+let whiteboardViewport = { width: 1920, height: 937 }; // updated by browser on WS connect + resize
+
+function broadcastToWhiteboard(message, excludeWs = null) {
+  const data = JSON.stringify(message);
+  for (const client of whiteboardClients) {
+    if (client !== excludeWs && client.readyState === 1) client.send(data);
+  }
+}
+
+// ── Browser config ──
+
+const BROWSER_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'browser-config.json');
+
+function loadBrowserConfig() {
+  try {
+    if (!existsSync(BROWSER_CONFIG_PATH)) return {};
+    return JSON.parse(readFileSync(BROWSER_CONFIG_PATH, 'utf-8'));
+  } catch { return {}; }
+}
+
+function saveBrowserConfig(config) {
+  const dir = dirname(BROWSER_CONFIG_PATH);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(BROWSER_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+/**
+ * Find a usable Chromium/Chrome executable.
+ * Priority: user-configured path > common system locations > playwright bundled.
+ */
+function findBrowserExecutable() {
+  const config = loadBrowserConfig();
+  if (config.executablePath && existsSync(config.executablePath)) {
+    return config.executablePath;
+  }
+
+  // Common Chrome/Chromium locations
+  const candidates = IS_WIN ? [
+    join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    join(process.env['ProgramFiles'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    join(process.env['ProgramFiles(x86)'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    join(process.env.LOCALAPPDATA || '', 'Chromium', 'Application', 'chrome.exe'),
+  ] : [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  ];
+
+  for (const p of candidates) {
+    if (p && existsSync(p)) return p;
+  }
+
+  return null; // Will let playwright-core try its default
+}
+
+/**
+ * Detect Chrome/Edge/Chromium profile directories on the system.
+ * Scans common User Data locations and reads Preferences files to get
+ * human-readable profile names.
+ */
+function detectChromeProfiles() {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const localAppData = process.env.LOCALAPPDATA || '';
+
+  // Browser User Data root directories by platform
+  const browserRoots = IS_WIN ? [
+    { browser: 'Chrome', dir: join(localAppData, 'Google', 'Chrome', 'User Data') },
+    { browser: 'Edge', dir: join(localAppData, 'Microsoft', 'Edge', 'User Data') },
+    { browser: 'Chromium', dir: join(localAppData, 'Chromium', 'User Data') },
+  ] : process.platform === 'darwin' ? [
+    { browser: 'Chrome', dir: join(home, 'Library', 'Application Support', 'Google', 'Chrome') },
+    { browser: 'Edge', dir: join(home, 'Library', 'Application Support', 'Microsoft Edge') },
+    { browser: 'Chromium', dir: join(home, 'Library', 'Application Support', 'Chromium') },
+  ] : [
+    { browser: 'Chrome', dir: join(home, '.config', 'google-chrome') },
+    { browser: 'Chromium', dir: join(home, '.config', 'chromium') },
+    { browser: 'Edge', dir: join(home, '.config', 'microsoft-edge') },
+  ];
+
+  const profiles = [];
+
+  for (const { browser, dir } of browserRoots) {
+    if (!existsSync(dir)) continue;
+
+    // Read Local State for authoritative profile names (Chrome updates names here, not in per-profile Preferences)
+    let localStateNames = {};
+    try {
+      const lsPath = join(dir, 'Local State');
+      if (existsSync(lsPath)) {
+        const ls = JSON.parse(readFileSync(lsPath, 'utf-8'));
+        const cache = ls?.profile?.info_cache || {};
+        for (const [folder, info] of Object.entries(cache)) {
+          if (info.name) localStateNames[folder] = info.name;
+        }
+      }
+    } catch { /* Local State unavailable */ }
+
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const folderName = entry.name;
+      // Match "Default", "Profile 1", "Profile 2", etc.
+      if (folderName !== 'Default' && !/^Profile \d+$/.test(folderName)) continue;
+
+      const profileDir = join(dir, folderName);
+      const prefsPath = join(profileDir, 'Preferences');
+      if (!existsSync(prefsPath)) continue;
+
+      // Prefer Local State name (authoritative after renames), fall back to per-profile Preferences
+      let displayName = localStateNames[folderName] || folderName;
+      if (!localStateNames[folderName]) {
+        try {
+          const prefs = JSON.parse(readFileSync(prefsPath, 'utf-8'));
+          if (prefs.profile?.name) displayName = prefs.profile.name;
+        } catch { /* use folder name */ }
+      }
+
+      profiles.push({
+        browser,
+        name: displayName,
+        folder: folderName,
+        path: profileDir.replace(/\\/g, '/'),
+        isDefault: folderName === 'Default',
+      });
+    }
+  }
+
+  return profiles;
+}
+
+/**
+ * Launch a browser session. Returns sessionId + CDP WebSocket URL.
+ * Merges saved browser-config.json with per-session overrides, clones
+ * the real browser's fingerprint from Neural Interface request headers.
+ */
+async function createBrowserSession(options = {}) {
+  const sessionId = randomBytes(16).toString('hex');
+  const savedCfg = loadBrowserConfig();
+  const execPath = findBrowserExecutable();
+
+  // Merge: saved config is base, per-session options override
+  const vpW = options.width || savedCfg.viewport?.width || 1280;
+  const vpH = options.height || savedCfg.viewport?.height || 800;
+
+  // Per-session headless override (from launch dialog) takes priority over saved config
+  // Note: Playwright only accepts boolean for headless (the old "new" string mode is no longer valid)
+  // Default: headed (false) — headless only when explicitly set to true
+  const headlessVal = options.headless !== undefined
+    ? (options.headless === true || options.headless === 'true')
+    : savedCfg.headless === true ? true : false;
+  console.log(`[browser] headless=${headlessVal} (override: ${JSON.stringify(options.headless)}, config: ${JSON.stringify(savedCfg.headless)})`);
+
+  // ── Stealth args: strip all headless indicators ──
+  const stealthArgs = [
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-popup-blocking',
+    `--window-size=${vpW},${vpH}`,
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=AutomationControlled',
+    '--disable-infobars',
+    '--disable-dev-shm-usage',
+    '--no-sandbox',
+    '--enable-webgl',
+    '--disable-session-crashed-bubble',
+    '--hide-crash-restore-bubble',
+  ];
+
+  // SwiftShader (software GL) only for headless — in headed mode it can prevent
+  // the Chrome window from rendering or appearing on the desktop.
+  if (headlessVal) {
+    stealthArgs.push('--use-gl=swiftshader');
+  }
+
+  // ── Resolve userDataDir ──
+  // Chrome refuses --remote-debugging-pipe with its own default User Data directory.
+  // If the user specified Chrome's default dir, redirect to a safe SynaBun-managed directory.
+  // NEVER junction/symlink to the real profile — Playwright modifies profile data on launch.
+  let userDataDir = savedCfg.userDataDir || null;
+  if (userDataDir) {
+    const normalized = userDataDir.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+    const chromeDefaults = [
+      (process.env.LOCALAPPDATA || '').replace(/\\/g, '/').toLowerCase() + '/google/chrome/user data',
+      (process.env['ProgramFiles'] || '').replace(/\\/g, '/').toLowerCase() + '/google/chrome/user data',
+    ].filter(Boolean);
+    const isDefaultDir = chromeDefaults.some(d => normalized === d || normalized === d + '/default');
+    if (isDefaultDir) {
+      const safeDir = resolve(PROJECT_ROOT, 'data', 'chrome-profile');
+      console.warn(`[browser] Chrome's default User Data dir cannot be used with remote debugging.`);
+      console.warn(`[browser] Using SynaBun-managed profile: ${safeDir}`);
+      if (!existsSync(safeDir)) mkdirSync(safeDir, { recursive: true });
+      userDataDir = safeDir;
+    }
+  }
+
+  // Only disable extensions when NOT using a user profile (they'd want their extensions)
+  if (!userDataDir) {
+    stealthArgs.push('--disable-extensions');
+  }
+
+  // Append user's extra launch args from config
+  if (savedCfg.extraArgs) {
+    const extra = savedCfg.extraArgs.split(/\s+/).filter(Boolean);
+    stealthArgs.push(...extra);
+  }
+  const launchOpts = { headless: headlessVal, args: stealthArgs };
+  if (execPath) launchOpts.executablePath = execPath;
+  if (savedCfg.channel) launchOpts.channel = savedCfg.channel;
+  if (savedCfg.slowMo) launchOpts.slowMo = savedCfg.slowMo;
+  if (savedCfg.timeout) launchOpts.timeout = savedCfg.timeout;
+
+  // Proxy at browser level
+  if (savedCfg.proxy?.server) {
+    launchOpts.proxy = {
+      server: savedCfg.proxy.server,
+      ...(savedCfg.proxy.bypass ? { bypass: savedCfg.proxy.bypass } : {}),
+      ...(savedCfg.proxy.username ? { username: savedCfg.proxy.username } : {}),
+      ...(savedCfg.proxy.password ? { password: savedCfg.proxy.password } : {}),
+    };
+  }
+
+  // ── Clone real browser fingerprint ──
+  const realHeaders = options._realHeaders || {};
+  const realUA = realHeaders['user-agent'] || '';
+  const userAgent = savedCfg.userAgent || options.userAgent || realUA || undefined;
+  const cfgAcceptLang = savedCfg.acceptLanguage || null;
+  const acceptLanguage = cfgAcceptLang || realHeaders['accept-language'] || 'en-US,en;q=0.9';
+  const locale = savedCfg.locale || acceptLanguage.split(',')[0].split(';')[0] || 'en-US';
+
+  // Build context options from saved config
+  const contextOpts = {
+    viewport: { width: vpW, height: vpH },
+    userAgent,
+    locale,
+    timezoneId: savedCfg.timezoneId || options.timezone || undefined,
+    screen: savedCfg.screen || { width: options.screenWidth || 1920, height: options.screenHeight || 1080 },
+    deviceScaleFactor: savedCfg.deviceScaleFactor || options.deviceScaleFactor || 1,
+    isMobile: savedCfg.isMobile || false,
+    hasTouch: savedCfg.hasTouch || false,
+    javaScriptEnabled: savedCfg.javaScriptEnabled !== false,
+    ignoreHTTPSErrors: savedCfg.ignoreHTTPSErrors || false,
+    bypassCSP: savedCfg.bypassCSP || false,
+    acceptDownloads: savedCfg.acceptDownloads !== false,
+    strictSelectors: savedCfg.strictSelectors !== false,
+    serviceWorkers: savedCfg.serviceWorkers || 'allow',
+    offline: savedCfg.offline || false,
+    // Extra HTTP headers: merge config + cloned headers
+    extraHTTPHeaders: {
+      'Accept-Language': acceptLanguage,
+      ...(realHeaders['sec-ch-ua'] ? { 'Sec-CH-UA': realHeaders['sec-ch-ua'] } : {}),
+      ...(realHeaders['sec-ch-ua-mobile'] ? { 'Sec-CH-UA-Mobile': realHeaders['sec-ch-ua-mobile'] } : {}),
+      ...(realHeaders['sec-ch-ua-platform'] ? { 'Sec-CH-UA-Platform': realHeaders['sec-ch-ua-platform'] } : {}),
+      ...(savedCfg.extraHTTPHeaders || {}),
+    },
+  };
+
+  // Appearance
+  if (savedCfg.colorScheme) contextOpts.colorScheme = savedCfg.colorScheme;
+  if (savedCfg.reducedMotion) contextOpts.reducedMotion = savedCfg.reducedMotion;
+  if (savedCfg.forcedColors) contextOpts.forcedColors = savedCfg.forcedColors;
+
+  // Geolocation
+  if (savedCfg.geolocation) contextOpts.geolocation = savedCfg.geolocation;
+
+  // Permissions
+  if (savedCfg.permissions?.length) contextOpts.permissions = savedCfg.permissions;
+
+  // HTTP credentials
+  if (savedCfg.httpCredentials?.username) contextOpts.httpCredentials = savedCfg.httpCredentials;
+
+  // Navigation timeout
+  if (savedCfg.navigationTimeout) contextOpts.navigationTimeout = savedCfg.navigationTimeout;
+
+  // Recording: video
+  if (savedCfg.recordVideo?.dir) contextOpts.recordVideo = savedCfg.recordVideo;
+
+  // Recording: HAR
+  if (savedCfg.recordHar?.path) contextOpts.recordHar = savedCfg.recordHar;
+
+  // Storage state: restore if persist is enabled and file exists (not needed for persistent context)
+  const STORAGE_STATE_PATH = resolve(PROJECT_ROOT, savedCfg.storageStatePath || 'data/browser-storage.json');
+  if (!userDataDir && savedCfg.persistStorage && !savedCfg.clearStorageOnStart && existsSync(STORAGE_STATE_PATH)) {
+    try {
+      contextOpts.storageState = STORAGE_STATE_PATH;
+    } catch (e) {
+      console.warn('Failed to load storage state:', e.message);
+    }
+  }
+
+  let browser, context, page;
+  let _isPersistent = false;
+
+  if (userDataDir) {
+    // ── Persistent context: uses a Chrome profile directory ──
+    // launchPersistentContext returns a BrowserContext directly — no separate browser.newContext()
+    _isPersistent = true;
+
+    // Chrome enforces single-instance per User Data directory. If Chrome is running
+    // and the selected profile is inside Chrome's User Data dir, the new Playwright
+    // process will be killed by Chrome's singleton lock within seconds.
+    // Detect this and redirect to SynaBun's managed profile instead.
+    let _chromeConflict = false;
+    if (IS_WIN) {
+      try {
+        const tasklist = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', { encoding: 'utf8', timeout: 3000 });
+        if (tasklist.includes('chrome.exe')) {
+          // Check if the selected profile is inside Chrome's User Data directory
+          const norm = userDataDir.replace(/\\/g, '/').toLowerCase();
+          const chromeUD = ((process.env.LOCALAPPDATA || '') + '/Google/Chrome/User Data').replace(/\\/g, '/').toLowerCase();
+          const edgeUD = ((process.env.LOCALAPPDATA || '') + '/Microsoft/Edge/User Data').replace(/\\/g, '/').toLowerCase();
+          if (norm.startsWith(chromeUD) || norm.startsWith(edgeUD)) {
+            _chromeConflict = true;
+            const safeDir = resolve(PROJECT_ROOT, 'data', 'chrome-profile');
+            if (!existsSync(safeDir)) mkdirSync(safeDir, { recursive: true });
+            console.warn(`[browser] Chrome is running — can't use ${userDataDir} (singleton lock conflict)`);
+            console.warn(`[browser] Redirecting to SynaBun managed profile: ${safeDir}`);
+            console.warn(`[browser] Tip: Log into sites once in SynaBun's browser — logins persist across sessions.`);
+            userDataDir = safeDir;
+            broadcastSync({ type: 'notification', level: 'warn', message: 'Chrome is running — using SynaBun\'s own profile instead. Log into sites once here and logins will persist.' });
+          }
+        }
+      } catch {}
+    }
+
+    // Pre-launch: clean crash markers to prevent "didn't shut down correctly" dialog
+    const _prefsFile = resolve(userDataDir, 'Default', 'Preferences');
+    if (existsSync(_prefsFile)) {
+      try {
+        const _prefs = JSON.parse(readFileSync(_prefsFile, 'utf-8'));
+        if (_prefs.profile) {
+          _prefs.profile.exit_type = 'Normal';
+          _prefs.profile.exited_cleanly = true;
+          writeFileSync(_prefsFile, JSON.stringify(_prefs));
+        }
+      } catch {}
+    }
+
+    console.log(`[browser] Launching persistent context at: ${userDataDir}`);
+    try {
+      // Selectively remove Playwright defaults that block profile features.
+      // Can't use ignoreDefaultArgs:true — Playwright needs its internal flags for CDP.
+      context = await chromium.launchPersistentContext(userDataDir, {
+        ...launchOpts,
+        ...contextOpts,
+        ignoreDefaultArgs: [
+          '--disable-extensions',
+          '--disable-component-extensions-with-background-pages',
+          '--disable-default-apps',
+          '--enable-automation',
+          '--disable-sync',
+          '--password-store=basic',
+          '--use-mock-keychain',
+        ],
+      });
+    } catch (err) {
+      const msg = err.message || '';
+      if (msg.includes('non-default data directory') || msg.includes('user-data-dir')) {
+        throw new Error(`Chrome refuses to use this profile directory for remote debugging. Try a different path (not Chrome's default User Data dir). Original error: ${msg}`);
+      }
+      if (msg.includes('already in use') || msg.includes('lock')) {
+        throw new Error(`Chrome profile is locked — close all Chrome windows using this profile and try again. Original error: ${msg}`);
+      }
+      throw err;
+    }
+    browser = context; // persistent context IS the top-level object (no parent browser)
+
+    // Verify the browser is still alive — Chrome's singleton lock may cause it to exit
+    // immediately after launch if another Chrome instance is using the same profile.
+    // Wait a moment to detect this before proceeding.
+    await new Promise(r => setTimeout(r, 500));
+    let contextAlive = true;
+    try {
+      // Try to access pages — if Chrome exited, this will throw or return empty
+      const testPages = context.pages();
+      if (testPages.length === 0) contextAlive = false;
+    } catch { contextAlive = false; }
+
+    if (!contextAlive) {
+      throw new Error('Browser closed immediately after launch — Chrome is likely already running with this profile. Close ALL Chrome windows and background processes (check system tray), then try again.');
+    }
+
+    // Close any restored tabs from previous Chrome session, then open a fresh page
+    const existingPages = context.pages();
+    page = await context.newPage();
+    for (const p of existingPages) {
+      await p.close().catch(() => {});
+    }
+  } else {
+    // ── Standard: clean sandboxed browser ──
+    browser = await chromium.launch(launchOpts);
+    context = await browser.newContext(contextOpts);
+    page = await context.newPage();
+  }
+
+  // ── CDP stealth injections (if enabled) ──
+  const doStealth = savedCfg.stealthFingerprint !== false;
+  if (doStealth) {
+    const cdpStealth = await page.context().newCDPSession(page);
+    try {
+      await cdpStealth.send('Page.addScriptToEvaluateOnNewDocument', {
+        source: `
+          Object.defineProperty(navigator, 'webdriver', { get: () => false });
+          Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+              { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+            ],
+          });
+          Object.defineProperty(navigator, 'languages', {
+            get: () => ${JSON.stringify(acceptLanguage.split(',').map(l => l.split(';')[0].trim()))},
+          });
+          const origQuery = window.Permissions.prototype.query;
+          window.Permissions.prototype.query = function(params) {
+            if (params.name === 'notifications') {
+              return Promise.resolve({ state: 'default', onchange: null });
+            }
+            return origQuery.call(this, params);
+          };
+          if (!window.chrome) window.chrome = {};
+          if (!window.chrome.runtime) window.chrome.runtime = { connect: () => {}, sendMessage: () => {} };
+          delete window.cdc_adoQpoasnfa76pfcZLmcfl_;
+          delete window.__playwright;
+        `,
+      });
+    } catch (err) {
+      console.warn('CDP stealth injection warning:', err.message);
+    }
+    await cdpStealth.detach().catch(() => {});
+  }
+
+  // Navigate to initial URL or blank
+  const startUrl = options.url || 'about:blank';
+  await page.goto(startUrl).catch((err) => {
+    console.warn('Initial navigation warning:', err.message);
+  });
+
+  // Wait for page to be ready before attaching CDP
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+
+  // Get CDP session for screencast
+  console.log('[browser] Creating CDP session... persistent:', !!_isPersistent, 'page url:', page.url());
+  let cdpSession;
+  try {
+    cdpSession = await context.newCDPSession(page);
+    console.log('[browser] CDP session created successfully via context');
+  } catch (err) {
+    console.error('[browser] CDP session creation failed:', err.message);
+    throw new Error('Cannot create CDP session for screencast: ' + err.message);
+  }
+
+  const session = {
+    browser,
+    context,
+    page,
+    cdpSession,
+    _isPersistent,
+    clients: new Set(),       // WebSocket connections for screencast
+    screencastActive: false,
+    createdAt: Date.now(),
+    graceTimer: null,
+    currentUrl: startUrl,
+    title: await page.title().catch(() => ''),
+  };
+
+  // Listen for URL changes
+  page.on('framenavigated', async (frame) => {
+    if (frame === page.mainFrame()) {
+      session.currentUrl = page.url();
+      session.title = await page.title().catch(() => '');
+      const msg = JSON.stringify({ type: 'navigated', url: session.currentUrl, title: session.title });
+      session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+    }
+  });
+
+  // Listen for page load
+  page.on('load', async () => {
+    session.title = await page.title().catch(() => '');
+    const msg = JSON.stringify({ type: 'loaded', url: page.url(), title: session.title });
+    session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+  });
+
+  // Handle page close (user closed tab in headed mode, or crash)
+  page.on('close', () => {
+    console.log(`Browser page closed for session ${sessionId}`);
+    session.clients.forEach(ws => {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Page closed' }));
+        ws.close(1000, 'Page closed');
+      }
+    });
+    session.clients.clear();
+  });
+
+  // Handle context close (browser quit)
+  context.on('close', () => {
+    console.log(`Browser context closed for session ${sessionId}`);
+    session.clients.forEach(ws => {
+      if (ws.readyState === 1) ws.close(1000, 'Browser closed');
+    });
+    session.clients.clear();
+    browserSessions.delete(sessionId);
+    broadcastSync({ type: 'browser:session-deleted', sessionId });
+  });
+
+  browserSessions.set(sessionId, session);
+  return { sessionId, wsEndpoint: _isPersistent ? null : (browser.wsEndpoint?.() || null) };
+}
+
+/**
+ * Start CDP screencast — streams JPEG frames to all connected WebSocket clients.
+ */
+async function startScreencast(session) {
+  if (session.screencastActive) return;
+  session.screencastActive = true;
+
+  console.log('[screencast] Starting screencast, CDP session exists:', !!session.cdpSession, 'persistent:', !!session._isPersistent);
+
+  let frameCount = 0;
+  session.cdpSession.on('Page.screencastFrame', async (params) => {
+    frameCount++;
+    if (frameCount <= 3) console.log(`[screencast] Frame #${frameCount} received (${params.data?.length || 0} chars)`);
+    const msg = JSON.stringify({
+      type: 'frame',
+      data: params.data,               // base64 JPEG
+      metadata: params.metadata,        // { offsetTop, pageScaleFactor, ... }
+      sessionId: params.sessionId,      // CDP ack ID
+    });
+    session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+
+    // Acknowledge frame to keep the stream going
+    try {
+      await session.cdpSession.send('Page.screencastFrameAck', {
+        sessionId: params.sessionId,
+      });
+    } catch {}
+  });
+
+  const scCfg = loadBrowserConfig().screencast || {};
+  try {
+    await session.cdpSession.send('Page.startScreencast', {
+      format: scCfg.format || 'jpeg',
+      quality: scCfg.quality ?? 60,
+      maxWidth: scCfg.maxWidth || 1280,
+      maxHeight: scCfg.maxHeight || 800,
+      everyNthFrame: scCfg.everyNthFrame || 1,
+    });
+    console.log('[screencast] Page.startScreencast sent successfully');
+  } catch (err) {
+    console.error('[screencast] Page.startScreencast FAILED:', err.message);
+    session.screencastActive = false;
+    throw err;
+  }
+}
+
+async function stopScreencast(session) {
+  if (!session.screencastActive) return;
+  session.screencastActive = false;
+  try {
+    await session.cdpSession.send('Page.stopScreencast');
+  } catch {}
+}
+
+/**
+ * Clean up a browser session.
+ */
+async function destroyBrowserSession(sessionId) {
+  const session = browserSessions.get(sessionId);
+  if (!session) return;
+
+  // Save storage state (cookies, localStorage) if persistence is enabled
+  // Skip for persistent contexts — Chrome handles persistence natively via the profile
+  const savedCfg = loadBrowserConfig();
+  if (!session._isPersistent && savedCfg.persistStorage && session.context) {
+    const storagePath = resolve(PROJECT_ROOT, savedCfg.storageStatePath || 'data/browser-storage.json');
+    try {
+      const dir = dirname(storagePath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      await session.context.storageState({ path: storagePath });
+      console.log(`  Storage state saved to ${storagePath}`);
+    } catch (err) {
+      console.warn('Failed to save storage state:', err.message);
+    }
+  }
+
+  if (session.graceTimer) clearTimeout(session.graceTimer);
+  try { await stopScreencast(session); } catch {}
+  if (session._isPersistent) {
+    // Persistent context: close the context which also kills the browser process
+    try { await session.context.close(); } catch {}
+    // Mark profile as cleanly exited so next launch doesn't show crash dialog
+    const _cfg = loadBrowserConfig();
+    if (_cfg.userDataDir) {
+      for (const base of [_cfg.userDataDir, resolve(PROJECT_ROOT, _cfg.userDataDir)]) {
+        const pp = resolve(base, 'Default', 'Preferences');
+        if (existsSync(pp)) {
+          try {
+            const prefs = JSON.parse(readFileSync(pp, 'utf-8'));
+            if (prefs.profile) {
+              prefs.profile.exit_type = 'Normal';
+              prefs.profile.exited_cleanly = true;
+            }
+            writeFileSync(pp, JSON.stringify(prefs));
+          } catch {}
+          break;
+        }
+      }
+    }
+  } else {
+    try { await session.browser.close(); } catch {}
+  }
+  browserSessions.delete(sessionId);
+  broadcastSync({ type: 'browser:session-deleted', sessionId });
+}
+
+// ── Browser REST endpoints ──
+
+app.get('/api/browser/sessions', (req, res) => {
+  const sessions = [...browserSessions.entries()].map(([id, s]) => ({
+    id,
+    url: s.currentUrl,
+    title: s.title,
+    createdAt: s.createdAt,
+    clients: s.clients.size,
+    persistent: !!s._isPersistent,
+    wsEndpoint: s._isPersistent ? null : (s.browser.wsEndpoint?.() || null),
+  }));
+  res.json({ sessions });
+});
+
+app.post('/api/browser/sessions', async (req, res) => {
+  const { url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, headless } = req.body;
+  try {
+    // Clone the real browser's headers from this HTTP request
+    const _realHeaders = {
+      'user-agent': req.headers['user-agent'],
+      'accept-language': req.headers['accept-language'],
+      'sec-ch-ua': req.headers['sec-ch-ua'],
+      'sec-ch-ua-mobile': req.headers['sec-ch-ua-mobile'],
+      'sec-ch-ua-platform': req.headers['sec-ch-ua-platform'],
+    };
+    const result = await createBrowserSession({
+      url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, headless, _realHeaders,
+    });
+    broadcastSync({ type: 'browser:session-created', sessionId: result.sessionId, url: url || 'about:blank' });
+    res.json({ sessionId: result.sessionId, url: url || 'about:blank', wsEndpoint: result.wsEndpoint });
+  } catch (err) {
+    console.error('Browser session create error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/browser/sessions/:id', async (req, res) => {
+  try {
+    await destroyBrowserSession(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { url } = req.body;
+  try {
+    await session.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/back', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    await session.page.goBack({ timeout: 10000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/forward', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    await session.page.goForward({ timeout: 10000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/reload', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    await session.page.reload({ timeout: 15000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// Screenshot endpoint (for snapshot/debugging)
+app.get('/api/browser/sessions/:id/screenshot', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    const buf = await session.page.screenshot({ type: 'jpeg', quality: 80 });
+    res.set('Content-Type', 'image/jpeg');
+    res.send(buf);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CDP WebSocket endpoint info — for Claude Code's Playwright MCP to connect
+app.get('/api/browser/sessions/:id/cdp', (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    const wsEndpoint = session._isPersistent ? null : (session.browser.wsEndpoint?.() || null);
+    res.json({ ok: true, wsEndpoint, sessionId: req.params.id, persistent: !!session._isPersistent });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// Claude Code connection helper — returns MCP config snippet for connecting to this browser
+app.get('/api/browser/sessions/:id/claude-connect', (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const wsEndpoint = session._isPersistent ? null : (session.browser.wsEndpoint?.() || null);
+  if (!wsEndpoint) return res.json({ ok: false, error: session._isPersistent ? 'Persistent context sessions use SynaBun MCP browser tools instead of CDP endpoint' : 'No CDP endpoint available' });
+  res.json({
+    ok: true,
+    wsEndpoint,
+    mcpConfig: {
+      playwright: {
+        command: 'npx',
+        args: ['@playwright/mcp@latest', `--cdp-url=${wsEndpoint}`],
+      },
+    },
+    instructions: `To connect Claude Code to this browser, add this to your .mcp.json or pass --cdp-url=${wsEndpoint} to the Playwright MCP server.`,
+  });
+});
+
+// ── Selector-based browser interaction endpoints (for MCP tools) ──
+
+/**
+ * Normalize selectors from LLMs that may use invalid CSS pseudo-classes.
+ * Converts common mistakes to valid Playwright selector syntax.
+ */
+function normalizeSelector(sel) {
+  if (!sel || typeof sel !== 'string') return sel;
+  // :contains("text") → :has-text("text")  (jQuery → Playwright)
+  sel = sel.replace(/:contains\(/gi, ':has-text(');
+  return sel;
+}
+
+app.post('/api/browser/sessions/:id/click', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector: rawSelector, timeout, nthMatch } = req.body;
+  if (!rawSelector) return res.status(400).json({ error: 'selector required' });
+  const selector = normalizeSelector(rawSelector);
+  try {
+    const loc = session.page.locator(selector);
+    // Pre-check element count for better error messages
+    const count = await loc.count().catch(() => -1);
+    if (count === 0) {
+      return res.status(400).json({ error: `No elements match selector: ${selector}` });
+    }
+    if (count > 1 && nthMatch === undefined) {
+      return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
+    }
+    const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
+    await target.click({ timeout: timeout || 5000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/fill', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector: rawFillSel, value, timeout } = req.body;
+  if (!rawFillSel) return res.status(400).json({ error: 'selector required' });
+  try {
+    await session.page.locator(normalizeSelector(rawFillSel)).fill(value ?? '', { timeout: timeout || 5000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/type', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector: rawTypeSel, text, timeout } = req.body;
+  try {
+    if (rawTypeSel) {
+      await session.page.locator(normalizeSelector(rawTypeSel)).pressSequentially(text ?? '', { timeout: timeout || 5000 });
+    } else {
+      // No selector: type into the currently focused element via keyboard
+      await session.page.keyboard.type(text ?? '');
+    }
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/hover', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector: rawHoverSel, timeout } = req.body;
+  if (!rawHoverSel) return res.status(400).json({ error: 'selector required' });
+  try {
+    await session.page.locator(normalizeSelector(rawHoverSel)).hover({ timeout: timeout || 5000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/select', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector: rawSelSel, value, timeout } = req.body;
+  if (!rawSelSel) return res.status(400).json({ error: 'selector required' });
+  try {
+    await session.page.locator(normalizeSelector(rawSelSel)).selectOption(value ?? '', { timeout: timeout || 5000 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/press', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { key } = req.body;
+  if (!key) return res.status(400).json({ error: 'key required' });
+  try {
+    await session.page.keyboard.press(key);
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/evaluate', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { script } = req.body;
+  if (!script) return res.status(400).json({ error: 'script required' });
+  try {
+    const result = await session.page.evaluate(script);
+    // Ensure result is JSON-serializable (undefined becomes null)
+    res.json({ ok: true, result: result === undefined ? null : result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/browser/sessions/:id/snapshot', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    // page.accessibility was removed in Playwright 1.50+
+    let tree = null;
+    if (session.page.accessibility && typeof session.page.accessibility.snapshot === 'function') {
+      tree = await session.page.accessibility.snapshot();
+    } else {
+      // Fallback: build a tree from ariaSnapshot text
+      const ariaText = await session.page.locator('body').ariaSnapshot({ timeout: 5000 }).catch(() => null);
+      if (ariaText) {
+        tree = parseAriaSnapshotText(ariaText);
+      }
+    }
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title, snapshot: tree });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/snapshot', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector: rawSel } = req.body;
+  const scopeSel = rawSel ? normalizeSelector(rawSel) : null;
+  try {
+    let tree = null;
+    if (scopeSel) {
+      const ariaText = await session.page.locator(scopeSel).ariaSnapshot({ timeout: 8000 }).catch(() => null);
+      if (ariaText) tree = parseAriaSnapshotText(ariaText);
+    } else {
+      if (session.page.accessibility && typeof session.page.accessibility.snapshot === 'function') {
+        tree = await session.page.accessibility.snapshot();
+      } else {
+        const ariaText = await session.page.locator('body').ariaSnapshot({ timeout: 5000 }).catch(() => null);
+        if (ariaText) tree = parseAriaSnapshotText(ariaText);
+      }
+    }
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title, snapshot: tree });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Parse Playwright's ariaSnapshot YAML-like text into a tree structure
+function parseAriaSnapshotText(text) {
+  if (!text) return null;
+  const lines = text.split('\n').filter(l => l.trim());
+  if (lines.length === 0) return null;
+
+  const root = { role: 'document', name: '', children: [] };
+  const stack = [{ node: root, indent: -1 }];
+
+  for (const line of lines) {
+    const stripped = line.replace(/^\s*- /, '');
+    const indent = line.length - line.trimStart().length;
+
+    // Parse "role "name"" or "role "name": value"
+    const match = stripped.match(/^(\w+)(?:\s+"([^"]*)")?(?::\s*(.*))?$/);
+    if (!match) continue;
+
+    const node = {
+      role: match[1] || 'generic',
+      name: match[2] || '',
+      children: [],
+    };
+    if (match[3]) node.value = match[3];
+
+    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
+      stack.pop();
+    }
+    stack[stack.length - 1].node.children.push(node);
+    stack.push({ node, indent });
+  }
+
+  return root.children.length === 1 ? root.children[0] : root;
+}
+
+app.post('/api/browser/sessions/:id/wait', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector, state, loadState, timeout } = req.body;
+  try {
+    if (loadState) {
+      const valid = ['load', 'domcontentloaded', 'networkidle'];
+      if (!valid.includes(loadState)) return res.status(400).json({ error: `Invalid loadState. Use: ${valid.join(', ')}` });
+      await session.page.waitForLoadState(loadState, { timeout: timeout || 15000 });
+      session.currentUrl = session.page.url();
+      session.title = await session.page.title().catch(() => '');
+      res.json({ ok: true, loadState, url: session.currentUrl, title: session.title });
+    } else if (selector) {
+      await session.page.locator(selector).waitFor({
+        state: state || 'visible',
+        timeout: timeout || 10000,
+      });
+      res.json({ ok: true, selector, state: state || 'visible' });
+    } else {
+      await session.page.waitForTimeout(timeout || 1000);
+      session.currentUrl = session.page.url();
+      session.title = await session.page.title().catch(() => '');
+      res.json({ ok: true, url: session.currentUrl, title: session.title });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/browser/sessions/:id/content', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    let text = '';
+    try {
+      text = await session.page.innerText('body');
+      if (text.length > 50000) text = text.slice(0, 50000) + '\n... (truncated)';
+    } catch { text = ''; }
+    res.json({ ok: true, url: session.currentUrl, title: session.title, text });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/browser/sessions/:id/screenshot-base64', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    const buf = await session.page.screenshot({ type: 'jpeg', quality: 70 });
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title, data: buf.toString('base64') });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { direction = 'down', distance = 500, selector: rawSel } = req.body;
+  const deltaX = direction === 'right' ? distance : direction === 'left' ? -distance : 0;
+  const deltaY = direction === 'down' ? distance : direction === 'up' ? -distance : 0;
+  try {
+    if (rawSel) {
+      await session.page.locator(normalizeSelector(rawSel)).evaluate(
+        (el, { dx, dy }) => el.scrollBy(dx, dy), { dx: deltaX, dy: deltaY }
+      );
+    } else {
+      await session.page.evaluate(({ dx, dy }) => window.scrollBy(dx, dy), { dx: deltaX, dy: deltaY });
+    }
+    await session.page.waitForTimeout(300);
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/upload', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const { selector: rawSel, filePaths } = req.body;
+  if (!rawSel) return res.status(400).json({ error: 'selector required' });
+  if (!Array.isArray(filePaths) || !filePaths.length) return res.status(400).json({ error: 'filePaths must be a non-empty array' });
+  try {
+    await session.page.locator(normalizeSelector(rawSel)).setInputFiles(filePaths);
+    await session.page.waitForTimeout(500);
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+    res.json({ ok: true, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Browser config endpoint
+app.get('/api/browser/config', (req, res) => {
+  const config = loadBrowserConfig();
+  const detected = findBrowserExecutable();
+  res.json({ config, detectedPath: detected });
+});
+
+app.put('/api/browser/config', (req, res) => {
+  try {
+    // Full replacement — the frontend sends the complete config object
+    saveBrowserConfig(req.body);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Detect Chrome/Edge/Chromium profiles on the system
+app.get('/api/browser/detect-profiles', (req, res) => {
+  try {
+    const profiles = detectChromeProfiles();
+    const synabunProfile = resolve(PROJECT_ROOT, 'data', 'chrome-profile').replace(/\\/g, '/');
+    const synabunExists = existsSync(synabunProfile);
+    res.json({ profiles, synabunProfile, synabunProfileExists: synabunExists });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Open native folder picker dialog (Windows: PowerShell, macOS: osascript, Linux: zenity)
+app.post('/api/browser/browse-folder', async (req, res) => {
+  try {
+    let cmd;
+    if (IS_WIN) {
+      const pickerScript = resolve(__dirname, 'lib', 'folder-picker.ps1');
+      cmd = `powershell -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "${pickerScript}" -Title "Select Chrome profile directory"`;
+    } else if (process.platform === 'darwin') {
+      cmd = "osascript -e 'POSIX path of (choose folder with prompt \"Select Chrome profile directory\")'";
+    } else {
+      cmd = 'zenity --file-selection --directory --title="Select Chrome profile directory" 2>/dev/null';
+    }
+    const result = execSync(cmd, { encoding: 'utf8', timeout: 60000, windowsHide: true }).trim();
+    if (result) {
+      res.json({ path: result.replace(/\\/g, '/') });
+    } else {
+      res.json({ path: null, cancelled: true });
+    }
+  } catch (err) {
+    // User cancelled or dialog failed
+    res.json({ path: null, cancelled: true });
+  }
+});
+
 // --- Start ---
-// Migrate connections.json → .env if it still exists (one-time)
-migrateConnectionsJsonToEnv();
-// Load active connection from .env
 reloadConfig();
 
 const httpServer = app.listen(PORT, async () => {
   console.log(`\n  Neural Memory Interface`);
   console.log(`  ──────────────────────`);
-  console.log(`  Server:  http://localhost:${PORT}`);
-  console.log(`  MCP:     http://localhost:${PORT}/mcp`);
-  console.log(`  Qdrant:  ${QDRANT_URL}`);
-  console.log(`  Collection: ${COLLECTION}`);
-  console.log(`  OpenAI:  ${OPENAI_KEY ? 'configured' : 'MISSING'}`);
-  console.log(`  Terminal: WebSocket on ws://localhost:${PORT}/ws/terminal/*\n`);
+  console.log(`  Server:    http://localhost:${PORT}`);
+  console.log(`  MCP:       http://localhost:${PORT}/mcp`);
+  console.log(`  Storage:   SQLite (${getDbPath()})`);
+  console.log(`  Embedding: local (${EMBEDDING_DIMS}d)`);
+  console.log(`  Terminal:  WebSocket on ws://localhost:${PORT}/ws/terminal/*`);
+  console.log(`  Browser:   WebSocket on ws://localhost:${PORT}/ws/browser/*`);
+  console.log(`  Whiteboard: WebSocket on ws://localhost:${PORT}/ws/whiteboard`);
+  console.log(`  Cards:      WebSocket on ws://localhost:${PORT}/ws/cards\n`);
 
-  // Ensure trashed_at index exists for soft-delete filtering on existing collections
+  // Write embedding model metadata so mismatch can be detected later
   try {
-    await qdrantFetch('/index', {
-      method: 'PUT',
-      body: JSON.stringify({ field_name: 'trashed_at', field_schema: 'keyword' }),
-    });
-    console.log('  trashed_at index ensured');
-  } catch (err) {
-    // Index may already exist or Qdrant not yet reachable — non-fatal
-    if (!err.message?.includes('already exists')) {
-      console.warn('  trashed_at index warning:', err.message);
-    }
-  }
+    setKvConfig('embedding_model', EMBEDDING_MODEL);
+    setKvConfig('embedding_dims', String(EMBEDDING_DIMS));
+  } catch {}
+
+  // SQLite indexes are created in schema — no runtime index creation needed
 
   // Auto-sync OpenClaw bridge if enabled
   try {
@@ -5635,25 +8582,59 @@ const httpServer = app.listen(PORT, async () => {
 const wss = new WebSocketServer({ noServer: true });
 
 httpServer.on('upgrade', (req, socket, head) => {
-  // Block tunnel traffic from WebSocket upgrades
-  if (req.headers['cf-connecting-ip']) {
+  // Block tunnel traffic from WebSocket upgrades, except cookie-authenticated invite sessions
+  if (req.headers['cf-connecting-ip'] && !isValidInviteSession(req)) {
     socket.destroy();
     return;
   }
 
   const url = new URL(req.url, `http://localhost:${PORT}`);
-  if (!url.pathname.startsWith('/ws/terminal/')) {
-    socket.destroy();
-    return;
+
+  // Permission-based WS upgrade blocking for guests
+  const guest = isGuestRequest(req);
+  if (guest) {
+    if (url.pathname.startsWith('/ws/terminal/') && !invitePermissions.terminal) { socket.destroy(); return; }
+    if (url.pathname.startsWith('/ws/browser/') && !invitePermissions.browser) { socket.destroy(); return; }
+    // Whiteboard + sync always allowed (read-only viewing; sync needed for permission delivery)
   }
 
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req);
-  });
+  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync') {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+  } else {
+    socket.destroy();
+  }
 });
 
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // ── Route: Real-time sync (multi-client state broadcast) ──
+  if (url.pathname === '/ws/sync') {
+    handleSyncWebSocket(ws, req);
+    return;
+  }
+
+  // ── Route: Whiteboard (Claude MCP integration) ──
+  if (url.pathname === '/ws/whiteboard') {
+    handleWhiteboardWebSocket(ws);
+    return;
+  }
+
+  // ── Route: Cards (Claude MCP integration) ──
+  if (url.pathname === '/ws/cards') {
+    handleCardsWebSocket(ws);
+    return;
+  }
+
+  // ── Route: Browser session ──
+  if (url.pathname.startsWith('/ws/browser/')) {
+    handleBrowserWebSocket(ws, url);
+    return;
+  }
+
+  // ── Route: Terminal session ──
   const sessionId = url.pathname.replace('/ws/terminal/', '');
   const session = terminalSessions.get(sessionId);
 
@@ -5694,6 +8675,18 @@ wss.on('connection', (ws, req) => {
         } catch (err) {
           ws.send(JSON.stringify({ type: 'error', message: `Image paste failed: ${err.message}` }));
         }
+      } else if (msg.type === 'image_drop' && msg.data) {
+        // Save whiteboard image drag-drop to temp file, write path into PTY
+        const ext = (msg.mimeType === 'image/jpeg') ? 'jpg' : 'png';
+        const tmpPath = join(os.tmpdir(), `synabun-wbimg-${sessionId}-${Date.now()}.${ext}`);
+        try {
+          writeFileSync(tmpPath, Buffer.from(msg.data, 'base64'));
+          if (!session.tempFiles) session.tempFiles = [];
+          session.tempFiles.push(tmpPath);
+          ws.send(JSON.stringify({ type: 'image_dropped', path: tmpPath }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: `Image drop failed: ${err.message}` }));
+        }
       } else if (msg.type === 'memory_drop' && msg.content) {
         // Save memory as .md temp file so CLI can pick it up as a file reference
         const slug = (msg.title || 'memory').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
@@ -5724,3 +8717,244 @@ wss.on('connection', (ws, req) => {
     }
   });
 });
+
+// ═══════════════════════════════════════════
+// WHITEBOARD — WebSocket Handler (Claude MCP ↔ Browser)
+// ═══════════════════════════════════════════
+
+function handleWhiteboardWebSocket(ws) {
+  whiteboardClients.add(ws);
+  console.log(`[ws-whiteboard] Client connected (total: ${whiteboardClients.size})`);
+
+  // Send init with current element count
+  try {
+    const state = loadUiState();
+    const wb = state['neural-whiteboard'];
+    const count = wb?.elements?.length || 0;
+    ws.send(JSON.stringify({ type: 'init', elementCount: count }));
+  } catch { /* ignore */ }
+
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+
+      if (msg.type === 'viewport') {
+        whiteboardViewport = { width: msg.width, height: msg.height };
+        console.log(`[ws-whiteboard] Viewport: ${msg.width}x${msg.height}`);
+      }
+
+      if (msg.type === 'screenshot:response' && msg.requestId) {
+        const pending = whiteboardPendingScreenshots.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          whiteboardPendingScreenshots.delete(msg.requestId);
+          pending.resolve(msg.data);
+        }
+      }
+
+      if (msg.type === 'screenshot:error' && msg.requestId) {
+        const pending = whiteboardPendingScreenshots.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          whiteboardPendingScreenshots.delete(msg.requestId);
+          pending.reject(new Error(msg.error || 'Screenshot failed'));
+        }
+      }
+
+      // Client pushes full state sync after local mutation — save and relay to other clients
+      if (msg.type === 'state:sync' && msg.snapshot) {
+        mergeUiState({ 'neural-whiteboard': msg.snapshot });
+        broadcastToWhiteboard({ type: 'state:full', snapshot: msg.snapshot }, ws);
+      }
+    } catch { /* ignore malformed */ }
+  });
+
+  ws.on('close', () => {
+    whiteboardClients.delete(ws);
+    console.log(`[ws-whiteboard] Client disconnected (remaining: ${whiteboardClients.size})`);
+  });
+}
+
+// ── Cards WebSocket clients (Claude MCP integration) ──
+const cardsClients = new Set(); // Set<WebSocket>
+const cardsPendingOps = new Map(); // requestId → { resolve, reject, timer }
+let cardsViewport = { width: 1920, height: 1080 }; // updated by browser on WS connect + resize
+
+function broadcastToCards(message, excludeWs = null) {
+  const data = JSON.stringify(message);
+  for (const client of cardsClients) {
+    if (client !== excludeWs && client.readyState === 1) client.send(data);
+  }
+}
+
+function handleCardsWebSocket(ws) {
+  cardsClients.add(ws);
+  console.log(`[ws-cards] Client connected (total: ${cardsClients.size})`);
+
+  // Send init with current open card count
+  try {
+    const state = loadUiState();
+    const raw = state['neural-open-cards'];
+    const cards = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
+    ws.send(JSON.stringify({ type: 'init', openCount: cards.length }));
+  } catch { /* ignore */ }
+
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+
+      if (msg.type === 'viewport') {
+        cardsViewport = { width: msg.width, height: msg.height };
+        console.log(`[ws-cards] Viewport: ${msg.width}x${msg.height}`);
+      }
+
+      // ACK responses from browser for card operations (open/close/update)
+      if (msg.type === 'ack' && msg.requestId) {
+        const pending = cardsPendingOps.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          cardsPendingOps.delete(msg.requestId);
+          if (msg.ok) {
+            pending.resolve(msg.result || {});
+          } else {
+            pending.reject(new Error(msg.error || 'Operation failed'));
+          }
+        }
+      }
+
+      // Screenshot response from browser
+      if (msg.type === 'screenshot:response' && msg.requestId) {
+        const pending = cardsPendingOps.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          cardsPendingOps.delete(msg.requestId);
+          pending.resolve(msg.data);
+        }
+      }
+
+      if (msg.type === 'screenshot:error' && msg.requestId) {
+        const pending = cardsPendingOps.get(msg.requestId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          cardsPendingOps.delete(msg.requestId);
+          pending.reject(new Error(msg.error || 'Screenshot failed'));
+        }
+      }
+    } catch { /* ignore malformed */ }
+  });
+
+  ws.on('close', () => {
+    cardsClients.delete(ws);
+    console.log(`[ws-cards] Client disconnected (remaining: ${cardsClients.size})`);
+  });
+}
+
+// ═══════════════════════════════════════════
+// BROWSER — WebSocket Handler
+// ═══════════════════════════════════════════
+
+async function handleBrowserWebSocket(ws, url) {
+  const sessionId = url.pathname.replace('/ws/browser/', '');
+  const session = browserSessions.get(sessionId);
+
+  if (!session) {
+    ws.send(JSON.stringify({ type: 'error', message: 'Browser session not found' }));
+    ws.close();
+    return;
+  }
+
+  console.log('[ws-browser] Client connected for session', sessionId, 'persistent:', !!session._isPersistent, 'clients:', session.clients.size + 1);
+  session.clients.add(ws);
+  if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null; }
+
+  // Send current state
+  ws.send(JSON.stringify({
+    type: 'init',
+    url: session.currentUrl,
+    title: session.title,
+  }));
+
+  // Start screencast if not already running
+  try { await startScreencast(session); } catch (err) {
+    console.error('[ws-browser] Screencast start failed:', err.message);
+    ws.send(JSON.stringify({ type: 'error', message: `Screencast start failed: ${err.message}` }));
+  }
+
+  ws.on('message', async (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+
+      if (msg.type === 'navigate' && msg.url) {
+        try {
+          await session.page.goto(msg.url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          session.currentUrl = session.page.url();
+          session.title = await session.page.title().catch(() => '');
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: err.message }));
+        }
+      } else if (msg.type === 'back') {
+        await session.page.goBack({ timeout: 10000 }).catch(() => {});
+      } else if (msg.type === 'forward') {
+        await session.page.goForward({ timeout: 10000 }).catch(() => {});
+      } else if (msg.type === 'reload') {
+        await session.page.reload({ timeout: 15000 }).catch(() => {});
+      } else if (msg.type === 'click') {
+        // Forward mouse click at coordinates relative to viewport
+        await session.page.mouse.click(msg.x, msg.y, {
+          button: msg.button || 'left',
+        }).catch(() => {});
+      } else if (msg.type === 'dblclick') {
+        await session.page.mouse.dblclick(msg.x, msg.y).catch(() => {});
+      } else if (msg.type === 'mousemove') {
+        await session.page.mouse.move(msg.x, msg.y).catch(() => {});
+      } else if (msg.type === 'mousedown') {
+        await session.page.mouse.down({ button: msg.button || 'left' }).catch(() => {});
+      } else if (msg.type === 'mouseup') {
+        await session.page.mouse.up({ button: msg.button || 'left' }).catch(() => {});
+      } else if (msg.type === 'wheel') {
+        await session.page.mouse.wheel(msg.deltaX || 0, msg.deltaY || 0).catch(() => {});
+      } else if (msg.type === 'keydown') {
+        await session.page.keyboard.down(msg.key).catch(() => {});
+      } else if (msg.type === 'keyup') {
+        await session.page.keyboard.up(msg.key).catch(() => {});
+      } else if (msg.type === 'keypress') {
+        // For typing text characters
+        await session.page.keyboard.type(msg.text || '').catch(() => {});
+      } else if (msg.type === 'resize') {
+        // Resize viewport
+        const w = Math.max(320, Math.min(3840, msg.width || 1280));
+        const h = Math.max(200, Math.min(2160, msg.height || 800));
+        await session.page.setViewportSize({ width: w, height: h }).catch(() => {});
+        // Restart screencast with new dimensions
+        await stopScreencast(session);
+        const scCfg2 = loadBrowserConfig().screencast || {};
+        await session.cdpSession.send('Page.startScreencast', {
+          format: scCfg2.format || 'jpeg',
+          quality: scCfg2.quality ?? 60,
+          maxWidth: w, maxHeight: h,
+          everyNthFrame: scCfg2.everyNthFrame || 1,
+        }).catch(() => {});
+        session.screencastActive = true;
+      }
+    } catch { /* ignore malformed */ }
+  });
+
+  ws.on('close', () => {
+    session.clients.delete(ws);
+    if (session.clients.size === 0 && browserSessions.has(sessionId)) {
+      // Stop screencast when nobody is watching
+      stopScreencast(session).catch(() => {});
+      // Grace period before killing browser
+      session.graceTimer = setTimeout(async () => {
+        if (session.clients.size === 0 && browserSessions.has(sessionId)) {
+          // Don't destroy if an active loop is using this browser session
+          if (isSessionUsedByActiveLoop(sessionId)) {
+            console.log(`[browser] Grace period: skipping destroy — active loop uses session ${sessionId}`);
+            return;
+          }
+          await destroyBrowserSession(sessionId);
+        }
+      }, BROWSER_GRACE_PERIOD_MS);
+    }
+  });
+}
