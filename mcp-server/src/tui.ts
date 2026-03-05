@@ -6,7 +6,7 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname_ = dirname(fileURLToPath(import.meta.url));
-const envPath = resolve(__dirname_, '..', '..', '.env');
+const envPath = process.env.DOTENV_PATH || resolve(__dirname_, '..', '..', '.env');
 try {
   const envContent = readFileSync(envPath, 'utf-8');
   for (const line of envContent.split('\n')) {
@@ -23,9 +23,9 @@ try {
 import { select, input, confirm } from '@inquirer/prompts';
 import chalk from 'chalk';
 import { v4 as uuidv4 } from 'uuid';
-import { ensureCollection, scrollMemories, searchMemories, getMemory, deleteMemory, updatePayload, updateVector, upsertMemory, getMemoryStats, countMemories, updatePayloadByFilter } from './services/qdrant.js';
+import { ensureCollection, scrollMemories, searchMemories, getMemory, deleteMemory, updatePayload, updateVector, upsertMemory, getMemoryStats, countMemories, updatePayloadByFilter } from './services/sqlite.js';
 import { getAllCategories, getCategories, getCustomCategories, getCategoryDescription, validateCategoryName, addCategory, removeCategory } from './services/categories.js';
-import { generateEmbedding } from './services/embeddings.js';
+import { generateEmbedding } from './services/local-embeddings.js';
 import { detectProject } from './config.js';
 import type { MemoryPayload, MemorySource } from './types.js';
 
@@ -228,7 +228,7 @@ function printLogo(): void {
   console.log(dboxRow(W, ''));
 
   // Tagline (centered)
-  const tagline = accent2('Vector-Powered') + dim(' \u2022 ') + info('Qdrant') + dim(' \u2022 ') + chalk.white('v1.0.0');
+  const tagline = accent2('Vector-Powered') + dim(' \u2022 ') + info('SQLite') + dim(' \u2022 ') + chalk.white('v2.0.0');
   console.log(dboxRow(W, tagline));
 
   console.log(dim(BOX.dbl + BOX.dh.repeat(W) + BOX.dbr));
@@ -519,7 +519,7 @@ async function browseScreen(): Promise<void> {
 
 async function searchScreen(): Promise<void> {
   while (true) {
-    printScreenHeader(`${ICONS.search} Search Memories`, 'Semantic search powered by OpenAI embeddings');
+    printScreenHeader(`${ICONS.search} Search Memories`, 'Semantic search powered by local embeddings');
 
     const query = await safePrompt(() =>
       input({ message: accent(`  ${ICONS.search} Query:`) })
@@ -549,7 +549,7 @@ async function searchScreen(): Promise<void> {
     );
     if (minImpStr === null) return;
 
-    // Build Qdrant filter
+    // Build search filter
     const must: Record<string, unknown>[] = [];
     if (catFilter !== '__all__') {
       must.push({ key: 'category', match: { value: catFilter } });
@@ -918,7 +918,7 @@ async function mainMenu(): Promise<void> {
 
 async function main(): Promise<void> {
   try {
-    // Suppress Qdrant "Api key is used with unsecure connection" warning
+    // Suppress API key warnings
     const origWarn = console.warn;
     console.warn = (...args: unknown[]) => {
       const msg = String(args[0] || '');

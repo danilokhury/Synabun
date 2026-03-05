@@ -47,6 +47,11 @@ let _graphRemovalTimer = null;
 // Neighbor adjacency map: id → Set<id> — built once in applyGraphData
 let _neighborMap = new Map();
 
+// Resolved links cache — built once in applyGraphData, avoids per-frame ID lookups
+// Each entry: { sourceCard, targetCard, strength, crossCat }
+let _resolvedLinks = [];
+let _resolvedLinksStrong = []; // strength >= 0.4 (shown at LOD 1)
+
 // Card text cache: nodeId → { content, lines }
 const _textCache = new Map();
 
@@ -241,8 +246,10 @@ export function applyGraphData() {
     _cardById.set(card.node.id, card);
   }
 
-  // Build neighbor adjacency map (O(links) once, not O(links) per card per frame)
+  // Build neighbor adjacency map + resolved links (O(links) once, not per frame)
   _neighborMap.clear();
+  _resolvedLinks = [];
+  _resolvedLinksStrong = [];
   for (const link of state.allLinks) {
     const s = typeof link.source === 'object' ? link.source.id : link.source;
     const t = typeof link.target === 'object' ? link.target.id : link.target;
@@ -250,6 +257,14 @@ export function applyGraphData() {
     if (!_neighborMap.has(t)) _neighborMap.set(t, new Set());
     _neighborMap.get(s).add(t);
     _neighborMap.get(t).add(s);
+
+    const sc = _cardById.get(s);
+    const tc = _cardById.get(t);
+    if (!sc || !tc) continue;
+    const crossCat = (sc.node.payload?.category !== tc.node.payload?.category);
+    const entry = { sourceCard: sc, targetCard: tc, strength: link.strength || 0.5, crossCat };
+    _resolvedLinks.push(entry);
+    if (entry.strength >= 0.4) _resolvedLinksStrong.push(entry);
   }
 
   // Clear text cache (content may have changed)
@@ -324,6 +339,21 @@ export function cancelScheduledRemoval() {
   }
 }
 
+
+/** Stop the render loop (focus mode). */
+export function stopAnimation() {
+  if (_animFrameId) {
+    cancelAnimationFrame(_animFrameId);
+    _animFrameId = null;
+  }
+}
+
+/** Restart the render loop after stopping. */
+export function startAnimation() {
+  if (!_animFrameId && _canvas) {
+    _animFrameId = requestAnimationFrame(_renderLoop);
+  }
+}
 
 // ═══════════════════════════════════════════
 // RENDER LOOP
@@ -410,9 +440,9 @@ function _renderLoop(time) {
     }
   }
 
-  // ── 4. Connection lines (batched + culled, skip at LOD 2) ──
-  if (state.linkMode !== 'off' && state.allLinks.length > 0 && lod < 2) {
-    _drawLinks(ctx, vb);
+  // ── 4. Connection lines (batched + culled, LOD-aware, skip at LOD 2) ──
+  if (state.linkMode !== 'off' && _resolvedLinks.length > 0 && lod < 2) {
+    _drawLinks(ctx, vb, lod);
   }
 
   // ── 5. Memory cards (LOD-aware + culled) ──
@@ -973,42 +1003,35 @@ function _getWrappedText(ctx, nodeId, content, maxWidth, maxLines) {
 // DRAWING: Links
 // ═══════════════════════════════════════════
 
-function _drawLinks(ctx, vb) {
-  ctx.strokeStyle = `rgba(100, 140, 200, ${gfx.linkOpacity})`;
+function _drawLinks(ctx, vb, lod) {
+  // LOD 1: only draw strong links (strength >= 0.4), reduced opacity
+  const links = lod >= 1 ? _resolvedLinksStrong : _resolvedLinks;
+  const opacity = lod >= 1 ? gfx.linkOpacity * 0.5 : gfx.linkOpacity;
+  ctx.strokeStyle = `rgba(100, 140, 200, ${opacity})`;
   ctx.lineWidth = 0.5;
 
-  // Batch all visible links into a single path — one stroke() call instead of 43k
   ctx.beginPath();
   const isIntra = state.linkMode === 'intra';
+  const hasSearch = state.searchResults !== null;
 
-  for (const link of state.allLinks) {
-    const sourceId = typeof link.source === 'object' ? link.source.id : link.source;
-    const targetId = typeof link.target === 'object' ? link.target.id : link.target;
-    const sourceCard = _cardById.get(sourceId);
-    const targetCard = _cardById.get(targetId);
-    if (!sourceCard || !targetCard) continue;
+  for (let i = 0, len = links.length; i < len; i++) {
+    const link = links[i];
+    const sc = link.sourceCard;
+    const tc = link.targetCard;
 
     // Viewport cull: skip if both endpoints are off-screen
-    if (vb) {
-      const sx = sourceCard.x, sy = sourceCard.y, tx = targetCard.x, ty = targetCard.y;
-      if ((sx < vb.left && tx < vb.left) || (sx > vb.right && tx > vb.right) ||
-          (sy < vb.top && ty < vb.top)   || (sy > vb.bottom && ty > vb.bottom)) continue;
-    }
+    const sx = sc.x, sy = sc.y, tx = tc.x, ty = tc.y;
+    if ((sx < vb.left && tx < vb.left) || (sx > vb.right && tx > vb.right) ||
+        (sy < vb.top && ty < vb.top)   || (sy > vb.bottom && ty > vb.bottom)) continue;
 
     // Filter by link mode
-    if (isIntra) {
-      const sCat = sourceCard.node.payload?.category;
-      const tCat = targetCard.node.payload?.category;
-      if (sCat !== tCat) continue;
-    }
+    if (isIntra && link.crossCat) continue;
 
     // Hide links where both endpoints are not search matches
-    if (state.searchResults !== null) {
-      if (!state.searchResults.has(sourceId) && !state.searchResults.has(targetId)) continue;
-    }
+    if (hasSearch && !state.searchResults.has(sc.node.id) && !state.searchResults.has(tc.node.id)) continue;
 
-    ctx.moveTo(sourceCard.x, sourceCard.y);
-    ctx.lineTo(targetCard.x, targetCard.y);
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(tx, ty);
   }
   ctx.stroke();
 }

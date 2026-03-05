@@ -8,7 +8,7 @@
 
 import express from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { ensureCollection } from './services/qdrant.js';
+import { ensureDatabase } from './services/sqlite.js';
 import { initCategoryCache } from './services/categories.js';
 import { createMcpServer } from './index.js';
 
@@ -16,7 +16,7 @@ let initialized = false;
 
 async function ensureInit() {
   if (initialized) return;
-  try { await ensureCollection(); } catch {}
+  try { await ensureDatabase(); } catch {}
   await initCategoryCache();
   initialized = true;
 }

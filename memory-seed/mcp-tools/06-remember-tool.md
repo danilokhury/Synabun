@@ -30,8 +30,8 @@ The remember tool (`mcp-server/src/tools/remember.ts`, 117 lines) stores new inf
 2. Generate UUID (`crypto.randomUUID()`)
 3. Build MemoryPayload with timestamps (`created_at`, `updated_at`, `accessed_at` all set to now, `access_count = 0`)
 4. Compute SHA-256 file checksums for any `related_files` via `computeChecksums()` — stored as `file_checksums` in the payload for stale memory detection
-5. Generate embedding vector via embeddings service (OpenAI-compatible API)
-6. Upsert point to Qdrant via `upsertMemory(id, vector, payload)`
+5. Generate embedding vector via local Transformers.js embeddings service
+6. Upsert record to SQLite via `upsertMemory(id, vector, payload)`
 7. Return shortened ID (first 8 chars of UUID) and content summary
 
 **IMPORTANT:** The returned shortened ID is for display only. The `reflect` tool requires the FULL UUID — use `recall` to retrieve it.

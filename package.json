@@ -10,8 +10,7 @@
   },
   "type": "module",
   "scripts": {
-    "start": "node setup.js",
-    "stop": "docker compose down"
+    "start": "node setup.js"
   },
   "engines": {
     "node": ">=18.0.0"

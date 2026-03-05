@@ -2,7 +2,7 @@
 
 REST API served by the Neural Interface at `http://localhost:3344`.
 
-The Neural Interface is the HTTP server that bridges the SynaBun web UI, MCP server, and Qdrant vector database. It manages memories, categories, connections to Qdrant instances, settings, setup/onboarding, Claude Code integrations (hooks, MCP registration, skills), OpenClaw bridge, trash management, backup/restore, and more. 55+ endpoints across 12 groups.
+The Neural Interface is the HTTP server that bridges the SynaBun web UI, MCP server, and SQLite database. It manages memories, categories, database settings, setup/onboarding, Claude Code integrations (hooks, MCP registration, skills), OpenClaw bridge, trash management, backup/restore, and more. 55+ endpoints across 12 groups.
 
 ## Table of Contents
 
@@ -31,11 +31,11 @@ The Neural Interface is the HTTP server that bridges the SynaBun web UI, MCP ser
   - [GET /api/setup/check-deps](#get-apisetupcheck-deps)
   - [GET /api/setup/status](#get-apisetupstatus)
   - [POST /api/setup/save-config](#post-apisetupsave-config)
-  - [POST /api/setup/docker](#post-apisetupdocker)
+  - [POST /api/setup/docker](#post-apisetupdocker) *(deprecated)*
   - [POST /api/setup/create-collection](#post-apisetupcreate-collection)
   - [POST /api/setup/build](#post-apisetupbuild)
-  - [GET /api/setup/test-qdrant](#get-apisetuptest-qdrant)
-  - [POST /api/setup/test-qdrant-cloud](#post-apisetuptest-qdrant-cloud)
+  - [GET /api/setup/test-qdrant](#get-apisetuptest-qdrant) *(tests SQLite)*
+  - [POST /api/setup/test-qdrant-cloud](#post-apisetuptest-qdrant-cloud) *(deprecated)*
   - [POST /api/setup/write-mcp-json](#post-apisetupwrite-mcp-json)
   - [POST /api/setup/write-instructions](#post-apisetupwrite-instructions)
   - [POST /api/setup/complete](#post-apisetupcomplete)
@@ -59,13 +59,13 @@ The Neural Interface is the HTTP server that bridges the SynaBun web UI, MCP ser
 - [Category Export Endpoints](#category-export-endpoints)
   - [GET /api/categories/:name/export](#get-apicategoriesname-export)
 - [Connection Management (Extended)](#connection-management-extended)
-  - [GET /api/connections/suggest-port](#get-apiconnectionssuggest-port)
-  - [POST /api/connections/start-container](#post-apiconnectionsstart-container)
   - [POST /api/connections/:id/backup](#post-apiconnectionsidbackup)
   - [POST /api/connections/:id/restore](#post-apiconnectionsidrestore)
   - [POST /api/connections/restore-standalone](#post-apiconnectionsrestore-standalone)
-  - [POST /api/connections/docker-new](#post-apiconnectionsdocker-new)
-  - [POST /api/connections/create-collection](#post-apiconnectionscreate-collection)
+  - ~~GET /api/connections/suggest-port~~ *(removed)*
+  - ~~POST /api/connections/start-container~~ *(removed)*
+  - ~~POST /api/connections/docker-new~~ *(removed)*
+  - ~~POST /api/connections/create-collection~~ *(removed)*
 - [OpenClaw Bridge Endpoints](#openclaw-bridge-endpoints)
   - [GET /api/bridges/openclaw](#get-apibridgesopenclaw)
   - [POST /api/bridges/openclaw/connect](#post-apibridgesopenclawconnect)
@@ -80,7 +80,7 @@ The Neural Interface is the HTTP server that bridges the SynaBun web UI, MCP ser
   - [PUT /api/claude-code/hook-features/config](#put-apiclaude-codehook-featuresconfig)
   - [GET /api/claude-code/ruleset](#get-apiclaude-coderuleset)
 - [Setup Endpoints (Extended)](#setup-endpoints-extended)
-  - [POST /api/setup/start-docker-desktop](#post-apisetupstart-docker-desktop)
+  - ~~POST /api/setup/start-docker-desktop~~ *(removed)*
 
 ---
 
@@ -88,7 +88,7 @@ The Neural Interface is the HTTP server that bridges the SynaBun web UI, MCP ser
 
 ### GET /api/memories
 
-Retrieves all memories from the active Qdrant collection, along with pre-computed graph edges (links) between memories based on cosine similarity, shared tags, shared categories, and explicit `related_memory_ids`.
+Retrieves all memories from the SQLite database, along with pre-computed graph edges (links) between memories based on cosine similarity, shared tags, shared categories, and explicit `related_memory_ids`.
 
 **Request**
 
@@ -148,7 +148,7 @@ curl http://localhost:3344/api/memories
 
 ### POST /api/search
 
-Performs semantic vector search across all memories. The query text is embedded via the configured OpenAI-compatible embedding API and searched against Qdrant with a minimum score threshold of `0.3`.
+Performs semantic vector search across all memories. The query text is embedded locally via Transformers.js (all-MiniLM-L6-v2, 384d) and searched against the SQLite database with a minimum score threshold of `0.3`.
 
 **Request**
 
@@ -204,7 +204,7 @@ curl -X POST http://localhost:3344/api/search \
 
 ### GET /api/stats
 
-Returns the point count, vector count, and status of the active Qdrant collection.
+Returns the record count, vector count, and status of the SQLite database.
 
 **Request**
 
@@ -222,9 +222,9 @@ No parameters.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `count` | number | Total number of points (memories) in the collection |
+| `count` | number | Total number of records (memories) in the database |
 | `vectors` | number | Total number of vectors stored |
-| `status` | string | Qdrant collection status (e.g. `"green"`) |
+| `status` | string | Database status (e.g. `"green"`) |
 
 **Error Response**
 
@@ -248,7 +248,7 @@ Retrieves a single memory by its UUID.
 
 | Parameter | Location | Type | Required | Description |
 |-----------|----------|------|----------|-------------|
-| `id` | Path | string (UUID) | Yes | The memory point ID |
+| `id` | Path | string (UUID) | Yes | The memory record ID |
 
 **Response**
 
@@ -289,7 +289,7 @@ Updates a memory's payload fields. Validates that the category exists in the cus
 
 | Parameter | Location | Type | Required | Description |
 |-----------|----------|------|----------|-------------|
-| `id` | Path | string (UUID) | Yes | The memory point ID |
+| `id` | Path | string (UUID) | Yes | The memory record ID |
 
 ```json
 {
@@ -342,13 +342,13 @@ curl -X PATCH http://localhost:3344/api/memory/8f7cab3b-644e-4cea-8662-de0ca695b
 
 ### DELETE /api/memory/:id
 
-Permanently deletes a memory point from the active Qdrant collection.
+Permanently deletes a memory record from the SQLite database.
 
 **Request**
 
 | Parameter | Location | Type | Required | Description |
 |-----------|----------|------|----------|-------------|
-| `id` | Path | string (UUID) | Yes | The memory point ID to delete |
+| `id` | Path | string (UUID) | Yes | The memory record ID to delete |
 
 **Response**
 
@@ -363,7 +363,7 @@ Permanently deletes a memory point from the active Qdrant collection.
 
 | Status | Body |
 |--------|------|
-| 500 | `{ "error": "Qdrant error: <status>" }` |
+| 500 | `{ "error": "Database error: <status>" }` |
 
 **Example**
 
@@ -395,22 +395,22 @@ No parameters.
     {
       "name": "learning",
       "description": "Lessons learned and gotchas",
-      "parent": "my-project",
+      "parent": "criticalpixel",
       "color": "#4a9eff",
       "is_parent": false,
       "created_at": "ISO 8601 string"
     }
   ],
   "tree": {
-    "my-project": {
-      "name": "my-project",
-      "description": "Parent category for My Project",
+    "criticalpixel": {
+      "name": "criticalpixel",
+      "description": "Parent category for CriticalPixel",
       "is_parent": true,
       "children": [
         {
           "name": "learning",
           "description": "Lessons learned",
-          "parent": "my-project"
+          "parent": "criticalpixel"
         }
       ]
     }
@@ -419,7 +419,7 @@ No parameters.
     {
       "name": "learning",
       "description": "Lessons learned",
-      "parent": "my-project",
+      "parent": "criticalpixel",
       "color": "#4a9eff"
     }
   ]
@@ -469,7 +469,7 @@ Creates a new category. Optionally nests it under a parent and assigns a color.
 ```json
 {
   "categories": [ /* full updated category list */ ],
-  "message": "Created \"learning\" under \"my-project\" with color #4a9eff"
+  "message": "Created \"learning\" under \"criticalpixel\" with color #4a9eff"
 }
 ```
 
@@ -496,7 +496,7 @@ curl -X POST http://localhost:3344/api/categories \
 
 ### PUT /api/categories/:name
 
-Updates an existing category. Supports renaming, changing description, parent, color, and `is_parent` flag. On rename, all child categories that reference this category as their parent are cascaded to the new name, and all Qdrant memories using the old category name are updated in bulk.
+Updates an existing category. Supports renaming, changing description, parent, color, and `is_parent` flag. On rename, all child categories that reference this category as their parent are cascaded to the new name, and all memories using the old category name are updated in bulk.
 
 If the category does not exist in the JSON file but exists in memories, it is auto-created first.
 
@@ -526,8 +526,8 @@ If the category does not exist in the JSON file but exists in memories, it is au
 
 **Rename cascade behavior:**
 1. All child categories with `parent === oldName` are updated to `parent = newName`
-2. All Qdrant memory points with `category === oldName` are bulk-updated to the new name (up to 100 points per scroll page)
-3. If the Qdrant update fails, the category file is still saved (non-blocking error)
+2. All memory records with `category === oldName` are bulk-updated to the new name
+3. If the database update fails, the category file is still saved (non-blocking error)
 
 **Circular dependency check:** Setting a parent is rejected if it would create a cycle (e.g., A -> B -> A).
 
@@ -536,7 +536,7 @@ If the category does not exist in the JSON file but exists in memories, it is au
 ```json
 {
   "categories": [ /* full updated category list */ ],
-  "message": "Updated \"old-name\" -> \"new-name\": description updated, parent: my-project, color: #4a9eff"
+  "message": "Updated \"old-name\" -> \"new-name\": description updated, parent: criticalpixel, color: #4a9eff"
 }
 ```
 
@@ -610,7 +610,7 @@ curl -X PATCH http://localhost:3344/api/categories/learning \
 
 ### DELETE /api/categories/:name
 
-Deletes a category. Handles two kinds of dependents: child categories (via `reassign_children_to` in the request body) and Qdrant memories (via `reassign_to` query parameter).
+Deletes a category. Handles two kinds of dependents: child categories (via `reassign_children_to` in the request body) and memories (via `reassign_to` query parameter).
 
 **Request**
 
@@ -632,8 +632,8 @@ Deletes a category. Handles two kinds of dependents: child categories (via `reas
 **Deletion logic:**
 1. If the category has child categories and `reassign_children_to` is not provided, the request is rejected with a 400 listing the children.
 2. If `reassign_children_to` is provided, children are re-parented (or made top-level if empty string).
-3. Qdrant is queried for memories using this category. If any exist and `reassign_to` is not provided, the request is rejected with a 409.
-4. If `reassign_to` is provided and valid, all matching memories are bulk-updated in Qdrant.
+3. The database is queried for memories using this category. If any exist and `reassign_to` is not provided, the request is rejected with a 409.
+4. If `reassign_to` is provided and valid, all matching memories are bulk-updated in the database.
 5. The category is removed from the JSON file.
 
 **Response**
@@ -669,11 +669,11 @@ curl -X DELETE "http://localhost:3344/api/categories/old-cat?reassign_to=general
 
 ## Connection Endpoints
 
-Connections represent configured Qdrant instances. They are stored in `connections.json` at the project root. Each connection has an `id`, `label`, `url`, `apiKey`, and `collection`. One connection is marked as `active` and is used by all memory operations.
+> **Note:** SynaBun now uses a single SQLite database file (`data/memory.db`) instead of external database instances. The connection endpoints are retained for backward compatibility but the architecture is simplified -- there is one local database rather than multiple configurable instances.
 
 ### GET /api/connections
 
-Lists all configured Qdrant connections with live health checks. For each connection, the server attempts to reach the Qdrant instance (with a 3-second timeout) and reports whether it is reachable and how many points are in its collection.
+Returns database configuration and status. Reports whether the SQLite database is accessible and how many records it contains.
 
 **Request**
 
@@ -687,20 +687,10 @@ No parameters.
     {
       "id": "default",
       "label": "Default",
-      "url": "http://localhost:6333",
-      "collection": "claude_memory",
-      "points": 42,
+      "path": "data/memory.db",
+      "records": 42,
       "reachable": true,
       "active": true
-    },
-    {
-      "id": "cloud",
-      "label": "Qdrant Cloud",
-      "url": "https://xyz.qdrant.io",
-      "collection": "claude_memory",
-      "points": 0,
-      "reachable": false,
-      "active": false
     }
   ],
   "active": "default"
@@ -711,10 +701,9 @@ No parameters.
 |-------|------|-------------|
 | `connections[].id` | string | Unique connection identifier |
 | `connections[].label` | string | Human-readable name |
-| `connections[].url` | string | Qdrant REST API URL |
-| `connections[].collection` | string | Qdrant collection name |
-| `connections[].points` | number | Number of points in the collection (0 if unreachable) |
-| `connections[].reachable` | boolean | Whether the Qdrant instance responded within 3 seconds |
+| `connections[].path` | string | Path to the SQLite database file |
+| `connections[].records` | number | Number of records (memories) in the database |
+| `connections[].reachable` | boolean | Whether the database is accessible |
 | `connections[].active` | boolean | Whether this is the currently active connection |
 | `active` | string | ID of the active connection |
 
@@ -728,7 +717,9 @@ curl http://localhost:3344/api/connections
 
 ### POST /api/connections
 
-Adds a new Qdrant connection. The server verifies reachability by pinging the Qdrant `/collections` endpoint (5-second timeout) before saving.
+> **Deprecated:** With SQLite, there is typically only one local database. This endpoint is retained for backward compatibility.
+
+Adds a new database connection entry.
 
 **Request**
 
@@ -736,9 +727,7 @@ Adds a new Qdrant connection. The server verifies reachability by pinging the Qd
 {
   "id": "string (required)",
   "label": "string (optional)",
-  "url": "string (required)",
-  "apiKey": "string (required)",
-  "collection": "string (required)"
+  "path": "string (required)"
 }
 ```
 
@@ -746,16 +735,14 @@ Adds a new Qdrant connection. The server verifies reachability by pinging the Qd
 |-------|------|----------|-------------|
 | `id` | string | Yes | Unique identifier for this connection |
 | `label` | string | No | Display name (defaults to `id`) |
-| `url` | string | Yes | Qdrant REST API URL |
-| `apiKey` | string | Yes | Qdrant API key |
-| `collection` | string | Yes | Collection name to use |
+| `path` | string | Yes | Path to the SQLite database file |
 
 **Response**
 
 ```json
 {
   "ok": true,
-  "message": "Connection \"My Cloud\" added"
+  "message": "Connection \"My Database\" added"
 }
 ```
 
@@ -763,9 +750,7 @@ Adds a new Qdrant connection. The server verifies reachability by pinging the Qd
 
 | Status | Body |
 |--------|------|
-| 400 | `{ "error": "id, url, apiKey, and collection are required" }` |
-| 400 | `{ "error": "Cannot reach Qdrant at <url> (HTTP <status>)" }` |
-| 400 | `{ "error": "Cannot reach Qdrant at <url>: <message>" }` |
+| 400 | `{ "error": "id and path are required" }` |
 | 409 | `{ "error": "Connection \"xyz\" already exists" }` |
 | 500 | `{ "error": "string" }` |
 
@@ -775,11 +760,9 @@ Adds a new Qdrant connection. The server verifies reachability by pinging the Qd
 curl -X POST http://localhost:3344/api/connections \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "cloud",
-    "label": "Qdrant Cloud",
-    "url": "https://xyz-abc.eu-west-1-0.aws.cloud.qdrant.io:6333",
-    "apiKey": "your-api-key",
-    "collection": "claude_memory"
+    "id": "default",
+    "label": "Default",
+    "path": "data/memory.db"
   }'
 ```
 
@@ -787,7 +770,9 @@ curl -X POST http://localhost:3344/api/connections \
 
 ### PUT /api/connections/active
 
-Switches the active Qdrant connection. The server verifies the target connection is reachable by pinging its collection endpoint (5-second timeout) before switching. On success, the runtime variables (`QDRANT_URL`, `QDRANT_KEY`, `COLLECTION`) are updated immediately without requiring a server restart.
+> **Deprecated:** With a single SQLite database, switching connections is typically unnecessary.
+
+Switches the active database connection. The server verifies the target database is accessible before switching. On success, the runtime configuration is updated immediately without requiring a server restart.
 
 **Request**
 
@@ -806,8 +791,8 @@ Switches the active Qdrant connection. The server verifies the target connection
 ```json
 {
   "ok": true,
-  "message": "Switched to \"Qdrant Cloud\"",
-  "active": "cloud"
+  "message": "Switched to \"Default\"",
+  "active": "default"
 }
 ```
 
@@ -816,8 +801,7 @@ Switches the active Qdrant connection. The server verifies the target connection
 | Status | Body |
 |--------|------|
 | 400 | `{ "error": "Connection id is required" }` |
-| 400 | `{ "error": "Cannot reach collection \"xyz\" at <url>" }` |
-| 400 | `{ "error": "Cannot reach Qdrant at <url>: <message>" }` |
+| 400 | `{ "error": "Cannot access database at <path>" }` |
 | 404 | `{ "error": "Connection \"xyz\" not found" }` |
 | 500 | `{ "error": "string" }` |
 
@@ -826,14 +810,14 @@ Switches the active Qdrant connection. The server verifies the target connection
 ```bash
 curl -X PUT http://localhost:3344/api/connections/active \
   -H "Content-Type: application/json" \
-  -d '{"id": "cloud"}'
+  -d '{"id": "default"}'
 ```
 
 ---
 
 ### DELETE /api/connections/:id
 
-Removes a Qdrant connection from the configuration. The currently active connection cannot be deleted -- you must switch to another connection first.
+Removes a database connection from the configuration. The currently active connection cannot be deleted -- you must switch to another connection first.
 
 **Request**
 
@@ -846,7 +830,7 @@ Removes a Qdrant connection from the configuration. The currently active connect
 ```json
 {
   "ok": true,
-  "message": "Connection \"cloud\" removed"
+  "message": "Connection \"old-db\" removed"
 }
 ```
 
@@ -861,7 +845,7 @@ Removes a Qdrant connection from the configuration. The currently active connect
 **Example**
 
 ```bash
-curl -X DELETE http://localhost:3344/api/connections/cloud
+curl -X DELETE http://localhost:3344/api/connections/old-db
 ```
 
 ---
@@ -870,7 +854,7 @@ curl -X DELETE http://localhost:3344/api/connections/cloud
 
 ### GET /api/settings
 
-Returns current configuration with sensitive keys masked (all but last 4 characters replaced with `*`). Qdrant config is sourced from `connections.json` (primary) with `.env` fallback. Embedding config comes from `.env`.
+Returns current configuration with sensitive keys masked (all but last 4 characters replaced with `*`). Database config is sourced from `connections.json` (primary) with `.env` fallback. Embedding config comes from `.env`.
 
 **Request**
 
@@ -880,27 +864,13 @@ No parameters.
 
 ```json
 {
-  "qdrantUrl": "http://localhost:6333",
-  "qdrantApiKey": "****key1",
-  "qdrantApiKeySet": true,
-  "collection": "claude_memory",
-  "openaiApiKey": "****ab12",
-  "openaiApiKeySet": true,
-  "qdrantPort": "6333",
-  "qdrantGrpcPort": "6334"
+  "databasePath": "data/memory.db"
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `qdrantUrl` | string | Active Qdrant REST URL |
-| `qdrantApiKey` | string | Masked API key (last 4 chars visible) |
-| `qdrantApiKeySet` | boolean | Whether a Qdrant API key is configured |
-| `collection` | string | Active collection name |
-| `openaiApiKey` | string | Masked OpenAI/embedding API key |
-| `openaiApiKeySet` | boolean | Whether an embedding API key is configured |
-| `qdrantPort` | string | Configured Qdrant REST port |
-| `qdrantGrpcPort` | string | Configured Qdrant gRPC port |
+| `databasePath` | string | Path to the active SQLite database file |
 
 **Example**
 
@@ -912,18 +882,13 @@ curl http://localhost:3344/api/settings
 
 ### PUT /api/settings
 
-Saves settings. Embedding config and port config are written to `.env`. Qdrant connection config (url, apiKey, collection) is written to the active connection in `connections.json`. The server runtime is reloaded after saving.
+Saves settings. Embedding config is written to `.env`. Database config is written to the active connection in `connections.json`. The server runtime is reloaded after saving.
 
 **Request**
 
 ```json
 {
-  "qdrantUrl": "string (optional)",
-  "qdrantApiKey": "string (optional)",
-  "collection": "string (optional)",
-  "openaiApiKey": "string (optional)",
-  "qdrantPort": "string (optional)",
-  "qdrantGrpcPort": "string (optional)"
+  "databasePath": "string (optional)"
 }
 ```
 
@@ -949,7 +914,7 @@ All fields are optional; only provided fields are updated.
 ```bash
 curl -X PUT http://localhost:3344/api/settings \
   -H "Content-Type: application/json" \
-  -d '{"openaiApiKey": "sk-new-key-here", "qdrantPort": "6333"}'
+  -d '{"databasePath": "data/memory.db"}'
 ```
 
 ---
@@ -960,7 +925,7 @@ These endpoints power the onboarding wizard. The root `/` route redirects to `/o
 
 ### GET /api/setup/check-deps
 
-Checks system dependencies required for SynaBun. Reports version and availability of Node.js, npm, Docker (including daemon status), and Git.
+Checks system dependencies required for SynaBun. Reports version and availability of Node.js, npm, and Git.
 
 **Request**
 
@@ -988,14 +953,6 @@ No parameters.
       "url": "https://nodejs.org/"
     },
     {
-      "id": "docker",
-      "name": "Docker",
-      "ok": true,
-      "version": "24.0.7",
-      "detail": "v24.0.7 (running)",
-      "url": "https://docs.docker.com/get-docker/"
-    },
-    {
       "id": "git",
       "name": "Git",
       "ok": true,
@@ -1009,18 +966,17 @@ No parameters.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `deps[].id` | string | Dependency identifier (`node`, `npm`, `docker`, `git`) |
+| `deps[].id` | string | Dependency identifier (`node`, `npm`, `git`) |
 | `deps[].name` | string | Display name |
 | `deps[].ok` | boolean | Whether the dependency meets requirements |
-| `deps[].warn` | boolean | Present on optional deps (Docker, Git) when missing |
+| `deps[].warn` | boolean | Present on optional deps (Git) when missing |
 | `deps[].version` | string or null | Detected version, or null if not found |
 | `deps[].detail` | string | Human-readable status string |
 | `deps[].url` | string | Installation URL |
 
 **Notes:**
 - Node.js requires version 18+
-- Docker checks both CLI presence and daemon status separately
-- Docker and Git are marked as optional (warn instead of hard fail)
+- Git is marked as optional (warn instead of hard fail)
 
 **Example**
 
@@ -1043,9 +999,8 @@ No parameters.
 ```json
 {
   "setupComplete": true,
-  "hasQdrantKey": true,
   "hasEmbeddingKey": true,
-  "dockerRunning": true,
+  "databaseReady": true,
   "mcpBuilt": true,
   "projectDir": "/path/to/Synabun",
   "platform": "win32"
@@ -1055,9 +1010,8 @@ No parameters.
 | Field | Type | Description |
 |-------|------|-------------|
 | `setupComplete` | boolean | Whether `SETUP_COMPLETE=true` is in `.env` |
-| `hasQdrantKey` | boolean | Whether a Qdrant API key is configured (from connection or `.env`) |
-| `hasEmbeddingKey` | boolean | Whether `OPENAI_EMBEDDING_API_KEY` is set in `.env` |
-| `dockerRunning` | boolean | Whether Qdrant is reachable at the configured URL (3-second timeout) |
+| `hasEmbeddingKey` | boolean | Whether the local embedding model is available |
+| `databaseReady` | boolean | Whether the SQLite database at `data/memory.db` is accessible |
 | `mcpBuilt` | boolean | Whether `mcp-server/dist/index.js` exists |
 | `projectDir` | string | Absolute path to the SynaBun project root |
 | `platform` | string | Node.js platform identifier (e.g. `win32`, `linux`, `darwin`) |
@@ -1072,27 +1026,17 @@ curl http://localhost:3344/api/setup/status
 
 ### POST /api/setup/save-config
 
-Writes configuration during onboarding. Embedding and Docker port config is saved to `.env`. Qdrant connection details are saved to `connections.json` as the `"default"` connection (auto-set as active if no active connection exists). Creates `.env` if it does not exist. Reloads runtime config after saving.
+Writes configuration during onboarding. Embedding config is saved to `.env`. Database connection details are saved to `connections.json` as the `"default"` connection (auto-set as active if no active connection exists). Creates `.env` if it does not exist. Reloads runtime config after saving.
 
 **Request**
 
 ```json
-{
-  "qdrantApiKey": "string (optional)",
-  "qdrantUrl": "string (optional)",
-  "collectionName": "string (optional)",
-  "embeddingApiKey": "string (optional)",
-  "embeddingBaseUrl": "string (optional, default: https://api.openai.com/v1)",
-  "embeddingModel": "string (optional, default: text-embedding-3-small)",
-  "embeddingDimensions": "number (optional, default: 1536)",
-  "qdrantPort": "string (optional)",
-  "qdrantGrpcPort": "string (optional)"
-}
+{}
 ```
 
 **Notes:**
-- `embeddingBaseUrl`, `embeddingModel`, and `embeddingDimensions` are only written to `.env` if they differ from defaults (to keep the file clean).
-- `qdrantApiKey` is written to both `.env` (for `docker-compose.yml`) and `connections.json`.
+- Embeddings are handled locally via Transformers.js (all-MiniLM-L6-v2, 384d). No API key or external service needed.
+- The SQLite database at `data/memory.db` is created automatically if it does not exist.
 
 **Response**
 
@@ -1113,30 +1057,25 @@ Writes configuration during onboarding. Embedding and Docker port config is save
 ```bash
 curl -X POST http://localhost:3344/api/setup/save-config \
   -H "Content-Type: application/json" \
-  -d '{
-    "qdrantApiKey": "my-qdrant-key",
-    "qdrantUrl": "http://localhost:6333",
-    "collectionName": "claude_memory",
-    "embeddingApiKey": "sk-openai-key"
-  }'
+  -d '{}'
 ```
 
 ---
 
 ### POST /api/setup/docker
 
-Starts Docker containers via `docker compose up -d` from the project root. After starting, it polls Qdrant's `/collections` endpoint every second for up to 30 seconds, waiting for readiness. Detects port-in-use conflicts and returns a specific error.
+> **Deprecated:** Docker is no longer required. SynaBun uses SQLite (`data/memory.db`) which is created automatically. This endpoint is retained for backward compatibility and now initializes the SQLite database file if it does not exist.
 
 **Request**
 
-No parameters (body is ignored). Environment variables from `.env` are passed to the Docker Compose process.
+No parameters.
 
 **Response (success)**
 
 ```json
 {
   "ok": true,
-  "output": "docker compose stdout + stderr",
+  "message": "SQLite database ready",
   "ready": true
 }
 ```
@@ -1144,15 +1083,14 @@ No parameters (body is ignored). Environment variables from `.env` are passed to
 | Field | Type | Description |
 |-------|------|-------------|
 | `ok` | boolean | Always `true` on success |
-| `output` | string | Combined stdout and stderr from `docker compose up -d` |
-| `ready` | boolean | Whether Qdrant became reachable within 30 seconds |
+| `message` | string | Human-readable result |
+| `ready` | boolean | Whether the database is accessible |
 
 **Error Responses**
 
 | Status | Body |
 |--------|------|
-| 409 | `{ "error": "Port NNNN is already in use...", "portConflict": true, "port": "NNNN", "output": "string" }` |
-| 500 | `{ "error": "string", "output": "string" }` |
+| 500 | `{ "error": "string" }` |
 
 **Example**
 
@@ -1164,7 +1102,7 @@ curl -X POST http://localhost:3344/api/setup/docker
 
 ### POST /api/setup/create-collection
 
-Creates the Qdrant collection using the configured runtime variables (URL, API key, collection name, embedding dimensions). If the collection already exists, returns success with `existed: true`.
+Creates the SQLite database tables using the configured embedding dimensions. If the tables already exist, returns success with `existed: true`.
 
 **Request**
 
@@ -1175,7 +1113,7 @@ No parameters (body is ignored). Uses runtime config set by `reloadConfig()`.
 ```json
 {
   "ok": true,
-  "message": "Collection \"claude_memory\" created (1536d vectors)",
+  "message": "Database tables created (384d vectors)",
   "existed": false
 }
 ```
@@ -1184,13 +1122,13 @@ No parameters (body is ignored). Uses runtime config set by `reloadConfig()`.
 |-------|------|-------------|
 | `ok` | boolean | Always `true` on success |
 | `message` | string | Human-readable result |
-| `existed` | boolean | `true` if the collection already existed, `false` if newly created |
+| `existed` | boolean | `true` if the tables already existed, `false` if newly created |
 
 **Error Response**
 
 | Status | Body |
 |--------|------|
-| 500 | `{ "error": "Qdrant <status>: <body>" }` |
+| 500 | `{ "error": "Database error: <message>" }` |
 
 **Example**
 
@@ -1233,13 +1171,13 @@ curl -X POST http://localhost:3344/api/setup/build
 
 ### GET /api/setup/test-qdrant
 
-Pings the Qdrant `/collections` endpoint to verify connectivity. Optionally accepts a `port` query parameter to test a specific local port instead of the configured URL.
+> **Note:** This endpoint now tests SQLite database accessibility rather than a network connection. The URL path is retained for backward compatibility.
+
+Verifies that the SQLite database file at `data/memory.db` is accessible and functional.
 
 **Request**
 
-| Parameter | Location | Type | Required | Description |
-|-----------|----------|------|----------|-------------|
-| `port` | Query | number | No | Local port to test (overrides configured URL with `http://localhost:<port>`) |
+No parameters.
 
 **Response**
 
@@ -1249,65 +1187,19 @@ Pings the Qdrant `/collections` endpoint to verify connectivity. Optionally acce
 }
 ```
 
-Always returns 200. The `ok` field indicates whether Qdrant responded successfully within 3 seconds.
+Always returns 200. The `ok` field indicates whether the database is accessible.
 
 **Example**
 
 ```bash
-# Test configured Qdrant
 curl http://localhost:3344/api/setup/test-qdrant
-
-# Test specific port
-curl "http://localhost:3344/api/setup/test-qdrant?port=6333"
 ```
 
 ---
 
 ### POST /api/setup/test-qdrant-cloud
 
-Tests connectivity to a remote Qdrant instance (e.g., Qdrant Cloud) with provided URL and API key. Strips trailing slashes from the URL before pinging.
-
-**Request**
-
-```json
-{
-  "url": "string (required)",
-  "apiKey": "string (required)"
-}
-```
-
-**Response (reachable)**
-
-```json
-{
-  "ok": true
-}
-```
-
-**Response (unreachable)**
-
-```json
-{
-  "ok": false,
-  "error": "Qdrant responded 401: Unauthorized"
-}
-```
-
-Always returns HTTP 200 (unless body is missing). Use the `ok` field to determine success.
-
-**Error Response**
-
-| Status | Body |
-|--------|------|
-| 400 | `{ "error": "url and apiKey required" }` |
-
-**Example**
-
-```bash
-curl -X POST http://localhost:3344/api/setup/test-qdrant-cloud \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://xyz.eu-west-1-0.aws.cloud.qdrant.io:6333", "apiKey": "your-key"}'
-```
+> **Deprecated:** This endpoint was used to test remote Qdrant Cloud instances. With SQLite, there is no remote database to test. This endpoint is no longer functional and will return a deprecation notice.
 
 ---
 
@@ -1487,7 +1379,7 @@ No parameters.
   "projects": [
     {
       "path": "/home/user/my-project",
-      "label": "My Project",
+      "label": "MyProject",
       "installed": true,
       "settingsExists": true
     }
@@ -1548,7 +1440,7 @@ or
 ```json
 {
   "ok": true,
-  "message": "Hook enabled for My Project."
+  "message": "Hook enabled for CriticalPixel."
 }
 ```
 
@@ -1574,7 +1466,7 @@ curl -X POST http://localhost:3344/api/claude-code/integrations \
 ```bash
 curl -X POST http://localhost:3344/api/claude-code/integrations \
   -H "Content-Type: application/json" \
-  -d '{"target": "project", "projectPath": "/home/user/my-project", "label": "My Project"}'
+  -d '{"target": "project", "projectPath": "/home/user/my-project", "label": "MyProject"}'
 ```
 
 ---
@@ -1611,7 +1503,7 @@ or
 ```json
 {
   "ok": true,
-  "message": "Hook removed from My Project."
+  "message": "Hook removed from CriticalPixel."
 }
 ```
 
@@ -1817,80 +1709,46 @@ Downloads all memories in a category as a Markdown file.
 
 ## Connection Management (Extended)
 
-### GET /api/connections/suggest-port
-
-Suggests the next available port for a new Qdrant instance.
-
-**Response**
-
-```json
-{ "port": 6340, "grpcPort": 6341 }
-```
-
-### POST /api/connections/start-container
-
-Starts a stopped Docker container for a connection, with Qdrant readiness polling.
-
-**Request Body**
-
-```json
-{ "id": "connection-id" }
-```
+> **Note:** Most of these endpoints were designed for managing multiple Qdrant Docker containers. With SQLite, the architecture is simplified to a single database file. Backup and restore now operate on the SQLite file directly.
 
 ### POST /api/connections/:id/backup
 
-Creates a Qdrant snapshot and streams it as a downloadable `.snapshot` binary.
+Creates a backup copy of the SQLite database and streams it as a downloadable file.
 
 | Parameter | Location | Type | Required | Description |
 |-----------|----------|------|----------|-------------|
 | `id` | Path | string | Yes | Connection ID |
 
-**Response:** Binary stream (`application/octet-stream`). Timeout: 120s creation + 5min download.
+**Response:** Binary stream (`application/octet-stream`).
 
 ### POST /api/connections/:id/restore
 
-Restores a `.snapshot` binary to a connection's Qdrant collection.
+Restores a SQLite database backup.
 
 | Parameter | Location | Type | Required | Description |
 |-----------|----------|------|----------|-------------|
 | `id` | Path | string | Yes | Connection ID |
-| `snapshot` | Body (multipart) | File | Yes | `.snapshot` binary (max 500MB) |
+| `backup` | Body (multipart) | File | Yes | SQLite database backup file (max 500MB) |
 
 ### POST /api/connections/restore-standalone
 
-Restores a snapshot to any Qdrant instance by URL, then auto-adds it as a connection.
+Restores a database backup file as a new connection.
 
-**Query Parameters:** `url`, `apiKey`, `collection`
+### ~~GET /api/connections/suggest-port~~
 
-### POST /api/connections/docker-new
+> **Removed:** No longer applicable. SQLite does not use network ports.
 
-Spins up a new Qdrant Docker container on a specified port.
+### ~~POST /api/connections/start-container~~
 
-**Request Body**
+> **Removed:** No longer applicable. There are no Docker containers to manage.
 
-```json
-{
-  "port": 6340,
-  "grpcPort": 6341,
-  "apiKey": "generated-key",
-  "label": "My Second Instance"
-}
-```
+### ~~POST /api/connections/docker-new~~
 
-### POST /api/connections/create-collection
+> **Removed:** No longer applicable. There are no Docker containers to manage.
 
-Creates a Qdrant collection on any arbitrary instance.
+### ~~POST /api/connections/create-collection~~
 
-**Request Body**
-
-```json
-{
-  "url": "http://localhost:6340",
-  "apiKey": "key",
-  "collection": "claude_memory",
-  "dimensions": 1536
-}
-```
+> **Removed:** Database tables are created automatically when the SQLite database is initialized.
 
 ---
 
@@ -1931,7 +1789,7 @@ Re-reads and parses all OpenClaw workspace files. Three parsers run:
 - `parseDailyLogs` — `memory/*.md` (daily session logs)
 - `parseWorkspaceConfigs` — 7 config files (AGENTS.md, SOUL.md, etc.)
 
-All nodes are in-memory only (not stored in Qdrant).
+All nodes are in-memory only (not stored in the database).
 
 ### DELETE /api/bridges/openclaw
 
@@ -2015,12 +1873,6 @@ Returns the CLAUDE.md memory ruleset section for copy-paste into any project.
 
 ## Setup Endpoints (Extended)
 
-### POST /api/setup/start-docker-desktop
+### ~~POST /api/setup/start-docker-desktop~~
 
-Launches Docker Desktop on Windows and polls until the Docker daemon is ready (45s timeout).
-
-**Response**
-
-```json
-{ "ok": true, "message": "Docker Desktop started" }
-```
+> **Removed:** Docker is no longer required. SynaBun uses SQLite which requires no external services.

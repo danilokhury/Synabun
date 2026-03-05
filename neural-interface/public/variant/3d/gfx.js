@@ -14,6 +14,8 @@ export const GFX_DEFAULTS = {
   bgParticleCount: 2000,
   bgTheme: 'deep-grid',
   floorStyle: 'grid',
+  // Post-processing
+  bloomEnabled: true,
 };
 
 export const GFX_PRESETS = {
@@ -22,6 +24,7 @@ export const GFX_PRESETS = {
     values: {
       linkOpacity: 0.05, clickZoom: 120, gentleZoom: 180,
       bgIntensity: 0.2, bgParticleCount: 800, bgTheme: 'deep-grid', floorStyle: 'grid',
+      bloomEnabled: false,
     },
   },
   medium: {
@@ -48,6 +51,7 @@ export const GFX_PRESETS = {
 };
 
 import { storage } from '../../shared/storage.js';
+import { emit } from '../../shared/state.js';
 
 const STORAGE_KEY = 'neural-gfx-config';
 const PRESET_KEY = 'neural-gfx-preset';
@@ -82,18 +86,8 @@ export function applyGfxPreset(presetKey, gfx, graph, applyBgTheme) {
   saveGfxConfig(gfx);
   setActivePreset(presetKey);
 
-  if (graph) {
-    const scene = graph.scene();
-    scene.traverse(obj => {
-      if (!obj.userData || !obj.userData.nodeId) return;
-      const r = obj.userData.baseRadius;
-      if (!r) return;
-      const dot = obj.userData.dot;
-      if (dot && dot.material) {
-        dot.material.opacity = obj.userData.baseOpacity || 0.1;
-      }
-    });
-  }
+  // Reset node opacities (instanced memory nodes + individual anchor/tag nodes)
+  emit('gfx:preset-applied');
 
   // Update slider UI if settings panel is open
   const panel = document.getElementById('settings-panel');

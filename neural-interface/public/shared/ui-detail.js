@@ -14,6 +14,13 @@ import { catColor } from './colors.js';
 import { truncate, formatMemoryContent, exportMemoryAsMarkdown } from './utils.js';
 import { t } from './i18n.js';
 import { savePanelLayout, restorePanelLayout } from './ui-panels.js';
+import { sendSync as _sendSync, hasPermission, isGuest } from './ui-sync.js';
+
+// Wrap sendSync — skip card events when guest lacks cards permission
+function sendSync(msg) {
+  if (isGuest() && !hasPermission('cards')) return;
+  _sendSync(msg);
+}
 
 // ─── Scoped query helper ────────────────
 const q = (card, role) => card.querySelector(`[data-role="${role}"]`);
@@ -22,6 +29,7 @@ const q = (card, role) => card.querySelector(`[data-role="${role}"]`);
 const _openCards = new Map();  // memoryId → { el, node, isCompact, isEditing, savedExpanded }
 let _topZ = 220;
 const MAX_CARDS = 20;
+let _isRemoteCardOp = false; // prevents echo loops for sync events
 
 // ─── Variant callbacks ───────────────────
 let _callbacks = {
@@ -617,6 +625,14 @@ export function openMemoryCard(node, savedPosition) {
     contentEl.parentNode.insertBefore(ocSourceEl, contentEl);
   }
 
+  // ── Guest read-only: hide mutation buttons ──
+  const _guestRO = isGuest() && !hasPermission('memories');
+  if (_guestRO) {
+    q(card, 'edit-btn').style.display = 'none';
+    q(card, 'delete-btn').style.display = 'none';
+    q(card, 'move-cat-btn').style.display = 'none';
+  }
+
   // ── Actions ──
   q(card, 'move-cat-btn').onclick = () => openCategoryChangeModal(card, node);
 
@@ -762,7 +778,8 @@ export function openMemoryCard(node, savedPosition) {
     tagContainer.appendChild(input);
   }
 
-  if (isOC) {
+  if (isOC || _guestRO) {
+    // Read-only tags (no remove button, no add input)
     tagContainer.innerHTML = '';
     currentTags.forEach(tag => {
       const chip = document.createElement('span');
@@ -887,6 +904,7 @@ export function openMemoryCard(node, savedPosition) {
         cardState.isCompact = true;
         cardState._animating = false;
         persistOpenCards();
+        if (!_isRemoteCardOp) sendSync({ type: 'card:compacted', memoryId: node.id });
       };
       card.addEventListener('transitionend', onEnd);
 
@@ -899,6 +917,7 @@ export function openMemoryCard(node, savedPosition) {
           cardState.isCompact = true;
           cardState._animating = false;
           persistOpenCards();
+          if (!_isRemoteCardOp) sendSync({ type: 'card:compacted', memoryId: node.id });
         }
       }, 300);
 
@@ -939,6 +958,7 @@ export function openMemoryCard(node, savedPosition) {
         cardState.isCompact = false;
         cardState._animating = false;
         persistOpenCards();
+        if (!_isRemoteCardOp) sendSync({ type: 'card:expanded', memoryId: node.id });
       };
       card.addEventListener('transitionend', onEnd);
 
@@ -951,6 +971,7 @@ export function openMemoryCard(node, savedPosition) {
           cardState.isCompact = false;
           cardState._animating = false;
           persistOpenCards();
+          if (!_isRemoteCardOp) sendSync({ type: 'card:expanded', memoryId: node.id });
         }
       }, 300);
     }
@@ -988,6 +1009,19 @@ export function openMemoryCard(node, savedPosition) {
   storage.setItem(KEYS.SELECTED_NODE, node.id);
   emit('detail:opened', { nodeId: node.id });
   persistOpenCards();
+
+  // Sync to other clients
+  if (!_isRemoteCardOp) {
+    sendSync({
+      type: 'card:opened',
+      memoryId: node.id,
+      left: card.style.left,
+      top: card.style.top,
+      width: card.style.width,
+      height: card.style.height,
+      isCompact: cardState.isCompact,
+    });
+  }
 }
 
 
@@ -1039,6 +1073,11 @@ export function closeMemoryCard(memoryId) {
 
   emit('detail:closed');
   persistOpenCards();
+
+  // Sync to other clients
+  if (!_isRemoteCardOp) {
+    sendSync({ type: 'card:closed', memoryId });
+  }
 }
 
 export function closeAllCards() {
@@ -1066,8 +1105,350 @@ export function initDetailPanel() {
     closeAllCards();
   });
 
-  // Persist open card positions after resize/drag
+  // Persist open card positions after resize/drag and sync to other clients
   on('detail:layout-changed', () => {
     persistOpenCards();
+    // Send move/resize sync for all open cards (the event doesn't tell us which card changed,
+    // so we sync all — the receiving end ignores unchanged values)
+    if (!_isRemoteCardOp) {
+      for (const [id, c] of _openCards) {
+        sendSync({
+          type: 'card:moved',
+          memoryId: id,
+          left: c.el.style.left,
+          top: c.el.style.top,
+          width: c.el.style.width,
+          height: c.el.style.height,
+        });
+      }
+    }
   });
+
+  // ── Card sync from other clients ──
+  on('sync:card:opened', (msg) => {
+    const node = state.allNodes.find(n => n.id === msg.memoryId);
+    if (!node) return;
+    _isRemoteCardOp = true;
+    openMemoryCard(node, {
+      left: msg.left, top: msg.top,
+      width: msg.width, height: msg.height,
+      isCompact: msg.isCompact,
+    });
+    _isRemoteCardOp = false;
+  });
+
+  on('sync:card:closed', (msg) => {
+    _isRemoteCardOp = true;
+    closeMemoryCard(msg.memoryId);
+    _isRemoteCardOp = false;
+  });
+
+  on('sync:card:moved', (msg) => {
+    const c = _openCards.get(msg.memoryId);
+    if (!c) return;
+    if (msg.left) c.el.style.left = msg.left;
+    if (msg.top) c.el.style.top = msg.top;
+    if (msg.width) c.el.style.width = msg.width;
+    if (msg.height) c.el.style.height = msg.height;
+    persistOpenCards();
+  });
+
+  on('sync:card:resized', (msg) => {
+    const c = _openCards.get(msg.memoryId);
+    if (!c) return;
+    if (msg.width) c.el.style.width = msg.width;
+    if (msg.height) c.el.style.height = msg.height;
+    persistOpenCards();
+  });
+
+  on('sync:card:compacted', (msg) => {
+    const c = _openCards.get(msg.memoryId);
+    if (!c || c.isCompact) return;
+    // Simple compact without animation for remote
+    c.el.classList.add('compact');
+    c.el.style.width = '';
+    c.el.style.height = '';
+    c.el.style.maxHeight = '';
+    c.isCompact = true;
+    const body = q(c.el, 'body');
+    if (body) { body.classList.add('drag-handle'); body.dataset.drag = c.el.id; }
+    const compactBtn = q(c.el, 'compact-btn');
+    if (compactBtn) {
+      compactBtn.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
+      compactBtn.dataset.tooltip = 'Expand';
+    }
+    persistOpenCards();
+  });
+
+  on('sync:card:expanded', (msg) => {
+    const c = _openCards.get(msg.memoryId);
+    if (!c || !c.isCompact) return;
+    c.el.classList.remove('compact');
+    c.el.style.width = '';
+    c.el.style.height = '';
+    c.el.style.maxHeight = '';
+    c.isCompact = false;
+    const body = q(c.el, 'body');
+    if (body) { body.classList.remove('drag-handle'); delete body.dataset.drag; }
+    const compactBtn = q(c.el, 'compact-btn');
+    if (compactBtn) {
+      compactBtn.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
+      compactBtn.dataset.tooltip = 'Compact';
+    }
+    persistOpenCards();
+  });
+
+  // ── Update all open cards when guest permission state arrives or changes ──
+  function updateCardsPermissionState() {
+    const ro = isGuest() && !hasPermission('memories');
+    for (const [, entry] of _openCards) {
+      const card = entry.el;
+      const editBtn = q(card, 'edit-btn');
+      const deleteBtn = q(card, 'delete-btn');
+      const moveCatBtn = q(card, 'move-cat-btn');
+      if (editBtn) editBtn.style.display = ro ? 'none' : '';
+      if (deleteBtn) deleteBtn.style.display = ro ? 'none' : '';
+      if (moveCatBtn) moveCatBtn.style.display = ro ? 'none' : '';
+      // Hide tag add inputs, show/hide tag remove buttons
+      card.querySelectorAll('.tag-remove').forEach(el => el.style.display = ro ? 'none' : '');
+      card.querySelectorAll('.tag-add-input').forEach(el => el.style.display = ro ? 'none' : '');
+    }
+  }
+  on('session:info', updateCardsPermissionState);
+  on('permissions:changed', updateCardsPermissionState);
+
+  // ── /ws/cards — MCP remote control channel ──
+  _connectCardsWs();
+}
+
+// ═══════════════════════════════════════════
+// CARDS WEBSOCKET — MCP Remote Control
+// ═══════════════════════════════════════════
+
+let _cardsWs = null;
+let _cardsWsRetry = null;
+
+function _connectCardsWs() {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  _cardsWs = new WebSocket(`${protocol}//${location.host}/ws/cards`);
+
+  _cardsWs.onopen = () => {
+    console.log('[ws-cards] Connected');
+    if (_cardsWsRetry) { clearTimeout(_cardsWsRetry); _cardsWsRetry = null; }
+    _cardsWs.send(JSON.stringify({ type: 'init', openCount: _openCards.size }));
+    // Report viewport for percentage-based card positioning
+    _cardsWs.send(JSON.stringify({ type: 'viewport', width: window.innerWidth, height: window.innerHeight }));
+  };
+
+  _cardsWs.onmessage = (event) => {
+    try { _handleCardsWsMessage(JSON.parse(event.data)); } catch (e) {
+      console.warn('[ws-cards] Message parse error:', e);
+    }
+  };
+
+  _cardsWs.onclose = () => {
+    console.log('[ws-cards] Disconnected, retrying in 5s');
+    _cardsWsRetry = setTimeout(_connectCardsWs, 5000);
+  };
+
+  _cardsWs.onerror = () => { /* onclose will fire next */ };
+}
+
+// Debounced viewport resize reporting for cards
+let _cardsViewportTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_cardsViewportTimer);
+  _cardsViewportTimer = setTimeout(() => {
+    if (_cardsWs && _cardsWs.readyState === 1) {
+      _cardsWs.send(JSON.stringify({ type: 'viewport', width: window.innerWidth, height: window.innerHeight }));
+    }
+  }, 300);
+});
+
+function _sendCardsWs(msg) {
+  if (_cardsWs?.readyState === 1) {
+    _cardsWs.send(JSON.stringify(msg));
+  }
+}
+
+function _sendCardsAck(requestId, ok, result) {
+  _sendCardsWs({ type: 'ack', requestId, ok, ...(ok ? { result } : { error: result }) });
+}
+
+async function _handleCardsWsMessage(msg) {
+  const { type, requestId } = msg;
+
+  // ── Open a card by memory UUID ──
+  if (type === 'card:open-request') {
+    let node = state.allNodes.find(n => n.id === msg.memoryId);
+
+    // If node not in loaded state, try fetching from server
+    if (!node) {
+      try {
+        const res = await fetch(`/api/memory/${msg.memoryId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.id && data.payload) {
+            node = { id: data.id, payload: data.payload };
+          } else if (data.point) {
+            node = { id: data.point.id, payload: data.point.payload };
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (!node) {
+      _sendCardsAck(requestId, false, 'Memory not found. Try refreshing the Neural Interface.');
+      return;
+    }
+
+    const alreadyOpen = _openCards.has(msg.memoryId);
+    _isRemoteCardOp = true;
+
+    const savedPos = {};
+    if (msg.left !== undefined) savedPos.left = msg.left + 'px';
+    if (msg.top !== undefined) savedPos.top = msg.top + 'px';
+    if (msg.compact !== undefined) savedPos.isCompact = msg.compact;
+
+    openMemoryCard(node, Object.keys(savedPos).length ? savedPos : undefined);
+    _isRemoteCardOp = false;
+
+    const c = _openCards.get(msg.memoryId);
+    _sendCardsAck(requestId, true, {
+      memoryId: msg.memoryId,
+      left: c?.el.style.left || '',
+      top: c?.el.style.top || '',
+      width: c?.el.style.width || '',
+      height: c?.el.style.height || '',
+      isCompact: c?.isCompact || false,
+      isPinned: c?.el.classList.contains('locked') || false,
+      alreadyOpen,
+    });
+    return;
+  }
+
+  // ── Close one or all cards ──
+  if (type === 'card:close-request') {
+    _isRemoteCardOp = true;
+    if (!msg.memoryId) {
+      const count = _openCards.size;
+      closeAllCards();
+      _isRemoteCardOp = false;
+      _sendCardsAck(requestId, true, { closed: 'all', count });
+    } else {
+      if (!_openCards.has(msg.memoryId)) {
+        _isRemoteCardOp = false;
+        _sendCardsAck(requestId, false, 'Card not open');
+        return;
+      }
+      closeMemoryCard(msg.memoryId);
+      _isRemoteCardOp = false;
+      _sendCardsAck(requestId, true, { memoryId: msg.memoryId });
+    }
+    return;
+  }
+
+  // ── Update card state (position, size, compact, pin) ──
+  if (type === 'card:update-request') {
+    const c = _openCards.get(msg.memoryId);
+    if (!c) {
+      _sendCardsAck(requestId, false, 'Card not open');
+      return;
+    }
+
+    const u = msg.updates || {};
+    _isRemoteCardOp = true;
+
+    // Position
+    if (u.left !== undefined) c.el.style.left = u.left + 'px';
+    if (u.top !== undefined) c.el.style.top = u.top + 'px';
+
+    // Size (only in expanded mode)
+    if (u.width !== undefined && !c.isCompact) c.el.style.width = u.width + 'px';
+    if (u.height !== undefined && !c.isCompact) c.el.style.height = u.height + 'px';
+
+    // Compact / Expand (skip animation for remote ops — just apply end state)
+    if (u.compact === true && !c.isCompact) {
+      c.el.classList.add('compact');
+      c.el.style.width = '';
+      c.el.style.height = '';
+      c.el.style.maxHeight = '';
+      const body = c.el.querySelector('.detail-body');
+      if (body) { body.classList.add('drag-handle'); body.dataset.drag = c.el.id; }
+      c.isCompact = true;
+      // Update compact button icon
+      const compactBtn = q(c.el, 'compact-btn');
+      if (compactBtn) {
+        compactBtn.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
+        compactBtn.dataset.tooltip = 'Expand';
+      }
+    } else if (u.compact === false && c.isCompact) {
+      c.el.classList.remove('compact');
+      c.el.style.width = '';
+      c.el.style.height = '';
+      c.el.style.maxHeight = '';
+      const body = c.el.querySelector('.detail-body');
+      if (body) { body.classList.remove('drag-handle'); delete body.dataset.drag; }
+      c.isCompact = false;
+      const compactBtn = q(c.el, 'compact-btn');
+      if (compactBtn) {
+        compactBtn.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
+        compactBtn.dataset.tooltip = 'Compact';
+      }
+    }
+
+    // Pin / Unpin
+    if (u.pinned === true && !c.el.classList.contains('locked')) {
+      c.el.classList.add('locked');
+      const pinBtn = c.el.querySelector('.pin-btn');
+      if (pinBtn) pinBtn.classList.add('pinned');
+      storage.setItem('neural-pinned-' + c.el.id, 'true');
+    } else if (u.pinned === false && c.el.classList.contains('locked')) {
+      c.el.classList.remove('locked');
+      const pinBtn = c.el.querySelector('.pin-btn');
+      if (pinBtn) pinBtn.classList.remove('pinned');
+      storage.removeItem('neural-pinned-' + c.el.id);
+    }
+
+    persistOpenCards();
+    _isRemoteCardOp = false;
+
+    _sendCardsAck(requestId, true, {
+      memoryId: msg.memoryId,
+      left: c.el.style.left,
+      top: c.el.style.top,
+      width: c.el.style.width,
+      height: c.el.style.height,
+      isCompact: c.isCompact,
+      isPinned: c.el.classList.contains('locked'),
+    });
+    return;
+  }
+
+  // ── Screenshot ──
+  if (type === 'screenshot:request') {
+    _captureCardsScreenshot(requestId);
+    return;
+  }
+}
+
+async function _captureCardsScreenshot(requestId) {
+  try {
+    // Use html2canvas if available (loaded from CDN in html-shell.js)
+    if (typeof html2canvas === 'function') {
+      const canvas = await html2canvas(document.body, {
+        backgroundColor: '#0a0a0f',
+        useCORS: true,
+        scale: 1,
+        logging: false,
+      });
+      const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+      _sendCardsWs({ type: 'screenshot:response', requestId, data: base64 });
+    } else {
+      // Fallback: use canvas API to capture a simple screenshot
+      _sendCardsWs({ type: 'screenshot:error', requestId, error: 'html2canvas not loaded. Add the script to html-shell.js.' });
+    }
+  } catch (err) {
+    _sendCardsWs({ type: 'screenshot:error', requestId, error: err.message || 'Screenshot capture failed' });
+  }
 }

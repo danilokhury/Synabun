@@ -15,8 +15,12 @@ import { updateCategory as apiUpdateCategory } from './api.js';
 import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
 import { storage } from './storage.js';
+import { isGuest, hasPermission } from './ui-sync.js';
 
 const $ = (id) => document.getElementById(id);
+
+/** True when guest and memories permission is disabled */
+function guestReadOnly() { return isGuest() && !hasPermission('memories'); }
 
 // ─── Local state ────────────────────────
 let _sortMode = 'newest';   // 'newest' | 'oldest' | 'alpha'
@@ -66,10 +70,16 @@ function showCategoryContextMenu(btnEl, item, isParent, eyeState) {
   const editItem = document.createElement('button');
   editItem.className = 'explorer-ctx-item';
   editItem.innerHTML = `<span class="explorer-ctx-icon">${SVG_PENCIL}</span><span>Edit category</span>`;
-  editItem.addEventListener('click', () => {
-    dismissContextMenu();
-    editCategoryUI(item.name);
-  });
+  if (guestReadOnly()) {
+    editItem.disabled = true;
+    editItem.style.opacity = '0.35';
+    editItem.style.pointerEvents = 'none';
+  } else {
+    editItem.addEventListener('click', () => {
+      dismissContextMenu();
+      editCategoryUI(item.name);
+    });
+  }
   menu.appendChild(editItem);
 
   // ── Separator ──
@@ -82,10 +92,16 @@ function showCategoryContextMenu(btnEl, item, isParent, eyeState) {
   const deleteItem = document.createElement('button');
   deleteItem.className = 'explorer-ctx-item explorer-ctx-item--danger';
   deleteItem.innerHTML = `<span class="explorer-ctx-icon">${SVG_TRASH}</span><span>Delete category</span>`;
-  deleteItem.addEventListener('click', () => {
-    dismissContextMenu();
-    deleteCategoryUI(item.name, memCount);
-  });
+  if (guestReadOnly()) {
+    deleteItem.disabled = true;
+    deleteItem.style.opacity = '0.35';
+    deleteItem.style.pointerEvents = 'none';
+  } else {
+    deleteItem.addEventListener('click', () => {
+      dismissContextMenu();
+      deleteCategoryUI(item.name, memCount);
+    });
+  }
   menu.appendChild(deleteItem);
 
   // Position relative to the button
@@ -614,15 +630,17 @@ function renderMemoryItem(node, depth) {
   });
 
   // Drag to terminal — feed memory as context to CLI
-  el.draggable = true;
-  el.addEventListener('dragstart', (e) => {
-    e.dataTransfer.setData('application/x-synabun-memory', node.id);
-    e.dataTransfer.effectAllowed = 'copy';
-    el.classList.add('dragging');
-  });
-  el.addEventListener('dragend', () => {
-    el.classList.remove('dragging');
-  });
+  if (!guestReadOnly()) {
+    el.draggable = true;
+    el.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('application/x-synabun-memory', node.id);
+      e.dataTransfer.effectAllowed = 'copy';
+      el.classList.add('dragging');
+    });
+    el.addEventListener('dragend', () => {
+      el.classList.remove('dragging');
+    });
+  }
 
   return el;
 }
@@ -1286,6 +1304,14 @@ export function initExplorer() {
     else {
       if (panel) delete panel.dataset.built;
     }
+  });
+
+  // Rebuild when permissions arrive or change (context menu items may differ)
+  on('session:info', () => {
+    if (_visible) buildTree();
+  });
+  on('permissions:changed', () => {
+    if (_visible) buildTree();
   });
 
   // Sync selection from graph click
