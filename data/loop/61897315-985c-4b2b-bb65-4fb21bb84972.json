@@ -1,0 +1,14 @@
+{
+  "active": false,
+  "task": "=== SOCIAL MEDIA ===\n\nTASK:\nI need you to find popular hashtags on twitter with recent discussions (last 48 hours). Then i need you to store those popular discussions on a memory category for this under the research parent memory. Look for popular AI related hashtags, vibe coding and automation.\n\nAPPROACH:\n- Use browser tools to navigate social media platforms\n- Find relevant posts and conversations\n- ASSISTED MODE: Draft responses but do NOT submit without review\n- Take screenshots of drafted responses for user review\n\nBROWSER INSTRUCTIONS:\nUse ONLY SynaBun browser tools (browser_session, browser_navigate, browser_click, browser_content, browser_snapshot, browser_fill, browser_type).\nCall browser_session first to create or reuse a session.\nDo NOT use Playwright plugin tools.\n\nCONSTRAINTS:\n- Complete the task within the allocated time\n- Report progress and findings after each iteration\n- Be thorough but stay focused on the stated task",
+  "context": "This automation uses browser tools. Launch browser sessions as needed.",
+  "totalIterations": 10,
+  "currentIteration": 0,
+  "maxMinutes": 60,
+  "startedAt": "2026-02-28T18:44:24.403Z",
+  "lastIterationAt": null,
+  "retries": 0,
+  "usesBrowser": true,
+  "stopped": true,
+  "finishedAt": "2026-02-28T19:08:53.291Z"
+}

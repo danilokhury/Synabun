@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "categories": [
+    {
+      "name": "conversations",
+      "description": "Indexed conversation sessions with compacted summaries for cross-session recall",
+      "created_at": "2026-02-18T04:13:46.784Z",
+      "is_parent": true
+    }
+  ]
+}

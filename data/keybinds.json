@@ -1,0 +1,22 @@
+{
+  "_version": 1,
+  "bindings": {
+    "toggle-categories": "c",
+    "open-skills": "k",
+    "open-automations": null,
+    "toggle-terminal": "t",
+    "toggle-terminal-alt": "Ctrl+Dead",
+    "focus-search": "/",
+    "toggle-help": "?",
+    "toggle-explorer": "f",
+    "toggle-focus-mode": "v",
+    "toggle-minimap": "m",
+    "open-keybinds": "n",
+    "launch-claude": "1",
+    "launch-codex": "2",
+    "launch-gemini": "3",
+    "launch-browser": "b",
+    "launch-youtube": "y"
+  },
+  "_updated": "2026-02-27T21:36:28.364Z"
+}

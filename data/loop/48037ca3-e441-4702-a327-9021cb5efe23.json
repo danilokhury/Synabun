@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "Task:\n\nNavigate to facebook groups related to AI, vibe coding and overall AI software development and plug the following message:\n\n=====================================\nMessage (translate when needed)\n\nHey all, i'm making a little MCP frontend for browser automation, planning, storyboarding. Fully MCP capable, 100% free and opensource.\n\nIt consists of: \n- vector memory\n- whiteboard fully interactible by any CLI agent\n- Full terminal support\n- Memory explorer (with 3d browsing)\n- Full Claude Code skill suite for memory management\n\nIt's just a place to interact in a different way with CLI agents.\n\nhttps://synabun.ai/\n=====================================\n\nRules:\n\n- Just post the messagew\n- don't double post on the same group, check 1 or 2 posts down before posting\n- You are free to join groups related to the theme",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_wait, browser_go_back, browser_go_forward, browser_evaluate. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 0,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-01T18:16:47.503Z",
+  "lastIterationAt": null,
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "5865e3d5dbbae0d4ca73d924bd1457d1",
+  "profile": "claude-code",
+  "model": "claude-haiku-4-5",
+  "stopped": true,
+  "finishedAt": "2026-03-01T18:19:36.286Z"
+}
