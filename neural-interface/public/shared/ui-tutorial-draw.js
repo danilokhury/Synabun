@@ -569,6 +569,17 @@ const DOODLE_LIBRARY = {
       'M 4 10 Q 12 2 20 10 Q 28 18 36 10 Q 44 2 52 10',
     ],
   },
+  alert: {
+    viewBox: [0, 0, 40, 40],
+    paths: [
+      // Triangle outline
+      'M 20 4 L 36 34 L 4 34 Z',
+      // Exclamation line
+      'M 20 14 L 20 24',
+      // Exclamation dot
+      'M 20 28 L 20.3 28.3',
+    ],
+  },
 };
 
 /**
@@ -787,7 +798,7 @@ export class AnimationSequencer {
       if (this._cancelled) return;
       if (delay > 0) await this._wait(delay);
       if (this._cancelled) return;
-      const result = fn();
+      const result = await fn();
       if (result && typeof result.destroy === 'function') {
         this._cleanup.push(result.destroy);
       }
