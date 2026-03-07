@@ -695,3 +695,12 @@
 [2026-03-07T20:40:42.826Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0
 [2026-03-07T20:41:04.392Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0
 [2026-03-07T20:42:47.261Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0
+[2026-03-07T21:01:20.133Z] CHECK: session=38c40324... msgCount=9 threshold=3 nudgeCount=1 maxNudges=2 observed=true
+[2026-03-07T21:01:20.133Z] SKIP: userLearningObserved=true (already stored this session)
+[2026-03-07T21:01:55.425Z] CHECK: session=63269d0a... msgCount=2 threshold=3 nudgeCount=0 maxNudges=2 observed=false
+[2026-03-07T21:01:55.425Z] SKIP: msgCount 2 < threshold 3
+[2026-03-07T21:02:29.931Z] STOP: CHECK 2.5: pending=undefined retries=0 editCount=0
+[2026-03-07T21:02:43.427Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0
+[2026-03-07T21:06:29.655Z] STOP: CHECK 2.5: pending=false retries=0 editCount=2
+[2026-03-07T21:17:09.374Z] STOP: CHECK 2.5: pending=undefined retries=0 editCount=0
+[2026-03-07T21:17:20.847Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0
