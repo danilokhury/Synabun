@@ -689,3 +689,26 @@
 [2026-03-07T21:10:07.271Z] SESSION-START source=startup session_id=5356c9b4-736d-4e1d-91ad-568bbd84e9fd isCompactRestart=false cacheExists=false convMemory=true
 [2026-03-07T21:17:09.373Z] STOP session_id=5356c9b4-736d-4e1d-91ad-568bbd84e9fd compactFlagPath=null
 [2026-03-07T21:17:20.845Z] STOP session_id=5356c9b4-736d-4e1d-91ad-568bbd84e9fd compactFlagPath=null
+[2026-03-07T21:21:57.194Z] SESSION-START source=startup session_id=f54d947c-023c-4bae-ae00-f4089e4df917 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-07T21:21:57.226Z] SESSION-START source=resume session_id=63269d0a-f5c9-4545-be49-78fed2159cce isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-07T21:23:11.743Z] STOP session_id=63269d0a-f5c9-4545-be49-78fed2159cce compactFlagPath=null
+[2026-03-07T21:23:22.470Z] STOP session_id=63269d0a-f5c9-4545-be49-78fed2159cce compactFlagPath=null
+[2026-03-07T21:23:40.336Z] STOP session_id=63269d0a-f5c9-4545-be49-78fed2159cce compactFlagPath=null
+[2026-03-07T21:30:18.220Z] STOP session_id=63269d0a-f5c9-4545-be49-78fed2159cce compactFlagPath=null
+[2026-03-07T21:30:42.649Z] STOP session_id=63269d0a-f5c9-4545-be49-78fed2159cce compactFlagPath=null
+[2026-03-07T21:30:48.493Z] STOP session_id=63269d0a-f5c9-4545-be49-78fed2159cce compactFlagPath=null
+[2026-03-07T21:31:01.090Z] STOP session_id=63269d0a-f5c9-4545-be49-78fed2159cce compactFlagPath=null
+[2026-03-07T21:33:06.030Z] SESSION-START source=startup session_id=a63cae45-405d-486e-a54e-aa4f6a35ecd1 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-07T21:56:08.703Z] STOP session_id=a63cae45-405d-486e-a54e-aa4f6a35ecd1 compactFlagPath=null
+[2026-03-07T22:10:47.740Z] STOP session_id=a63cae45-405d-486e-a54e-aa4f6a35ecd1 compactFlagPath=null
+[2026-03-07T22:13:27.997Z] STOP session_id=a63cae45-405d-486e-a54e-aa4f6a35ecd1 compactFlagPath=null
+[2026-03-07T22:21:36.581Z] STOP session_id=a63cae45-405d-486e-a54e-aa4f6a35ecd1 compactFlagPath=null
+[2026-03-07T22:23:02.134Z] PRE-COMPACT session_id=a63cae45-405d-486e-a54e-aa4f6a35ecd1 trigger=auto cwd=J:\Sites\Apps\Synabun
+[2026-03-07T22:24:16.968Z] SESSION-START source=compact session_id=a63cae45-405d-486e-a54e-aa4f6a35ecd1 isCompactRestart=true cacheExists=true convMemory=true
+[2026-03-07T22:38:51.601Z] STOP session_id=a63cae45-405d-486e-a54e-aa4f6a35ecd1 compactFlagPath=null
+[2026-03-07T22:43:18.066Z] SESSION-START source=startup session_id=b74a3979-757a-4cdf-be0d-ce84d344a477 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-07T22:54:40.084Z] STOP session_id=b74a3979-757a-4cdf-be0d-ce84d344a477 compactFlagPath=null
+[2026-03-07T23:02:44.093Z] STOP session_id=b74a3979-757a-4cdf-be0d-ce84d344a477 compactFlagPath=null
+[2026-03-07T23:03:56.442Z] STOP session_id=b74a3979-757a-4cdf-be0d-ce84d344a477 compactFlagPath=null
+[2026-03-07T23:04:59.078Z] PRE-COMPACT session_id=b74a3979-757a-4cdf-be0d-ce84d344a477 trigger=auto cwd=J:\Sites\Apps\Synabun
+[2026-03-07T23:06:05.195Z] SESSION-START source=compact session_id=b74a3979-757a-4cdf-be0d-ce84d344a477 isCompactRestart=true cacheExists=true convMemory=true
