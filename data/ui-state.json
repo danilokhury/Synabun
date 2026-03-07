@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-07T20:44:52.303Z",
+  "_updated": "2026-03-07T21:17:40.351Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "421px",
@@ -56,7 +56,7 @@
     "width": "1367px",
     "height": "1105px"
   },
-  "neural-explorer-visible": true,
+  "neural-explorer-visible": false,
   "neural-explorer-width": 400,
   "neural-open-cards": [],
   "neural-explorer-collapsed": [
@@ -23799,7 +23799,16 @@
       "selectedNodeId": "dc33bfe5-2c6d-4b7d-be8d-826af43d09e9"
     }
   ],
-  "neural-terminal-active-sessions": [],
+  "neural-terminal-active-sessions": [
+    {
+      "id": "b1510a445685705fea66ef000981efee",
+      "profile": "claude-code",
+      "label": "✳ Claude Code",
+      "pinned": false,
+      "userRenamed": false,
+      "claudeSessionId": "5356c9b4-736d-4e1d-91ad-568bbd84e9fd"
+    }
+  ],
   "neural-terminal-active-sessions-layout": {
     "detached": false,
     "floatPos": null,
@@ -23807,22 +23816,13 @@
     "visible": false,
     "sessions": [
       {
-        "id": "2670f8682a2647c25269a60c54f4a092",
-        "profile": "shell",
-        "label": "Shell",
-        "pinned": false,
-        "isDetached": false,
-        "userRenamed": false,
-        "claudeSessionId": null
-      },
-      {
-        "id": "a5d80d9c4f5c7013b3e76919420ee8b2",
-        "profile": "browser",
-        "label": "X",
+        "id": "b1510a445685705fea66ef000981efee",
+        "profile": "claude-code",
+        "label": "✳ Claude Code",
         "pinned": false,
         "isDetached": true,
         "userRenamed": false,
-        "claudeSessionId": null
+        "claudeSessionId": "5356c9b4-736d-4e1d-91ad-568bbd84e9fd"
       }
     ],
     "splitMode": false,
@@ -23835,17 +23835,17 @@
     ],
     "detachedTabs": [
       {
-        "sessionId": "a5d80d9c4f5c7013b3e76919420ee8b2",
-        "sessionIdx": 1,
-        "left": 2483.223388671875,
-        "top": 96.67500305175781,
-        "width": 65.85009765625,
+        "sessionId": "b1510a445685705fea66ef000981efee",
+        "sessionIdx": 0,
+        "left": 918.5,
+        "top": 456.5,
+        "width": 700,
         "height": 420,
         "pinned": false,
-        "label": "X",
+        "label": "✳ Claude Code",
         "userRenamed": false,
-        "claudeSessionId": null,
-        "minimized": false
+        "claudeSessionId": "5356c9b4-736d-4e1d-91ad-568bbd84e9fd",
+        "minimized": true
       }
     ]
   },
@@ -47779,7 +47779,7 @@
   "neural-onboarding-cli": "claude-code",
   "neural-onboarding-model": "claude-haiku-4-5",
   "neural-tutorial-skipped": true,
-  "neural-file-explorer-visible": false,
+  "neural-file-explorer-visible": true,
   "neural-file-explorer-width": 334,
   "neural-file-explorer-project": "J:\\Sites\\Apps\\Synabun",
   "neural-file-explorer-collapsed": [
@@ -47839,5 +47839,6 @@
   "synabun-session-label:f463c186-1295-40e5-bd6e-28d7e60b2ca6": "Synabun minimized badge alert",
   "synabun-session-label:38c40324-4314-4705-8cf8-e366b15a97b9": "Code Editor Text Wrap",
   "synabun-session-label:eca56962-27f5-4aa0-9e1e-30e88a1a7df9": "SynabunWeb memory fix",
-  "synabun-session-label:b3f4e2e6-ad6a-4265-9adb-ce0d6e73f3dd": "Synabun Website Tech Section Fix"
+  "synabun-session-label:b3f4e2e6-ad6a-4265-9adb-ce0d6e73f3dd": "Synabun Website Tech Section Fix",
+  "synabun-session-label:63269d0a-f5c9-4545-be49-78fed2159cce": "Onboard Fix"
 }
