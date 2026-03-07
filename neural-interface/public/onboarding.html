@@ -416,13 +416,13 @@
 
   /* ── Tool Cards ── */
   .tool-grid {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    display: flex;
     gap: 8px;
     margin-bottom: 16px;
   }
   .tool-card {
-    padding: 12px 8px;
+    flex: 1;
+    padding: 10px 6px;
     border: 1px solid var(--b-light);
     border-radius: var(--r-card);
     background: var(--s-subtle);
@@ -437,9 +437,10 @@
     box-shadow: 0 0 0 1px var(--accent-border);
   }
   .tool-card .tname {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--t-bright);
+    white-space: nowrap;
   }
 
   /* ── Dependency List ── */
@@ -1029,8 +1030,23 @@
       </div>
     </div>
 
-    <!-- Step 6: Complete -->
+    <!-- Step 6: Ruleset -->
     <div class="step right" data-step="6">
+      <div style="position:relative;display:flex;justify-content:center;align-items:center;">
+        <div class="step-eyes"></div>
+      </div>
+      <h2>Memory Ruleset</h2>
+      <p class="subtitle">Copy this into your project's <code id="rulesetFileName" style="color:var(--t-bright);">CLAUDE.md</code> so your AI tool knows how to use SynaBun.</p>
+      <div id="rulesetPanel">
+        <div class="code-copy-wrap" id="rulesetCodeWrap">
+          <div class="instructions-preview" id="rulesetCode" style="max-height:220px;">Loading...</div>
+          <span class="code-copy-label">copy</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 7: Complete -->
+    <div class="step right" data-step="7">
       <div class="step-eyes"></div>
       <h2 style="text-align:center;margin-bottom:12px;">Setup Complete!</h2>
       <ul class="checklist" id="checklist"></ul>
@@ -1149,7 +1165,7 @@
 // STATE
 // ═══════════════════════════════════════════
 
-const TOTAL_STEPS = 7;
+const TOTAL_STEPS = 8;
 let currentStep = 0;
 
 const wizardState = {
@@ -1248,7 +1264,7 @@ function goToStep(n) {
 function updateNav() {
   $prevBtn.disabled = currentStep === 0;
 
-  const labels = ['', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
+  const labels = ['', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
   $nextBtn.textContent = (labels[currentStep] || 'Next') + ' \u2192';
 
   if (currentStep === 0 || currentStep === TOTAL_STEPS - 1) {
@@ -1319,7 +1335,8 @@ async function onStepEnter(n) {
     }
   }
   if (n === 3) await onBuildStep();
-  if (n === 6) await onCompleteStep();
+  if (n === 6) await onRulesetStep();
+  if (n === 7) await onCompleteStep();
   // Re-measure after async content loads — but only if user is still on this step
   if (currentStep === n) resizeViewport(n);
 }
@@ -2082,7 +2099,50 @@ document.getElementById('mcpCodeWrap').addEventListener('click', () => {
 });
 
 // ═══════════════════════════════════════════
-// STEP 6: Complete
+// STEP 6: Ruleset
+// ═══════════════════════════════════════════
+
+async function onRulesetStep() {
+  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
+  document.getElementById('rulesetFileName').textContent = tool.instrFile;
+
+  // Map tool to API format
+  const formatMap = { claude: 'claude', cursor: 'cursor', windsurf: 'generic', codex: 'codex', other: 'generic' };
+  const format = formatMap[tool.id] || 'generic';
+
+  const $code = document.getElementById('rulesetCode');
+  if ($code.dataset.loadedFormat === format) return; // already loaded
+
+  $code.textContent = 'Loading...';
+  try {
+    const res = await fetch(`/api/claude-code/ruleset?format=${format}`);
+    const data = await res.json();
+    if (data.ok && data.ruleset) {
+      $code.textContent = data.ruleset;
+      $code.dataset.loadedFormat = format;
+      wizardState.rulesetCopied = false;
+    } else {
+      $code.textContent = 'Could not load ruleset.';
+    }
+  } catch {
+    $code.textContent = 'Failed to load ruleset.';
+  }
+  if (currentStep === 6) resizeViewport(6);
+}
+
+document.getElementById('rulesetCodeWrap').addEventListener('click', () => {
+  const code = document.getElementById('rulesetCode').textContent;
+  if (code === 'Loading...' || code.startsWith('Could not') || code.startsWith('Failed')) return;
+  navigator.clipboard.writeText(code);
+  wizardState.rulesetCopied = true;
+  const label = document.querySelector('#rulesetCodeWrap .code-copy-label');
+  label.textContent = 'copied!';
+  label.style.opacity = '1';
+  setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
+});
+
+// ═══════════════════════════════════════════
+// STEP 7: Complete
 // ═══════════════════════════════════════════
 
 async function onCompleteStep() {
@@ -2096,6 +2156,7 @@ async function onCompleteStep() {
     { label: 'MCP server built', done: wizardState.buildReady },
     { label: 'Projects registered', done: (wizardState.projects || []).length > 0 },
     { label: 'MCP config copied', done: wizardState.mcpWritten },
+    { label: 'Ruleset copied', done: !!wizardState.rulesetCopied },
   ];
 
   const $list = document.getElementById('checklist');
