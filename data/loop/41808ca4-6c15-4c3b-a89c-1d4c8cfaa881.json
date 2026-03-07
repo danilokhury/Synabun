@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "Task: Engage in brazilian facebook groups explaining about what synabun does in an excited way. Post a link to synabun.ai\n\nRules:\n\n- Speak Portuguese\n- Dont use Dashes on text -- \n- Don't use Emoji\n- Be accurate about synabun usage\n- Focus on vibecoding tools, automation and mcp\n- You are free to search for groups to join related to the topic\n- Be respectful and nonpolitical\n\nRequirements:\n\n- Engage as a real user,the user will be monitoring\n- Use the research memory related to facebook to fetch some groups to interact with\n- If no more groups to interact, search facebook for groups to join",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_wait, browser_go_back, browser_go_forward, browser_evaluate. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 0,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-01T18:08:01.291Z",
+  "lastIterationAt": null,
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "196eb21d4c58d7ccde894041fd050ebf",
+  "profile": "claude-code",
+  "model": "claude-haiku-4-5",
+  "stopped": true,
+  "finishedAt": "2026-03-01T18:16:47.449Z"
+}

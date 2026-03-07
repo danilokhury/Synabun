@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile, access the game related groups and post our Crimson Desert Campaign. Create a catch call to action and tell users they will always find the best deals on criticalpixel.\n\n=====================================\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=BRL\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=USD\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=TRY\n=====================================\n\nRules:\n\n- Arrange posts to most recent\n- Facebook Groups are in English, Portuguese and Turkish. Post the links related to the region.\n- Post the promo on the gorups language\n- Dont use -- dashes on text\n- Don't over use emojis",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_extract_tweets, browser_go_back, browser_go_forward, browser_evaluate. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 2,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-02T22:22:29.741Z",
+  "lastIterationAt": "2026-03-02T23:00:12.973Z",
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "a320e311923f25dd0c86d20c040579f5",
+  "profile": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "stopped": true,
+  "finishedAt": "2026-03-02T23:45:12.208Z"
+}

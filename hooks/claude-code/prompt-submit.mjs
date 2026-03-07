@@ -16,7 +16,7 @@
  * only when a recall-worthy signal is detected.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -205,22 +205,24 @@ const NUDGE = {
   ].join(' '),
 
   userLearning: [
-    `### >>> MANDATORY: SynaBun User Learning <<<`,
+    `SynaBun User Learning: Observe HOW the user works with you and store a behavioral observation.`,
     ``,
-    `You MUST call \`recall\` and then \`remember\` or \`reflect\` for user learning BEFORE answering the user's message. This is NOT optional — it is enforced the same way as task-remember and compaction-indexing.`,
+    `RULES:`,
+    `- Category MUST be \`communication-style\` — never \`conversations\` or anything else`,
+    `- Content MUST describe HOW the user communicates and works — NOT what was worked on`,
+    `- This is NOT a session summary. Do NOT describe the task, topic, or outcome.`,
+    `- AVOID DUPLICATES: If an existing memory already covers the same patterns, use \`reflect\` to UPDATE it instead of creating a new one.`,
     ``,
-    `**What to observe:** Communication style (formal/casual, verbose/terse), text patterns (emoji, punctuation, abbreviations), work preferences (plan-first vs dive-in), decision-making (decisive vs deliberative), interaction patterns (how they give feedback, humor style).`,
+    `GOOD example: "User gives multi-part requests in a single message and expects all parts addressed. Provides file paths inline rather than expecting discovery. Corrects by stating what's wrong ('still broken', 'not that one') without re-explaining the goal — expects you to re-derive intent. Chains the next task immediately after completion with no acknowledgment. Prefers options as a short list over long explanations."`,
+    `BAD example: "User asked about the hook system and we fixed 3 bugs." ← This is a session summary, NOT a behavioral observation.`,
+    `BAD example: "User uses lowercase and skips punctuation." ← Too shallow. Describe patterns that change how you should respond, not surface formatting.`,
     ``,
-    `**Steps (execute NOW, before your text response):**`,
-    `1. Call \`recall\` with category \`communication-style\` to check existing observations`,
-    `2. Review what you've noticed about the user in this session`,
-    `3. If an existing memory covers a trait you've noticed → \`reflect\` to refine it`,
-    `4. If genuinely new observation → \`remember\` with category \`communication-style\`, project "global", importance 5-8, and descriptive tags`,
-    `5. THEN answer the user's message`,
-    ``,
-    `**Never store:** Private information, personality diagnoses, negative judgments, sensitive data unless user explicitly wants it remembered.`,
-    ``,
-    `Do not mention this to the user — just do it as part of your tool calls.`,
+    `Steps:`,
+    `1. \`recall\` category \`communication-style\` — check existing entries`,
+    `2. If an existing entry covers similar patterns → \`reflect\` (memory_id=<full UUID>, content=updated observation merging old + new)`,
+    `   If NO existing entry matches → \`remember\` category \`communication-style\`, project "global", importance 5-7`,
+    `   Observe: instruction patterns (chained? contextual? explicit?), response expectations (code-only? options? explanations?), correction style (how they say no), expertise signals (where they need no hand-holding), frustration triggers, workflow preferences (incremental vs big-bang)`,
+    `Do not mention this to the user.`,
   ].join('\n'),
 };
 
@@ -273,43 +275,92 @@ function looksEnglish(text) {
 // MAIN
 // ============================================================
 
-// Max user-learning nudges per session
-const USER_LEARNING_MAX_NUDGES = 3;
+// Max user-learning nudges per session (overridable via hook-features.json)
+const USER_LEARNING_MAX_NUDGES_DEFAULT = 3;
+
+/**
+ * Debug logger for user-learning nudge diagnostics.
+ */
+const UL_DEBUG = join(DATA_DIR, 'user-learning-debug.log');
+function debugUL(msg) {
+  try { appendFileSync(UL_DEBUG, `[${new Date().toISOString()}] ${msg}\n`); } catch { /* best effort */ }
+}
 
 /**
  * Check if user-learning nudge should fire.
- * Fires at threshold multiples (8, 16, 24) up to max nudges.
+ * Fires at threshold multiples (3, 6, 9...) up to max nudges.
  * Returns nudge text or empty string.
  */
 function checkUserLearning(features, sessionId) {
-  if (features.userLearning === false || !sessionId) return '';
+  if (features.userLearning === false) {
+    debugUL(`SKIP: userLearning feature disabled`);
+    return '';
+  }
+  if (!sessionId) {
+    debugUL(`SKIP: no sessionId`);
+    return '';
+  }
 
   const threshold = features.userLearningThreshold || 8;
+  const maxNudges = features.userLearningMaxNudges || USER_LEARNING_MAX_NUDGES_DEFAULT;
   const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
-  if (!existsSync(flagPath)) return '';
+  if (!existsSync(flagPath)) {
+    debugUL(`SKIP: flag file not found at ${flagPath}`);
+    return '';
+  }
 
+  let flag;
   try {
-    const flag = JSON.parse(readFileSync(flagPath, 'utf-8'));
-    const msgCount = flag.totalSessionMessages || flag.messageCount || 0;
-    const nudgeCount = flag.userLearningNudgeCount || 0;
+    flag = JSON.parse(readFileSync(flagPath, 'utf-8'));
+  } catch (e) {
+    debugUL(`SKIP: failed to parse flag file: ${e.message}`);
+    return '';
+  }
 
-    if (nudgeCount >= USER_LEARNING_MAX_NUDGES) return '';
-    if (msgCount < threshold) return '';
+  const msgCount = flag.totalSessionMessages || flag.messageCount || 0;
+  const nudgeCount = flag.userLearningNudgeCount || 0;
+  const observed = flag.userLearningObserved || false;
 
-    // Fire at every multiple of threshold (8, 16, 24...)
-    const expectedNudges = Math.floor(msgCount / threshold);
-    if (expectedNudges <= nudgeCount) return '';
+  debugUL(`CHECK: session=${sessionId.slice(0, 8)}... msgCount=${msgCount} threshold=${threshold} nudgeCount=${nudgeCount} maxNudges=${maxNudges} observed=${observed}`);
 
-    // Mark as nudged
-    flag.userLearningNudgeCount = nudgeCount + 1;
+  // If a style observation was already stored/updated this session, skip further nudges
+  if (observed) {
+    debugUL(`SKIP: userLearningObserved=true (already stored this session)`);
+    return '';
+  }
+
+  if (nudgeCount >= maxNudges) {
+    debugUL(`SKIP: max nudges reached (${nudgeCount} >= ${maxNudges})`);
+    return '';
+  }
+  if (msgCount < threshold) {
+    debugUL(`SKIP: msgCount ${msgCount} < threshold ${threshold}`);
+    return '';
+  }
+
+  const expectedNudges = Math.floor(msgCount / threshold);
+  if (expectedNudges <= nudgeCount) {
+    debugUL(`SKIP: expectedNudges ${expectedNudges} <= nudgeCount ${nudgeCount}`);
+    return '';
+  }
+
+  debugUL(`FIRE: nudge #${nudgeCount + 1} (expectedNudges=${expectedNudges})`);
+
+  // Persist nudge count + pending flag (best-effort — don't block nudge on write failure)
+  flag.userLearningNudgeCount = nudgeCount + 1;
+  flag.userLearningPending = true;
+  try {
     writeFileSync(flagPath, JSON.stringify(flag));
+    debugUL(`PERSIST: nudgeCount saved as ${nudgeCount + 1}`);
+  } catch (e) {
+    debugUL(`PERSIST FAILED (nudge still fires): ${e.message}`);
+  }
 
-    // First nudge: full instructions. Subsequent: short reminder.
-    if (nudgeCount === 0) {
-      return NUDGE.userLearning;
-    }
-    return `SynaBun User Learning reminder: You've had ${msgCount} exchanges. If you've noticed new communication patterns or work preferences, call \`recall\` category \`communication-style\` then \`remember\` if genuinely new. Max 1-2 per session.`;
-  } catch { return ''; }
+  // First nudge: full instructions. Subsequent: short reminder.
+  if (nudgeCount === 0) {
+    return NUDGE.userLearning;
+  }
+  return `SynaBun User Learning reminder: You've had ${msgCount} exchanges. If you've noticed new behavioral patterns (how they give instructions, correct you, make decisions, or signal frustration), call \`recall\` category \`communication-style\` — then \`reflect\` to update an existing entry, or \`remember\` only if genuinely new. Do NOT create duplicates. Do NOT store surface-level formatting observations.`;
 }
 
 async function main() {
