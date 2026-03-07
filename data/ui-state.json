@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-07T21:17:40.351Z",
+  "_updated": "2026-03-07T23:14:24.665Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "421px",
@@ -23801,12 +23801,12 @@
   ],
   "neural-terminal-active-sessions": [
     {
-      "id": "b1510a445685705fea66ef000981efee",
+      "id": "13a604384563a00baee5d5eaeb092ec4",
       "profile": "claude-code",
-      "label": "✳ Claude Code",
+      "label": "Onboard Fix",
       "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": "5356c9b4-736d-4e1d-91ad-568bbd84e9fd"
+      "userRenamed": true,
+      "claudeSessionId": "63269d0a-f5c9-4545-be49-78fed2159cce"
     }
   ],
   "neural-terminal-active-sessions-layout": {
@@ -23816,13 +23816,31 @@
     "visible": false,
     "sessions": [
       {
-        "id": "b1510a445685705fea66ef000981efee",
+        "id": "13a604384563a00baee5d5eaeb092ec4",
         "profile": "claude-code",
-        "label": "✳ Claude Code",
+        "label": "Onboard Fix",
+        "pinned": false,
+        "isDetached": true,
+        "userRenamed": true,
+        "claudeSessionId": "63269d0a-f5c9-4545-be49-78fed2159cce"
+      },
+      {
+        "id": "00a622b00683d23a5f32fc7bb9d04b8a",
+        "profile": "browser",
+        "label": "Browser",
         "pinned": false,
         "isDetached": true,
         "userRenamed": false,
-        "claudeSessionId": "5356c9b4-736d-4e1d-91ad-568bbd84e9fd"
+        "claudeSessionId": null
+      },
+      {
+        "id": "c460c2f301d0e8620d6408299bf27a7d",
+        "profile": "claude-code",
+        "label": "Claude Code",
+        "pinned": false,
+        "isDetached": true,
+        "userRenamed": false,
+        "claudeSessionId": null
       }
     ],
     "splitMode": false,
@@ -23835,17 +23853,43 @@
     ],
     "detachedTabs": [
       {
-        "sessionId": "b1510a445685705fea66ef000981efee",
+        "sessionId": "13a604384563a00baee5d5eaeb092ec4",
         "sessionIdx": 0,
-        "left": 918.5,
-        "top": 456.5,
+        "left": 946,
+        "top": 526.5,
+        "width": 1082,
+        "height": 680,
+        "pinned": false,
+        "label": "Onboard Fix",
+        "userRenamed": true,
+        "claudeSessionId": "63269d0a-f5c9-4545-be49-78fed2159cce",
+        "minimized": true
+      },
+      {
+        "sessionId": "00a622b00683d23a5f32fc7bb9d04b8a",
+        "sessionIdx": 1,
+        "left": 960,
+        "top": 504.5,
         "width": 700,
         "height": 420,
         "pinned": false,
-        "label": "✳ Claude Code",
+        "label": "Browser",
         "userRenamed": false,
-        "claudeSessionId": "5356c9b4-736d-4e1d-91ad-568bbd84e9fd",
-        "minimized": true
+        "claudeSessionId": null,
+        "minimized": false
+      },
+      {
+        "sessionId": "c460c2f301d0e8620d6408299bf27a7d",
+        "sessionIdx": 2,
+        "left": 990,
+        "top": 534.5,
+        "width": 700,
+        "height": 420,
+        "pinned": false,
+        "label": "Claude Code",
+        "userRenamed": false,
+        "claudeSessionId": null,
+        "minimized": false
       }
     ]
   },

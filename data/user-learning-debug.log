@@ -704,3 +704,14 @@
 [2026-03-07T21:06:29.655Z] STOP: CHECK 2.5: pending=false retries=0 editCount=2
 [2026-03-07T21:17:09.374Z] STOP: CHECK 2.5: pending=undefined retries=0 editCount=0
 [2026-03-07T21:17:20.847Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0
+[2026-03-07T21:22:51.342Z] CHECK: session=63269d0a... msgCount=3 threshold=3 nudgeCount=0 maxNudges=2 observed=false
+[2026-03-07T21:22:51.342Z] FIRE: nudge #1 (expectedNudges=1)
+[2026-03-07T21:22:51.342Z] PERSIST: nudgeCount saved as 1
+[2026-03-07T21:23:11.745Z] STOP: CHECK 2.5: pending=true retries=0 editCount=0
+[2026-03-07T21:23:11.745Z] STOP: BLOCK: user learning retry 1/3
+[2026-03-07T21:23:22.472Z] STOP: CHECK 2.5: pending=true retries=1 editCount=0
+[2026-03-07T21:23:22.472Z] STOP: BLOCK: user learning retry 2/3
+[2026-03-07T21:23:40.337Z] STOP: CHECK 2.5: pending=false retries=2 editCount=0
+[2026-03-07T21:25:06.326Z] CHECK: session=63269d0a... msgCount=4 threshold=3 nudgeCount=1 maxNudges=2 observed=true
+[2026-03-07T21:25:06.326Z] SKIP: userLearningObserved=true (already stored this session)
+[2026-03-07T21:31:01.091Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0
