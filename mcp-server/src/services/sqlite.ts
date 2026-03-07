@@ -498,6 +498,65 @@ export async function getMemoryStats(): Promise<MemoryStats> {
   };
 }
 
+// --- FTS5 full-text search ---
+
+/**
+ * Search memories using FTS5 full-text search (keyword fallback).
+ * Returns results scored by BM25 relevance. Used when vector similarity
+ * scores are low (exact identifiers, error codes, proper nouns).
+ */
+export async function searchMemoriesFTS(
+  query: string,
+  limit: number,
+  filter?: Record<string, unknown>,
+  excludeIds?: Set<string>
+): Promise<Array<{ id: string; score: number; payload: MemoryPayload }>> {
+  const d = getDb();
+
+  // Sanitize query for FTS5: escape double quotes, wrap terms
+  const ftsQuery = query
+    .replace(/"/g, '""')
+    .split(/\s+/)
+    .filter(t => t.length > 1)
+    .map(t => `"${t}"`)
+    .join(' OR ');
+
+  if (!ftsQuery) return [];
+
+  const { where, params } = translateFilter(filter);
+
+  try {
+    const rows = d.prepare(`
+      SELECT m.id, m.content, m.category, m.subcategory, m.project, m.tags,
+             m.importance, m.source, m.created_at, m.updated_at, m.accessed_at,
+             m.access_count, m.related_files, m.related_memory_ids,
+             m.file_checksums, m.trashed_at, m.source_session_chunks,
+             rank
+      FROM memories_fts fts
+      JOIN memories m ON m.rowid = fts.rowid
+      WHERE memories_fts MATCH ? AND m.trashed_at IS NULL${where}
+      ORDER BY rank
+      LIMIT ?
+    `).all(ftsQuery, ...params, limit) as Array<Record<string, unknown>>;
+
+    return rows
+      .filter(row => !excludeIds || !excludeIds.has(row.id as string))
+      .map(row => {
+        // FTS5 rank is negative (lower = better match). Normalize to 0-1 range.
+        const rawRank = Math.abs(row.rank as number);
+        const normalizedScore = Math.min(1, rawRank / 10);
+        return {
+          id: row.id as string,
+          score: normalizedScore,
+          payload: rowToPayload(row),
+        };
+      });
+  } catch {
+    // FTS5 not available or query error — return empty
+    return [];
+  }
+}
+
 // --- Session Chunks ---
 
 export async function searchSessionChunks(

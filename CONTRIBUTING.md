@@ -76,7 +76,7 @@ npm start            # Express server on port 3344
 synabun/
 ├── mcp-server/         # MCP Protocol server (TypeScript)
 │   └── src/
-│       ├── tools/      # 11 MCP tools (remember, recall, forget, restore, reflect, memories, sync, category_*)
+│       ├── tools/      # 46 MCP tools (memory, browser, whiteboard, cards, loop, tictactoe)
 │       └── services/   # SQLite, local embeddings, categories, file-checksums
 ├── neural-interface/   # 3D visualization UI (Express + Three.js)
 │   ├── server.js       # REST API backend (55+ endpoints)
@@ -144,12 +144,12 @@ npx vitest run unit     # Unit tests only
 npx vitest run scenarios # Scenario/cost tests only
 ```
 
-- **Unit tests** cover all 11 MCP tools (remember, recall, forget, restore, reflect, memories, sync, category_*)
+- **Unit tests** cover all core MCP tools (remember, recall, forget, restore, reflect, memories, sync, category)
 - **Scenario tests** simulate usage patterns (light/medium/heavy user) and benchmark Claude API call costs
 
 ### Manual Testing
 
-1. **MCP tools:** Restart Claude Code, run `/mcp` to verify all 11 tools are listed, then use `remember`, `recall`, etc.
+1. **MCP tools:** Restart Claude Code, run `/mcp` to verify all 46 tools are listed, then use `remember`, `recall`, etc.
 2. **Neural Interface:** Open `http://localhost:3344`, verify the 3D graph renders, test search, category management, trash, sync, and memory editing.
 3. **Hooks:** Start a new Claude Code session and verify the category tree and 5 directives appear in the system context.
 4. **Skills:** Run `/synabun` to access the command hub, test all menu options (Brainstorm Ideas, Audit Memories, Memory Health, Search Memories).
