@@ -47,7 +47,9 @@
       "mcp__SynaBun__browser_extract_tiktok_search",
       "mcp__SynaBun__browser_extract_tiktok_profile",
       "Bash(npm run:*)",
-      "mcp__SynaBun__browser_extract_tiktok_videos"
+      "mcp__SynaBun__browser_extract_tiktok_videos",
+      "Bash(node:*)",
+      "Bash(echo Tiny files \\(<500 bytes\\): $count_tiny:*)"
     ]
   }
 }

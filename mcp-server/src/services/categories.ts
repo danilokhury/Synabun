@@ -270,7 +270,7 @@ export function addCategory(name: string, description: string, parent?: string, 
 
   if (parent) newCat.parent = parent;
   if (color) newCat.color = color;
-  if (is_parent) newCat.is_parent = true;
+  if (is_parent && !parent) newCat.is_parent = true;
 
   cats.push(newCat);
   cachedCategories = cats;
@@ -331,7 +331,7 @@ export function updateCategory(
     }
   }
   if (updates.is_parent !== undefined) {
-    if (updates.is_parent) {
+    if (updates.is_parent && !cat.parent) {
       cat.is_parent = true;
     } else {
       delete cat.is_parent;
