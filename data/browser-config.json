@@ -1,0 +1,53 @@
+{
+  "executablePath": null,
+  "userDataDir": "C:/Users/danil/AppData/Local/Google/Chrome/User Data/Profile 4",
+  "headless": false,
+  "channel": null,
+  "slowMo": 0,
+  "timeout": 30000,
+  "navigationTimeout": 30000,
+  "extraArgs": null,
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "screen": {
+    "width": 1920,
+    "height": 1080
+  },
+  "deviceScaleFactor": 1,
+  "isMobile": false,
+  "hasTouch": false,
+  "userAgent": null,
+  "acceptLanguage": null,
+  "locale": null,
+  "timezoneId": null,
+  "extraHTTPHeaders": null,
+  "stealthFingerprint": true,
+  "geolocation": null,
+  "permissions": null,
+  "offline": false,
+  "proxy": null,
+  "httpCredentials": null,
+  "colorScheme": null,
+  "reducedMotion": null,
+  "forcedColors": null,
+  "javaScriptEnabled": true,
+  "ignoreHTTPSErrors": false,
+  "bypassCSP": false,
+  "acceptDownloads": true,
+  "strictSelectors": true,
+  "serviceWorkers": "allow",
+  "persistStorage": false,
+  "storageStatePath": "data/browser-storage.json",
+  "clearStorageOnStart": false,
+  "recordVideo": null,
+  "recordHar": null,
+  "screencast": {
+    "format": "jpeg",
+    "quality": 60,
+    "maxWidth": 1280,
+    "maxHeight": 800,
+    "everyNthFrame": 1
+  }
+}

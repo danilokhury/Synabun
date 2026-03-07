@@ -46,6 +46,7 @@ export const KEYS = {
   TERMINAL_FLOAT_POS:  'neural-terminal-float-pos',
   TERMINAL_SESSIONS:   'neural-terminal-active-sessions',
   TERMINAL_SPLIT_RATIO: 'neural-terminal-split-ratio',
+  TERMINAL_NOTIFICATIONS: 'neural-terminal-notifications',
   OPEN_CARDS:          'neural-open-cards',
   WORKSPACES:          'neural-workspaces',
   ACTIVE_WORKSPACE:    'neural-active-workspace',  // sessionStorage
@@ -64,6 +65,11 @@ export const KEYS = {
   LINK_PANEL_SIZE:     'neural-link-panel-size',
   ACTIVE_LINKS:        'neural-active-links',
   COMMAND_RUNNER:      'neural-command-runner',
+  FILE_EXPLORER_VISIBLE:  'neural-file-explorer-visible',
+  FILE_EXPLORER_WIDTH:    'neural-file-explorer-width',
+  FILE_EXPLORER_COLLAPSED:'neural-file-explorer-collapsed',
+  FILE_EXPLORER_SORT:     'neural-file-explorer-sort',
+  FILE_EXPLORER_PROJECT:  'neural-file-explorer-project',
 };
 
 /** Default keybind mappings — action ID → combo string.
@@ -86,6 +92,8 @@ export const DEFAULT_KEYBINDS = {
   'launch-gemini':       '3',
   'launch-browser':      'b',
   'launch-youtube':      'y',
+  'toggle-file-explorer': 'e',
+  'open-settings':       's',
 };
 
 /** Display metadata for each rebindable action. */
@@ -100,10 +108,12 @@ export const KEYBIND_META = {
   'toggle-explorer':     { label: 'Toggle Explorer',       group: 'Navigation' },
   'toggle-focus-mode':   { label: 'Toggle Focus Mode',     group: 'Navigation' },
   'toggle-minimap':      { label: 'Toggle Minimap',        group: 'View' },
+  'open-settings':       { label: 'Open Settings',          group: 'Settings' },
   'open-keybinds':       { label: 'Open Keybinds',         group: 'Settings' },
   'launch-claude':       { label: 'Claude Code',           group: 'Launch App', icon: 'claude' },
   'launch-codex':        { label: 'Codex CLI',             group: 'Launch App', icon: 'codex' },
   'launch-gemini':       { label: 'Gemini CLI',            group: 'Launch App', icon: 'gemini' },
   'launch-browser':      { label: 'Browser',               group: 'Launch App', icon: 'browser' },
   'launch-youtube':      { label: 'YouTube',               group: 'Launch App', icon: 'youtube' },
+  'toggle-file-explorer': { label: 'Toggle File Explorer', group: 'Navigation' },
 };
