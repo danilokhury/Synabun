@@ -11,7 +11,7 @@ SynaBun uses an **Open Core** licensing model:
 
 Everything in this repository is Apache 2.0 licensed:
 
-- All 11 MCP tools (remember, recall, forget, restore, reflect, memories, sync, category CRUD)
+- All 46 MCP tools (memory, browser automation, whiteboard, cards, loop, tictactoe)
 - Neural Interface (3D/2D visualization, admin panel, REST API)
 - Claude Code hooks (5 lifecycle hooks)
 - Claude Code `/synabun` skill

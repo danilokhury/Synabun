@@ -656,6 +656,10 @@ export async function deleteTerminalLink(linkId) {
   });
 }
 
+export async function detectClaudeSession(terminalSessionId) {
+  return jsonFetch(`/api/terminal/sessions/${encodeURIComponent(terminalSessionId)}/claude-session`);
+}
+
 export async function updateTerminalLink(linkId, config) {
   return jsonFetch(`/api/terminal/links/${encodeURIComponent(linkId)}`, {
     method: 'PATCH',

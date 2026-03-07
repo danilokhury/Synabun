@@ -20,7 +20,6 @@ const $ = (id) => document.getElementById(id);
 
 // ── Module-local state ──
 let _panel = null;
-let _backdrop = null;
 let _library = [];
 let _projects = [];
 let _selected = null;      // currently selected artifact
@@ -259,12 +258,6 @@ async function openPanel() {
   }
   if (_panel) { _panel.focus(); return; }
 
-  // Backdrop
-  _backdrop = document.createElement('div');
-  _backdrop.className = 'ss-backdrop';
-  // No close-on-backdrop-click — panel stays open until explicitly closed
-  document.body.appendChild(_backdrop);
-
   // Panel
   _panel = document.createElement('div');
   _panel.className = 'skills-studio-panel glass resizable';
@@ -310,7 +303,6 @@ function closePanel() {
 
   _panel.remove();
   _panel = null;
-  if (_backdrop) { _backdrop.remove(); _backdrop = null; }
   _selected = null;
   _selectedContent = null;
   _view = 'library';
@@ -377,7 +369,6 @@ function wirePanel() {
   // Focus mode
   $('ss-focus')?.addEventListener('click', () => {
     _focusMode = !_focusMode;
-    _backdrop?.classList.toggle('focus', _focusMode);
     $('ss-focus')?.classList.toggle('active', _focusMode);
   });
 

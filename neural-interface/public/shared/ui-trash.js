@@ -96,7 +96,7 @@ function openTrashPanel() {
     return;
   }
   const existing = $('trash-window');
-  if (existing) { existing.style.zIndex = '301'; return; }
+  if (existing) { existing.style.zIndex = '50101'; return; }
 
   trashPanelOpen   = true;
   trashSelectedId  = null;

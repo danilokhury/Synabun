@@ -56,6 +56,32 @@ Never store directly in parent categories.
 
 ---
 
+## Coexistence with Other Tools
+
+When running SynaBun alongside other memory or code intelligence tools (CogniLayer, mem0, etc.):
+
+**SynaBun owns ALL memory operations:**
+- Storing information: `remember`
+- Searching past context: `recall`
+- Updating memories: `reflect`
+- Deleting/restoring: `forget` / `restore`
+- Browsing: `memories`
+- Stale detection: `sync`
+- Categories: `category` (create/update/delete/list)
+
+**Other tools** should be restricted to their non-memory capabilities only (e.g., AST-based code search, code impact analysis).
+
+**Enforcement rule for CLAUDE.md / project instructions:**
+```
+For ALL memory operations (store, search, recall, update, delete), use SynaBun tools exclusively.
+[OtherTool] is restricted to [specific use case, e.g., code_search, code_context, code_impact].
+Never use [OtherTool] for remembering, recalling, or reflecting on past work.
+```
+
+If you notice the AI defaulting to another tool's memory features, add the enforcement rule above to your project's `CLAUDE.md`.
+
+---
+
 ## Condensed Rulesets
 
 ### Cursor

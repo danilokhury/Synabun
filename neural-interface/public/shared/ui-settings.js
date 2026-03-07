@@ -10,6 +10,8 @@ import { state, emit, on } from './state.js';
 import { getSettingsTabs } from './registry.js';
 import { escapeHtml } from './utils.js';
 import { storage } from './storage.js';
+import { KEYS } from './constants.js';
+import { registerAction } from './ui-keybinds.js';
 import { createTerminalSession } from './api.js';
 import { buildExplorePrompt } from './ui-tutorial-steps.js';
 
@@ -914,6 +916,23 @@ function buildSetupTab(setupStatus) {
           </div>
         </div>
 
+        <!-- COEXISTENCE RULES -->
+        <div class="iface-section collapsed" data-collapsible id="setup-coexistence">
+          <div class="gfx-group-title">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${CHEVRON_ICON}
+              <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v-2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+              <span>Multi-Tool Coexistence</span>
+            </span>
+          </div>
+          <div class="cc-section-body">
+            <div class="setup-hint" style="margin-bottom:8px">When running SynaBun alongside other AI memory tools (CogniLayer, mem0, etc.), paste these rules into your project's instructions file to prevent tool confusion.</div>
+            <div class="cc-ruleset-preview" id="setup-coexistence-ruleset-preview">Loading...</div>
+            <button class="cc-copy-btn" id="setup-coexistence-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Coexistence Rules</button>
+            <div class="setup-hint">Paste into your project's <code>CLAUDE.md</code>, <code>GEMINI.md</code>, <code>AGENTS.md</code>, or <code>.cursorrules</code></div>
+          </div>
+        </div>
+
       </div>`;
 }
 
@@ -991,6 +1010,21 @@ function buildTerminalTab(cliConfig) {
               <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">wsl -d Ubuntu gemini</code>
               <span style="color:var(--t-dim)">Specific WSL distro</span>
             </div>
+          </div>
+        </div>
+
+        <!-- NOTIFICATIONS -->
+        <div class="iface-section">
+          <div class="gfx-group-title">Notifications</div>
+          <div class="cc-hint" style="margin-bottom:10px">
+            Play a sound and show a browser notification when a CLI task finishes or needs attention.
+          </div>
+          <div class="iface-toggle-row">
+            <label class="iface-toggle">
+              <input type="checkbox" id="term-notif-toggle">
+              <span class="iface-slider"></span>
+            </label>
+            <span class="iface-toggle-label">Enable task notifications</span>
           </div>
         </div>
 
@@ -1123,6 +1157,7 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
   const grOn = hf.greeting === true;
   const ulOn = hf.userLearning !== false;
   const ulThreshold = hf.userLearningThreshold || 8;
+  const ulMaxNudges = hf.userLearningMaxNudges || 3;
 
   const hookRows = [
     { key: 'SessionStart', on: ssOn, label: 'Session Startup', desc: 'Load memory and context when a new session begins' },
@@ -1340,6 +1375,9 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
                     <span style="font-size:10px;color:var(--t-dim);white-space:nowrap">Reflect every</span>
                     <input type="number" id="cc-ul-threshold-input" min="3" max="30" value="${ulThreshold}" style="width:40px;padding:2px 4px;font-size:10px;background:rgba(255,255,255,0.04);border:1px solid var(--b-subtle);border-radius:4px;color:var(--t-bright);text-align:center;font-family:inherit">
                     <span style="font-size:10px;color:var(--t-dim)">interactions</span>
+                    <span style="font-size:10px;color:var(--t-dim);white-space:nowrap;margin-left:8px">Max</span>
+                    <input type="number" id="cc-ul-max-nudges-input" min="1" max="10" value="${ulMaxNudges}" style="width:34px;padding:2px 4px;font-size:10px;background:rgba(255,255,255,0.04);border:1px solid var(--b-subtle);border-radius:4px;color:var(--t-bright);text-align:center;font-family:inherit">
+                    <span style="font-size:10px;color:var(--t-dim)">per session</span>
                   </div>
                 </div>
                 <button class="cc-toggle${ulOn ? ' on' : ''}" data-cc-feature="userLearning"></button>
@@ -1636,7 +1674,7 @@ function detectIfacePreset(cfg) {
 export async function openSettingsModal() {
   // If already open, just bring it to front
   const existing = document.getElementById('settings-panel');
-  if (existing) { existing.style.zIndex = '301'; return; }
+  if (existing) { existing.style.zIndex = '50101'; return; }
 
   // ── Fetch all data in parallel ──
   let settings = {};
@@ -1684,11 +1722,6 @@ export async function openSettingsModal() {
 
   // ── Gather variant-registered settings tabs ──
   const variantTabs = getSettingsTabs();
-
-  // ── Backdrop ──
-  const backdrop = document.createElement('div');
-  backdrop.className = 'settings-panel-backdrop';
-  document.body.appendChild(backdrop);
 
   // ── Panel ──
   const overlay = document.createElement('div');
@@ -1770,7 +1803,6 @@ export async function openSettingsModal() {
   if (focusBtn) {
     focusBtn.addEventListener('click', () => {
       _focusMode = !_focusMode;
-      backdrop.classList.toggle('focus', _focusMode);
       focusBtn.classList.toggle('active', _focusMode);
     });
   }
@@ -1784,7 +1816,6 @@ export async function openSettingsModal() {
       height: overlay.style.height || null,
     }));
     overlay.remove();
-    backdrop.remove();
   };
 
   // ── Nav switching ──
@@ -2206,7 +2237,7 @@ export async function openSettingsModal() {
 
         const confirmOverlay = document.createElement('div');
         confirmOverlay.className = 'tag-delete-overlay';
-        confirmOverlay.style.zIndex = '10001';
+        confirmOverlay.style.zIndex = '50200';
         confirmOverlay.innerHTML = `
           <div class="tag-delete-modal settings-modal" style="max-width:500px;text-align:left">
             <h3 style="margin-bottom:4px">Restore Backup</h3>
@@ -2525,6 +2556,18 @@ export async function openSettingsModal() {
         }
       });
     }
+
+    // Notification toggle
+    const notifToggle = overlay.querySelector('#term-notif-toggle');
+    if (notifToggle) {
+      notifToggle.checked = storage.getItem(KEYS.TERMINAL_NOTIFICATIONS) !== 'off';
+      notifToggle.addEventListener('change', () => {
+        storage.setItem(KEYS.TERMINAL_NOTIFICATIONS, notifToggle.checked ? 'on' : 'off');
+        if (notifToggle.checked && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+          Notification.requestPermission();
+        }
+      });
+    }
   }
 
   function updateGlobalHookBadge() {
@@ -2681,6 +2724,24 @@ export async function openSettingsModal() {
           ulInput.value = val;
           try {
             await fetch('/api/claude-code/hook-features/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'userLearningThreshold', value: val }) });
+          } catch { /* silent */ }
+        }, 600);
+      });
+    }
+  }
+
+  // ── User Learning max nudges handler ──
+  {
+    const ulMaxInput = overlay.querySelector('#cc-ul-max-nudges-input');
+    if (ulMaxInput) {
+      let ulMaxDebounce;
+      ulMaxInput.addEventListener('input', () => {
+        clearTimeout(ulMaxDebounce);
+        ulMaxDebounce = setTimeout(async () => {
+          const val = Math.max(1, Math.min(10, parseInt(ulMaxInput.value) || 3));
+          ulMaxInput.value = val;
+          try {
+            await fetch('/api/claude-code/hook-features/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'userLearningMaxNudges', value: val }) });
           } catch { /* silent */ }
         }, 600);
       });
@@ -3023,6 +3084,9 @@ export async function openSettingsModal() {
       wireCopyBtn('setup-codex-config-copy', () => cachedConfig, 'Copy TOML Config');
     }
     wireRulesetPreview('codex', 'codex');
+
+    // ── Coexistence rules ──
+    wireRulesetPreview('coexistence', 'coexistence');
   }
 
   // ── Browser config (Setup tab) ──
@@ -3915,7 +3979,7 @@ export async function openSettingsModal() {
 
     const exploreOverlay = document.createElement('div');
     exploreOverlay.className = 'tag-delete-overlay';
-    exploreOverlay.style.zIndex = '10001';
+    exploreOverlay.style.zIndex = '50200';
 
     function tierColor(tier) {
       return tier === 'top' ? 'rgba(255, 180, 80, 0.7)'
@@ -4059,7 +4123,7 @@ export async function openSettingsModal() {
   // Add project
   overlay.querySelector('#cc-add-project').addEventListener('click', () => {
     const addOverlay = document.createElement('div');
-    addOverlay.className = 'tag-delete-overlay'; addOverlay.style.zIndex = '10001';
+    addOverlay.className = 'tag-delete-overlay'; addOverlay.style.zIndex = '50200';
     addOverlay.innerHTML = `
       <div class="tag-delete-modal settings-modal" style="max-width:480px">
         <h3><svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:var(--accent-blue);stroke-width:2;fill:none"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Project</h3>
@@ -4348,6 +4412,8 @@ export function initSettings() {
 
   const menubarBtn = document.getElementById('menubar-settings-btn');
   if (menubarBtn) menubarBtn.addEventListener('click', () => openSettingsModal());
+
+  registerAction('open-settings', openSettingsModal);
 
   // Expose sync functions for inline onclick attributes (if any remain)
   window.checkSyncStatus = checkSyncStatus;

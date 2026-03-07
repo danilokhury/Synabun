@@ -7,6 +7,7 @@
 import { emit, on } from './state.js';
 import { fetchClaudeSessions, searchMemories, startSessionIndexing, cancelSessionIndexing, fetchIndexingStatus } from './api.js';
 import { isGuest, hasPermission } from './ui-sync.js';
+import { storage } from './storage.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -23,18 +24,18 @@ let _indexingProgress = { completed: 0, total: 0, chunks: 0 };
 let _indexedSessionIds = new Set();
 let _indexingStatusLoaded = false;
 
-// ── Session labels (localStorage) ──
+// ── Session labels (server-synced via storage.js) ──
 const LABEL_PREFIX = 'synabun-session-label:';
 
 function getSessionLabel(sessionId) {
-  try { return localStorage.getItem(LABEL_PREFIX + sessionId) || ''; } catch { return ''; }
+  try { return storage.getItem(LABEL_PREFIX + sessionId) || ''; } catch { return ''; }
 }
 
 function setSessionLabel(sessionId, label) {
   try {
-    if (label) localStorage.setItem(LABEL_PREFIX + sessionId, label);
-    else localStorage.removeItem(LABEL_PREFIX + sessionId);
-  } catch { /* quota exceeded or private mode */ }
+    if (label) storage.setItem(LABEL_PREFIX + sessionId, label);
+    else storage.removeItem(LABEL_PREFIX + sessionId);
+  } catch { /* storage error */ }
 }
 
 // ── Public API ──
@@ -232,13 +233,14 @@ function renderProjectList(container) {
     .sort((a, b) => new Date(b.modified) - new Date(a.modified));
 
   if (allSessions.length > 0 && !_currentSearch) {
-    // Find the most recent session with actual content (skip empty/tag-only sessions)
+    // Find the most recent session with actual content (skip empty/tag-only/deleted sessions)
     const latest = allSessions.find(s => {
+      if (s.deleted) return false;
       const label = getSessionLabel(s.sessionId);
       if (label) return true;
       const cleaned = cleanPrompt(s.firstPrompt);
       return cleaned && cleaned.length > 0;
-    }) || allSessions[0]; // fallback to newest if all are empty
+    }) || allSessions.find(s => !s.deleted) || allSessions[0]; // fallback to newest non-deleted
 
     const previewText = getSessionLabel(latest.sessionId) || cleanPrompt(latest.firstPrompt) || '';
 
@@ -388,6 +390,12 @@ function renderSession(s, projectPath) {
     item.classList.add('resume-session-item--empty');
   }
 
+  // Dim deleted sessions (file removed by Claude Code, cached in SynaBun)
+  if (s.deleted) {
+    item.classList.add('resume-session-item--deleted');
+    item.title = 'Session file was cleaned up by Claude Code — no longer resumable';
+  }
+
   // Rename button handler
   const renBtn = item.querySelector('.resume-rename-btn');
   renBtn.addEventListener('click', (e) => {
@@ -398,6 +406,7 @@ function renderSession(s, projectPath) {
   // Launch on click (but not when renaming)
   item.addEventListener('click', (e) => {
     if (item.querySelector('.resume-rename-input')) return; // renaming in progress
+    if (s.deleted) return; // can't resume deleted sessions
     closeMenu();
     launchResume(s.sessionId, projectPath);
   });
@@ -548,10 +557,12 @@ async function performSearch(query, container) {
 // ── Terminal launch ──
 
 async function launchResume(claudeSessionId, projectPath) {
+  const label = getSessionLabel(claudeSessionId);
   emit('terminal:open-resume', {
     profile: 'claude-code',
     cwd: projectPath,
     resume: claudeSessionId,
+    label: label || '',
   });
 }
 

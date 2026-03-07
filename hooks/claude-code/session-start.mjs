@@ -336,13 +336,28 @@ async function main() {
 
   // --- SESSION BOOT SEQUENCE (fresh sessions only — skip on compaction) ---
   if (!isCompactRestart) {
+    const bootSteps = [
+      `1. Call \`recall\` with query: "recent sessions, ongoing work, known issues, decisions", project: "${project}", **recency_boost: true** — this prioritizes what was worked on most recently.`,
+    ];
+
+    if (features.userLearning !== false) {
+      bootSteps.push(
+        `2. Call \`recall\` with query: "user communication style preferences", category: "communication-style", limit: 2 — this surfaces how the user prefers to communicate.`,
+        `3. Output the greeting as your FIRST text. No other tool calls between the recalls and greeting.`,
+        `4. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
+      );
+    } else {
+      bootSteps.push(
+        `2. Output the greeting as your FIRST text. No other tool calls between recall and greeting.`,
+        `3. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
+      );
+    }
+
     context.push(
       `### Session Boot Sequence (MANDATORY ORDER)`,
       ``,
       `Your first response MUST follow this exact sequence:`,
-      `1. Call \`recall\` ONCE (no category filter) — query: recent sessions, ongoing work, known issues, decisions for project "${project}".${features.userLearning !== false ? ' This also surfaces user communication style preferences.' : ''}`,
-      `2. Output the greeting as your FIRST text. No other tool calls between recall and greeting.`,
-      `3. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
+      ...bootSteps,
       ``,
       `---`,
       ``,
