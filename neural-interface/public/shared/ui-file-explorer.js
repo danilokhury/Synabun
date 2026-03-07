@@ -1318,14 +1318,18 @@ export function initFileExplorer() {
     editorTextarea.addEventListener('keyup', () => { updateCursorPos(); updateLineHighlight(); });
     editorTextarea.addEventListener('select', () => { updateCursorPos(); updateLineHighlight(); });
 
-    // Track typing for undo — snapshot BEFORE first keystroke of each burst
     let _undoBurstTimer = null;
-    editorTextarea.addEventListener('beforeinput', (e) => {
-      if (e.inputType === 'insertText' || e.inputType === 'deleteContentBackward' || e.inputType === 'deleteContentForward') {
-        // On first keystroke of a new burst, push current state BEFORE the edit
+
+    editorTextarea.addEventListener('keydown', (e) => {
+      const ta = e.target;
+      const mod = e.ctrlKey || e.metaKey;
+
+      // Typing snapshot — capture pre-edit state on first key of each burst
+      const isTypingKey = e.key.length === 1 && !mod;
+      const isDeleteKey = (e.key === 'Backspace' || e.key === 'Delete') && !mod;
+      if ((isTypingKey || isDeleteKey) && !PAIRS[e.key]) {
         if (!_undoBurstOpen) {
           _undoBurstOpen = true;
-          const ta = editorTextarea;
           const top = _undoStack.length ? _undoStack[_undoStack.length - 1] : null;
           if (!top || top.value !== ta.value) {
             _undoStack.push({ value: ta.value, selStart: ta.selectionStart, selEnd: ta.selectionEnd });
@@ -1333,15 +1337,9 @@ export function initFileExplorer() {
             _redoStack = [];
           }
         }
-        // Reset burst after 400ms of no typing
         clearTimeout(_undoBurstTimer);
         _undoBurstTimer = setTimeout(() => { _undoBurstOpen = false; }, 400);
       }
-    });
-
-    editorTextarea.addEventListener('keydown', (e) => {
-      const ta = e.target;
-      const mod = e.ctrlKey || e.metaKey;
 
       // Ctrl+Z → undo
       if (e.key === 'z' && mod && !e.shiftKey) {

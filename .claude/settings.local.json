@@ -49,7 +49,8 @@
       "Bash(npm run:*)",
       "mcp__SynaBun__browser_extract_tiktok_videos",
       "Bash(node:*)",
-      "Bash(echo Tiny files \\(<500 bytes\\): $count_tiny:*)"
+      "Bash(echo Tiny files \\(<500 bytes\\): $count_tiny:*)",
+      "Bash(grep:*)"
     ]
   }
 }

@@ -417,12 +417,12 @@
   /* ── Tool Cards ── */
   .tool-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 10px;
-    margin-bottom: 20px;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+    margin-bottom: 16px;
   }
   .tool-card {
-    padding: 16px 12px;
+    padding: 12px 8px;
     border: 1px solid var(--b-light);
     border-radius: var(--r-card);
     background: var(--s-subtle);
@@ -733,6 +733,7 @@
     border-color: rgba(255,255,255,0.22);
   }
   .code-copy-wrap .instructions-preview { margin-bottom: 0; }
+  #mcpSetupCode { max-height: 140px; }
   .code-copy-label {
     position: absolute;
     bottom: 8px;
@@ -1019,21 +1020,12 @@
       <p class="subtitle">Select your AI coding tool to get setup instructions.</p>
       <div class="tool-grid" id="toolGrid"></div>
       <div id="mcpSetupPanel" style="display:none;">
-        <div id="mcpSetupLabel" style="font-size:12px;color:var(--t-secondary);margin-bottom:8px;"></div>
+        <div id="mcpSetupLabel" style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;"></div>
         <div class="code-copy-wrap" id="mcpCodeWrap">
-          <div class="instructions-preview" id="mcpSetupCode" style="max-height:180px;"></div>
+          <div class="instructions-preview" id="mcpSetupCode"></div>
           <span class="code-copy-label">copy</span>
         </div>
-        <div id="mcpSetupHint" style="margin-top:8px;font-size:11px;color:var(--t-muted);"></div>
-      </div>
-      <div id="coexistencePanel" style="display:none;margin-top:16px;">
-        <div style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;font-weight:600;">Using other AI memory tools?</div>
-        <div style="font-size:11px;color:var(--t-muted);margin-bottom:8px;">If you also use CogniLayer, mem0, or similar tools, paste these enforcement rules into your project's instructions file to prevent tool confusion.</div>
-        <div class="code-copy-wrap" id="coexistenceCodeWrap">
-          <div class="instructions-preview" id="coexistenceCode" style="max-height:140px;font-size:11px;white-space:pre-wrap;">Loading...</div>
-          <span class="code-copy-label">copy</span>
-        </div>
-        <div style="margin-top:4px;font-size:10px;color:var(--t-muted);">Paste into CLAUDE.md, GEMINI.md, AGENTS.md, or .cursorrules</div>
+        <div id="mcpSetupHint" style="margin-top:6px;font-size:11px;color:var(--t-muted);"></div>
       </div>
     </div>
 
@@ -2027,7 +2019,7 @@ function getMcpSetup(id) {
     return {
       label: 'Run this in your terminal to register SynaBun globally:',
       code: `claude mcp add SynaBun -s user -e DOTENV_PATH="${envPath}" -- node "${mcpPath}"`,
-      hint: 'This registers SynaBun for all your Claude Code projects. Restart Claude Code after running.',
+      hint: 'Registers SynaBun globally. Restart Claude Code after running.',
     };
   }
   if (id === 'cursor') {
@@ -2035,7 +2027,7 @@ function getMcpSetup(id) {
     return {
       label: 'Add to Cursor Settings > MCP Servers, or paste into .cursor/mcp.json:',
       code: json,
-      hint: 'Cursor: Settings (Ctrl+,) > search "MCP" > Add Server, or create .cursor/mcp.json in your project root.',
+      hint: 'Settings > MCP > Add Server, or save as .cursor/mcp.json',
     };
   }
   if (id === 'windsurf') {
@@ -2043,7 +2035,7 @@ function getMcpSetup(id) {
     return {
       label: 'Add to ~/.codeium/windsurf/mcp_config.json:',
       code: json,
-      hint: 'Windsurf: Cascade sidebar > hammer icon > Configure, or edit the config file directly.',
+      hint: 'Cascade sidebar > hammer icon > Configure',
     };
   }
   // codex, other
@@ -2051,7 +2043,7 @@ function getMcpSetup(id) {
   return {
     label: 'Add to your project\'s .mcp.json:',
     code: json,
-    hint: 'Place this file in your project root. Most MCP-compatible tools will auto-detect it.',
+    hint: 'Save as .mcp.json in your project root.',
   };
 }
 
@@ -2067,22 +2059,7 @@ function selectTool(id) {
   document.getElementById('mcpSetupHint').textContent = setup.hint;
   document.getElementById('mcpSetupPanel').style.display = '';
 
-  // Show coexistence rules panel and load content
-  const coexPanel = document.getElementById('coexistencePanel');
-  coexPanel.style.display = '';
-  const coexCode = document.getElementById('coexistenceCode');
-  if (!coexCode.dataset.loaded) {
-    fetch('/api/claude-code/ruleset?format=coexistence').then(r => r.json()).then(data => {
-      if (data.ok && data.ruleset) {
-        coexCode.textContent = data.ruleset;
-        coexCode.dataset.loaded = '1';
-      } else {
-        coexCode.textContent = 'Could not load coexistence rules.';
-      }
-    }).catch(() => { coexCode.textContent = 'Failed to load.'; });
-  }
-
-  resizeViewport(currentStep);
+  requestAnimationFrame(() => resizeViewport(currentStep));
 }
 
 function showMascotToast(msg, duration = 2000) {
@@ -2101,16 +2078,6 @@ document.getElementById('mcpCodeWrap').addEventListener('click', () => {
   label.textContent = 'copied!';
   label.style.opacity = '1';
   showMascotToast('Copied to clipboard!');
-  setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
-});
-
-document.getElementById('coexistenceCodeWrap').addEventListener('click', () => {
-  const code = document.getElementById('coexistenceCode').textContent;
-  navigator.clipboard.writeText(code);
-  const label = document.querySelector('#coexistenceCodeWrap .code-copy-label');
-  label.textContent = 'copied!';
-  label.style.opacity = '1';
-  showMascotToast('Coexistence rules copied!');
   setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
 });
 
