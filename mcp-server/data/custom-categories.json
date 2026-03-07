@@ -2,51 +2,325 @@
   "version": 1,
   "categories": [
     {
-      "name": "conversations",
-      "description": "Session summaries and conversation indexing",
-      "created_at": "2026-03-05T18:38:57.930Z"
+      "name": "criticalpixel",
+      "description": "Branch dedicated to knowledge mainly related to criticalpixel.gg",
+      "created_at": "2026-02-15T02:30:30.021Z",
+      "color": "#7C4DFF",
+      "is_parent": true
     },
     {
-      "name": "communication-style",
-      "description": "User communication patterns and preferences",
-      "created_at": "2026-03-05T18:38:57.930Z"
+      "name": "changelog",
+      "description": "changelog",
+      "created_at": "2026-02-15T02:30:37.617Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "synabun",
+      "description": "Knowledge about the SynaBun memory system itself — architecture, MCP server, neural interface, hooks, integrations",
+      "created_at": "2026-02-15T17:22:26.448Z",
+      "is_parent": true
+    },
+    {
+      "name": "learning",
+      "description": "learning",
+      "created_at": "2026-02-15T17:45:23.357Z",
+      "color": "#ed7d31"
+    },
+    {
+      "name": "databases",
+      "description": "databases",
+      "created_at": "2026-02-15T17:45:27.260Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "arch-v2",
+      "description": "System architecture, components, data flow, config, SQLite storage, local embeddings",
+      "created_at": "2026-02-16T03:58:28.685Z",
+      "parent": "synabun",
+      "color": "#3b82f6"
+    },
+    {
+      "name": "mcp-tools",
+      "description": "The 9 MCP tools — parameters, behavior, quirks, usage patterns, scoring algorithm",
+      "created_at": "2026-02-16T03:58:35.859Z",
+      "parent": "synabun",
+      "color": "#8b5cf6"
+    },
+    {
+      "name": "neural-interface",
+      "description": "3D visualization UI, Express REST API, graph edges, memory/category/connection endpoints",
+      "created_at": "2026-02-16T03:58:39.255Z",
+      "parent": "synabun",
+      "color": "#06b6d4"
+    },
+    {
+      "name": "hooks",
+      "description": "Claude Code lifecycle hooks — SessionStart, UserPromptSubmit, installation, customization",
+      "created_at": "2026-02-16T03:58:42.487Z",
+      "parent": "synabun",
+      "color": "#f59e0b"
+    },
+    {
+      "name": "setup",
+      "description": "Installation, onboarding wizard, database setup, local embeddings, .mcp.json generation",
+      "created_at": "2026-02-16T03:58:45.948Z",
+      "parent": "synabun",
+      "color": "#22c55e"
+    },
+    {
+      "name": "development",
+      "description": "Contributing, code style, project structure, security model, testing",
+      "created_at": "2026-02-16T03:58:48.891Z",
+      "parent": "synabun",
+      "color": "#ef4444"
+    },
+    {
+      "name": "deals",
+      "description": "deals",
+      "created_at": "2026-02-16T15:10:58.484Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "conversations",
+      "description": "Session indexes and conversation logs. ONLY for recording session summaries after compaction.",
+      "created_at": "2026-03-03T23:08:35.506Z"
     },
     {
       "name": "plans",
-      "description": "Implementation plans stored after plan mode approval",
-      "created_at": "2026-03-05T18:38:57.930Z",
-      "is_parent": true,
-      "color": "#06d6a0"
+      "description": "Implementation plans stored after plan mode approval. Sub-categorized by project name.",
+      "created_at": "2026-03-03T23:10:13.874Z",
+      "color": "#06d6a0",
+      "is_parent": true
     },
     {
-      "name": "synabunwebsite",
-      "description": "Knowledge and context for the SynaBunWebsite project",
-      "is_parent": true,
-      "created_at": "2026-03-05T18:38:57.930Z"
+      "name": "social",
+      "description": "Social media interactions, community engagement, Facebook groups, and online communication.",
+      "created_at": "2026-03-03T23:10:17.899Z",
+      "color": "#ec4899",
+      "is_parent": true
     },
     {
-      "name": "synabunwebsite-project",
-      "description": "General project knowledge, decisions, and milestones for SynaBunWebsite",
-      "parent": "synabunwebsite",
-      "created_at": "2026-03-05T18:38:57.930Z"
+      "name": "bug-fixes",
+      "description": "Bug fixes, debugging sessions, and resolved issues in CriticalPixel",
+      "created_at": "2026-03-03T23:10:22.043Z",
+      "parent": "criticalpixel"
     },
     {
-      "name": "synabunwebsite-architecture",
-      "description": "System design, tech stack, data flow, and component architecture for SynaBunWebsite",
-      "parent": "synabunwebsite",
-      "created_at": "2026-03-05T18:38:57.930Z"
+      "name": "bugs-to-fix",
+      "description": "Known bugs and issues to be fixed in CriticalPixel",
+      "created_at": "2026-03-03T23:10:25.040Z",
+      "parent": "criticalpixel"
     },
     {
-      "name": "synabunwebsite-bugs",
-      "description": "Bug fixes, debugging sessions, and known issues for SynaBunWebsite",
-      "parent": "synabunwebsite",
-      "created_at": "2026-03-05T18:38:57.930Z"
+      "name": "design-system",
+      "description": "UI design system, component styles, and visual design decisions for CriticalPixel",
+      "created_at": "2026-03-03T23:10:28.366Z",
+      "parent": "synabun"
     },
     {
-      "name": "synabunwebsite-config",
-      "description": "Configuration, deployment, environment, and infrastructure for SynaBunWebsite",
-      "parent": "synabunwebsite",
-      "created_at": "2026-03-05T18:38:57.930Z"
+      "name": "effects-and-canvas",
+      "description": "Visual effects, canvas rendering, animations, and graphical elements in CriticalPixel",
+      "created_at": "2026-03-03T23:10:31.533Z",
+      "parent": "synabun"
+    },
+    {
+      "name": "site-structure",
+      "description": "Page structure, routing, layouts, navigation, and information architecture for CriticalPixel",
+      "created_at": "2026-03-03T23:10:34.888Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "project",
+      "description": "Project-level info, goals, milestones, and general project context for CriticalPixel",
+      "created_at": "2026-03-03T23:10:38.463Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "ideas",
+      "description": "Feature ideas, brainstorms, and future plans for CriticalPixel",
+      "created_at": "2026-03-03T23:10:41.501Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "research",
+      "description": "Research findings, competitive analysis, and technology investigations",
+      "created_at": "2026-03-03T23:10:45.096Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "synabun-bugs",
+      "description": "Bug fixes, debugging sessions, and resolved issues in SynaBun",
+      "created_at": "2026-03-03T23:10:48.440Z",
+      "parent": "synabun"
+    },
+    {
+      "name": "synabun-website",
+      "description": "SynaBun marketing website — design, content, features, and deployment",
+      "created_at": "2026-03-03T23:10:52.115Z",
+      "parent": "synabun",
+      "is_parent": true
+    },
+    {
+      "name": "automations",
+      "description": "Automated workflows, scripts, and scheduled tasks",
+      "created_at": "2026-03-03T23:10:55.327Z",
+      "parent": "synabun"
+    },
+    {
+      "name": "plans-criticalpixel",
+      "description": "Implementation plans for CriticalPixel project",
+      "created_at": "2026-03-03T23:10:58.569Z",
+      "parent": "plans"
+    },
+    {
+      "name": "plans-synabun-website",
+      "description": "Implementation plans for SynaBun Website project",
+      "created_at": "2026-03-03T23:11:02.087Z",
+      "parent": "plans"
+    },
+    {
+      "name": "communication-style",
+      "description": "User communication preferences, tone, and interaction style",
+      "created_at": "2026-03-03T23:11:05.285Z",
+      "parent": "learning"
+    },
+    {
+      "name": "personality",
+      "description": "User personality traits, preferences, and behavioral patterns",
+      "created_at": "2026-03-03T23:11:08.146Z",
+      "parent": "learning"
+    },
+    {
+      "name": "social-interactions",
+      "description": "Social media posts, community interactions, and engagement activities",
+      "created_at": "2026-03-03T23:11:12.027Z",
+      "parent": "social"
+    },
+    {
+      "name": "facebook-groups",
+      "description": "Facebook group management, posts, and community building",
+      "created_at": "2026-03-03T23:11:15.566Z",
+      "parent": "social"
+    },
+    {
+      "name": "criticalpixel-project",
+      "description": "General project knowledge, decisions, and milestones for CriticalPixel",
+      "parent": "criticalpixel",
+      "created_at": "2026-03-05T04:23:21.169Z"
+    },
+    {
+      "name": "criticalpixel-architecture",
+      "description": "System design, tech stack, data flow, and component architecture for CriticalPixel",
+      "parent": "criticalpixel",
+      "created_at": "2026-03-05T04:23:21.169Z"
+    },
+    {
+      "name": "criticalpixel-bugs",
+      "description": "Bug fixes, debugging sessions, and known issues for CriticalPixel",
+      "parent": "criticalpixel",
+      "created_at": "2026-03-05T04:23:21.169Z"
+    },
+    {
+      "name": "criticalpixel-config",
+      "description": "Configuration, deployment, environment, and infrastructure for CriticalPixel",
+      "parent": "criticalpixel",
+      "created_at": "2026-03-05T04:23:21.169Z"
+    },
+    {
+      "name": "synabun-project",
+      "description": "General project knowledge, decisions, and milestones for Synabun",
+      "parent": "synabun",
+      "created_at": "2026-03-05T04:23:21.169Z"
+    },
+    {
+      "name": "synabun-architecture",
+      "description": "System design, tech stack, data flow, and component architecture for Synabun",
+      "parent": "synabun",
+      "created_at": "2026-03-05T04:23:21.169Z"
+    },
+    {
+      "name": "synabun-config",
+      "description": "Configuration, deployment, environment, and infrastructure for Synabun",
+      "parent": "synabun",
+      "created_at": "2026-03-05T04:23:21.169Z"
+    },
+    {
+      "name": "architecture",
+      "description": "Synabun project architecture",
+      "created_at": "2026-03-05T23:37:48.205Z",
+      "parent": "synabun"
+    },
+    {
+      "name": "plans-synabun",
+      "description": "Implementation plans for synabun project",
+      "parent": "plans",
+      "created_at": "2026-03-07T00:50:00.874Z"
+    },
+    {
+      "name": "synabun-website-architecture",
+      "description": "System design, tech stack, data flow, and component architecture for Synabun Website",
+      "parent": "synabun-website",
+      "created_at": "2026-03-07T20:10:09.821Z"
+    },
+    {
+      "name": "synabun-website-bugs",
+      "description": "Bug fixes, debugging sessions, and known issues for Synabun Website",
+      "parent": "synabun-website",
+      "created_at": "2026-03-07T20:10:09.821Z"
+    },
+    {
+      "name": "synabun-website-canvas",
+      "description": "3D canvas effects, WebGL rendering, MCP logo animations",
+      "created_at": "2026-03-07T20:15:32.420Z",
+      "parent": "synabun-website",
+      "color": "#06b6d4"
+    },
+    {
+      "name": "synabun-website-whiteboard",
+      "description": "Whiteboard section, storyboard cards, doodles, showcase scene",
+      "created_at": "2026-03-07T20:15:33.750Z",
+      "parent": "synabun-website",
+      "color": "#8b5cf6"
+    },
+    {
+      "name": "synabun-website-showcase",
+      "description": "NeuralOS showcase pages and interactive demos",
+      "created_at": "2026-03-07T20:15:34.702Z",
+      "parent": "synabun-website",
+      "color": "#f59e0b"
+    },
+    {
+      "name": "synabun-website-docs",
+      "description": "Documentation page, navigation links, docs UI design",
+      "created_at": "2026-03-07T20:15:35.298Z",
+      "parent": "synabun-website",
+      "color": "#22c55e"
+    },
+    {
+      "name": "synabun-website-project",
+      "description": "General project knowledge, decisions, and milestones for Synabun Website",
+      "parent": "synabun-website",
+      "created_at": "2026-03-07T20:21:44.367Z"
+    },
+    {
+      "name": "synabun-website-config",
+      "description": "Configuration, deployment, environment, and infrastructure for Synabun Website",
+      "parent": "synabun-website",
+      "created_at": "2026-03-07T20:21:44.367Z"
+    },
+    {
+      "name": "synabun-website-mcp-tools",
+      "description": "MCP Toolkit section — tool cards, marquee, filters, service logos",
+      "created_at": "2026-03-07T20:35:00.093Z",
+      "parent": "synabun-website",
+      "color": "#3b82f6"
+    },
+    {
+      "name": "synabun-website-ui",
+      "description": "Hero section, download section, general layout, copy changes, decorative elements",
+      "created_at": "2026-03-07T20:35:01.479Z",
+      "parent": "synabun-website",
+      "color": "#ec4899"
     }
   ]
 }

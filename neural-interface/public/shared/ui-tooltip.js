@@ -62,9 +62,24 @@ export function initTooltip() {
   function show(el) {
     let text = el.getAttribute('data-tooltip');
     if (!text) return;
-    if (text.length > 200) text = text.slice(0, 200) + '\u2026';
     clearTimeout(hideTimer);
-    tip.querySelector('.ui-tooltip-text').textContent = text;
+    const textEl = tip.querySelector('.ui-tooltip-text');
+    const nlIdx = text.indexOf('\n');
+    if (nlIdx !== -1) {
+      let main = text.slice(0, nlIdx);
+      if (main.length > 200) main = main.slice(0, 200) + '\u2026';
+      const mainNode = document.createTextNode(main);
+      const sub = document.createElement('span');
+      sub.className = 'ui-tooltip-sub';
+      sub.textContent = text.slice(nlIdx + 1);
+      textEl.textContent = '';
+      textEl.appendChild(mainNode);
+      textEl.appendChild(document.createElement('br'));
+      textEl.appendChild(sub);
+    } else {
+      if (text.length > 200) text = text.slice(0, 200) + '\u2026';
+      textEl.textContent = text;
+    }
     currentTarget = el;
     tip.style.display = 'block';
     tip.offsetHeight; // force reflow

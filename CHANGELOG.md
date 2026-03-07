@@ -1,358 +1,116 @@
-# Changelog
-
-All notable changes to SynaBun will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
-
-## [1.5.0] - 2026-02-25
-
 ### Added
 
-**Focus Mode Whiteboard**
-- Full-featured whiteboard in Focus Mode — 6 tools: Select, Text, Arrow, Shape, Pencil, Image Paste
-- **Text tool** — click canvas to create hand-drawn style text cards (Caveat font), contenteditable with auto-height
-- **Arrow tool** — click-click placement with bezier curve preview, anchor snapping to element edges (30px threshold), curved arrowheads
-- **Shape tool** — hand-drawn SVG shapes (rectangle, pill, circle) with seeded PRNG wobble for a consistent sketched look per element; double-click cycles subtypes
-- **Pencil tool** — smooth freehand drawing with Ramer-Douglas-Peucker point simplification and Catmull-Rom → cubic bezier conversion
-- **Image paste** — Ctrl+V reads clipboard images, compresses (max 1920px, JPEG 0.8), places centered on canvas
-- **Undo/Redo** — 50-entry stack, Ctrl+Z / Ctrl+Shift+Z, supports all operations including multi-element actions
-- **Copy/Paste** — Ctrl+C copies selected elements, Ctrl+V pastes with offset
-- **Floating context menu** — glassmorphic popover above selected elements with Duplicate, Copy, Delete actions
-- **Multi-select** — marquee (rubber band) selection by dragging on empty canvas, Shift-click additive selection, Ctrl+A to select all
-- **Multi-drag** — dragging any selected element moves all selected elements together (including arrows and pen strokes)
-- **Multi-delete** — Delete/Backspace removes all selected elements at once
-- **Multi-copy/paste** — Ctrl+C/V works on entire selection with offset positioning
-- **Multi-context menu** — count badge with "Duplicate All" / "Delete All" buttons
-- **Color picker** — applies color to all selected elements simultaneously
-- **Workspace persistence** — whiteboard elements saved/restored per workspace with debounced storage (600ms)
-- **Zoom-compensated creation** — text, images, and paste offsets scale inversely with zoom so elements appear at consistent screen size
+- **Browser Click Auto-Hints on Failure** — When `browser_click` fails with "No elements match selector", the error response now includes a list of up to 15 visible interactive elements on the page (buttons, textboxes, links, inputs) with their role, text content, aria-label, and placeholder. The MCP handler formats these into a readable list appended to the error message, followed by a "Use browser_snapshot for full page structure" nudge. This eliminates the trial-and-error pattern where the AI would guess selectors blindly after a failed click — it now gets immediate feedback on what's actually clickable. Helper function `getInteractiveHints(page)` is reusable for extending to fill/type/hover endpoints later.
 
-**Session Sharing & Invitation System**
-- New Share button in `#topright-controls` toolbar with session count badge
-- Invite key generation — auto-generate (`synabun_inv_` + 48 hex chars, 288-bit entropy) or custom password (min 6 chars)
-- Standalone auth page at `/invite` — dark glassmorphic design, key input with pre-fill from URL fragment (`#key`)
-- Cookie-based session auth — `HttpOnly` cookie with `SameSite=None; Secure`, 24-hour TTL, validated per-request
-- Cloudflare tunnel start/stop directly from the Share dropdown — play/stop button with spinning animation during startup, auto-polling for tunnel URL
-- Custom proxy support — toggle between Cloudflare tunnel and user-supplied base URL (ngrok, custom domain, VPS reverse proxy)
-- Invite URL generation — copies tunnel/proxy URL with optional `#key` fragment for one-click authentication
-- Key rotation — generating a new key automatically revokes all existing sessions
-- Session management — active session count display, "Revoke All" button
-- Permission-controlled Neural Interface access for authenticated invitees — graph and explorer always available, terminal/browser/whiteboard/memories/cards/skills gated by owner-configured permissions
-- WebSocket upgrade handler expanded to allow cookie-authenticated connections through tunnel middleware
-- 6 new REST endpoints: `GET /api/invite/status`, `POST /api/invite/key`, `DELETE /api/invite/key`, `DELETE /api/invite/sessions`, `PUT /api/invite/proxy`, `POST /invite/auth`
+- **Offline Fallback Page (Service Worker)** — When the Neural Interface server isn't running, users now see a friendly "Server is sleeping" page instead of `ERR_CONNECTION_REFUSED`. Uses a service worker (`sw.js`) that caches `offline.html` on first visit and serves it on navigation fetch failure. The offline page is fully self-contained (all CSS/SVG/JS inline, zero external dependencies) with a sleeping SynaBun mascot (closed pill-eyes, floating Z's, breathing animation), the start command with a copy button, and auto-retry that checks every 3 seconds and auto-reloads when the server comes back. SW registration added to `index.html`, `index2d.html`, `onboarding.html`, and `invite.html`.
 
-**Real-time Multi-Client Sync**
-- `/ws/sync` WebSocket channel — all connected Neural Interface clients receive live data-mutation broadcasts
-- Automatic graph and category refresh within 300ms of any change by another client
-- Broadcasts on all 10 data-mutating endpoints: memory update/trash/delete/restore, category create/update/delete, trash purge, category logo upload/remove
-- Debounced `data:reload` — rapid mutations (e.g. bulk operations) coalesced into a single refresh cycle
-- Auto-reconnect with 5-second interval on disconnect
+- **PWA App Mode** — Added `manifest.json` with `display: standalone` to enable installing the Neural Interface as a standalone app (no address bar, no tabs). Server now auto-opens Edge in `--app` mode on startup, falling back to Chrome then generic browser. Skip auto-open with `--no-open` flag.
 
-**Bidirectional Card Sync**
-- Memory detail cards sync in real-time across all session participants — open, close, move, resize, compact, and expand
-- Client-originated messages relayed through the server to all other connected clients
-- `_isRemoteCardOp` echo prevention flag — same pattern as whiteboard's `_isRemoteUpdate`
-- Remote compact/expand applied instantly without animation for responsiveness
-- Terminal session list sync — new sessions auto-connect on remote clients, deleted sessions auto-close
+- **User Learning Deduplication (Reflect-First)** — Rewrote the user learning nudge and stop block instructions to prefer `reflect` (update existing memory) over `remember` (create new). Nudge now says: "AVOID DUPLICATES: If an existing memory already covers the same patterns, use `reflect` to UPDATE it." Steps changed from "1. recall → 2. remember" to "1. recall → 2. reflect existing or remember new." Added `userLearningObserved` flag in the session tracking file — once a style observation is stored or updated, all subsequent nudges in the same session are skipped. `post-remember.mjs` now clears `userLearningPending` on both `remember` (with `communication-style`/`personality` category) and `reflect` (when `userLearningPending` is true). `softCleanupFlag()` preserves `userLearningObserved` across soft resets. Prevents the duplicate memories problem where each nudge created a new overlapping entry.
 
-**Granular Guest Permissions**
-- Owner-controlled feature toggles: Memories, Memory Cards, Whiteboard, Terminal, Skills Studio, Browser
-- Permission toggle UI in Share dropdown — pill-style switches with teal (#64FFDA) active state, optimistic toggling with revert on failure
-- Persisted to `data/invite-permissions.json`, included in system backups
-- Server-enforced — admin-only middleware blocks guest access to 14 sensitive endpoint prefixes (settings, connections, setup, invite management, MCP config, keybinds, CLI)
-- Feature permission middleware blocks guest mutations (POST/PUT/PATCH/DELETE) for disabled features; read (GET) always allowed
-- WebSocket upgrade blocking — guests denied `/ws/terminal/` and `/ws/browser/` when permission is off
-- Relay permission checks — server validates guest permissions before broadcasting card and terminal sync messages
-- Client-side awareness — whiteboard skips sync sends, detail cards skip sync sends, terminal guards new-session creation
-- Share dropdown hidden entirely for guest sessions
-- `permissions:changed` broadcast — real-time permission updates pushed to all clients when owner toggles
+- **User Learning Test Suite** — `test-user-learning.mjs` with 21 tests and 75 assertions covering the full user learning hook lifecycle. Tests threshold timing, nudge guardrail content (GOOD/BAD examples, category prohibitions, reflect instructions, duplicate warnings), stop block guardrail content, retry enforcement with max-retries give-up, post-remember flag clearing for `communication-style`/`personality` categories, reflect clearing when pending is true, reflect NOT setting observed when pending is false, `userLearningObserved` skipping subsequent nudges, flag preservation for unrelated categories, feature toggle disable, `softCleanupFlag()` field preservation (including `userLearningObserved`), full nudge→block→clear lifecycle, and edit-heavy sessions. Uses isolated test config (`userLearningThreshold: 3`) with save/restore of production `hook-features.json`.
 
-**Multi-Card Detail Panel**
-- Converted from single `#detail-panel` to dynamic `.detail-card` spawn system — each memory click opens an independent card
-- Cards are draggable, resizable, compactable (compact mode: 240px, expanded: 480px), and closeable
-- Z-index management — clicking a card brings it to front
-- Cascade positioning — each new card offset by 30px from previous
-- 20-card soft limit with console warning
-- Full persistence via localStorage — saves positions, sizes, compact/expanded state per memory
-- Restored on boot after data loads
-- Fade-in + scale entrance animation
+- **User Learning Anti-Misuse Guardrails** — Rewrote nudge text in `prompt-submit.mjs` and stop block messages in `stop.mjs` with explicit GOOD/BAD examples and category prohibitions. Nudge and block text now include: "Category MUST be `communication-style` — never `conversations`", "Content MUST describe HOW the user communicates — NOT what was worked on", "This is NOT a session summary", with concrete good example ("User gives terse instructions...") and bad example ("User asked about hooks and we fixed bugs..."). First retry gets full instructions; subsequent retries get a shorter reminder. Addresses observed failure mode where Claude stored session summaries in `conversations` instead of style observations in `communication-style`.
 
-**Centralized Keyboard Shortcuts**
-- Single global dispatcher replacing 8 hardcoded listeners across 4 modules
-- Modules register actions via `registerAction(actionId, handler)` — O(1) combo-to-action dispatch
-- Configurable keybind modal — click-to-record UX with pulse animation, conflict detection with swap, unbind, reset-to-defaults
-- Server persistence — `data/keybinds.json` with `GET/PUT /api/keybinds` endpoints
-- Default keybinds: `C` categories, `K` skills, `T` terminal, `F` explorer, `/` search, `?` help, `M` minimap (2D)
-- CLI launch keybinds — launch Claude, Codex, or Gemini terminals from keyboard with project picker and auto-detach to floating window
-- Brand icons (Claude blue, Codex green, Gemini gold) displayed in keybind editor
-- Keycap-style button rendering in modal
+- **Configurable User Learning Max Nudges** — `userLearningMaxNudges` is now configurable via `hook-features.json` (default: 3). Previously hardcoded as `USER_LEARNING_MAX_NUDGES`. Renamed constant to `USER_LEARNING_MAX_NUDGES_DEFAULT` and reads `features.userLearningMaxNudges` at runtime, falling back to the default.
 
-**2D Visualization Performance**
-- Viewport culling — cards, links, glows, and labels skip rendering when off-screen
-- Link batching — 43k links batched into single `beginPath/stroke` call (was 43k individual draw calls)
-- Neighbor adjacency map — `_neighborMap` built once in `applyGraphData()`, focus-mode dimming O(1) per card
-- Text cache — wrapped text only recalculated on content change
-- DPR-aware canvas — buffer dimensions scaled by device pixel ratio, all coordinate transforms account for DPR
-- Background gradient cached and only recreated on resize
+- **Stop Hook User Learning Debug Logging** — Added `debugUL()` function in `stop.mjs` that appends timestamped `STOP:` prefixed entries to `data/user-learning-debug.log`. Logs CHECK 2.5 entry/skip decisions, BLOCK actions with retry count, and GIVE UP events. Complements existing `CHECK:/FIRE:/SKIP:` logging from `prompt-submit.mjs` for full observability into the user learning enforcement pipeline.
 
-**2D Layout Overhaul**
-- Two-pass layout algorithm — compute radii first, then re-position with proper spacing
-- Increased inner radius (140px parent, 100px child) to prevent card-label overlap
-- 6-pass collision resolution with 80px padding, including cross-parent collision handling
-- Orbital clustering with proper radius-based child positioning
+- **Native Session Auto-Store on End** — New CHECK 4 in `stop.mjs` that fires after all other enforcement checks pass. When a session had meaningful activity (3+ user messages or any file edits), blocks once to prompt Claude to store a brief session summary in `conversations` with `source: "auto-saved"`. Tracks `autoStoreTriggered` flag in pending-remember to fire only once per session. Controlled by `autoStoreOnEnd` feature flag in `hook-features.json` (defaults to enabled). Addresses the gap identified in onboarding reports: sessions ending without any conversation memory unless compaction was triggered.
 
-**Enhanced Search**
-- Non-matching memories vanish completely (opacity 0) instead of dimming
-- Matching memories visually boosted — 1.3-1.8x scale, colored glow, border highlights
-- Links filtered — hide links where neither endpoint matches the search
-- All three 2D LOD levels (full card, simple card, dot) now properly filter by search
+- **FTS5 Keyword Fallback in Recall** — Added `searchMemoriesFTS()` to `sqlite.ts` that queries the `memories_fts` table using FTS5 MATCH with BM25 ranking. In `recall.ts`, when vector similarity results are weak (top score < 0.45 or fewer results than requested), automatically falls back to full-text keyword search and merges results. Helps with exact identifiers, error codes, function names, and proper nouns that embedding models handle poorly. Excludes duplicates already found by vector search. Non-fatal: if FTS5 is unavailable, recall works normally via vector search only.
 
-**Minimap (2D)**
-- Drag-to-reposition — drag minimap container anywhere on screen with 4px dead zone and viewport clamping
-- Toggle fix — CSS class mismatch between `.hidden` and `.visible` resolved, `drawMinimap()` no longer overrides toggle state
-- Keybind support — `M` key toggles minimap (configurable in keybind editor)
-- Focus mode integration — minimap auto-hides when entering Focus Mode, restores on exit
+- **Multi-Tool Coexistence Rules** — New "Coexistence with Other Tools" section in `CLAUDE.md` that explicitly declares SynaBun's ownership of all memory operations and provides enforcement rule templates for users running SynaBun alongside other AI tools (CogniLayer, mem0, etc.). Includes copyable enforcement template with `[OtherTool]` placeholders.
+  - **Settings UI**: New "Multi-Tool Coexistence" collapsible section in Settings > Setup tab with preview + copy button, served via `/api/claude-code/ruleset?format=coexistence`
+  - **Onboarding**: Step 5 (AI Tool Integration) now shows coexistence rules panel below MCP config with copy button. Appears when a tool is selected.
+  - **API**: Ruleset endpoint extended with `coexistence` format option
 
-**Terminal Peek Dock**
-- Thin 28px fixed bar at bottom of screen when terminal panel is hidden but sessions exist
-- Shows miniature session tab pills matching active terminal sessions
-- Click to reopen terminal panel
+- **MCP Tool Permissions Sync** — Added 7 missing tools to `SYNABUN_TOOL_PERMISSIONS` and 6 missing browser extractors to `SYNABUN_TOOL_CATEGORIES` in the companion app server, bringing both arrays to the full 46 SynaBun tools that the MCP server registers. Settings UI now displays all 47 entries (46 SynaBun + 1 WebSearch). Missing tools: `browser_extract_tiktok_videos`, `browser_extract_tiktok_search`, `browser_extract_tiktok_studio`, `browser_extract_tiktok_profile`, `browser_extract_wa_chats`, `browser_extract_wa_messages`, and `tictactoe`.
 
-### Changed
+- **Documentation Sync (46 tools)** — Updated all documentation to reflect the full 46-tool inventory across 8 files:
+  - `README.md` — Architecture diagram (11→46), MCP Tools section restructured into 6 groups (Memory 9, Browser 26, Whiteboard 5, Cards 5, Loop 1, TicTacToe 1), CLAUDE.md template updated
+  - `llms-full.txt` — Tool count header (9→46), added all browser/whiteboard/card/loop tool docs, Node.js version (18+→22.5+)
+  - `index.html` — FAQ structured data ("9 tools"→"46 tools")
+  - `docs.html` — Key capabilities ("11 MCP tools"→"46"), tool table updated (`category_*`→single `category` + `tictactoe`), Browser Tools count (16→18) with `reload`, `upload`, separate `go_back`/`go_forward`
+  - `CONTRIBUTING.md` — 3 stale "11 tools" references updated
+  - `LICENSE-COMMERCIAL.md` — "11 MCP tools"→"46 MCP tools"
+  - Memory seeds — Removed hardcoded tool counts
 
-- Visualization toggle uses smooth crossfade animation (0.45s opacity transition) instead of instant `display:none`
-- Visualization toggle icon changed from sparkles to Lucide eye icon
-- Workspace dropdown restyled — removed `.glass` class, explicit glassmorphic styling matching toolbar buttons (`rgba(20,20,24,0.82)`, blur, 12px radius)
-- Category sidebar header reworked to match detail-panel pattern — unified drag-handle, SVG icon action buttons (select-all, deselect-all, label-toggle, label-size, pin)
-- Deselecting categories now immediately hides associated links (was only hiding nodes)
-- Label visibility toggle properly checked in both 3D and 2D render loops (was only applied in sidebar UI)
-- Dropdown menus restyled — 8px radius, keyboard-key shortcut badges, 5px padding, refined separators
-- Explorer keybind changed from `E` to `F`
+- **CLI Status Indicator** — Real-time status pill in the title bar header showing Claude Code / Codex / Gemini session state
+  - Three states: **Working** (pulsing blue dot), **Idle** (dim gray dot), **Action** (pulsing amber dot)
+  - Detects idle by scanning cursor line and up to 3 lines above for prompt characters (`❯` / `>` / `$` / `%`), verifying gap lines between prompt and cursor are empty
+  - Detects action needed by scanning visible rows for permission prompts (Allow/Yes/No)
+  - Aggregates across all active CLI sessions (action > working > idle priority)
+  - Auto-hides when no CLI sessions are active
+  - 600ms debounce on output to avoid flickering during rapid streaming, 2s poll interval for catching missed transitions
+
+- **Task Notifications (Sound + Push)** — Audio alerts and browser push notifications when a CLI task finishes or needs attention
+  - Fires only on Working → Idle/Action/Done transitions to avoid noise
+  - **Action needed**: urgent double-beep (880Hz) for permission prompts
+  - **Task complete**: gentle single tone (660Hz) for idle/done states
+  - Browser push notification when the tab is not focused (title: "Action Required" or "Task Complete", body: session label)
+  - Web Audio API oscillator — no audio files needed
+  - Toggle in Settings > Terminal > Notifications, prompts for browser notification permission on enable
+  - Notifications enabled by default, persisted via `TERMINAL_NOTIFICATIONS` storage key
+
+- **Project File Explorer** — New sidebar panel for browsing actual project files directly in the Neural Interface
+  - Shows ALL files including dotfiles (`.env`, `.gitignore`, `.claude/`, etc.)
+  - Lazy-loading directory tree with expand/collapse, search bar, and sort modes (name/size/date)
+  - **Project selector dropdown** — custom dropdown with folder icons, active project highlight, and chevron
+    - Browse files from any registered project (loaded from `data/claude-code-projects.json`)
+    - "Add project..." option opens native OS folder picker to register new projects
+    - Selection persisted across sessions
+    - Path security validates against all registered project roots
+  - Search bar with persistent magnifying glass icon
+  - Git status badges on modified/added/deleted/untracked files
+  - Stacking layout — sits adjacent to Memory Explorer, both can be open simultaneously
+  - Toggleable from View menu ("File Explorer") and keybind (`E`)
+  - Keybind appears in keybind selector modal and is fully rebindable
+  - Resizable right edge (240–500px), state persisted across sessions
+  - **Inline file editor** — right-click any file for context menu (Copy Path / Edit File)
+    - Opens as a standalone panel sliding into the workspace from the file explorer's right edge
+    - Line numbers gutter with scroll-synced highlighting
+    - Status bar showing detected language, cursor position (Ln/Col), file size, and encoding
+    - Word wrap enabled by default, toggleable from header button
+    - Custom undo/redo stack (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z) with debounced typing snapshots — up to 200 levels
+    - Tab indent (2 spaces), Shift+Tab unindent for selected lines
+    - Auto-indent on Enter — carries over current line's leading whitespace
+    - Ctrl+D duplicate current line, Ctrl+/ toggle line comment (language-aware: `//` for JS/TS, `#` for Python/Shell, `--` for SQL, etc.)
+    - Bracket and quote auto-close — `()[]{}""''`` with selection wrapping and Backspace pair deletion
+    - Find & Replace bar (Ctrl+F find, Ctrl+H replace) — case-insensitive search with match count, Replace / Replace All buttons, Enter/Shift+Enter cycling, Escape to close
+    - Go to Line (Ctrl+G) — number input bar, jumps to line and scrolls into view
+    - Current line highlight — subtle band tracking cursor position
+    - Scroll indicator — thin scrollmap on right edge showing viewport position
+    - Keyboard shortcuts help (?) button — popover listing all 10 editor keybinds
+    - Dirty tracking with yellow dot indicator and enabled/disabled Save/Discard buttons
+    - Unsaved changes prompt on back navigation and panel close
+    - Markdown preview: Raw/Preview toggle appears for `.md` files, renders full markdown (headers, lists, tables, code blocks, links, blockquotes)
+    - Ctrl+S / Cmd+S save
+    - Workspace toolbar auto-hides when editor is open
+    - 1MB size guard, binary file detection, and project path security validation
+    - Guest-protected via `ADMIN_ONLY_PREFIXES`
+  - New `/api/file-content` (GET/POST), `/api/project-files`, and `/api/projects` server endpoints
+  - Reusable `validateProjectPath()` helper extracted from project-files security logic
+  - Visual style matches the Memory Explorer (dark sidebar, filter, toolbar, tree, footer)
+
+- **Memory Explorer Tooltip Date** — Hovering a memory in the explorer sidebar now shows the creation date beneath the preview text. Date appears as a dimmer, smaller subtitle line (e.g. "Mar 6, 2026"). The tooltip system was enhanced to support subtitle lines generically — any `data-tooltip` containing `\n` renders the second part as a dimmed `<span>`.
+
+- **Recall Recency Boost** — New `recency_boost` parameter on the `recall` tool that shifts scoring to prioritize recent memories over semantic similarity. When enabled: scoring weights change from 70/20/10 (semantic/recency/access) to 35/55/10, half-life drops from 90 days to 14 days, and `importance >= 8` no longer skips time decay. Used by the session boot sequence to surface what was actually worked on recently instead of whatever semantically matches a generic query best.
+
+- **Dedicated Communication-Style Boot Recall** — Session boot sequence now makes two `recall` calls instead of one: (1) recent work context with `recency_boost: true`, (2) a dedicated `category: "communication-style"` query with `limit: 2` to surface user communication preferences. Previously, communication-style memories were never surfaced because the generic boot query ("recent sessions, ongoing work, known issues, decisions") had no semantic overlap with style observations.
 
 ### Fixed
 
-- Whiteboard workspace persistence — `restoreWhiteboardSnapshot()` now handles null snapshots from pre-whiteboard workspaces, cancels pending persist timers, and flushes in-progress text edits before snapshot
-- Whiteboard text at non-1x zoom — dimensions and font size now scale inversely with zoom level
-- Minimap viewport rectangle accounts for DPR-scaled offsets
-- Category sidebar toggle syncs active state with close button
-
----
-
-## [1.4.0] - 2026-02-24
-
-### Added
-
-**Embedded Browser (Playwright CDP)**
-- Browser tab in the terminal panel — powered by `playwright-core`, renders live via CDP screencast frames on canvas
-- Stealth fingerprint cloning — auto-captures User-Agent, Accept-Language, Client Hints, screen dimensions, device pixel ratio, and timezone from the real browser and applies them to the headless Chromium instance
-- CDP stealth injections — `navigator.webdriver=false`, fake plugins array, patched Permissions API, `chrome.runtime` stub, Playwright marker cleanup
-- Claude Code bridge — `GET /api/browser/sessions/:id/claude-connect` returns ready-to-use MCP config with `--cdp-url` for Playwright MCP to control the same browser instance
-- Navigation controls — address bar with back/forward/reload buttons, URL input, mouse and keyboard event forwarding from canvas to browser
-- Browser session reconnection — sessions survive page refresh with 5-minute grace period
-- Browser REST API — `POST/GET/DELETE /api/browser/sessions`, navigation endpoints, screenshot, CDP WebSocket endpoint
-- WebSocket screencast — `/ws/browser/:id` for real-time JPEG frame streaming and input forwarding
-
-**Granular Browser Configuration (Settings > Setup > Browser)**
-- 11 collapsible sub-sections exposing every Playwright context option:
-  - Executable — Chrome/Chromium path (auto-detect), headless mode, channel selector, slowMo, timeout, navigation timeout, extra Chromium launch flags
-  - Viewport & Display — viewport/screen width+height, deviceScaleFactor, isMobile, hasTouch
-  - Identity & Headers — userAgent, Accept-Language, locale, timezoneId, extra HTTP headers (JSON), stealth fingerprint toggle
-  - Geolocation — enable toggle with latitude, longitude, accuracy
-  - Permissions — 15 permission checkboxes (geolocation, camera, microphone, clipboard, MIDI, sensors, notifications, etc.)
-  - Network & Proxy — offline mode, proxy server/bypass/auth, HTTP credentials
-  - Appearance — colorScheme, reducedMotion, forcedColors
-  - Scripting & Security — JavaScript enabled, ignore HTTPS errors, bypass CSP, accept downloads, strict selectors, service workers
-  - Storage & Cookies — persist toggle, storage file path, clear on startup
-  - Recording — video (directory, resolution), HAR (path, content policy, mode, URL filter)
-  - Screencast — format (JPEG/PNG), quality slider, max resolution, frame skip
-- Save/Reset buttons with config persistence to `data/browser-config.json`
-- All saved options applied to `chromium.launch()` and `browser.newContext()` on session creation
-
-**Cookie & Storage State Persistence**
-- Optional save/restore of cookies, localStorage, and sessionStorage between browser sessions
-- `context.storageState()` called on session close when persistence is enabled
-- Storage state restored from file on new session creation
-- Configurable via Settings > Setup > Browser > Storage & Cookies
-
-**CLI Terminal**
-- Detachable floating terminal — individual tabs can be detached into free-floating, draggable, resizable windows
-- Per-tab floating window controls — pin (always-on-top), dock-back, close
-- Pin button on main panel header — prevents accidental close
-- Peek dock — thin 28px bar at bottom shows miniature session pills when terminal panel is hidden
-- 4 xterm addons — SearchAddon, WebglAddon, CanvasAddon, Unicode11Addon (from esm.sh CDN with graceful fallback)
-- GPU rendering — WebGL renderer with Canvas fallback, automatic context loss recovery
-- Keyboard shortcuts — Ctrl+Shift+C copy, Ctrl+V paste, Ctrl+F search, Ctrl+Shift+F close search
-- Copy-on-select — auto-copy selection to clipboard
-- Image paste — paste images from clipboard into terminal (saved as temp file, path written to stdin)
-- Right-click context menu — Copy, Paste, Select All, Clear, Find
-- Inline search bar — Ctrl+F with prev/next navigation and match highlighting
-- CLI launch keybinds — `1`/`2`/`3` to launch Claude/Codex/Gemini (configurable in keybind editor)
-- Workspace terminal state — terminal panel position, sessions, and floating tab positions saved/restored per workspace
-
-**Settings**
-- Multi-provider Setup tab — dedicated collapsible sections for Claude, Gemini, and Codex with MCP toggles, config previews, CLI copy, and ruleset previews
-- Gemini MCP registration — `POST/DELETE /api/setup/gemini/mcp` writes `~/.gemini/settings.json`
-- Codex MCP registration — `POST/DELETE /api/setup/codex/mcp` writes `~/.codex/config.toml` via TOML helpers
-- GEMINI.md and AGENTS.md ruleset preview and copy alongside existing CLAUDE.md
-- Terminal tab — CLI executable path configuration with auto-detect for Claude, Codex, Gemini
-
-**UI / UX**
-- Settings modal extracted into `ui-settings.js` ES module (~2400 lines from monolithic index.html)
-- Connections tab redesign — 7 collapsible sections (Hooks, Features, Greeting, Setup, External Access, Bridges, Skills)
-- Memory Explorer docked sidebar — converted from floating overlay to viewport-splitting sidebar with resize handle
-- Skills Studio — full skill editor with tab system, custom dropdown, focus mode, welcome screen with SynaBun logo, type icons (SVG), filter pills, stats cards
-- 3D/2D view toggle pill in title bar with session handoff via sessionStorage
-- Brand color corrections — Claude=#D4A27F, Gemini=#669DF6, Codex=#74c7a5
-- Keybind editor restyled — dark background, keycap-style buttons, CLI brand icons
-
-### Fixed
-
-- Browser tab zoom/blur on minimize+restore — ResizeObserver now guards against sub-100px dimensions, `visibilitychange` listener re-sends correct size on restore, canvas buffer only resets when frame dimensions actually change
-- Flyout clipped by overflow:hidden — changed from `position: absolute` to `position: fixed` with dynamic positioning
-- Floating tab header invisible — increased background opacity and button contrast
-- Scrollbar hidden by canvas z-index — added `z-index: 10 !important` to `.xterm-viewport`
-- Pin button SVG invisible — added stroke alongside fill for open path segments
-- Terminal scroll lag — disabled xterm smooth scrolling (60ms → 0)
-- Floating tab resize corners too small — increased edge hit zone from 6px to 10px
-- Off-screen panel recovery — auto-recenter detached panels that were dragged beyond viewport bounds
-
----
-
-## [1.3.0] - 2026-02-24
-
-### Changed
-
-**Contributions**
-- Pull requests are no longer accepted — the repository is maintained solely by the SynaBun authors
-- `CONTRIBUTING.md` rewritten to reflect issues-only contribution model while retaining development setup documentation for forkers
-- Added `.github/PULL_REQUEST_TEMPLATE.md` explaining the no-PR policy
-- Added `.github/ISSUE_TEMPLATE/bug_report.md` and `.github/ISSUE_TEMPLATE/feature_request.md` for structured issue reporting
-
-**Licensing**
-- Added `LICENSE-COMMERCIAL.md` documenting the Open Core model — Apache 2.0 core with premium features available under commercial license
-- Added `license`, `repository`, and `author` fields to root `package.json`
-- Updated README License and Trademark Notice sections
-- Bumped version to 1.3.0
-
----
-
-## [1.2.0] - 2026-02-23
-
-### Added
-
-**Claude Code Hooks**
-- **User Learning (Directive 5)** — autonomous observation of user communication patterns, preferences, and behavioral singularity across sessions. Stored in `user-profile/communication-style` category with `project: "global"`.
-- **Priority 7: User Learning Nudge** in `prompt-submit.mjs` — quiet-only, one-time nudge after N interactions (configurable). Only fires when no higher-priority trigger matched.
-- **Step D in Directive 1** — optional `recall` of `user-profile` memories at session start for immediate adaptation.
-- `userLearning` and `userLearningThreshold` feature flags in `hook-features.json`.
-- `PUT /api/claude-code/hook-features/config` endpoint — set non-boolean config values (thresholds, etc.)
-
-**Neural Interface**
-- User Learning toggle and threshold input in Settings > Connections > Features panel
-
-**Categories**
-- `user-profile` parent category — knowledge about the user as a person
-- `communication-style` child category — tone, formality, verbosity, language patterns, text quirks
-
----
-
-## [1.1.0] - 2026-02-20
-
-### Added
-
-**MCP Server**
-- `restore` tool — undo soft-deleted memories (clears `trashed_at` flag)
-- `sync` tool — detect stale memories by comparing SHA-256 file hashes against stored checksums
-- `file-checksums.ts` service — SHA-256 hashing for the sync tool
-- HTTP MCP transport (`http.ts`, `preload-http.ts`) — serve MCP tools over HTTP in addition to stdio
-- Per-connection category files (`custom-categories-{connId}.json`) — categories are now scoped per Qdrant connection
-- Display settings (`display-settings.json`) — configurable `recallMaxChars` for MCP response truncation
-- Dynamic tool schemas — 4 tools (`remember`, `recall`, `reflect`, `memories`) auto-update their parameter schemas when categories change or the active connection switches
-
-**Neural Interface**
-- Trash management — `GET /api/trash`, `POST /api/trash/:id/restore`, `DELETE /api/trash/purge` endpoints; full trash panel UI
-- Memory Sync UI — model selector (Haiku/Sonnet/Opus) for AI-assisted stale memory rewriting; `GET /api/sync/check` endpoint
-- Category logos — upload/delete logos for parent categories (`POST/DELETE /api/categories/:name/logo`); rendered on 3D sun nodes with aspect-ratio-aware sizing
-- Category export — `GET /api/categories/:name/export` downloads all memories in a category as Markdown
-- OpenClaw Bridge — full integration reading OpenClaw workspace files as ephemeral in-memory nodes; 4 API endpoints (`/api/bridges/openclaw/*`); 3 parsers (MEMORY.md, daily logs, workspace configs)
-- Backup & Restore — `POST /api/connections/:id/backup` creates Qdrant snapshots; `POST /api/connections/:id/restore` restores them; standalone restore endpoint for new instances
-- Multi-instance Docker management — `POST /api/connections/docker-new` spins up new Qdrant containers; `POST /api/connections/start-container` restarts stopped containers; `GET /api/connections/suggest-port` suggests available ports
-- Display settings endpoints — `GET/PUT /api/display-settings`
-- Claude Code MCP management — `GET/POST/DELETE /api/claude-code/mcp` for `.claude.json` registration
-- Hook feature flags — `GET/PUT /api/claude-code/hook-features` for toggling hook behaviors (e.g., `conversationMemory`)
-- Ruleset endpoint — `GET /api/claude-code/ruleset` returns CLAUDE.md sections in Claude/Cursor/generic format
-- Skill installation — list and install Claude skills from `skills/` directory via the UI
-- Docker Desktop launcher — `POST /api/setup/start-docker-desktop` for Windows
-- 2D visualization variant (`index2d.html`)
-- Tunnel security — blocks Cloudflare tunnel traffic except to `/mcp` endpoint
-- `GET /api/stats` now returns `trash_count` alongside existing fields
-
-**Claude Code Hooks**
-- `pre-compact.mjs` (PreCompact) — captures session transcript before context compaction; writes cache to `data/precompact/`
-- `stop.mjs` (Stop) — enforces memory storage by blocking response if session isn't indexed or edits aren't remembered; max 3 retries
-- `post-remember.mjs` (PostToolUse) — tracks Edit/Write/NotebookEdit call counts; clears enforcement flags when memories are stored; nudges at every 3rd unremembered edit
-- Conversation memory system — auto-indexes sessions on compaction via SessionStart + Stop hook coordination
-- Multi-tier recall triggers in `prompt-submit.mjs` — 6 priority tiers with non-English detection and Latin catch-all
-
-**Claude Code `/synabun` Command**
-- `/synabun` command hub — single slash command with interactive menu for Brainstorm Ideas, Audit Memories, Memory Health, and Search Memories
-- Audit Memories — 6-phase interactive validation: landscape survey, checksum pre-scan, bulk retrieval, parallel semantic verification (batches of 5), interactive classification (STALE/INVALID/VALID/UNVERIFIABLE), audit report capture
-- Brainstorm Ideas — multi-round recall with 5 query strategies, idea synthesis with memory provenance
-
-**Infrastructure**
-- Namespaced multi-instance `.env` format (`QDRANT__<id>__*`, `EMBEDDING__<id>__*`, `BRIDGE__<id>__*`)
-- Auto-migration from `connections.json` to `.env` (old file renamed to `.bak`)
-- Memory seed data (`memory-seed/`) — 28 pre-written documentation memories in 6 categories for bootstrapping
-- Vitest test suite (`.tests/`) — 6 unit tests covering all 11 tools + 5 scenario/cost benchmark tests
-- Runtime data directory (`data/`) — hook enforcement flags, feature toggles, session caches
-
-### Changed
-- `forget` is now a soft delete (sets `trashed_at` timestamp) instead of permanent deletion
-- `connections.json` replaced by namespaced `.env` variables as the source of truth for connections
-- Category definitions are now per-connection (`custom-categories-{connId}.json`) instead of global
-- Docker volume renamed from `qdrant-storage` to `synabun-qdrant-data`
-
----
-
-## [1.0.0] - 2026-02-16
-
-### Added
-
-**MCP Server**
-- 9 MCP tools: `remember`, `recall`, `forget`, `reflect`, `memories`, `category_create`, `category_update`, `category_delete`, `category_list`
-- Semantic search with cosine similarity, time decay (90-day half-life), project boost (1.2x), and access frequency scoring
-- User-defined hierarchical categories with prescriptive routing descriptions
-- Dynamic schema refresh — category changes propagate to AI tool schemas without server restart
-- Multi-project support with automatic project detection from working directory
-- Access tracking (fire-and-forget) for recall frequency boosting
-- Importance shield — memories with importance 8+ are immune to time decay
-
-**Neural Interface**
-- Interactive 3D force-directed graph visualization (Three.js + ForceGraph3D)
-- Memory detail panel with inline editing (content, tags, category)
-- Semantic search bar
-- Category sidebar with filtering, color management, and hierarchy editing
-- Multi-connection support — switch between Qdrant instances at runtime
-- Settings panel with masked API key display
-- Graphics quality presets (Low, Medium, High, Ultra)
-- Resizable, draggable, pinnable panels with localStorage persistence
-
-**Onboarding**
-- Guided setup wizard with dependency checks
-- One-command setup (`npm start`) — installs deps, builds, launches, opens browser
-- 11 embedding provider support (OpenAI, Google Gemini, Ollama, Mistral, Cohere, and more)
-- Automatic `.mcp.json` generation for Claude Code registration
-- CLAUDE.md memory instructions injection
-
-**Claude Code Hooks**
-- SessionStart hook — injects category tree, project detection, and behavioral rules
-- UserPromptSubmit hook — nudges AI to check memory before responding to recall-worthy prompts
-
-**Claude Code `/synabun` Command**
-- `/synabun` skill — initial command hub with brainstorming capability via multi-round recall with 5 query strategies (direct, adjacent, problem-space, solution-space, cross-domain), idea synthesis with memory provenance, and auto-save to `ideas` category
-
-**Infrastructure**
-- Docker Compose setup for local Qdrant with API key authentication
-- Multi-connection registry (`connections.json`) for Qdrant instance management
-- Cross-platform support: Windows, macOS, Linux, WSL
-- Terminal UI (`tui.ts`) for interactive memory management
+- **Terminal rename → Resume dropdown sync** — Renaming a terminal header (docked tab or floating window) now updates the session name in the Resume dropdown. Terminal sessions track their Claude Code session ID (`_claudeSessionId`) and write to the same `synabun-session-label:{id}` key via the server-synced `storage` module (persisted to `data/ui-state.json`). The ID persists through session registry, layout snapshots, and all reconnect paths.
+- **Duplicate terminal sessions corrupting labels** — `_sessions` array could accumulate duplicate entries with the same session ID, causing custom names, `_userRenamed` flags, and `_claudeSessionId` to be split across two objects. The first (stale) entry would win on reconnect, reverting the custom name to the profile default. Added `_pushSession()` helper that replaces existing entries instead of blindly pushing, and deduplication in `saveSessionRegistry()` as a safety net. Both merge `_claudeSessionId` from either entry to prevent data loss.
+- **Resume label not applied to terminal** — `openHtmlTermSession` was called without `await` in the `terminal:open-resume` handler. The session object didn't exist in `_sessions` yet when the code tried to set the label, so custom Resume labels were silently lost. Now properly awaited. Additionally, `openHtmlTermSession` now accepts an `options` parameter (`label`, `claudeSessionId`) so the session is created with the correct name from the start — the resume handler passes label and Claude session ID directly, eliminating the flash of the default "Claude Code" profile name.
+- **Minimized pills now display custom tab names** — Renaming a floating terminal tab and minimizing it now shows the custom name in the pill tray. PTY title escape sequences (`onTitle`), browser title updates, and CWD-change labels no longer overwrite user-set names. Custom names persist across page refresh and session reconnection via a new `_userRenamed` flag stored in the session registry and layout snapshot.
+- Minimized terminal tab pills now show the full tab name instead of truncating at 160px
+- Minimized pill labels now sync with session label changes (rename, auto-title, CWD change) via `renderTabBar()` sync loop
+- File Explorer title bar no longer pushed sideways — slides under the title bar like the Memory Explorer
+- **Reflect over-clearing user learning flag** — Any `reflect` call (even on unrelated memories) cleared `userLearningPending` in `post-remember.mjs`, allowing Claude to bypass the user learning requirement by reflecting on any memory. Fixed by removing `reflect` from the clearing condition entirely — now only `remember` with category `communication-style` or `personality` clears the flag.
+- **Wrong-category user learning storage** — Claude stored session summaries in `conversations` category instead of style observations in `communication-style`, defeating the purpose of user learning. Root cause: nudge and block text were too vague about what to store and which category to use. Fixed by adding explicit GOOD/BAD examples and "never conversations" prohibition to both nudge (`prompt-submit.mjs`) and block (`stop.mjs`) messages. Also expanded accepted categories to include `personality` alongside `communication-style`.
+- **User Learning nudge never fired** — `checkUserLearning()` in `prompt-submit.mjs` had a single `try-catch` wrapping both the `writeFileSync` (persist nudge count) and the nudge return. If the write threw, the catch swallowed the nudge text, silently returning empty every time. Restructured into separate try-catch blocks so write failures no longer block the nudge. Added debug logging to `data/user-learning-debug.log` for full observability into nudge decisions.
+- **Stop hook session-end block looped infinitely** — `softCleanupFlag()` in `stop.mjs` stripped `autoStoreTriggered` and `totalEdits` from the flag file when resetting enforcement fields. After CHECK 2's soft cleanup ran, CHECK 4 (auto-store on session end) would re-trigger every time because it saw `autoStoreTriggered` as false. Fixed by preserving both fields in the cleaned flag object.
+- **Session labels lost on page reload / server restart** — `getSessionLabel()` and `setSessionLabel()` in `ui-resume.js` used raw `localStorage`, which doesn't sync to the server. Labels disappeared when the browser cleared storage or when accessing from a different tab after server restart. Migrated all label read/write/remove calls to the server-synced `storage` module in both `ui-resume.js` and `ui-terminal.js` (`syncResumeLabel`). Existing labels migrate automatically via `storage.js`'s built-in `_migrateFromLocalStorage()` which transfers all `synabun-*` keys on first boot.
+- **CLI status badge stuck on "Working" after task completion** — `_detectSessionStatus()` only checked the exact cursor line for prompt characters. When Claude finishes, the cursor can land on a blank line or cost summary below the prompt, causing a permanent false "Working" state. Fixed by scanning the cursor line and up to 3 lines above for prompt characters (`❯` / `>` / `$` / `%`), verifying any gap lines between the detected prompt and cursor position are empty. Also increased debounce from 400ms to 600ms (gives terminal more time to render final prompt) and decreased poll interval from 3s to 2s (reduces worst-case latency for catching transitions).

@@ -671,7 +671,7 @@ export class HtmlTermRenderer {
     const CSI = app ? '\x1bO' : '\x1b[';
 
     switch (key) {
-      case 'Enter':     return ctrl ? '\x1b\r' : '\r';
+      case 'Enter':     return shift ? '\x16\n' : '\r';
       case 'Backspace': return ctrl ? '\x08' : '\x7f';
       case 'Tab':       return shift ? '\x1b[Z' : '\t';
       case 'Escape':    return '\x1b';
@@ -703,6 +703,16 @@ export class HtmlTermRenderer {
     if (key.length === 1 && !ctrl && !alt && !meta) return key;
 
     return null;
+  }
+
+  paste(text) {
+    if (!text) return;
+    const normalized = text.replace(/\r?\n/g, '\r');
+    if (this._buffer.bracketedPaste) {
+      this._send('\x1b[200~' + normalized + '\x1b[201~');
+    } else {
+      this._send(normalized);
+    }
   }
 
   _send(data) {

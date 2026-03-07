@@ -45,4 +45,4 @@ Returns a text report with:
 
 ## Integration
 
-Registered in `mcp-server/src/index.ts` alongside the other 9 tools. Can be called by Claude Code at session start or before decisions to check if any remembered knowledge is outdated.
+Registered in `mcp-server/src/index.ts` alongside the other memory tools. Can be called by Claude Code at session start or before decisions to check if any remembered knowledge is outdated.
