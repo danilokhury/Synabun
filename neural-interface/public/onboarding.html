@@ -416,13 +416,13 @@
 
   /* ── Tool Cards ── */
   .tool-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 10px;
-    margin-bottom: 20px;
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
   }
   .tool-card {
-    padding: 16px 12px;
+    flex: 1;
+    padding: 10px 6px;
     border: 1px solid var(--b-light);
     border-radius: var(--r-card);
     background: var(--s-subtle);
@@ -437,9 +437,10 @@
     box-shadow: 0 0 0 1px var(--accent-border);
   }
   .tool-card .tname {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--t-bright);
+    white-space: nowrap;
   }
 
   /* ── Dependency List ── */
@@ -733,6 +734,7 @@
     border-color: rgba(255,255,255,0.22);
   }
   .code-copy-wrap .instructions-preview { margin-bottom: 0; }
+  #mcpSetupCode { max-height: 140px; }
   .code-copy-label {
     position: absolute;
     bottom: 8px;
@@ -887,6 +889,7 @@
     filter: drop-shadow(0 6px 24px rgba(255, 255, 255, 0.08));
   }
 </style>
+<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{})</script>
 </head>
 <body>
 
@@ -1018,17 +1021,32 @@
       <p class="subtitle">Select your AI coding tool to get setup instructions.</p>
       <div class="tool-grid" id="toolGrid"></div>
       <div id="mcpSetupPanel" style="display:none;">
-        <div id="mcpSetupLabel" style="font-size:12px;color:var(--t-secondary);margin-bottom:8px;"></div>
+        <div id="mcpSetupLabel" style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;"></div>
         <div class="code-copy-wrap" id="mcpCodeWrap">
-          <div class="instructions-preview" id="mcpSetupCode" style="max-height:180px;"></div>
+          <div class="instructions-preview" id="mcpSetupCode"></div>
           <span class="code-copy-label">copy</span>
         </div>
-        <div id="mcpSetupHint" style="margin-top:8px;font-size:11px;color:var(--t-muted);"></div>
+        <div id="mcpSetupHint" style="margin-top:6px;font-size:11px;color:var(--t-muted);"></div>
       </div>
     </div>
 
-    <!-- Step 6: Complete -->
+    <!-- Step 6: Ruleset -->
     <div class="step right" data-step="6">
+      <div style="position:relative;display:flex;justify-content:center;align-items:center;">
+        <div class="step-eyes"></div>
+      </div>
+      <h2>Memory Ruleset</h2>
+      <p class="subtitle">Copy this into your project's <code id="rulesetFileName" style="color:var(--t-bright);">CLAUDE.md</code> so your AI tool knows how to use SynaBun.</p>
+      <div id="rulesetPanel">
+        <div class="code-copy-wrap" id="rulesetCodeWrap">
+          <div class="instructions-preview" id="rulesetCode" style="max-height:220px;">Loading...</div>
+          <span class="code-copy-label">copy</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 7: Complete -->
+    <div class="step right" data-step="7">
       <div class="step-eyes"></div>
       <h2 style="text-align:center;margin-bottom:12px;">Setup Complete!</h2>
       <ul class="checklist" id="checklist"></ul>
@@ -1147,7 +1165,7 @@
 // STATE
 // ═══════════════════════════════════════════
 
-const TOTAL_STEPS = 7;
+const TOTAL_STEPS = 8;
 let currentStep = 0;
 
 const wizardState = {
@@ -1246,7 +1264,7 @@ function goToStep(n) {
 function updateNav() {
   $prevBtn.disabled = currentStep === 0;
 
-  const labels = ['', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
+  const labels = ['', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
   $nextBtn.textContent = (labels[currentStep] || 'Next') + ' \u2192';
 
   if (currentStep === 0 || currentStep === TOTAL_STEPS - 1) {
@@ -1317,7 +1335,8 @@ async function onStepEnter(n) {
     }
   }
   if (n === 3) await onBuildStep();
-  if (n === 6) await onCompleteStep();
+  if (n === 6) await onRulesetStep();
+  if (n === 7) await onCompleteStep();
   // Re-measure after async content loads — but only if user is still on this step
   if (currentStep === n) resizeViewport(n);
 }
@@ -2017,7 +2036,7 @@ function getMcpSetup(id) {
     return {
       label: 'Run this in your terminal to register SynaBun globally:',
       code: `claude mcp add SynaBun -s user -e DOTENV_PATH="${envPath}" -- node "${mcpPath}"`,
-      hint: 'This registers SynaBun for all your Claude Code projects. Restart Claude Code after running.',
+      hint: 'Registers SynaBun globally. Restart Claude Code after running.',
     };
   }
   if (id === 'cursor') {
@@ -2025,7 +2044,7 @@ function getMcpSetup(id) {
     return {
       label: 'Add to Cursor Settings > MCP Servers, or paste into .cursor/mcp.json:',
       code: json,
-      hint: 'Cursor: Settings (Ctrl+,) > search "MCP" > Add Server, or create .cursor/mcp.json in your project root.',
+      hint: 'Settings > MCP > Add Server, or save as .cursor/mcp.json',
     };
   }
   if (id === 'windsurf') {
@@ -2033,7 +2052,7 @@ function getMcpSetup(id) {
     return {
       label: 'Add to ~/.codeium/windsurf/mcp_config.json:',
       code: json,
-      hint: 'Windsurf: Cascade sidebar > hammer icon > Configure, or edit the config file directly.',
+      hint: 'Cascade sidebar > hammer icon > Configure',
     };
   }
   // codex, other
@@ -2041,7 +2060,7 @@ function getMcpSetup(id) {
   return {
     label: 'Add to your project\'s .mcp.json:',
     code: json,
-    hint: 'Place this file in your project root. Most MCP-compatible tools will auto-detect it.',
+    hint: 'Save as .mcp.json in your project root.',
   };
 }
 
@@ -2056,7 +2075,8 @@ function selectTool(id) {
   document.getElementById('mcpSetupCode').textContent = setup.code;
   document.getElementById('mcpSetupHint').textContent = setup.hint;
   document.getElementById('mcpSetupPanel').style.display = '';
-  resizeViewport(currentStep);
+
+  requestAnimationFrame(() => resizeViewport(currentStep));
 }
 
 function showMascotToast(msg, duration = 2000) {
@@ -2079,7 +2099,50 @@ document.getElementById('mcpCodeWrap').addEventListener('click', () => {
 });
 
 // ═══════════════════════════════════════════
-// STEP 6: Complete
+// STEP 6: Ruleset
+// ═══════════════════════════════════════════
+
+async function onRulesetStep() {
+  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
+  document.getElementById('rulesetFileName').textContent = tool.instrFile;
+
+  // Map tool to API format
+  const formatMap = { claude: 'claude', cursor: 'cursor', windsurf: 'generic', codex: 'codex', other: 'generic' };
+  const format = formatMap[tool.id] || 'generic';
+
+  const $code = document.getElementById('rulesetCode');
+  if ($code.dataset.loadedFormat === format) return; // already loaded
+
+  $code.textContent = 'Loading...';
+  try {
+    const res = await fetch(`/api/claude-code/ruleset?format=${format}`);
+    const data = await res.json();
+    if (data.ok && data.ruleset) {
+      $code.textContent = data.ruleset;
+      $code.dataset.loadedFormat = format;
+      wizardState.rulesetCopied = false;
+    } else {
+      $code.textContent = 'Could not load ruleset.';
+    }
+  } catch {
+    $code.textContent = 'Failed to load ruleset.';
+  }
+  if (currentStep === 6) resizeViewport(6);
+}
+
+document.getElementById('rulesetCodeWrap').addEventListener('click', () => {
+  const code = document.getElementById('rulesetCode').textContent;
+  if (code === 'Loading...' || code.startsWith('Could not') || code.startsWith('Failed')) return;
+  navigator.clipboard.writeText(code);
+  wizardState.rulesetCopied = true;
+  const label = document.querySelector('#rulesetCodeWrap .code-copy-label');
+  label.textContent = 'copied!';
+  label.style.opacity = '1';
+  setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
+});
+
+// ═══════════════════════════════════════════
+// STEP 7: Complete
 // ═══════════════════════════════════════════
 
 async function onCompleteStep() {
@@ -2093,6 +2156,7 @@ async function onCompleteStep() {
     { label: 'MCP server built', done: wizardState.buildReady },
     { label: 'Projects registered', done: (wizardState.projects || []).length > 0 },
     { label: 'MCP config copied', done: wizardState.mcpWritten },
+    { label: 'Ruleset copied', done: !!wizardState.rulesetCopied },
   ];
 
   const $list = document.getElementById('checklist');
