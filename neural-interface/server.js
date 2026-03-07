@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { basename, dirname, extname, join, resolve } from 'path';
+import { basename, dirname, extname, join, resolve, sep } from 'path';
 import { config as dotenvConfig } from 'dotenv';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, renameSync, cpSync, appendFileSync, openSync, readSync, closeSync } from 'fs';
 import { randomBytes, randomUUID, createHash } from 'crypto';
@@ -101,6 +101,7 @@ const ADMIN_ONLY_PREFIXES = [
   '/api/tunnel/start', '/api/tunnel/stop',
   '/api/bridges', '/api/keybinds',
   '/api/cli',
+  '/api/file-content',
 ];
 
 app.use((req, res, next) => {
@@ -3347,6 +3348,177 @@ app.post('/api/system/restore',
   }
 });
 
+// GET /api/projects — List registered projects for file explorer selector
+app.get('/api/projects', (req, res) => {
+  const projects = loadHookProjects();
+  res.json({ ok: true, projects: projects.map(p => ({ path: p.path, label: p.label || basename(p.path) })) });
+});
+
+// ── Path validation helper (reused by project-files, file-content) ──
+function validateProjectPath(filePath) {
+  const normalized = resolve(filePath);
+  const registeredProjects = loadHookProjects();
+  const allowedRoots = [resolve(PROJECT_ROOT), ...registeredProjects.map(p => resolve(p.path))];
+  const matched = allowedRoots.find(r => normalized === r || normalized.startsWith(r + sep));
+  return matched ? normalized : null;
+}
+
+// GET /api/file-content — Read a single file for inline editing
+app.get('/api/file-content', (req, res) => {
+  try {
+    const filePath = req.query.path;
+    if (!filePath) return res.status(400).json({ error: 'Missing path parameter' });
+
+    const normalized = validateProjectPath(filePath);
+    if (!normalized) return res.status(403).json({ error: 'Path outside registered project roots' });
+
+    if (!existsSync(normalized) || !statSync(normalized).isFile()) {
+      return res.status(400).json({ error: 'Not a valid file' });
+    }
+
+    const stat = statSync(normalized);
+    if (stat.size > 1024 * 1024) {
+      return res.status(413).json({ error: 'File too large' });
+    }
+
+    // Binary detection: read first 8KB and scan for null bytes
+    const fd = openSync(normalized, 'r');
+    const buf = Buffer.alloc(Math.min(8192, stat.size));
+    const bytesRead = readSync(fd, buf, 0, buf.length, 0);
+    closeSync(fd);
+    for (let i = 0; i < bytesRead; i++) {
+      if (buf[i] === 0x00) {
+        return res.status(415).json({ error: 'Binary file' });
+      }
+    }
+
+    const content = readFileSync(normalized, 'utf-8');
+    const name = basename(normalized);
+    res.json({ ok: true, content, path: normalized.replace(/\\/g, '/'), name, size: stat.size });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/file-content — Write a file (existing files only)
+app.post('/api/file-content', (req, res) => {
+  try {
+    const { path: filePath, content } = req.body || {};
+    if (!filePath || typeof content !== 'string') {
+      return res.status(400).json({ error: 'Missing path or content' });
+    }
+
+    const normalized = validateProjectPath(filePath);
+    if (!normalized) return res.status(403).json({ error: 'Path outside registered project roots' });
+
+    if (!existsSync(normalized) || !statSync(normalized).isFile()) {
+      return res.status(400).json({ error: 'File does not exist' });
+    }
+
+    writeFileSync(normalized, content, 'utf-8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/project-files — List ALL files (incl. dotfiles) for file explorer sidebar
+app.get('/api/project-files', (req, res) => {
+  try {
+    const root = PROJECT_ROOT;
+    let dir = req.query.path ? resolve(req.query.path) : root;
+    const search = (req.query.search || '').trim();
+
+    // Security: allow paths within any registered project root
+    const normalizedDir = resolve(dir);
+    const registeredProjects = loadHookProjects();
+    const allowedRoots = [resolve(root), ...registeredProjects.map(p => resolve(p.path))];
+    const normalizedRoot = allowedRoots.find(r => normalizedDir === r || normalizedDir.startsWith(r + sep));
+    if (!normalizedRoot) {
+      return res.status(403).json({ error: 'Path outside registered project roots' });
+    }
+    if (!existsSync(normalizedDir) || !statSync(normalizedDir).isDirectory()) {
+      return res.status(400).json({ error: 'Not a valid directory' });
+    }
+
+    // Git info for status badges
+    const git = getGitInfo(normalizedDir);
+
+    if (search && search.length > 2) {
+      // Recursive search mode
+      const SKIP = new Set(['.git', 'node_modules', '__pycache__', '.next', 'dist', '.cache']);
+      const MAX_RESULTS = 100;
+      const results = [];
+      const lowerSearch = search.toLowerCase();
+
+      function walkSearch(d) {
+        if (results.length >= MAX_RESULTS) return;
+        let entries;
+        try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+        for (const e of entries) {
+          if (results.length >= MAX_RESULTS) break;
+          if (SKIP.has(e.name)) continue;
+          const full = join(d, e.name);
+          if (e.name.toLowerCase().includes(lowerSearch)) {
+            const rel = full.substring(normalizedRoot.length).replace(/\\/g, '/');
+            const item = { name: e.name, type: e.isDirectory() ? 'dir' : 'file', path: rel };
+            if (e.isFile()) {
+              try {
+                const s = statSync(full);
+                item.size = s.size;
+                item.mtime = s.mtimeMs;
+              } catch {}
+            }
+            results.push(item);
+          }
+          if (e.isDirectory()) walkSearch(full);
+        }
+      }
+
+      walkSearch(normalizedDir);
+      return res.json({ path: normalizedDir.replace(/\\/g, '/'), items: results, search: true, branch: git?.branch || null });
+    }
+
+    // Normal directory listing
+    const entries = readdirSync(normalizedDir, { withFileTypes: true });
+    const items = [];
+    for (const e of entries) {
+      const full = join(normalizedDir, e.name);
+      const item = { name: e.name, type: e.isDirectory() ? 'dir' : 'file' };
+      if (e.isFile()) {
+        try {
+          const s = statSync(full);
+          item.size = s.size;
+          item.mtime = s.mtimeMs;
+        } catch {}
+      }
+      if (git?.statuses?.has(e.name)) {
+        item.git = git.statuses.get(e.name);
+      }
+      items.push(item);
+    }
+
+    // Sort: dirs first, then alphabetical
+    items.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+
+    const parent = normalizedDir !== normalizedRoot
+      ? resolve(normalizedDir, '..').replace(/\\/g, '/')
+      : null;
+
+    res.json({
+      path: normalizedDir.replace(/\\/g, '/'),
+      items,
+      branch: git?.branch || null,
+      parent
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/browse-directory — List directories at a given path for folder picker UI
 app.get('/api/browse-directory', (req, res) => {
   try {
@@ -3775,6 +3947,13 @@ const SYNABUN_TOOL_PERMISSIONS = [
   'mcp__SynaBun__browser_upload',
   'mcp__SynaBun__browser_extract_tweets',
   'mcp__SynaBun__browser_extract_fb_posts',
+  'mcp__SynaBun__browser_extract_tiktok_videos',
+  'mcp__SynaBun__browser_extract_tiktok_search',
+  'mcp__SynaBun__browser_extract_tiktok_studio',
+  'mcp__SynaBun__browser_extract_tiktok_profile',
+  'mcp__SynaBun__browser_extract_wa_chats',
+  'mcp__SynaBun__browser_extract_wa_messages',
+  'mcp__SynaBun__tictactoe',
   'mcp__SynaBun__whiteboard_read',
   'mcp__SynaBun__whiteboard_add',
   'mcp__SynaBun__whiteboard_update',
@@ -3832,6 +4011,12 @@ const SYNABUN_TOOL_CATEGORIES = [
       { key: 'mcp__SynaBun__browser_upload', label: 'Upload file', desc: 'Upload a file through a form' },
       { key: 'mcp__SynaBun__browser_extract_tweets', label: 'Extract tweets', desc: 'Pull tweet data from the page' },
       { key: 'mcp__SynaBun__browser_extract_fb_posts', label: 'Extract FB posts', desc: 'Pull Facebook post data from the page' },
+      { key: 'mcp__SynaBun__browser_extract_tiktok_videos', label: 'Extract TikTok videos', desc: 'Pull TikTok video data from the page' },
+      { key: 'mcp__SynaBun__browser_extract_tiktok_search', label: 'Extract TikTok search', desc: 'Pull TikTok search results from the page' },
+      { key: 'mcp__SynaBun__browser_extract_tiktok_studio', label: 'Extract TikTok Studio', desc: 'Pull TikTok Studio content from the page' },
+      { key: 'mcp__SynaBun__browser_extract_tiktok_profile', label: 'Extract TikTok profile', desc: 'Pull TikTok profile info from the page' },
+      { key: 'mcp__SynaBun__browser_extract_wa_chats', label: 'Extract WA chats', desc: 'Pull WhatsApp chat list from the page' },
+      { key: 'mcp__SynaBun__browser_extract_wa_messages', label: 'Extract WA messages', desc: 'Pull WhatsApp messages from the page' },
     ],
   },
   {
@@ -3934,7 +4119,7 @@ function saveHookProjects(projects) {
 function extractSessionMeta(filePath) {
   try {
     const fd = openSync(filePath, 'r');
-    const buf = Buffer.alloc(8192); // read first 8KB — enough for metadata lines
+    const buf = Buffer.alloc(16384); // read first 16KB — system messages can be large
     const bytesRead = readSync(fd, buf, 0, buf.length, 0);
     closeSync(fd);
     const chunk = buf.toString('utf-8', 0, bytesRead);
@@ -3953,6 +4138,7 @@ function extractSessionMeta(filePath) {
           return {
             sessionId: obj.sessionId || basename(filePath, '.jsonl'),
             firstPrompt: prompt.slice(0, 200),
+            messageCount,
             gitBranch: obj.gitBranch || null,
             isSidechain: !!obj.isSidechain,
             cwd: obj.cwd || null,
@@ -3964,8 +4150,38 @@ function extractSessionMeta(filePath) {
   } catch { return null; }
 }
 
+// ── Session metadata cache ──
+// Persists discovered session metadata so entries survive even after
+// Claude Code deletes old JSONL files from disk.
+const SESSION_CACHE_DIR = resolve(PROJECT_ROOT, 'data');
+const _sessionCacheMap = new Map(); // projDir → Map(sessionId → entry)
+
+function getSessionCachePath(projDir) {
+  const key = basename(projDir).replace(/[^a-zA-Z0-9_-]/g, '_');
+  return join(SESSION_CACHE_DIR, `sessions-cache-${key}.json`);
+}
+
+function loadSessionCache(projDir) {
+  if (_sessionCacheMap.has(projDir)) return _sessionCacheMap.get(projDir);
+  const cache = new Map();
+  try {
+    const data = JSON.parse(readFileSync(getSessionCachePath(projDir), 'utf-8'));
+    for (const e of data) cache.set(e.sessionId, e);
+  } catch { /* no cache yet */ }
+  _sessionCacheMap.set(projDir, cache);
+  return cache;
+}
+
+function saveSessionCache(projDir, cache) {
+  try {
+    if (!existsSync(SESSION_CACHE_DIR)) mkdirSync(SESSION_CACHE_DIR, { recursive: true });
+    writeFileSync(getSessionCachePath(projDir), JSON.stringify([...cache.values()]), 'utf-8');
+  } catch { /* write error */ }
+}
+
 /** Build a complete session list for a project dir by merging the
- *  (potentially stale) sessions-index.json with any JSONL files not in the index. */
+ *  (potentially stale) sessions-index.json with any JSONL files not in the index,
+ *  plus cached entries for sessions whose files have been deleted. */
 function buildSessionEntries(projDir) {
   // 1. Load existing index
   const indexPath = join(projDir, 'sessions-index.json');
@@ -3981,38 +4197,72 @@ function buildSessionEntries(projDir) {
 
   // 2. Scan for JSONL files not in the index
   let allFiles;
-  try { allFiles = readdirSync(projDir); } catch { return indexed; }
+  try { allFiles = readdirSync(projDir); } catch { allFiles = []; }
 
   const jsonlFiles = allFiles.filter(f => f.endsWith('.jsonl'));
+  const jsonlIds = new Set(jsonlFiles.map(f => f.replace('.jsonl', '')));
   const missing = jsonlFiles.filter(f => !indexedIds.has(f.replace('.jsonl', '')));
 
-  if (missing.length === 0) return indexed;
-
-  // 3. Extract metadata from missing files (sorted by mtime desc, cap at 200 newest)
-  const missingWithMtime = missing.map(f => {
-    try {
-      const stat = statSync(join(projDir, f));
-      return { file: f, mtime: stat.mtime };
-    } catch { return null; }
-  }).filter(Boolean).sort((a, b) => b.mtime - a.mtime).slice(0, 200);
-
+  // 3. Extract metadata from missing files (sorted by mtime desc)
   const newEntries = [];
-  for (const { file, mtime } of missingWithMtime) {
-    const meta = extractSessionMeta(join(projDir, file));
-    if (!meta) continue;
-    newEntries.push({
-      sessionId: meta.sessionId,
-      firstPrompt: meta.firstPrompt,
-      messageCount: meta.messageCount || 0,
-      created: mtime.toISOString(),
-      modified: mtime.toISOString(),
-      gitBranch: meta.gitBranch,
-      isSidechain: meta.isSidechain,
-      projectPath: meta.cwd,
-    });
+  if (missing.length > 0) {
+    const missingWithMtime = missing.map(f => {
+      try {
+        const stat = statSync(join(projDir, f));
+        return { file: f, mtime: stat.mtime };
+      } catch { return null; }
+    }).filter(Boolean).sort((a, b) => b.mtime - a.mtime);
+
+    for (const { file, mtime } of missingWithMtime) {
+      const meta = extractSessionMeta(join(projDir, file));
+      if (!meta) continue;
+      newEntries.push({
+        sessionId: meta.sessionId,
+        firstPrompt: meta.firstPrompt,
+        messageCount: meta.messageCount || 0,
+        created: mtime.toISOString(),
+        modified: mtime.toISOString(),
+        gitBranch: meta.gitBranch,
+        isSidechain: meta.isSidechain,
+        projectPath: meta.cwd,
+      });
+    }
   }
 
-  return [...indexed, ...newEntries];
+  const liveEntries = [...indexed, ...newEntries];
+
+  // 4. Merge live entries into persistent cache
+  const cache = loadSessionCache(projDir);
+  let cacheChanged = false;
+  for (const e of liveEntries) {
+    if (!cache.has(e.sessionId)) {
+      cache.set(e.sessionId, e);
+      cacheChanged = true;
+    } else {
+      // Update modified timestamp if file still exists (it may have grown)
+      const existing = cache.get(e.sessionId);
+      if (e.modified > existing.modified) {
+        cache.set(e.sessionId, { ...existing, modified: e.modified });
+        cacheChanged = true;
+      }
+    }
+  }
+
+  // Mark cached entries whose files are gone (still returned, but not resumable)
+  for (const [sid, entry] of cache) {
+    const wasLive = jsonlIds.has(sid) || indexedIds.has(sid);
+    if (!wasLive && !entry._deleted) {
+      entry._deleted = true;
+      cacheChanged = true;
+    } else if (wasLive && entry._deleted) {
+      entry._deleted = false;
+      cacheChanged = true;
+    }
+  }
+
+  if (cacheChanged) saveSessionCache(projDir, cache);
+
+  return [...cache.values()];
 }
 
 // GET /api/claude-code/sessions — browse past Claude Code sessions across registered projects
@@ -4081,6 +4331,7 @@ app.get('/api/claude-code/sessions', (req, res) => {
           modified: e.modified,
           gitBranch: e.gitBranch || null,
           isSidechain: e.isSidechain || false,
+          deleted: e._deleted || false,
         })),
       });
     }
@@ -4568,16 +4819,17 @@ app.get('/api/claude-code/ruleset', (req, res) => {
 
     // Section markers in CLAUDE.md
     const MARKERS = {
-      claude:  { start: '## Memory Ruleset', end: '## Condensed Rulesets' },
-      cursor:  { start: '### Cursor',  end: '### Generic' },
-      generic: { start: '### Generic', end: '### Gemini' },
-      gemini:  { start: '### Gemini',  end: '### Codex' },
-      codex:   { start: '### Codex',   end: '\n---' },
+      claude:       { start: '## Memory Ruleset', end: '## Condensed Rulesets' },
+      cursor:       { start: '### Cursor',  end: '### Generic' },
+      generic:      { start: '### Generic', end: '### Gemini' },
+      gemini:       { start: '### Gemini',  end: '### Codex' },
+      codex:        { start: '### Codex',   end: '\n---' },
+      coexistence:  { start: '## Coexistence with Other Tools', end: '\n---\n\n## Condensed' },
     };
 
     const marker = MARKERS[format];
     if (!marker) {
-      return res.status(400).json({ error: `Invalid format: ${format}. Use claude, cursor, generic, gemini, or codex.` });
+      return res.status(400).json({ error: `Invalid format: ${format}. Use claude, cursor, generic, gemini, codex, or coexistence.` });
     }
 
     const startIdx = content.indexOf(marker.start);
@@ -4597,6 +4849,9 @@ app.get('/api/claude-code/ruleset', (req, res) => {
     let output;
     if (format === 'claude') {
       output = ruleset;
+    } else if (format === 'coexistence') {
+      // Remove the ## heading, keep the body
+      output = ruleset.replace(/^## Coexistence with Other Tools\s*\n?/, '').replace(/\n?---\s*$/, '').trim();
     } else {
       // Remove the marker heading line, return just the content
       output = ruleset.replace(/^### (Cursor|Generic|Gemini|Codex)\s*\n?/, '').replace(/^```\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
@@ -6315,6 +6570,36 @@ app.get('/api/terminal/profiles', (req, res) => {
   });
   const projects = loadHookProjects().map(p => ({ path: p.path, label: p.label || basename(p.path) }));
   res.json({ profiles, projects });
+});
+
+// GET /api/terminal/sessions/:id/claude-session — detect Claude Code session UUID for a terminal
+app.get('/api/terminal/sessions/:id/claude-session', (req, res) => {
+  const session = terminalSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  if (session.profile !== 'claude-code') return res.json({ claudeSessionId: null });
+  const cwd = session.cwd;
+  if (!cwd) return res.json({ claudeSessionId: null });
+  try {
+    const homeDir = process.env.USERPROFILE || process.env.HOME;
+    const claudeProjectsDir = join(homeDir, '.claude', 'projects');
+    const projKeyLower = cwd.replace(/\\/g, '-').replace(/:/g, '-').replace(/^([A-Z])/, m => m.toLowerCase());
+    const projKeyUpper = cwd.replace(/\\/g, '-').replace(/:/g, '-');
+    let projDir = join(claudeProjectsDir, projKeyLower);
+    if (!existsSync(projDir)) projDir = join(claudeProjectsDir, projKeyUpper);
+    if (!existsSync(projDir)) return res.json({ claudeSessionId: null });
+    const files = readdirSync(projDir).filter(f => f.endsWith('.jsonl'));
+    let newest = null, newestMtime = 0;
+    for (const f of files) {
+      try {
+        const mtime = statSync(join(projDir, f)).mtimeMs;
+        if (mtime >= session.createdAt && mtime > newestMtime) {
+          newestMtime = mtime;
+          newest = f.replace('.jsonl', '');
+        }
+      } catch {}
+    }
+    res.json({ claudeSessionId: newest });
+  } catch { res.json({ claudeSessionId: null }); }
 });
 
 // ── Terminal file tree ──
@@ -8186,6 +8471,30 @@ function normalizeSelector(sel) {
   return sel;
 }
 
+async function getInteractiveHints(page) {
+  try {
+    return await page.evaluate(() => {
+      const els = document.querySelectorAll(
+        'button, [role="button"], [role="textbox"], a[href], input, textarea, ' +
+        '[contenteditable="true"], [tabindex="0"]'
+      );
+      const visible = Array.from(els).filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && r.top < window.innerHeight;
+      });
+      return visible.slice(0, 15).map(el => {
+        const role = el.getAttribute('role') || el.tagName.toLowerCase();
+        const text = (el.innerText || '').trim().substring(0, 60);
+        const ariaLabel = el.getAttribute('aria-label') || '';
+        const placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-placeholder') || '';
+        return { role, text, ariaLabel, placeholder };
+      });
+    });
+  } catch (_) {
+    return [];
+  }
+}
+
 app.post('/api/browser/sessions/:id/click', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
@@ -8197,7 +8506,8 @@ app.post('/api/browser/sessions/:id/click', async (req, res) => {
     // Pre-check element count for better error messages
     const count = await loc.count().catch(() => -1);
     if (count === 0) {
-      return res.status(400).json({ error: `No elements match selector: ${selector}` });
+      const hints = await getInteractiveHints(session.page);
+      return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
     }
     if (count > 1 && nthMatch === undefined) {
       return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
