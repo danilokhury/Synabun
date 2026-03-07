@@ -2021,6 +2021,10 @@ function isWhiteboardActive() {
 function onKeyDown(e) {
   if (!isWhiteboardActive()) return;
 
+  // Don't intercept keys when focus is in inputs outside the whiteboard (e.g. code editor)
+  const tag = document.activeElement?.tagName;
+  if ((tag === 'INPUT' || tag === 'TEXTAREA') && !document.activeElement.closest('#static-bg')) return;
+
   const isEditingText = !!document.activeElement?.closest('.wb-text.editing');
   const editingListLi = document.activeElement?.closest('.wb-list.editing li') || null;
   const isEditing = isEditingText || !!editingListLi;

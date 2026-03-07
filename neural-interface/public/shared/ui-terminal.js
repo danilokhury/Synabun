@@ -9,7 +9,7 @@
 import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
-import { createTerminalSession, deleteTerminalSession, fetchTerminalSessions, fetchTerminalFiles, fetchTerminalBranches, checkoutTerminalBranch, createBrowserSession, deleteBrowserSession, fetchBrowserSessions } from './api.js';
+import { createTerminalSession, deleteTerminalSession, fetchTerminalSessions, fetchTerminalFiles, fetchTerminalBranches, checkoutTerminalBranch, createBrowserSession, deleteBrowserSession, fetchBrowserSessions, detectClaudeSession } from './api.js';
 import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { getWhiteboardElementById } from './ui-whiteboard.js';
@@ -104,6 +104,243 @@ let _splitRatio = 0.5;            // left pane width fraction (0.3–0.7)
 const DEFAULT_HEIGHT = 320;
 const MIN_HEIGHT = 120;
 
+// ── Resume label sync ──
+const RESUME_LABEL_PREFIX = 'synabun-session-label:';
+function syncResumeLabel(session) {
+  if (!session._claudeSessionId) return;
+  try {
+    if (session.label && session._userRenamed) {
+      storage.setItem(RESUME_LABEL_PREFIX + session._claudeSessionId, session.label);
+    }
+  } catch { /* storage error */ }
+}
+
+// ── CLI Status Indicator (per-window) ──
+// Detects Claude Code / CLI session state: idle, working, action needed.
+// Shown as a badge on each CLI terminal tab and floating window header.
+
+const CLI_STATUS = { OFF: 'off', IDLE: 'idle', WORKING: 'working', ACTION: 'action', DONE: 'done' };
+const _cliSessionStatus = new Map(); // sessionId → { status, lastOutput, timer }
+
+const _CLI_STATUS_HTML = '<span class="cli-status-badge" data-status="idle"><span class="cli-status-dot"></span><span class="cli-status-label">Idle</span></span>';
+const _CLI_LABELS = { idle: 'Idle', working: 'Working', action: 'Action', done: 'Done' };
+
+// ── Notification engine ──
+let _audioCtx = null;
+const _prevStatus = new Map(); // sessionId → previous status
+
+function _getNotifEnabled() {
+  return storage.getItem(KEYS.TERMINAL_NOTIFICATIONS) !== 'off';
+}
+
+function _playTone(freq, duration = 0.15, vol = 0.3) {
+  try {
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = _audioCtx.createOscillator();
+    const gain = _audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(_audioCtx.destination);
+    osc.frequency.value = freq;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(vol, _audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + duration);
+    osc.start();
+    osc.stop(_audioCtx.currentTime + duration);
+  } catch {}
+}
+
+function _notifyStatusChange(sessionId, newStatus) {
+  if (!_getNotifEnabled()) { _prevStatus.set(sessionId, newStatus); return; }
+  const prev = _prevStatus.get(sessionId);
+  _prevStatus.set(sessionId, newStatus);
+  if (!prev || prev !== CLI_STATUS.WORKING) return; // only notify on Working → X
+  if (newStatus === CLI_STATUS.WORKING) return;
+
+  // Sound: action = urgent double beep, idle/done = gentle single tone
+  if (newStatus === CLI_STATUS.ACTION) {
+    _playTone(880, 0.12, 0.35);
+    setTimeout(() => _playTone(880, 0.12, 0.35), 180);
+  } else {
+    _playTone(660, 0.18, 0.25);
+  }
+
+  // Browser notification (only if tab not focused)
+  if (document.hidden && Notification.permission === 'granted') {
+    const session = _sessions.find(s => s.id === sessionId);
+    const title = newStatus === CLI_STATUS.ACTION ? 'Action Required' : 'Task Complete';
+    const body = session?.label || 'Claude Code';
+    const n = new Notification(title, { body, tag: `synabun-cli-${sessionId}`, silent: true });
+    n.onclick = () => { window.focus(); n.close(); };
+  }
+}
+
+function _getBufferText(buffer, row) {
+  const rowData = buffer.getRow(row);
+  if (!rowData) return '';
+  let line = '';
+  for (let c = 0; c < buffer.cols; c++) line += rowData[c]?.char || ' ';
+  return line.trimEnd();
+}
+
+function _detectSessionStatus(session) {
+  if (!session?._htmlTerm?.buffer || session.dead) return CLI_STATUS.OFF;
+  const buf = session._htmlTerm.buffer;
+  const cursorY = buf.cursorY;
+
+  // Read full visible buffer for context (TUI apps use entire screen)
+  const lines = [];
+  for (let r = 0; r < buf.rows; r++) {
+    lines.push(_getBufferText(buf, r));
+  }
+  const recent = lines.join('\n');
+
+  // Action: permission prompts / approval needed
+  if (/\bAllow\b/i.test(recent) && /\b(Yes|No|Always)\b/.test(recent)) {
+    return CLI_STATUS.ACTION;
+  }
+  if (/\(y\/n\)/i.test(recent) || /\bDo you want to proceed\b/i.test(recent)) {
+    return CLI_STATUS.ACTION;
+  }
+
+  // TUI idle: prompt char between box-drawing vertical borders (Claude Code input box)
+  // e.g. "│ >  │" or "│  ❯  │"
+  for (let r = cursorY; r >= Math.max(0, cursorY - 3); r--) {
+    const line = _getBufferText(buf, r);
+    if (/[\u2502\u2503\u2551]\s*[❯>\u276F]\s*[\u2502\u2503\u2551]/.test(line)) {
+      let gapEmpty = true;
+      for (let g = r + 1; g <= cursorY; g++) {
+        const gl = _getBufferText(buf, g).trim();
+        if (gl.length > 0 && !/^[\u2500-\u257F\s]+$/.test(gl)) { gapEmpty = false; break; }
+      }
+      if (gapEmpty) return CLI_STATUS.IDLE;
+    }
+  }
+
+  // Shell idle: check cursor line AND a few lines above for prompt characters
+  for (let r = cursorY; r >= Math.max(0, cursorY - 3); r--) {
+    const line = _getBufferText(buf, r);
+    if (/[❯>\u276F$%]\s*$/.test(line) && line.trim().length < 80) {
+      // If prompt found above cursor, verify lines between are empty
+      let gapEmpty = true;
+      for (let g = r + 1; g <= cursorY; g++) {
+        if (_getBufferText(buf, g).trim().length > 0) { gapEmpty = false; break; }
+      }
+      if (gapEmpty) return CLI_STATUS.IDLE;
+    }
+  }
+
+  return CLI_STATUS.WORKING;
+}
+
+/** Update all DOM badges for a single session */
+function _ensureBadge(container) {
+  let badge = container.querySelector('.cli-status-badge');
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'cli-status-badge';
+    badge.dataset.status = 'idle';
+    badge.innerHTML = '<span class="cli-status-dot"></span><span class="cli-status-label">Idle</span>';
+    // Insert after the title/label element
+    const title = container.querySelector('.term-float-tab-title') || container.querySelector('.term-tab-label') || container.querySelector('.term-minimized-pill-label');
+    if (title) title.after(badge);
+    else container.appendChild(badge);
+  }
+  return badge;
+}
+
+function _updateSessionBadges(sessionId, status) {
+  _notifyStatusChange(sessionId, status);
+  // Docked tab badge
+  const tab = document.querySelector(`.term-tab[data-session-id="${sessionId}"]`);
+  if (tab) {
+    const badge = _ensureBadge(tab);
+    badge.dataset.status = status;
+    const lbl = badge.querySelector('.cli-status-label');
+    if (lbl) lbl.textContent = _CLI_LABELS[status] || '';
+  }
+  // Floating window header badge
+  const floatHeader = document.querySelector(`.term-float-tab[data-session-id="${sessionId}"] .term-float-tab-header`);
+  if (floatHeader) {
+    const badge = _ensureBadge(floatHeader);
+    badge.dataset.status = status;
+    const lbl = badge.querySelector('.cli-status-label');
+    if (lbl) lbl.textContent = _CLI_LABELS[status] || '';
+  }
+  // Minimized pill badge
+  const pill = document.querySelector(`.term-minimized-pill[data-session-id="${sessionId}"]`);
+  if (pill) {
+    const badge = _ensureBadge(pill);
+    badge.dataset.status = status;
+    const lbl = badge.querySelector('.cli-status-label');
+    if (lbl) lbl.textContent = _CLI_LABELS[status] || '';
+  }
+}
+
+function _scheduleCliStatusCheck(sessionId) {
+  const tracked = _cliSessionStatus.get(sessionId);
+  if (!tracked) return;
+  tracked.lastOutput = Date.now();
+
+  // Immediately mark as working while output is flowing
+  if (tracked.status !== CLI_STATUS.WORKING) {
+    tracked.status = CLI_STATUS.WORKING;
+    _updateSessionBadges(sessionId, CLI_STATUS.WORKING);
+  }
+
+  // Debounced buffer analysis after output settles
+  if (tracked.timer) clearTimeout(tracked.timer);
+  tracked.timer = setTimeout(() => {
+    const session = _sessions.find(s => s.id === sessionId);
+    if (!session) return;
+    let st = _detectSessionStatus(session);
+    // Safety net: no output for 5s but detection says WORKING -> assume IDLE
+    if (st === CLI_STATUS.WORKING && tracked.lastOutput > 0 && Date.now() - tracked.lastOutput > 5000) {
+      st = CLI_STATUS.IDLE;
+    }
+    tracked.status = st;
+    _updateSessionBadges(sessionId, st);
+  }, 600);
+}
+
+function _trackCliSession(sessionId) {
+  _cliSessionStatus.set(sessionId, {
+    status: CLI_STATUS.IDLE, lastOutput: 0, timer: null,
+    pollInterval: setInterval(() => {
+      const session = _sessions.find(s => s.id === sessionId);
+      if (!session) return;
+      const tracked = _cliSessionStatus.get(sessionId);
+      if (!tracked || tracked.status === CLI_STATUS.DONE) return;
+      if (Date.now() - tracked.lastOutput > 1000) {
+        let newStatus = _detectSessionStatus(session);
+        // Safety net: no output for 5s but detection says WORKING -> assume IDLE
+        if (newStatus === CLI_STATUS.WORKING && tracked.lastOutput > 0 && Date.now() - tracked.lastOutput > 5000) {
+          newStatus = CLI_STATUS.IDLE;
+        }
+        if (newStatus !== tracked.status) {
+          tracked.status = newStatus;
+          _updateSessionBadges(sessionId, newStatus);
+        }
+      }
+    }, 2000),
+  });
+  _prevStatus.set(sessionId, CLI_STATUS.IDLE);
+}
+
+function _untrackCliSession(sessionId) {
+  const tracked = _cliSessionStatus.get(sessionId);
+  if (tracked?.timer) clearTimeout(tracked.timer);
+  if (tracked?.pollInterval) clearInterval(tracked.pollInterval);
+  _cliSessionStatus.delete(sessionId);
+  _prevStatus.delete(sessionId);
+}
+
+/** Returns badge HTML for a session if it's a tracked CLI, or empty string */
+function _cliBadgeHtml(sessionId) {
+  return _cliSessionStatus.has(sessionId)
+    ? `<span class="cli-status-badge" data-status="${_cliSessionStatus.get(sessionId).status}"><span class="cli-status-dot"></span><span class="cli-status-label">${_CLI_LABELS[_cliSessionStatus.get(sessionId).status] || ''}</span></span>`
+    : '';
+}
+
 // ── rAF-throttled fit + debounced PTY resize ──
 //
 // Key insight from xterm.js issues (#3873, #4113, #5320):
@@ -119,6 +356,12 @@ const _fitPending = new Map();        // sessionId → rAF handle
 const _resizeTimers = new Map();      // sessionId → debounce timer for PTY resize
 let _draggingResize = false;          // true during edge-drag resize
 const DRAG_RESIZE_DEBOUNCE_MS = 150;  // ms between PTY resizes during drag
+
+// Touch → mouse coordinate helper for drag/resize
+function _touchXY(e) {
+  const t = e.touches?.[0] || e.changedTouches?.[0];
+  return t ? { clientX: t.clientX, clientY: t.clientY } : null;
+}
 
 function _scheduleFit(session, _retries) {
   if (!session?.fitAddon || session.dead || session._isBrowser || session._isHtmlTerm) return;
@@ -203,15 +446,21 @@ function _initAutoScroll(session) {
 // ── Session registry (persists across page refresh) ──
 
 function saveSessionRegistry() {
-  const registry = _sessions
-    .filter(s => !s._gitOutput) // exclude local-only git output tab
-    .map(s => ({
+  // Deduplicate by session ID (last entry wins, merge claudeSessionId)
+  const seen = new Map();
+  for (const s of _sessions) {
+    if (s._gitOutput) continue;
+    const prev = seen.get(s.id);
+    seen.set(s.id, {
       id: s.id,
       profile: s.profile,
       label: s.label,
       pinned: s.pinned,
-    }));
-  storage.setItem(KEYS.TERMINAL_SESSIONS, JSON.stringify(registry));
+      userRenamed: s._userRenamed || false,
+      claudeSessionId: s._claudeSessionId || prev?.claudeSessionId || null,
+    });
+  }
+  storage.setItem(KEYS.TERMINAL_SESSIONS, JSON.stringify([...seen.values()]));
 }
 
 function loadSessionRegistry() {
@@ -220,6 +469,22 @@ function loadSessionRegistry() {
   } catch {
     return [];
   }
+}
+
+/** Push session to _sessions, replacing any existing entry with the same ID */
+function _pushSession(session) {
+  const existingIdx = _sessions.findIndex(s => s.id === session.id);
+  if (existingIdx >= 0) {
+    // Merge claudeSessionId from old session if new one doesn't have it
+    if (!session._claudeSessionId && _sessions[existingIdx]._claudeSessionId) {
+      session._claudeSessionId = _sessions[existingIdx]._claudeSessionId;
+    }
+    _sessions[existingIdx] = session;
+  } else {
+    _sessions.push(session);
+  }
+  // Attach touch toolbar for terminal sessions on touch devices
+  if (!session._isBrowser && session.viewport) _createTouchToolbar(session);
 }
 
 function clearSessionRegistry() {
@@ -529,9 +794,21 @@ function ensurePanel() {
 
     const commit = () => {
       const val = input.value.trim();
-      if (val) session.label = val;
+      if (val) { session.label = val; session._userRenamed = true; }
       renderTabBar();
       saveSessionRegistry();
+      saveTerminalLayout();
+      syncResumeLabel(session);
+      // Retry detection if Claude session ID not yet known
+      if (!session._claudeSessionId && CLI_PROFILES.has(session.profile)) {
+        detectClaudeSession(session.id).then(r => {
+          if (r?.claudeSessionId && !session._claudeSessionId) {
+            session._claudeSessionId = r.claudeSessionId;
+            saveSessionRegistry();
+            syncResumeLabel(session);
+          }
+        }).catch(() => {});
+      }
     };
     input.addEventListener('blur', commit);
     input.addEventListener('keydown', (ev) => {
@@ -676,10 +953,13 @@ function showPanel() {
   ensurePanel();
   hidePeekDock();
 
-  const saved = parseInt(storage.getItem(KEYS.TERMINAL_HEIGHT), 10);
-  const h = (saved > MIN_HEIGHT) ? saved : DEFAULT_HEIGHT;
-  _panel.style.height = h + 'px';
-  document.documentElement.style.setProperty('--terminal-height', h + 'px');
+  // Only restore docked height when not floating — detached panels keep their own size
+  if (!_detached) {
+    const saved = parseInt(storage.getItem(KEYS.TERMINAL_HEIGHT), 10);
+    const h = (saved > MIN_HEIGHT) ? saved : DEFAULT_HEIGHT;
+    _panel.style.height = h + 'px';
+    document.documentElement.style.setProperty('--terminal-height', h + 'px');
+  }
 
   // Remove hidden class to trigger slide-up transition
   _panel.classList.remove('hidden');
@@ -708,8 +988,8 @@ function hidePanel() {
   const toggle = $('menu-terminal-toggle');
   if (toggle) toggle.classList.remove('active');
 
-  // Show peek dock after slide-down completes
-  setTimeout(() => showPeekDock(), 260);
+  // Show peek dock after slide-down completes (only for docked mode)
+  if (!_detached) setTimeout(() => showPeekDock(), 260);
 }
 
 function togglePanel() {
@@ -821,47 +1101,66 @@ function saveFloatPos() {
 
 function initFloatDrag() {
   // Header drag for floating mode
-  document.addEventListener('mousedown', (e) => {
-    if (!_detached || !_panel) return;
-    if (_panelPinned) return;
-    const header = e.target.closest('.term-header');
-    if (!header || !_panel.contains(header)) return;
-    // Don't drag if clicking a button, tab close, input, flyout
-    if (e.target.closest('button, input, .term-tab-close, .term-profile-flyout')) return;
-    e.preventDefault();
-
+  function _startPanelDrag(x, y) {
     const rect = _panel.getBoundingClientRect();
-    _floatDrag = { startX: e.clientX, startY: e.clientY, startL: rect.left, startT: rect.top };
+    _floatDrag = { startX: x, startY: y, startL: rect.left, startT: rect.top };
     _panel.classList.add('float-dragging');
     document.body.style.cursor = 'move';
     document.body.style.userSelect = 'none';
-  });
-
-  document.addEventListener('mousemove', (e) => {
+  }
+  function _movePanelDrag(x, y) {
     if (!_floatDrag) return;
-    const dx = e.clientX - _floatDrag.startX;
-    const dy = e.clientY - _floatDrag.startY;
-    let finalL = _floatDrag.startL + dx;
-    let finalT = _floatDrag.startT + dy;
+    let finalL = _floatDrag.startL + x - _floatDrag.startX;
+    let finalT = _floatDrag.startT + y - _floatDrag.startY;
     if (state.gridSnap) {
       const gs = state.gridSize || 20;
       finalL = Math.round(finalL / gs) * gs;
       finalT = Math.round(finalT / gs) * gs;
     }
-    // Keep below title bar
     finalT = Math.max(48, finalT);
     _panel.style.left = finalL + 'px';
     _panel.style.top = finalT + 'px';
-  });
-
-  document.addEventListener('mouseup', () => {
+  }
+  function _endPanelDrag() {
     if (!_floatDrag) return;
     _floatDrag = null;
     if (_panel) _panel.classList.remove('float-dragging');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
     saveFloatPos();
+  }
+
+  function _checkPanelHeader(target) {
+    if (!_detached || !_panel || _panelPinned) return false;
+    const header = target.closest('.term-header');
+    if (!header || !_panel.contains(header)) return false;
+    if (target.closest('button, input, .term-tab-close, .term-profile-flyout')) return false;
+    return true;
+  }
+
+  document.addEventListener('mousedown', (e) => {
+    if (!_checkPanelHeader(e.target)) return;
+    e.preventDefault();
+    _startPanelDrag(e.clientX, e.clientY);
   });
+  document.addEventListener('mousemove', (e) => _movePanelDrag(e.clientX, e.clientY));
+  document.addEventListener('mouseup', _endPanelDrag);
+
+  // Touch equivalents
+  document.addEventListener('touchstart', (e) => {
+    const pt = _touchXY(e);
+    if (!pt || !_checkPanelHeader(e.target)) return;
+    e.preventDefault();
+    _startPanelDrag(pt.clientX, pt.clientY);
+  }, { passive: false });
+  document.addEventListener('touchmove', (e) => {
+    const pt = _touchXY(e);
+    if (!pt || !_floatDrag) return;
+    e.preventDefault();
+    _movePanelDrag(pt.clientX, pt.clientY);
+  }, { passive: false });
+  document.addEventListener('touchend', _endPanelDrag);
+  document.addEventListener('touchcancel', _endPanelDrag);
 
   // Edge resize for floating mode (all 4 edges + 4 corners)
   initFloatResize();
@@ -873,54 +1172,40 @@ function initFloatResize() {
   const CURSORS = { n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
     nw: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', se: 'nwse-resize' };
 
-  // Mousedown on DOM resize handles (event delegation — handles are added/removed dynamically)
-  document.addEventListener('mousedown', (e) => {
-    const handle = e.target.closest('#terminal-panel.detached > .float-resize');
-    if (!handle || !_panel || _floatDrag) return;
-    if (_panelPinned) return;
-    e.preventDefault();
-    e.stopPropagation();
+  const MIN_W = 300, MIN_H = 160;
+
+  function _startPanelResize(handle, x, y) {
+    if (!_panel || _floatDrag || _panelPinned) return false;
     const dir = handle.dataset.resize;
     const r = _panel.getBoundingClientRect();
-    resizing = { dir, startX: e.clientX, startY: e.clientY, l: r.left, t: r.top, w: r.width, h: r.height };
+    resizing = { dir, startX: x, startY: y, l: r.left, t: r.top, w: r.width, h: r.height };
     _draggingResize = true;
     document.body.style.cursor = CURSORS[dir];
     document.body.style.userSelect = 'none';
-  });
-
-  const MIN_W = 300, MIN_H = 160;
-
-  document.addEventListener('mousemove', (e) => {
+    return true;
+  }
+  function _movePanelResize(x, y) {
     if (!resizing) return;
     const { dir, startX, startY, l, t, w, h } = resizing;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-
+    const dx = x - startX, dy = y - startY;
     let nw = w, nh = h, nl = l, nt = t;
-
     if (dir.includes('e')) nw = Math.max(MIN_W, w + dx);
     if (dir.includes('w')) { nw = Math.max(MIN_W, w - dx); nl = l + w - nw; }
     if (dir.includes('s')) nh = Math.max(MIN_H, h + dy);
     if (dir.includes('n')) { nh = Math.max(MIN_H, h - dy); nt = t + h - nh; }
-
     if (state.gridSnap) {
       const gs = state.gridSize || 20;
-      nl = Math.round(nl / gs) * gs;
-      nt = Math.round(nt / gs) * gs;
-      nw = Math.round(nw / gs) * gs;
-      nh = Math.round(nh / gs) * gs;
+      nl = Math.round(nl / gs) * gs; nt = Math.round(nt / gs) * gs;
+      nw = Math.round(nw / gs) * gs; nh = Math.round(nh / gs) * gs;
     }
-
     nt = Math.max(48, nt);
-
     _panel.style.left = nl + 'px';
     _panel.style.top = nt + 'px';
     _panel.style.width = nw + 'px';
     _panel.style.height = nh + 'px';
     _sessions.forEach(s => _scheduleFit(s));
-  });
-
-  document.addEventListener('mouseup', () => {
+  }
+  function _endPanelResize() {
     if (!resizing) return;
     resizing = null;
     _draggingResize = false;
@@ -928,7 +1213,36 @@ function initFloatResize() {
     document.body.style.userSelect = '';
     saveFloatPos();
     _sessions.forEach(s => _sendResize(s));
+  }
+
+  // Mouse
+  document.addEventListener('mousedown', (e) => {
+    const handle = e.target.closest('#terminal-panel.detached > .float-resize');
+    if (!handle) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _startPanelResize(handle, e.clientX, e.clientY);
   });
+  document.addEventListener('mousemove', (e) => _movePanelResize(e.clientX, e.clientY));
+  document.addEventListener('mouseup', _endPanelResize);
+
+  // Touch
+  document.addEventListener('touchstart', (e) => {
+    const handle = e.target.closest('#terminal-panel.detached > .float-resize');
+    const pt = _touchXY(e);
+    if (!handle || !pt) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _startPanelResize(handle, pt.clientX, pt.clientY);
+  }, { passive: false });
+  document.addEventListener('touchmove', (e) => {
+    const pt = _touchXY(e);
+    if (!pt || !resizing) return;
+    e.preventDefault();
+    _movePanelResize(pt.clientX, pt.clientY);
+  }, { passive: false });
+  document.addEventListener('touchend', _endPanelResize);
+  document.addEventListener('touchcancel', _endPanelResize);
 }
 
 // ── Resize handle (docked mode) ──
@@ -1067,9 +1381,9 @@ async function openSession(profile, cwd, existingSessionId) {
 
   // ── Keyboard shortcuts (after ws is declared) ──
   term.attachCustomKeyEventHandler((e) => {
-    // Ctrl+Enter → insert literal newline (multi-line command editing)
+    // Shift+Enter → insert literal newline (multi-line command editing)
     // Sends Ctrl-V (\x16) + LF (\n) — readline inserts LF literally instead of executing
-    if (e.ctrlKey && e.key === 'Enter') {
+    if (e.shiftKey && e.key === 'Enter') {
       if (e.type === 'keydown' && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'input', data: '\x16\n' }));
       }
@@ -1246,9 +1560,9 @@ async function openSession(profile, cwd, existingSessionId) {
     _fitInProgress: false,
   };
   _initAutoScroll(session);
-  _sessions.push(session);
+  _pushSession(session);
   _pendingSessionIds.delete(sessionId);
-  _activeIdx = _sessions.length - 1;
+  _activeIdx = _sessions.indexOf(session);
 
   // Slide panel up so user sees the session immediately
   ensurePanel();
@@ -1276,7 +1590,7 @@ async function loadHtmlTermRenderer() {
  * Open a CLI tool session using the custom HTML terminal renderer
  * instead of xterm.js. Mirrors openSession() but lighter.
  */
-async function openHtmlTermSession(profile, cwd, existingSessionId) {
+async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}) {
   if (_opening) return;
   _opening = true;
   try {
@@ -1317,7 +1631,7 @@ async function openHtmlTermSession(profile, cwd, existingSessionId) {
     const htmlTerm = new _HtmlTermRenderer(viewport, null, {
       onTitle: (title) => {
         const sess = _sessions.find(s => s.id === sessionId);
-        if (sess && title) {
+        if (sess && title && !sess._userRenamed) {
           sess.label = title;
           renderTabBar();
         }
@@ -1338,11 +1652,15 @@ async function openHtmlTermSession(profile, cwd, existingSessionId) {
       }
     };
 
+    // Track CLI status for Claude Code / Codex / Gemini sessions
+    if (CLI_PROFILES.has(profile)) _trackCliSession(sessionId);
+
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === 'output' || msg.type === 'replay') {
           htmlTerm.write(msg.data);
+          if (CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
         }
         if (msg.type === 'exit') markSessionDead(sessionId);
         if (msg.type === 'error') {
@@ -1373,7 +1691,7 @@ async function openHtmlTermSession(profile, cwd, existingSessionId) {
       id: sessionId,
       profile,
       cwd: cwd || null,
-      label: cwdLabel ? `${profileDef?.label || profile} · ${cwdLabel}` : (profileDef?.label || profile),
+      label: options.label || (cwdLabel ? `${profileDef?.label || profile} · ${cwdLabel}` : (profileDef?.label || profile)),
       term: null,
       fitAddon: null,
       searchAddon: null,
@@ -1383,14 +1701,16 @@ async function openHtmlTermSession(profile, cwd, existingSessionId) {
       renderer: 'html',
       dead: false,
       pinned: false,
+      _userRenamed: !!options.label,
+      _claudeSessionId: options.claudeSessionId || null,
       _isHtmlTerm: true,
       _htmlTerm: htmlTerm,
       _autoScroll: true,
       _fitInProgress: false,
     };
-    _sessions.push(session);
+    _pushSession(session);
     _pendingSessionIds.delete(sessionId);
-    _activeIdx = _sessions.length - 1;
+    _activeIdx = _sessions.indexOf(session);
 
     // Right-click context menu (term=null for HTML term — handler uses session)
     initContextMenu(viewport, null, ws);
@@ -1402,6 +1722,23 @@ async function openHtmlTermSession(profile, cwd, existingSessionId) {
     renderTabBar();
     switchToSession(_activeIdx);
     saveSessionRegistry();
+
+    // Auto-detect Claude session UUID for fresh CLI sessions (enables resume label sync)
+    if (CLI_PROFILES.has(profile) && !options.claudeSessionId) {
+      setTimeout(async () => {
+        try {
+          const r = await detectClaudeSession(sessionId);
+          if (r?.claudeSessionId) {
+            const sess = _sessions.find(s => s.id === sessionId);
+            if (sess && !sess._claudeSessionId) {
+              sess._claudeSessionId = r.claudeSessionId;
+              saveSessionRegistry();
+              if (sess._userRenamed && sess.label) syncResumeLabel(sess);
+            }
+          }
+        } catch {}
+      }, 4000);
+    }
   } finally { _opening = false; }
 }
 
@@ -1426,7 +1763,7 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
   const htmlTerm = new _HtmlTermRenderer(viewport, null, {
     onTitle: (title) => {
       const sess = _sessions.find(s => s.id === sessionId);
-      if (sess && title) {
+      if (sess && title && !sess._userRenamed) {
         sess.label = title;
         renderTabBar();
       }
@@ -1446,11 +1783,15 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
     }
   };
 
+  // Track CLI status on reconnect
+  if (CLI_PROFILES.has(profile)) _trackCliSession(sessionId);
+
   ws.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
       if (msg.type === 'output' || msg.type === 'replay') {
         htmlTerm.write(msg.data);
+        if (CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
       }
       if (msg.type === 'exit') markSessionDead(sessionId);
       if (msg.type === 'error') {
@@ -1495,13 +1836,15 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
     renderer: 'html',
     dead: false,
     pinned: options.pinned || false,
+    _userRenamed: options.userRenamed || false,
+    _claudeSessionId: options.claudeSessionId || null,
     _isHtmlTerm: true,
     _htmlTerm: htmlTerm,
     _autoScroll: true,
     _fitInProgress: false,
   };
-  _sessions.push(session);
-  _activeIdx = _sessions.length - 1;
+  _pushSession(session);
+  _activeIdx = _sessions.indexOf(session);
 
   // Right-click context menu (term=null for HTML term — handler uses session)
   initContextMenu(viewport, null, ws);
@@ -1646,8 +1989,10 @@ async function openBrowserSession(url, fresh, headless, force) {
           const sess = _sessions.find(s => s.id === sessionId);
           if (sess) {
             sess._browserTitle = msg.title;
-            sess.label = msg.title.length > 30 ? msg.title.slice(0, 30) + '…' : msg.title;
-            renderTabBar();
+            if (!sess._userRenamed) {
+              sess.label = msg.title.length > 30 ? msg.title.slice(0, 30) + '…' : msg.title;
+              renderTabBar();
+            }
             // Update floating tab title if detached
             const dt = _detachedTabs.get(sessionId);
             if (dt) {
@@ -1790,8 +2135,8 @@ async function openBrowserSession(url, fresh, headless, force) {
     _browserCtx: ctx,
     _visibilityHandler,
   };
-  _sessions.push(session);
-  _activeIdx = _sessions.length - 1;
+  _pushSession(session);
+  _activeIdx = _sessions.indexOf(session);
 
   ensurePanel();
   if (_panel.classList.contains('hidden')) {
@@ -1871,7 +2216,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
         if (msg.title) {
           titleLabel.textContent = msg.title;
           const sess = _sessions.find(s => s.id === sessionId);
-          if (sess) { sess._browserTitle = msg.title; sess.label = msg.title.length > 30 ? msg.title.slice(0, 30) + '…' : msg.title; renderTabBar(); }
+          if (sess) { sess._browserTitle = msg.title; if (!sess._userRenamed) { sess.label = msg.title.length > 30 ? msg.title.slice(0, 30) + '…' : msg.title; renderTabBar(); } }
         }
       }
     } catch {}
@@ -1930,11 +2275,12 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
     term: null, fitAddon: null, searchAddon: null,
     ws, viewport, ro, renderer: null,
     dead: false, pinned: saved?.pinned || false,
+    _userRenamed: saved?.userRenamed || false,
     _isBrowser: true, _browserUrl: currentUrl, _browserTitle: liveData?.title || '',
     _browserCanvas: canvas, _browserCtx: ctx, _visibilityHandler,
   };
-  _sessions.push(session);
-  _activeIdx = _sessions.length - 1;
+  _pushSession(session);
+  _activeIdx = _sessions.indexOf(session);
 
   ensurePanel();
   if (_panel.classList.contains('hidden')) {
@@ -2016,8 +2362,8 @@ async function reconnectSession(sessionId, profile, options = {}) {
   const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
 
   term.attachCustomKeyEventHandler((e) => {
-    // Ctrl+Enter → insert literal newline (multi-line command editing)
-    if (e.ctrlKey && e.key === 'Enter') {
+    // Shift+Enter → insert literal newline (multi-line command editing)
+    if (e.shiftKey && e.key === 'Enter') {
       if (e.type === 'keydown' && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'input', data: '\x16\n' }));
       }
@@ -2174,12 +2520,14 @@ async function reconnectSession(sessionId, profile, options = {}) {
     renderer,
     dead: false,
     pinned: options.pinned || false,
+    _userRenamed: options.userRenamed || false,
+    _claudeSessionId: options.claudeSessionId || null,
     _autoScroll: true,
     _fitInProgress: false,
   };
   _initAutoScroll(session);
-  _sessions.push(session);
-  _activeIdx = _sessions.length - 1;
+  _pushSession(session);
+  _activeIdx = _sessions.indexOf(session);
 
   ensurePanel();
   if (_panel.classList.contains('hidden')) {
@@ -2253,6 +2601,7 @@ async function closeSession(idx) {
 
   // Cleanup — mark dead first to prevent ws.onclose from re-entering
   session.dead = true;
+  _untrackCliSession(session.id);
   if (session.ro) session.ro.disconnect();
   if (session.ws) session.ws.close();
   if (session._isHtmlTerm && session._htmlTerm) session._htmlTerm.dispose();
@@ -2401,7 +2750,94 @@ function markSessionDead(sessionId) {
   if (session) {
     session.dead = true;
     renderTabBar();
+    // Set badge to "Done" instead of removing it
+    const tracked = _cliSessionStatus.get(sessionId);
+    if (tracked) {
+      tracked.status = CLI_STATUS.DONE;
+      if (tracked.timer) { clearTimeout(tracked.timer); tracked.timer = null; }
+      if (tracked.pollInterval) { clearInterval(tracked.pollInterval); tracked.pollInterval = null; }
+      _updateSessionBadges(sessionId, CLI_STATUS.DONE);
+    }
   }
+}
+
+// ── Touch toolbar (mobile/tablet arrow keys + modifiers) ──
+
+const _isTouchDevice = matchMedia('(pointer: coarse)').matches;
+
+function _createTouchToolbar(session) {
+  if (!_isTouchDevice) return null;
+
+  const bar = document.createElement('div');
+  bar.className = 'term-touch-toolbar';
+
+  // Key definitions: label, sequence to send (or special action)
+  const keys = [
+    { label: 'Esc', seq: '\x1b' },
+    { label: 'Tab', seq: '\t' },
+    { label: '↑', seq: '\x1b[A' },
+    { label: '↓', seq: '\x1b[B' },
+    { label: '←', seq: '\x1b[D' },
+    { label: '→', seq: '\x1b[C' },
+    { label: 'Ctrl', action: 'ctrl' },
+    { label: '^C', seq: '\x03' },
+    { label: 'y', seq: 'y' },
+    { label: 'n', seq: 'n' },
+  ];
+
+  let ctrlActive = false;
+
+  function sendToSession(data) {
+    if (session.ws?.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({ type: 'input', data }));
+    }
+  }
+
+  for (const key of keys) {
+    const btn = document.createElement('button');
+    btn.className = 'term-touch-key';
+    btn.textContent = key.label;
+    btn.setAttribute('tabindex', '-1');
+
+    if (key.action === 'ctrl') {
+      btn.classList.add('term-touch-mod');
+      btn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        ctrlActive = !ctrlActive;
+        btn.classList.toggle('active', ctrlActive);
+      }, { passive: false });
+      btn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        ctrlActive = !ctrlActive;
+        btn.classList.toggle('active', ctrlActive);
+      });
+    } else {
+      const handler = (e) => {
+        e.preventDefault();
+        if (ctrlActive && key.seq.length === 1) {
+          // Ctrl+letter → control code
+          const code = key.seq.toUpperCase().charCodeAt(0);
+          if (code >= 65 && code <= 90) sendToSession(String.fromCharCode(code - 64));
+          else sendToSession(key.seq);
+          // Auto-release Ctrl
+          ctrlActive = false;
+          bar.querySelector('.term-touch-mod')?.classList.remove('active');
+        } else {
+          sendToSession(key.seq);
+        }
+        // Refocus terminal input
+        if (session._isHtmlTerm) session._htmlTerm?.focus();
+        else session.term?.focus();
+      };
+      btn.addEventListener('touchstart', handler, { passive: false });
+      btn.addEventListener('mousedown', handler);
+    }
+
+    bar.appendChild(btn);
+  }
+
+  session.viewport.appendChild(bar);
+  return bar;
 }
 
 // ── Right-click context menu ──
@@ -2483,22 +2919,30 @@ function initContextMenu(viewport, term, ws) {
                 return;
               }
             }
-            // No image — text paste via xterm's built-in
+            // No image — text paste
             navigator.clipboard.readText().then(text => {
-              if (text && session?.term) session.term.paste(text);
+              if (text) {
+                if (session?._isHtmlTerm) session._htmlTerm?.paste(text);
+                else if (session?.term) session.term.paste(text);
+              }
             }).catch(() => {});
           }).catch(() => {
             // Fallback if clipboard.read() not available
             navigator.clipboard.readText().then(text => {
-              if (text && session?.term) session.term.paste(text);
+              if (text) {
+                if (session?._isHtmlTerm) session._htmlTerm?.paste(text);
+                else if (session?.term) session.term.paste(text);
+              }
             }).catch(() => {});
           });
           break;
         case 'select-all':
-          if (term) term.selectAll();
+          if (session?._isHtmlTerm) { /* HtmlTermRenderer doesn't support selectAll */ }
+          else if (term) term.selectAll();
           break;
         case 'clear':
-          if (term) term.clear();
+          if (session?._isHtmlTerm) session._htmlTerm?.clear?.();
+          else if (term) term.clear();
           break;
         case 'find':
           if (session && _detachedTabs.has(session.id)) {
@@ -2743,7 +3187,7 @@ function detachTab(idx) {
   win.innerHTML = `
     <div class="term-float-tab-header">
       <span class="term-float-tab-icon">${prof?.svg || SVG_SHELL}</span>
-      <span class="term-float-tab-title">${session.label}</span>
+      <span class="term-float-tab-title">${session.label}</span>${_cliBadgeHtml(session.id)}
       <div class="term-float-tab-actions">
         <button class="term-float-tab-btn files-btn" data-tooltip="Toggle file tree">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -2851,7 +3295,23 @@ function detachTab(idx) {
       titleEl.contentEditable = 'false';
       titleEl.classList.remove('editing');
       const val = titleEl.textContent.trim();
-      if (val) { session.label = val; renderTabBar(); saveSessionRegistry(); }
+      if (val) {
+        // Re-find session from _sessions to avoid stale closure after reconnection
+        const live = _sessions.find(s => s.id === session.id) || session;
+        live.label = val; live._userRenamed = true;
+        if (live !== session) { session.label = val; session._userRenamed = true; }
+        renderTabBar(); saveSessionRegistry(); saveTerminalLayout(); syncResumeLabel(live);
+        // Retry detection if Claude session ID not yet known
+        if (!live._claudeSessionId && CLI_PROFILES.has(live.profile)) {
+          detectClaudeSession(live.id).then(r => {
+            if (r?.claudeSessionId && !live._claudeSessionId) {
+              live._claudeSessionId = r.claudeSessionId;
+              saveSessionRegistry();
+              syncResumeLabel(live);
+            }
+          }).catch(() => {});
+        }
+      }
       else { titleEl.textContent = session.label; }
     };
     titleEl.addEventListener('blur', commit, { once: true });
@@ -2879,8 +3339,15 @@ function detachTab(idx) {
     }
   });
 
-  // Click anywhere on floating window → bring to front
-  win.addEventListener('mousedown', () => bringTabToFront(session.id));
+  // Click anywhere on floating window → bring to front + focus terminal
+  win.addEventListener('mousedown', (e) => {
+    bringTabToFront(session.id);
+    // Re-focus terminal unless user clicked a button/input
+    if (!e.target.closest('button, input, [contenteditable]')) {
+      if (session._isHtmlTerm) session._htmlTerm?.focus();
+      else if (session.term) session.term?.focus();
+    }
+  });
 
   // Header drag + edge resize — store cleanup to remove document listeners on close/dock
   const dragCleanup = initTabFloatDrag(win, session.id);
@@ -2893,8 +3360,10 @@ function detachTab(idx) {
     if (nextDocked >= 0) {
       switchToSession(nextDocked);
     } else {
-      // No docked sessions remain — hide main panel
+      // No docked sessions remain — clear container and hide main panel
       _activeIdx = -1;
+      const container = document.getElementById('term-container');
+      if (container) container.innerHTML = '';
       if (_panel && !_panel.classList.contains('hidden')) hidePanel();
     }
   }
@@ -2983,6 +3452,15 @@ function minimizeTab(sessionId) {
   pill.style.opacity = '0';
   tray.appendChild(pill);
   tabState.pill = pill;
+
+  // Set initial CLI status badge on pill
+  const tracked = _cliSessionStatus.get(sessionId);
+  if (tracked) {
+    const badge = _ensureBadge(pill);
+    badge.dataset.status = tracked.status;
+    const lbl = badge.querySelector('.cli-status-label');
+    if (lbl) lbl.textContent = _CLI_LABELS[tracked.status] || '';
+  }
 
   // Genie minimize animation — shrink toward pill position
   const el = tabState.el;
@@ -3096,45 +3574,69 @@ function initTabFloatDrag(win, sessionId) {
   const { signal } = ac;
   let drag = null;
 
-  win.addEventListener('mousedown', (e) => {
-    const header = e.target.closest('.term-float-tab-header');
-    if (!header || e.target.closest('button')) return;
+  function _checkHeader(target) {
+    const header = target.closest('.term-float-tab-header');
+    if (!header || target.closest('button')) return false;
     const session = _sessions.find(s => s.id === sessionId);
-    if (session?.pinned) return;
-    e.preventDefault();
-    e.stopPropagation(); // prevent resize document handler from also firing
+    return !session?.pinned;
+  }
+  function _startDrag(x, y) {
     const r = win.getBoundingClientRect();
-    drag = { startX: e.clientX, startY: e.clientY, startL: r.left, startT: r.top, startW: r.width };
+    drag = { startX: x, startY: y, startL: r.left, startT: r.top, startW: r.width };
     win.classList.add('float-dragging');
     document.body.style.cursor = DRAG_CURSOR_ACTIVE;
     document.body.style.userSelect = 'none';
-  });
-
-  document.addEventListener('mousemove', (e) => {
+  }
+  function _moveDrag(x, y) {
     if (!drag) return;
-    let finalL = drag.startL + e.clientX - drag.startX;
-    let finalT = drag.startT + e.clientY - drag.startY;
+    let finalL = drag.startL + x - drag.startX;
+    let finalT = drag.startT + y - drag.startY;
     if (state.gridSnap) {
       const gs = state.gridSize || 20;
       finalL = Math.round(finalL / gs) * gs;
       finalT = Math.round(finalT / gs) * gs;
     }
-    // Clamp to keep at least 80px of the window visible on screen
     const KEEP = 80;
     const w = drag.startW || parseFloat(win.style.width) || 700;
     finalL = Math.max(KEEP - w, Math.min(finalL, window.innerWidth - KEEP));
     finalT = Math.max(48, Math.min(finalT, window.innerHeight - KEEP));
     win.style.left = finalL + 'px';
     win.style.top = finalT + 'px';
-  }, { signal });
-
-  document.addEventListener('mouseup', () => {
+  }
+  function _endDrag() {
     if (!drag) return;
     drag = null;
     win.classList.remove('float-dragging');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+  }
+
+  // Mouse
+  win.addEventListener('mousedown', (e) => {
+    if (!_checkHeader(e.target)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _startDrag(e.clientX, e.clientY);
   }, { signal });
+  document.addEventListener('mousemove', (e) => _moveDrag(e.clientX, e.clientY), { signal });
+  document.addEventListener('mouseup', _endDrag, { signal });
+
+  // Touch
+  win.addEventListener('touchstart', (e) => {
+    const pt = _touchXY(e);
+    if (!pt || !_checkHeader(e.target)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _startDrag(pt.clientX, pt.clientY);
+  }, { signal, passive: false });
+  document.addEventListener('touchmove', (e) => {
+    const pt = _touchXY(e);
+    if (!pt || !drag) return;
+    e.preventDefault();
+    _moveDrag(pt.clientX, pt.clientY);
+  }, { signal, passive: false });
+  document.addEventListener('touchend', _endDrag, { signal });
+  document.addEventListener('touchcancel', _endDrag, { signal });
 
   return () => ac.abort();
 }
@@ -3149,26 +3651,21 @@ function initTabFloatResize(win, sessionId) {
 
   const MIN_W = 280, MIN_H = 160;
 
-  // Mousedown on DOM resize handles
-  win.querySelectorAll('.float-resize').forEach(handle => {
-    handle.addEventListener('mousedown', (e) => {
-      const session = _sessions.find(s => s.id === sessionId);
-      if (session?.pinned) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const dir = handle.dataset.resize;
-      const r = win.getBoundingClientRect();
-      resizing = { dir, startX: e.clientX, startY: e.clientY, l: r.left, t: r.top, w: r.width, h: r.height };
-      _draggingResize = true;
-      document.body.style.cursor = CURSORS[dir];
-      document.body.style.userSelect = 'none';
-    }, { signal });
-  });
-
-  document.addEventListener('mousemove', (e) => {
+  function _startResize(handle, x, y) {
+    const session = _sessions.find(s => s.id === sessionId);
+    if (session?.pinned) return false;
+    const dir = handle.dataset.resize;
+    const r = win.getBoundingClientRect();
+    resizing = { dir, startX: x, startY: y, l: r.left, t: r.top, w: r.width, h: r.height };
+    _draggingResize = true;
+    document.body.style.cursor = CURSORS[dir];
+    document.body.style.userSelect = 'none';
+    return true;
+  }
+  function _moveResize(x, y) {
     if (!resizing) return;
     const { dir, startX, startY, l, t, w, h } = resizing;
-    const dx = e.clientX - startX, dy = e.clientY - startY;
+    const dx = x - startX, dy = y - startY;
     let nw = w, nh = h, nl = l, nt = t;
     if (dir.includes('e')) nw = Math.max(MIN_W, w + dx);
     if (dir.includes('w')) { nw = Math.max(MIN_W, w - dx); nl = l + w - nw; }
@@ -3176,10 +3673,8 @@ function initTabFloatResize(win, sessionId) {
     if (dir.includes('n')) { nh = Math.max(MIN_H, h - dy); nt = t + h - nh; }
     if (state.gridSnap) {
       const gs = state.gridSize || 20;
-      nl = Math.round(nl / gs) * gs;
-      nt = Math.round(nt / gs) * gs;
-      nw = Math.round(nw / gs) * gs;
-      nh = Math.round(nh / gs) * gs;
+      nl = Math.round(nl / gs) * gs; nt = Math.round(nt / gs) * gs;
+      nw = Math.round(nw / gs) * gs; nh = Math.round(nh / gs) * gs;
     }
     nt = Math.max(48, nt);
     win.style.left = nl + 'px';
@@ -3188,9 +3683,8 @@ function initTabFloatResize(win, sessionId) {
     win.style.height = nh + 'px';
     const session = _sessions.find(s => s.id === sessionId);
     if (session) _scheduleFit(session);
-  }, { signal });
-
-  document.addEventListener('mouseup', () => {
+  }
+  function _endResize() {
     if (!resizing) return;
     resizing = null;
     _draggingResize = false;
@@ -3198,7 +3692,36 @@ function initTabFloatResize(win, sessionId) {
     document.body.style.userSelect = '';
     const session = _sessions.find(s => s.id === sessionId);
     if (session) _sendResize(session);
-  }, { signal });
+  }
+
+  // Mouse
+  win.querySelectorAll('.float-resize').forEach(handle => {
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _startResize(handle, e.clientX, e.clientY);
+    }, { signal });
+    // Touch
+    handle.addEventListener('touchstart', (e) => {
+      const pt = _touchXY(e);
+      if (!pt) return;
+      e.preventDefault();
+      e.stopPropagation();
+      _startResize(handle, pt.clientX, pt.clientY);
+    }, { signal, passive: false });
+  });
+
+  document.addEventListener('mousemove', (e) => _moveResize(e.clientX, e.clientY), { signal });
+  document.addEventListener('mouseup', _endResize, { signal });
+
+  document.addEventListener('touchmove', (e) => {
+    const pt = _touchXY(e);
+    if (!pt || !resizing) return;
+    e.preventDefault();
+    _moveResize(pt.clientX, pt.clientY);
+  }, { signal, passive: false });
+  document.addEventListener('touchend', _endResize, { signal });
+  document.addEventListener('touchcancel', _endResize, { signal });
 
   return () => ac.abort();
 }
@@ -3278,14 +3801,25 @@ function renderTabBar() {
     const active = i === _activeIdx;
     const dead = s.dead;
     const isLinked = state.linkedSessionIds.has(s.id);
-    return `<button class="term-tab${active ? ' active' : ''}${dead ? ' dead' : ''}" data-idx="${i}" data-profile="${s.profile}">
+    return `<button class="term-tab${active ? ' active' : ''}${dead ? ' dead' : ''}" data-idx="${i}" data-profile="${s.profile}" data-session-id="${s.id}">
       <span class="term-tab-icon">${s._gitOutput ? SVG_GIT : (prof?.svg || SVG_SHELL)}</span>
-      <span class="term-tab-label">${s.label}${dead ? ' (exited)' : ''}</span>
+      <span class="term-tab-label">${s.label}${dead ? ' (exited)' : ''}</span>${_cliBadgeHtml(s.id)}
       ${isLinked ? '<span class="term-tab-link-badge" title="Linked"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>' : ''}
       ${!dead && !s._gitOutput ? `<span class="term-tab-detach" data-idx="${i}" data-tooltip="Detach tab"><svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M21 3l-7 7"/><rect x="3" y="11" width="10" height="10" rx="1"/></svg></span>` : ''}
       <span class="term-tab-close" data-idx="${i}">&times;</span>
     </button>`;
   }).join('');
+
+  // Sync minimized pill labels with current session labels
+  for (const [sessionId, tabState] of _detachedTabs) {
+    if (tabState.minimized && tabState.pill) {
+      const session = _sessions.find(s => s.id === sessionId);
+      if (session) {
+        const pillLabel = tabState.pill.querySelector('.term-minimized-pill-label');
+        if (pillLabel && pillLabel.textContent !== session.label) pillLabel.textContent = session.label;
+      }
+    }
+  }
 
   // Keep peek dock in sync if it's showing
   if (_peekDock?.classList.contains('visible')) renderPeekDock();
@@ -3376,12 +3910,15 @@ export async function initTerminal() {
   });
 
   on('terminal:open-resume', async (data) => {
-    const { profile, cwd, resume } = data || {};
+    const { profile, cwd, resume, label } = data || {};
     if (!profile || !resume) return;
     if (isGuest() && !hasPermission('terminal')) return;
     try {
       const { sessionId } = await createTerminalSession(profile, 120, 30, cwd, { resume });
-      openHtmlTermSession(profile, cwd, sessionId);
+      await openHtmlTermSession(profile, cwd, sessionId, {
+        label: label || '',
+        claudeSessionId: resume,
+      });
     } catch (err) {
       console.error('[resume] Failed to launch resume session:', err);
     }
@@ -3513,6 +4050,8 @@ export async function initTerminal() {
             label: saved.label,
             pinned: saved.pinned,
             cwd: live?.cwd || null,
+            userRenamed: saved.userRenamed,
+            claudeSessionId: saved.claudeSessionId,
           });
         } else {
           const live = liveMap.get(saved.id);
@@ -3520,6 +4059,8 @@ export async function initTerminal() {
             label: saved.label,
             pinned: saved.pinned,
             cwd: live?.cwd || null,
+            userRenamed: saved.userRenamed,
+            claudeSessionId: saved.claudeSessionId,
           });
         }
       }
@@ -3736,6 +4277,8 @@ export function getTerminalSnapshot() {
       label: s.label,
       pinned: s.pinned,
       isDetached: _detachedTabs.has(s.id),
+      userRenamed: s._userRenamed || false,
+      claudeSessionId: s._claudeSessionId || null,
     })),
     // Split pane state
     splitMode: _splitMode,
@@ -3755,6 +4298,8 @@ export function getTerminalSnapshot() {
         left: r.left, top: r.top, width: w, height: h,
         pinned: session?.pinned || false,
         label: session?.label || '',
+        userRenamed: session?._userRenamed || false,
+        claudeSessionId: session?._claudeSessionId || null,
         minimized: dt.minimized || false,
       };
     }),
@@ -3817,10 +4362,18 @@ function applyTerminalLayout(snap) {
           if (pinEl) pinEl.title = 'Unpin';
         }
 
+        if (dt.claudeSessionId && !session._claudeSessionId) {
+          session._claudeSessionId = dt.claudeSessionId;
+        }
+
         if (dt.label) {
-          session.label = dt.label;
+          // Don't overwrite a user-renamed label already set during reconnection
+          if (!session._userRenamed) {
+            session.label = dt.label;
+            session._userRenamed = dt.userRenamed || false;
+          }
           const titleEl = tabState.el.querySelector('.term-float-tab-title');
-          if (titleEl) titleEl.textContent = dt.label;
+          if (titleEl) titleEl.textContent = session.label;
         }
 
         if (dt.minimized) {
@@ -3892,7 +4445,7 @@ export async function restoreTerminalSnapshot(snap) {
     for (const saved of snap.sessions) {
       if (liveIds.has(saved.id)) {
         const live = liveMap.get(saved.id);
-        const opts = { label: saved.label, pinned: saved.pinned, cwd: live?.cwd || null };
+        const opts = { label: saved.label, pinned: saved.pinned, cwd: live?.cwd || null, userRenamed: saved.userRenamed, claudeSessionId: saved.claudeSessionId };
         if (CLI_PROFILES.has(saved.profile)) {
           await reconnectHtmlTermSession(saved.id, saved.profile, opts);
         } else {
@@ -4412,7 +4965,9 @@ async function switchSidebarCwd(sidebar, session, newCwd) {
   session.cwd = newCwd;
   const cwdLabel = newCwd.split(/[\\/]/).pop() || '';
   const profileDef = PROFILES.find(p => p.id === session.profile);
-  session.label = cwdLabel ? `${profileDef?.label || session.profile} · ${cwdLabel}` : session.label;
+  if (!session._userRenamed) {
+    session.label = cwdLabel ? `${profileDef?.label || session.profile} · ${cwdLabel}` : session.label;
+  }
   renderTabBar();
   saveSessionRegistry();
 
@@ -4523,7 +5078,7 @@ function getGitOutputTab() {
     pinned: false,
     _gitOutput: true,
   };
-  _sessions.push(session);
+  _pushSession(session);
   renderTabBar();
   return session;
 }
@@ -4781,9 +5336,9 @@ function renderSplitTabBars() {
       const active = i === _activePaneIdx[pane];
       const dead = s.dead;
       return `<button class="term-tab${active ? ' active' : ''}${dead ? ' dead' : ''}"
-        data-idx="${i}" data-pane="${pane}" draggable="true" data-profile="${s.profile}">
+        data-idx="${i}" data-pane="${pane}" draggable="true" data-profile="${s.profile}" data-session-id="${s.id}">
         <span class="term-tab-icon">${s._gitOutput ? SVG_GIT : (prof?.svg || SVG_SHELL)}</span>
-        <span class="term-tab-label">${s.label}${dead ? ' (exited)' : ''}</span>
+        <span class="term-tab-label">${s.label}${dead ? ' (exited)' : ''}</span>${_cliBadgeHtml(s.id)}
         <span class="term-tab-close" data-idx="${i}">&times;</span>
       </button>`;
     }).join('');

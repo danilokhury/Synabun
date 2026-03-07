@@ -20,6 +20,7 @@ function getSharedHelpSections() {
       <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-terminal')}</span></div><span class="help-desc">Toggle terminal</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('open-skills')}</span></div><span class="help-desc">Open Skills Studio</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-explorer')}</span></div><span class="help-desc">Toggle explorer</span></div>
+      <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-file-explorer')}</span></div><span class="help-desc">Toggle file explorer</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-focus-mode')}</span></div><span class="help-desc">Toggle Focus Mode</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">${getDisplayKey('toggle-help')}</span></div><span class="help-desc">Toggle this help</span></div>
       <div class="help-row"><div class="help-keys"><span class="help-key">Enter</span></div><span class="help-desc">Save layout (when naming)</span></div>

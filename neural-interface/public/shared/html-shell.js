@@ -168,6 +168,11 @@ export function getSharedHTML() {
             <span class="menu-text">${t('menu.view.explorer')}</span>
             <span class="menu-shortcut">F</span>
           </div>
+          <div class="menu-item menu-toggle" id="menu-toggle-file-explorer">
+            <span class="menu-check">&#10003;</span>
+            <span class="menu-text">File Explorer</span>
+            <span class="menu-shortcut" data-keybind-for="toggle-file-explorer"></span>
+          </div>
           <div class="menu-sep"></div>
           <div id="menu-variant-slot"></div>
           <div class="menu-sep" id="menu-variant-sep" style="display:none"></div>
@@ -453,6 +458,124 @@ export function getSharedHTML() {
     <span id="explorer-count">0 ${t('explorer.memoryCount.other', { count: '' }).trim()}</span>
   </div>
   <div class="explorer-resize-handle" id="explorer-resize-handle"></div>
+</div>
+
+<!-- File Explorer (docked sidebar) -->
+<div id="file-explorer-panel">
+  <div class="fe-project-selector" id="fe-project-selector">
+    <button class="fe-project-btn" id="fe-project-btn">
+      <svg class="fe-project-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <span class="fe-project-label" id="fe-project-label">Project</span>
+      <svg class="fe-project-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+    </button>
+    <div class="fe-project-dropdown" id="fe-project-dropdown"></div>
+  </div>
+  <div class="fe-filter">
+    <svg class="fe-filter-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
+    <input type="text" id="fe-filter-input" placeholder="Search files..." autocomplete="off" spellcheck="false">
+    <button id="fe-filter-clear">&times;</button>
+  </div>
+  <div class="fe-toolbar">
+    <button class="detail-action-btn" id="fe-collapse-all" data-tooltip="Collapse all"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    <button class="detail-action-btn" id="fe-expand-all" data-tooltip="Expand all"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h16M18 9v6"/></svg></button>
+    <div class="detail-action-sep"></div>
+    <button class="detail-action-btn" id="fe-sort-btn" data-tooltip="Sort: name"><svg viewBox="0 0 24 24"><path d="M3 6h7M3 12h5M3 18h3M16 4v16M12 16l4 4 4-4"/></svg></button>
+    <div class="detail-action-sep"></div>
+    <button class="detail-action-btn" id="fe-refresh" data-tooltip="Refresh"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+  </div>
+  <div id="fe-tree" class="fe-tree"></div>
+  <div class="fe-footer">
+    <span id="fe-count">0 items</span>
+  </div>
+  <div class="fe-resize-handle" id="fe-resize-handle"></div>
+</div>
+
+<!-- File Editor (separate panel, slides from file explorer's right edge) -->
+<div id="fe-editor-panel" class="fe-editor-panel">
+  <div class="fe-editor-header">
+    <button class="fe-editor-back" id="fe-editor-back" data-tooltip="Close editor">
+      <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <span class="fe-editor-dot" id="fe-editor-dot"></span>
+    <span class="fe-editor-filepath" id="fe-editor-filepath"></span>
+    <div style="flex:1"></div>
+    <button class="fe-editor-action" id="fe-editor-find-btn" data-tooltip="Find (Ctrl+F)">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    </button>
+    <button class="fe-editor-action" id="fe-editor-word-wrap" data-tooltip="Toggle word wrap">
+      <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="16 16 14 18 16 20"/><path d="M3 18h7"/></svg>
+    </button>
+    <div class="fe-editor-help-wrap">
+      <button class="fe-editor-action fe-editor-help-btn" id="fe-editor-help-btn" data-tooltip="Keyboard shortcuts">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </button>
+      <div class="fe-editor-keybinds" id="fe-editor-keybinds">
+        <div class="fe-editor-keybinds-title">Keyboard Shortcuts</div>
+        <div class="fe-editor-kb"><kbd>Ctrl+S</kbd> <span>Save</span></div>
+        <div class="fe-editor-kb"><kbd>Ctrl+F</kbd> <span>Find</span></div>
+        <div class="fe-editor-kb"><kbd>Ctrl+H</kbd> <span>Replace</span></div>
+        <div class="fe-editor-kb"><kbd>Ctrl+G</kbd> <span>Go to Line</span></div>
+        <div class="fe-editor-kb"><kbd>Ctrl+D</kbd> <span>Duplicate Line</span></div>
+        <div class="fe-editor-kb"><kbd>Ctrl+/</kbd> <span>Toggle Comment</span></div>
+        <div class="fe-editor-kb"><kbd>Tab</kbd> <span>Indent</span></div>
+        <div class="fe-editor-kb"><kbd>Shift+Tab</kbd> <span>Unindent</span></div>
+        <div class="fe-editor-kb"><kbd>Enter</kbd> <span>Auto-indent</span></div>
+        <div class="fe-editor-kb"><kbd>Esc</kbd> <span>Close panel</span></div>
+      </div>
+    </div>
+    <div class="fe-editor-sep"></div>
+    <div class="fe-editor-view-toggle" id="fe-editor-view-toggle" style="display:none">
+      <button class="fe-editor-toggle-btn active" data-mode="raw">Raw</button>
+      <button class="fe-editor-toggle-btn" data-mode="preview">Preview</button>
+    </div>
+    <div class="fe-editor-sep" id="fe-editor-sep-preview" style="display:none"></div>
+    <button class="fe-editor-btn" id="fe-editor-discard" disabled>Discard</button>
+    <button class="fe-editor-btn fe-editor-save" id="fe-editor-save" disabled>Save</button>
+    <button class="fe-editor-btn" id="fe-editor-close">Close</button>
+  </div>
+  <div class="fe-editor-find" id="fe-editor-find">
+    <div class="fe-editor-find-row">
+      <input type="text" class="fe-editor-find-input" id="fe-editor-find-input" placeholder="Find..." spellcheck="false" autocomplete="off" />
+      <span class="fe-editor-find-count" id="fe-editor-find-count"></span>
+      <button class="fe-editor-find-nav" id="fe-editor-find-prev" data-tooltip="Previous">
+        <svg viewBox="0 0 24 24"><polyline points="18 15 12 9 6 15"/></svg>
+      </button>
+      <button class="fe-editor-find-nav" id="fe-editor-find-next" data-tooltip="Next">
+        <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <button class="fe-editor-find-nav" id="fe-editor-find-close" data-tooltip="Close">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="fe-editor-replace-row">
+      <input type="text" class="fe-editor-replace-input" id="fe-editor-replace-input" placeholder="Replace..." spellcheck="false" autocomplete="off" />
+      <button class="fe-editor-replace-btn" id="fe-editor-replace">Replace</button>
+      <button class="fe-editor-replace-btn" id="fe-editor-replace-all">All</button>
+    </div>
+  </div>
+  <div class="fe-editor-goto" id="fe-editor-goto">
+    <span class="fe-editor-goto-label">Go to Line</span>
+    <input type="number" class="fe-editor-goto-input" id="fe-editor-goto-input" min="1" placeholder="Line..." />
+  </div>
+  <div class="fe-editor-body">
+    <div class="fe-editor-gutter" id="fe-editor-gutter"></div>
+    <div class="fe-editor-line-highlight" id="fe-editor-line-highlight"></div>
+    <textarea class="fe-editor-textarea" id="fe-editor-textarea"
+      spellcheck="false" autocorrect="off" autocapitalize="off"></textarea>
+    <div class="fe-editor-preview" id="fe-editor-preview"></div>
+    <div class="fe-editor-scrollmap" id="fe-editor-scrollmap">
+      <div class="fe-editor-scrollmap-thumb" id="fe-editor-scrollmap-thumb"></div>
+    </div>
+  </div>
+  <div class="fe-editor-statusbar">
+    <span id="fe-editor-lang"></span>
+    <div style="flex:1"></div>
+    <span id="fe-editor-cursor">Ln 1, Col 1</span>
+    <span class="fe-editor-sep"></span>
+    <span id="fe-editor-size"></span>
+    <span class="fe-editor-sep"></span>
+    <span>UTF-8</span>
+  </div>
 </div>
 
 <!-- Detail cards are spawned dynamically by ui-detail.js -->

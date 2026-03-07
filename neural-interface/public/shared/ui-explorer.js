@@ -601,7 +601,8 @@ function renderMemoryItem(node, depth) {
   label.className = 'explorer-label';
   const preview = getMemoryLabel(node);
   label.textContent = truncate(preview, 60);
-  row.setAttribute('data-tooltip', preview);
+  const created = node.payload.created_at ? new Date(node.payload.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+  row.setAttribute('data-tooltip', created ? `${preview}\n${created}` : preview);
   row.setAttribute('data-tooltip-pos', 'right');
   row.appendChild(label);
 
