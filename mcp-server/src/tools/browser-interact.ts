@@ -1,6 +1,18 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
 
+function formatClickHints(result: Record<string, unknown>): string {
+  const hints = result.hints as Array<{ role: string; text: string; ariaLabel: string; placeholder: string }> | undefined;
+  if (!hints?.length) return '';
+  let msg = '\n\nVisible interactive elements on page:';
+  for (const h of hints) {
+    const label = h.ariaLabel || h.text || h.placeholder || '(unnamed)';
+    msg += `\n- ${h.role}: "${label.substring(0, 60)}"`;
+  }
+  msg += '\n\nUse browser_snapshot for full page structure.';
+  return msg;
+}
+
 // ── browser_click ──
 
 export const browserClickSchema = {
@@ -39,7 +51,7 @@ export async function handleBrowserClick(args: { selector: string; nthMatch?: nu
   if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
 
   const result = await ni.click(resolved.sessionId, args.selector, args.nthMatch);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Click failed: ${result.error}` }] };
+  if (result.error) return { content: [{ type: 'text' as const, text: `Click failed: ${result.error}${formatClickHints(result)}` }] };
 
   return {
     content: [{ type: 'text' as const, text: `Clicked "${args.selector}" — now at ${result.url} "${result.title}"` }],

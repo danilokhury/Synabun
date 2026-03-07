@@ -28,4 +28,4 @@ The forget tool (`mcp-server/src/tools/forget.ts`, 42 lines) permanently deletes
 - Deletion is permanent — there is no undo or trash/archive system
 - The `memory_id` must be the full UUID format, not the shortened 8-char display ID
 - Use `recall` first to find memories and get their full UUIDs before deleting
-- The simplest of the 9 MCP tools — single parameter, straightforward delete
+- The simplest of the memory tools — single parameter, straightforward delete

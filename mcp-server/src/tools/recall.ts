@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { generateEmbedding } from '../services/local-embeddings.js';
-import { searchMemories, updatePayload, searchSessionChunks } from '../services/sqlite.js';
+import { searchMemories, searchMemoriesFTS, updatePayload, searchSessionChunks } from '../services/sqlite.js';
 import { validateCategory } from '../services/categories.js';
 import { coerceStringArray } from './utils.js';
 import type { MemoryPayload, SessionChunkPayload } from '../types.js';
@@ -46,6 +46,10 @@ export function buildRecallSchema() {
       .boolean()
       .optional()
       .describe('Override session chunk search. Auto-triggers on temporal queries or sparse results. Set true to force, false to disable.'),
+    recency_boost: z
+      .boolean()
+      .optional()
+      .describe('Prioritize recent memories. Shifts scoring to favor recency over semantic similarity (14-day half-life, 55% recency weight). Ideal for session-start boot queries.'),
   };
 }
 
@@ -58,13 +62,22 @@ function applyTimeDecay(
   rawScore: number,
   createdAt: string,
   importance: number,
-  accessCount: number
+  accessCount: number,
+  recencyBoost = false
 ): number {
-  if (importance >= 8) return rawScore;
   const ageInDays =
     (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24);
-  const recencyMultiplier = Math.pow(0.5, ageInDays / 90);
   const accessBoost = Math.min(0.1, accessCount * 0.01);
+
+  if (recencyBoost) {
+    // Recency-first scoring: 14-day half-life, recency dominates
+    const recencyMultiplier = Math.pow(0.5, ageInDays / 14);
+    return rawScore * 0.35 + recencyMultiplier * 0.55 + accessBoost;
+  }
+
+  // Default scoring: semantic similarity dominates, 90-day half-life
+  if (importance >= 8) return rawScore;
+  const recencyMultiplier = Math.pow(0.5, ageInDays / 90);
   return rawScore * 0.7 + recencyMultiplier * 0.2 + accessBoost;
 }
 
@@ -98,6 +111,7 @@ export async function handleRecall(args: {
   min_importance?: number;
   min_score?: number;
   include_sessions?: boolean;
+  recency_boost?: boolean;
 }) {
   const query = args.query;
   const category = args.category;
@@ -107,6 +121,7 @@ export async function handleRecall(args: {
   const minImportance = args.min_importance;
   const minScore = args.min_score ?? 0.3;
   const includeSessionsExplicit = args.include_sessions;
+  const recencyBoost = args.recency_boost ?? false;
 
   if (category) {
     const catCheck = validateCategory(category);
@@ -142,7 +157,8 @@ export async function handleRecall(args: {
         r.score,
         payload.created_at,
         payload.importance,
-        payload.access_count
+        payload.access_count,
+        recencyBoost
       );
       if (!project && payload.project === currentProject) {
         adjustedScore *= 1.2;
@@ -151,6 +167,27 @@ export async function handleRecall(args: {
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
+
+  // FTS5 keyword fallback — when vector results are weak, supplement with
+  // full-text search to catch exact identifiers, error codes, proper nouns
+  const FTS_TRIGGER_SCORE = 0.45;
+  const vectorWeak = scored.length === 0 ||
+    (scored.length < limit && scored[0]?.score < FTS_TRIGGER_SCORE);
+
+  if (vectorWeak) {
+    try {
+      const existingIds = new Set(scored.map(r => r.id));
+      const ftsResults = await searchMemoriesFTS(query, limit, filter, existingIds);
+      for (const fts of ftsResults) {
+        if (scored.length >= limit) break;
+        scored.push(fts);
+      }
+      // Re-sort after merge
+      scored.sort((a, b) => b.score - a.score);
+    } catch {
+      // FTS fallback failure is non-fatal
+    }
+  }
 
   // Update access tracking (fire-and-forget)
   const now = new Date().toISOString();

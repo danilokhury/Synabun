@@ -887,6 +887,7 @@
     filter: drop-shadow(0 6px 24px rgba(255, 255, 255, 0.08));
   }
 </style>
+<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{})</script>
 </head>
 <body>
 
@@ -1024,6 +1025,15 @@
           <span class="code-copy-label">copy</span>
         </div>
         <div id="mcpSetupHint" style="margin-top:8px;font-size:11px;color:var(--t-muted);"></div>
+      </div>
+      <div id="coexistencePanel" style="display:none;margin-top:16px;">
+        <div style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;font-weight:600;">Using other AI memory tools?</div>
+        <div style="font-size:11px;color:var(--t-muted);margin-bottom:8px;">If you also use CogniLayer, mem0, or similar tools, paste these enforcement rules into your project's instructions file to prevent tool confusion.</div>
+        <div class="code-copy-wrap" id="coexistenceCodeWrap">
+          <div class="instructions-preview" id="coexistenceCode" style="max-height:140px;font-size:11px;white-space:pre-wrap;">Loading...</div>
+          <span class="code-copy-label">copy</span>
+        </div>
+        <div style="margin-top:4px;font-size:10px;color:var(--t-muted);">Paste into CLAUDE.md, GEMINI.md, AGENTS.md, or .cursorrules</div>
       </div>
     </div>
 
@@ -2056,6 +2066,22 @@ function selectTool(id) {
   document.getElementById('mcpSetupCode').textContent = setup.code;
   document.getElementById('mcpSetupHint').textContent = setup.hint;
   document.getElementById('mcpSetupPanel').style.display = '';
+
+  // Show coexistence rules panel and load content
+  const coexPanel = document.getElementById('coexistencePanel');
+  coexPanel.style.display = '';
+  const coexCode = document.getElementById('coexistenceCode');
+  if (!coexCode.dataset.loaded) {
+    fetch('/api/claude-code/ruleset?format=coexistence').then(r => r.json()).then(data => {
+      if (data.ok && data.ruleset) {
+        coexCode.textContent = data.ruleset;
+        coexCode.dataset.loaded = '1';
+      } else {
+        coexCode.textContent = 'Could not load coexistence rules.';
+      }
+    }).catch(() => { coexCode.textContent = 'Failed to load.'; });
+  }
+
   resizeViewport(currentStep);
 }
 
@@ -2075,6 +2101,16 @@ document.getElementById('mcpCodeWrap').addEventListener('click', () => {
   label.textContent = 'copied!';
   label.style.opacity = '1';
   showMascotToast('Copied to clipboard!');
+  setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
+});
+
+document.getElementById('coexistenceCodeWrap').addEventListener('click', () => {
+  const code = document.getElementById('coexistenceCode').textContent;
+  navigator.clipboard.writeText(code);
+  const label = document.querySelector('#coexistenceCodeWrap .code-copy-label');
+  label.textContent = 'copied!';
+  label.style.opacity = '1';
+  showMascotToast('Coexistence rules copied!');
   setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
 });
 

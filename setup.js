@@ -130,22 +130,25 @@ function isSetupComplete() {
 
 function openBrowser(url) {
   const plat = platform();
-  let cmd;
 
   if (plat === 'win32') {
-    cmd = `start "" "${url}"`;
+    // Try Edge app mode first, then Chrome, then fallback to regular tab
+    exec(`start msedge --app=${url}`, (err) => {
+      if (err) exec(`start chrome --app=${url}`, (err2) => {
+        if (err2) exec(`start "" "${url}"`, (err3) => {
+          if (err3) { warn('Could not open browser automatically'); info(`Open manually: ${url}`); }
+        });
+      });
+    });
   } else if (plat === 'darwin') {
-    cmd = `open "${url}"`;
+    exec(`open -a "Google Chrome" --args --app=${url}`, (err) => {
+      if (err) exec(`open "${url}"`);
+    });
   } else {
-    cmd = `xdg-open "${url}"`;
+    exec(`google-chrome --app=${url}`, (err) => {
+      if (err) exec(`xdg-open "${url}"`);
+    });
   }
-
-  exec(cmd, (err) => {
-    if (err) {
-      warn('Could not open browser automatically');
-      info(`Open manually: ${url}`);
-    }
-  });
 }
 
 function startServer() {

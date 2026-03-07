@@ -128,6 +128,28 @@ async function main() {
     return;
   }
 
+  // ─── USER LEARNING CLEARING (remember or reflect for communication-style/personality) ───
+  const UL_CATEGORIES = ['communication-style', 'personality'];
+  const isRememberUL = toolName.includes('remember') && UL_CATEGORIES.includes(toolInput.category || '');
+  // For reflect: no category in input, so clear if userLearningPending is true
+  // (the nudge explicitly told Claude to reflect on a communication-style memory)
+  const isReflectUL = toolName.includes('reflect');
+
+  if (isRememberUL || isReflectUL) {
+    const ulFlagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+    if (existsSync(ulFlagPath)) {
+      try {
+        const ulFlag = JSON.parse(readFileSync(ulFlagPath, 'utf-8'));
+        // For reflect: only clear if there's actually a pending user learning request
+        if (isRememberUL || (isReflectUL && ulFlag.userLearningPending)) {
+          ulFlag.userLearningPending = false;
+          ulFlag.userLearningObserved = true;
+          writeFileSync(ulFlagPath, JSON.stringify(ulFlag));
+        }
+      } catch { /* ok */ }
+    }
+  }
+
   // ─── REMEMBER FLAG CLEARING ───
   if (toolName.includes('remember')) {
     const category = toolInput.category || '';
