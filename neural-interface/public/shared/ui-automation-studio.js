@@ -28,7 +28,6 @@ const $ = (id) => document.getElementById(id);
 
 // ── Module-local state ──
 let _panel = null;
-let _backdrop = null;
 let _templates = [];       // user-created templates from API
 let _activeLoop = null;    // current active loop status
 let _history = [];         // completed loops / memories
@@ -995,10 +994,6 @@ async function openPanel() {
   }
   if (_panel) { _panel.focus(); return; }
 
-  _backdrop = document.createElement('div');
-  _backdrop.className = 'as-backdrop';
-  document.body.appendChild(_backdrop);
-
   _panel = document.createElement('div');
   _panel.className = 'automation-studio-panel glass resizable';
   _panel.id = 'automation-studio-panel';
@@ -1040,7 +1035,6 @@ function closePanel() {
 
   stopPolling();
   _panel.remove(); _panel = null;
-  if (_backdrop) { _backdrop.remove(); _backdrop = null; }
   _templates = []; _activeLoop = null; _history = [];
   _view = 'welcome'; _selected = null;
   resetDirty(); _editorContent = ''; _originalContent = '';
@@ -1119,7 +1113,6 @@ function wirePanel() {
 
   $('as-focus')?.addEventListener('click', () => {
     _focusMode = !_focusMode;
-    _backdrop?.classList.toggle('focus', _focusMode);
     $('as-focus')?.classList.toggle('active', _focusMode);
   });
 
