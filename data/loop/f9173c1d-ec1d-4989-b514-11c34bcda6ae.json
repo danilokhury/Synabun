@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "Task:\n\n  Navigate to facebook groups related to AI, vibe coding and overall AI software development and plug the following message:\n\n  ========================================\n\n  SynaBun just dropped a massive update. 46 MCP tools. Persistent vector memory. And yes — this post was shared by SynaBun itself. It automates your social media while you watch.\n\n  Watch it live: https://www.twitch.tv/synabunai\n\n  What's new:\n  - PWA app mode — install it as a standalone app\n  - CLI status indicator — real-time Working/Idle/Action tracking\n  - Task notifications — sound + push alerts when your AI finishes\n  - Project file explorer with inline code editor\n  - FTS5 keyword fallback — recall now catches exact names embeddings miss\n  - Session indexing — 860+ sessions searchable by semantic query\n  - Browser auto-hints — failed clicks now show what's actually clickable\n  - Offline fallback page — friendly \"server sleeping\" instead of connection errors\n  - User learning system — your AI learns how you communicate across sessions\n  - Multi-tool coexistence — runs alongside Cursor, Codex, Gemini\n\n  It's 100% vibe coded, 100% free, 100% local.\n\n  ---> https://github.com/danilokhury/Synabun\n\n  https://synabun.ai/\n\n  ========================================\n\n  Rules:\n\n  - Don't double post\n  - Double check the group language. If posts are in english, post in english. if posts are in portuguese, post in portuguese\n  - don't double post on the same group, check 1 or 2 posts down before posting\n  - You are free to join groups related to the theme and look for more languages also, just make sure to always post in the language the group is in.",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 1,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-08T00:22:37.135Z",
+  "lastIterationAt": "2026-03-08T00:56:54.721Z",
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "d8347c6e884a0945b26f77c8a0d2c6d6",
+  "profile": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "stopped": true,
+  "finishedAt": "2026-03-08T01:10:38.524Z"
+}

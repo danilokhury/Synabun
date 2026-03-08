@@ -462,13 +462,20 @@ export function getSharedHTML() {
 
 <!-- File Explorer (docked sidebar) -->
 <div id="file-explorer-panel">
-  <div class="fe-project-selector" id="fe-project-selector">
-    <button class="fe-project-btn" id="fe-project-btn">
-      <svg class="fe-project-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-      <span class="fe-project-label" id="fe-project-label">Project</span>
-      <svg class="fe-project-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+  <div class="fe-project-row">
+    <div class="fe-project-selector" id="fe-project-selector">
+      <button class="fe-project-btn" id="fe-project-btn">
+        <svg class="fe-project-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span class="fe-project-label" id="fe-project-label">Project</span>
+        <svg class="fe-project-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="fe-project-dropdown" id="fe-project-dropdown"></div>
+    </div>
+    <button class="fe-branch-btn" id="fe-branch-btn" style="display:none">
+      <svg viewBox="0 0 24 24"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+      <span class="fe-branch-btn-name" id="fe-branch-btn-name"></span>
+      <span class="fe-branch-btn-badge" id="fe-branch-btn-badge"></span>
     </button>
-    <div class="fe-project-dropdown" id="fe-project-dropdown"></div>
   </div>
   <div class="fe-filter">
     <svg class="fe-filter-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
@@ -560,6 +567,7 @@ export function getSharedHTML() {
   <div class="fe-editor-body">
     <div class="fe-editor-gutter" id="fe-editor-gutter"></div>
     <div class="fe-editor-line-highlight" id="fe-editor-line-highlight"></div>
+    <pre class="fe-editor-highlight" id="fe-editor-highlight" aria-hidden="true"><code id="fe-editor-highlight-code"></code></pre>
     <textarea class="fe-editor-textarea" id="fe-editor-textarea"
       spellcheck="false" autocorrect="off" autocapitalize="off"></textarea>
     <div class="fe-editor-preview" id="fe-editor-preview"></div>

@@ -200,7 +200,7 @@
   }
   .static-bg-logo {
     position: fixed;
-    left: 50vw;
+    left: calc(var(--sidebar-total-width, 0px) + (100vw - var(--sidebar-total-width, 0px)) / 2);
     top: 50%;
     transform: translate(-50%, -50%);
     height: 80px;
@@ -210,7 +210,8 @@
     user-select: none;
     pointer-events: none;
     z-index: 1;
-    transition: top 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+                top 0.6s cubic-bezier(0.22, 1, 0.36, 1),
                 transform 0.6s cubic-bezier(0.22, 1, 0.36, 1),
                 opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1);
   }
@@ -219,7 +220,7 @@
   }
   .focus-breathe {
     position: fixed;
-    left: 50vw;
+    left: calc(var(--sidebar-total-width, 0px) + (100vw - var(--sidebar-total-width, 0px)) / 2);
     top: 50%;
     margin-left: -150px;
     margin-top: -150px;
@@ -229,6 +230,7 @@
     background: radial-gradient(circle, rgba(100, 140, 200, 0.06) 0%, transparent 70%);
     animation: focus-breathe 4s ease-in-out infinite;
     pointer-events: none;
+    transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1);
   }
   @keyframes focus-breathe {
     0%, 100% { transform: scale(1); opacity: 0.4; }
@@ -9548,10 +9550,18 @@
     stroke: rgba(255,255,255,0.45);
   }
 
-  /* Project selector (custom dropdown) */
-  .fe-project-selector {
+  /* Project row — selector + branch button side by side */
+  .fe-project-row {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
     padding: 8px 10px 0;
     flex-shrink: 0;
+    position: relative;
+  }
+  .fe-project-selector {
+    flex: 1;
+    min-width: 0;
     position: relative;
   }
   .fe-project-btn {
@@ -9599,11 +9609,230 @@
   }
   .fe-project-selector.open .fe-project-chevron { transform: rotate(180deg); }
 
+  /* ── Branch button (same row as project selector) ── */
+  .fe-branch-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 6px;
+    color: rgba(255,255,255,0.45);
+    font-size: 10px;
+    font-family: var(--ff-mono);
+    padding: 0 8px;
+    cursor: pointer;
+    outline: none;
+    white-space: nowrap;
+    transition: border-color 0.2s, background 0.2s, color 0.2s;
+    flex-shrink: 0;
+    max-width: 110px;
+    position: relative;
+  }
+  .fe-branch-btn svg {
+    width: 11px; height: 11px;
+    fill: none;
+    stroke: rgba(255,255,255,0.3);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    flex-shrink: 0;
+  }
+  .fe-branch-btn:hover {
+    border-color: rgba(255,255,255,0.18);
+    color: var(--t-primary);
+    background: rgba(255,255,255,0.06);
+  }
+  .fe-branch-btn:hover svg { stroke: rgba(255,255,255,0.5); }
+  .fe-branch-btn.active {
+    border-color: rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.06);
+    color: var(--t-primary);
+  }
+  .fe-branch-btn-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .fe-branch-btn-badge {
+    font-size: 9px;
+    font-weight: 600;
+    color: #ffb74d;
+    flex-shrink: 0;
+  }
+  .fe-branch-btn-badge:empty { display: none; }
+
+  /* ── Git popover ── */
+  .fe-git-popover {
+    position: fixed;
+    width: 240px;
+    background: rgb(28, 28, 32);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.55), 0 0 0 1px rgba(0,0,0,0.2);
+    z-index: 300;
+    padding: 10px;
+    opacity: 0;
+    transform: translateX(-8px) scale(0.96);
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  .fe-git-popover.visible {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    pointer-events: auto;
+  }
+  .fe-git-popover-arrow {
+    position: absolute;
+    left: -5px;
+    top: 12px;
+    width: 10px;
+    height: 10px;
+    background: rgb(28, 28, 32);
+    border-left: 1px solid rgba(255,255,255,0.1);
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    transform: rotate(45deg);
+  }
+  .fe-git-pop-label {
+    display: block;
+    font-size: 9px;
+    font-family: var(--ff-mono);
+    color: rgba(255,255,255,0.3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+  .fe-git-pop-section {
+    padding: 2px 0;
+  }
+  .fe-git-pop-sep {
+    height: 1px;
+    background: rgba(255,255,255,0.06);
+    margin: 6px 0;
+  }
+
+  /* Branch select */
+  .fe-git-branch-select {
+    width: 100%;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 5px;
+    color: var(--t-primary);
+    font-size: 11px;
+    font-family: var(--ff-mono);
+    padding: 5px 22px 5px 8px;
+    outline: none;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.3)' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 7px center;
+    transition: border-color 0.15s;
+  }
+  .fe-git-branch-select:hover { border-color: rgba(255,255,255,0.16); }
+  .fe-git-branch-select:focus { border-color: rgba(255,255,255,0.22); }
+  .fe-git-branch-select option {
+    background: rgb(28, 28, 32);
+    color: var(--t-primary);
+  }
+
+  /* Commit area */
+  .fe-git-commit-area {
+    display: flex;
+    gap: 4px;
+  }
+  .fe-git-commit-input {
+    flex: 1;
+    min-width: 0;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 5px;
+    color: var(--t-primary);
+    font-size: 11px;
+    font-family: var(--ff-mono);
+    padding: 5px 8px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .fe-git-commit-input::placeholder { color: rgba(255,255,255,0.2); }
+  .fe-git-commit-input:focus { border-color: rgba(255,255,255,0.22); }
+  .fe-git-commit-btn {
+    flex-shrink: 0;
+    width: 28px; height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    outline: none;
+  }
+  .fe-git-commit-btn svg {
+    width: 13px; height: 13px;
+    fill: none;
+    stroke: rgba(255,255,255,0.35);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .fe-git-commit-btn:hover {
+    background: rgba(102,187,106,0.12);
+    border-color: rgba(102,187,106,0.3);
+  }
+  .fe-git-commit-btn:hover svg { stroke: #66bb6a; }
+  .fe-git-commit-btn:active { background: rgba(102,187,106,0.2); }
+  .fe-git-commit-btn.loading,
+  .fe-git-gen-btn.loading {
+    pointer-events: none;
+    opacity: 0.5;
+  }
+
+  /* Generate message button */
+  .fe-git-gen-btn {
+    flex-shrink: 0;
+    width: 28px; height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    outline: none;
+  }
+  .fe-git-gen-btn svg {
+    width: 12px; height: 12px;
+    fill: rgba(255,255,255,0.3);
+    stroke: none;
+  }
+  .fe-git-gen-btn:hover {
+    background: rgba(255,183,77,0.12);
+    border-color: rgba(255,183,77,0.3);
+  }
+  .fe-git-gen-btn:hover svg { fill: #ffb74d; }
+  .fe-git-gen-btn:active { background: rgba(255,183,77,0.2); }
+
+  /* Summary line */
+  .fe-git-summary {
+    font-size: 10px;
+    font-family: var(--ff-mono);
+    color: var(--t-dimmed);
+    line-height: 1.5;
+  }
+  .fe-git-summary:empty { display: none; }
+  .fe-git-summary .gs-m { color: #ffb74d; }
+  .fe-git-summary .gs-a { color: #66bb6a; }
+  .fe-git-summary .gs-d { color: #ef5350; }
+  .fe-git-summary .gs-u { color: rgba(255,255,255,0.35); }
+
   /* Dropdown panel */
   .fe-project-dropdown {
     display: none;
     position: absolute;
-    left: 10px; right: 10px;
+    left: 0; right: 0;
     top: calc(100% + 2px);
     background: rgb(30, 30, 34);
     border: 1px solid rgba(255,255,255,0.1);
@@ -10009,6 +10238,50 @@
     padding-right: 10px;
     height: calc(12px * 1.65);
   }
+  .fe-editor-highlight {
+    position: absolute;
+    top: 0;
+    left: 48px;
+    right: 0;
+    bottom: 0;
+    margin: 0;
+    padding: 10px 16px;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    overflow: hidden;
+    pointer-events: none;
+    color: #8a8ea0;
+    tab-size: 2;
+    z-index: 1;
+    border: none;
+    background: transparent;
+  }
+  .fe-editor-highlight code {
+    font: inherit;
+    color: inherit;
+    display: block;
+    will-change: transform;
+  }
+  .fe-editor-textarea::selection {
+    background: rgba(99,102,241,0.25);
+  }
+  .fe-editor-textarea::-moz-selection {
+    background: rgba(99,102,241,0.25);
+  }
+  /* Mono syntax tokens — cool gray palette */
+  .sh-kw  { color: #cccdd6; }
+  .sh-str { color: #6e7a86; }
+  .sh-cm  { color: #5a6a5a; font-style: italic; }
+  .sh-num { color: #8c94a8; }
+  .sh-fn  { color: #b0b4c4; }
+  .sh-op  { color: #585c6c; }
+  .sh-tag { color: #a0a4b4; }
+  .sh-attr { color: #787c8c; }
+  .sh-prop { color: #9498a8; }
+  .sh-br  { color: #8a7a50; }
   .fe-editor-textarea {
     flex: 1;
     background: transparent;
@@ -10017,7 +10290,8 @@
     font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
     font-size: 12px;
     line-height: 1.65;
-    color: var(--t-bright);
+    color: transparent;
+    caret-color: var(--t-bright);
     resize: none;
     outline: none;
     tab-size: 2;
@@ -10026,6 +10300,8 @@
     overflow-x: auto;
     overflow-y: auto;
     min-height: 0;
+    position: relative;
+    z-index: 2;
   }
 
   /* Status bar */
