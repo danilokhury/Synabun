@@ -70,6 +70,7 @@ export const KEYS = {
   FILE_EXPLORER_COLLAPSED:'neural-file-explorer-collapsed',
   FILE_EXPLORER_SORT:     'neural-file-explorer-sort',
   FILE_EXPLORER_PROJECT:  'neural-file-explorer-project',
+  ACTIVE_SKIN:            'neural-active-skin',
 };
 
 /** Default keybind mappings — action ID → combo string.
