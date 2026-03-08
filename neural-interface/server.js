@@ -366,6 +366,11 @@ app.get('/', (req, res, next) => {
 
 app.use('/i18n', express.static(join(__dirname, 'i18n')));
 app.use('/games', express.static(join(__dirname, 'games')));
+app.use('/skins', express.static(join(__dirname, 'skins'), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'),
+}));
 app.use(express.static(join(__dirname, 'public'), {
   etag: false,
   lastModified: false,
@@ -1601,6 +1606,189 @@ app.put('/api/display-settings', (req, res) => {
     res.json({ ok: true, message: 'Display settings saved. Changes take effect on next recall.' });
   } catch (err) {
     console.error('PUT /api/display-settings error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════
+// SKINS — Community theme system
+// ═══════════════════════════════════════════
+
+const SKINS_DIR = join(__dirname, 'skins');
+const SKIN_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'skin-config.json');
+const SKIN_ID_RE = /^[a-z][a-z0-9-]*$/;
+
+function loadSkinConfig() {
+  try { return JSON.parse(readFileSync(SKIN_CONFIG_PATH, 'utf-8')); }
+  catch { return { active: 'default' }; }
+}
+
+function saveSkinConfig(cfg) {
+  const dir = resolve(SKIN_CONFIG_PATH, '..');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(SKIN_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+}
+
+// GET /api/skins — List installed skins + active skin ID
+app.get('/api/skins', (req, res) => {
+  try {
+    if (!existsSync(SKINS_DIR)) mkdirSync(SKINS_DIR, { recursive: true });
+    const dirs = readdirSync(SKINS_DIR, { withFileTypes: true }).filter(d => d.isDirectory());
+    const skins = [];
+    for (const d of dirs) {
+      const manifestPath = join(SKINS_DIR, d.name, 'skin.json');
+      if (!existsSync(manifestPath)) continue;
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+        skins.push({
+          id: manifest.id || d.name,
+          name: manifest.name || d.name,
+          version: manifest.version || '0.0.0',
+          author: manifest.author || '',
+          description: manifest.description || '',
+          css: manifest.css || 'skin.css',
+          preview: manifest.preview || null,
+          builtin: d.name === 'default',
+        });
+      } catch { /* skip malformed manifests */ }
+    }
+    const cfg = loadSkinConfig();
+    res.json({ ok: true, skins, active: cfg.active || 'default' });
+  } catch (err) {
+    console.error('GET /api/skins error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/skins/:id/activate — Activate a skin
+app.put('/api/skins/:id/activate', (req, res) => {
+  try {
+    const { id } = req.params;
+    const skinDir = join(SKINS_DIR, id);
+    if (!existsSync(skinDir) || !existsSync(join(skinDir, 'skin.json'))) {
+      return res.status(404).json({ error: `Skin "${id}" not found` });
+    }
+    const cfg = loadSkinConfig();
+    cfg.active = id;
+    saveSkinConfig(cfg);
+    // Broadcast to all connected clients
+    broadcastSync({ type: 'skin:changed', id });
+    res.json({ ok: true, active: id });
+  } catch (err) {
+    console.error('PUT /api/skins/:id/activate error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skins/upload — Install a skin from ZIP
+app.post('/api/skins/upload',
+  express.raw({ type: ['application/zip', 'application/x-zip-compressed', 'application/octet-stream'], limit: '20mb' }),
+  (req, res) => {
+  try {
+    if (!req.body || req.body.length === 0) {
+      return res.status(400).json({ error: 'No data received' });
+    }
+    const zip = new AdmZip(req.body);
+    const entries = zip.getEntries();
+
+    // Find skin.json — root level or one directory deep
+    let manifestEntry = entries.find(e => e.entryName === 'skin.json');
+    let prefix = '';
+    if (!manifestEntry) {
+      manifestEntry = entries.find(e => {
+        const parts = e.entryName.split('/');
+        return parts.length === 2 && parts[1] === 'skin.json';
+      });
+      if (manifestEntry) prefix = manifestEntry.entryName.replace('skin.json', '');
+    }
+    if (!manifestEntry) {
+      return res.status(400).json({ error: 'skin.json not found in ZIP' });
+    }
+
+    let manifest;
+    try { manifest = JSON.parse(manifestEntry.getData().toString('utf-8')); }
+    catch { return res.status(400).json({ error: 'skin.json is not valid JSON' }); }
+
+    // Validate required fields
+    if (!manifest.id || !manifest.name || !manifest.version || !manifest.css) {
+      return res.status(400).json({ error: 'skin.json must have id, name, version, and css fields' });
+    }
+    if (!SKIN_ID_RE.test(manifest.id)) {
+      return res.status(400).json({ error: `Invalid skin id "${manifest.id}" — must be lowercase alphanumeric with hyphens` });
+    }
+    if (manifest.id === 'default') {
+      return res.status(400).json({ error: 'Cannot overwrite the built-in default skin' });
+    }
+
+    // Verify CSS file exists in ZIP
+    const cssPath = prefix + manifest.css;
+    if (!entries.find(e => e.entryName === cssPath)) {
+      return res.status(400).json({ error: `CSS file "${manifest.css}" not found in ZIP` });
+    }
+
+    // Extract to skins directory with path traversal protection
+    const targetDir = join(SKINS_DIR, manifest.id);
+    if (existsSync(targetDir)) rmSync(targetDir, { recursive: true });
+    mkdirSync(targetDir, { recursive: true });
+
+    for (const entry of entries) {
+      if (entry.isDirectory) continue;
+      // Resolve relative to prefix
+      let relPath = entry.entryName;
+      if (prefix && relPath.startsWith(prefix)) relPath = relPath.slice(prefix.length);
+      if (!relPath) continue;
+
+      // Path traversal protection
+      const resolved = resolve(targetDir, relPath);
+      if (!resolved.startsWith(targetDir + sep) && resolved !== targetDir) continue;
+
+      // Create parent dirs and extract
+      const parentDir = dirname(resolved);
+      if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
+      writeFileSync(resolved, entry.getData());
+    }
+
+    res.json({
+      ok: true,
+      skin: {
+        id: manifest.id,
+        name: manifest.name,
+        version: manifest.version,
+        author: manifest.author || '',
+        description: manifest.description || '',
+        css: manifest.css,
+        preview: manifest.preview || null,
+        builtin: false,
+      }
+    });
+  } catch (err) {
+    console.error('POST /api/skins/upload error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/skins/:id — Uninstall a skin
+app.delete('/api/skins/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    if (id === 'default') {
+      return res.status(400).json({ error: 'Cannot delete the built-in default skin' });
+    }
+    const skinDir = join(SKINS_DIR, id);
+    if (!existsSync(skinDir)) {
+      return res.status(404).json({ error: `Skin "${id}" not found` });
+    }
+    rmSync(skinDir, { recursive: true });
+    // Reset to default if the deleted skin was active
+    const cfg = loadSkinConfig();
+    if (cfg.active === id) {
+      cfg.active = 'default';
+      saveSkinConfig(cfg);
+      broadcastSync({ type: 'skin:changed', id: 'default' });
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('DELETE /api/skins/:id error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

@@ -31,6 +31,7 @@ const TAB_ICONS = {
   interface: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="9" y1="9" x2="21" y2="9"/></svg>',
   graphics: '<svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
   setup: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
+  skins: '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-1 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9zM6.5 13c-.83 0-1.5-.67-1.5-1.5S5.67 10 6.5 10 8 10.67 8 11.5 7.33 13 6.5 13zm3-4C8.67 9 8 8.33 8 7.5S8.67 6 9.5 6s1.5.67 1.5 1.5S10.33 9 9.5 9zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 6 14.5 6s1.5.67 1.5 1.5S15.33 9 14.5 9zm3 4c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>',
   discord: '<svg viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>',
 };
 
@@ -245,7 +246,7 @@ export function restoreInterfaceConfig() {
 
 // ── Shared tab order (variant tabs injected by order) ──
 
-const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'collections', 'memory', 'projects', 'hooks', 'discord', 'interface'];
+const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'collections', 'memory', 'projects', 'hooks', 'discord', 'skins', 'interface'];
 
 // ── Tab descriptor map ──
 const TAB_META = {
@@ -257,8 +258,200 @@ const TAB_META = {
   projects:    { label: 'Projects',    desc: 'Workspace configs',       group: 'Data' },
   hooks:       { label: 'Connections', desc: 'Integrations & bridges',  group: 'Connections' },
   discord:     { label: 'Discord',     desc: 'Bot & server config',     group: 'Connections' },
+  skins:       { label: 'Skins',       desc: 'Community themes',        group: 'Appearance' },
   interface:   { label: 'Interface',   desc: 'Theme & appearance',      group: 'Appearance' },
 };
+
+// ═══════════════════════════════════════════
+// SKIN LOADING — stylesheet injection + boot restore
+// ═══════════════════════════════════════════
+
+const SKIN_LINK_ID = 'synabun-skin-css';
+
+/** Insert or update the skin stylesheet <link> */
+function loadSkinStylesheet(skinId) {
+  if (!skinId || skinId === 'default') {
+    removeSkinStylesheet();
+    return;
+  }
+  let link = document.getElementById(SKIN_LINK_ID);
+  if (!link) {
+    link = document.createElement('link');
+    link.id = SKIN_LINK_ID;
+    link.rel = 'stylesheet';
+    // Insert after the main styles.css
+    const mainCSS = document.querySelector('link[href*="styles.css"]');
+    if (mainCSS && mainCSS.nextSibling) {
+      mainCSS.parentNode.insertBefore(link, mainCSS.nextSibling);
+    } else {
+      document.head.appendChild(link);
+    }
+  }
+  link.href = `/skins/${skinId}/skin.css`;
+  storage.setItem(KEYS.ACTIVE_SKIN, skinId);
+}
+
+/** Remove the skin stylesheet */
+function removeSkinStylesheet() {
+  const link = document.getElementById(SKIN_LINK_ID);
+  if (link) link.remove();
+  storage.setItem(KEYS.ACTIVE_SKIN, 'default');
+}
+
+/** Restore active skin on page load. Export for variant main.js to call. */
+export function restoreSkin() {
+  const skinId = storage.getItem(KEYS.ACTIVE_SKIN) || 'default';
+  if (skinId && skinId !== 'default') {
+    loadSkinStylesheet(skinId);
+  }
+}
+
+// Listen for cross-tab skin changes via WebSocket
+on('sync:skin:changed', (msg) => {
+  const id = msg?.id || 'default';
+  if (id === 'default') removeSkinStylesheet();
+  else loadSkinStylesheet(id);
+  // Update settings panel if open
+  const panel = document.getElementById('settings-panel');
+  if (panel) refreshSkinsTab(panel);
+});
+
+// ═══════════════════════════════════════════
+// SKINS TAB — builder + interaction
+// ═══════════════════════════════════════════
+
+function buildSkinsTab(skins = [], activeSkin = 'default') {
+  const activeMeta = skins.find(s => s.id === activeSkin) || { name: activeSkin };
+
+  let cardsHtml = '';
+  for (const s of skins) {
+    const isActive = s.id === activeSkin;
+    const previewHtml = s.preview
+      ? `<div class="skin-preview" style="background-image:url(/skins/${escapeHtml(s.id)}/${escapeHtml(s.preview)})"></div>`
+      : `<div class="skin-preview-fallback">${escapeHtml(s.name)}</div>`;
+
+    const badgeHtml = isActive ? `<span class="skin-active-badge">Active</span>` : '';
+    const removeBtn = s.builtin ? '' : `<button class="skin-remove" data-skin-id="${escapeHtml(s.id)}">Remove</button>`;
+    const activateBtn = isActive ? '' : `<button class="skin-activate" data-skin-id="${escapeHtml(s.id)}">Activate</button>`;
+
+    cardsHtml += `
+      <div class="skin-card${isActive ? ' active' : ''}" data-skin-id="${escapeHtml(s.id)}">
+        ${previewHtml}
+        ${badgeHtml}
+        <div class="skin-info">
+          <span class="skin-name">${escapeHtml(s.name)}</span>
+          <span class="skin-author">${s.author ? 'by ' + escapeHtml(s.author) : ''}</span>
+        </div>
+        <div class="skin-actions">
+          ${activateBtn}
+          ${removeBtn}
+        </div>
+      </div>`;
+  }
+
+  return `<div class="settings-tab-body" data-tab="skins">
+    <div class="skin-active-strip">
+      <span class="skin-active-dot"></span>
+      <span class="skin-active-name">${escapeHtml(activeMeta.name)}</span>
+      <span style="color:var(--t-muted)">active</span>
+    </div>
+    <div class="skin-grid" id="skin-grid">
+      ${cardsHtml}
+    </div>
+    <div class="skin-upload-area">
+      <button class="skin-upload-btn" id="skin-upload-btn">Install from ZIP</button>
+      <input type="file" id="skin-file-input" accept=".zip" style="display:none">
+      <span class="skin-upload-msg" id="skin-upload-msg"></span>
+    </div>
+    <div class="skin-hint">Create a skin: folder with skin.json + skin.css, package as ZIP.</div>
+  </div>`;
+}
+
+/** Refresh the skins tab in an already-open settings panel */
+async function refreshSkinsTab(panel) {
+  try {
+    const resp = await fetch('/api/skins').then(r => r.json());
+    if (!resp.ok) return;
+    const tabBody = panel.querySelector('.settings-tab-body[data-tab="skins"]');
+    if (!tabBody) return;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = buildSkinsTab(resp.skins, resp.active);
+    const newBody = tmp.querySelector('.settings-tab-body[data-tab="skins"]');
+    tabBody.innerHTML = newBody.innerHTML;
+    wireSkinsTab(panel, resp.skins, resp.active);
+  } catch {}
+}
+
+/** Wire interaction handlers for the skins tab */
+function wireSkinsTab(overlay, skins, activeSkin) {
+  // Activate buttons
+  overlay.querySelectorAll('.skin-activate').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.skinId;
+      try {
+        const resp = await fetch(`/api/skins/${id}/activate`, { method: 'PUT' }).then(r => r.json());
+        if (resp.ok) {
+          loadSkinStylesheet(id);
+          refreshSkinsTab(overlay);
+        }
+      } catch {}
+    });
+  });
+
+  // Remove buttons
+  overlay.querySelectorAll('.skin-remove').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.skinId;
+      if (!confirm(`Remove skin "${id}"?`)) return;
+      try {
+        const resp = await fetch(`/api/skins/${id}`, { method: 'DELETE' }).then(r => r.json());
+        if (resp.ok) {
+          // If the deleted skin was active, revert to default
+          const currentSkin = storage.getItem(KEYS.ACTIVE_SKIN) || 'default';
+          if (currentSkin === id) removeSkinStylesheet();
+          refreshSkinsTab(overlay);
+        }
+      } catch {}
+    });
+  });
+
+  // Upload button
+  const uploadBtn = overlay.querySelector('#skin-upload-btn');
+  const fileInput = overlay.querySelector('#skin-file-input');
+  const uploadMsg = overlay.querySelector('#skin-upload-msg');
+  if (uploadBtn && fileInput) {
+    uploadBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      fileInput.value = '';
+      uploadMsg.textContent = 'Installing...';
+      uploadMsg.className = 'skin-upload-msg';
+      try {
+        const buf = await file.arrayBuffer();
+        const resp = await fetch('/api/skins/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/zip' },
+          body: buf,
+        }).then(r => r.json());
+        if (resp.ok) {
+          uploadMsg.textContent = `Installed "${resp.skin.name}"`;
+          uploadMsg.className = 'skin-upload-msg success';
+          refreshSkinsTab(overlay);
+        } else {
+          uploadMsg.textContent = resp.error || 'Upload failed';
+          uploadMsg.className = 'skin-upload-msg error';
+        }
+      } catch (err) {
+        uploadMsg.textContent = err.message || 'Upload failed';
+        uploadMsg.className = 'skin-upload-msg error';
+      }
+      setTimeout(() => { if (uploadMsg) uploadMsg.textContent = ''; }, 5000);
+    });
+  }
+}
 
 // ═══════════════════════════════════════════
 // TAB HTML BUILDERS
@@ -1866,9 +2059,10 @@ export async function openSettingsModal() {
   let toolPermissions = {};
   let toolCategories = [];
   let discordConfig = {};
+  let skinsData = { skins: [], active: 'default' };
 
   try {
-    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes] = await Promise.allSettled([
+    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes] = await Promise.allSettled([
       fetch('/api/settings').then(r => r.json()),
       fetch('/api/connections').then(r => r.json()),
       fetch('/api/claude-code/integrations').then(r => r.json()),
@@ -1882,6 +2076,7 @@ export async function openSettingsModal() {
       fetch('/api/claude-code/tool-permissions').then(r => r.json()),
       fetch('/api/claude-code/tool-categories').then(r => r.json()),
       fetch('/api/discord/config').then(r => r.json()),
+      fetch('/api/skins').then(r => r.json()),
     ]);
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
     if (connRes.status === 'fulfilled' && connRes.value.connections) connections = connRes.value.connections;
@@ -1896,6 +2091,7 @@ export async function openSettingsModal() {
     if (toolPermsRes.status === 'fulfilled' && toolPermsRes.value.ok) toolPermissions = toolPermsRes.value.tools;
     if (toolCatsRes.status === 'fulfilled' && toolCatsRes.value.ok) toolCategories = toolCatsRes.value.categories;
     if (discordRes.status === 'fulfilled' && discordRes.value.ok) discordConfig = discordRes.value.config;
+    if (skinsRes.status === 'fulfilled' && skinsRes.value.ok) skinsData = skinsRes.value;
   } catch {}
   let openclawBridge = _bridgeResult || { enabled: false };
 
@@ -1967,6 +2163,7 @@ export async function openSettingsModal() {
         ${buildProjectsTab(ccIntegrations)}
         ${buildMemoryTab()}
         ${buildDiscordTab(discordConfig)}
+        ${buildSkinsTab(skinsData.skins, skinsData.active)}
         ${buildInterfaceTab()}
         ${variantTabBodies}
       </div>
@@ -4535,6 +4732,9 @@ export async function openSettingsModal() {
       } catch (err) { alert('Failed: ' + err.message); const saveBtn = addOverlay.querySelector('#cc-proj-save'); saveBtn.textContent = 'Add & Enable'; saveBtn.disabled = false; }
     });
   });
+
+  // ── Skins tab: wire interaction ──
+  wireSkinsTab(overlay, skinsData.skins, skinsData.active);
 
   // ── Variant tabs: call afterRender ──
   for (const vTab of variantTabs) {

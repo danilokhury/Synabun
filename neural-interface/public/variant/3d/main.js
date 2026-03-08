@@ -26,7 +26,7 @@ import { initMenubar } from '../../shared/ui-menubar.js';
 import { initSearch } from '../../shared/ui-search.js';
 import { buildCategorySidebar, initSidebar, preloadCategoryLogos, loadCategories } from '../../shared/ui-sidebar.js';
 import { openMemoryCard, restoreOpenCards, initDetailPanel, setDetailCallbacks } from '../../shared/ui-detail.js';
-import { initSettings, restoreInterfaceConfig, loadIfaceConfig } from '../../shared/ui-settings.js';
+import { initSettings, restoreInterfaceConfig, restoreSkin, loadIfaceConfig } from '../../shared/ui-settings.js';
 import { initTrash } from '../../shared/ui-trash.js';
 import { initBookmarks } from '../../shared/ui-bookmarks.js';
 import { initResume } from '../../shared/ui-resume.js';
@@ -266,8 +266,9 @@ setDetailCallbacks({
 
 async function boot() {
   try {
-    // Restore interface customization before anything renders
+    // Restore interface customization + active skin before anything renders
     restoreInterfaceConfig();
+    restoreSkin();
 
     // Pre-flight health check
     try {
