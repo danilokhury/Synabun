@@ -3,13 +3,16 @@
   "version": "1.0.0",
   "description": "3D neural visualization of Claude's memory system",
   "type": "module",
-  "engines": { "node": ">=22.5.0" },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
   },
   "dependencies": {
+    "@anthropic-ai/claude-code": "^2.1.71",
     "@huggingface/transformers": "^3.0.0",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",

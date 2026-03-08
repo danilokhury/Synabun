@@ -1793,6 +1793,107 @@ app.delete('/api/skins/:id', (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════
+// CLAUDE SKIN — WebSocket handler
+// Spawns claude subprocess, streams NDJSON events to client
+// ═══════════════════════════════════════════
+
+function handleClaudeSkinWebSocket(ws) {
+  let activeProc = null;
+
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+
+      if (msg.type === 'query') {
+        // Kill any active process
+        if (activeProc) { try { activeProc.kill(); } catch {} activeProc = null; }
+
+        const { prompt, cwd, sessionId, allowedTools } = msg;
+        if (!prompt) return ws.send(JSON.stringify({ type: 'error', message: 'No prompt provided' }));
+
+        const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
+        if (sessionId) args.push('--continue', sessionId);
+        if (allowedTools) args.push('--allowedTools', allowedTools);
+
+        const workDir = cwd || PROJECT_ROOT;
+        const env = { ...process.env };
+        delete env.CLAUDECODE; // allow nested execution
+
+        const proc = spawn('claude', args, {
+          cwd: workDir,
+          env,
+          shell: process.platform === 'win32',
+        });
+        activeProc = proc;
+
+        let buf = '';
+        proc.stdout.on('data', (chunk) => {
+          buf += chunk.toString();
+          const lines = buf.split('\n');
+          buf = lines.pop(); // keep incomplete last line
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const event = JSON.parse(trimmed);
+              if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event }));
+            } catch { /* skip malformed lines */ }
+          }
+        });
+
+        proc.stderr.on('data', (chunk) => {
+          const text = chunk.toString();
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'stderr', text }));
+        });
+
+        proc.on('close', (code) => {
+          // Flush remaining buffer
+          if (buf.trim()) {
+            try {
+              const event = JSON.parse(buf.trim());
+              if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event }));
+            } catch {}
+          }
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'done', code }));
+          activeProc = null;
+        });
+
+        proc.on('error', (err) => {
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: err.message }));
+          activeProc = null;
+        });
+      }
+
+      if (msg.type === 'abort') {
+        if (activeProc) { try { activeProc.kill(); } catch {} activeProc = null; }
+        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'aborted' }));
+      }
+    } catch { /* ignore malformed */ }
+  });
+
+  ws.on('close', () => {
+    if (activeProc) { try { activeProc.kill(); } catch {} activeProc = null; }
+  });
+}
+
+// GET /api/claude/config — config for the skin UI (cwd, model, etc.)
+app.get('/api/claude/config', (req, res) => {
+  try {
+    const cliCfg = (() => {
+      try { return JSON.parse(readFileSync(resolve(PROJECT_ROOT, 'data', 'cli-config.json'), 'utf-8')); }
+      catch { return {}; }
+    })();
+    const projects = (() => {
+      try { return JSON.parse(readFileSync(resolve(PROJECT_ROOT, 'data', 'claude-code-projects.json'), 'utf-8')); }
+      catch { return []; }
+    })();
+    res.json({ ok: true, config: cliCfg, projects });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Keybinds Persistence ---
 
 const KEYBINDS_PATH = resolve(__dirname, '..', 'data', 'keybinds.json');
@@ -9388,7 +9489,7 @@ httpServer.on('upgrade', (req, socket, head) => {
     // Whiteboard + sync always allowed (read-only viewing; sync needed for permission delivery)
   }
 
-  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync') {
+  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });
@@ -9421,6 +9522,12 @@ wss.on('connection', (ws, req) => {
   // ── Route: Browser session ──
   if (url.pathname.startsWith('/ws/browser/')) {
     handleBrowserWebSocket(ws, url);
+    return;
+  }
+
+  // ── Route: Claude Skin chat ──
+  if (url.pathname === '/ws/claude-skin') {
+    handleClaudeSkinWebSocket(ws);
     return;
   }
 
