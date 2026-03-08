@@ -50,7 +50,12 @@
       "mcp__SynaBun__browser_extract_tiktok_videos",
       "Bash(node:*)",
       "Bash(echo Tiny files \\(<500 bytes\\): $count_tiny:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }
