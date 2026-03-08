@@ -77,6 +77,7 @@ export function getSharedHTML() {
     <div class="view-toggle">
       <a class="view-toggle-btn${is3D ? '' : ' active'}" href="${is3D ? '/index2d.html' : '#'}" id="nav-2d-link">${t('nav.toggle2d')}</a>
       <a class="view-toggle-btn${is3D ? ' active' : ''}" href="${is3D ? '#' : '/'}" id="nav-3d-link">${t('nav.toggle3d')}</a>
+      <a class="view-toggle-btn" href="/claude-chat.html" id="nav-chat-link" style="border-left:1px solid var(--b-subtle);padding-left:8px;margin-left:4px;" title="SynaBun Chat — rich Claude Code UI">Chat</a>
     </div>
     <div class="bar-sep"></div>
 
