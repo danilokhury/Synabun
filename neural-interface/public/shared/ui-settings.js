@@ -31,6 +31,7 @@ const TAB_ICONS = {
   interface: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="9" y1="9" x2="21" y2="9"/></svg>',
   graphics: '<svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
   setup: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
+  discord: '<svg viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>',
 };
 
 // ── Shared icon constants ──
@@ -244,7 +245,7 @@ export function restoreInterfaceConfig() {
 
 // ── Shared tab order (variant tabs injected by order) ──
 
-const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'collections', 'memory', 'projects', 'hooks', 'interface'];
+const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'collections', 'memory', 'projects', 'hooks', 'discord', 'interface'];
 
 // ── Tab descriptor map ──
 const TAB_META = {
@@ -255,6 +256,7 @@ const TAB_META = {
   memory:      { label: 'Recall',      desc: 'Token budget & sync',     group: 'Data' },
   projects:    { label: 'Projects',    desc: 'Workspace configs',       group: 'Data' },
   hooks:       { label: 'Connections', desc: 'Integrations & bridges',  group: 'Connections' },
+  discord:     { label: 'Discord',     desc: 'Bot & server config',     group: 'Connections' },
   interface:   { label: 'Interface',   desc: 'Theme & appearance',      group: 'Appearance' },
 };
 
@@ -1568,6 +1570,180 @@ function ifaceSliderRow(key, label, min, max, step, decimals, value) {
   </div>`;
 }
 
+function buildDiscordTab(discordConfig) {
+  const c = discordConfig || {};
+  const hasToken = !!c.botToken;
+  const maskedToken = hasToken ? c.botToken.slice(0, 10) + '...' + c.botToken.slice(-4) : '';
+
+  return `
+    <div class="settings-tab-body" data-tab="discord">
+      <div class="settings-status">
+        <span class="settings-status-dot ${hasToken ? 'connected' : 'disconnected'}"></span>
+        ${hasToken ? 'Token configured' : 'Not configured'}
+      </div>
+
+      <!-- Bot Connection -->
+      <div class="iface-section" data-collapsible>
+        <div class="gfx-group-title" style="justify-content:space-between;cursor:pointer">
+          <span style="display:flex;align-items:center;gap:6px">
+            ${CHEVRON_ICON} Bot Connection
+          </span>
+          <span id="discord-conn-status" style="font-size:11px;color:var(--t-muted)">${hasToken ? 'configured' : 'missing'}</span>
+        </div>
+        <div class="cc-section-body">
+          <div class="settings-field">
+            <label>Bot Token</label>
+            <div class="settings-key-row" style="display:flex;gap:6px">
+              <input type="password" id="discord-bot-token" value="${escapeHtml(c.botToken || '')}" placeholder="Paste your Discord bot token" autocomplete="off" spellcheck="false" style="flex:1;font-family:monospace;font-size:12px">
+              <button class="conn-add-btn discord-eye-btn" id="discord-token-eye" style="margin:0;width:auto;flex:0 0 auto;padding:4px 8px" data-tooltip="Show/hide">${eyeClosed}</button>
+              <button class="conn-add-btn" id="discord-token-save" style="margin:0;width:auto;flex:0 0 auto;padding:4px 10px">Save</button>
+            </div>
+            <div class="settings-hint">Create a bot at <a href="https://discord.com/developers/applications" target="_blank" style="color:var(--accent)">discord.com/developers</a>. Enable MESSAGE CONTENT, SERVER MEMBERS, and PRESENCE intents.</div>
+          </div>
+          <div class="settings-field">
+            <label>Default Guild ID</label>
+            <div class="settings-key-row" style="display:flex;gap:6px">
+              <input type="text" id="discord-guild-id" value="${escapeHtml(c.guildId || '')}" placeholder="Right-click server > Copy Server ID" autocomplete="off" spellcheck="false" style="flex:1;font-family:monospace;font-size:12px">
+              <button class="conn-add-btn" id="discord-guild-save" style="margin:0;width:auto;flex:0 0 auto;padding:4px 10px">Save</button>
+            </div>
+            <div class="settings-hint">The server Claude Code will manage by default. Enable Developer Mode in Discord to copy IDs.</div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button class="conn-add-btn" id="discord-test-btn" style="margin:0">Test Connection</button>
+          </div>
+          <div id="discord-test-result" style="display:none;margin-top:10px;padding:10px 12px;border-radius:8px;font-size:12px"></div>
+        </div>
+      </div>
+
+      <!-- Bot Permissions -->
+      <div class="iface-section collapsed" data-collapsible>
+        <div class="gfx-group-title" style="cursor:pointer">
+          <span style="display:flex;align-items:center;gap:6px">
+            ${CHEVRON_ICON} Required Permissions
+          </span>
+        </div>
+        <div class="cc-section-body">
+          <div class="settings-hint" style="margin-bottom:10px">Your bot needs these permissions to fully manage the server. Use the invite link below or add them manually.</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:12px;color:var(--t-secondary)">
+            <span>Administrator</span><span style="color:var(--t-muted)">Full access (recommended)</span>
+            <span>Manage Server</span><span style="color:var(--t-muted)">Edit server settings</span>
+            <span>Manage Channels</span><span style="color:var(--t-muted)">Create/edit/delete channels</span>
+            <span>Manage Roles</span><span style="color:var(--t-muted)">Create/edit/assign roles</span>
+            <span>Manage Messages</span><span style="color:var(--t-muted)">Pin, delete messages</span>
+            <span>Manage Webhooks</span><span style="color:var(--t-muted)">Create/manage webhooks</span>
+            <span>Kick/Ban Members</span><span style="color:var(--t-muted)">Moderation actions</span>
+            <span>Moderate Members</span><span style="color:var(--t-muted)">Timeout members</span>
+            <span>Send Messages</span><span style="color:var(--t-muted)">Post in channels</span>
+            <span>Add Reactions</span><span style="color:var(--t-muted)">React to messages</span>
+            <span>Read Message History</span><span style="color:var(--t-muted)">View past messages</span>
+            <span>View Channels</span><span style="color:var(--t-muted)">See all channels</span>
+          </div>
+          <div class="settings-field" style="margin-top:12px">
+            <label>Bot Invite Link</label>
+            <div class="settings-key-row" style="display:flex;gap:6px">
+              <input type="text" id="discord-invite-link" value="" readonly style="flex:1;font-size:11px;opacity:0.7;cursor:default" autocomplete="off" spellcheck="false">
+              <button class="conn-add-btn" id="discord-invite-copy" style="margin:0;width:auto;flex:0 0 auto;padding:4px 8px" data-tooltip="Copy">${COPY_ICON}</button>
+            </div>
+            <div class="settings-hint">Permission integer: 8 (Administrator). Change to 1642825033974 for granular permissions.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Server Defaults -->
+      <div class="iface-section collapsed" data-collapsible>
+        <div class="gfx-group-title" style="cursor:pointer">
+          <span style="display:flex;align-items:center;gap:6px">
+            ${CHEVRON_ICON} Server Defaults
+          </span>
+        </div>
+        <div class="cc-section-body">
+          <div class="settings-hint" style="margin-bottom:10px">Default channel and role names used by Discord tools. Leave empty for no default.</div>
+          <div class="settings-field">
+            <label>Default Category</label>
+            <div class="settings-key-row">
+              <input type="text" id="discord-default-category" value="${escapeHtml(c.defaultCategory || '')}" placeholder="e.g. General" autocomplete="off" spellcheck="false" data-discord-key="defaultCategory">
+            </div>
+            <div class="settings-hint">New channels are created under this category by default.</div>
+          </div>
+          <div class="settings-field">
+            <label>Welcome Channel</label>
+            <div class="settings-key-row">
+              <input type="text" id="discord-welcome-channel" value="${escapeHtml(c.welcomeChannel || '')}" placeholder="e.g. welcome" autocomplete="off" spellcheck="false" data-discord-key="welcomeChannel">
+            </div>
+          </div>
+          <div class="settings-field">
+            <label>Rules Channel</label>
+            <div class="settings-key-row">
+              <input type="text" id="discord-rules-channel" value="${escapeHtml(c.rulesChannel || '')}" placeholder="e.g. rules" autocomplete="off" spellcheck="false" data-discord-key="rulesChannel">
+            </div>
+          </div>
+          <div class="settings-field">
+            <label>Log Channel</label>
+            <div class="settings-key-row">
+              <input type="text" id="discord-log-channel" value="${escapeHtml(c.logChannel || '')}" placeholder="e.g. mod-logs" autocomplete="off" spellcheck="false" data-discord-key="logChannel">
+            </div>
+            <div class="settings-hint">Where moderation actions are logged.</div>
+          </div>
+          <div class="settings-field">
+            <label>Moderator Role</label>
+            <div class="settings-key-row">
+              <input type="text" id="discord-mod-role" value="${escapeHtml(c.modRole || '')}" placeholder="e.g. Moderator" autocomplete="off" spellcheck="false" data-discord-key="modRole">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Moderation Defaults -->
+      <div class="iface-section collapsed" data-collapsible>
+        <div class="gfx-group-title" style="cursor:pointer">
+          <span style="display:flex;align-items:center;gap:6px">
+            ${CHEVRON_ICON} Moderation Defaults
+          </span>
+        </div>
+        <div class="cc-section-body">
+          <div class="settings-field">
+            <label>Ban — Delete Message Days</label>
+            <div class="settings-key-row" style="display:flex;gap:6px;align-items:center">
+              <input type="number" id="discord-ban-delete-days" value="${c.banDeleteDays || '0'}" min="0" max="7" style="width:70px;text-align:center" data-discord-key="banDeleteDays">
+              <span style="font-size:12px;color:var(--t-muted)">days (0-7)</span>
+            </div>
+            <div class="settings-hint">How many days of messages to delete when banning a user.</div>
+          </div>
+          <div class="settings-field">
+            <label>Timeout — Default Duration</label>
+            <div class="settings-key-row" style="display:flex;gap:6px;align-items:center">
+              <input type="number" id="discord-timeout-minutes" value="${c.timeoutMinutes || '10'}" min="1" max="40320" style="width:70px;text-align:center" data-discord-key="timeoutMinutes">
+              <span style="font-size:12px;color:var(--t-muted)">minutes (max 28 days)</span>
+            </div>
+            <div class="settings-hint">Default timeout duration when no duration is specified.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MCP Tools Reference -->
+      <div class="iface-section collapsed" data-collapsible>
+        <div class="gfx-group-title" style="cursor:pointer">
+          <span style="display:flex;align-items:center;gap:6px">
+            ${CHEVRON_ICON} MCP Tools Reference
+          </span>
+        </div>
+        <div class="cc-section-body">
+          <div style="font-size:12px;color:var(--t-secondary);display:grid;grid-template-columns:auto 1fr;gap:4px 12px">
+            <code style="color:var(--accent)">discord_guild</code><span>Server info, list channels/members/roles, audit log</span>
+            <code style="color:var(--accent)">discord_channel</code><span>Create/edit/delete channels, categories, permissions</span>
+            <code style="color:var(--accent)">discord_role</code><span>Create/edit/delete roles, assign/remove from members</span>
+            <code style="color:var(--accent)">discord_message</code><span>Send/edit/delete/pin/react, bulk delete, list messages</span>
+            <code style="color:var(--accent)">discord_member</code><span>Info, kick, ban, unban, timeout, nickname</span>
+            <code style="color:var(--accent)">discord_onboarding</code><span>Welcome screen, rules, verification, onboarding</span>
+            <code style="color:var(--accent)">discord_webhook</code><span>Create/edit/delete/list/execute webhooks</span>
+            <code style="color:var(--accent)">discord_thread</code><span>Create/archive/lock/delete threads</span>
+          </div>
+          <div class="settings-hint" style="margin-top:10px">All tools use an <code>action</code> parameter. Channel/role/user fields accept names or IDs.</div>
+        </div>
+      </div>
+    </div>`;
+}
+
 function buildInterfaceTab() {
   const cfg = loadIfaceConfig();
 
@@ -1689,9 +1865,10 @@ export async function openSettingsModal() {
   let cliConfig = {};
   let toolPermissions = {};
   let toolCategories = [];
+  let discordConfig = {};
 
   try {
-    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes] = await Promise.allSettled([
+    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes] = await Promise.allSettled([
       fetch('/api/settings').then(r => r.json()),
       fetch('/api/connections').then(r => r.json()),
       fetch('/api/claude-code/integrations').then(r => r.json()),
@@ -1704,6 +1881,7 @@ export async function openSettingsModal() {
       fetch('/api/cli/config').then(r => r.json()),
       fetch('/api/claude-code/tool-permissions').then(r => r.json()),
       fetch('/api/claude-code/tool-categories').then(r => r.json()),
+      fetch('/api/discord/config').then(r => r.json()),
     ]);
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
     if (connRes.status === 'fulfilled' && connRes.value.connections) connections = connRes.value.connections;
@@ -1717,6 +1895,7 @@ export async function openSettingsModal() {
     if (cliRes.status === 'fulfilled' && cliRes.value.ok) cliConfig = cliRes.value.config;
     if (toolPermsRes.status === 'fulfilled' && toolPermsRes.value.ok) toolPermissions = toolPermsRes.value.tools;
     if (toolCatsRes.status === 'fulfilled' && toolCatsRes.value.ok) toolCategories = toolCatsRes.value.categories;
+    if (discordRes.status === 'fulfilled' && discordRes.value.ok) discordConfig = discordRes.value.config;
   } catch {}
   let openclawBridge = _bridgeResult || { enabled: false };
 
@@ -1776,6 +1955,7 @@ export async function openSettingsModal() {
         ${buildNavHTML(variantTabs, {
           server: settings.storage === 'sqlite' ? 'connected' : 'disconnected',
           setup: (setupStatus.claude?.installed || setupStatus.gemini?.installed || setupStatus.codex?.installed) ? 'connected' : 'disconnected',
+          discord: discordConfig.botToken ? 'connected' : 'disconnected',
         })}
       </nav>
       <div class="settings-content">
@@ -1786,6 +1966,7 @@ export async function openSettingsModal() {
         ${buildCollectionsTab(connections, settings)}
         ${buildProjectsTab(ccIntegrations)}
         ${buildMemoryTab()}
+        ${buildDiscordTab(discordConfig)}
         ${buildInterfaceTab()}
         ${variantTabBodies}
       </div>
@@ -2480,6 +2661,135 @@ export async function openSettingsModal() {
       section.classList.toggle('collapsed');
     });
   });
+
+  // ── Discord tab handlers ──
+  {
+    // Token save
+    const tokenSaveBtn = overlay.querySelector('#discord-token-save');
+    if (tokenSaveBtn) {
+      tokenSaveBtn.addEventListener('click', async () => {
+        const input = overlay.querySelector('#discord-bot-token');
+        const val = input.value.trim();
+        const res = await fetch('/api/discord/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: 'botToken', value: val }),
+        }).then(r => r.json()).catch(() => ({ error: 'Network error' }));
+        if (res.ok) {
+          showCCToast('Bot token saved');
+          const statusEl = overlay.querySelector('#discord-conn-status');
+          if (statusEl) statusEl.textContent = val ? 'configured' : 'missing';
+          const dot = overlay.querySelector('.settings-tab-body[data-tab="discord"] .settings-status-dot');
+          if (dot) { dot.classList.toggle('connected', !!val); dot.classList.toggle('disconnected', !val); }
+          const statusText = overlay.querySelector('.settings-tab-body[data-tab="discord"] .settings-status');
+          if (statusText) statusText.lastChild.textContent = val ? ' Token configured' : ' Not configured';
+          // Update invite link
+          updateInviteLink(overlay, val);
+        } else {
+          showCCToast(res.error || 'Save failed');
+        }
+      });
+    }
+
+    // Token eye toggle
+    const tokenEye = overlay.querySelector('#discord-token-eye');
+    if (tokenEye) {
+      tokenEye.addEventListener('click', () => {
+        const input = overlay.querySelector('#discord-bot-token');
+        const isPassword = input.type === 'password';
+        input.type = isPassword ? 'text' : 'password';
+        tokenEye.innerHTML = isPassword ? eyeOpen : eyeClosed;
+      });
+    }
+
+    // Guild ID save
+    const guildSaveBtn = overlay.querySelector('#discord-guild-save');
+    if (guildSaveBtn) {
+      guildSaveBtn.addEventListener('click', async () => {
+        const input = overlay.querySelector('#discord-guild-id');
+        const val = input.value.trim();
+        const res = await fetch('/api/discord/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: 'guildId', value: val }),
+        }).then(r => r.json()).catch(() => ({ error: 'Network error' }));
+        if (res.ok) showCCToast('Guild ID saved');
+        else showCCToast(res.error || 'Save failed');
+      });
+    }
+
+    // Test connection
+    const testBtn = overlay.querySelector('#discord-test-btn');
+    if (testBtn) {
+      testBtn.addEventListener('click', async () => {
+        const resultEl = overlay.querySelector('#discord-test-result');
+        resultEl.style.display = 'block';
+        resultEl.style.background = 'rgba(255,255,255,0.05)';
+        resultEl.style.border = '1px solid var(--s-medium)';
+        resultEl.textContent = 'Testing connection...';
+
+        const res = await fetch('/api/discord/test', { method: 'POST' }).then(r => r.json()).catch(() => ({ ok: false, error: 'Network error' }));
+        if (res.ok) {
+          const bot = res.bot;
+          const guilds = bot.guilds.map(g => `${g.name} (${g.id})`).join(', ');
+          resultEl.style.background = 'rgba(109,213,140,0.08)';
+          resultEl.style.border = '1px solid rgba(109,213,140,0.2)';
+          resultEl.innerHTML = `<div style="color:var(--green);margin-bottom:4px;font-weight:600">Connected!</div>` +
+            `<div>Bot: <strong>${escapeHtml(bot.username)}</strong> (${bot.id})</div>` +
+            `<div>Guilds: ${escapeHtml(guilds) || 'none'}</div>`;
+        } else {
+          resultEl.style.background = 'rgba(255,99,99,0.08)';
+          resultEl.style.border = '1px solid rgba(255,99,99,0.2)';
+          resultEl.innerHTML = `<div style="color:var(--red,#ff6b6b)">Failed: ${escapeHtml(res.error || 'Unknown error')}</div>`;
+        }
+      });
+    }
+
+    // Invite link
+    function updateInviteLink(container, token) {
+      const linkInput = container.querySelector('#discord-invite-link');
+      if (!linkInput) return;
+      if (!token) { linkInput.value = 'Save a bot token first'; return; }
+      // Extract application ID from token (first segment is base64-encoded app ID)
+      try {
+        const appId = atob(token.split('.')[0]);
+        linkInput.value = `https://discord.com/oauth2/authorize?client_id=${appId}&permissions=8&scope=bot`;
+      } catch {
+        linkInput.value = 'Could not parse bot token';
+      }
+    }
+    updateInviteLink(overlay, discordConfig.botToken);
+
+    // Copy invite link
+    const inviteCopy = overlay.querySelector('#discord-invite-copy');
+    if (inviteCopy) {
+      inviteCopy.addEventListener('click', () => {
+        const linkInput = overlay.querySelector('#discord-invite-link');
+        if (linkInput.value && !linkInput.value.startsWith('Save') && !linkInput.value.startsWith('Could')) {
+          navigator.clipboard.writeText(linkInput.value);
+          showCCToast('Invite link copied');
+        }
+      });
+    }
+
+    // Auto-save for Server Defaults and Moderation Defaults inputs
+    overlay.querySelectorAll('input[data-discord-key]').forEach(input => {
+      let debounce;
+      input.addEventListener('input', () => {
+        clearTimeout(debounce);
+        debounce = setTimeout(async () => {
+          const key = input.dataset.discordKey;
+          const val = input.value.trim();
+          await fetch('/api/discord/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key, value: val }),
+          }).catch(() => {});
+          showCCToast('Saved');
+        }, 800);
+      });
+    });
+  }
 
   // ── CLI Paths handlers ──
   {

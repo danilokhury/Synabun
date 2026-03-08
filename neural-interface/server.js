@@ -1,4 +1,15 @@
 import 'dotenv/config';
+
+// Prevent Playwright internal race conditions (e.g. stale frame lifecycle events) from crashing the server
+process.on('uncaughtException', (err) => {
+  if (err.message?.includes('Frame has been detached')) {
+    console.warn('[playwright] Ignoring stale frame error:', err.message);
+    return;
+  }
+  console.error('Uncaught exception:', err);
+  process.exit(1);
+});
+
 import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, dirname, extname, join, resolve, sep } from 'path';
@@ -3674,6 +3685,117 @@ app.delete('/api/bridges/openclaw', (req, res) => {
   }
 });
 
+// --- Discord Configuration Routes ---
+
+// GET /api/discord/config — Read Discord config from .env
+app.get('/api/discord/config', (req, res) => {
+  try {
+    const vars = parseEnvFile(ENV_PATH);
+    res.json({
+      ok: true,
+      config: {
+        botToken: vars.DISCORD_BOT_TOKEN || '',
+        guildId: vars.DISCORD_GUILD_ID || '',
+        defaultCategory: vars.DISCORD_DEFAULT_CATEGORY || '',
+        logChannel: vars.DISCORD_LOG_CHANNEL || '',
+        welcomeChannel: vars.DISCORD_WELCOME_CHANNEL || '',
+        rulesChannel: vars.DISCORD_RULES_CHANNEL || '',
+        modRole: vars.DISCORD_MOD_ROLE || '',
+        banDeleteDays: vars.DISCORD_BAN_DELETE_DAYS || '0',
+        timeoutMinutes: vars.DISCORD_TIMEOUT_MINUTES || '10',
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/discord/config error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/discord/config — Save Discord config to .env
+app.put('/api/discord/config', (req, res) => {
+  try {
+    const { key, value } = req.body;
+    const ENV_KEYS = {
+      botToken: 'DISCORD_BOT_TOKEN',
+      guildId: 'DISCORD_GUILD_ID',
+      defaultCategory: 'DISCORD_DEFAULT_CATEGORY',
+      logChannel: 'DISCORD_LOG_CHANNEL',
+      welcomeChannel: 'DISCORD_WELCOME_CHANNEL',
+      rulesChannel: 'DISCORD_RULES_CHANNEL',
+      modRole: 'DISCORD_MOD_ROLE',
+      banDeleteDays: 'DISCORD_BAN_DELETE_DAYS',
+      timeoutMinutes: 'DISCORD_TIMEOUT_MINUTES',
+    };
+    const envKey = ENV_KEYS[key];
+    if (!envKey) return res.status(400).json({ error: `Unknown config key: ${key}` });
+
+    const vars = parseEnvFile(ENV_PATH);
+    vars[envKey] = value || '';
+    writeEnvFile(ENV_PATH, vars);
+
+    // Also update process.env so MCP server picks it up
+    process.env[envKey] = value || '';
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('PUT /api/discord/config error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/discord/test — Test bot token by calling Discord API
+app.post('/api/discord/test', async (req, res) => {
+  try {
+    const vars = parseEnvFile(ENV_PATH);
+    const token = vars.DISCORD_BOT_TOKEN;
+    if (!token) return res.json({ ok: false, error: 'No bot token configured.' });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      // Test bot token
+      const botRes = await fetch('https://discord.com/api/v10/users/@me', {
+        headers: { 'Authorization': `Bot ${token}` },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (!botRes.ok) {
+        const err = await botRes.json().catch(() => ({}));
+        return res.json({ ok: false, error: `Discord API ${botRes.status}: ${err.message || 'Invalid token'}` });
+      }
+
+      const bot = await botRes.json();
+
+      // Fetch guilds
+      const guildsRes = await fetch('https://discord.com/api/v10/users/@me/guilds', {
+        headers: { 'Authorization': `Bot ${token}` },
+      });
+      const guilds = guildsRes.ok ? await guildsRes.json() : [];
+
+      res.json({
+        ok: true,
+        bot: {
+          id: bot.id,
+          username: bot.username,
+          discriminator: bot.discriminator,
+          avatar: bot.avatar,
+          guilds: guilds.map(g => ({ id: g.id, name: g.name, icon: g.icon })),
+        },
+      });
+    } catch (fetchErr) {
+      clearTimeout(timer);
+      const msg = fetchErr.message || String(fetchErr);
+      if (msg.includes('abort')) return res.json({ ok: false, error: 'Connection timed out.' });
+      res.json({ ok: false, error: `Network error: ${msg}` });
+    }
+  } catch (err) {
+    console.error('POST /api/discord/test error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Setup / Onboarding Routes ---
 
 // GET /api/setup/check-deps — Check system dependencies
@@ -6795,6 +6917,176 @@ app.post('/api/terminal/checkout', (req, res) => {
   } catch {}
   const output = result.stderr?.toString?.()?.trim() || `Switched to branch '${current}'`;
   res.json({ ok: true, branch: current, output });
+});
+
+app.get('/api/git/status', (req, res) => {
+  const dir = req.query.path;
+  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+  } catch {
+    return res.json({ ok: true, isGit: false, branch: null, changes: [] });
+  }
+
+  try {
+    let branch = '';
+    try {
+      branch = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+      if (!branch) branch = execSync('git rev-parse --short HEAD', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+    } catch {}
+
+    const raw = execSync('git status --porcelain', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString();
+    const changes = [];
+    for (const line of raw.split('\n')) {
+      if (!line || line.length < 4) continue;
+      const xy = line.substring(0, 2);
+      let filePath = line.substring(3);
+      const arrowIdx = filePath.indexOf(' -> ');
+      if (arrowIdx !== -1) filePath = filePath.substring(arrowIdx + 4);
+      const x = xy[0], y = xy[1];
+      let staged = x !== ' ' && x !== '?';
+      let status;
+      if (xy === '??') status = 'untracked';
+      else if (xy === '!!') continue;
+      else if (x === 'U' || y === 'U' || xy === 'DD' || xy === 'AA') status = 'conflict';
+      else if (x === 'A') status = 'added';
+      else if (x === 'D' || y === 'D') status = 'deleted';
+      else if (x === 'R') status = 'renamed';
+      else if (x !== ' ' && y !== ' ') status = 'mixed';
+      else if (x !== ' ') status = 'staged';
+      else status = 'modified';
+      changes.push({ path: filePath, status, staged });
+    }
+
+    res.json({ ok: true, isGit: true, branch, changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/git/commit', (req, res) => {
+  const { path: dir, message, files } = req.body;
+  if (!dir || !message) return res.status(400).json({ error: 'path and message required' });
+  if (typeof message !== 'string' || message.trim().length === 0) return res.status(400).json({ error: 'Commit message cannot be empty' });
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+  } catch {
+    return res.status(400).json({ error: 'Not a git repository' });
+  }
+
+  try {
+    // Stage: specific files or all changes
+    if (Array.isArray(files) && files.length > 0) {
+      // Validate file paths — no shell injection
+      for (const f of files) {
+        if (typeof f !== 'string' || f.includes('..')) return res.status(400).json({ error: 'Invalid file path' });
+      }
+      const result = spawnSync('git', ['add', '--', ...files], { cwd: dir, stdio: 'pipe', timeout: 10000 });
+      if (result.status !== 0) return res.status(500).json({ error: result.stderr?.toString?.()?.trim() || 'Stage failed' });
+    } else {
+      // Stage all changes
+      const result = spawnSync('git', ['add', '-A'], { cwd: dir, stdio: 'pipe', timeout: 10000 });
+      if (result.status !== 0) return res.status(500).json({ error: result.stderr?.toString?.()?.trim() || 'Stage failed' });
+    }
+
+    // Commit
+    const result = spawnSync('git', ['commit', '-m', message.trim()], { cwd: dir, stdio: 'pipe', timeout: 15000 });
+    if (result.status !== 0) {
+      const stderr = result.stderr?.toString?.()?.trim() || '';
+      const stdout = result.stdout?.toString?.()?.trim() || '';
+      return res.status(500).json({ error: stderr || stdout || 'Commit failed' });
+    }
+
+    const output = result.stdout?.toString?.()?.trim() || 'Committed';
+    res.json({ ok: true, output });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/git/diff-summary', (req, res) => {
+  const dir = req.query.path;
+  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+  } catch {
+    return res.status(400).json({ error: 'Not a git repository' });
+  }
+
+  try {
+    // Get diff stat for tracked files
+    const stat = execSync('git diff --stat --stat-width=120', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+
+    // Get diff stat for staged files
+    const stagedStat = execSync('git diff --cached --stat --stat-width=120', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+
+    // Get untracked files
+    const untracked = execSync('git ls-files --others --exclude-standard', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+
+    // Get short diff for context (limited to avoid huge payloads)
+    const diff = execSync('git diff -U1 --no-color', { cwd: dir, stdio: 'pipe', timeout: 8000, maxBuffer: 64 * 1024 }).toString().substring(0, 4000);
+
+    const stagedDiff = execSync('git diff --cached -U1 --no-color', { cwd: dir, stdio: 'pipe', timeout: 8000, maxBuffer: 64 * 1024 }).toString().substring(0, 4000);
+
+    // Build a commit message from the changes
+    const changedFiles = [];
+    const statLines = (stat + '\n' + stagedStat).split('\n').filter(l => l.includes('|'));
+    for (const line of statLines) {
+      const match = line.match(/^\s*(.+?)\s*\|/);
+      if (match) {
+        const f = match[1].trim();
+        if (!changedFiles.includes(f)) changedFiles.push(f);
+      }
+    }
+
+    const untrackedFiles = untracked ? untracked.split('\n').filter(Boolean) : [];
+
+    // Analyze diff to detect what kind of changes were made
+    const allDiff = diff + '\n' + stagedDiff;
+    const addedLines = (allDiff.match(/^\+[^+]/gm) || []).length;
+    const removedLines = (allDiff.match(/^-[^-]/gm) || []).length;
+
+    // Generate message
+    let message = '';
+    const totalFiles = changedFiles.length + untrackedFiles.length;
+
+    if (totalFiles === 0) {
+      return res.json({ ok: true, message: '', summary: 'No changes to commit' });
+    }
+
+    // Detect common patterns from file paths
+    const dirs = new Set();
+    for (const f of [...changedFiles, ...untrackedFiles]) {
+      const parts = f.split('/');
+      if (parts.length > 1) dirs.add(parts[0]);
+    }
+
+    // Build descriptive message
+    if (totalFiles === 1) {
+      const f = changedFiles[0] || untrackedFiles[0];
+      const basename = f.split('/').pop();
+      if (untrackedFiles.length === 1) message = 'Add ' + basename;
+      else if (removedLines > addedLines * 2) message = 'Remove code from ' + basename;
+      else message = 'Update ' + basename;
+    } else if (totalFiles <= 4) {
+      const names = [...changedFiles, ...untrackedFiles].map(f => f.split('/').pop());
+      if (untrackedFiles.length === totalFiles) message = 'Add ' + names.join(', ');
+      else message = 'Update ' + names.join(', ');
+    } else {
+      const scope = dirs.size === 1 ? [...dirs][0] : `${totalFiles} files`;
+      if (untrackedFiles.length > changedFiles.length) message = 'Add and update ' + scope;
+      else message = 'Update ' + scope;
+    }
+
+    const summary = `${changedFiles.length} modified, ${untrackedFiles.length} new — +${addedLines} -${removedLines} lines`;
+
+    res.json({ ok: true, message, summary });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── CLI Config REST ──

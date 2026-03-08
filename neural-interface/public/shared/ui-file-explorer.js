@@ -127,6 +127,335 @@ function selectProject(proj) {
   });
 }
 
+function updateBranchLabel(branch) {
+  const btn = $('fe-branch-btn');
+  const nameEl = $('fe-branch-btn-name');
+  if (!btn) return;
+
+  if (branch) {
+    btn.style.display = '';
+    if (nameEl) nameEl.textContent = branch;
+    refreshGitStatus();
+  } else {
+    btn.style.display = 'none';
+    closeGitPopover();
+  }
+}
+
+
+// ═══════════════════════════════════════════
+// GIT POPOVER
+// ═══════════════════════════════════════════
+
+let _gitChanges = [];
+let _gitPopoverOpen = false;
+
+function positionGitPopover() {
+  const btn = $('fe-branch-btn');
+  const pop = $('fe-git-popover');
+  if (!btn || !pop) return;
+
+  const r = btn.getBoundingClientRect();
+  const arrow = pop.querySelector('.fe-git-popover-arrow');
+  const popHeight = pop.offsetHeight || 200;
+  const navbarH = 44;
+
+  // Position to the right of the branch button, vertically centered on button
+  let left = r.right + 8;
+  let top = r.top + (r.height / 2) - 18; // align arrow with button center
+
+  // If it would overflow the right edge, flip to the left
+  let flipped = false;
+  if (left + 248 > window.innerWidth) {
+    left = r.left - 248 - 8;
+    flipped = true;
+  }
+
+  // Arrow positioning
+  if (arrow) {
+    arrow.style.left = flipped ? '' : '-5px';
+    arrow.style.right = flipped ? '-5px' : '';
+    arrow.style.borderLeft = flipped ? 'none' : '1px solid rgba(255,255,255,0.1)';
+    arrow.style.borderBottom = flipped ? 'none' : '1px solid rgba(255,255,255,0.1)';
+    arrow.style.borderRight = flipped ? '1px solid rgba(255,255,255,0.1)' : 'none';
+    arrow.style.borderTop = flipped ? '1px solid rgba(255,255,255,0.1)' : 'none';
+  }
+
+  // Clamp to viewport — respect navbar at top
+  if (top + popHeight > window.innerHeight - 8) top = window.innerHeight - popHeight - 8;
+  if (top < navbarH + 4) top = navbarH + 4;
+
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+}
+
+function openGitPopover() {
+  const pop = $('fe-git-popover');
+  const btn = $('fe-branch-btn');
+  if (!pop) return;
+
+  _gitPopoverOpen = true;
+  btn?.classList.add('active');
+  positionGitPopover();
+
+  // Reset arrow for default (right-side) positioning
+  const arrow = pop.querySelector('.fe-git-popover-arrow');
+  if (arrow) {
+    arrow.style.left = '-5px';
+    arrow.style.right = '';
+    arrow.style.borderLeft = '1px solid rgba(255,255,255,0.1)';
+    arrow.style.borderBottom = '1px solid rgba(255,255,255,0.1)';
+    arrow.style.borderRight = 'none';
+    arrow.style.borderTop = 'none';
+  }
+
+  requestAnimationFrame(() => pop.classList.add('visible'));
+  loadGitBranches();
+  refreshGitStatus();
+}
+
+function closeGitPopover() {
+  const pop = $('fe-git-popover');
+  const btn = $('fe-branch-btn');
+  if (!pop) return;
+  _gitPopoverOpen = false;
+  pop.classList.remove('visible');
+  btn?.classList.remove('active');
+}
+
+function toggleGitPopover() {
+  if (_gitPopoverOpen) closeGitPopover();
+  else openGitPopover();
+}
+
+async function refreshGitStatus() {
+  if (!_selectedProject) return;
+  try {
+    const res = await fetch('/api/git/status?path=' + encodeURIComponent(_selectedProject.path));
+    const data = await res.json();
+    if (!data.ok || !data.isGit) return;
+
+    _gitChanges = data.changes || [];
+
+    // Update button badge
+    const badge = $('fe-branch-btn-badge');
+    if (badge) badge.textContent = _gitChanges.length > 0 ? _gitChanges.length : '';
+
+    // Update branch name on button
+    const nameEl = $('fe-branch-btn-name');
+    if (nameEl && data.branch) nameEl.textContent = data.branch;
+
+    // Update summary in popover
+    const summary = $('fe-git-summary');
+    if (summary) {
+      if (_gitChanges.length === 0) {
+        summary.innerHTML = 'Clean working tree';
+      } else {
+        const counts = { modified: 0, added: 0, deleted: 0, untracked: 0, other: 0 };
+        for (const c of _gitChanges) {
+          if (c.status === 'modified' || c.status === 'mixed') counts.modified++;
+          else if (c.status === 'added' || c.status === 'staged') counts.added++;
+          else if (c.status === 'deleted') counts.deleted++;
+          else if (c.status === 'untracked') counts.untracked++;
+          else counts.other++;
+        }
+        const parts = [];
+        if (counts.modified) parts.push('<span class="gs-m">' + counts.modified + ' modified</span>');
+        if (counts.added) parts.push('<span class="gs-a">' + counts.added + ' added</span>');
+        if (counts.deleted) parts.push('<span class="gs-d">' + counts.deleted + ' deleted</span>');
+        if (counts.untracked) parts.push('<span class="gs-u">' + counts.untracked + ' untracked</span>');
+        if (counts.other) parts.push(counts.other + ' other');
+        summary.innerHTML = parts.join(' &middot; ');
+      }
+    }
+  } catch {}
+}
+
+async function loadGitBranches() {
+  if (!_selectedProject) return;
+  const sel = $('fe-git-branch-select');
+  if (!sel) return;
+
+  try {
+    const res = await fetch('/api/terminal/branches?path=' + encodeURIComponent(_selectedProject.path));
+    const data = await res.json();
+    sel.innerHTML = '';
+    for (const b of (data.branches || [])) {
+      const opt = document.createElement('option');
+      opt.value = b;
+      opt.textContent = b;
+      if (b === data.current) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch {}
+}
+
+async function switchBranch(branch) {
+  if (!_selectedProject || !branch) return;
+  try {
+    const res = await fetch('/api/terminal/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: _selectedProject.path, branch })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast('Switched to ' + (data.branch || branch));
+      closeGitPopover();
+      _cache.clear();
+      _rootLoaded = false;
+      loadDirectory(_selectedProject.path).then(() => {
+        _rootLoaded = true;
+        buildFileTree();
+      });
+    } else {
+      showToast(data.error || 'Checkout failed');
+      refreshGitStatus();
+      loadGitBranches();
+    }
+  } catch {
+    showToast('Checkout failed');
+  }
+}
+
+async function doGitCommit() {
+  const input = $('fe-git-commit-input');
+  const btn = $('fe-git-commit-btn');
+  if (!input || !_selectedProject) return;
+
+  const message = input.value.trim();
+  if (!message) { input.focus(); return; }
+
+  btn?.classList.add('loading');
+  try {
+    const res = await fetch('/api/git/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: _selectedProject.path, message })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      input.value = '';
+      showToast('Committed');
+      _cache.clear();
+      _rootLoaded = false;
+      loadDirectory(_selectedProject.path).then(() => {
+        _rootLoaded = true;
+        buildFileTree();
+      });
+      refreshGitStatus();
+    } else {
+      showToast(data.error || 'Commit failed');
+    }
+  } catch {
+    showToast('Commit failed');
+  } finally {
+    btn?.classList.remove('loading');
+  }
+}
+
+async function generateCommitMessage() {
+  const input = $('fe-git-commit-input');
+  const genBtn = $('fe-git-gen-btn');
+  if (!input || !_selectedProject) return;
+
+  genBtn?.classList.add('loading');
+  try {
+    const res = await fetch('/api/git/diff-summary?path=' + encodeURIComponent(_selectedProject.path));
+    const data = await res.json();
+    if (data.ok && data.message) {
+      input.value = data.message;
+      input.focus();
+    } else {
+      showToast(data.summary || 'No changes');
+    }
+  } catch {
+    showToast('Failed to generate message');
+  } finally {
+    genBtn?.classList.remove('loading');
+  }
+}
+
+function createGitPopover() {
+  // Build the popover in document.body to escape the file-explorer-panel's
+  // transform-based stacking context (which breaks position:fixed)
+  const pop = document.createElement('div');
+  pop.className = 'fe-git-popover';
+  pop.id = 'fe-git-popover';
+  pop.innerHTML = `
+    <div class="fe-git-popover-arrow"></div>
+    <div class="fe-git-pop-section">
+      <label class="fe-git-pop-label">Branch</label>
+      <select class="fe-git-branch-select" id="fe-git-branch-select"></select>
+    </div>
+    <div class="fe-git-pop-sep"></div>
+    <div class="fe-git-pop-section">
+      <label class="fe-git-pop-label">Commit</label>
+      <div class="fe-git-commit-area">
+        <button class="fe-git-gen-btn" id="fe-git-gen-btn" data-tooltip="Generate message">
+          <svg viewBox="0 0 24 24"><path d="M12 2L9.5 8.5 3 10l5 4-1.5 7L12 17.5 17.5 21 16 14l5-4-6.5-1.5z"/></svg>
+        </button>
+        <input type="text" class="fe-git-commit-input" id="fe-git-commit-input" placeholder="Message..." autocomplete="off" spellcheck="false" maxlength="200">
+        <button class="fe-git-commit-btn" id="fe-git-commit-btn">
+          <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="fe-git-pop-sep"></div>
+    <div class="fe-git-pop-section">
+      <div class="fe-git-summary" id="fe-git-summary"></div>
+    </div>`;
+  document.body.appendChild(pop);
+  return pop;
+}
+
+function initGitPanel() {
+  const branchBtn = $('fe-branch-btn');
+  const popover = createGitPopover();
+  const sel = $('fe-git-branch-select');
+  const commitInput = $('fe-git-commit-input');
+  const commitBtn = $('fe-git-commit-btn');
+
+  if (branchBtn) {
+    branchBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleGitPopover();
+    });
+  }
+
+  // Close on outside click
+  document.addEventListener('click', (e) => {
+    if (!_gitPopoverOpen) return;
+    if (popover && !popover.contains(e.target) && branchBtn && !branchBtn.contains(e.target)) {
+      closeGitPopover();
+    }
+  });
+
+  // Reposition on scroll/resize
+  window.addEventListener('resize', () => { if (_gitPopoverOpen) positionGitPopover(); });
+
+  if (sel) {
+    sel.addEventListener('change', () => switchBranch(sel.value));
+  }
+
+  const genBtn = $('fe-git-gen-btn');
+  if (genBtn) {
+    genBtn.addEventListener('click', generateCommitMessage);
+  }
+
+  if (commitBtn) {
+    commitBtn.addEventListener('click', doGitCommit);
+  }
+
+  if (commitInput) {
+    commitInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); doGitCommit(); }
+      e.stopPropagation();
+    });
+    commitInput.addEventListener('click', (e) => e.stopPropagation());
+  }
+}
+
 function closeProjectDropdown() {
   const wrap = $('fe-project-selector');
   if (wrap) wrap.classList.remove('open');
@@ -238,6 +567,10 @@ async function loadDirectory(dirPath) {
   if (data.items) {
     const key = data.path || '';
     _cache.set(key, data);
+    // Update branch label when loading the project root
+    if (target && _selectedProject && target.replace(/\\/g, '/') === _selectedProject.path.replace(/\\/g, '/')) {
+      updateBranchLabel(data.branch || null);
+    }
   }
   return data;
 }
@@ -443,6 +776,233 @@ const COMMENT_PREFIX = {
   SQL: '--', Rust: '//', Go: '//', Ruby: '#', ENV: '#', Git: '#', Docker: '#',
 };
 
+// ─── Syntax Highlighting ────────────────────────
+
+const SH_KEYWORDS = {
+  JavaScript: 'async|await|break|case|catch|class|const|continue|debugger|default|delete|do|else|export|extends|finally|for|from|function|if|import|in|instanceof|let|new|of|return|static|super|switch|this|throw|try|typeof|var|void|while|with|yield|true|false|null|undefined',
+  TypeScript: 'abstract|as|async|await|break|case|catch|class|const|continue|debugger|declare|default|delete|do|else|enum|export|extends|finally|for|from|function|if|implements|import|in|instanceof|interface|keyof|let|new|of|return|static|super|switch|this|throw|try|type|typeof|var|void|while|with|yield|true|false|null|undefined',
+  Python: 'and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield|True|False|None',
+  JSON: 'true|false|null',
+  Shell: 'if|then|else|elif|fi|for|while|do|done|case|esac|in|function|return|exit|local|export|source|set|unset|shift|read|echo|printf|test|eval',
+  SQL: 'SELECT|FROM|WHERE|AND|OR|NOT|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|DROP|ALTER|ADD|INDEX|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AS|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|ALL|DISTINCT|COUNT|SUM|AVG|MIN|MAX|IS|NULL|LIKE|BETWEEN|IN|EXISTS|PRIMARY|KEY|FOREIGN|REFERENCES|DEFAULT|CASCADE|VIEW|BEGIN|END|IF|ELSE|THEN|WHILE|DECLARE|COMMIT|ROLLBACK',
+  Rust: 'as|async|await|break|const|continue|crate|dyn|else|enum|extern|false|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|true|type|unsafe|use|where|while|yield',
+  Go: 'break|case|chan|const|continue|default|defer|else|fallthrough|for|func|go|goto|if|import|interface|map|package|range|return|select|struct|switch|type|var|true|false|nil',
+  Ruby: 'alias|and|begin|break|case|class|def|do|else|elsif|end|ensure|false|for|if|in|module|next|nil|not|or|redo|rescue|retry|return|self|super|then|true|undef|unless|until|when|while|yield',
+  TOML: 'true|false',
+  YAML: 'true|false|null|yes|no|on|off',
+};
+
+const SH_MAX_SIZE = 80000;
+
+function _shEsc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function _shBuildRules(lang) {
+  const rules = [];
+  const cStyle = ['JavaScript', 'TypeScript', 'CSS', 'Go', 'Rust'];
+  const hashStyle = ['Python', 'Shell', 'YAML', 'TOML', 'Ruby', 'ENV', 'Git', 'Docker'];
+
+  // Comments (highest priority)
+  if (cStyle.includes(lang)) rules.push({ p: '\\/\\*[\\s\\S]*?\\*\\/', c: 'sh-cm' });
+  if (lang === 'HTML') rules.push({ p: '<!--[\\s\\S]*?-->', c: 'sh-cm' });
+  if (cStyle.includes(lang) && lang !== 'CSS') rules.push({ p: '\\/\\/[^\\n]*', c: 'sh-cm' });
+  if (hashStyle.includes(lang)) rules.push({ p: '#[^\\n]*', c: 'sh-cm' });
+  if (lang === 'SQL') rules.push({ p: '--[^\\n]*', c: 'sh-cm' });
+
+  // JSON property keys (before generic strings so they match first)
+  if (lang === 'JSON') {
+    rules.push({ p: '"(?:[^"\\\\\\n]|\\\\.)*"(?=\\s*:)', c: 'sh-prop' });
+  }
+
+  // Strings
+  rules.push({ p: '"(?:[^"\\\\\\n]|\\\\.)*"', c: 'sh-str' });
+  rules.push({ p: "'(?:[^'\\\\\\n]|\\\\.)*'", c: 'sh-str' });
+  if (['JavaScript', 'TypeScript'].includes(lang)) {
+    rules.push({ p: '`(?:[^`\\\\]|\\\\.)*`', c: 'sh-str' });
+  }
+  if (lang === 'Python') {
+    // Triple-quoted strings
+    rules.push({ p: '"""[\\s\\S]*?"""|\'\'\'[\\s\\S]*?\'\'\'', c: 'sh-str' });
+  }
+
+  // Numbers
+  rules.push({ p: '\\b(?:0x[0-9a-fA-F]+|0b[01]+|\\d+(?:\\.\\d+)?(?:e[+-]?\\d+)?)\\b', c: 'sh-num' });
+
+  // CSS-specific: at-rules, selectors, properties
+  if (lang === 'CSS') {
+    rules.push({ p: '@[a-zA-Z][a-zA-Z-]*', c: 'sh-kw' });
+    rules.push({ p: '!important', c: 'sh-kw' });
+    rules.push({ p: '[.#][a-zA-Z_-][a-zA-Z0-9_-]*', c: 'sh-fn' });
+    rules.push({ p: ':[a-zA-Z][a-zA-Z-]*', c: 'sh-attr' });
+  }
+
+  // HTML-specific: tags and attributes
+  if (lang === 'HTML') {
+    rules.push({ p: '<\\/?[a-zA-Z][a-zA-Z0-9-]*', c: 'sh-tag' });
+    rules.push({ p: '\\/?>', c: 'sh-op' });
+    rules.push({ p: '\\b[a-zA-Z][a-zA-Z-]*(?=\\s*=)', c: 'sh-attr' });
+  }
+
+  // Keywords
+  const kw = SH_KEYWORDS[lang];
+  if (kw) {
+    const flags = lang === 'SQL' ? 'i' : '';
+    rules.push({ p: '\\b(?:' + kw + ')\\b', c: 'sh-kw', flags });
+  }
+
+  // Function calls (identifier followed by paren)
+  if (!['JSON', 'CSS', 'HTML', 'YAML', 'TOML', 'ENV', 'Markdown'].includes(lang)) {
+    rules.push({ p: '\\b[a-zA-Z_$][a-zA-Z0-9_$]*(?=\\s*\\()', c: 'sh-fn' });
+  }
+
+  // YAML keys (word at line start followed by colon)
+  if (lang === 'YAML' || lang === 'TOML') {
+    rules.push({ p: '^[ \\t]*[a-zA-Z_][a-zA-Z0-9_.\\-]*(?=\\s*[:=])', c: 'sh-prop' });
+  }
+
+  // Shell variables
+  if (lang === 'Shell' || lang === 'ENV') {
+    rules.push({ p: '\\$[a-zA-Z_][a-zA-Z0-9_]*|\\$\\{[^}]+\\}', c: 'sh-prop' });
+  }
+
+  // Brackets
+  rules.push({ p: '[{}\\[\\]()]', c: 'sh-br' });
+
+  return rules;
+}
+
+// Cache compiled regexes per language
+const _shCache = {};
+
+function _shGetRegex(lang) {
+  if (_shCache[lang]) return _shCache[lang];
+  const rules = _shBuildRules(lang);
+  if (rules.length === 0) return null;
+  // Combine all rule patterns into one alternation
+  const combined = rules.map(r => '(' + r.p + ')').join('|');
+  const flags = 'gm' + (rules.some(r => r.flags?.includes('i')) ? 'i' : '');
+  _shCache[lang] = { regex: new RegExp(combined, flags), rules };
+  return _shCache[lang];
+}
+
+function highlightCode(text, lang) {
+  if (!text) return '';
+  if (text.length > SH_MAX_SIZE || !lang || lang === 'Plain Text' || lang === 'Markdown') {
+    return _shEsc(text);
+  }
+
+  const compiled = _shGetRegex(lang);
+  if (!compiled) return _shEsc(text);
+
+  const { regex, rules } = compiled;
+  regex.lastIndex = 0;
+  let result = '';
+  let lastIndex = 0;
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    // Unmatched text before this token
+    if (match.index > lastIndex) {
+      result += _shEsc(text.slice(lastIndex, match.index));
+    }
+    // Find which capturing group matched
+    for (let i = 0; i < rules.length; i++) {
+      if (match[i + 1] !== undefined) {
+        result += '<span class="' + rules[i].c + '">' + _shEsc(match[0]) + '</span>';
+        break;
+      }
+    }
+    lastIndex = match.index + match[0].length;
+    // Guard against zero-length matches
+    if (match[0].length === 0) { regex.lastIndex++; lastIndex++; }
+  }
+  // Remaining text
+  if (lastIndex < text.length) result += _shEsc(text.slice(lastIndex));
+
+  return result;
+}
+
+let _shLang = '';
+let _shLines = null;      // cached line split for large files
+let _shViewStart = 0;     // first buffered line
+let _shViewEnd = 0;       // last buffered line
+const SH_LINE_H = 12 * 1.65;
+const SH_BUFFER = 80;     // lines of buffer above/below viewport
+const SH_REBUFFER = 30;   // re-render when within this many lines of buffer edge
+
+function updateHighlight() {
+  const textarea = $('fe-editor-textarea');
+  const code = $('fe-editor-highlight-code');
+  if (!textarea || !code) return;
+
+  const text = textarea.value;
+  if (!text || !_shLang || _shLang === 'Plain Text' || _shLang === 'Markdown') {
+    code.innerHTML = _shEsc(text || '') + '\n';
+    _shLines = null;
+    return;
+  }
+
+  if (text.length <= SH_MAX_SIZE) {
+    // Small file: highlight everything
+    code.innerHTML = highlightCode(text, _shLang) + '\n';
+    _shLines = null;
+    return;
+  }
+
+  // Large file: viewport-based highlighting
+  _shLines = text.split('\n');
+  _shRenderViewport(textarea, code, text);
+}
+
+function _shRenderViewport(textarea, code, text) {
+  if (!_shLines) return;
+
+  const scrollTop = textarea.scrollTop;
+  const viewH = textarea.clientHeight;
+  const firstVisLine = Math.max(0, Math.floor(scrollTop / SH_LINE_H));
+  const visLineCount = Math.ceil(viewH / SH_LINE_H);
+
+  const startLine = Math.max(0, firstVisLine - SH_BUFFER);
+  const endLine = Math.min(_shLines.length, firstVisLine + visLineCount + SH_BUFFER);
+
+  _shViewStart = startLine;
+  _shViewEnd = endLine;
+
+  // Character offsets for the visible chunk
+  let charStart = 0;
+  for (let i = 0; i < startLine; i++) charStart += _shLines[i].length + 1;
+  let charEnd = charStart;
+  for (let i = startLine; i < endLine; i++) charEnd += _shLines[i].length + 1;
+  if (charEnd > text.length) charEnd = text.length;
+
+  const chunk = text.slice(charStart, charEnd);
+  const highlighted = highlightCode(chunk, _shLang);
+
+  // Use real newlines as spacers — guarantees identical line height to textarea
+  code.innerHTML =
+    '\n'.repeat(startLine) +
+    highlighted +
+    '\n'.repeat(Math.max(0, _shLines.length - endLine)) +
+    '\n';
+}
+
+function syncHighlightScroll() {
+  const textarea = $('fe-editor-textarea');
+  const code = $('fe-editor-highlight-code');
+  if (!textarea || !code) return;
+  code.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
+
+  // Large file: re-render viewport if scrolled near buffer edge
+  if (_shLines) {
+    const firstVisLine = Math.floor(textarea.scrollTop / SH_LINE_H);
+    const lastVisLine = firstVisLine + Math.ceil(textarea.clientHeight / SH_LINE_H);
+    if (firstVisLine < _shViewStart + SH_REBUFFER || lastVisLine > _shViewEnd - SH_REBUFFER) {
+      _shRenderViewport(textarea, code, textarea.value);
+    }
+  }
+}
+
 function detectLang(filename) {
   const parts = filename.split('.');
   if (parts.length < 2) return 'Plain Text';
@@ -546,6 +1106,7 @@ function editorUndo(ta) {
   ta.selectionEnd = state.selEnd;
   updateEditorDirtyState();
   updateGutter();
+  updateHighlight();
 }
 
 function editorRedo(ta) {
@@ -557,6 +1118,7 @@ function editorRedo(ta) {
   ta.selectionEnd = state.selEnd;
   updateEditorDirtyState();
   updateGutter();
+  updateHighlight();
 }
 
 async function openFileEditor(filePath) {
@@ -599,8 +1161,9 @@ async function openFileEditor(filePath) {
       fpEl.textContent = rel.startsWith('/') ? rel.slice(1) : rel;
     }
 
-    // Language detection + markdown check
+    // Language detection + markdown check + syntax highlighting
     const lang = detectLang(data.name);
+    _shLang = lang;
     const langEl = $('fe-editor-lang');
     if (langEl) langEl.textContent = lang;
     _editorIsMarkdown = lang === 'Markdown';
@@ -620,10 +1183,11 @@ async function openFileEditor(filePath) {
     if (sizeEl) sizeEl.textContent = formatSize(data.size || 0);
 
     updateGutter();
+    updateHighlight();
     updateCursorPos();
     updateEditorDirtyState();
     // Defer so the textarea has rendered its scroll dimensions
-    requestAnimationFrame(() => { updateLineHighlight(); updateScrollmap(); });
+    requestAnimationFrame(() => { updateLineHighlight(); updateScrollmap(); syncHighlightScroll(); });
   } catch (err) {
     showToast('Failed to open file');
   }
@@ -640,6 +1204,12 @@ function closeFileEditor() {
   _editorDirty = false;
   _editorIsMarkdown = false;
   _editorPreviewMode = false;
+  _shLang = '';
+  _shLines = null;
+  _shViewStart = 0;
+  _shViewEnd = 0;
+  const hlCode = $('fe-editor-highlight-code');
+  if (hlCode) hlCode.innerHTML = '';
 
   // Close find bar and preview
   closeFind();
@@ -1229,8 +1799,12 @@ export function initFileExplorer() {
   if (wordWrapBtn && editorTextarea) {
     wordWrapBtn.addEventListener('click', () => {
       const wrapped = editorTextarea.style.whiteSpace === 'pre-wrap';
-      editorTextarea.style.whiteSpace = wrapped ? 'pre' : 'pre-wrap';
-      editorTextarea.style.overflowWrap = wrapped ? 'normal' : 'break-word';
+      const newWrap = wrapped ? 'pre' : 'pre-wrap';
+      const newOverflow = wrapped ? 'normal' : 'break-word';
+      editorTextarea.style.whiteSpace = newWrap;
+      editorTextarea.style.overflowWrap = newOverflow;
+      const hl = $('fe-editor-highlight');
+      if (hl) { hl.style.whiteSpace = newWrap; hl.style.overflowWrap = newOverflow; }
       wordWrapBtn.classList.toggle('active', !wrapped);
     });
   }
@@ -1305,11 +1879,13 @@ export function initFileExplorer() {
     editorTextarea.addEventListener('input', () => {
       updateEditorDirtyState();
       updateGutter();
+      updateHighlight();
       updateLineHighlight();
     });
-    // Scroll sync: gutter follows textarea, update scrollmap + line highlight
+    // Scroll sync: gutter follows textarea, update scrollmap + line highlight + syntax
     editorTextarea.addEventListener('scroll', () => {
       syncGutterScroll();
+      syncHighlightScroll();
       updateScrollmap();
       updateLineHighlight();
     });
@@ -1505,6 +2081,9 @@ export function initFileExplorer() {
       }
     });
   }
+
+  // Git panel
+  initGitPanel();
 
   // Resize handle
   initResizeHandle();

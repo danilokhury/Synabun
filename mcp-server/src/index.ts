@@ -15,6 +15,7 @@ import { registerBrowserTools } from './tools/browser.js';
 import { registerWhiteboardTools } from './tools/whiteboard.js';
 import { registerCardTools } from './tools/card.js';
 import { registerTicTacToeTools } from './tools/tictactoe.js';
+import { registerDiscordTools } from './tools/discord.js';
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, initCategoryCache } from './services/categories.js';
 import { getEnvPath } from './config.js';
 import { readFileSync, watch, existsSync } from 'fs';
@@ -31,8 +32,11 @@ Tool groups:
 - TicTacToe: tictactoe (action: start/move/state/end)
 - Sync: sync
 - Loop: loop (action: start/stop/status)
+- Discord: discord_guild, discord_channel, discord_role, discord_message, discord_member, discord_onboarding, discord_webhook, discord_thread
 
-Use "category" with action "list" to see valid category names before using remember/recall/reflect.`;
+Use "category" with action "list" to see valid category names before using remember/recall/reflect.
+
+Discord tools require DISCORD_BOT_TOKEN in .env. Set DISCORD_GUILD_ID for default guild. Each tool uses an "action" parameter to select the operation.`;
 }
 
 // Register all tools on a given McpServer instance.
@@ -51,6 +55,7 @@ export function registerTools(server: McpServer) {
   registerWhiteboardTools(server);
   registerCardTools(server);
   registerTicTacToeTools(server);
+  registerDiscordTools(server);
   return { rememberTool, recallTool, reflectTool, memoriesTool };
 }
 
