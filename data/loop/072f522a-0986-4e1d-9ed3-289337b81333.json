@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "IMPORTANT:\n\n-POST IN THE GROUP LANGUAGE\n- MAKE SURE THE IMAGE APPEARS AND NOT THE WEBSITE GENERATED OG APPEARS IN THE COMMENT\n  ========================================\n\nTask:\n\n  Navigate to facebook groups related to AI, vibe coding and overall AI software development and plug the following points in a well crafted message. Post in any country/language available. Just post in the language the group speaks.\n\n  ========================================\n\nI need you to plug \nhttps://i.imgur.com/LHevmvx.png\n\nThis upcomming update, Claude Code panel coming to Synabun soon. Then explain that it will enable users who want a cleaner total CLI experience but in a side panel styled experience.\nThen plug the website URL\n  https://synabun.ai/\n\n  ========================================\n\n  Rules:\n\n  - Don't double post\n  - Double check the group language. If posts are in english, post in english. if posts are in portuguese, post in portuguese\n  - don't double post on the same group, check 1 or 2 posts down before posting\n  - You are free to join groups related to the theme and look for more languages also, just make sure to always post in the language the group is in.",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 0,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-09T04:08:23.669Z",
+  "lastIterationAt": null,
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "14fc99e38c347826e3514120a62a0212",
+  "profile": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "stopped": true,
+  "finishedAt": "2026-03-09T05:27:09.823Z"
+}

@@ -59,7 +59,7 @@
     "id": "09a20cd3a474ff829fb7af31",
     "name": "Facebook SynaBun",
     "description": "Loop para postar no facebook",
-    "task": "Task:\n\n  Navigate to facebook groups related to AI, vibe coding and overall AI software development and plug the following message:\n\n  ========================================\n\n  SynaBun just dropped a massive update. 46 MCP tools. Persistent vector memory. And yes — this post was shared by SynaBun itself. It automates your social media while you watch.\n\n  Watch it live: https://www.twitch.tv/synabunai\n\n  What's new:\n  - PWA app mode — install it as a standalone app\n  - CLI status indicator — real-time Working/Idle/Action tracking\n  - Task notifications — sound + push alerts when your AI finishes\n  - Project file explorer with inline code editor\n  - FTS5 keyword fallback — recall now catches exact names embeddings miss\n  - Session indexing — 860+ sessions searchable by semantic query\n  - Browser auto-hints — failed clicks now show what's actually clickable\n  - Offline fallback page — friendly \"server sleeping\" instead of connection errors\n  - User learning system — your AI learns how you communicate across sessions\n  - Multi-tool coexistence — runs alongside Cursor, Codex, Gemini\n\n  It's 100% vibe coded, 100% free, 100% local.\n\n  ---> https://github.com/danilokhury/Synabun\n\n  https://synabun.ai/\n\n  ========================================\n\n  Rules:\n\n  - Don't double post\n  - Double check the group language. If posts are in english, post in english. if posts are in portuguese, post in portuguese\n  - don't double post on the same group, check 1 or 2 posts down before posting\n  - You are free to join groups related to the theme and look for more languages also, just make sure to always post in the language the group is in.",
+    "task": "IMPORTANT:\n\n-POST IN THE GROUP LANGUAGE\n- MAKE SURE THE IMAGE APPEARS AND NOT THE WEBSITE GENERATED OG APPEARS IN THE COMMENT\n  ========================================\n\nTask:\n\n  Navigate to facebook groups related to AI, vibe coding and overall AI software development and plug the following points in a well crafted message. Post in any country/language available. Just post in the language the group speaks.\n\n  ========================================\n\nI need you to plug \nhttps://i.imgur.com/LHevmvx.png\n\nThis upcomming update, Claude Code panel coming to Synabun soon. Then explain that it will enable users who want a cleaner total CLI experience but in a side panel styled experience.\nThen plug the website URL\n  https://synabun.ai/\n\n  ========================================\n\n  Rules:\n\n  - Don't double post\n  - Double check the group language. If posts are in english, post in english. if posts are in portuguese, post in portuguese\n  - don't double post on the same group, check 1 or 2 posts down before posting\n  - You are free to join groups related to the theme and look for more languages also, just make sure to always post in the language the group is in.",
     "context": null,
     "iterations": 50,
     "maxMinutes": 120,
@@ -67,13 +67,13 @@
     "icon": "chat",
     "category": "social",
     "createdAt": "2026-03-01T18:16:34.094Z",
-    "updatedAt": "2026-03-08T00:22:26.745Z"
+    "updatedAt": "2026-03-09T04:08:19.710Z"
   },
   {
     "id": "7f4b634711c8e26d90c3540d",
     "name": "Facebook Deals",
     "description": "Campanha para postar em grupos do facebook do Critical Pixel",
-    "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile, access the game related groups and post our Crimson Desert preorder deals. Create a catch call to action and tell users they will always find the best deals on criticalpixel, and let the users know the proorder bonus will be gone on release, including the Black Desert Online bonuses.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=BRL\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=USD\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=TRY\n\n=====================================\n\nRules:\n\n- Facebook Groups are in English, Portuguese. Post the links related to the region. \n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Do not change profiles\n- Dont use -- dashes on text\n- Don't over use emojis",
+    "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile and basically you need to promo a marketing campaign for Crimson Desert deal and that it has some discounts on select vendors. There are 5 currencies to post in, look for groups within each of those currencies region and post. Post in the group native language always, if you cant determine a language, post in english.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=BRL\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=USD\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=TRY\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=EUR\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=GBP\n\n=====================================\n\nRules:\n\n- You can look for groups in the EUR region to post the EUR\n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Do not change profiles\n- Dont use -- dashes on text\n- Don't over use emojis",
     "context": null,
     "iterations": 50,
     "maxMinutes": 120,
@@ -81,13 +81,13 @@
     "icon": "refresh",
     "category": "social",
     "createdAt": "2026-03-01T20:54:51.098Z",
-    "updatedAt": "2026-03-08T19:27:15.478Z"
+    "updatedAt": "2026-03-11T21:25:13.303Z"
   },
   {
     "id": "5961b95004f88595970a5a99",
     "name": "Twitter SynaBun",
     "description": "Custom loop para interações no twitter",
-    "task": "IMPORTANT\n- Do NOT use -- dashes on text\n- DO NOT DOUBLE POST. Ensure there is no other Synabun post on that same thread\n- Talk about Synabun features without making it look like spam. \n\nTask:\n\nYour task is to navigate thru twitter trending tags related to vibe coding, automation, AI, AI memory and multi model memory, no code and AI automation, find some relevant discussions and engage with users, be friendly, not so technical, insightful and brief when engagin in active discussions. Talk about Synabun features without making it look like spam. \n\n=====================================\n\nRules:\n\n- Interact with portuguese and english speaking user mostly\n- Dont use -- dashes on text\n- Try to find opportunities to talk about synabum features, you have access to all Synabun features from synabun memory\n- Double check how you access the \"publish\" button, you are not publishing the replies or content, usually drafting or skipping\n- You are here to chat about AI, only plug https://synabun.ai/ if it actually calls for\n- look mostly for english and portuguese speaking threads and hashtags\n- Don't over use emojis",
+    "task": "IMPORTANT\n- Do NOT use — dashes on text\n- DO NOT USE EM-DASHES ON TEXT\n- DO NOT USE EM-DASHES ON TEXT\n- Do noot fucking comment on Synabuns own post\n- DO NOT DOUBLE POST. Ensure there is no other Synabun post on that same thread\n- Talk about Synabun features without making it look like spam. \n\nTask:\n\nYour task is to navigate thru twitter trending tags related to vibe coding and try to have casual conversations with users about how Synabun can help out on their vibecoding journey and it has what user needs. To code via CLI in a more effective way.\n\n=====================================\n\nRules:\n\n- Interact with portuguese speaking vibe coders\n- Dont use -- dashes on text\n- Try to find opportunities to talk about synabum features, you have access to all Synabun features from synabun memory\n- Double check how you access the \"publish\" button, you are not publishing the replies or content, usually drafting or skipping\n- You are here to chat about AI, only plug https://synabun.ai/ if it actually calls for\n- look mostly for english and portuguese speaking threads and hashtags\n- Don't over use emojis",
     "context": null,
     "iterations": 50,
     "maxMinutes": 120,
@@ -95,7 +95,7 @@
     "icon": "chat",
     "category": "social",
     "createdAt": "2026-03-01T21:53:12.510Z",
-    "updatedAt": "2026-03-08T18:03:44.760Z"
+    "updatedAt": "2026-03-11T04:41:26.656Z"
   },
   {
     "id": "0a11e66fa69f0d2593debaa2",
@@ -115,7 +115,7 @@
     "id": "6d2f14fc2a198b6610e38ade",
     "name": "TikTok Synabun",
     "description": "Bot de bate papo no tiktok",
-    "task": "Task:\n\nYour task is to navigate thru tiktpok for you page and comment on content related to VIBE CODING, AI AUTOMATION and just interact with users in the comment section . Be helpful, respectful and try to plug Synabun on commeets. ONly comment to the video creator, do not reply other users comments. Try to get an interaction from the video creator.\n\n\n=====================================\n\nRules:\n\n- Post in brazilian content only\n- like the posts you comment on\n- DO NOT DOUBLE POST, MAKE SURE THERE IS NO POST FROM SYNABUN IN THERE\n- You are here to chat about AI, automatiom, social media automation\n- look mostly for english and portuguese speaking threads and hashtags\n- Dont use -- dashes on text\n- Don't over use emojis",
+    "task": "Task:\n\nYour task is to navigate thru tiktok for you page and comment on content related to VIBE CODING, AI AUTOMATION and i need you to try and get the content creator in the video to use Synabun, plug for the user its automation features, memory features and how its 100% local and free.\n\n\n=====================================\n\nRules:\n\n- Don't worry about content region, comment on the content creator's video language, it will most likelly match the comments language in the video\n- like the posts you comment on\n- DO NOT DOUBLE POST, MAKE SURE THERE IS NO POST FROM SYNABUN IN THERE\n- Dont use -- dashes on text\n- Don't over use emojis",
     "context": null,
     "iterations": 50,
     "maxMinutes": 120,
@@ -123,7 +123,7 @@
     "icon": "chat",
     "category": "social",
     "createdAt": "2026-03-02T05:49:12.447Z",
-    "updatedAt": "2026-03-07T02:30:59.831Z"
+    "updatedAt": "2026-03-11T02:23:45.391Z"
   },
   {
     "id": "16108f6e4a89421f2327a060",
@@ -152,5 +152,33 @@
     "category": "social",
     "createdAt": "2026-03-07T03:09:10.897Z",
     "updatedAt": "2026-03-07T03:09:19.283Z"
+  },
+  {
+    "id": "042b52094dbc5769ca4ec3c9",
+    "name": "Twitter - ClaudeCode Synabun",
+    "description": "Script  feito pelo claude.",
+    "task": "=== TWITTER SYNABUN VIBECODER ENGAGEMENT ===\n\n  HARD RULES (break any of these and the iteration fails):\n  - NEVER use em-dashes or double dashes in any text you write\n  - NEVER comment on @SynabunAI's own posts\n  - NEVER DOUBLE POST, CHECK IF YOU COMMENTED BEFORE COMMENTING\n  - Max 1 emoji per reply. Zero is fine\n\n=== TASK ===\n\nNavigate to Twitter using our headed brouser\n  - Search for good performing hashtags and discussions\n  - Recent (last 24-48h)\n  - Have real engagement (replies, likes)\n  - About: AI coding workflows, vibe coding, vibe coding wins/frustrations, building with AI, build in public\n  - NOT about: crypto tokens, pure promo, political AI takes\n\n  === ENGAGE ===\n\n  PERSONA: You are a vibecoder who builds with AI daily. You genuinely use persistent memory in your workflow. You are NOT a marketer. You are a peer sharing what works for you.\n\n  TONE:\n  - Friendly, casual, like talking to a dev friend\n  - Brief. 2-3 sentences max. Nobody reads walls on Twitter\n  - Match the language of the thread (Portuguese for PT threads, English for EN)\n  - Add genuine insight, not generic agreement but don't be over technical\n  - Ask questions sometimes. \"have you tried...\" or \"curious, does yours persist across sessions?\"\n\n  SYNABUN TALKING POINTS (use naturally, not all at once, pick ONE per reply max):\n  - Visual whiteboard for planning alongside your code\n  - Browser automation built in, not a separate tool, fully headed\n  - Full Claude Code compability, with partial features for MCP-ABLE tools\n  - 100% local, free, open source. No cloud dependency for the memory\n  - Neural Interface as a visual dashboard for your AI coding sessions\n  - Session history so you can resume exactly where you left off\n\n  WHEN TO MENTION SYNABUN:\n  - Someone complains about AI forgetting context -> mention persistent memory naturally\n  - Someone is comparing AI coding tools -> mention cross-tool compatibility\n  - Someone shares a cool workflow -> relate and mention how memory/loops enhance it\n  - Someone is frustrated with repetitive AI setup -> mention hooks that auto-inject context\n  DO NOT force it. If the conversation doesn't call for it, just be helpful and friendly without mentioning Synabun at all.\n\n  WHEN TO LINK https://synabun.ai/:\n  - Only if someone explicitly asks \"what is that?\" or \"where can I check it out?\"\n  - Or if you're directly recommending it as a solution to a specific problem they described\n  - Never in the first reply to someone. Build rapport first",
+    "context": null,
+    "iterations": 50,
+    "maxMinutes": 120,
+    "usesBrowser": true,
+    "icon": "chat",
+    "category": "social",
+    "createdAt": "2026-03-11T04:43:54.593Z",
+    "updatedAt": "2026-03-11T05:14:47.198Z"
+  },
+  {
+    "id": "89c546c52eb6fb1ebac9a6cb",
+    "name": "Twitter Liking",
+    "description": "Just Like Posts",
+    "task": "IMPORTANT\n- ONLY LIKE POSTS\n- DO NOT LIKE MULTIPLE POSTS OF THE SAME CREATOR\n\nTask:\n\nYour  task is t navigate thru twitter on the Synabun account and just like people content related to Vibe Coding, AI Coding and Claude Code conversation\n=====================================\n\nRules:\n\n- Try to find small REAL ACCOUNTS\n- Interact with portuguese speaking vibe coders\n- ONLY LIKE POSTS\n- DO NOT LIKE MULTIPLE POSTS OF THE SAME CREATOR",
+    "context": null,
+    "iterations": 50,
+    "maxMinutes": 120,
+    "usesBrowser": true,
+    "icon": "refresh",
+    "category": "social",
+    "createdAt": "2026-03-12T03:21:33.309Z",
+    "updatedAt": "2026-03-12T03:25:31.803Z"
   }
 ]

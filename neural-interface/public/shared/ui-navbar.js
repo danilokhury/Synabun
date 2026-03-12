@@ -10,6 +10,7 @@ import { KEYS } from './constants.js';
 import { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig } from './ui-settings.js';
 import { registerAction } from './ui-keybinds.js';
 import { startTutorial } from './ui-tutorial.js';
+import { toggleClaudePanel } from './ui-claude-panel.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -34,6 +35,17 @@ export function initNavbar() {
       }
       window.location.href = inactiveLink.getAttribute('href');
     });
+  }
+
+  // ── Claude panel toggle ──
+  const claudePanelBtn = $('nav-claude-panel-btn');
+  if (claudePanelBtn) {
+    claudePanelBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      toggleClaudePanel();
+      claudePanelBtn.classList.toggle('active');
+    });
+    registerAction('toggle-claude-panel', () => claudePanelBtn.click());
   }
 
   // ── Sidebar close button ──

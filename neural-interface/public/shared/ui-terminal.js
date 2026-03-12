@@ -9,7 +9,7 @@
 import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
-import { createTerminalSession, deleteTerminalSession, fetchTerminalSessions, fetchTerminalFiles, fetchTerminalBranches, checkoutTerminalBranch, createBrowserSession, deleteBrowserSession, fetchBrowserSessions, detectClaudeSession } from './api.js';
+import { createTerminalSession, deleteTerminalSession, fetchTerminalSessions, fetchTerminalFiles, fetchTerminalBranches, checkoutTerminalBranch, createBrowserSession, deleteBrowserSession, fetchBrowserSessions, detectClaudeSession, fetchLastSession, dismissLastSession } from './api.js';
 import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { getWhiteboardElementById } from './ui-whiteboard.js';
@@ -86,6 +86,24 @@ let _panelPinned = false;   // whether the main panel is pinned (prevent close/h
 let _detached = false;
 let _floatDrag = null; // { startX, startY, startL, startT }
 let _detachedTabs = new Map(); // sessionId → { el, drag, resize }
+const FLOAT_COLORS = [
+  { id: 'blue',      h: 215, s: 60 },
+  { id: 'indigo',    h: 235, s: 55 },
+  { id: 'purple',    h: 270, s: 55 },
+  { id: 'pink',      h: 330, s: 55 },
+  { id: 'red',       h: 0,   s: 60 },
+  { id: 'orange',    h: 25,  s: 70 },
+  { id: 'amber',     h: 40,  s: 70 },
+  { id: 'yellow',    h: 50,  s: 65 },
+  { id: 'lime',      h: 80,  s: 55 },
+  { id: 'green',     h: 145, s: 55 },
+  { id: 'teal',      h: 170, s: 55 },
+  { id: 'cyan',      h: 185, s: 60 },
+  { id: 'sky',       h: 200, s: 60 },
+  { id: 'slate',     h: 215, s: 20 },
+  { id: 'warm',      h: 20,  s: 15 },
+  { id: 'none',      h: 0,   s: 0  },
+];
 let _floatZCounter = 10000;    // z-index counter for floating tab focus-to-front
 let _peekDock = null;          // bottom peek dock element (shown when panel hidden)
 let _closingIds = new Set();   // session IDs currently being closed (prevents re-entry)
@@ -458,6 +476,7 @@ function saveSessionRegistry() {
       pinned: s.pinned,
       userRenamed: s._userRenamed || false,
       claudeSessionId: s._claudeSessionId || prev?.claudeSessionId || null,
+      floatColor: s._floatColor || null,
     });
   }
   storage.setItem(KEYS.TERMINAL_SESSIONS, JSON.stringify([...seen.values()]));
@@ -704,6 +723,11 @@ function ensurePanel() {
       openSessionWithPicker(p.id);
     });
     flyout.appendChild(item);
+  });
+
+  // Click on docked panel → bring above any floating TUI windows
+  panel.addEventListener('mousedown', () => {
+    panel.style.zIndex = ++_floatZCounter;
   });
 
   // Wire resize handle (docked only — panel detach removed, only tabs float)
@@ -960,6 +984,9 @@ function showPanel() {
     _panel.style.height = h + 'px';
     document.documentElement.style.setProperty('--terminal-height', h + 'px');
   }
+
+  // Bring docked panel above any floating TUI windows
+  _panel.style.zIndex = ++_floatZCounter;
 
   // Remove hidden class to trigger slide-up transition
   _panel.classList.remove('hidden');
@@ -1838,6 +1865,7 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
     pinned: options.pinned || false,
     _userRenamed: options.userRenamed || false,
     _claudeSessionId: options.claudeSessionId || null,
+    _floatColor: options.floatColor || null,
     _isHtmlTerm: true,
     _htmlTerm: htmlTerm,
     _autoScroll: true,
@@ -2522,6 +2550,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
     pinned: options.pinned || false,
     _userRenamed: options.userRenamed || false,
     _claudeSessionId: options.claudeSessionId || null,
+    _floatColor: options.floatColor || null,
     _autoScroll: true,
     _fitInProgress: false,
   };
@@ -2597,6 +2626,7 @@ async function closeSession(idx) {
     tabState.el.remove();
     if (tabState.pill) tabState.pill.remove();
     _detachedTabs.delete(session.id);
+    _updateSnappedEdges();
   }
 
   // Cleanup — mark dead first to prevent ws.onclose from re-entering
@@ -3173,6 +3203,149 @@ function bringTabToFront(sessionId) {
   }
 }
 
+function _applyFloatColor(win, colorId) {
+  const c = FLOAT_COLORS.find(f => f.id === colorId) || FLOAT_COLORS[0];
+  if (c.s === 0) {
+    win.style.setProperty('--fh', '0');
+    win.style.setProperty('--fs', '0%');
+  } else {
+    win.style.setProperty('--fh', String(c.h));
+    win.style.setProperty('--fs', c.s + '%');
+  }
+  // Update color strip
+  const strip = win.querySelector('.term-float-color-strip');
+  if (strip) {
+    strip.style.background = c.s === 0 ? 'rgba(255,255,255,0.15)' : `hsl(${c.h}, ${Math.round(c.s * 0.5)}%, 30%)`;
+  }
+}
+
+/** Update snapped-edge classes on all floating tabs based on adjacency */
+function _updateSnappedEdges() {
+  const TOLERANCE = 2;
+  const rects = new Map();
+  for (const [sid, dt] of _detachedTabs) {
+    if (!dt.el || dt.minimized) continue;
+    rects.set(sid, dt.el.getBoundingClientRect());
+  }
+
+  // Compute viewport / panel boundaries
+  const cs = getComputedStyle(document.documentElement);
+  const explorerW = parseFloat(cs.getPropertyValue('--explorer-width')) || 0;
+  const fileExplorerW = parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0;
+  const leftPanelEdge = explorerW + fileExplorerW;
+  const claudeW = parseFloat(cs.getPropertyValue('--claude-panel-width')) || 0;
+  const rightPanelEdge = window.innerWidth - claudeW;
+  const topEdge = 48; // navbar height
+  const bottomEdge = window.innerHeight;
+
+  for (const [sid, dt] of _detachedTabs) {
+    if (!dt.el || dt.minimized) continue;
+    const me = rects.get(sid);
+    let edges = { left: false, right: false, top: false, bottom: false };
+
+    // Check adjacency to other floating tabs
+    for (const [oid, oRect] of rects) {
+      if (oid === sid) continue;
+      const vOverlap = me.top < oRect.bottom - TOLERANCE && me.bottom > oRect.top + TOLERANCE;
+      const hOverlap = me.left < oRect.right - TOLERANCE && me.right > oRect.left + TOLERANCE;
+      if (vOverlap && Math.abs(me.right - oRect.left) < TOLERANCE) edges.right = true;
+      if (vOverlap && Math.abs(me.left - oRect.right) < TOLERANCE) edges.left = true;
+      if (hOverlap && Math.abs(me.bottom - oRect.top) < TOLERANCE) edges.bottom = true;
+      if (hOverlap && Math.abs(me.top - oRect.bottom) < TOLERANCE) edges.top = true;
+    }
+
+    // Check adjacency to viewport / panel edges
+    if (Math.abs(me.left - leftPanelEdge) < TOLERANCE || Math.abs(me.left) < TOLERANCE) edges.left = true;
+    if (Math.abs(me.right - rightPanelEdge) < TOLERANCE || Math.abs(me.right - window.innerWidth) < TOLERANCE) edges.right = true;
+    if (Math.abs(me.top - topEdge) < TOLERANCE) edges.top = true;
+    if (Math.abs(me.bottom - bottomEdge) < TOLERANCE) edges.bottom = true;
+
+    dt.el.classList.toggle('snapped-r', edges.right);
+    dt.el.classList.toggle('snapped-l', edges.left);
+    dt.el.classList.toggle('snapped-t', edges.top);
+    dt.el.classList.toggle('snapped-b', edges.bottom);
+  }
+}
+
+/** Tile all floating (non-minimized) terminals across the viewport */
+export function tileFloatingTerminals() {
+  const entries = [];
+  for (const [sid, dt] of _detachedTabs) {
+    if (!dt.el || dt.minimized) continue;
+    entries.push({ sid, dt });
+  }
+  // Also detach all docked sessions so everything tiles
+  const dockedSessions = _sessions.filter(s => !_detachedTabs.has(s.id) && !s._gitOutput);
+  for (const s of dockedSessions) {
+    const idx = _sessions.indexOf(s);
+    if (idx >= 0) detachTab(idx);
+  }
+  // Re-collect after detaching
+  entries.length = 0;
+  for (const [sid, dt] of _detachedTabs) {
+    if (!dt.el || dt.minimized) continue;
+    entries.push({ sid, dt });
+  }
+  if (entries.length === 0) return;
+
+  // Compute available whiteboard area (respect open panels)
+  const cs = getComputedStyle(document.documentElement);
+  const explorerW = parseFloat(cs.getPropertyValue('--explorer-width')) || 0;
+  const fileExplorerW = parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0;
+  const sidebarW = explorerW + fileExplorerW;
+  const claudeW = parseFloat(cs.getPropertyValue('--claude-panel-width')) || 0;
+  const termPanel = document.getElementById('terminal-panel');
+  const termH = (termPanel && !termPanel.classList.contains('hidden') && !termPanel.classList.contains('detached'))
+    ? termPanel.getBoundingClientRect().height : 0;
+  const TOP_PAD = 48; // navbar height
+  const areaL = sidebarW;
+  const areaT = TOP_PAD;
+  const areaW = window.innerWidth - sidebarW - claudeW;
+  const areaH = window.innerHeight - TOP_PAD - termH;
+
+  // Calculate grid: find best cols/rows to fill the space
+  const n = entries.length;
+  let bestCols = 1, bestRows = n;
+  let bestRatio = Infinity;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const cellW = areaW / cols;
+    const cellH = areaH / rows;
+    const ratio = Math.abs((cellW / cellH) - 16 / 9);
+    if (ratio < bestRatio) {
+      bestRatio = ratio;
+      bestCols = cols;
+      bestRows = rows;
+    }
+  }
+
+  const cellW = areaW / bestCols;
+  const cellH = areaH / bestRows;
+
+  entries.forEach(({ dt }, i) => {
+    const col = i % bestCols;
+    const row = Math.floor(i / bestCols);
+    dt.el.style.left = (areaL + col * cellW) + 'px';
+    dt.el.style.top = (areaT + row * cellH) + 'px';
+    dt.el.style.width = cellW + 'px';
+    dt.el.style.height = cellH + 'px';
+  });
+
+  // Refit all terminals after layout
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      for (const { sid } of entries) {
+        const session = _sessions.find(s => s.id === sid);
+        if (!session) continue;
+        if (session._isHtmlTerm) session._htmlTerm?.fit();
+        else _scheduleFit(session);
+      }
+      _updateSnappedEdges();
+      saveTerminalLayout();
+    });
+  });
+}
+
 function detachTab(idx) {
   const session = _sessions[idx];
   if (!session || _detachedTabs.has(session.id)) return;
@@ -3187,6 +3360,7 @@ function detachTab(idx) {
   win.innerHTML = `
     <div class="term-float-tab-header">
       <span class="term-float-tab-icon">${prof?.svg || SVG_SHELL}</span>
+      <button class="term-float-color-strip" data-tooltip="Change color"></button>
       <span class="term-float-tab-title">${session.label}</span>${_cliBadgeHtml(session.id)}
       <div class="term-float-tab-actions">
         <button class="term-float-tab-btn files-btn" data-tooltip="Toggle file tree">
@@ -3196,7 +3370,7 @@ function detachTab(idx) {
           <svg viewBox="0 0 24 24"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
         </button>
         <button class="term-float-tab-btn pin-btn" data-tooltip="Pin on top">
-          <svg viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1h1V3H7v3h1a1 1 0 0 1 1 1z"/></svg>
+          <svg viewBox="0 0 24 24"><path d="M9 4v6l-2 4h5v6" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 14h5l-2-4V4" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7" y1="14" x2="17" y2="14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="9" y1="4" x2="15" y2="4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
         <button class="term-float-tab-btn minimize-btn" data-tooltip="Minimize">
           <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -3242,6 +3416,49 @@ function detachTab(idx) {
   body.appendChild(wrap);
   wrap.appendChild(session.viewport);
   session.viewport.style.display = '';
+
+  // Apply saved color or assign random
+  if (!session._floatColor) {
+    session._floatColor = FLOAT_COLORS[Math.floor(Math.random() * FLOAT_COLORS.length)].id;
+  }
+  _applyFloatColor(win, session._floatColor);
+
+  // Wire color picker popup
+  const colorBtn = win.querySelector('.term-float-color-strip');
+  colorBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Close any existing picker
+    const existing = document.querySelector('.float-color-picker');
+    if (existing) { existing.remove(); return; }
+    const picker = document.createElement('div');
+    picker.className = 'float-color-picker';
+    // Position above the color strip button
+    const btnRect = colorBtn.getBoundingClientRect();
+    picker.style.left = btnRect.left + 'px';
+    picker.style.bottom = (window.innerHeight - btnRect.top + 6) + 'px';
+    picker.style.top = 'auto';
+    FLOAT_COLORS.forEach(c => {
+      const swatch = document.createElement('button');
+      swatch.className = 'float-color-swatch';
+      if (c.id === (session._floatColor || 'blue')) swatch.classList.add('active');
+      swatch.style.background = c.s === 0 ? 'rgba(255,255,255,0.15)' : `hsl(${c.h}, ${Math.round(c.s * 0.5)}%, 25%)`;
+      swatch.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        session._floatColor = c.id;
+        _applyFloatColor(win, c.id);
+        saveSessionRegistry();
+        saveTerminalLayout();
+        picker.remove();
+      });
+      picker.appendChild(swatch);
+    });
+    document.body.appendChild(picker);
+    // Close on outside click
+    const close = (ev) => {
+      if (!picker.contains(ev.target)) { picker.remove(); document.removeEventListener('mousedown', close); }
+    };
+    setTimeout(() => document.addEventListener('mousedown', close), 0);
+  });
 
   // Wire file tree toggle
   win.querySelector('.files-btn').addEventListener('click', (e) => {
@@ -3412,6 +3629,7 @@ function attachTab(sessionId) {
 
   renderTabBar();
   saveTerminalLayout();
+  _updateSnappedEdges(); // neighbors may no longer be snapped
   requestAnimationFrame(() => {
     if (session._isHtmlTerm) session._htmlTerm?.fit();
     else _scheduleFit(session);
@@ -3541,6 +3759,9 @@ function restoreTab(sessionId) {
   el.style.opacity = '0';
   el.style.display = '';
 
+  // Bring restored window above all other floating terminals
+  bringTabToFront(sessionId);
+
   requestAnimationFrame(() => {
     el.style.transition = 'transform 0.35s cubic-bezier(0.2, 0, 0.2, 1), opacity 0.2s ease';
     el.style.transform = 'translate(0,0) scale(1)';
@@ -3598,17 +3819,60 @@ function initTabFloatDrag(win, sessionId) {
     }
     const KEEP = 80;
     const w = drag.startW || parseFloat(win.style.width) || 700;
+    const h = parseFloat(win.style.height) || 420;
     finalL = Math.max(KEEP - w, Math.min(finalL, window.innerWidth - KEEP));
     finalT = Math.max(48, Math.min(finalT, window.innerHeight - KEEP));
+
+    // Snap to other floating windows
+    const SNAP_DIST = 12;
+    let snapped = false;
+    const myR = finalL + w, myB = finalT + h;
+    for (const [sid, dt] of _detachedTabs) {
+      if (sid === sessionId || !dt.el) continue;
+      const or = dt.el.getBoundingClientRect();
+      // Only snap if vertically or horizontally overlapping (close enough to be neighbors)
+      const vOverlap = finalT < or.bottom + SNAP_DIST && myB > or.top - SNAP_DIST;
+      const hOverlap = finalL < or.right + SNAP_DIST && myR > or.left - SNAP_DIST;
+      if (vOverlap) {
+        // Snap my right edge to their left edge
+        if (Math.abs(myR - or.left) < SNAP_DIST) { finalL = or.left - w; snapped = true; }
+        // Snap my left edge to their right edge
+        else if (Math.abs(finalL - or.right) < SNAP_DIST) { finalL = or.right; snapped = true; }
+        // Align left edges
+        if (Math.abs(finalL - or.left) < SNAP_DIST) { finalL = or.left; snapped = true; }
+        // Align right edges
+        else if (Math.abs(myR - or.right) < SNAP_DIST) { finalL = or.right - w; snapped = true; }
+      }
+      if (hOverlap) {
+        // Snap my bottom to their top
+        if (Math.abs(myB - or.top) < SNAP_DIST) { finalT = or.top - h; snapped = true; }
+        // Snap my top to their bottom
+        else if (Math.abs(finalT - or.bottom) < SNAP_DIST) { finalT = or.bottom; snapped = true; }
+        // Align top edges
+        if (Math.abs(finalT - or.top) < SNAP_DIST) { finalT = or.top; snapped = true; }
+        // Align bottom edges
+        else if (Math.abs(myB - or.bottom) < SNAP_DIST) { finalT = or.bottom - h; snapped = true; }
+      }
+    }
+    // Also snap to viewport edges
+    if (Math.abs(finalL) < SNAP_DIST) { finalL = 0; snapped = true; }
+    if (Math.abs(finalT - 48) < SNAP_DIST) { finalT = 48; snapped = true; }
+    if (Math.abs(myR - window.innerWidth) < SNAP_DIST) { finalL = window.innerWidth - w; snapped = true; }
+    if (Math.abs(myB - window.innerHeight) < SNAP_DIST) { finalT = window.innerHeight - h; snapped = true; }
+
+    win.classList.toggle('float-snapping', snapped);
     win.style.left = finalL + 'px';
     win.style.top = finalT + 'px';
+    _updateSnappedEdges();
   }
   function _endDrag() {
     if (!drag) return;
     drag = null;
     win.classList.remove('float-dragging');
+    win.classList.remove('float-snapping');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+    _updateSnappedEdges();
   }
 
   // Mouse
@@ -3692,6 +3956,7 @@ function initTabFloatResize(win, sessionId) {
     document.body.style.userSelect = '';
     const session = _sessions.find(s => s.id === sessionId);
     if (session) _sendResize(session);
+    _updateSnappedEdges();
   }
 
   // Mouse
@@ -3823,6 +4088,107 @@ function renderTabBar() {
 
   // Keep peek dock in sync if it's showing
   if (_peekDock?.classList.contains('visible')) renderPeekDock();
+}
+
+// ── Resume last session prompt ──
+
+async function checkResumePrompt() {
+  // Don't show if there's already a resume overlay
+  if (document.querySelector('.resume-prompt-overlay')) {
+    console.log('[resume] Overlay already exists, skipping');
+    return;
+  }
+  console.log('[resume] Checking for last session... (sessions:', _sessions.length, 'dead:', _sessions.filter(s => s.dead).length, ')');
+  try {
+    const lastSession = await fetchLastSession();
+    console.log('[resume] fetchLastSession result:', lastSession);
+    if (lastSession?.sessions?.length > 0) {
+      console.log('[resume] Showing resume prompt with', lastSession.sessions.length, 'sessions');
+      showResumePrompt(lastSession);
+    } else {
+      console.log('[resume] No sessions to resume');
+    }
+  } catch (err) {
+    console.warn('[resume] Failed to check last session:', err);
+  }
+}
+
+function showResumePrompt(data) {
+  const count = data.sessions.length;
+  const ago = _relativeTime(data.timestamp);
+
+  // Build session list items
+  const items = data.sessions.map(s => {
+    const name = s.label || s.cwd.split(/[\\/]/).filter(Boolean).pop() || 'unknown';
+    return `<div class="resume-prompt-item">${_escHtml(name)}</div>`;
+  }).join('');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'resume-prompt-overlay';
+  overlay.innerHTML = `
+    <div class="resume-prompt-card glass">
+      <div class="resume-prompt-title">Resume last session?</div>
+      <div class="resume-prompt-count">${count} Claude Code session${count > 1 ? 's' : ''}</div>
+      <div class="resume-prompt-list">${items}</div>
+      <div class="resume-prompt-actions">
+        <button class="resume-prompt-yes">Resume All</button>
+        <button class="resume-prompt-no">Dismiss</button>
+      </div>
+      <div class="resume-prompt-time">Server closed ${ago}</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Animate in
+  requestAnimationFrame(() => overlay.classList.add('visible'));
+
+  const cleanup = () => {
+    overlay.classList.remove('visible');
+    setTimeout(() => overlay.remove(), 200);
+  };
+
+  overlay.querySelector('.resume-prompt-yes').addEventListener('click', async () => {
+    cleanup();
+    for (const s of data.sessions) {
+      emit('terminal:open-resume', {
+        profile: 'claude-code',
+        cwd: s.cwd,
+        resume: s.claudeSessionId,
+        label: s.label || '',
+      });
+      // Stagger launches to avoid PTY overload
+      await new Promise(r => setTimeout(r, 300));
+    }
+    try { await dismissLastSession(); } catch {}
+  });
+
+  overlay.querySelector('.resume-prompt-no').addEventListener('click', async () => {
+    cleanup();
+    try { await dismissLastSession(); } catch {}
+  });
+
+  // Auto-dismiss after 60s
+  setTimeout(() => {
+    if (overlay.parentNode) {
+      cleanup();
+      dismissLastSession().catch(() => {});
+    }
+  }, 60000);
+}
+
+function _relativeTime(ts) {
+  const diff = Date.now() - ts;
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function _escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ── Public API ──
@@ -4052,6 +4418,7 @@ export async function initTerminal() {
             cwd: live?.cwd || null,
             userRenamed: saved.userRenamed,
             claudeSessionId: saved.claudeSessionId,
+            floatColor: saved.floatColor,
           });
         } else {
           const live = liveMap.get(saved.id);
@@ -4061,6 +4428,7 @@ export async function initTerminal() {
             cwd: live?.cwd || null,
             userRenamed: saved.userRenamed,
             claudeSessionId: saved.claudeSessionId,
+            floatColor: saved.floatColor,
           });
         }
       }
@@ -4080,6 +4448,18 @@ export async function initTerminal() {
       saveSessionRegistry();
     }
   }
+
+  // ── Resume prompt: offer to restore sessions from last server shutdown ──
+  checkResumePrompt();
+
+  // ── Re-check on sync reconnect (server restarted while page was open) ──
+  on('session:info', () => {
+    // session:info fires on every sync WS connect (including reconnects).
+    // If all sessions are dead (server died and restarted), offer resume.
+    const allDead = _sessions.length > 0 && _sessions.every(s => s.dead);
+    const noSessions = _sessions.length === 0;
+    if (allDead || noSessions) checkResumePrompt();
+  });
 
   // Always show peek dock when panel is not open
   if (!_panel || _panel.classList.contains('hidden')) {
@@ -4301,6 +4681,7 @@ export function getTerminalSnapshot() {
         userRenamed: session?._userRenamed || false,
         claudeSessionId: session?._claudeSessionId || null,
         minimized: dt.minimized || false,
+        floatColor: session?._floatColor || null,
       };
     }),
   };

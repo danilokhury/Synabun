@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "Test iteration task",
+  "totalIterations": 3,
+  "currentIteration": 3,
+  "maxMinutes": 30,
+  "startedAt": "2026-03-11T06:05:11.866Z",
+  "lastIterationAt": "2026-03-11T06:05:13.991Z",
+  "context": null,
+  "retries": 0,
+  "journal": [],
+  "lastMemoryAt": 0,
+  "memoryInterval": 5,
+  "progressSummary": null,
+  "awaitingNext": true,
+  "finishedAt": "2026-03-11T06:05:16.076Z"
+}

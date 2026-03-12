@@ -233,58 +233,82 @@ async function main() {
   }
 
   // ─── CHECK 1.5: Active loop ───
-  const loopFlagPath = join(LOOP_DIR, `${sessionId}.json`);
+  // After /clear, session ID may change. Try exact match first, then scan for any active loop.
+  let loopFlagPath = join(LOOP_DIR, `${sessionId}.json`);
+  let loop = null;
 
   if (existsSync(loopFlagPath)) {
-    let loop;
     try {
       loop = JSON.parse(readFileSync(loopFlagPath, 'utf-8'));
     } catch {
-      // Corrupt file → delete and fall through
       try { unlinkSync(loopFlagPath); } catch { /* ok */ }
     }
+  }
 
-    if (loop?.active) {
-      const elapsed = Date.now() - new Date(loop.startedAt).getTime();
-      const maxMs = (loop.maxMinutes || 30) * 60 * 1000;
-      const iterationsDone = loop.currentIteration || 0;
-      const totalIterations = loop.totalIterations || 10;
+  // Note: No fallback scan here. The prompt-submit hook handles session ID
+  // rename when the [SynaBun Loop] marker arrives after /clear. By the time
+  // the stop hook fires, the file should be at the correct session ID path.
 
-      // Check caps — iteration limit or time limit reached
-      if (iterationsDone >= totalIterations || elapsed >= maxMs) {
-        // Loop finished — deactivate and allow stop
-        loop.active = false;
-        loop.finishedAt = new Date().toISOString();
-        try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
-        // Fall through to remember/conversation checks
-      } else if (loop.usesBrowser && isHumanBlocker(lastMessage)) {
-        // Agent is waiting for human action (login, CAPTCHA, etc.) — pause loop
-        // Don't increment iteration, don't block. Let agent stop and wait for user input.
-        // Loop stays active, so when user sends next message the loop resumes.
-        process.stdout.write(JSON.stringify({}));
-        return;
-      } else {
-        // Continue loop — increment and block
-        loop.currentIteration = iterationsDone + 1;
-        loop.lastIterationAt = new Date().toISOString();
-        loop.retries = 0; // reset retries on successful iteration
-        try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
+  if (loop?.active) {
+    const elapsed = Date.now() - new Date(loop.startedAt).getTime();
+    const maxMs = (loop.maxMinutes || 30) * 60 * 1000;
+    const iterationsDone = loop.currentIteration || 0;
+    const totalIterations = loop.totalIterations || 10;
 
-        const timeLeft = Math.round((maxMs - elapsed) / 60000);
-        const browserRule = loop.usesBrowser
-          ? '\nBROWSER ENFORCEMENT: Use ONLY SynaBun browser tools. If the browser shows a login page, CAPTCHA, or any wall requiring human action: STOP and tell the user what to do. Do NOT fall back to WebSearch or WebFetch. NEVER abandon the browser.'
-          : '';
-        const reason = [
-          `SynaBun Loop: Iteration ${loop.currentIteration}/${totalIterations} (${timeLeft}min remaining).`,
-          `Task: ${loop.task}`,
-          loop.context ? `Context: ${loop.context}` : '',
-          '',
-          `LOOP AUTONOMY: Execute directly. No confirmations. Use all tools freely. If a technical issue occurs, try alternatives. Produce concrete progress this iteration.${browserRule}`,
-        ].filter(Boolean).join('\n');
+    // Check caps — iteration limit or time limit reached
+    if (iterationsDone >= totalIterations || elapsed >= maxMs) {
+      // Loop finished — deactivate and allow stop
+      loop.active = false;
+      loop.finishedAt = new Date().toISOString();
+      try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
+      // Fall through to remember/conversation checks
+    } else if (loop.memoryPending && (loop.memoryRetries || 0) < MAX_RETRIES) {
+      // Memory enforcement: block until Claude stores progress in memory
+      loop.memoryRetries = (loop.memoryRetries || 0) + 1;
+      try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
 
-        process.stdout.write(JSON.stringify({ decision: 'block', reason }));
-        return;
+      const reason = [
+        `SynaBun Loop: Memory checkpoint required (iteration ${iterationsDone}/${totalIterations}).`,
+        `You've completed ${iterationsDone - (loop.lastMemoryAt || 0)} iterations since your last memory save.`,
+        `Call \`remember\` with progress from iterations ${(loop.lastMemoryAt || 0) + 1}-${iterationsDone}.`,
+        `Include: what was accomplished, accounts/targets engaged, key findings, strategies that worked.`,
+        `Category: use the task's appropriate category or "social-interactions". Importance: 6-7. Tags: ["loop", "progress"].`,
+        `Then the loop will continue automatically.`,
+      ].join('\n');
+
+      process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+      return;
+    } else if (loop.usesBrowser && isHumanBlocker(lastMessage)) {
+      // Agent is waiting for human action (login, CAPTCHA, etc.) — pause loop
+      process.stdout.write(JSON.stringify({}));
+      return;
+    } else {
+      // Fresh-context iteration: let Claude stop, server drives next via /clear
+      loop.currentIteration = iterationsDone + 1;
+      loop.lastIterationAt = new Date().toISOString();
+      loop.retries = 0;
+
+      // Memory enforcement check
+      const memoryInterval = loop.memoryInterval || 5;
+      const iterationsSinceMemory = loop.currentIteration - (loop.lastMemoryAt || 0);
+      if (iterationsSinceMemory >= memoryInterval) {
+        loop.memoryPending = true;
+        loop.memoryRetries = 0;
       }
+
+      // Signal server loop driver to send /clear + next iteration prompt
+      loop.awaitingNext = true;
+      try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
+
+      // Reset edit tracking for fresh iteration context
+      const rememberFlagForReset = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+      if (existsSync(rememberFlagForReset)) {
+        try { unlinkSync(rememberFlagForReset); } catch { /* ok */ }
+      }
+
+      // Allow stop — server loop driver will send /clear + next iteration message
+      process.stdout.write(JSON.stringify({}));
+      return;
     }
   }
 
@@ -326,6 +350,7 @@ async function main() {
       const ulRetries = flag.userLearningRetries || 0;
       if (ulRetries < MAX_RETRIES) {
         flag.userLearningRetries = ulRetries + 1;
+        flag.userLearningBlockActive = true; // Signal that stop hook enforced UL — post-remember uses this to validate reflect-based clears
         try { writeFileSync(rememberFlagPath, JSON.stringify(flag)); } catch { /* ok */ }
 
         const reason = ulRetries === 0
@@ -354,6 +379,7 @@ async function main() {
       // Max retries — clear pending and fall through
       debugUL(`GIVE UP: max retries reached for user learning`);
       flag.userLearningPending = false;
+      flag.userLearningBlockActive = false;
       flag.userLearningRetries = 0;
       try { writeFileSync(rememberFlagPath, JSON.stringify(flag)); } catch { /* ok */ }
     }

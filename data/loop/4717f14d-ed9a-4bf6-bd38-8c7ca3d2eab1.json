@@ -1,0 +1,34 @@
+{
+  "active": false,
+  "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile and basically you need to promo a marketing campaign for Crimson Desert deal and that it has some discounts on select vendors. There are 5 currencies to post in, look for groups within each of those currencies region and post. Post in the group native language always, if you cant determine a language, post in english.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=BRL\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=USD\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=TRY\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=EUR\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=GBP\n\n=====================================\n\nRules:\n\n- You can look for groups in the EUR region to post the EUR\n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Do not change profiles\n- Dont use -- dashes on text\n- Don't over use emojis",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 3,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-11T21:25:17.829Z",
+  "lastIterationAt": "2026-03-11T22:18:51.668Z",
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "ac25cdb0d2af3c534ae18b2f45eb7b91",
+  "profile": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "awaitingNext": false,
+  "journal": [
+    {
+      "iteration": 1,
+      "summary": "Posted Crimson Desert (2026) CriticalPixel promo across 20+ Facebook groups covering all 5 currencies. BRL (Portuguese): Divulga Gamers Brasil, PS5 Brasil, Tudo para Gamers!, Gamers BR, PC GAMERS & CO",
+      "timestamp": "2026-03-11T22:06:58.829Z"
+    },
+    {
+      "iteration": 3,
+      "summary": "Posted GBP to DVD's Games CD's UK (8.6k). GBP cross-post batch also hit 702 PC Gaming Community, Gaming Setups, Gaming PC parts (confirmed by timestamps). Posted USD to Gaming Community (12.6k, live).",
+      "timestamp": "2026-03-11T22:56:19.635Z"
+    }
+  ],
+  "progressSummary": "All 5 currencies posted. BRL=9 groups (Portuguese), TRY=3+ groups (Turkish), EUR=6+ groups (mixed EU languages), GBP=4+ groups (English UK: Gaming UK Community, DVD's UK, 702 PC Gaming, Gaming Setups, Gaming PC parts), USD=4+ groups (English: Gaming Community, GWAO International, Gaming Community heart, Gyan gaming). Total ~30+ posts submitted. Continuing to find more groups, especially GBP and USD English audiences.",
+  "lastMemoryAt": 3,
+  "memoryPending": false,
+  "memoryRetries": 0,
+  "stopped": true,
+  "finishedAt": "2026-03-12T01:38:54.550Z"
+}

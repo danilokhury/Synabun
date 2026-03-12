@@ -1,15 +1,17 @@
 {
-  "active": true,
+  "active": false,
   "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile, access the game related groups and post our Crimson Desert preorder deals. Create a catch call to action and tell users they will always find the best deals on criticalpixel, and let the users know the proorder bonus will be gone on release, including the Black Desert Online bonuses.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=BRL\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=USD\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=TRY\n\n=====================================\n\nRules:\n\n- Facebook Groups are in English, Portuguese. Post the links related to the region. \n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Do not change profiles\n- Dont use -- dashes on text\n- Don't over use emojis",
   "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
   "totalIterations": 50,
-  "currentIteration": 2,
+  "currentIteration": 6,
   "maxMinutes": 60,
   "startedAt": "2026-03-08T19:27:22.570Z",
-  "lastIterationAt": "2026-03-08T19:49:48.706Z",
+  "lastIterationAt": "2026-03-08T20:09:42.626Z",
   "retries": 0,
   "usesBrowser": true,
   "browserSessionId": "467e8e6792e27e1ea871c7945b988ed7",
   "profile": "claude-code",
-  "model": "claude-sonnet-4-6"
+  "model": "claude-sonnet-4-6",
+  "stopped": true,
+  "finishedAt": "2026-03-08T22:19:31.115Z"
 }

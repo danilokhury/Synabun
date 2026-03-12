@@ -3,6 +3,5 @@
   "greeting": true,
   "userLearning": true,
   "userLearningThreshold": 3,
-  "autoStoreOnEnd": true,
-  "userLearningMaxNudges": 2
+  "autoStoreOnEnd": false
 }

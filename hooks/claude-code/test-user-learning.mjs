@@ -269,15 +269,36 @@ async function main() {
     assert(flag.userLearningPending === true, 'userLearningPending preserved after bug-fixes remember');
 
     // ═══════════════════════════════════════════════════════════
-    // TEST 7: Reflect clears pending when userLearningPending is true
+    // TEST 7: Reflect only clears pending when stop hook enforced UL (blockActive)
     // ═══════════════════════════════════════════════════════════
-    console.log(`\n${Y}Test 7: Reflect clears pending when userLearningPending is true${X}`);
+    console.log(`\n${Y}Test 7: Reflect clears pending only when userLearningBlockActive${X}`);
     cleanup();
 
+    // 7a: reflect WITHOUT blockActive → should NOT clear (prevents false clears from unrelated reflects)
     writeFlag({
       editCount: 0, retries: 0, files: [],
       messageCount: 5, totalSessionMessages: 5,
       userLearningPending: true, userLearningNudgeCount: 1, userLearningRetries: 0,
+    });
+
+    await runHook(POST_REMEMBER, {
+      session_id: TEST_SESSION,
+      tool_name: 'mcp__SynaBun__reflect',
+      tool_input: { memory_id: 'some-unrelated-uuid', content: 'Unrelated reflect during normal work' },
+      tool_response: { success: true },
+    });
+
+    flag = readFlag();
+    assert(flag.userLearningPending === true, 'Reflect without blockActive does NOT clear pending');
+    assert(!flag.userLearningObserved, 'Reflect without blockActive does NOT set observed');
+
+    // 7b: reflect WITH blockActive → should clear (stop hook enforced UL, Claude reflected on comm-style memory)
+    cleanup();
+    writeFlag({
+      editCount: 0, retries: 0, files: [],
+      messageCount: 5, totalSessionMessages: 5,
+      userLearningPending: true, userLearningBlockActive: true,
+      userLearningNudgeCount: 1, userLearningRetries: 1,
     });
 
     await runHook(POST_REMEMBER, {
@@ -288,8 +309,9 @@ async function main() {
     });
 
     flag = readFlag();
-    assert(flag.userLearningPending === false, 'userLearningPending cleared by reflect when pending was true');
-    assert(flag.userLearningObserved === true, 'userLearningObserved set after reflect');
+    assert(flag.userLearningPending === false, 'Reflect with blockActive clears pending');
+    assert(flag.userLearningBlockActive === false, 'blockActive cleared after reflect');
+    assert(flag.userLearningObserved === true, 'userLearningObserved set after enforced reflect');
 
     // ═══════════════════════════════════════════════════════════
     // TEST 7b: Reflect does NOT set observed when pending is false

@@ -20,7 +20,7 @@ Full Playwright-based browser automation exposed as MCP tools. The MCP server de
 
 ## Registration
 
-`browser.ts` exports `registerBrowserTools(server)` which registers 26 tools in 4 groups:
+`browser.ts` exports `registerBrowserTools(server)` which registers 38 tools in 5 groups:
 
 ## Navigation Tools (4)
 

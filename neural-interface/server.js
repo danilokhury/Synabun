@@ -14,7 +14,7 @@ import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, dirname, extname, join, resolve, sep } from 'path';
 import { config as dotenvConfig } from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, renameSync, cpSync, appendFileSync, openSync, readSync, closeSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, appendFileSync, openSync, readSync, closeSync } from 'fs';
 import { randomBytes, randomUUID, createHash } from 'crypto';
 import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
@@ -157,6 +157,19 @@ function reloadConfig() {
 
 // --- Reindex Job State ---
 let _reindexJob = null;
+
+// --- Custom File Icons ---
+const CUSTOM_ICONS_DIR = resolve(PROJECT_ROOT, 'data', 'custom-icons');
+const CUSTOM_ICONS_CONFIG = resolve(PROJECT_ROOT, 'data', 'custom-icons.json');
+
+function loadCustomIconsConfig() {
+  try { return JSON.parse(readFileSync(CUSTOM_ICONS_CONFIG, 'utf-8')); }
+  catch { return { extensions: {}, filenames: {} }; }
+}
+function saveCustomIconsConfig(cfg) {
+  mkdirSync(CUSTOM_ICONS_DIR, { recursive: true });
+  writeFileSync(CUSTOM_ICONS_CONFIG, JSON.stringify(cfg, null, 2));
+}
 
 // --- Category Helpers (per-connection) ---
 
@@ -367,6 +380,11 @@ app.get('/', (req, res, next) => {
 app.use('/i18n', express.static(join(__dirname, 'i18n')));
 app.use('/games', express.static(join(__dirname, 'games')));
 app.use('/skins', express.static(join(__dirname, 'skins'), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'),
+}));
+app.use('/custom-icons', express.static(CUSTOM_ICONS_DIR, {
   etag: false,
   lastModified: false,
   setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'),
@@ -1794,90 +1812,349 @@ app.delete('/api/skins/:id', (req, res) => {
 });
 
 // ═══════════════════════════════════════════
+// CUSTOM FILE ICONS
+// ═══════════════════════════════════════════
+
+const ICON_CONTENT_TYPES = ['image/png', 'image/svg+xml', 'image/jpeg', 'image/webp'];
+const ICON_EXT_MAP = { 'image/png': '.png', 'image/svg+xml': '.svg', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
+
+// GET /api/file-icons — Return custom icon overrides
+app.get('/api/file-icons', (req, res) => {
+  res.json({ ok: true, custom: loadCustomIconsConfig() });
+});
+
+// POST /api/file-icons/:type/:key — Upload custom icon
+app.post('/api/file-icons/:type/:key',
+  express.raw({ type: [...ICON_CONTENT_TYPES, 'application/octet-stream'], limit: '2mb' }),
+  (req, res) => {
+  try {
+    const { type, key } = req.params;
+    if (type !== 'ext' && type !== 'name') {
+      return res.status(400).json({ error: 'type must be "ext" or "name"' });
+    }
+    if (!key || !/^[a-zA-Z0-9._-]+$/.test(key)) {
+      return res.status(400).json({ error: 'Invalid key' });
+    }
+    if (!req.body || req.body.length === 0) {
+      return res.status(400).json({ error: 'No data received' });
+    }
+
+    // Determine file extension from content-type
+    const ct = req.headers['content-type'] || '';
+    let imgExt = ICON_EXT_MAP[ct];
+    if (!imgExt) {
+      // Try to detect from magic bytes
+      const head = req.body.slice(0, 8);
+      if (head[0] === 0x89 && head[1] === 0x50) imgExt = '.png';
+      else if (head[0] === 0xFF && head[1] === 0xD8) imgExt = '.jpg';
+      else if (head.toString().startsWith('RIFF')) imgExt = '.webp';
+      else imgExt = '.svg'; // Assume SVG for text-based content
+    }
+
+    mkdirSync(CUSTOM_ICONS_DIR, { recursive: true });
+
+    const prefix = type === 'ext' ? 'e_' : 'f_';
+    const safeKey = key.toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+    const filename = `${prefix}${safeKey}${imgExt}`;
+
+    // Remove previous icons for this key
+    if (existsSync(CUSTOM_ICONS_DIR)) {
+      for (const f of readdirSync(CUSTOM_ICONS_DIR)) {
+        if (f.startsWith(`${prefix}${safeKey}.`)) {
+          unlinkSync(resolve(CUSTOM_ICONS_DIR, f));
+        }
+      }
+    }
+
+    writeFileSync(resolve(CUSTOM_ICONS_DIR, filename), req.body);
+
+    // Update config
+    const cfg = loadCustomIconsConfig();
+    const section = type === 'ext' ? 'extensions' : 'filenames';
+    cfg[section][safeKey] = {
+      path: filename,
+      originalName: req.headers['x-original-name'] || filename,
+    };
+    saveCustomIconsConfig(cfg);
+
+    res.json({ ok: true, key: safeKey, iconUrl: `/custom-icons/${filename}` });
+  } catch (err) {
+    console.error('POST /api/file-icons error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/file-icons/:type/:key — Reset a single custom icon
+app.delete('/api/file-icons/:type/:key', (req, res) => {
+  try {
+    const { type, key } = req.params;
+    const section = type === 'ext' ? 'extensions' : 'filenames';
+    const cfg = loadCustomIconsConfig();
+    const entry = cfg[section]?.[key];
+    if (entry?.path && existsSync(resolve(CUSTOM_ICONS_DIR, entry.path))) {
+      unlinkSync(resolve(CUSTOM_ICONS_DIR, entry.path));
+    }
+    delete cfg[section][key];
+    saveCustomIconsConfig(cfg);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('DELETE /api/file-icons/:type/:key error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/file-icons — Reset all custom icons
+app.delete('/api/file-icons', (req, res) => {
+  try {
+    if (existsSync(CUSTOM_ICONS_DIR)) {
+      for (const f of readdirSync(CUSTOM_ICONS_DIR)) {
+        unlinkSync(resolve(CUSTOM_ICONS_DIR, f));
+      }
+    }
+    saveCustomIconsConfig({ extensions: {}, filenames: {} });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('DELETE /api/file-icons error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════
 // CLAUDE SKIN — WebSocket handler
 // Spawns claude subprocess, streams NDJSON events to client
 // ═══════════════════════════════════════════
 
+// Cache resolved claude binary path (avoids running `where` every query)
+let _claudeBinPath = null;
+function getClaudeBin() {
+  if (_claudeBinPath) return _claudeBinPath;
+  if (process.platform === 'win32') {
+    try { _claudeBinPath = execSync('where claude', { encoding: 'utf-8' }).split('\n')[0].trim(); }
+    catch { _claudeBinPath = 'claude'; }
+  } else {
+    _claudeBinPath = 'claude';
+  }
+  return _claudeBinPath;
+}
+
 function handleClaudeSkinWebSocket(ws) {
   let activeProc = null;
+  let procSessionId = null;
+  let procModel = null;
+  let procCwd = null;
+  let procEffort = null;
+
+  // Strip env vars that interfere with nested claude execution
+  const cleanEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) =>
+      k !== 'CLAUDECODE' &&
+      !k.startsWith('VSCODE_') &&
+      k !== 'TERM_PROGRAM' &&
+      k !== 'TERM_PROGRAM_VERSION'
+    )
+  );
+
+  function killProc() {
+    if (!activeProc) return;
+    try { activeProc.stdin?.end(); } catch {}
+    try { activeProc.kill(); } catch {}
+    activeProc = null;
+  }
+
+  function spawnProc(sessionId, model, cwd, effort) {
+    killProc();
+    const args = [
+      '--output-format', 'stream-json',
+      '--input-format', 'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+    ];
+    if (sessionId) args.push('--continue', sessionId);
+    if (model) args.push('--model', model);
+    if (effort && ['low', 'medium', 'high', 'max'].includes(effort)) args.push('--effort', effort);
+
+    const workDir = cwd || PROJECT_ROOT;
+    const claudeBin = getClaudeBin();
+    const useShell = process.platform === 'win32' && claudeBin === 'claude';
+    console.log('[claude-skin] Spawning:', claudeBin, args.join(' '), 'cwd:', workDir);
+
+    const proc = spawn(claudeBin, args, {
+      cwd: workDir,
+      env: cleanEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: useShell,
+    });
+    activeProc = proc;
+    procSessionId = sessionId;
+    procModel = model;
+    procCwd = cwd;
+    procEffort = effort;
+    console.log('[claude-skin] Process spawned, pid:', proc.pid);
+
+    let buf = '';
+    proc.stdout.on('data', (chunk) => {
+      buf += chunk.toString();
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const event = JSON.parse(trimmed);
+          // Track cost server-side
+          if (event.type === 'result' && typeof event.total_cost_usd === 'number' && event.total_cost_usd > 0) {
+            try { addCost(event.total_cost_usd, event.session_id); } catch {}
+          }
+          // Forward ALL control_requests to client (permissions, AskUserQuestion, etc.)
+          if (event.type === 'control_request') {
+            const req = event.request || event;
+            const requestId = event.request_id || req.request_id;
+            console.log('[claude-skin] Control request → client:', req?.tool_name || req?.subtype, 'request_id:', requestId, 'raw keys:', Object.keys(event).join(','));
+            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'control_request', request_id: requestId, request: req }));
+          } else {
+            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event }));
+          }
+        } catch (e) { console.log('[claude-skin] JSON parse error:', e.message, 'line:', trimmed.substring(0, 80)); }
+      }
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      if (text.trim()) console.log('[claude-skin] stderr:', text.substring(0, 200));
+      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'stderr', text }));
+    });
+
+    proc.on('close', (code) => {
+      console.log('[claude-skin] Process closed, code:', code);
+      if (buf.trim()) {
+        try {
+          const event = JSON.parse(buf.trim());
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event }));
+        } catch {}
+      }
+      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'done', code }));
+      activeProc = null;
+    });
+
+    proc.on('error', (err) => {
+      console.log('[claude-skin] Process error:', err.message);
+      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: err.message }));
+      activeProc = null;
+    });
+
+    return proc;
+  }
+
+  // ── Skill injection for slash commands (pipe mode doesn't support them natively) ──
+  function resolveSkillPrompt(command, args) {
+    const dirs = [
+      join(SKILLS_SOURCE_DIR, command),
+      join(getGlobalSkillsDir(), command),
+    ];
+    for (const dir of dirs) {
+      const file = join(dir, 'SKILL.md');
+      if (existsSync(file)) {
+        let content = readFileSync(file, 'utf-8');
+        content = content.replace(/\$ARGUMENTS/g, args || '(none)');
+        return { content, dir };
+      }
+    }
+    return null;
+  }
 
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
 
       if (msg.type === 'query') {
-        // Kill any active process
-        if (activeProc) { try { activeProc.kill(); } catch {} activeProc = null; }
+        let { prompt, cwd, sessionId, model, effort, images } = msg;
+        if (!prompt && !images?.length) return ws.send(JSON.stringify({ type: 'error', message: 'No prompt provided' }));
 
-        const { prompt, cwd, sessionId, allowedTools } = msg;
-        if (!prompt) return ws.send(JSON.stringify({ type: 'error', message: 'No prompt provided' }));
-
-        const args = ['-p', prompt, '--output-format', 'stream-json', '--verbose'];
-        if (sessionId) args.push('--continue', sessionId);
-        if (allowedTools) args.push('--allowedTools', allowedTools);
-
-        const workDir = cwd || PROJECT_ROOT;
-        const env = { ...process.env };
-        delete env.CLAUDECODE; // allow nested execution
-
-        const proc = spawn('claude', args, {
-          cwd: workDir,
-          env,
-          shell: process.platform === 'win32',
-        });
-        activeProc = proc;
-
-        let buf = '';
-        proc.stdout.on('data', (chunk) => {
-          buf += chunk.toString();
-          const lines = buf.split('\n');
-          buf = lines.pop(); // keep incomplete last line
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            try {
-              const event = JSON.parse(trimmed);
-              if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event }));
-            } catch { /* skip malformed lines */ }
+        // ── Slash command → skill injection ──
+        if (prompt && prompt.startsWith('/')) {
+          const parts = prompt.slice(1).split(/\s+/);
+          const cmd = parts[0].toLowerCase();
+          const args = parts.slice(1).join(' ');
+          if (cmd === 'clear') return; // client-only command
+          const skill = resolveSkillPrompt(cmd, args);
+          if (skill) {
+            console.log('[claude-skin] Skill injection: /' + cmd, 'dir:', skill.dir);
+            prompt = `<skill-instructions>\nBase directory for this skill: ${skill.dir}\n\n${skill.content}\n</skill-instructions>\n\nThe user invoked the /${cmd} command${args ? ' with arguments: ' + args : ''}. Follow the skill instructions above exactly.`;
           }
-        });
+        }
 
-        proc.stderr.on('data', (chunk) => {
-          const text = chunk.toString();
-          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'stderr', text }));
-        });
+        // Respawn if session/model/cwd/effort changed or process exited
+        const needsSpawn = !activeProc ||
+          (sessionId || null) !== procSessionId ||
+          (model || null) !== procModel ||
+          (cwd || null) !== procCwd ||
+          (effort || null) !== procEffort;
+        if (needsSpawn) spawnProc(sessionId || null, model || null, cwd || null, effort || null);
 
-        proc.on('close', (code) => {
-          // Flush remaining buffer
-          if (buf.trim()) {
-            try {
-              const event = JSON.parse(buf.trim());
-              if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event }));
-            } catch {}
+        // Build content (text + optional images)
+        let content;
+        if (images?.length) {
+          content = [];
+          for (const img of images) {
+            content.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType || 'image/png', data: img.base64 } });
           }
-          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'done', code }));
-          activeProc = null;
-        });
+          if (prompt) content.push({ type: 'text', text: prompt });
+        } else {
+          content = prompt;
+        }
 
-        proc.on('error', (err) => {
-          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: err.message }));
-          activeProc = null;
-        });
+        // Write user message to stdin
+        const userMsg = { type: 'user', session_id: sessionId || '', message: { role: 'user', content } };
+        console.log('[claude-skin] Sending user message, length:', JSON.stringify(content).length);
+        try { activeProc.stdin.write(JSON.stringify(userMsg) + '\n'); } catch (e) {
+          console.log('[claude-skin] stdin write error:', e.message);
+          ws.send(JSON.stringify({ type: 'error', message: 'Failed to send message to Claude process' }));
+        }
+      }
+
+      if (msg.type === 'control_response') {
+        // Forward client's control_response to Claude process stdin
+        console.log('[claude-skin] Control response →', JSON.stringify(msg).slice(0, 500));
+        if (activeProc?.stdin?.writable) {
+          try { activeProc.stdin.write(JSON.stringify(msg) + '\n'); } catch {}
+        }
+      }
+
+      if (msg.type === 'tool_result') {
+        // Forward client's tool_result (e.g. AskUserQuestion answer) to Claude process stdin
+        console.log('[claude-skin] Tool result →', msg.tool_use_id, JSON.stringify(msg.content).slice(0, 200));
+        if (activeProc?.stdin?.writable) {
+          try { activeProc.stdin.write(JSON.stringify(msg) + '\n'); } catch {}
+        }
+      }
+
+      if (msg.type === 'compact') {
+        // Send /compact as user message — Claude Code handles compaction natively
+        if (!activeProc?.stdin?.writable) {
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: 'No active process to compact' }));
+        } else {
+          const compactMsg = { type: 'user', session_id: procSessionId || '', message: { role: 'user', content: '/compact' } };
+          try {
+            activeProc.stdin.write(JSON.stringify(compactMsg) + '\n');
+            console.log('[claude-skin] Sent /compact to subprocess');
+            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event: { type: 'system', subtype: 'compact_started', message: 'Compacting context...' } }));
+          } catch (e) {
+            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: 'Failed to send compact command' }));
+          }
+        }
       }
 
       if (msg.type === 'abort') {
-        if (activeProc) { try { activeProc.kill(); } catch {} activeProc = null; }
+        killProc();
         if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'aborted' }));
       }
     } catch { /* ignore malformed */ }
   });
 
-  ws.on('close', () => {
-    if (activeProc) { try { activeProc.kill(); } catch {} activeProc = null; }
-  });
+  ws.on('close', () => killProc());
 }
 
-// GET /api/claude/config — config for the skin UI (cwd, model, etc.)
+// GET /api/claude/config — config for the skin UI (cwd, model, projects, models)
 app.get('/api/claude/config', (req, res) => {
   try {
     const cliCfg = (() => {
@@ -1888,7 +2165,218 @@ app.get('/api/claude/config', (req, res) => {
       try { return JSON.parse(readFileSync(resolve(PROJECT_ROOT, 'data', 'claude-code-projects.json'), 'utf-8')); }
       catch { return []; }
     })();
-    res.json({ ok: true, config: cliCfg, projects });
+    const models = [
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', tier: 'fast' },
+      { id: 'claude-opus-4-6', label: 'Opus 4.6', tier: 'capable' },
+      { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', tier: 'instant' },
+    ];
+    res.json({ ok: true, config: cliCfg, projects, models });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Claude Skin Cost Tracking ---
+
+const COST_PATH = resolve(__dirname, '..', 'data', 'cost-tracking.json');
+
+function loadCostData() {
+  try { return JSON.parse(readFileSync(COST_PATH, 'utf-8')); }
+  catch { return { months: {} }; }
+}
+
+function saveCostData(data) {
+  writeFileSync(COST_PATH, JSON.stringify(data, null, 2));
+}
+
+function addCost(amount, sessionId) {
+  const data = loadCostData();
+  const now = new Date();
+  const key = now.toISOString().slice(0, 7); // "2026-03"
+  if (!data.months[key]) data.months[key] = { totalUsd: 0, queries: 0, sessions: [], days: {}, lastUpdated: null };
+  const month = data.months[key];
+  month.totalUsd = Math.round((month.totalUsd + amount) * 1e6) / 1e6; // avoid float drift
+  month.queries += 1;
+  if (sessionId && !month.sessions.includes(sessionId)) month.sessions.push(sessionId);
+  // Daily granularity
+  if (!month.days) month.days = {};
+  const day = now.getDate().toString().padStart(2, '0');
+  if (!month.days[day]) month.days[day] = { totalUsd: 0, queries: 0 };
+  month.days[day].totalUsd = Math.round((month.days[day].totalUsd + amount) * 1e6) / 1e6;
+  month.days[day].queries += 1;
+  month.lastUpdated = now.toISOString();
+  saveCostData(data);
+  return month;
+}
+
+app.get('/api/claude-skin/cost', (req, res) => {
+  const data = loadCostData();
+  const current = new Date().toISOString().slice(0, 7);
+  res.json({
+    currentMonth: current,
+    month: data.months[current] || { totalUsd: 0, queries: 0, sessions: [] },
+    history: data.months,
+  });
+});
+
+app.post('/api/claude-skin/cost', express.json(), (req, res) => {
+  const { amount, sessionId } = req.body || {};
+  if (typeof amount !== 'number' || amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
+  const month = addCost(amount, sessionId);
+  res.json({ ok: true, month });
+});
+
+// --- CLI Session Cost Scanner ---
+// Parses JSONL session files to extract costs from direct CLI usage (not via skin)
+
+const MODEL_PRICING = {
+  // $/MTok — [input, output, cache_write, cache_read]
+  'claude-opus-4-6':            [15, 75, 18.75, 1.50],
+  'claude-sonnet-4-6':          [3, 15, 3.75, 0.30],
+  'claude-haiku-4-5-20251001':  [0.80, 4, 1.00, 0.08],
+  // Fallbacks for older model IDs
+  'claude-sonnet-4-5-20250514': [3, 15, 3.75, 0.30],
+  'claude-3-5-sonnet-20241022': [3, 15, 3.75, 0.30],
+  'claude-3-5-haiku-20241022':  [0.80, 4, 1.00, 0.08],
+};
+
+function calcMessageCost(model, usage) {
+  const pricing = MODEL_PRICING[model] || MODEL_PRICING['claude-sonnet-4-6']; // safe fallback
+  const [pIn, pOut, pCacheW, pCacheR] = pricing;
+  const input = (usage.input_tokens || 0) / 1e6 * pIn;
+  const output = (usage.output_tokens || 0) / 1e6 * pOut;
+  const cacheWrite = (usage.cache_creation_input_tokens || 0) / 1e6 * pCacheW;
+  const cacheRead = (usage.cache_read_input_tokens || 0) / 1e6 * pCacheR;
+  return Math.round((input + output + cacheWrite + cacheRead) * 1e6) / 1e6;
+}
+
+function scanSessionCosts() {
+  const homeDir = process.env.USERPROFILE || process.env.HOME;
+  const claudeProjectsDir = join(homeDir, '.claude', 'projects');
+  if (!existsSync(claudeProjectsDir)) return { scanned: 0, added: 0, totalNew: 0 };
+
+  const data = loadCostData();
+  if (!data.scannedSessions) data.scannedSessions = {};
+
+  // Collect all session IDs already tracked by the skin
+  const skinSessions = new Set();
+  for (const m of Object.values(data.months)) {
+    for (const sid of (m.sessions || [])) skinSessions.add(sid);
+  }
+
+  let scanned = 0, added = 0, totalNew = 0;
+
+  const projDirs = readdirSync(claudeProjectsDir, { withFileTypes: true }).filter(d => d.isDirectory());
+  for (const projDir of projDirs) {
+    const projPath = join(claudeProjectsDir, projDir.name);
+    let files;
+    try { files = readdirSync(projPath).filter(f => f.endsWith('.jsonl')); }
+    catch { continue; }
+
+    for (const file of files) {
+      const sessionId = file.replace('.jsonl', '');
+      // Skip if already scanned or tracked by skin
+      if (data.scannedSessions[sessionId] || skinSessions.has(sessionId)) continue;
+
+      const filePath = join(projPath, file);
+
+      // Skip files modified in the last 5 minutes (likely active sessions)
+      // Skip tiny files (<500 bytes — no meaningful cost data)
+      let fstat;
+      try { fstat = statSync(filePath); } catch { continue; }
+      if (Date.now() - fstat.mtimeMs < 5 * 60 * 1000) continue;
+      if (fstat.size < 500) { data.scannedSessions[sessionId] = 'empty'; continue; }
+
+      scanned++;
+      let content;
+      try { content = readFileSync(filePath, 'utf-8'); }
+      catch { continue; }
+
+      // Parse line by line, extract assistant messages with usage
+      // IMPORTANT: Claude Code writes multiple JSONL entries per API call (streaming chunks).
+      // Each requestId may appear 2-3 times with increasing token counts.
+      // We must keep only the LAST entry per requestId for accurate cost.
+      const lines = content.split('\n');
+      const requestMap = new Map(); // requestId → { model, usage, timestamp }
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let entry;
+        try { entry = JSON.parse(line); } catch { continue; }
+
+        if (entry.type !== 'assistant' || !entry.message?.usage) continue;
+        const { model, usage } = entry.message;
+        const requestId = entry.requestId || entry.message?.id;
+        if (!model || !usage || !requestId) continue;
+
+        // Always overwrite — last entry per requestId has final token counts
+        requestMap.set(requestId, { model, usage, timestamp: entry.timestamp });
+      }
+
+      let sessionCost = 0;
+      let sessionQueries = 0;
+      let sessionDate = null;
+      const dailyCosts = {}; // { "2026-03-09": { cost, queries } }
+
+      for (const { model, usage, timestamp } of requestMap.values()) {
+        const cost = calcMessageCost(model, usage);
+        if (cost <= 0) continue;
+
+        sessionCost += cost;
+        sessionQueries++;
+
+        if (timestamp) {
+          const dayStr = timestamp.slice(0, 10);
+          if (!dailyCosts[dayStr]) dailyCosts[dayStr] = { cost: 0, queries: 0 };
+          dailyCosts[dayStr].cost += cost;
+          dailyCosts[dayStr].queries++;
+          if (!sessionDate) sessionDate = dayStr;
+        }
+      }
+
+      if (sessionCost > 0) {
+        // Merge into months/days
+        for (const [dayStr, dc] of Object.entries(dailyCosts)) {
+          const monthKey = dayStr.slice(0, 7); // "2026-03"
+          const dayKey = dayStr.slice(8, 10); // "09"
+          if (!data.months[monthKey]) data.months[monthKey] = { totalUsd: 0, queries: 0, sessions: [], days: {}, lastUpdated: null };
+          const month = data.months[monthKey];
+          const rounded = Math.round(dc.cost * 1e6) / 1e6;
+          month.totalUsd = Math.round((month.totalUsd + rounded) * 1e6) / 1e6;
+          month.queries += dc.queries;
+          if (!month.days) month.days = {};
+          if (!month.days[dayKey]) month.days[dayKey] = { totalUsd: 0, queries: 0 };
+          month.days[dayKey].totalUsd = Math.round((month.days[dayKey].totalUsd + rounded) * 1e6) / 1e6;
+          month.days[dayKey].queries += dc.queries;
+          month.lastUpdated = new Date().toISOString();
+          if (!month.sessions.includes(sessionId)) month.sessions.push(sessionId);
+        }
+        added++;
+        totalNew = Math.round((totalNew + sessionCost) * 1e6) / 1e6;
+      }
+
+      // Mark as scanned regardless (to avoid re-processing empty/no-cost sessions)
+      data.scannedSessions[sessionId] = sessionDate || new Date().toISOString().slice(0, 10);
+    }
+  }
+
+  // Always save if we scanned anything (even zero-cost sessions get marked)
+  if (scanned > 0) saveCostData(data);
+  return { scanned, added, totalNew };
+}
+
+// Scan on startup (async to not block)
+setTimeout(() => {
+  try {
+    const result = scanSessionCosts();
+    if (result.added > 0) console.log(`[cost-tracker] Imported ${result.added} CLI sessions (+$${result.totalNew.toFixed(2)})`);
+  } catch (err) { console.error('[cost-tracker] Scan error:', err.message); }
+}, 3000);
+
+app.post('/api/claude-skin/cost/scan', (req, res) => {
+  try {
+    const result = scanSessionCosts();
+    res.json({ ok: true, ...result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2012,30 +2500,32 @@ app.post('/api/ui-state', (req, res) => {
 function applyWhiteboardLayout(elements, layout, vp) {
   const gap = 40;
   const pad = 60;
+  const xOff = vp.xOffset || 0;
+  const yOff = vp.yOffset || 0;
   const n = elements.length;
   if (!n) return;
 
   if (layout === 'center') {
     const totalH = elements.reduce((s, el) => s + (el.height || 100), 0) + gap * (n - 1);
-    let y = (vp.height - totalH) / 2;
+    let y = yOff + (vp.height - totalH) / 2;
     for (const el of elements) {
-      el.x = Math.round((vp.width - (el.width || 200)) / 2);
+      el.x = Math.round(xOff + (vp.width - (el.width || 200)) / 2);
       el.y = Math.round(y);
       y += (el.height || 100) + gap;
     }
   } else if (layout === 'row') {
     const totalW = elements.reduce((s, el) => s + (el.width || 200), 0) + gap * (n - 1);
-    let x = (vp.width - totalW) / 2;
+    let x = xOff + (vp.width - totalW) / 2;
     for (const el of elements) {
       el.x = Math.round(x);
-      el.y = Math.round((vp.height - (el.height || 100)) / 2);
+      el.y = Math.round(yOff + (vp.height - (el.height || 100)) / 2);
       x += (el.width || 200) + gap;
     }
   } else if (layout === 'column') {
     const totalH = elements.reduce((s, el) => s + (el.height || 100), 0) + gap * (n - 1);
-    let y = (vp.height - totalH) / 2;
+    let y = yOff + (vp.height - totalH) / 2;
     for (const el of elements) {
-      el.x = Math.round((vp.width - (el.width || 200)) / 2);
+      el.x = Math.round(xOff + (vp.width - (el.width || 200)) / 2);
       el.y = Math.round(y);
       y += (el.height || 100) + gap;
     }
@@ -2047,8 +2537,8 @@ function applyWhiteboardLayout(elements, layout, vp) {
     elements.forEach((el, i) => {
       const col = i % cols;
       const row = Math.floor(i / cols);
-      el.x = Math.round(pad + col * (cellW + gap) + (cellW - (el.width || 200)) / 2);
-      el.y = Math.round(pad + row * (cellH + gap) + (cellH - (el.height || 100)) / 2);
+      el.x = Math.round(xOff + pad + col * (cellW + gap) + (cellW - (el.width || 200)) / 2);
+      el.y = Math.round(yOff + pad + row * (cellH + gap) + (cellH - (el.height || 100)) / 2);
     });
   }
 }
@@ -2079,9 +2569,11 @@ app.post('/api/whiteboard/elements', (req, res) => {
     if (layout && whiteboardViewport) {
       applyWhiteboardLayout(elements, layout, whiteboardViewport);
     } else if (coordMode === 'pct' && whiteboardViewport) {
+      const xOff = whiteboardViewport.xOffset || 0;
+      const yOff = whiteboardViewport.yOffset || 0;
       for (const el of elements) {
-        if (el.x != null) el.x = Math.round((el.x / 100) * whiteboardViewport.width);
-        if (el.y != null) el.y = Math.round((el.y / 100) * whiteboardViewport.height);
+        if (el.x != null) el.x = Math.round(xOff + (el.x / 100) * whiteboardViewport.width);
+        if (el.y != null) el.y = Math.round(yOff + (el.y / 100) * whiteboardViewport.height);
         if (el.width != null) el.width = Math.round((el.width / 100) * whiteboardViewport.width);
         if (el.height != null) el.height = Math.round((el.height / 100) * whiteboardViewport.height);
       }
@@ -2104,6 +2596,45 @@ app.post('/api/whiteboard/elements', (req, res) => {
             el.dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
           }
         } catch { /* ignore — element will just have no dataUrl */ }
+      }
+      // Apply section defaults when not specified
+      if (el.type === 'section' && el.sectionType) {
+        const SEC_DEFAULTS = {
+          navbar: { w: 960, h: 56, color: '#64748b', label: 'Navbar' },
+          hero: { w: 960, h: 340, color: '#6366f1', label: 'Hero' },
+          sidebar: { w: 260, h: 400, color: '#475569', label: 'Sidebar' },
+          content: { w: 640, h: 360, color: '#737373', label: 'Content' },
+          footer: { w: 960, h: 100, color: '#6b7280', label: 'Footer' },
+          card: { w: 260, h: 180, color: '#14b8a6', label: 'Card' },
+          form: { w: 380, h: 280, color: '#f59e0b', label: 'Form' },
+          'image-placeholder': { w: 280, h: 180, color: '#a855f7', label: 'Image' },
+          button: { w: 140, h: 42, color: '#22c55e', label: 'Button' },
+          'text-block': { w: 380, h: 90, color: '#e2e8f0', label: 'Text Block' },
+          grid: { w: 640, h: 320, color: '#06b6d4', label: 'Grid' },
+          modal: { w: 440, h: 300, color: '#f43f5e', label: 'Modal' },
+        };
+        const def = SEC_DEFAULTS[el.sectionType];
+        if (def) {
+          if (!el.width) el.width = def.w;
+          if (!el.height) el.height = def.h;
+          if (!el.color) el.color = def.color;
+          if (!el.label) el.label = def.label;
+        }
+      }
+      // Clamp elements to stay within the usable viewport
+      if (whiteboardViewport && el.x != null && el.y != null) {
+        const vpW = whiteboardViewport.width;
+        const vpH = whiteboardViewport.height;
+        const xOff = whiteboardViewport.xOffset || 0;
+        const yOff = whiteboardViewport.yOffset || 0;
+        const elW = el.width || 0;
+        const elH = el.height || 0;
+        // Don't let elements overflow right/bottom edges
+        if (el.x + elW > vpW + xOff) el.x = Math.max(xOff, vpW + xOff - elW);
+        if (el.y + elH > vpH + yOff) el.y = Math.max(yOff, vpH + yOff - elH);
+        // Don't let elements go under toolbar or above navbar
+        if (el.x < xOff) el.x = xOff;
+        if (el.y < yOff) el.y = yOff;
       }
       if (!el.id) el.id = 'wb-' + Date.now() + '-' + randomBytes(2).toString('hex').slice(0, 3);
       el.zIndex = wb.nextZIndex++;
@@ -2129,8 +2660,10 @@ app.put('/api/whiteboard/elements/:id', (req, res) => {
 
     // Percentage coordinate conversion for updates
     if (coordMode === 'pct' && whiteboardViewport) {
-      if (updates.x != null) updates.x = Math.round((updates.x / 100) * whiteboardViewport.width);
-      if (updates.y != null) updates.y = Math.round((updates.y / 100) * whiteboardViewport.height);
+      const xOff = whiteboardViewport.xOffset || 0;
+      const yOff = whiteboardViewport.yOffset || 0;
+      if (updates.x != null) updates.x = Math.round(xOff + (updates.x / 100) * whiteboardViewport.width);
+      if (updates.y != null) updates.y = Math.round(yOff + (updates.y / 100) * whiteboardViewport.height);
       if (updates.width != null) updates.width = Math.round((updates.width / 100) * whiteboardViewport.width);
       if (updates.height != null) updates.height = Math.round((updates.height / 100) * whiteboardViewport.height);
     }
@@ -3176,6 +3709,9 @@ app.post('/api/loop/launch', async (req, res) => {
     };
     writeFileSync(resolve(LOOP_DIR, `${pendingId}.json`), JSON.stringify(loopState, null, 2));
 
+    // Attach loop driver to watch for iteration transitions (/clear + re-prompt)
+    attachLoopDriver(terminalSessionId);
+
     broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile: cliProfile });
 
     res.json({ ok: true, pendingId, terminalSessionId, browserSessionId });
@@ -3434,6 +3970,10 @@ app.get('/api/system/backup', async (req, res) => {
     addJsonDir('data/pending-remember', resolve(dataDir, 'pending-remember'));
     addJsonDir('data/pending-compact', resolve(dataDir, 'pending-compact'));
     addJsonDir('data/loop', resolve(dataDir, 'loop'));
+
+    // Custom file icons
+    addFile('data/custom-icons.json', resolve(dataDir, 'custom-icons.json'));
+    addDirRecursive('data/custom-icons', resolve(dataDir, 'custom-icons'));
 
     // 3. mcp-server/data/
     if (existsSync(CATEGORIES_DATA_DIR)) {
@@ -3700,10 +4240,10 @@ app.get('/api/file-content', (req, res) => {
   }
 });
 
-// POST /api/file-content — Write a file (existing files only)
+// POST /api/file-content — Write a file (existing, or create if `create: true`)
 app.post('/api/file-content', (req, res) => {
   try {
-    const { path: filePath, content } = req.body || {};
+    const { path: filePath, content, create } = req.body || {};
     if (!filePath || typeof content !== 'string') {
       return res.status(400).json({ error: 'Missing path or content' });
     }
@@ -3711,11 +4251,60 @@ app.post('/api/file-content', (req, res) => {
     const normalized = validateProjectPath(filePath);
     if (!normalized) return res.status(403).json({ error: 'Path outside registered project roots' });
 
-    if (!existsSync(normalized) || !statSync(normalized).isFile()) {
-      return res.status(400).json({ error: 'File does not exist' });
+    if (create) {
+      // Ensure parent dir exists
+      const parentDir = dirname(normalized);
+      if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true });
+    } else {
+      if (!existsSync(normalized) || !statSync(normalized).isFile()) {
+        return res.status(400).json({ error: 'File does not exist' });
+      }
     }
 
     writeFileSync(normalized, content, 'utf-8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/file-mkdir — Create a directory
+app.post('/api/file-mkdir', (req, res) => {
+  try {
+    const { path: dirPath } = req.body || {};
+    if (!dirPath) return res.status(400).json({ error: 'Missing path' });
+
+    const normalized = validateProjectPath(dirPath);
+    if (!normalized) return res.status(403).json({ error: 'Path outside registered project roots' });
+
+    mkdirSync(normalized, { recursive: true });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/file-content — Delete a file or empty directory
+app.delete('/api/file-content', (req, res) => {
+  try {
+    const filePath = req.query.path;
+    if (!filePath) return res.status(400).json({ error: 'Missing path parameter' });
+
+    const normalized = validateProjectPath(filePath);
+    if (!normalized) return res.status(403).json({ error: 'Path outside registered project roots' });
+
+    if (!existsSync(normalized)) {
+      return res.status(404).json({ error: 'Path does not exist' });
+    }
+
+    const stat = statSync(normalized);
+    if (stat.isDirectory()) {
+      const entries = readdirSync(normalized);
+      if (entries.length > 0) return res.status(400).json({ error: 'Directory is not empty' });
+      rmSync(normalized);
+    } else {
+      unlinkSync(normalized);
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -4364,6 +4953,27 @@ const SYNABUN_TOOL_PERMISSIONS = [
   'mcp__SynaBun__browser_extract_tiktok_profile',
   'mcp__SynaBun__browser_extract_wa_chats',
   'mcp__SynaBun__browser_extract_wa_messages',
+  'mcp__SynaBun__browser_extract_ig_feed',
+  'mcp__SynaBun__browser_extract_ig_profile',
+  'mcp__SynaBun__browser_extract_ig_post',
+  'mcp__SynaBun__browser_extract_ig_reels',
+  'mcp__SynaBun__browser_extract_ig_search',
+  'mcp__SynaBun__browser_extract_li_feed',
+  'mcp__SynaBun__browser_extract_li_profile',
+  'mcp__SynaBun__browser_extract_li_post',
+  'mcp__SynaBun__browser_extract_li_notifications',
+  'mcp__SynaBun__browser_extract_li_messages',
+  'mcp__SynaBun__browser_extract_li_search_people',
+  'mcp__SynaBun__browser_extract_li_network',
+  'mcp__SynaBun__discord_guild',
+  'mcp__SynaBun__discord_channel',
+  'mcp__SynaBun__discord_role',
+  'mcp__SynaBun__discord_message',
+  'mcp__SynaBun__discord_member',
+  'mcp__SynaBun__discord_onboarding',
+  'mcp__SynaBun__discord_webhook',
+  'mcp__SynaBun__discord_thread',
+  'mcp__SynaBun__git',
   'mcp__SynaBun__tictactoe',
   'mcp__SynaBun__whiteboard_read',
   'mcp__SynaBun__whiteboard_add',
@@ -4420,14 +5030,39 @@ const SYNABUN_TOOL_CATEGORIES = [
       { key: 'mcp__SynaBun__browser_wait', label: 'Wait for page', desc: 'Wait until an element or page finishes loading' },
       { key: 'mcp__SynaBun__browser_scroll', label: 'Scroll', desc: 'Scroll the page or a specific area' },
       { key: 'mcp__SynaBun__browser_upload', label: 'Upload file', desc: 'Upload a file through a form' },
-      { key: 'mcp__SynaBun__browser_extract_tweets', label: 'Extract tweets', desc: 'Pull tweet data from the page' },
-      { key: 'mcp__SynaBun__browser_extract_fb_posts', label: 'Extract FB posts', desc: 'Pull Facebook post data from the page' },
-      { key: 'mcp__SynaBun__browser_extract_tiktok_videos', label: 'Extract TikTok videos', desc: 'Pull TikTok video data from the page' },
-      { key: 'mcp__SynaBun__browser_extract_tiktok_search', label: 'Extract TikTok search', desc: 'Pull TikTok search results from the page' },
-      { key: 'mcp__SynaBun__browser_extract_tiktok_studio', label: 'Extract TikTok Studio', desc: 'Pull TikTok Studio content from the page' },
-      { key: 'mcp__SynaBun__browser_extract_tiktok_profile', label: 'Extract TikTok profile', desc: 'Pull TikTok profile info from the page' },
-      { key: 'mcp__SynaBun__browser_extract_wa_chats', label: 'Extract WA chats', desc: 'Pull WhatsApp chat list from the page' },
-      { key: 'mcp__SynaBun__browser_extract_wa_messages', label: 'Extract WA messages', desc: 'Pull WhatsApp messages from the page' },
+    ],
+  },
+  {
+    id: 'social', label: 'Social Media Automation',
+    tools: [
+      { key: 'mcp__SynaBun__browser_extract_tweets', label: 'Extract tweets', desc: 'Pull tweet data from the page', group: 'Twitter / X' },
+      { key: 'mcp__SynaBun__browser_extract_fb_posts', label: 'Extract posts', desc: 'Pull Facebook post data from the page', group: 'Facebook' },
+      { key: 'mcp__SynaBun__browser_extract_tiktok_videos', label: 'Extract videos', desc: 'Pull TikTok video data from feed', group: 'TikTok' },
+      { key: 'mcp__SynaBun__browser_extract_tiktok_search', label: 'Extract search results', desc: 'Pull TikTok search results', group: 'TikTok' },
+      { key: 'mcp__SynaBun__browser_extract_tiktok_studio', label: 'Extract Studio content', desc: 'Pull TikTok Studio content list', group: 'TikTok' },
+      { key: 'mcp__SynaBun__browser_extract_tiktok_profile', label: 'Extract profile', desc: 'Pull TikTok creator profile info', group: 'TikTok' },
+      { key: 'mcp__SynaBun__browser_extract_wa_chats', label: 'Extract chat list', desc: 'Pull WhatsApp chat list', group: 'WhatsApp' },
+      { key: 'mcp__SynaBun__browser_extract_wa_messages', label: 'Extract messages', desc: 'Pull WhatsApp messages from open chat', group: 'WhatsApp' },
+      { key: 'mcp__SynaBun__browser_extract_ig_feed', label: 'Extract feed', desc: 'Pull Instagram feed posts', group: 'Instagram' },
+      { key: 'mcp__SynaBun__browser_extract_ig_profile', label: 'Extract profile', desc: 'Pull Instagram profile data', group: 'Instagram' },
+      { key: 'mcp__SynaBun__browser_extract_ig_post', label: 'Extract post', desc: 'Pull single post with comments', group: 'Instagram' },
+      { key: 'mcp__SynaBun__browser_extract_ig_reels', label: 'Extract reels', desc: 'Pull Instagram Reels data', group: 'Instagram' },
+      { key: 'mcp__SynaBun__browser_extract_ig_search', label: 'Extract search', desc: 'Pull Explore page posts', group: 'Instagram' },
+      { key: 'mcp__SynaBun__browser_extract_li_feed', label: 'Extract feed', desc: 'Pull LinkedIn feed posts', group: 'LinkedIn' },
+      { key: 'mcp__SynaBun__browser_extract_li_profile', label: 'Extract profile', desc: 'Pull LinkedIn profile data', group: 'LinkedIn' },
+      { key: 'mcp__SynaBun__browser_extract_li_post', label: 'Extract post', desc: 'Pull single post with comments', group: 'LinkedIn' },
+      { key: 'mcp__SynaBun__browser_extract_li_notifications', label: 'Extract notifications', desc: 'Pull LinkedIn notifications', group: 'LinkedIn' },
+      { key: 'mcp__SynaBun__browser_extract_li_messages', label: 'Extract messages', desc: 'Pull LinkedIn messaging threads', group: 'LinkedIn' },
+      { key: 'mcp__SynaBun__browser_extract_li_search_people', label: 'Search people', desc: 'Pull people search results', group: 'LinkedIn' },
+      { key: 'mcp__SynaBun__browser_extract_li_network', label: 'Extract network', desc: 'Pull My Network invitations & suggestions', group: 'LinkedIn' },
+      { key: 'mcp__SynaBun__discord_guild', label: 'Server management', desc: 'Server info, channels, members, roles, audit log', group: 'Discord' },
+      { key: 'mcp__SynaBun__discord_channel', label: 'Channel management', desc: 'Create, edit, delete, list channels', group: 'Discord' },
+      { key: 'mcp__SynaBun__discord_role', label: 'Role management', desc: 'Create, edit, delete, assign roles', group: 'Discord' },
+      { key: 'mcp__SynaBun__discord_message', label: 'Messages', desc: 'Send, edit, delete, pin, react to messages', group: 'Discord' },
+      { key: 'mcp__SynaBun__discord_member', label: 'Member moderation', desc: 'Kick, ban, timeout, nickname members', group: 'Discord' },
+      { key: 'mcp__SynaBun__discord_onboarding', label: 'Onboarding', desc: 'Welcome, rules, verification, onboarding setup', group: 'Discord' },
+      { key: 'mcp__SynaBun__discord_webhook', label: 'Webhooks', desc: 'Create, edit, delete, execute webhooks', group: 'Discord' },
+      { key: 'mcp__SynaBun__discord_thread', label: 'Threads', desc: 'Create, archive, lock, delete threads', group: 'Discord' },
     ],
   },
   {
@@ -4456,6 +5091,7 @@ const SYNABUN_TOOL_CATEGORIES = [
       { key: 'mcp__SynaBun__loop', label: 'Autonomous loops', desc: 'Run, stop, or check background tasks' },
       { key: 'mcp__SynaBun__category', label: 'Manage categories', desc: 'Create, edit, or remove memory categories' },
       { key: 'mcp__SynaBun__tictactoe', label: 'Tic Tac Toe', desc: 'Play a game of tic-tac-toe with your AI' },
+      { key: 'mcp__SynaBun__git', label: 'Git operations', desc: 'Status, diff, commit, log, and branches' },
     ],
   },
   {
@@ -4530,35 +5166,86 @@ function saveHookProjects(projects) {
 function extractSessionMeta(filePath) {
   try {
     const fd = openSync(filePath, 'r');
-    const buf = Buffer.alloc(16384); // read first 16KB — system messages can be large
-    const bytesRead = readSync(fd, buf, 0, buf.length, 0);
-    closeSync(fd);
-    const chunk = buf.toString('utf-8', 0, bytesRead);
-    const lines = chunk.split('\n');
-    let messageCount = 0;
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const obj = JSON.parse(line);
-        if (obj.type === 'user' || obj.type === 'assistant') messageCount++;
-        if (obj.type === 'user' && obj.message) {
-          const txt = obj.message.content;
-          const prompt = Array.isArray(txt)
-            ? (txt.find(b => b.type === 'text')?.text || '')
-            : (txt || '');
-          return {
-            sessionId: obj.sessionId || basename(filePath, '.jsonl'),
-            firstPrompt: prompt.slice(0, 200),
-            messageCount,
-            gitBranch: obj.gitBranch || null,
-            isSidechain: !!obj.isSidechain,
-            cwd: obj.cwd || null,
-          };
-        }
-      } catch {}
+    const CHUNK = 65536;      // 64KB per read
+    const MAX_READ = 1048576; // 1MB max total
+    const fileSize = fstatSync(fd).size;
+    let pending = '';
+    let offset = 0;
+
+    while (offset < Math.min(fileSize, MAX_READ)) {
+      const readSize = Math.min(CHUNK, fileSize - offset);
+      const buf = Buffer.alloc(readSize);
+      const bytesRead = readSync(fd, buf, 0, readSize, offset);
+      if (bytesRead === 0) break;
+      pending += buf.toString('utf-8', 0, bytesRead);
+      offset += bytesRead;
+
+      // Process complete lines (terminated by \n)
+      let nlIdx;
+      while ((nlIdx = pending.indexOf('\n')) !== -1) {
+        const line = pending.slice(0, nlIdx).trim();
+        pending = pending.slice(nlIdx + 1);
+        if (!line) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj.type === 'user' && obj.message) {
+            closeSync(fd);
+            const txt = obj.message.content;
+            const prompt = Array.isArray(txt)
+              ? (txt.find(b => b.type === 'text')?.text || '')
+              : (txt || '');
+            return {
+              sessionId: obj.sessionId || basename(filePath, '.jsonl'),
+              firstPrompt: prompt.slice(0, 200),
+              gitBranch: obj.gitBranch || null,
+              isSidechain: !!obj.isSidechain,
+              cwd: obj.cwd || null,
+            };
+          }
+        } catch { /* incomplete or malformed line */ }
+      }
     }
+
+    closeSync(fd);
     return null; // no user message found
   } catch { return null; }
+}
+
+/** Count user + assistant messages in a JSONL session file.
+ *  Fast string scan — no JSON parsing, reads the full file in 64KB chunks. */
+function countSessionMessages(filePath) {
+  try {
+    const fd = openSync(filePath, 'r');
+    const CHUNK = 65536;
+    const fileSize = fstatSync(fd).size;
+    let pending = '', offset = 0, count = 0;
+
+    while (offset < fileSize) {
+      const readSize = Math.min(CHUNK, fileSize - offset);
+      const buf = Buffer.alloc(readSize);
+      const bytesRead = readSync(fd, buf, 0, readSize, offset);
+      if (bytesRead === 0) break;
+      pending += buf.toString('utf-8', 0, bytesRead);
+      offset += bytesRead;
+
+      let nlIdx;
+      while ((nlIdx = pending.indexOf('\n')) !== -1) {
+        const line = pending.slice(0, nlIdx);
+        pending = pending.slice(nlIdx + 1);
+        if (line.includes('"type":"user"') || line.includes('"type":"assistant"') ||
+            line.includes('"type": "user"') || line.includes('"type": "assistant"')) {
+          count++;
+        }
+      }
+    }
+    if (pending.length > 0 &&
+        (pending.includes('"type":"user"') || pending.includes('"type":"assistant"') ||
+         pending.includes('"type": "user"') || pending.includes('"type": "assistant"'))) {
+      count++;
+    }
+    closeSync(fd);
+    return count;
+  } catch { return 0; }
 }
 
 // ── Session metadata cache ──
@@ -4590,78 +5277,66 @@ function saveSessionCache(projDir, cache) {
   } catch { /* write error */ }
 }
 
-/** Build a complete session list for a project dir by merging the
- *  (potentially stale) sessions-index.json with any JSONL files not in the index,
- *  plus cached entries for sessions whose files have been deleted. */
+/** Build a complete session list for a project dir by scanning JSONL files,
+ *  counting messages (with smart caching by fileSize), and preserving
+ *  cached entries for sessions whose files have been deleted. */
 function buildSessionEntries(projDir) {
-  // 1. Load existing index
-  const indexPath = join(projDir, 'sessions-index.json');
-  let indexed = [];
-  try {
-    if (existsSync(indexPath)) {
-      const data = JSON.parse(readFileSync(indexPath, 'utf-8'));
-      indexed = data.entries || [];
-    }
-  } catch { indexed = []; }
+  const cache = loadSessionCache(projDir);
+  let cacheChanged = false;
 
-  const indexedIds = new Set(indexed.map(e => e.sessionId));
-
-  // 2. Scan for JSONL files not in the index
+  // 1. Scan ALL JSONL files with stat info
   let allFiles;
   try { allFiles = readdirSync(projDir); } catch { allFiles = []; }
 
   const jsonlFiles = allFiles.filter(f => f.endsWith('.jsonl'));
   const jsonlIds = new Set(jsonlFiles.map(f => f.replace('.jsonl', '')));
-  const missing = jsonlFiles.filter(f => !indexedIds.has(f.replace('.jsonl', '')));
 
-  // 3. Extract metadata from missing files (sorted by mtime desc)
-  const newEntries = [];
-  if (missing.length > 0) {
-    const missingWithMtime = missing.map(f => {
-      try {
-        const stat = statSync(join(projDir, f));
-        return { file: f, mtime: stat.mtime };
-      } catch { return null; }
-    }).filter(Boolean).sort((a, b) => b.mtime - a.mtime);
+  const filesWithStat = jsonlFiles.map(f => {
+    try {
+      const stat = statSync(join(projDir, f));
+      return { file: f, mtime: stat.mtime, size: stat.size };
+    } catch { return null; }
+  }).filter(Boolean).sort((a, b) => b.mtime - a.mtime);
 
-    for (const { file, mtime } of missingWithMtime) {
-      const meta = extractSessionMeta(join(projDir, file));
-      if (!meta) continue;
-      newEntries.push({
-        sessionId: meta.sessionId,
-        firstPrompt: meta.firstPrompt,
-        messageCount: meta.messageCount || 0,
-        created: mtime.toISOString(),
-        modified: mtime.toISOString(),
-        gitBranch: meta.gitBranch,
-        isSidechain: meta.isSidechain,
-        projectPath: meta.cwd,
-      });
-    }
-  }
+  // 2. Extract metadata + count messages (smart: skip counting if fileSize unchanged)
+  for (const { file, mtime, size } of filesWithStat) {
+    const sid = file.replace('.jsonl', '');
+    const filePath = join(projDir, file);
+    const cached = cache.get(sid);
 
-  const liveEntries = [...indexed, ...newEntries];
-
-  // 4. Merge live entries into persistent cache
-  const cache = loadSessionCache(projDir);
-  let cacheChanged = false;
-  for (const e of liveEntries) {
-    if (!cache.has(e.sessionId)) {
-      cache.set(e.sessionId, e);
-      cacheChanged = true;
-    } else {
-      // Update modified timestamp if file still exists (it may have grown)
-      const existing = cache.get(e.sessionId);
-      if (e.modified > existing.modified) {
-        cache.set(e.sessionId, { ...existing, modified: e.modified });
+    if (cached && cached.fileSize === size && cached.fileSize !== undefined) {
+      // File unchanged — update modified timestamp if needed
+      if (mtime.toISOString() > cached.modified) {
+        cache.set(sid, { ...cached, modified: mtime.toISOString() });
         cacheChanged = true;
       }
+      continue;
     }
+
+    // New or changed file — extract metadata and count messages
+    const meta = extractSessionMeta(filePath);
+    if (!meta) continue;
+
+    const messageCount = countSessionMessages(filePath);
+    const entry = {
+      sessionId: meta.sessionId,
+      firstPrompt: meta.firstPrompt,
+      messageCount,
+      fileSize: size,
+      created: cached?.created || mtime.toISOString(),
+      modified: mtime.toISOString(),
+      gitBranch: meta.gitBranch,
+      isSidechain: meta.isSidechain,
+      projectPath: meta.cwd,
+    };
+
+    cache.set(sid, cached ? { ...cached, ...entry } : entry);
+    cacheChanged = true;
   }
 
   // Mark cached entries whose files are gone (still returned, but not resumable)
   for (const [sid, entry] of cache) {
-    const wasLive = jsonlIds.has(sid) || indexedIds.has(sid);
+    const wasLive = jsonlIds.has(sid);
     if (!wasLive && !entry._deleted) {
       entry._deleted = true;
       cacheChanged = true;
@@ -4679,6 +5354,16 @@ function buildSessionEntries(projDir) {
 // GET /api/claude-code/sessions — browse past Claude Code sessions across registered projects
 app.get('/api/claude-code/sessions', (req, res) => {
   try {
+    // Force full re-scan when refresh requested — nuke both in-memory and persistent cache
+    if (req.query.refresh === 'true') {
+      _sessionCacheMap.clear();
+      try {
+        const cacheFiles = readdirSync(SESSION_CACHE_DIR)
+          .filter(f => f.startsWith('sessions-cache-') && f.endsWith('.json'));
+        for (const f of cacheFiles) { try { unlinkSync(join(SESSION_CACHE_DIR, f)); } catch {} }
+      } catch {}
+    }
+
     const projects = loadHookProjects();
     const targetProject = req.query.project;
     const limit = Math.min(parseInt(req.query.limit) || 30, 100);
@@ -4748,6 +5433,113 @@ app.get('/api/claude-code/sessions', (req, res) => {
     }
 
     res.json({ projects: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Session Messages (read JSONL for panel history) ---
+
+app.get('/api/claude-code/sessions/:sessionId/messages', (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
+    const project = req.query.project;
+
+    // Find the JSONL file for this session
+    const homeDir = process.env.USERPROFILE || process.env.HOME;
+    const claudeProjectsDir = join(homeDir, '.claude', 'projects');
+    const projects = loadHookProjects();
+
+    let filePath = null;
+
+    // Search in the specified project first, then all projects
+    const searchOrder = project
+      ? [projects.find(p => resolve(p.path) === resolve(project)), ...projects].filter(Boolean)
+      : projects;
+
+    for (const proj of searchOrder) {
+      if (filePath) break;
+      const projKeyLower = proj.path.replace(/\\/g, '-').replace(/:/g, '-').replace(/^([A-Z])/, m => m.toLowerCase());
+      const projKeyUpper = proj.path.replace(/\\/g, '-').replace(/:/g, '-');
+
+      for (const key of [projKeyLower, projKeyUpper]) {
+        const candidate = join(claudeProjectsDir, key, `${sessionId}.jsonl`);
+        if (existsSync(candidate)) { filePath = candidate; break; }
+      }
+    }
+
+    if (!filePath) return res.json({ messages: [] });
+
+    const raw = readFileSync(filePath, 'utf-8');
+    const lines = raw.split('\n');
+    const messages = [];
+    let lastUsage = null;
+    let turns = 0;
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === 'user') {
+          const content = obj.message?.content;
+          const text = typeof content === 'string' ? content
+            : Array.isArray(content) ? content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+            : '';
+          if (text) { messages.push({ role: 'user', text: text.slice(0, 8000) }); turns++; }
+        } else if (obj.type === 'assistant') {
+          const content = obj.message?.content;
+          const textBlocks = Array.isArray(content)
+            ? content.filter(b => b.type === 'text').map(b => b.text)
+            : [];
+          const toolUseBlocks = Array.isArray(content)
+            ? content.filter(b => b.type === 'tool_use').map(b => ({
+                id: b.id,
+                name: b.name,
+                input: b.input,
+              }))
+            : [];
+          const text = textBlocks.join('\n');
+          if (text || toolUseBlocks.length) {
+            messages.push({
+              role: 'assistant',
+              text: text.slice(0, 8000) || undefined,
+              tools: toolUseBlocks.length ? toolUseBlocks : undefined,
+            });
+          }
+          // Track latest usage from assistant messages (last entry has final counts)
+          if (obj.message?.usage) lastUsage = obj.message.usage;
+        } else if (obj.type === 'tool_result' || obj.type === 'tool') {
+          // Extract tool results for pairing with tool_use cards in history
+          const content = obj.message?.content || obj.content;
+          const toolUseId = obj.tool_use_id || obj.message?.tool_use_id;
+          if (toolUseId) {
+            let resultText = '';
+            if (Array.isArray(content)) resultText = content.map(b => b.text || '').join('\n');
+            else if (typeof content === 'string') resultText = content;
+            messages.push({
+              role: 'tool_result',
+              toolUseId,
+              text: resultText.slice(0, 4000) || undefined,
+              isError: obj.is_error || obj.message?.is_error || false,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    // Return last N messages + usage summary
+    const sliced = messages.slice(-limit);
+    const result = { messages: sliced, total: messages.length, turns };
+    if (lastUsage) {
+      result.usage = {
+        input_tokens: lastUsage.input_tokens || 0,
+        output_tokens: lastUsage.output_tokens || 0,
+        cache_read_input_tokens: lastUsage.cache_read_input_tokens || 0,
+        cache_creation_input_tokens: lastUsage.cache_creation_input_tokens || 0,
+      };
+    }
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4860,6 +5652,23 @@ app.get('/api/claude-code/integrations', (req, res) => {
       globalHooks[def.event] = isSpecificHookInstalled(globalSettings, def.event);
     }
 
+    // Auto-sync: ensure all registered projects have globally-enabled hooks
+    const globallyEnabled = Object.entries(globalHooks).filter(([, on]) => on).map(([ev]) => ev);
+    for (const p of projects) {
+      const projFile = getClaudeSettingsPath(p.path);
+      let projSettings = readClaudeSettings(projFile);
+      let needsWrite = false;
+      for (const ev of globallyEnabled) {
+        if (!isSpecificHookInstalled(projSettings, ev)) {
+          projSettings = addHookToSettings(projSettings || {}, ev);
+          needsWrite = true;
+        }
+      }
+      if (needsWrite) {
+        try { writeClaudeSettings(projFile, projSettings); } catch {}
+      }
+    }
+
     // Check each registered project
     const projectStatuses = projects.map(p => {
       const settingsPath = getClaudeSettingsPath(p.path);
@@ -4920,11 +5729,9 @@ app.post('/api/claude-code/integrations', (req, res) => {
       const projects = loadHookProjects();
       for (const p of projects) {
         const projFile = getClaudeSettingsPath(p.path);
-        let projSettings = readClaudeSettings(projFile);
-        if (projSettings) {
-          projSettings = addHookToSettings(projSettings, hook || undefined);
-          writeClaudeSettings(projFile, projSettings);
-        }
+        let projSettings = readClaudeSettings(projFile) || {};
+        projSettings = addHookToSettings(projSettings, hook || undefined);
+        writeClaudeSettings(projFile, projSettings);
       }
 
       return res.json({ ok: true, message: hook ? `${hook} hook enabled globally.` : 'Hooks enabled globally for all Claude Code projects.' });
@@ -4941,14 +5748,34 @@ app.post('/api/claude-code/integrations', (req, res) => {
       writeClaudeSettings(filePath, settings);
 
       // Save to registered projects list
+      const projectLabel = label || basename(normalized);
       const projects = loadHookProjects();
       if (!projects.some(p => resolve(p.path) === normalized)) {
-        projects.push({ path: normalized, label: label || basename(normalized) });
+        projects.push({ path: normalized, label: projectLabel });
         saveHookProjects(projects);
       }
 
       // Create default category tree for the project (parent + children)
       try { ensureProjectCategories(); } catch {}
+
+      // Auto-create greeting config entry for the new project
+      try {
+        const greetingKey = projectLabel.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        const gcPath = resolve(PROJECT_ROOT, 'data', 'greeting-config.json');
+        let gc = { version: 1, defaults: {}, projects: {}, global: {} };
+        try { if (existsSync(gcPath)) gc = JSON.parse(readFileSync(gcPath, 'utf-8')); } catch {}
+        if (!gc.projects) gc.projects = {};
+        if (!gc.projects[greetingKey]) {
+          gc.projects[greetingKey] = {
+            label: projectLabel,
+            greetingTemplate: gc.defaults?.greetingTemplate || '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.',
+            showReminders: false,
+            showLastSession: true,
+            reminders: [],
+          };
+          writeFileSync(gcPath, JSON.stringify(gc, null, 2), 'utf-8');
+        }
+      } catch { /* non-critical */ }
 
       return res.json({ ok: true, message: `Hook enabled for ${basename(normalized)}.` });
     }
@@ -5536,25 +6363,39 @@ function parseSkillFrontmatter(content) {
 }
 
 function listAvailableSkills() {
-  if (!existsSync(SKILLS_SOURCE_DIR)) return [];
-  const entries = readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true });
   const skills = [];
-  for (const entry of entries) {
-    if (!isDirEntry(entry)) continue;
-    const skillFile = join(SKILLS_SOURCE_DIR, entry.name, 'SKILL.md');
-    if (!existsSync(skillFile)) continue;
-    const content = readFileSync(skillFile, 'utf-8');
-    const { name, description } = parseSkillFrontmatter(content);
-    const installedPath = join(getGlobalSkillsDir(), entry.name, 'SKILL.md');
-    skills.push({
-      dirName: entry.name,
-      name: name || entry.name,
-      description: description || '',
-      installed: existsSync(installedPath),
-      sourcePath: skillFile,
-      installedPath,
-    });
+  const seen = new Set();
+
+  // 1. Bundled skills (PROJECT_ROOT/skills/)
+  if (existsSync(SKILLS_SOURCE_DIR)) {
+    for (const entry of readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true })) {
+      if (!isDirEntry(entry)) continue;
+      const skillFile = join(SKILLS_SOURCE_DIR, entry.name, 'SKILL.md');
+      if (!existsSync(skillFile)) continue;
+      const content = readFileSync(skillFile, 'utf-8');
+      const { name, description } = parseSkillFrontmatter(content);
+      const installedPath = join(getGlobalSkillsDir(), entry.name, 'SKILL.md');
+      skills.push({ dirName: entry.name, name: name || entry.name, description: description || '', installed: existsSync(installedPath), sourcePath: skillFile, installedPath });
+      seen.add(entry.name);
+    }
   }
+
+  // 2. Global skills (~/.claude/skills/) — only those not already in bundled
+  const globalDir = getGlobalSkillsDir();
+  if (existsSync(globalDir)) {
+    try {
+      for (const entry of readdirSync(globalDir, { withFileTypes: true })) {
+        if (!isDirEntry(entry) || seen.has(entry.name)) continue;
+        const skillFile = join(globalDir, entry.name, 'SKILL.md');
+        if (!existsSync(skillFile)) continue;
+        const content = readFileSync(skillFile, 'utf-8');
+        const { name, description } = parseSkillFrontmatter(content);
+        skills.push({ dirName: entry.name, name: name || entry.name, description: description || '', installed: true, sourcePath: skillFile, installedPath: skillFile });
+        seen.add(entry.name);
+      }
+    } catch {}
+  }
+
   return skills;
 }
 
@@ -6887,8 +7728,19 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     outputBuffer: [],      // ring buffer of output strings
     outputBufferBytes: 0,  // running byte count
     graceTimer: null,      // setTimeout handle for orphan cleanup
+    claudeSessionId: opts.resume || null,  // known Claude session ID (from resume or detect)
   };
   terminalSessions.set(sessionId, session);
+
+  // Auto-detect Claude session ID for fresh sessions (not resumed — those already have it)
+  if (profile === 'claude-code' && !session.claudeSessionId) {
+    setTimeout(() => {
+      if (!session.claudeSessionId && terminalSessions.has(sessionId)) {
+        const csid = detectClaudeSessionForCwd(session.cwd, session.createdAt);
+        if (csid) session.claudeSessionId = csid;
+      }
+    }, 5000);
+  }
 
   ptyProcess.onData((data) => {
     // Append to ring buffer for replay on reconnect
@@ -6901,6 +7753,14 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     // Live link capture hook — called when a live-mode link is capturing this session's output
     if (session._linkCaptureCallback) {
       session._linkCaptureCallback(data);
+    }
+
+    // Loop driver capture — accumulates output for prompt detection
+    if (session._loopDriverBuffer !== undefined) {
+      session._loopDriverBuffer += data;
+      if (session._loopDriverBuffer.length > 4096) {
+        session._loopDriverBuffer = session._loopDriverBuffer.slice(-2048);
+      }
     }
 
     const msg = JSON.stringify({ type: 'output', data });
@@ -6918,6 +7778,11 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     session.clients.forEach(ws => {
       if (ws.readyState === 1) ws.send(msg);
     });
+    // Clean up loop driver interval
+    if (session._loopDriverInterval) {
+      clearInterval(session._loopDriverInterval);
+      session._loopDriverInterval = null;
+    }
     // Clean up temp files from image paste
     if (session.tempFiles) {
       session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
@@ -6935,6 +7800,191 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
 
   return sessionId;
 }
+
+// ── Loop Driver — sends /clear + next iteration prompt between loop iterations ──
+
+const LOOP_ANSI_RE = /\x1b\[[\x20-\x3f]*[\x40-\x7e]|\x1b\][^\x07]*\x07|\x1b[()][AB012]/g;
+
+/**
+ * Writes text to a PTY in chunks to avoid ConPTY buffer overflow on Windows.
+ * Same approach as client-side _sendOnceReady (256-byte chunks, 30ms delays).
+ */
+function writeToLoopPty(session, text, sendEnter = true) {
+  const full = sendEnter ? text + '\r' : text;
+  const CHUNK = 256;
+  const DELAY = 30;
+  for (let i = 0; i < full.length; i += CHUNK) {
+    const chunk = full.slice(i, i + CHUNK);
+    const delay = (i / CHUNK) * DELAY;
+    setTimeout(() => {
+      try { session.pty.write(chunk); } catch { /* pty may be dead */ }
+    }, delay);
+  }
+  // Return total time for all chunks to be sent
+  return Math.ceil(full.length / CHUNK) * DELAY;
+}
+
+/**
+ * Check if the ANSI-stripped PTY output buffer contains a ready prompt (>).
+ */
+function loopPromptReady(buffer) {
+  const stripped = buffer.replace(LOOP_ANSI_RE, '');
+  return />\s*$/.test(stripped) || /^>\s*$/m.test(stripped);
+}
+
+/**
+ * Attach a loop driver to a terminal session. The driver watches for the
+ * `awaitingNext` flag in the loop state file. When detected, it sends /clear
+ * to the PTY, waits for the prompt, then sends the next iteration message.
+ */
+function attachLoopDriver(terminalSessionId) {
+  const session = terminalSessions.get(terminalSessionId);
+  if (!session) return;
+
+  // Initialize capture buffer
+  session._loopDriverBuffer = '';
+  let driving = false; // prevent re-entrance
+
+  const interval = setInterval(async () => {
+    if (driving) return;
+    if (!terminalSessions.has(terminalSessionId)) {
+      clearInterval(interval);
+      return;
+    }
+
+    // Scan for any loop state file with awaitingNext
+    try {
+      if (!existsSync(LOOP_DIR)) return;
+      const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
+      for (const f of files) {
+        let loopState;
+        try {
+          loopState = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
+        } catch { continue; }
+
+        if (!loopState.awaitingNext || !loopState.active) continue;
+
+        // Found a loop awaiting next iteration — drive it
+        driving = true;
+        try {
+          await driveNextIteration(session, loopState, f);
+        } catch (err) {
+          console.error('[loop-driver] Error driving iteration:', err.message);
+        }
+        driving = false;
+        break;
+      }
+    } catch { /* ok */ }
+  }, 2000);
+
+  session._loopDriverInterval = interval;
+}
+
+/**
+ * Wait for the > prompt to appear in the PTY output buffer.
+ * Resolves true if prompt detected, false on timeout.
+ */
+function waitForLoopPrompt(session, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const check = setInterval(() => {
+      if (loopPromptReady(session._loopDriverBuffer || '')) {
+        clearInterval(check);
+        resolve(true);
+      } else if (Date.now() - start > timeoutMs) {
+        clearInterval(check);
+        console.warn('[loop-driver] Prompt detection timed out after', timeoutMs, 'ms');
+        resolve(false);
+      }
+    }, 500);
+  });
+}
+
+/**
+ * Drive the next loop iteration: /clear → wait → iteration prompt → auto-confirm
+ */
+async function driveNextIteration(session, loopState, filename) {
+  const loopPath = resolve(LOOP_DIR, filename);
+
+  console.log(`[loop-driver] Driving iteration ${loopState.currentIteration}/${loopState.totalIterations}`);
+
+  // Step 1: Wait for > prompt (Claude finished stopping)
+  await waitForLoopPrompt(session, 15000);
+
+  // Step 2: Send /clear to reset conversation context
+  session._loopDriverBuffer = '';
+  session.pty.write('/clear\r');
+  console.log('[loop-driver] Sent /clear');
+
+  // Step 3: Wait for > prompt after /clear completes
+  await waitForLoopPrompt(session, 15000);
+
+  // Step 4: Send the iteration message (prompt-submit hook will inject full context)
+  const iterMsg = `[SynaBun Loop] Iteration ${loopState.currentIteration}. Begin task.`;
+  const chunkTime = writeToLoopPty(session, iterMsg, true);
+  console.log(`[loop-driver] Sent iteration ${loopState.currentIteration} message (${iterMsg.length} chars)`);
+
+  // Step 5: Auto-confirm (Enter after all chunks + settle time)
+  setTimeout(() => {
+    try { session.pty.write('\r'); } catch { /* ok */ }
+    console.log('[loop-driver] Sent auto-confirm Enter');
+  }, chunkTime + 4000);
+
+  // Step 6: Clear awaitingNext flag
+  try {
+    const freshState = JSON.parse(readFileSync(loopPath, 'utf-8'));
+    freshState.awaitingNext = false;
+    writeFileSync(loopPath, JSON.stringify(freshState, null, 2));
+  } catch (err) {
+    console.warn('[loop-driver] Failed to clear awaitingNext:', err.message);
+  }
+}
+
+// ── Last Session (resume after server restart) ──
+
+const LAST_SESSION_PATH = resolve(PROJECT_ROOT, 'data', 'last-session.json');
+
+app.get('/api/last-session', (req, res) => {
+  try {
+    const fileExists = existsSync(LAST_SESSION_PATH);
+    const activeCount = [...terminalSessions.values()].filter(s => s.profile === 'claude-code').length;
+    console.log(`[last-session] Check: file=${fileExists}, activeClaude=${activeCount}`);
+    if (!fileExists) return res.status(404).json({ error: 'No saved session' });
+    // If there are currently active claude-code sessions, the snapshot is live — don't offer resume
+    if (activeCount > 0) return res.status(404).json({ error: 'Sessions still active' });
+    const raw = readFileSync(LAST_SESSION_PATH, 'utf-8').trim();
+    if (!raw) {
+      unlinkSync(LAST_SESSION_PATH);
+      return res.status(404).json({ error: 'Empty snapshot — cleaned up' });
+    }
+    const data = JSON.parse(raw);
+    // Enrich with labels from ui-state
+    const uiState = loadUiState();
+    for (const s of data.sessions || []) {
+      const labelKey = `synabun-session-label:${s.claudeSessionId}`;
+      if (uiState[labelKey]) s.label = uiState[labelKey];
+    }
+    console.log(`[last-session] Returning ${data.sessions?.length} sessions`);
+    res.json(data);
+  } catch (err) {
+    console.error('[last-session] Error:', err);
+    // Corrupt file — clean it up so it doesn't keep failing
+    if (err instanceof SyntaxError) {
+      try { unlinkSync(LAST_SESSION_PATH); } catch {}
+      return res.status(404).json({ error: 'Corrupt snapshot — cleaned up' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/last-session', (req, res) => {
+  try {
+    if (existsSync(LAST_SESSION_PATH)) unlinkSync(LAST_SESSION_PATH);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Terminal REST endpoints ──
 
@@ -6954,6 +8004,7 @@ app.post('/api/terminal/sessions', (req, res) => {
   try {
     const sessionId = createTerminalSession(profile, cols, rows, cwd, { resume, model });
     broadcastSync({ type: 'terminal:session-created', sessionId, profile });
+    if (profile === 'claude-code') setTimeout(saveSessionSnapshot, 2000); // update resume snapshot
     res.json({ sessionId, profile });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -6963,6 +8014,7 @@ app.post('/api/terminal/sessions', (req, res) => {
 app.delete('/api/terminal/sessions/:id', (req, res) => {
   const session = terminalSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const wasClaudeCode = session.profile === 'claude-code';
   session.pty.kill();
   // Clean up temp files from image paste
   if (session.tempFiles) {
@@ -6970,6 +8022,7 @@ app.delete('/api/terminal/sessions/:id', (req, res) => {
   }
   terminalSessions.delete(req.params.id);
   broadcastSync({ type: 'terminal:session-deleted', sessionId: req.params.id });
+  if (wasClaudeCode) setTimeout(saveSessionSnapshot, 500); // update resume snapshot
   res.json({ ok: true });
 });
 
@@ -6983,13 +8036,10 @@ app.get('/api/terminal/profiles', (req, res) => {
   res.json({ profiles, projects });
 });
 
-// GET /api/terminal/sessions/:id/claude-session — detect Claude Code session UUID for a terminal
-app.get('/api/terminal/sessions/:id/claude-session', (req, res) => {
-  const session = terminalSessions.get(req.params.id);
-  if (!session) return res.status(404).json({ error: 'Session not found' });
-  if (session.profile !== 'claude-code') return res.json({ claudeSessionId: null });
-  const cwd = session.cwd;
-  if (!cwd) return res.json({ claudeSessionId: null });
+// Detect Claude Code session UUID for a given cwd (finds newest JSONL modified after createdAfter)
+// exclude: Set of session IDs to skip (already claimed by other terminals)
+function detectClaudeSessionForCwd(cwd, createdAfter = 0, exclude = null) {
+  if (!cwd) return null;
   try {
     const homeDir = process.env.USERPROFILE || process.env.HOME;
     const claudeProjectsDir = join(homeDir, '.claude', 'projects');
@@ -6997,20 +8047,34 @@ app.get('/api/terminal/sessions/:id/claude-session', (req, res) => {
     const projKeyUpper = cwd.replace(/\\/g, '-').replace(/:/g, '-');
     let projDir = join(claudeProjectsDir, projKeyLower);
     if (!existsSync(projDir)) projDir = join(claudeProjectsDir, projKeyUpper);
-    if (!existsSync(projDir)) return res.json({ claudeSessionId: null });
+    if (!existsSync(projDir)) return null;
     const files = readdirSync(projDir).filter(f => f.endsWith('.jsonl'));
     let newest = null, newestMtime = 0;
     for (const f of files) {
+      const sid = f.replace('.jsonl', '');
+      if (exclude && exclude.has(sid)) continue;
       try {
-        const mtime = statSync(join(projDir, f)).mtimeMs;
-        if (mtime >= session.createdAt && mtime > newestMtime) {
+        const st = statSync(join(projDir, f));
+        if (st.size < 1024) continue; // skip sidechains / empty snapshots
+        const mtime = st.mtimeMs;
+        if (mtime >= createdAfter && mtime > newestMtime) {
           newestMtime = mtime;
-          newest = f.replace('.jsonl', '');
+          newest = sid;
         }
       } catch {}
     }
-    res.json({ claudeSessionId: newest });
-  } catch { res.json({ claudeSessionId: null }); }
+    return newest;
+  } catch { return null; }
+}
+
+// GET /api/terminal/sessions/:id/claude-session — detect Claude Code session UUID for a terminal
+app.get('/api/terminal/sessions/:id/claude-session', (req, res) => {
+  const session = terminalSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  if (session.profile !== 'claude-code') return res.json({ claudeSessionId: null });
+  const csid = session.claudeSessionId || detectClaudeSessionForCwd(session.cwd, session.createdAt);
+  if (csid) session.claudeSessionId = csid; // cache for snapshot
+  res.json({ claudeSessionId: csid });
 });
 
 // ── Terminal file tree ──
@@ -7375,6 +8439,190 @@ app.get('/api/git/diff-summary', (req, res) => {
     res.json({ ok: true, message, summary });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Git Diff (raw content) ──
+
+app.get('/api/git/diff', (req, res) => {
+  const dir = req.query.path;
+  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+  const maxLines = Math.min(Math.max(parseInt(req.query.maxLines) || 500, 50), 2000);
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+  } catch {
+    return res.status(400).json({ error: 'Not a git repository' });
+  }
+
+  try {
+    let branch = '';
+    try { branch = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim(); } catch {}
+    if (!branch) try { branch = execSync('git rev-parse --short HEAD', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim(); } catch {}
+
+    const rawDiff = execSync('git diff --no-color', { cwd: dir, stdio: 'pipe', timeout: 10000, maxBuffer: 2 * 1024 * 1024 }).toString();
+    const rawStaged = execSync('git diff --cached --no-color', { cwd: dir, stdio: 'pipe', timeout: 10000, maxBuffer: 2 * 1024 * 1024 }).toString();
+    const untracked = execSync('git ls-files --others --exclude-standard', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+
+    const truncate = (text) => {
+      const lines = text.split('\n');
+      if (lines.length <= maxLines) return { text, truncated: false };
+      return { text: lines.slice(0, maxLines).join('\n'), truncated: true };
+    };
+
+    const d = truncate(rawDiff);
+    const s = truncate(rawStaged);
+    const untrackedFiles = untracked ? untracked.split('\n').filter(Boolean) : [];
+
+    res.json({
+      ok: true,
+      branch,
+      diff: d.text,
+      stagedDiff: s.text,
+      untrackedFiles,
+      truncated: d.truncated || s.truncated
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Git Log ──
+
+app.get('/api/git/log', (req, res) => {
+  const dir = req.query.path;
+  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+  const count = Math.min(Math.max(parseInt(req.query.count) || 10, 1), 50);
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+  } catch {
+    return res.status(400).json({ error: 'Not a git repository' });
+  }
+
+  try {
+    const raw = execSync(`git log --oneline --no-decorate -n ${count}`, { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+    const commits = raw ? raw.split('\n').map(line => {
+      const spaceIdx = line.indexOf(' ');
+      return { hash: line.substring(0, spaceIdx), message: line.substring(spaceIdx + 1) };
+    }) : [];
+    res.json({ ok: true, commits });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Git Generate Commit Message (AI-powered) ──
+
+app.post('/api/git/generate-message', async (req, res) => {
+  const dir = req.body?.path;
+  if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+  } catch {
+    return res.status(400).json({ error: 'Not a git repository' });
+  }
+
+  // Gather diff data — separate try/catch per command so one failure doesn't skip the rest
+  let diffText = '', stagedText = '', untrackedList = '', recentCommits = '';
+  try { diffText = execSync('git diff --no-color', { cwd: dir, stdio: 'pipe', timeout: 8000, maxBuffer: 2 * 1024 * 1024 }).toString().substring(0, 4000); } catch {}
+  try { stagedText = execSync('git diff --cached --no-color', { cwd: dir, stdio: 'pipe', timeout: 8000, maxBuffer: 2 * 1024 * 1024 }).toString().substring(0, 4000); } catch {}
+  try { untrackedList = execSync('git ls-files --others --exclude-standard', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim(); } catch {}
+  try { recentCommits = execSync('git log --oneline --no-decorate -n 5', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim(); } catch {}
+
+  const allDiff = (diffText + '\n' + stagedText).trim();
+  if (!allDiff && !untrackedList) {
+    return res.json({ ok: true, message: '', source: 'heuristic', summary: 'No changes to commit' });
+  }
+
+  // Try Claude CLI
+  let claudeAvailable = false;
+  try {
+    execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { stdio: 'pipe', timeout: 3000 });
+    claudeAvailable = true;
+  } catch {}
+
+  if (claudeAvailable) {
+    try {
+      const prompt = [
+        'Generate a single-line git commit message for these changes.',
+        'Match the style of recent commits shown below.',
+        'Be specific about what changed. Output ONLY the commit message — no quotes, no prefix, no explanation.',
+        '',
+        '## Recent commits (for style reference)',
+        recentCommits || '(none)',
+        '',
+        '## Diff',
+        allDiff.substring(0, 3500),
+        untrackedList ? '\n## New untracked files\n' + untrackedList.split('\n').slice(0, 20).join('\n') : '',
+      ].join('\n');
+
+      const { spawnSync: spawnS } = require('child_process');
+      const result = spawnS('claude', ['-p', '--model', 'sonnet'], {
+        input: prompt,
+        cwd: dir,
+        timeout: 30000,
+        maxBuffer: 64 * 1024,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: true,
+      });
+
+      const output = (result.stdout || '').toString().trim();
+      if (output && !result.error && result.status === 0) {
+        // Clean up: remove quotes if Claude wrapped the message
+        const cleaned = output.replace(/^["']|["']$/g, '').trim();
+        if (cleaned) {
+          return res.json({ ok: true, message: cleaned, source: 'claude' });
+        }
+      }
+    } catch {}
+  }
+
+  // Fallback: heuristic (same logic as /api/git/diff-summary)
+  try {
+    let stat = '', stagedStat = '';
+    try { stat = execSync('git diff --stat --stat-width=120', { cwd: dir, stdio: 'pipe', timeout: 5000, maxBuffer: 2 * 1024 * 1024 }).toString().trim(); } catch {}
+    try { stagedStat = execSync('git diff --cached --stat --stat-width=120', { cwd: dir, stdio: 'pipe', timeout: 5000, maxBuffer: 2 * 1024 * 1024 }).toString().trim(); } catch {}
+    const changedFiles = [];
+    for (const line of (stat + '\n' + stagedStat).split('\n').filter(l => l.includes('|'))) {
+      const m = line.match(/^\s*(.+?)\s*\|/);
+      if (m) { const f = m[1].trim(); if (!changedFiles.includes(f)) changedFiles.push(f); }
+    }
+    const untrackedFiles = untrackedList ? untrackedList.split('\n').filter(Boolean) : [];
+    const addedLines = (allDiff.match(/^\+[^+]/gm) || []).length;
+    const removedLines = (allDiff.match(/^-[^-]/gm) || []).length;
+    const totalFiles = changedFiles.length + untrackedFiles.length;
+
+    let message = '';
+    if (totalFiles === 0) {
+      return res.json({ ok: true, message: '', source: 'heuristic', summary: 'No changes to commit' });
+    }
+    const dirs = new Set();
+    for (const f of [...changedFiles, ...untrackedFiles]) {
+      const parts = f.split('/');
+      if (parts.length > 1) dirs.add(parts[0]);
+    }
+    if (totalFiles === 1) {
+      const f = changedFiles[0] || untrackedFiles[0];
+      const basename = f.split('/').pop();
+      if (untrackedFiles.length === 1) message = 'Add ' + basename;
+      else if (removedLines > addedLines * 2) message = 'Remove code from ' + basename;
+      else message = 'Update ' + basename;
+    } else if (totalFiles <= 4) {
+      const names = [...changedFiles, ...untrackedFiles].map(f => f.split('/').pop());
+      if (untrackedFiles.length === totalFiles) message = 'Add ' + names.join(', ');
+      else message = 'Update ' + names.join(', ');
+    } else {
+      const scope = dirs.size === 1 ? [...dirs][0] : `${totalFiles} files`;
+      if (untrackedFiles.length > changedFiles.length) message = 'Add and update ' + scope;
+      else message = 'Update ' + scope;
+    }
+
+    const summary = `${changedFiles.length} modified, ${untrackedFiles.length} new — +${addedLines} -${removedLines} lines`;
+    res.json({ ok: true, message, source: 'heuristic', summary });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to generate message: ' + err.message });
   }
 });
 
@@ -9636,8 +10884,8 @@ function handleWhiteboardWebSocket(ws) {
       const msg = JSON.parse(raw.toString());
 
       if (msg.type === 'viewport') {
-        whiteboardViewport = { width: msg.width, height: msg.height };
-        console.log(`[ws-whiteboard] Viewport: ${msg.width}x${msg.height}`);
+        whiteboardViewport = { width: msg.width, height: msg.height, yOffset: msg.yOffset || 0, xOffset: msg.xOffset || 0 };
+        console.log(`[ws-whiteboard] Viewport: ${msg.width}x${msg.height} (xOffset: ${msg.xOffset || 0}, yOffset: ${msg.yOffset || 0})`);
       }
 
       if (msg.type === 'screenshot:response' && msg.requestId) {
@@ -9855,3 +11103,58 @@ async function handleBrowserWebSocket(ws, url) {
     }
   });
 }
+
+// ═══════════════════════════════════════════
+// SESSION SNAPSHOT — Periodic save for resume
+// ═══════════════════════════════════════════
+// Windows kills node hard on terminal close — no signals fire.
+// Instead, heartbeat every 30s to keep last-session.json current.
+
+const SESSION_SNAPSHOT_INTERVAL_MS = 30_000;
+const SERVER_START_TIME = Date.now();
+const RESUME_GRACE_PERIOD_MS = 120_000; // 2 min — don't delete snapshot before client can check
+
+function saveSessionSnapshot() {
+  const sessions = [];
+  const seen = new Set(); // dedup — avoid resuming same Claude session twice
+
+  // First pass: sessions with known claudeSessionId (from resume or detect endpoint)
+  for (const [id, session] of terminalSessions) {
+    if (session.profile !== 'claude-code') continue;
+    if (!session.claudeSessionId) continue;
+    if (seen.has(session.claudeSessionId)) continue;
+    seen.add(session.claudeSessionId);
+    sessions.push({ profile: 'claude-code', cwd: session.cwd, claudeSessionId: session.claudeSessionId });
+  }
+
+  // Second pass: sessions without known ID — try detection, excluding already-claimed IDs
+  for (const [id, session] of terminalSessions) {
+    if (session.profile !== 'claude-code') continue;
+    if (session.claudeSessionId) continue; // already handled
+    const csid = detectClaudeSessionForCwd(session.cwd, session.createdAt, seen);
+    if (!csid) continue;
+    seen.add(csid);
+    session.claudeSessionId = csid; // cache it
+    sessions.push({ profile: 'claude-code', cwd: session.cwd, claudeSessionId: csid });
+  }
+
+  if (sessions.length === 0) {
+    // Don't delete during grace period — client may not have checked for resume yet
+    if (Date.now() - SERVER_START_TIME < RESUME_GRACE_PERIOD_MS) return;
+    // No Claude Code sessions — clean up stale snapshot
+    try { if (existsSync(LAST_SESSION_PATH)) unlinkSync(LAST_SESSION_PATH); } catch {}
+    return;
+  }
+
+  try {
+    writeFileSync(LAST_SESSION_PATH, JSON.stringify({ timestamp: Date.now(), sessions }, null, 2), 'utf-8');
+  } catch {}
+}
+
+// Heartbeat: snapshot active sessions every 30s
+setInterval(saveSessionSnapshot, SESSION_SNAPSHOT_INTERVAL_MS);
+
+// Also try to save on clean shutdown (works with Ctrl+C, not window close)
+process.on('SIGINT', () => { saveSessionSnapshot(); process.exit(0); });
+process.on('SIGTERM', () => { saveSessionSnapshot(); process.exit(0); });
+process.on('exit', saveSessionSnapshot);

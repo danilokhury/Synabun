@@ -8,6 +8,29 @@
     "reminderPrefix": "Remember to start these services:"
   },
   "projects": {
+    "synabun": {
+      "label": "SynaBun",
+      "greetingTemplate": "{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.",
+      "showReminders": true,
+      "showLastSession": true,
+      "reminders": [
+        {
+          "label": "Neural Interface",
+          "command": "node neural-interface/server.js"
+        },
+        {
+          "label": "Build MCP server",
+          "command": "cd mcp-server && npm run build"
+        }
+      ]
+    },
+    "synabun-website": {
+      "label": "SynaBun Website",
+      "greetingTemplate": "{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.",
+      "showReminders": false,
+      "showLastSession": true,
+      "reminders": []
+    },
     "criticalpixel": {
       "label": "CriticalPixel",
       "greetingTemplate": "{time_greeting}! Welcome back to **{project_label}** (`{branch}` branch). {date}.",
@@ -31,7 +54,7 @@
   },
   "global": {
     "label": "Global",
-    "greetingTemplate": "{time_greeting}! Starting a new session. {date}.",
+    "greetingTemplate": "{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.",
     "showReminders": false,
     "showLastSession": false,
     "reminders": []

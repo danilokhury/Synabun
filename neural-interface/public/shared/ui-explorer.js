@@ -714,6 +714,8 @@ export function toggleExplorer() {
   // Sync menu checkmark
   const menuEl = $('menu-toggle-explorer');
   if (menuEl) menuEl.classList.toggle('active', _visible);
+  const tbBtn = $('topright-memory-explorer-btn');
+  if (tbBtn) tbBtn.classList.toggle('active', _visible);
 
   // Build tree on first show
   if (_visible && !panel.dataset.built) {
@@ -1184,6 +1186,12 @@ export function initExplorer() {
     logo.addEventListener('click', () => toggleExplorer());
   }
 
+  // Toolbar button
+  const toolbarBtn = $('topright-memory-explorer-btn');
+  if (toolbarBtn) {
+    toolbarBtn.addEventListener('click', () => toggleExplorer());
+  }
+
   // Collapse all / expand all
   const collapseAllBtn = $('explorer-collapse-all');
   if (collapseAllBtn) collapseAllBtn.addEventListener('click', collapseAll);
@@ -1341,6 +1349,8 @@ export function initExplorer() {
       document.body.classList.add('explorer-open');
       const menuItem = $('menu-toggle-explorer');
       if (menuItem) menuItem.classList.add('active');
+      const tbBtnInit = $('topright-memory-explorer-btn');
+      if (tbBtnInit) tbBtnInit.classList.add('active');
     }
   }
 }

@@ -197,4 +197,21 @@ export async function tictactoeState() {
 export async function tictactoeEnd() {
     return request('POST', '/api/games/tictactoe/end');
 }
+// ── Git ──
+export async function gitStatus(path) {
+    return request('GET', `/api/git/status?path=${encodeURIComponent(path)}`);
+}
+export async function gitDiff(path, maxLines) {
+    const qs = `path=${encodeURIComponent(path)}${maxLines ? `&maxLines=${maxLines}` : ''}`;
+    return request('GET', `/api/git/diff?${qs}`, undefined, LONG_TIMEOUT);
+}
+export async function gitCommit(path, message, files) {
+    return request('POST', '/api/git/commit', { path, message, files });
+}
+export async function gitLog(path, count) {
+    return request('GET', `/api/git/log?path=${encodeURIComponent(path)}&count=${count || 10}`);
+}
+export async function gitBranches(path) {
+    return request('GET', `/api/terminal/branches?path=${encodeURIComponent(path)}`);
+}
 //# sourceMappingURL=neural-interface.js.map

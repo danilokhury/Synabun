@@ -48,8 +48,8 @@ function getLoopPath(sessionId) {
 }
 export const loopSchema = {
     action: z
-        .enum(['start', 'stop', 'status'])
-        .describe('start: begin autonomous loop. stop: end loop. status: check current loop state.'),
+        .enum(['start', 'stop', 'status', 'update'])
+        .describe('start: begin autonomous loop. stop: end loop. status: check current loop state. update: write iteration journal/progress.'),
     task: z
         .string()
         .optional()
@@ -74,8 +74,16 @@ export const loopSchema = {
         .string()
         .optional()
         .describe('Load a saved template by name or id. Template values are used as defaults; explicit params override.'),
+    summary: z
+        .string()
+        .optional()
+        .describe('Brief summary of what this iteration accomplished (1-2 sentences, for journal). Used with action "update".'),
+    progress: z
+        .string()
+        .optional()
+        .describe('Rolling progress summary replacing the previous one. Used with action "update".'),
 };
-export const loopDescription = 'Autonomous loop control. Start a repeating task loop, check status, or stop it. The Stop hook drives iteration — each time Claude finishes, the hook blocks and injects the next iteration.';
+export const loopDescription = 'Autonomous loop control. Start a repeating task loop, check status, update progress journal, or stop it. The Stop hook drives iteration. Call "update" after each iteration with a brief summary to maintain context across compactions.';
 // ── Start ──────────────────────────────────────────────────────
 function loadTemplate(nameOrId) {
     try {
@@ -140,6 +148,11 @@ function handleStart(args) {
         lastIterationAt: null,
         context: args.context?.trim() || null,
         retries: 0,
+        journal: [],
+        lastMemoryAt: 0,
+        memoryInterval: 5,
+        progressSummary: null,
+        awaitingNext: false,
     };
     writeFileSync(loopPath, JSON.stringify(state, null, 2));
     return {
@@ -215,6 +228,55 @@ function handleStatus(args) {
             }],
     };
 }
+// ── Update (journal + progress) ───────────────────────────────
+function handleUpdate(args) {
+    if (!args.summary && !args.progress) {
+        return { content: [{ type: 'text', text: 'Error: Provide "summary" (iteration journal) and/or "progress" (rolling summary) for update.' }] };
+    }
+    const sessionId = resolveSessionId(args.session_id);
+    if (!sessionId) {
+        return { content: [{ type: 'text', text: 'No active loop to update.' }] };
+    }
+    const loopPath = getLoopPath(sessionId);
+    if (!existsSync(loopPath)) {
+        return { content: [{ type: 'text', text: 'No loop state file found.' }] };
+    }
+    let state;
+    try {
+        state = JSON.parse(readFileSync(loopPath, 'utf-8'));
+    }
+    catch {
+        return { content: [{ type: 'text', text: 'Loop state file is corrupt.' }] };
+    }
+    if (!state.active) {
+        return { content: [{ type: 'text', text: 'Loop is not active.' }] };
+    }
+    // Append journal entry
+    if (args.summary) {
+        if (!Array.isArray(state.journal))
+            state.journal = [];
+        state.journal.push({
+            iteration: state.currentIteration || 0,
+            summary: args.summary.slice(0, 200),
+            timestamp: new Date().toISOString(),
+        });
+        // Keep only last 10 entries
+        if (state.journal.length > 10) {
+            state.journal = state.journal.slice(-10);
+        }
+    }
+    // Update rolling progress summary
+    if (args.progress) {
+        state.progressSummary = args.progress.slice(0, 500);
+    }
+    writeFileSync(loopPath, JSON.stringify(state, null, 2));
+    return {
+        content: [{
+                type: 'text',
+                text: `Loop journal updated (iteration ${state.currentIteration}).`,
+            }],
+    };
+}
 // ── Main dispatcher ────────────────────────────────────────────
 export async function handleLoop(args) {
     switch (args.action) {
@@ -224,8 +286,10 @@ export async function handleLoop(args) {
             return handleStop(args);
         case 'status':
             return handleStatus(args);
+        case 'update':
+            return handleUpdate(args);
         default:
-            return { content: [{ type: 'text', text: `Unknown action "${args.action}". Use: start, stop, status.` }] };
+            return { content: [{ type: 'text', text: `Unknown action "${args.action}". Use: start, stop, status, update.` }] };
     }
 }
 //# sourceMappingURL=loop.js.map

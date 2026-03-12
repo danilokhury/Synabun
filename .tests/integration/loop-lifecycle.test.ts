@@ -1,11 +1,15 @@
 /**
  * Integration test: Loop lifecycle
  *
- * Full flow:
+ * Full flow (fresh-context model):
  * 1. Start loop via handleLoop MCP tool → writes state file
- * 2. Fire stop.mjs → blocks with iteration 1, increments currentIteration
- * 3. Fire stop.mjs again → blocks with iteration 2
- * 4. Fire stop.mjs at max iterations → deactivates loop, no block
+ * 2. Fire stop.mjs → allows stop, sets awaitingNext, increments currentIteration
+ * 3. Fire stop.mjs again → allows stop, increments again
+ * 4. Fire stop.mjs at max iterations → deactivates loop, no awaitingNext
+ *
+ * Note: In the fresh-context model, the stop hook never blocks for loop
+ * continuation. Instead it sets awaitingNext=true and the server-side loop
+ * driver sends /clear + re-prompt to the PTY.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, unlinkSync, readFileSync } from 'node:fs';
@@ -14,7 +18,6 @@ import { handleLoop } from '@mcp/tools/loop.js';
 import {
   runHook,
   isBlocked,
-  getBlockReason,
 } from '../utils/hook-runner.js';
 
 const LOOP_DIR = resolve(__dirname, '../../data/loop');
@@ -51,46 +54,57 @@ describe('integration: loop lifecycle', () => {
       expect(state0.currentIteration).toBe(0);
       expect(state0.totalIterations).toBe(3);
 
-      // Step 2: Fire stop.mjs → should block (iteration 1)
+      // Step 2: Fire stop.mjs → allows stop, sets awaitingNext (iteration 1)
       const stop1 = await runHook('stop.mjs', {
         session_id: sessionId,
         last_assistant_message: 'Completed first iteration.',
       });
-      expect(isBlocked(stop1)).toBe(true);
-      expect(getBlockReason(stop1)).toContain('1');
+      expect(isBlocked(stop1)).toBe(false);
 
-      // Verify currentIteration incremented
       const state1 = JSON.parse(readFileSync(loopFilePath, 'utf-8'));
       expect(state1.currentIteration).toBe(1);
+      expect(state1.awaitingNext).toBe(true);
 
-      // Step 3: Fire stop.mjs → should block (iteration 2)
+      // Simulate server driver clearing awaitingNext (as it would after /clear)
+      state1.awaitingNext = false;
+      const { writeFileSync } = await import('node:fs');
+      writeFileSync(loopFilePath, JSON.stringify(state1, null, 2));
+
+      // Step 3: Fire stop.mjs → allows stop (iteration 2)
       const stop2 = await runHook('stop.mjs', {
         session_id: sessionId,
         last_assistant_message: 'Completed second iteration.',
       });
-      expect(isBlocked(stop2)).toBe(true);
+      expect(isBlocked(stop2)).toBe(false);
 
       const state2 = JSON.parse(readFileSync(loopFilePath, 'utf-8'));
       expect(state2.currentIteration).toBe(2);
+      expect(state2.awaitingNext).toBe(true);
 
-      // Step 4: Fire stop.mjs → iteration 3 (final)
+      // Clear awaitingNext again
+      state2.awaitingNext = false;
+      writeFileSync(loopFilePath, JSON.stringify(state2, null, 2));
+
+      // Step 4: Fire stop.mjs → allows stop (iteration 3 = max)
       const stop3 = await runHook('stop.mjs', {
         session_id: sessionId,
         last_assistant_message: 'Completed third iteration.',
       });
-      expect(isBlocked(stop3)).toBe(true);
+      expect(isBlocked(stop3)).toBe(false);
 
       const state3 = JSON.parse(readFileSync(loopFilePath, 'utf-8'));
       expect(state3.currentIteration).toBe(3);
+      expect(state3.awaitingNext).toBe(true);
 
-      // Step 5: Fire stop.mjs → at max, should deactivate and NOT block
+      // Clear awaitingNext
+      state3.awaitingNext = false;
+      writeFileSync(loopFilePath, JSON.stringify(state3, null, 2));
+
+      // Step 5: Fire stop.mjs → at max (3/3), should deactivate
       const stop4 = await runHook('stop.mjs', {
         session_id: sessionId,
         last_assistant_message: 'Final.',
       });
-      // At this point the loop should be deactivated
-      // The stop hook may or may not block depending on implementation
-      // but the loop file should show active: false or be deleted
       if (existsSync(loopFilePath)) {
         const stateFinal = JSON.parse(readFileSync(loopFilePath, 'utf-8'));
         expect(stateFinal.active).toBe(false);

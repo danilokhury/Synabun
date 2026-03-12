@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile and basically you need to promo a marketing campaign for Arc Raiders and that it has some discounts on select vendors. There are 4 currencies to post in, look for groups within each of those currencies region and post. Post in the group native language always, if you cant determine a language, post in english.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/arc-raiders-2025-6826?currency=BRL\nhttps://criticalpixel.gg/games/arc-raiders-2025-6826?currency=USD\nhttps://criticalpixel.gg/games/arc-raiders-2025-6826?currency=TRY\nhttps://criticalpixel.gg/games/arc-raiders-2025-6826?currency=EUR\n\n=====================================\n\nRules:\n\n- You can look for groups in the EUR region to post the EUR link\n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Do not change profiles\n- Dont use -- dashes on text\n- Don't over use emojis",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 2,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-09T18:38:37.839Z",
+  "lastIterationAt": "2026-03-09T19:19:07.985Z",
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "413583a93569c0af62788fe49901a9a8",
+  "profile": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "stopped": true,
+  "finishedAt": "2026-03-09T19:31:11.842Z"
+}
