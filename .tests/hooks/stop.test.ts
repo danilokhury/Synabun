@@ -84,7 +84,7 @@ describe('stop hook', () => {
     expect(existsSync(flagPath)).toBe(false);
   });
 
-  it('active loop file triggers block with iteration info', async () => {
+  it('active loop file allows stop and sets awaitingNext for server driver', async () => {
     const sessionId = testSessionId();
 
     // Write an active loop file
@@ -108,10 +108,14 @@ describe('stop hook', () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(isBlocked(result)).toBe(true);
-    const reason = getBlockReason(result);
-    expect(reason).toContain('Loop');
-    expect(reason).toContain('Iteration');
+    // Fresh-context model: stop hook allows stop (no block)
+    // Server loop driver handles /clear + next iteration
+    expect(isBlocked(result)).toBe(false);
+
+    // Verify state file updated with awaitingNext
+    const state = JSON.parse(readFileSync(loopPath, 'utf-8'));
+    expect(state.currentIteration).toBe(3);
+    expect(state.awaitingNext).toBe(true);
   });
 
   it('pending-remember with editCount >= 3 triggers block', async () => {

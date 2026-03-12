@@ -147,7 +147,11 @@ export async function handleRecall(args: {
   }
 
   const filter = must.length > 0 ? { must } : undefined;
-  const results = await searchMemories(vector, limit * 2, filter, minScore);
+  // Use a lower raw threshold for the DB query — time decay, importance,
+  // and project boosts can lift borderline results well above minScore.
+  // The actual minScore filter is applied after adjustments below.
+  const rawThreshold = Math.min(minScore, minScore * 0.5);
+  const results = await searchMemories(vector, limit * 2, filter, rawThreshold);
 
   const currentProject = detectProject();
   const scored = results
@@ -165,6 +169,7 @@ export async function handleRecall(args: {
       }
       return { id: r.id as string, score: adjustedScore, payload };
     })
+    .filter((r) => r.score >= minScore)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 
@@ -253,7 +258,7 @@ export async function handleRecall(args: {
         sessionFilter.must = [{ key: 'project', match: { value: project } }];
       }
       const sessionLimit = Math.max(3, Math.floor(limit / 2));
-      const sessionResults = await searchSessionChunks(vector, sessionLimit * 2, Object.keys(sessionFilter).length > 0 ? sessionFilter : undefined, minScore);
+      const sessionResults = await searchSessionChunks(vector, sessionLimit * 2, Object.keys(sessionFilter).length > 0 ? sessionFilter : undefined, rawThreshold);
 
       // Deduplicate: skip chunks whose dedup_memory_id matches a returned memory
       const memoryIds = new Set(scored.map((r) => r.id));

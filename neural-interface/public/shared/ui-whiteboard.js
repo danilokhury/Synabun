@@ -39,6 +39,8 @@ let _multiSelectMode = false;  // Toggled via toolbar button
 let _penPoints = null;   // Array<[x,y]> while drawing, null when idle
 let _penLiveEl = null;   // Temp SVG path for live preview
 let _arrowCreating = null; // { points: [[x,y],...], startAnchor } — multi-point arrow in progress
+let _sectionCreating = null; // { id, originX, originY, sectionType } — drag-to-create section
+let _activeSectionType = 'content'; // default section type for new placements
 let _shapeCreating = null; // { id, originX, originY } — drag-to-create shape
 
 // Tool lock (Ctrl-hold keeps tool active)
@@ -59,6 +61,21 @@ const WB_COLORS = [
   'rgba(255,255,255,0.3)',     // dim
 ];
 
+const SECTION_TYPES = {
+  navbar:              { label: 'Navbar',       w: 960, h: 56,  color: '#64748b', icon: '\u2261' },
+  hero:                { label: 'Hero',         w: 960, h: 340, color: '#6366f1', icon: '\u2606' },
+  sidebar:             { label: 'Sidebar',      w: 260, h: 400, color: '#475569', icon: '\u229e' },
+  content:             { label: 'Content',      w: 640, h: 360, color: '#737373', icon: '\u00b6' },
+  footer:              { label: 'Footer',       w: 960, h: 100, color: '#6b7280', icon: '\u2500' },
+  card:                { label: 'Card',         w: 260, h: 180, color: '#14b8a6', icon: '\u25a1' },
+  form:                { label: 'Form',         w: 380, h: 280, color: '#f59e0b', icon: '\u2610' },
+  'image-placeholder': { label: 'Image',        w: 280, h: 180, color: '#a855f7', icon: '\u229e' },
+  button:              { label: 'Button',       w: 140, h: 42,  color: '#22c55e', icon: '\u25b8' },
+  'text-block':        { label: 'Text Block',   w: 380, h: 90,  color: '#e2e8f0', icon: 'T' },
+  grid:                { label: 'Grid',         w: 640, h: 320, color: '#06b6d4', icon: '\u229e\u229e' },
+  modal:               { label: 'Modal',        w: 440, h: 300, color: '#f43f5e', icon: '\u25fb' },
+};
+
 // Persist debounce + cross-client sync
 let _persistTimer = null;
 let _isRemoteUpdate = false; // Suppress WS echo when receiving remote state
@@ -66,6 +83,13 @@ const PERSIST_DELAY = 600;
 const MAX_UNDO = 50;
 const SNAP_DIST = 30;    // px for arrow anchor snapping
 const MAX_IMAGE_DIM = 1920;
+
+/** Snap a value to grid if grid snapping is enabled. */
+function _snap(v) {
+  if (!state.gridSnap) return v;
+  const gs = state.gridSize || 20;
+  return Math.round(v / gs) * gs;
+}
 const IMAGE_QUALITY = 0.8;
 
 // DOM refs (set in init)
@@ -369,6 +393,9 @@ function createElementDOM(el) {
     grip.addEventListener('dragend', () => {
       div.classList.remove('wb-dragging-to-term');
     });
+  } else if (el.type === 'section') {
+    div.className = 'wb-section';
+    div.innerHTML = `<div class="wb-section-type-icon"></div><div class="wb-section-label" contenteditable="false"></div><div class="wb-resize-handle"></div>`;
   }
   return div;
 }
@@ -427,6 +454,21 @@ function updateElementDOM(dom, el) {
   } else if (el.type === 'image') {
     const img = dom.querySelector('img');
     if (img && img.src !== el.dataUrl) img.src = el.dataUrl;
+  } else if (el.type === 'section') {
+    const def = SECTION_TYPES[el.sectionType] || SECTION_TYPES.content;
+    const color = el.color || def.color;
+    dom.style.borderColor = color;
+    dom.style.background = color + '0d';
+    const iconEl = dom.querySelector('.wb-section-type-icon');
+    if (iconEl) {
+      iconEl.textContent = def.icon;
+      iconEl.style.color = color;
+    }
+    const labelEl = dom.querySelector('.wb-section-label');
+    if (labelEl && !labelEl.matches(':focus')) {
+      labelEl.textContent = el.label || def.label;
+      labelEl.style.color = color;
+    }
   }
 }
 
@@ -469,7 +511,7 @@ function renderArrows() {
       path.setAttribute('d', d);
       path.setAttribute('fill', 'none');
       path.setAttribute('stroke', isSel ? 'var(--accent-blue, #60a5fa)' : 'rgba(255,255,255,0.8)');
-      path.setAttribute('stroke-width', isSel ? '6' : '5');
+      path.setAttribute('stroke-width', isSel ? '3' : '2');
       path.setAttribute('stroke-linecap', 'butt');
       path.setAttribute('stroke-linejoin', 'round');
       path.setAttribute('marker-end', isSel ? 'url(#wb-arrowhead-sel)' : 'url(#wb-arrowhead)');
@@ -914,6 +956,7 @@ function hideContextMenu() {
 function setTool(name) {
   _activeTool = name;
   _arrowCreating = null;
+  _sectionCreating = null;
   clearArrowPreview();
   hideArrowHint();
 
@@ -924,13 +967,31 @@ function setTool(name) {
   }
 
   if (_root) {
-    _root.classList.remove('tool-text', 'tool-list', 'tool-arrow', 'tool-shape', 'tool-pen');
+    _root.classList.remove('tool-text', 'tool-list', 'tool-arrow', 'tool-shape', 'tool-pen', 'tool-section');
     if (name === 'text') _root.classList.add('tool-text');
     if (name === 'list') _root.classList.add('tool-list');
     if (name === 'arrow') _root.classList.add('tool-arrow');
     if (name === 'shape') _root.classList.add('tool-shape');
     if (name === 'pen') _root.classList.add('tool-pen');
+    if (name === 'section') _root.classList.add('tool-section');
   }
+
+  // Show/hide section picker
+  const sectionPicker = document.getElementById('wb-section-picker');
+  if (sectionPicker) {
+    if (name === 'section') {
+      sectionPicker.style.display = 'grid';
+      const btn = _toolbar?.querySelector('[data-tool="section"]');
+      if (btn && _toolbar) {
+        const btnRect = btn.getBoundingClientRect();
+        const toolbarRect = _toolbar.getBoundingClientRect();
+        sectionPicker.style.top = (btnRect.top - toolbarRect.top) + 'px';
+      }
+    } else {
+      sectionPicker.style.display = 'none';
+    }
+  }
+
   updateLockIndicator();
 }
 
@@ -1560,8 +1621,8 @@ function onMouseDown(e) {
     const el = addElement({
       id: _genId(),
       type: 'text',
-      x: pt.x,
-      y: pt.y - 10,
+      x: _snap(pt.x),
+      y: _snap(pt.y - 10),
       width: 0,
       height: 0,       // auto-size
       content: '',
@@ -1584,8 +1645,8 @@ function onMouseDown(e) {
     const el = addElement({
       id: _genId(),
       type: 'list',
-      x: pt.x,
-      y: pt.y - 10,
+      x: _snap(pt.x),
+      y: _snap(pt.y - 10),
       width: 0,
       height: 0,
       items: [''],
@@ -1611,8 +1672,8 @@ function onMouseDown(e) {
       id,
       type: 'shape',
       shape: 'rect',
-      x: pt.x,
-      y: pt.y,
+      x: _snap(pt.x),
+      y: _snap(pt.y),
       width: 1,
       height: 1,
       color: _activeColor,
@@ -1620,6 +1681,32 @@ function onMouseDown(e) {
     };
     _elements.push(el);
     _shapeCreating = { id, originX: pt.x, originY: pt.y };
+    renderAll();
+    e.preventDefault();
+    return;
+  }
+
+  if (_activeTool === 'section') {
+    exitEditMode();
+    deselectAll();
+    const id = _genId();
+    const def = SECTION_TYPES[_activeSectionType] || SECTION_TYPES.content;
+    const el = {
+      id,
+      type: 'section',
+      sectionType: _activeSectionType,
+      label: def.label,
+      x: _snap(pt.x),
+      y: _snap(pt.y),
+      width: 1,
+      height: 1,
+      color: def.color,
+      zIndex: _nextZIndex++,
+    };
+    _elements.push(el);
+    _sectionCreating = { id, originX: pt.x, originY: pt.y, sectionType: _activeSectionType };
+    const picker = document.getElementById('wb-section-picker');
+    if (picker) picker.style.display = 'none';
     renderAll();
     e.preventDefault();
     return;
@@ -1686,8 +1773,10 @@ function onMouseMove(e) {
 
   // Multi-drag move
   if (_drag?.type === 'move-multi') {
-    const dx = e.clientX - _drag.startX;
-    const dy = e.clientY - _drag.startY;
+    const rawDx = e.clientX - _drag.startX;
+    const rawDy = e.clientY - _drag.startY;
+    const dx = state.gridSnap ? (_snap(_drag.snapshots[0]?.origX + rawDx) - _drag.snapshots[0]?.origX) : rawDx;
+    const dy = state.gridSnap ? (_snap(_drag.snapshots[0]?.origY + rawDy) - _drag.snapshots[0]?.origY) : rawDy;
     for (const snap of _drag.snapshots) {
       const el = _elements.find(el2 => el2.id === snap.id);
       if (!el) continue;
@@ -1714,10 +1803,28 @@ function onMouseMove(e) {
     const pt = clientToCanvas(e.clientX, e.clientY);
     const el = _elements.find(el2 => el2.id === _shapeCreating.id);
     if (el) {
-      el.x = Math.min(_shapeCreating.originX, pt.x);
-      el.y = Math.min(_shapeCreating.originY, pt.y);
-      el.width = Math.max(Math.abs(pt.x - _shapeCreating.originX), 2);
-      el.height = Math.max(Math.abs(pt.y - _shapeCreating.originY), 2);
+      const sx = _snap(Math.min(_shapeCreating.originX, pt.x));
+      const sy = _snap(Math.min(_shapeCreating.originY, pt.y));
+      el.x = sx;
+      el.y = sy;
+      el.width = Math.max(_snap(Math.abs(pt.x - _shapeCreating.originX)), 2);
+      el.height = Math.max(_snap(Math.abs(pt.y - _shapeCreating.originY)), 2);
+      renderAll();
+    }
+    return;
+  }
+
+  // Section drag-to-create
+  if (_sectionCreating) {
+    const pt = clientToCanvas(e.clientX, e.clientY);
+    const el = _elements.find(el2 => el2.id === _sectionCreating.id);
+    if (el) {
+      const sx = _snap(Math.min(_sectionCreating.originX, pt.x));
+      const sy = _snap(Math.min(_sectionCreating.originY, pt.y));
+      el.x = sx;
+      el.y = sy;
+      el.width = Math.max(_snap(Math.abs(pt.x - _sectionCreating.originX)), 2);
+      el.height = Math.max(_snap(Math.abs(pt.y - _sectionCreating.originY)), 2);
       renderAll();
     }
     return;
@@ -1736,8 +1843,8 @@ function onMouseMove(e) {
     const dy = e.clientY - _drag.startY;
     const el = _elements.find(el2 => el2.id === _drag.id);
     if (el) {
-      el.x = _drag.origX + dx;
-      el.y = _drag.origY + dy;
+      el.x = _snap(_drag.origX + dx);
+      el.y = _snap(_drag.origY + dy);
       renderAll();
     }
     return;
@@ -1832,8 +1939,8 @@ function onMouseMove(e) {
     const dy = e.clientY - _drag.startY;
     const el = _elements.find(el2 => el2.id === _drag.id);
     if (el) {
-      el.width = Math.max(60, _drag.origW + dx);
-      el.height = Math.max(30, _drag.origH + dy);
+      el.width = _snap(Math.max(60, _drag.origW + dx));
+      el.height = _snap(Math.max(30, _drag.origH + dy));
       renderAll();
     }
     return;
@@ -1908,11 +2015,13 @@ function onMouseUp(e) {
     if (el) {
       // Click without drag → fall back to default size
       if (el.width < 10 && el.height < 10) {
-        el.x = _shapeCreating.originX - 80;
-        el.y = _shapeCreating.originY - 50;
+        el.x = _snap(_shapeCreating.originX - 80);
+        el.y = _snap(_shapeCreating.originY - 50);
         el.width = 160;
         el.height = 100;
       }
+      el.x = _snap(el.x);
+      el.y = _snap(el.y);
       el.width = Math.max(el.width, 30);
       el.height = Math.max(el.height, 20);
       pushUndo('add', null, { ...el });
@@ -1921,6 +2030,30 @@ function onMouseUp(e) {
       autoRevert();
     }
     _shapeCreating = null;
+    return;
+  }
+
+  // Finalize section drag-to-create
+  if (_sectionCreating) {
+    const el = _elements.find(el2 => el2.id === _sectionCreating.id);
+    if (el) {
+      if (el.width < 10 && el.height < 10) {
+        const def = SECTION_TYPES[el.sectionType] || SECTION_TYPES.content;
+        el.x = _snap(_sectionCreating.originX - def.w / 2);
+        el.y = _snap(_sectionCreating.originY - def.h / 2);
+        el.width = def.w;
+        el.height = def.h;
+      }
+      el.x = _snap(el.x);
+      el.y = _snap(el.y);
+      el.width = Math.max(el.width, 40);
+      el.height = Math.max(el.height, 30);
+      pushUndo('add', null, { ...el });
+      selectElement(el.id);
+      persistDebounced();
+      autoRevert();
+    }
+    _sectionCreating = null;
     return;
   }
 
@@ -2005,6 +2138,41 @@ function onDblClick(e) {
       persistDebounced();
     }
     e.preventDefault();
+    return;
+  }
+
+  // Double-click section → edit label
+  const sectionEl = e.target.closest('.wb-section[data-wb-id]');
+  if (sectionEl && _activeTool === 'select') {
+    const id = sectionEl.dataset.wbId;
+    const el = _elements.find(el2 => el2.id === id);
+    if (el) {
+      const labelDiv = sectionEl.querySelector('.wb-section-label');
+      if (labelDiv) {
+        const before = { ...el };
+        labelDiv.contentEditable = 'true';
+        labelDiv.focus();
+        const range = document.createRange();
+        range.selectNodeContents(labelDiv);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        const onBlur = () => {
+          labelDiv.contentEditable = 'false';
+          el.label = labelDiv.textContent.trim() || (SECTION_TYPES[el.sectionType]?.label || 'Section');
+          pushUndo('edit', before, { ...el });
+          renderAll();
+          persistDebounced();
+          labelDiv.removeEventListener('blur', onBlur);
+        };
+        labelDiv.addEventListener('blur', onBlur);
+        labelDiv.addEventListener('keydown', (ke) => {
+          if (ke.key === 'Enter') { ke.preventDefault(); labelDiv.blur(); }
+          if (ke.key === 'Escape') { labelDiv.textContent = before.label || ''; labelDiv.blur(); }
+        });
+      }
+    }
+    e.preventDefault();
+    return;
   }
 }
 
@@ -2085,6 +2253,11 @@ function onKeyDown(e) {
         _shapeCreating = null;
         renderAll();
       }
+      if (_sectionCreating) {
+        _elements = _elements.filter(el => el.id !== _sectionCreating.id);
+        _sectionCreating = null;
+        renderAll();
+      }
       if (_arrowCreating) { _arrowCreating = null; clearArrowPreview(); }
       if (_multiSelectMode) toggleMultiSelectMode(false);
       exitEditMode();
@@ -2160,8 +2333,11 @@ function onKeyDown(e) {
 
 async function onPaste(e) {
   if (!isWhiteboardActive()) return;
-  if (document.activeElement?.closest('.wb-text.editing')) return;
-  if (document.activeElement?.closest('.wb-list.editing')) return;
+  // Only process paste when whiteboard (or its children) has focus
+  const active = document.activeElement;
+  if (active && active !== _root && !_root.contains(active)) return;
+  if (active?.closest('.wb-text.editing')) return;
+  if (active?.closest('.wb-list.editing')) return;
 
   const items = e.clipboardData?.items;
   if (!items) return;
@@ -2292,6 +2468,33 @@ function initColorPicker() {
   });
 }
 
+function initSectionPicker() {
+  const picker = document.getElementById('wb-section-picker');
+  const btn = _toolbar?.querySelector('[data-tool="section"]');
+  if (!picker || !btn) return;
+
+  picker.innerHTML = Object.entries(SECTION_TYPES).map(([key, def]) =>
+    `<button class="wb-section-btn${key === _activeSectionType ? ' active' : ''}" data-section="${key}">
+       <span class="wb-section-icon" style="color:${def.color}">${def.icon}</span>
+       <span class="wb-section-label-text">${def.label}</span>
+     </button>`
+  ).join('');
+
+  picker.addEventListener('click', (e2) => {
+    const sBtn = e2.target.closest('.wb-section-btn');
+    if (!sBtn) return;
+    _activeSectionType = sBtn.dataset.section;
+    picker.querySelectorAll('.wb-section-btn').forEach(s => s.classList.remove('active'));
+    sBtn.classList.add('active');
+  });
+
+  document.addEventListener('mousedown', (e2) => {
+    if (!e2.target.closest('#wb-section-picker') && !e2.target.closest('[data-tool="section"]')) {
+      picker.style.display = 'none';
+    }
+  });
+}
+
 // ═══════════════════════════════════════════
 // TOOLBAR HANDLERS
 // ═══════════════════════════════════════════
@@ -2388,6 +2591,7 @@ export function restoreWhiteboardSnapshot(snap) {
   _selectedId = null;
   _selectedIds.clear();
   _arrowCreating = null;
+  _sectionCreating = null;
   _clipboard = null;
   renderAll();
   persistDebounced();
@@ -2401,6 +2605,7 @@ export function clearWhiteboard() {
   _selectedId = null;
   _selectedIds.clear();
   _arrowCreating = null;
+  _sectionCreating = null;
   _clipboard = null;
   renderAll();
   persistDebounced();
@@ -2465,6 +2670,9 @@ export function initWhiteboard() {
   // Color picker
   initColorPicker();
 
+  // Section picker
+  initSectionPicker();
+
   // Prevent context menu on whiteboard
   _root.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -2526,10 +2734,14 @@ function _connectWhiteboardWS() {
   _ws.onopen = () => {
     console.log('[whiteboard-ws] Connected');
     if (_wsReconnectTimer) { clearInterval(_wsReconnectTimer); _wsReconnectTimer = null; }
-    // Report viewport dimensions so MCP tools can use percentage coordinates
+    // Report usable viewport dimensions (excluding navbar, toolbar, terminal) for MCP coordinate mapping
     if (_root) {
       const rect = _root.getBoundingClientRect();
-      _ws.send(JSON.stringify({ type: 'viewport', width: Math.round(rect.width), height: Math.round(rect.height) }));
+      const titleBar = document.getElementById('title-bar');
+      const toolbar = document.getElementById('wb-toolbar');
+      const navH = titleBar ? titleBar.getBoundingClientRect().height : 0;
+      const tbW = toolbar ? toolbar.getBoundingClientRect().right - rect.left + 12 : 60;
+      _ws.send(JSON.stringify({ type: 'viewport', width: Math.round(rect.width - tbW), height: Math.round(rect.height - navH), yOffset: Math.round(navH), xOffset: Math.round(tbW) }));
     }
   };
 
@@ -2558,7 +2770,11 @@ window.addEventListener('resize', () => {
   _viewportResizeTimer = setTimeout(() => {
     if (_ws && _ws.readyState === 1 && _root) {
       const rect = _root.getBoundingClientRect();
-      _ws.send(JSON.stringify({ type: 'viewport', width: Math.round(rect.width), height: Math.round(rect.height) }));
+      const titleBar = document.getElementById('title-bar');
+      const toolbar = document.getElementById('wb-toolbar');
+      const navH = titleBar ? titleBar.getBoundingClientRect().height : 0;
+      const tbW = toolbar ? toolbar.getBoundingClientRect().right - rect.left + 12 : 60;
+      _ws.send(JSON.stringify({ type: 'viewport', width: Math.round(rect.width - tbW), height: Math.round(rect.height - navH), yOffset: Math.round(navH), xOffset: Math.round(tbW) }));
     }
   }, 300);
 });
@@ -2607,6 +2823,7 @@ function _handleExternalCommand(msg) {
       _selectedId = null;
       _selectedIds.clear();
       _arrowCreating = null;
+      _sectionCreating = null;
       renderAll();
       break;
 
@@ -2747,6 +2964,29 @@ async function _captureScreenshot(requestId) {
           ctx.lineTo(el.points[i][0], el.points[i][1]);
         }
         ctx.stroke();
+      } else if (el.type === 'section') {
+        const def = SECTION_TYPES[el.sectionType] || SECTION_TYPES.content;
+        const color = el.color || def.color;
+        const w = el.width || def.w;
+        const h = el.height || def.h;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(el.x, el.y, w, h);
+        ctx.setLineDash([]);
+        ctx.fillStyle = color + '1a';
+        ctx.fillRect(el.x, el.y, w, h);
+        ctx.font = '28px sans-serif';
+        ctx.fillStyle = color + '33';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(def.icon, el.x + w / 2, el.y + h / 2);
+        ctx.font = '12px JetBrains Mono, monospace';
+        ctx.fillStyle = color;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText(el.label || def.label, el.x + 8, el.y + 6);
+        ctx.textAlign = 'start';
       }
 
       ctx.restore();

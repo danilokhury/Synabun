@@ -55,7 +55,26 @@
       "WebFetch(domain:www.npmjs.com)",
       "WebFetch(domain:medium.com)",
       "WebFetch(domain:docs.anthropic.com)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(tasklist:*)",
+      "Bash(mv:*)",
+      "Bash(wait bm6q2xrku:*)",
+      "Bash(xargs wc:*)",
+      "Bash(npx vitest:*)",
+      "Bash(where claude:*)",
+      "Read(//c/users/danil/.local/bin/**)",
+      "Bash(/j/Sites/Apps/Synabun/neural-interface/node_modules/.bin/claude:*)",
+      "Bash(head:*)",
+      "Bash(find /j/Sites/Apps/Synabun/mcp-server/src -type f -name \"*.ts\" 2>/dev/null | head -30)",
+      "Bash(python3 -c \"import json; f=json.load\\(open\\('J:/Sites/Apps/Synabun/data/loop/1390c719-6d6b-4ba3-9426-3a8fa90c734e.json'\\)\\); print\\(f['task'][:500]\\)\")",
+      "Bash(head -c 2000 ./data/sessions-cache-j--Sites-Apps-Synabun.json | jq '.[0]' 2>/dev/null || head -c 2000 ./data/sessions-cache-j--Sites-Apps-Synabun.json)",
+      "Read(//c/Users/danil/.claude/skills/synabun/**)",
+      "mcp__SynaBun__discord_guild",
+      "mcp__SynaBun__discord_role",
+      "mcp__SynaBun__discord_channel",
+      "mcp__SynaBun__discord_onboarding",
+      "mcp__SynaBun__discord_message",
+      "mcp__SynaBun__discord_webhook"
     ]
   }
 }

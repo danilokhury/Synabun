@@ -8,12 +8,14 @@
 import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
 import { storage } from './storage.js';
+import { sendToPanel } from './ui-claude-panel.js';
+import { on } from './state.js';
 
 const $ = (id) => document.getElementById(id);
 
 // ─── Local state ────────────────────────
 let _visible = false;
-let _width = 280;
+let _width = 260;
 let _collapsed = new Set();   // set of dir paths that are collapsed
 let _filterText = '';
 let _sortMode = 'name';       // 'name' | 'size' | 'date'
@@ -33,6 +35,8 @@ let _findIndex = -1;
 let _undoStack = [];              // [{ value, selStart, selEnd }]
 let _redoStack = [];
 let _undoBurstOpen = false;       // true while user is in a typing burst
+let _folderColors = {};           // { "/path/to/folder": "#hex" }
+let _customIcons = null;          // { extensions: {}, filenames: {} } from server
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 500;
@@ -40,6 +44,80 @@ const MAX_WIDTH = 500;
 // ─── SVG icons ────────────────────────
 const FOLDER_SVG = '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
 const FILE_SVG = '<svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><polyline points="13 2 13 7 18 7"/></svg>';
+
+// ─── File type icons ────────────────────────
+// Each shape is stroke-based (fill:none via CSS). Color set via `color` on .fe-icon span.
+const FI = {
+  code:     '<svg viewBox="0 0 24 24"><path d="M9 3H7C5.3 3 4 4.3 4 6v4c0 1.1-.9 2-2 2 1.1 0 2 .9 2 2v4c0 1.7 1.3 3 3 3h2"/><path d="M15 3h2c1.7 0 3 1.3 3 3v4c0 1.1.9 2 2 2-1.1 0-2 .9-2 2v4c0 1.7-1.3 3-3 3h-2"/></svg>',
+  markup:   '<svg viewBox="0 0 24 24"><polyline points="8 6 2 12 8 18"/><polyline points="16 6 22 12 16 18"/><line x1="14" y1="4" x2="10" y2="20"/></svg>',
+  style:    '<svg viewBox="0 0 24 24"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>',
+  image:    '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
+  terminal: '<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="6 9 10 12 6 15"/><line x1="12" y1="15" x2="18" y2="15"/></svg>',
+  doc:      '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="12" y2="17"/></svg>',
+  gear:     '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4m0 14v4M1 12h4m14 0h4M4.2 4.2l2.8 2.8m10 10l2.8 2.8M19.8 4.2l-2.8 2.8M7 17l-2.8 2.8"/></svg>',
+  lock:     '<svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+  git:      '<svg viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>',
+  db:       '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>',
+  file:     FILE_SVG,
+};
+
+// Extension → { i: icon key, c: color hex }
+const FI_MAP = {
+  js: { i:'code', c:'#e8d44d' }, mjs: { i:'code', c:'#e8d44d' }, cjs: { i:'code', c:'#e8d44d' },
+  ts: { i:'code', c:'#3178c6' }, mts: { i:'code', c:'#3178c6' }, cts: { i:'code', c:'#3178c6' },
+  jsx: { i:'markup', c:'#61dafb' }, tsx: { i:'markup', c:'#61dafb' },
+  html: { i:'markup', c:'#e44d26' }, htm: { i:'markup', c:'#e44d26' },
+  xml: { i:'markup', c:'#e44d26' }, vue: { i:'markup', c:'#42b883' }, svelte: { i:'markup', c:'#ff3e00' },
+  css: { i:'style', c:'#2196f3' }, scss: { i:'style', c:'#cd6799' }, sass: { i:'style', c:'#cd6799' }, less: { i:'style', c:'#6a9ccd' },
+  json: { i:'code', c:'#a8b065' }, jsonc: { i:'code', c:'#a8b065' }, json5: { i:'code', c:'#a8b065' },
+  py: { i:'code', c:'#3776ab' }, pyw: { i:'code', c:'#3776ab' },
+  rb: { i:'code', c:'#cc342d' }, rs: { i:'code', c:'#dea584' }, go: { i:'code', c:'#00add8' },
+  java: { i:'code', c:'#e76f00' }, kt: { i:'code', c:'#7f52ff' }, scala: { i:'code', c:'#dc322f' },
+  php: { i:'code', c:'#777bb3' }, c: { i:'code', c:'#8a8a8a' }, h: { i:'code', c:'#8a8a8a' },
+  cpp: { i:'code', c:'#00599c' }, cc: { i:'code', c:'#00599c' }, hpp: { i:'code', c:'#00599c' },
+  cs: { i:'code', c:'#178600' }, swift: { i:'code', c:'#f05138' },
+  lua: { i:'code', c:'#4e6faf' }, zig: { i:'code', c:'#f7a41d' }, r: { i:'code', c:'#276dc3' },
+  wasm: { i:'code', c:'#654ff0' },
+  sql: { i:'db', c:'#e38c00' }, csv: { i:'db', c:'#4eaa25' }, tsv: { i:'db', c:'#4eaa25' },
+  md: { i:'doc', c:'#519aba' }, mdx: { i:'doc', c:'#519aba' }, txt: { i:'doc', c:'#9aa7b0' },
+  yaml: { i:'gear', c:'#cb171e' }, yml: { i:'gear', c:'#cb171e' },
+  toml: { i:'gear', c:'#9aa7b0' }, ini: { i:'gear', c:'#9aa7b0' },
+  sh: { i:'terminal', c:'#4eaa25' }, bash: { i:'terminal', c:'#4eaa25' }, zsh: { i:'terminal', c:'#4eaa25' },
+  bat: { i:'terminal', c:'#c1f12e' }, cmd: { i:'terminal', c:'#c1f12e' }, ps1: { i:'terminal', c:'#4e73b5' },
+  png: { i:'image', c:'#a074c4' }, jpg: { i:'image', c:'#a074c4' }, jpeg: { i:'image', c:'#a074c4' },
+  gif: { i:'image', c:'#a074c4' }, webp: { i:'image', c:'#a074c4' }, ico: { i:'image', c:'#a074c4' },
+  bmp: { i:'image', c:'#a074c4' }, svg: { i:'image', c:'#ffb13b' },
+  lock: { i:'lock', c:'#9aa7b0' }, log: { i:'file', c:'#9aa7b0' }, map: { i:'file', c:'#9aa7b0' },
+};
+
+function getFileIcon(filename) {
+  const name = filename.toLowerCase();
+
+  // Custom filename override
+  if (_customIcons?.filenames?.[name]) {
+    return { img: `/custom-icons/${_customIcons.filenames[name].path}`, color: null };
+  }
+
+  // Special filenames (check custom ext overrides inline)
+  if (name === 'dockerfile' || name.startsWith('dockerfile.')) return { svg: FI.terminal, color: '#2496ed' };
+  if (name === 'makefile' || name === 'gnumakefile') return { svg: FI.terminal, color: '#6d8086' };
+  if (name.startsWith('.git')) return { svg: FI.git, color: '#f05032' };
+  if (name === '.env' || name.startsWith('.env.')) return { svg: FI.gear, color: '#ecd53f' };
+  if (/^(license|licence|notice)$/i.test(name)) return { svg: FI.doc, color: '#9aa7b0' };
+  if (/^(readme|contributing|changelog|security)/i.test(name)) return { svg: FI.doc, color: '#519aba' };
+
+  const dot = name.lastIndexOf('.');
+  const ext = dot >= 0 ? name.slice(dot + 1) : '';
+
+  // Custom extension override
+  if (ext && _customIcons?.extensions?.[ext]) {
+    return { img: `/custom-icons/${_customIcons.extensions[ext].path}`, color: null };
+  }
+
+  const info = FI_MAP[ext];
+  if (info) return { svg: FI[info.i], color: info.c };
+  return { svg: FI.file, color: null };
+}
 
 // Git status → badge text + class
 const GIT_BADGE = {
@@ -63,6 +141,19 @@ function applyFileExplorerWidth() {
   document.documentElement.style.setProperty('--file-explorer-width', w);
 }
 
+function calcDefaultWidth() {
+  const barLeft = document.querySelector('#title-bar .bar-left');
+  if (!barLeft) return _width;
+  const seps = barLeft.querySelectorAll('.bar-sep');
+  if (seps.length < 2) return _width;
+  const titleBar = document.getElementById('title-bar');
+  const tbPad = parseFloat(getComputedStyle(titleBar).paddingLeft) || 18;
+  const barLeftRect = barLeft.getBoundingClientRect();
+  const sepRect = seps[1].getBoundingClientRect();
+  const w = Math.round(sepRect.right - barLeftRect.left + tbPad);
+  return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, w));
+}
+
 
 // ═══════════════════════════════════════════
 // PERSISTENCE
@@ -72,6 +163,7 @@ function saveVisible() { try { storage.setItem(KEYS.FILE_EXPLORER_VISIBLE, Strin
 function saveWidth() { try { storage.setItem(KEYS.FILE_EXPLORER_WIDTH, String(_width)); } catch {} }
 function saveCollapsed() { try { storage.setItem(KEYS.FILE_EXPLORER_COLLAPSED, JSON.stringify([..._collapsed])); } catch {} }
 function saveSort() { try { storage.setItem(KEYS.FILE_EXPLORER_SORT, _sortMode); } catch {} }
+function saveFolderColors() { try { storage.setItem(KEYS.FILE_EXPLORER_FOLDER_COLORS, JSON.stringify(_folderColors)); } catch {} }
 
 function loadPersistedState() {
   const vis = storage.getItem(KEYS.FILE_EXPLORER_VISIBLE);
@@ -87,6 +179,11 @@ function loadPersistedState() {
 
   const sort = storage.getItem(KEYS.FILE_EXPLORER_SORT);
   if (sort === 'name' || sort === 'size' || sort === 'date') _sortMode = sort;
+
+  try {
+    const fc = JSON.parse(storage.getItem(KEYS.FILE_EXPLORER_FOLDER_COLORS) || '{}');
+    if (fc && typeof fc === 'object') _folderColors = fc;
+  } catch {}
 }
 
 
@@ -361,7 +458,11 @@ async function generateCommitMessage() {
 
   genBtn?.classList.add('loading');
   try {
-    const res = await fetch('/api/git/diff-summary?path=' + encodeURIComponent(_selectedProject.path));
+    const res = await fetch('/api/git/generate-message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: _selectedProject.path })
+    });
     const data = await res.json();
     if (data.ok && data.message) {
       input.value = data.message;
@@ -629,8 +730,23 @@ function createRow(item, depth) {
   }
 
   const icon = document.createElement('span');
-  icon.className = `fe-icon ${item.type === 'dir' ? 'fe-icon--dir' : 'fe-icon--file'}`;
-  icon.innerHTML = item.type === 'dir' ? FOLDER_SVG : FILE_SVG;
+  if (item.type === 'dir') {
+    icon.className = 'fe-icon fe-icon--dir';
+    icon.innerHTML = FOLDER_SVG;
+    if (_folderColors[item.fullPath]) {
+      const svg = icon.querySelector('svg');
+      if (svg) { svg.style.fill = _folderColors[item.fullPath]; svg.style.stroke = _folderColors[item.fullPath]; }
+    }
+  } else {
+    const fi = getFileIcon(item.name);
+    icon.className = 'fe-icon fe-icon--file';
+    if (fi.img) {
+      icon.innerHTML = `<img src="${fi.img}" class="fe-icon-img">`;
+    } else {
+      icon.innerHTML = fi.svg;
+      if (fi.color) icon.style.color = fi.color;
+    }
+  }
   row.appendChild(icon);
 
   const name = document.createElement('span');
@@ -667,78 +783,447 @@ function createRow(item, depth) {
       }
     });
   } else {
+    // Left-click opens context menu for files too
     row.addEventListener('click', (e) => {
-      showFileContextMenu(e, item.fullPath, row);
+      e.preventDefault();
+      e.stopPropagation();
+      showContextMenu(e, item, node, row, icon, depth);
     });
   }
+
+  // Right-click context menu for both files and folders
+  row.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showContextMenu(e, item, node, row, icon, depth);
+  });
 
   return node;
 }
 
-// ─── File context menu ────────────────────────
-let _activeFileMenu = null;
+// ─── Delete undo/redo stacks ─────────────
+let _deleteUndoStack = [];   // [{ path, content, type }]  — deleted items
+let _deleteRedoStack = [];   // [{ path, content, type }]  — undone deletes
 
-function dismissFileMenu() {
-  if (_activeFileMenu) { _activeFileMenu.remove(); _activeFileMenu = null; }
+function updateDeleteButtons() {
+  const undoBtn = $('fe-undo-btn');
+  const redoBtn = $('fe-redo-btn');
+  if (undoBtn) undoBtn.classList.toggle('fe-disabled', _deleteUndoStack.length === 0);
+  if (redoBtn) redoBtn.classList.toggle('fe-disabled', _deleteRedoStack.length === 0);
 }
 
-function showFileContextMenu(e, filePath, rowEl) {
-  e.stopPropagation();
-  dismissFileMenu();
+async function deleteFileOrDir(filePath, itemName, type) {
+  // Read content before deleting (for undo) — only for files
+  let content = null;
+  if (type === 'file') {
+    try {
+      const r = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`);
+      const d = await r.json();
+      if (d.ok) content = d.content;
+    } catch {}
+  }
 
+  const res = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (!data.ok) {
+    showToast(data.error || 'Delete failed');
+    return false;
+  }
+
+  _deleteUndoStack.push({ path: filePath, content, type });
+  _deleteRedoStack = [];
+  updateDeleteButtons();
+  showToast(`Deleted ${itemName}`);
+
+  // Refresh tree
+  _cache.clear();
+  await loadDirectory();
+  buildFileTree();
+  return true;
+}
+
+async function undoDelete() {
+  if (_deleteUndoStack.length === 0) return;
+  const entry = _deleteUndoStack.pop();
+
+  if (entry.type === 'file' && entry.content !== null) {
+    // Recreate file via POST — need to ensure parent dir exists
+    try {
+      const res = await fetch('/api/file-content', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: entry.path, content: entry.content, create: true }),
+      });
+      const data = await res.json();
+      if (!data.ok) { showToast('Undo failed'); _deleteUndoStack.push(entry); updateDeleteButtons(); return; }
+    } catch { showToast('Undo failed'); _deleteUndoStack.push(entry); updateDeleteButtons(); return; }
+  } else if (entry.type === 'dir') {
+    // Recreate empty dir
+    try {
+      const res = await fetch('/api/file-mkdir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: entry.path }),
+      });
+      const data = await res.json();
+      if (!data.ok) { showToast('Undo failed'); _deleteUndoStack.push(entry); updateDeleteButtons(); return; }
+    } catch { showToast('Undo failed'); _deleteUndoStack.push(entry); updateDeleteButtons(); return; }
+  } else {
+    showToast('Cannot undo — file content was not saved');
+    _deleteUndoStack.push(entry);
+    updateDeleteButtons();
+    return;
+  }
+
+  _deleteRedoStack.push(entry);
+  updateDeleteButtons();
+  showToast(`Restored ${entry.path.split('/').pop()}`);
+  _cache.clear();
+  await loadDirectory();
+  buildFileTree();
+}
+
+async function redoDelete() {
+  if (_deleteRedoStack.length === 0) return;
+  const entry = _deleteRedoStack.pop();
+
+  const res = await fetch(`/api/file-content?path=${encodeURIComponent(entry.path)}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (!data.ok) { showToast('Redo failed'); _deleteRedoStack.push(entry); updateDeleteButtons(); return; }
+
+  _deleteUndoStack.push(entry);
+  updateDeleteButtons();
+  showToast(`Deleted ${entry.path.split('/').pop()}`);
+  _cache.clear();
+  await loadDirectory();
+  buildFileTree();
+}
+
+// ─── Confirmation modal ──────────────────
+function showDeleteConfirm(itemName, itemType, onConfirm) {
+  // Remove any existing modal
+  const existing = document.getElementById('fe-delete-modal');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'fe-delete-modal';
+  overlay.className = 'fe-modal-overlay';
+
+  const modal = document.createElement('div');
+  modal.className = 'fe-modal';
+
+  const typeLabel = itemType === 'dir' ? 'folder' : 'file';
+  modal.innerHTML = `
+    <div class="fe-modal-title">Delete ${typeLabel}</div>
+    <div class="fe-modal-body">Are you sure you want to delete <strong>${itemName}</strong>?${itemType === 'dir' ? '<br><span style="color:rgba(255,255,255,0.35);font-size:11px">Only empty folders can be deleted.</span>' : ''}</div>
+    <div class="fe-modal-actions">
+      <button class="fe-modal-btn fe-modal-cancel">Cancel</button>
+      <button class="fe-modal-btn fe-modal-confirm">Delete</button>
+    </div>
+  `;
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  // Animate in
+  requestAnimationFrame(() => overlay.classList.add('fe-modal-overlay--in'));
+
+  const dismiss = () => {
+    overlay.classList.remove('fe-modal-overlay--in');
+    setTimeout(() => overlay.remove(), 150);
+  };
+
+  modal.querySelector('.fe-modal-cancel').addEventListener('click', dismiss);
+  modal.querySelector('.fe-modal-confirm').addEventListener('click', () => {
+    dismiss();
+    onConfirm();
+  });
+  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) dismiss(); });
+  // Esc to cancel
+  const onKey = (ev) => { if (ev.key === 'Escape') { dismiss(); document.removeEventListener('keydown', onKey); } };
+  document.addEventListener('keydown', onKey);
+}
+
+// ─── Context menu ────────────────────────
+let _activeCtxMenu = null;
+let _activeColorPalette = null;
+
+const FOLDER_COLORS = [
+  { hex: '#ffb74d', label: 'Amber' },
+  { hex: '#64b5f6', label: 'Blue' },
+  { hex: '#81c784', label: 'Green' },
+  { hex: '#e57373', label: 'Red' },
+  { hex: '#ba68c8', label: 'Purple' },
+  { hex: '#4dd0e1', label: 'Cyan' },
+  { hex: '#fff176', label: 'Yellow' },
+  { hex: '#a1887f', label: 'Brown' },
+  { hex: '#90a4ae', label: 'Grey' },
+];
+
+function dismissCtxMenu() {
+  if (_activeCtxMenu) {
+    if (_activeCtxMenu._row) _activeCtxMenu._row.classList.remove('fe-row--ctx-active');
+    _activeCtxMenu.classList.remove('fe-ctx-flyout--in');
+    _activeCtxMenu.classList.add('fe-ctx-flyout--out');
+    const el = _activeCtxMenu;
+    setTimeout(() => el.remove(), 150);
+    _activeCtxMenu = null;
+  }
+}
+
+function dismissColorPalette() {
+  if (_activeColorPalette) { _activeColorPalette.remove(); _activeColorPalette = null; }
+}
+
+function setFolderColor(folderPath, color, iconEl, dotEl) {
+  if (color) {
+    _folderColors[folderPath] = color;
+  } else {
+    delete _folderColors[folderPath];
+  }
+  saveFolderColors();
+
+  // Update icon in DOM
+  if (iconEl) {
+    const svg = iconEl.querySelector('svg');
+    if (svg) {
+      svg.style.fill = color || '';
+      svg.style.stroke = color || '';
+    }
+  }
+  // Update color dot
+  if (dotEl) {
+    dotEl.style.color = color || '#ffb74d';
+  }
+}
+
+function showColorPalette(e, folderPath, iconEl, dotEl) {
+  dismissColorPalette();
+  dismissCtxMenu();
+
+  const palette = document.createElement('div');
+  palette.className = 'fe-color-palette';
+
+  const currentColor = _folderColors[folderPath] || '#ffb74d';
+
+  for (const c of FOLDER_COLORS) {
+    const swatch = document.createElement('button');
+    swatch.className = 'fe-color-swatch' + (c.hex === currentColor ? ' fe-color-swatch--active' : '');
+    swatch.style.background = c.hex;
+    swatch.title = c.label;
+    swatch.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      setFolderColor(folderPath, c.hex === '#ffb74d' ? null : c.hex, iconEl, dotEl);
+      dismissColorPalette();
+    });
+    palette.appendChild(swatch);
+  }
+
+  // Reset button
+  if (_folderColors[folderPath]) {
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'fe-ctx-item fe-color-reset';
+    resetBtn.textContent = 'Reset';
+    resetBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      setFolderColor(folderPath, null, iconEl, dotEl);
+      dismissColorPalette();
+    });
+    palette.appendChild(resetBtn);
+  }
+
+  const panel = $('file-explorer-panel');
+  if (panel) panel.appendChild(palette);
+
+  // Position near the click
+  const panelRect = panel.getBoundingClientRect();
+  palette.style.top = `${e.clientY - panelRect.top + 4}px`;
+  palette.style.left = `${e.clientX - panelRect.left}px`;
+
+  // Clamp
+  requestAnimationFrame(() => {
+    const palRect = palette.getBoundingClientRect();
+    if (palRect.right > panelRect.right - 8) {
+      palette.style.left = `${panelRect.width - palRect.width - 8}px`;
+    }
+    if (palRect.bottom > panelRect.bottom - 8) {
+      palette.style.top = `${e.clientY - panelRect.top - palRect.height - 4}px`;
+    }
+  });
+
+  _activeColorPalette = palette;
+
+  const onOutside = (ev) => {
+    if (!palette.contains(ev.target)) {
+      dismissColorPalette();
+      document.removeEventListener('mousedown', onOutside, true);
+    }
+  };
+  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+}
+
+function _ctxItem(iconSvg, label, onClick) {
+  const btn = document.createElement('button');
+  btn.className = 'fe-ctx-item';
+  btn.innerHTML = iconSvg + `<span>${label}</span>`;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function _ctxSeparator() {
+  const sep = document.createElement('div');
+  sep.className = 'fe-ctx-separator';
+  return sep;
+}
+
+function showContextMenu(e, item, nodeEl, rowEl, iconEl, depth) {
+  dismissCtxMenu();
+  dismissColorPalette();
+
+  const panel = $('file-explorer-panel');
+  if (!panel) return;
+
+  // ── Flyout container (positioned outside panel, to its right)
+  const flyout = document.createElement('div');
+  flyout.className = 'fe-ctx-flyout';
+
+  // ── Arrow element
+  const arrow = document.createElement('div');
+  arrow.className = 'fe-ctx-arrow';
+  flyout.appendChild(arrow);
+
+  // ── Menu body
   const menu = document.createElement('div');
   menu.className = 'fe-ctx-menu';
 
-  // Copy Path
-  const copyBtn = document.createElement('button');
-  copyBtn.className = 'fe-ctx-item';
-  copyBtn.innerHTML = '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy Path</span>';
-  copyBtn.addEventListener('click', () => {
-    navigator.clipboard.writeText(filePath).then(() => showToast('Path copied'));
-    dismissFileMenu();
+  const copyIcon = '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  const nameIcon = '<svg viewBox="0 0 24 24"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>';
+  const aiIcon = '<svg viewBox="0 0 24 24"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/><path d="M18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9L18 14z"/></svg>';
+  const editIcon = '<svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
+  const paletteIcon = '<svg viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12.5" r="2.5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.67 1.5-1.5 0-.39-.14-.74-.39-1.04-.24-.28-.37-.59-.37-.96 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-5.5-4.5-10-10-10z"/></svg>';
+  const collapseIcon = '<svg viewBox="0 0 24 24"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/></svg>';
+  const expandIcon = '<svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>';
+
+  // ── Copy Path (both)
+  menu.appendChild(_ctxItem(copyIcon, 'Copy Path', () => {
+    navigator.clipboard.writeText(item.fullPath).then(() => showToast('Path copied'));
+    dismissCtxMenu();
+  }));
+
+  // ── Copy Name (both)
+  menu.appendChild(_ctxItem(nameIcon, 'Copy Name', () => {
+    navigator.clipboard.writeText(item.name).then(() => showToast('Name copied'));
+    dismissCtxMenu();
+  }));
+
+  // ── Send to AI (both)
+  menu.appendChild(_ctxItem(aiIcon, 'Send to AI', () => {
+    sendToPanel(item.fullPath);
+    dismissCtxMenu();
+  }));
+
+  if (item.type === 'file') {
+    menu.appendChild(_ctxSeparator());
+
+    // ── Edit File
+    menu.appendChild(_ctxItem(editIcon, 'Edit File', () => {
+      dismissCtxMenu();
+      openFileEditor(item.fullPath);
+    }));
+  }
+
+  if (item.type === 'dir') {
+    menu.appendChild(_ctxSeparator());
+
+    // ── Change Color
+    menu.appendChild(_ctxItem(paletteIcon, 'Change Color', (ev) => {
+      dismissCtxMenu();
+      showColorPalette(ev, item.fullPath, iconEl, null);
+    }));
+
+    menu.appendChild(_ctxSeparator());
+
+    // ── Expand / Collapse
+    const isExpanded = nodeEl.dataset.expanded === 'true';
+    if (isExpanded) {
+      menu.appendChild(_ctxItem(collapseIcon, 'Collapse', () => {
+        collapseDir(nodeEl, item.fullPath);
+        dismissCtxMenu();
+      }));
+
+      // ── Collapse All Children
+      menu.appendChild(_ctxItem(collapseIcon, 'Collapse Children', () => {
+        nodeEl.querySelectorAll('.fe-node[data-type="dir"][data-expanded="true"]').forEach(n => {
+          n.dataset.expanded = 'false';
+          _collapsed.add(n.dataset.path);
+        });
+        saveCollapsed();
+        dismissCtxMenu();
+      }));
+    } else {
+      menu.appendChild(_ctxItem(expandIcon, 'Expand', () => {
+        expandDir(nodeEl, item.fullPath, depth + 1);
+        dismissCtxMenu();
+      }));
+    }
+  }
+
+  // ── Delete (both files and dirs)
+  menu.appendChild(_ctxSeparator());
+  const deleteIcon = '<svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+  const deleteBtn = _ctxItem(deleteIcon, 'Delete', () => {
+    dismissCtxMenu();
+    showDeleteConfirm(item.name, item.type, () => {
+      deleteFileOrDir(item.fullPath, item.name, item.type);
+    });
   });
-  menu.appendChild(copyBtn);
+  deleteBtn.classList.add('fe-ctx-item--danger');
+  menu.appendChild(deleteBtn);
 
-  // Edit File
-  const editBtn = document.createElement('button');
-  editBtn.className = 'fe-ctx-item';
-  editBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg><span>Edit File</span>';
-  editBtn.addEventListener('click', () => {
-    dismissFileMenu();
-    openFileEditor(filePath);
-  });
-  menu.appendChild(editBtn);
+  flyout.appendChild(menu);
 
-  // Position relative to the row
-  const panel = $('file-explorer-panel');
-  if (panel) panel.appendChild(menu);
+  // ── Position: flyout docks to the right edge of the panel, arrow points at the row
+  document.body.appendChild(flyout);
 
-  const rowRect = rowEl.getBoundingClientRect();
   const panelRect = panel.getBoundingClientRect();
-  menu.style.top = `${rowRect.bottom - panelRect.top}px`;
-  menu.style.left = `${rowRect.left - panelRect.left + 20}px`;
+  const rowRect = rowEl.getBoundingClientRect();
+  const rowCenterY = rowRect.top + rowRect.height / 2;
 
-  // Clamp to panel bounds
+  // Flyout left edge sits at the panel's right edge + small gap for arrow
+  flyout.style.left = `${panelRect.right + 6}px`;
+  flyout.style.opacity = '0';
+
   requestAnimationFrame(() => {
-    const menuRect = menu.getBoundingClientRect();
-    if (menuRect.right > panelRect.right - 8) {
-      menu.style.left = `${panelRect.width - menuRect.width - 8}px`;
-    }
-    if (menuRect.bottom > panelRect.bottom - 8) {
-      menu.style.top = `${rowRect.top - panelRect.top - menuRect.height}px`;
-    }
+    const flyRect = flyout.getBoundingClientRect();
+    // Vertically center on the row, but clamp to viewport
+    let top = rowCenterY - flyRect.height / 2;
+    if (top < 8) top = 8;
+    if (top + flyRect.height > window.innerHeight - 8) top = window.innerHeight - flyRect.height - 8;
+    flyout.style.top = `${top}px`;
+
+    // Arrow points at the row center
+    const arrowY = rowCenterY - top;
+    arrow.style.top = `${Math.max(12, Math.min(flyRect.height - 12, arrowY))}px`;
+
+    // Animate in
+    flyout.style.opacity = '';
+    flyout.classList.add('fe-ctx-flyout--in');
   });
 
-  _activeFileMenu = menu;
+  // Highlight the source row
+  rowEl.classList.add('fe-row--ctx-active');
+
+  _activeCtxMenu = flyout;
+  _activeCtxMenu._row = rowEl;
 
   // Close on outside click
   const onOutside = (ev) => {
-    if (!menu.contains(ev.target)) {
-      dismissFileMenu();
-      document.removeEventListener('click', onOutside, true);
+    if (!flyout.contains(ev.target)) {
+      dismissCtxMenu();
+      document.removeEventListener('mousedown', onOutside, true);
     }
   };
-  setTimeout(() => document.addEventListener('click', onOutside, true), 0);
+  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
 }
 
 function showToast(msg) {
@@ -1140,7 +1625,7 @@ async function openFileEditor(filePath) {
     _undoBurstOpen = false;
 
     // Slide editor panel open
-    dismissFileMenu();
+    dismissCtxMenu();
     const editorPanel = $('fe-editor-panel');
     if (editorPanel) editorPanel.classList.add('open');
     document.body.classList.add('fe-editor-open');
@@ -1322,10 +1807,14 @@ function setPreviewMode(preview) {
   const textarea = $('fe-editor-textarea');
   const gutter = $('fe-editor-gutter');
   const previewEl = $('fe-editor-preview');
+  const highlight = $('fe-editor-highlight');
+  const lineHighlight = $('fe-editor-line-highlight');
 
   if (preview) {
     if (textarea) textarea.style.display = 'none';
     if (gutter) gutter.style.display = 'none';
+    if (highlight) highlight.style.display = 'none';
+    if (lineHighlight) lineHighlight.style.display = 'none';
     if (previewEl) {
       previewEl.innerHTML = renderMarkdown(textarea?.value || '');
       previewEl.classList.add('visible');
@@ -1333,6 +1822,8 @@ function setPreviewMode(preview) {
   } else {
     if (textarea) textarea.style.display = '';
     if (gutter) gutter.style.display = '';
+    if (highlight) highlight.style.display = '';
+    if (lineHighlight) lineHighlight.style.display = '';
     if (previewEl) previewEl.classList.remove('visible');
   }
 }
@@ -1712,6 +2203,8 @@ export function toggleFileExplorer() {
   // Sync menu checkmark
   const menuEl = $('menu-toggle-file-explorer');
   if (menuEl) menuEl.classList.toggle('active', _visible);
+  const tbBtn = $('topright-file-explorer-btn');
+  if (tbBtn) tbBtn.classList.toggle('active', _visible);
 
   // Build tree on first show
   if (_visible && !_rootLoaded) {
@@ -1728,13 +2221,29 @@ export function toggleFileExplorer() {
 // INIT
 // ═══════════════════════════════════════════
 
+async function loadCustomIcons() {
+  try {
+    const r = await fetch('/api/file-icons').then(r => r.json());
+    if (r.ok) _customIcons = r.custom;
+  } catch {}
+}
+
 export function initFileExplorer() {
   loadPersistedState();
+  loadCustomIcons(); // non-blocking — icons load in background
+
+  // Re-render tree when custom icons change
+  on('sync:icons:changed', () => {
+    loadCustomIcons().then(() => { if (_rootLoaded) buildFileTree(); });
+  });
 
   const panel = $('file-explorer-panel');
   if (!panel) return;
 
-  // Set width
+  // Set width — use navbar-aligned default if no persisted value
+  if (!storage.getItem(KEYS.FILE_EXPLORER_WIDTH)) {
+    _width = calcDefaultWidth();
+  }
   panel.style.width = `${_width}px`;
 
   // Wire filter
@@ -1768,6 +2277,11 @@ export function initFileExplorer() {
     });
     sortBtn.dataset.tooltip = `Sort: ${_sortMode}`;
   }
+
+  const undoBtn = $('fe-undo-btn');
+  const redoBtn = $('fe-redo-btn');
+  if (undoBtn) undoBtn.addEventListener('click', undoDelete);
+  if (redoBtn) redoBtn.addEventListener('click', redoDelete);
 
   if (refreshBtn) refreshBtn.addEventListener('click', () => {
     _cache.clear();
@@ -2097,6 +2611,12 @@ export function initFileExplorer() {
     menuEl.addEventListener('click', toggleFileExplorer);
   }
 
+  // Toolbar button
+  const toolbarBtn = $('topright-file-explorer-btn');
+  if (toolbarBtn) {
+    toolbarBtn.addEventListener('click', toggleFileExplorer);
+  }
+
   // Restore visibility
   if (_visible) {
     panel.classList.add('open');
@@ -2105,6 +2625,7 @@ export function initFileExplorer() {
     document.body.classList.add('file-explorer-open');
     applyFileExplorerWidth();
     if (menuEl) menuEl.classList.add('active');
+    if (toolbarBtn) toolbarBtn.classList.add('active');
     _rootLoaded = true;
     fetchProjects().then(() => {
       initProjectSelector();
@@ -2112,3 +2633,6 @@ export function initFileExplorer() {
     }).then(() => buildFileTree());
   }
 }
+
+// Exports for Settings → Icons tab preview
+export { FI, FI_MAP, getFileIcon };

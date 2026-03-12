@@ -140,4 +140,148 @@ export declare function handleBrowserExtractWaMessages(args: {
         text: string;
     }[];
 }>;
+export declare const browserExtractIgFeedSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractIgFeedDescription: string;
+export declare function handleBrowserExtractIgFeed(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractIgProfileSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractIgProfileDescription: string;
+export declare function handleBrowserExtractIgProfile(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractIgPostSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractIgPostDescription: string;
+export declare function handleBrowserExtractIgPost(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractIgReelsSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractIgReelsDescription: string;
+export declare function handleBrowserExtractIgReels(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractIgSearchSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractIgSearchDescription: string;
+export declare function handleBrowserExtractIgSearch(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractLiFeedSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractLiFeedDescription: string;
+export declare function handleBrowserExtractLiFeed(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractLiProfileSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractLiProfileDescription: string;
+export declare function handleBrowserExtractLiProfile(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractLiPostSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractLiPostDescription: string;
+export declare function handleBrowserExtractLiPost(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractLiNotificationsSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractLiNotificationsDescription: string;
+export declare function handleBrowserExtractLiNotifications(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractLiMessagesSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractLiMessagesDescription: string;
+export declare function handleBrowserExtractLiMessages(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractLiSearchPeopleSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractLiSearchPeopleDescription: string;
+export declare function handleBrowserExtractLiSearchPeople(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserExtractLiNetworkSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractLiNetworkDescription: string;
+export declare function handleBrowserExtractLiNetwork(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
 //# sourceMappingURL=browser-observe.d.ts.map

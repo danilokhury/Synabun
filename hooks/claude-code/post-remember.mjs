@@ -131,8 +131,9 @@ async function main() {
   // ─── USER LEARNING CLEARING (remember or reflect for communication-style/personality) ───
   const UL_CATEGORIES = ['communication-style', 'personality'];
   const isRememberUL = toolName.includes('remember') && UL_CATEGORIES.includes(toolInput.category || '');
-  // For reflect: no category in input, so clear if userLearningPending is true
-  // (the nudge explicitly told Claude to reflect on a communication-style memory)
+  // For reflect: only clear if the stop hook has actively blocked for user learning
+  // (userLearningBlockActive). This prevents unrelated reflects from falsely clearing
+  // the pending flag before the stop hook ever enforces it.
   const isReflectUL = toolName.includes('reflect');
 
   if (isRememberUL || isReflectUL) {
@@ -140,9 +141,11 @@ async function main() {
     if (existsSync(ulFlagPath)) {
       try {
         const ulFlag = JSON.parse(readFileSync(ulFlagPath, 'utf-8'));
-        // For reflect: only clear if there's actually a pending user learning request
-        if (isRememberUL || (isReflectUL && ulFlag.userLearningPending)) {
+        // remember with correct category → always clear
+        // reflect → only clear if stop hook has actively enforced UL (blockActive flag)
+        if (isRememberUL || (isReflectUL && ulFlag.userLearningPending && ulFlag.userLearningBlockActive)) {
           ulFlag.userLearningPending = false;
+          ulFlag.userLearningBlockActive = false;
           ulFlag.userLearningObserved = true;
           writeFileSync(ulFlagPath, JSON.stringify(ulFlag));
         }
@@ -169,8 +172,12 @@ async function main() {
         try {
           let flag = {};
           try { flag = JSON.parse(readFileSync(rememberFlagPath, 'utf-8')); } catch { /* fresh */ }
+          flag.editCount = 0;
           flag.messageCount = 0;
           flag.retries = 0;
+          flag.files = [];
+          flag.firstEditAt = null;
+          flag.lastEditAt = null;
           flag.rememberCount = (flag.rememberCount || 0) + 1;
           flag.lastRememberedAt = new Date().toISOString();
           writeFileSync(rememberFlagPath, JSON.stringify(flag));
@@ -206,6 +213,23 @@ async function main() {
           try { unlinkSync(rememberFlagPath); } catch { /* ok */ }
         }
       }
+    }
+  }
+
+  // Update loop memory tracking when remember is called during an active loop
+  if (toolName.includes('remember')) {
+    const LOOP_DIR = join(DATA_DIR, 'loop');
+    const loopPath = join(LOOP_DIR, `${sessionId}.json`);
+    if (existsSync(loopPath)) {
+      try {
+        const loop = JSON.parse(readFileSync(loopPath, 'utf-8'));
+        if (loop.active) {
+          loop.lastMemoryAt = loop.currentIteration || 0;
+          loop.memoryPending = false;
+          loop.memoryRetries = 0;
+          writeFileSync(loopPath, JSON.stringify(loop, null, 2));
+        }
+      } catch { /* ok */ }
     }
   }
 

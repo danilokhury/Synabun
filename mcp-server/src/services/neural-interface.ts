@@ -291,3 +291,26 @@ export async function tictactoeState(): Promise<NiResponse> {
 export async function tictactoeEnd(): Promise<NiResponse> {
   return request('POST', '/api/games/tictactoe/end');
 }
+
+// ── Git ──
+
+export async function gitStatus(path: string): Promise<NiResponse> {
+  return request('GET', `/api/git/status?path=${encodeURIComponent(path)}`);
+}
+
+export async function gitDiff(path: string, maxLines?: number): Promise<NiResponse> {
+  const qs = `path=${encodeURIComponent(path)}${maxLines ? `&maxLines=${maxLines}` : ''}`;
+  return request('GET', `/api/git/diff?${qs}`, undefined, LONG_TIMEOUT);
+}
+
+export async function gitCommit(path: string, message: string, files?: string[]): Promise<NiResponse> {
+  return request('POST', '/api/git/commit', { path, message, files } as Record<string, unknown>);
+}
+
+export async function gitLog(path: string, count?: number): Promise<NiResponse> {
+  return request('GET', `/api/git/log?path=${encodeURIComponent(path)}&count=${count || 10}`);
+}
+
+export async function gitBranches(path: string): Promise<NiResponse> {
+  return request('GET', `/api/terminal/branches?path=${encodeURIComponent(path)}`);
+}

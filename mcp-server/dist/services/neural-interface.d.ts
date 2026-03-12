@@ -79,5 +79,10 @@ export declare function tictactoeStart(piece?: string): Promise<NiResponse>;
 export declare function tictactoeMove(cell: number): Promise<NiResponse>;
 export declare function tictactoeState(): Promise<NiResponse>;
 export declare function tictactoeEnd(): Promise<NiResponse>;
+export declare function gitStatus(path: string): Promise<NiResponse>;
+export declare function gitDiff(path: string, maxLines?: number): Promise<NiResponse>;
+export declare function gitCommit(path: string, message: string, files?: string[]): Promise<NiResponse>;
+export declare function gitLog(path: string, count?: number): Promise<NiResponse>;
+export declare function gitBranches(path: string): Promise<NiResponse>;
 export {};
 //# sourceMappingURL=neural-interface.d.ts.map

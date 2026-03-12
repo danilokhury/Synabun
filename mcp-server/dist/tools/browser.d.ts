@@ -1,6 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 /**
- * Register all 26 browser MCP tools on the given server instance.
+ * Register all 38 browser MCP tools on the given server instance.
  * Browser tools are static (no dynamic schema refresh needed).
  */
 export declare function registerBrowserTools(server: McpServer): void;

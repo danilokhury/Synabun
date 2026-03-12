@@ -1,10 +1,7 @@
 ---
 name: synabun
-description: >
-  SynaBun command hub — interactive menu for all memory-powered capabilities.
-  Routes to brainstorming, auditing, health checks, and memory search.
-  Triggers on: "synabun", "memory menu", "synabun menu".
-argument-hint: "[idea|audit|memorize|health|search] or leave blank for interactive menu"
+description: "Memory-powered command hub — brainstorm, audit, search, and more"
+argument-hint: "[idea|audit|memorize|changelog|health|search] or leave blank for interactive menu"
 ---
 
 # SynaBun — Command Hub
@@ -31,6 +28,7 @@ Parse `$ARGUMENTS` to determine the path:
 - If args start with `idea` or `brainstorm` → extract the rest as the topic, set `$ARGUMENTS` to that topic, then jump to **Step 2a: Brainstorm Ideas**.
 - If args start with `audit` → extract the rest as the scope, set `$ARGUMENTS` to that scope, then jump to **Step 2b: Audit Memories**.
 - If args start with `memorize` or `remember` or `store` or `save` → extract the rest as the focus hint, set `$ARGUMENTS` to that hint, then jump to **Step 2c: Memorize Context**.
+- If args start with `changelog` or `changes` or `log` → extract the rest as the focus hint, set `$ARGUMENTS` to that hint, then jump to **Step 2d: Changelog**.
 - If args start with `health` or `stats` → jump to **Step 3: Memory Health**.
 - If args start with `search` or `recall` or `find` → jump to **Step 4: Search Memories**, using the rest as the initial query.
 
@@ -47,7 +45,7 @@ The menu is paginated (3 features + 1 navigation slot per page). Start on **Page
 - **Brainstorm Ideas** — "Cross-pollinate memories to spark creative ideas and novel connections"
 - **Audit Memories** — "Validate stored memories against the current codebase for staleness"
 - **Memorize Context** — "Convert the current conversation into a structured, tagged memory"
-- **More...** — "Memory Health, Search Memories"
+- **More...** — "Memory Health, Search Memories, Auto Changelog"
 
 If user picks **More...** → show **Page 2**.
 
@@ -55,6 +53,7 @@ If user picks **More...** → show **Page 2**.
 
 - **Memory Health** — "Quick stats overview and staleness check of your memory system"
 - **Search Memories** — "Find something specific across your entire memory bank"
+- **Auto Changelog** — "Analyze this session's work and generate CHANGELOG.md entries"
 - **Back** — "Return to page 1"
 
 If user picks **Back** → show **Page 1** again.
@@ -91,6 +90,12 @@ Based on the user's answer, set `$ARGUMENTS` to:
 ## Step 2c: Memorize Context
 
 **Directly**: Use the `Read` tool to read the file at `$SKILL_DIR/modules/memorize.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value (the focus hint, if any). That file is your complete memorization procedure — execute it fully.
+
+---
+
+## Step 2d: Changelog
+
+**Directly**: Use the `Read` tool to read the file at `$SKILL_DIR/modules/changelog.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value. That file is your complete changelog procedure — execute it fully.
 
 ---
 
