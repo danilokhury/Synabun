@@ -191,6 +191,30 @@ async function main() {
     files_read: parsed.filesRead,
   };
 
+  // Capture active loop state for compaction recovery
+  const LOOP_DIR = join(__dirname, '..', '..', 'data', 'loop');
+  const loopPath = join(LOOP_DIR, `${sessionId}.json`);
+  if (existsSync(loopPath)) {
+    try {
+      const loopState = JSON.parse(readFileSync(loopPath, 'utf-8'));
+      if (loopState.active) {
+        cache.loop = {
+          active: true,
+          task: loopState.task,
+          context: loopState.context,
+          currentIteration: loopState.currentIteration,
+          totalIterations: loopState.totalIterations,
+          maxMinutes: loopState.maxMinutes,
+          startedAt: loopState.startedAt,
+          progressSummary: loopState.progressSummary || null,
+          journal: (loopState.journal || []).slice(-5),
+          lastMemoryAt: loopState.lastMemoryAt || 0,
+          usesBrowser: loopState.usesBrowser || false,
+        };
+      }
+    } catch { /* skip */ }
+  }
+
   // Write cache
   if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
   writeFileSync(join(CACHE_DIR, `${sessionId}.json`), JSON.stringify(cache, null, 2));

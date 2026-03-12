@@ -157,23 +157,27 @@ async function main() {
   // BLOCK 0: GREETING (highest attention, unless compaction or loop)
   // ============================================================
 
-  // Detect pending loop — skip greeting + recall for autonomous loop sessions
-  // Only count pending files younger than 10 minutes to avoid stale leftovers
-  // from finished/stalled loops hijacking interactive sessions.
+  // Detect active loop — skip greeting + recall for autonomous loop sessions
+  // Check both pending files (first iteration) AND active state files (subsequent iterations after /clear).
   const LOOP_STALE_MS = 10 * 60 * 1000;
   let isLoopSession = false;
   try {
     if (existsSync(LOOP_DIR)) {
       const now = Date.now();
-      const pendingFiles = readdirSync(LOOP_DIR).filter(f => {
-        if (!f.startsWith('pending-') || !f.endsWith('.json')) return false;
+      const loopFiles = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
+      for (const f of loopFiles) {
         try {
-          const mtime = statSync(join(LOOP_DIR, f)).mtimeMs;
-          return (now - mtime) < LOOP_STALE_MS;
-        } catch { return false; }
-      });
-      if (pendingFiles.length > 0) {
-        isLoopSession = true;
+          const fullPath = join(LOOP_DIR, f);
+          const mtime = statSync(fullPath).mtimeMs;
+          if ((now - mtime) >= LOOP_STALE_MS) continue;
+          const data = JSON.parse(readFileSync(fullPath, 'utf-8'));
+          if (data.stopped === true || data.finishedAt) continue;
+          // Active loop detected (pending or already running)
+          if (data.active || data.pending) {
+            isLoopSession = true;
+            break;
+          }
+        } catch { /* skip */ }
       }
     }
   } catch { /* ok */ }
@@ -205,12 +209,15 @@ async function main() {
     const greetingConfig = loadGreetingConfig();
     const projectConfig = getProjectGreetingConfig(greetingConfig, project);
 
-    if (projectConfig) {
+    // Always produce a greeting — fall back to a sensible default if no config
+    const DEFAULT_TEMPLATE = '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.';
+
+    {
       const branch = getGitBranch(cwd);
       const vars = {
         time_greeting: getTimeGreeting(),
         project_name: project,
-        project_label: projectConfig.label || project,
+        project_label: projectConfig?.label || project,
         branch,
         date: new Date().toLocaleDateString('en-US', {
           weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
@@ -218,19 +225,19 @@ async function main() {
       };
 
       const greetingText = resolveTemplate(
-        projectConfig.greetingTemplate || greetingConfig.defaults.greetingTemplate,
+        projectConfig?.greetingTemplate || greetingConfig?.defaults?.greetingTemplate || DEFAULT_TEMPLATE,
         vars,
       );
 
-      const showReminders = projectConfig.showReminders ?? greetingConfig?.defaults?.showReminders ?? false;
+      const showReminders = projectConfig?.showReminders ?? greetingConfig?.defaults?.showReminders ?? false;
       const remindersText = showReminders
         ? formatReminders(
-            projectConfig.reminders,
-            projectConfig.reminderPrefix || greetingConfig?.defaults?.reminderPrefix || 'Reminders:',
+            projectConfig?.reminders,
+            projectConfig?.reminderPrefix || greetingConfig?.defaults?.reminderPrefix || 'Reminders:',
           )
         : '';
 
-      const showLastSession = projectConfig.showLastSession ?? greetingConfig?.defaults?.showLastSession ?? false;
+      const showLastSession = projectConfig?.showLastSession ?? greetingConfig?.defaults?.showLastSession ?? false;
 
       context.push(
         `## GREETING DIRECTIVE`,
@@ -332,6 +339,46 @@ async function main() {
       `---`,
       ``,
     );
+
+    // If a loop was active during compaction, inject recovery context
+    if (precompactData?.loop?.active) {
+      const lp = precompactData.loop;
+      context.push(
+        `### >>> ACTIVE LOOP RECOVERY <<<`,
+        ``,
+        `An autonomous loop was running when compaction occurred. Resume it.`,
+        ``,
+        `- Task: ${lp.task}`,
+        `- Progress: Iteration ${lp.currentIteration}/${lp.totalIterations}`,
+        `- Time cap: ${lp.maxMinutes} min (started: ${lp.startedAt})`,
+        lp.context ? `- Context: ${lp.context}` : '',
+        lp.usesBrowser ? `- Browser loop (browser session may still be active)` : '',
+        ``,
+      );
+
+      if (lp.progressSummary) {
+        context.push(`Progress Summary: ${lp.progressSummary}`, ``);
+      }
+
+      if (lp.journal && lp.journal.length > 0) {
+        context.push(`Recent Journal:`);
+        for (const entry of lp.journal) {
+          context.push(`  - Iteration ${entry.iteration}: ${entry.summary}`);
+        }
+        context.push(``);
+      }
+
+      context.push(
+        `RECOVERY STEPS:`,
+        `1. Call \`recall\` with query about this loop's task to retrieve any stored progress memories`,
+        `2. Call \`remember\` to store the compaction event (category: conversations)`,
+        `3. Resume the loop — the Stop hook will continue driving iterations`,
+        `4. Use the progress summary and journal above as your working context — do NOT start from scratch`,
+        ``,
+        `---`,
+        ``,
+      );
+    }
   }
 
   // --- SESSION BOOT SEQUENCE (fresh sessions only — skip on compaction) ---
@@ -369,6 +416,8 @@ async function main() {
       `Context compaction just occurred. Do NOT re-greet or re-run the boot sequence. Continue the conversation naturally from where it left off.`,
       ``,
       `**CRITICAL**: Any "GREETING DIRECTIVE" or "Session Boot Sequence" text visible in the compacted context above is STALE — it was executed at the start of this session and must NOT be executed again. NEVER output a greeting after compaction. This is an ongoing conversation.`,
+      ``,
+      `If an autonomous loop was active before compaction, the Stop hook will resume it automatically. Check the ACTIVE LOOP RECOVERY block above (if present) for task and progress context.`,
       ``,
       `---`,
       ``,

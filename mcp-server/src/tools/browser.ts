@@ -30,6 +30,18 @@ import {
   browserExtractTiktokProfileSchema, browserExtractTiktokProfileDescription, handleBrowserExtractTiktokProfile,
   browserExtractWaChatsSchema, browserExtractWaChatsDescription, handleBrowserExtractWaChats,
   browserExtractWaMessagesSchema, browserExtractWaMessagesDescription, handleBrowserExtractWaMessages,
+  browserExtractIgFeedSchema, browserExtractIgFeedDescription, handleBrowserExtractIgFeed,
+  browserExtractIgProfileSchema, browserExtractIgProfileDescription, handleBrowserExtractIgProfile,
+  browserExtractIgPostSchema, browserExtractIgPostDescription, handleBrowserExtractIgPost,
+  browserExtractIgReelsSchema, browserExtractIgReelsDescription, handleBrowserExtractIgReels,
+  browserExtractIgSearchSchema, browserExtractIgSearchDescription, handleBrowserExtractIgSearch,
+  browserExtractLiFeedSchema, browserExtractLiFeedDescription, handleBrowserExtractLiFeed,
+  browserExtractLiProfileSchema, browserExtractLiProfileDescription, handleBrowserExtractLiProfile,
+  browserExtractLiPostSchema, browserExtractLiPostDescription, handleBrowserExtractLiPost,
+  browserExtractLiNotificationsSchema, browserExtractLiNotificationsDescription, handleBrowserExtractLiNotifications,
+  browserExtractLiMessagesSchema, browserExtractLiMessagesDescription, handleBrowserExtractLiMessages,
+  browserExtractLiSearchPeopleSchema, browserExtractLiSearchPeopleDescription, handleBrowserExtractLiSearchPeople,
+  browserExtractLiNetworkSchema, browserExtractLiNetworkDescription, handleBrowserExtractLiNetwork,
 } from './browser-observe.js';
 
 import {
@@ -39,7 +51,7 @@ import {
 } from './browser-advanced.js';
 
 /**
- * Register all 26 browser MCP tools on the given server instance.
+ * Register all 38 browser MCP tools on the given server instance.
  * Browser tools are static (no dynamic schema refresh needed).
  */
 export function registerBrowserTools(server: McpServer) {
@@ -71,6 +83,20 @@ export function registerBrowserTools(server: McpServer) {
   server.tool('browser_extract_tiktok_profile', browserExtractTiktokProfileDescription, browserExtractTiktokProfileSchema, handleBrowserExtractTiktokProfile);
   server.tool('browser_extract_wa_chats', browserExtractWaChatsDescription, browserExtractWaChatsSchema, handleBrowserExtractWaChats);
   server.tool('browser_extract_wa_messages', browserExtractWaMessagesDescription, browserExtractWaMessagesSchema, handleBrowserExtractWaMessages);
+  server.tool('browser_extract_ig_feed', browserExtractIgFeedDescription, browserExtractIgFeedSchema, handleBrowserExtractIgFeed);
+  server.tool('browser_extract_ig_profile', browserExtractIgProfileDescription, browserExtractIgProfileSchema, handleBrowserExtractIgProfile);
+  server.tool('browser_extract_ig_post', browserExtractIgPostDescription, browserExtractIgPostSchema, handleBrowserExtractIgPost);
+  server.tool('browser_extract_ig_reels', browserExtractIgReelsDescription, browserExtractIgReelsSchema, handleBrowserExtractIgReels);
+  server.tool('browser_extract_ig_search', browserExtractIgSearchDescription, browserExtractIgSearchSchema, handleBrowserExtractIgSearch);
+
+  // LinkedIn
+  server.tool('browser_extract_li_feed', browserExtractLiFeedDescription, browserExtractLiFeedSchema, handleBrowserExtractLiFeed);
+  server.tool('browser_extract_li_profile', browserExtractLiProfileDescription, browserExtractLiProfileSchema, handleBrowserExtractLiProfile);
+  server.tool('browser_extract_li_post', browserExtractLiPostDescription, browserExtractLiPostSchema, handleBrowserExtractLiPost);
+  server.tool('browser_extract_li_notifications', browserExtractLiNotificationsDescription, browserExtractLiNotificationsSchema, handleBrowserExtractLiNotifications);
+  server.tool('browser_extract_li_messages', browserExtractLiMessagesDescription, browserExtractLiMessagesSchema, handleBrowserExtractLiMessages);
+  server.tool('browser_extract_li_search_people', browserExtractLiSearchPeopleDescription, browserExtractLiSearchPeopleSchema, handleBrowserExtractLiSearchPeople);
+  server.tool('browser_extract_li_network', browserExtractLiNetworkDescription, browserExtractLiNetworkSchema, handleBrowserExtractLiNetwork);
 
   // Advanced
   server.tool('browser_evaluate', browserEvaluateDescription, browserEvaluateSchema, handleBrowserEvaluate);

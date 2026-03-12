@@ -40,6 +40,7 @@ import { initSkillsStudio } from '../../shared/ui-skills.js';
 import { initTerminal } from '../../shared/ui-terminal.js';
 import { initLink } from '../../shared/ui-link.js';
 import { initWhiteboard } from '../../shared/ui-whiteboard.js';
+import { initCostWidget } from '../../shared/ui-cost-widget.js';
 import { initGames, clearGameOnLoad } from '../../shared/ui-games.js';
 import { initWorkspaces } from '../../shared/ui-workspaces.js';
 import { initInvite } from '../../shared/ui-invite.js';
@@ -410,6 +411,7 @@ initTerminal();
 initLink();
 clearGameOnLoad();
 initWhiteboard();
+initCostWidget();
 initGames();
 initTutorial();
 

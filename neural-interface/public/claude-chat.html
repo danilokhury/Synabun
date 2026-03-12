@@ -11,41 +11,67 @@
 <body class="chat-body">
   <div id="chat-app">
 
-    <!-- Header -->
-    <header id="chat-header">
-      <div id="header-left">
-        <a href="/" id="chat-back" title="Back to Neural Interface">
-          <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
-        </a>
-        <span id="chat-title">SynaBun Chat</span>
+    <!-- Toolbar -->
+    <header id="chat-toolbar">
+      <a href="/" id="chat-back" title="Back to Neural Interface">
+        <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+
+      <div class="toolbar-brand">
+        <div class="toolbar-brand-icon">S</div>
+        <span class="toolbar-brand-label">SynaBun</span>
       </div>
-      <div id="header-center">
-        <span id="chat-project-label"></span>
+
+      <!-- Project selector -->
+      <div class="toolbar-select" id="project-select-wrap">
+        <select id="project-select"><option value="">project...</option></select>
       </div>
-      <div id="header-right">
-        <span id="chat-model-label">claude</span>
-        <span id="chat-cost-label" class="chat-cost">$0.0000</span>
-        <button id="chat-new-btn" title="New session">
-          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+
+      <!-- Branch selector -->
+      <div class="toolbar-select" id="branch-select-wrap">
+        <select id="branch-select"><option value="">branch</option></select>
+      </div>
+
+      <div class="toolbar-spacer"></div>
+
+      <!-- Model selector -->
+      <div class="toolbar-select" id="model-select-wrap">
+        <select id="model-select"><option value="">model</option></select>
+      </div>
+
+      <!-- Cost -->
+      <span id="chat-cost" class="toolbar-badge">$0.00</span>
+
+      <!-- Session history -->
+      <div class="toolbar-session-wrap">
+        <button id="chat-session-btn" class="toolbar-btn" title="Session history">
+          <svg viewBox="0 0 24 24"><path d="M12 8v4l3 3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/></svg>
         </button>
+        <div id="chat-session-menu" class="session-menu"></div>
       </div>
+
+      <!-- New session -->
+      <button id="chat-new-btn" class="toolbar-btn" title="New session">
+        <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
     </header>
 
-    <!-- Message list -->
+    <!-- Message stream -->
     <div id="messages"></div>
 
-    <!-- Input area -->
-    <div id="chat-input-wrap">
-      <div id="chat-cwd-row">
-        <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-        <span id="chat-cwd-display">~</span>
-        <button id="chat-cwd-btn" title="Change directory">change</button>
-      </div>
-      <div id="chat-input-row">
-        <textarea id="chat-input" placeholder="Ask Claude... (Shift+Enter for newline)" rows="1" autocomplete="off" spellcheck="false"></textarea>
-        <button id="chat-send-btn" disabled>
-          <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-        </button>
+    <!-- Input -->
+    <div id="chat-input-area">
+      <div id="chat-input-wrap">
+        <div id="chat-input-inner">
+          <button id="chat-attach-btn" class="attach-btn" title="Attach file">
+            <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.49" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            <span id="chat-attach-badge" hidden></span>
+          </button>
+          <textarea id="chat-input" placeholder="Message SynaBun..." rows="1" autocomplete="off" spellcheck="false"></textarea>
+          <button id="chat-send-btn" disabled title="Send (Enter)">
+            <svg viewBox="0 0 24 24"><path d="M22 2L11 13" stroke="currentColor" stroke-width="2" fill="none"/><path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+          </button>
+        </div>
       </div>
     </div>
 

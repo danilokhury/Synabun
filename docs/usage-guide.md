@@ -28,32 +28,22 @@ remember({
 // Returns: Remembered [8f7cab3b] (project, importance: 5)
 ```
 
-### Storing with metadata (proper workflow)
+### Storing with metadata (single step)
 
-Due to parameter serialization limitations in some AI tools, use this two-step approach:
+`remember` accepts all fields directly and returns the full UUID — no need for a separate recall+reflect step:
 
 ```javascript
-// Step 1: Create the memory
 remember({
   content: "Redis TTL for price cache is 1 hour, set in orchestratorSingleton.ts",
   category: "project",
-  project: "my-project"
-})
-
-// Step 2: Get the full UUID
-recall({
-  query: "Redis TTL price cache",
-  limit: 1
-})
-// Returns: [8f7cab3b-644e-4cea-8662-de0ca695bdf2] (full UUID)
-
-// Step 3: Add metadata
-reflect({
-  memory_id: "8f7cab3b-644e-4cea-8662-de0ca695bdf2",
+  project: "my-project",
   importance: 7,
   tags: ["redis", "cache", "pricing"],
-  subcategory: "architecture"
+  subcategory: "architecture",
+  related_files: ["src/orchestratorSingleton.ts"]
 })
+
+// Returns: Remembered [8f7cab3b-644e-4cea-8662-de0ca695bdf2] (project, importance: 7)
 ```
 
 ### Searching memories

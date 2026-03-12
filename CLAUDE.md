@@ -128,7 +128,7 @@ Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
 
 ## Hook System
 
-5 Claude Code hooks in `hooks/claude-code/`, registered in `~/.claude/settings.json`.
+7 Claude Code hooks in `hooks/claude-code/`, registered in `~/.claude/settings.json`.
 
 | Hook | Script | Purpose |
 |------|--------|---------|
@@ -136,7 +136,9 @@ Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
 | UserPromptSubmit | `prompt-submit.mjs` | Tiered recall nudges based on message content. |
 | PreCompact | `pre-compact.mjs` | Caches session data, sets pending-compact flag. |
 | Stop | `stop.mjs` | Blocks if pending-compact or 3+ edits without remember. |
+| PreToolUse | `pre-websearch.mjs` | Blocks WebSearch/WebFetch during active browser sessions. |
 | PostToolUse | `post-remember.mjs` | Tracks edits. Clears flags on remember. |
+| PostToolUse | `post-plan.mjs` | Auto-stores plans in memory when exiting plan mode. |
 
 **Compaction chain:** PreCompact → flag → SessionStart injects → Claude remembers(conversations) → PostToolUse clears → Stop allows.
 **Task chain:** PostToolUse tracks edits → Stop blocks at 3+ → Claude remembers → cleared.
@@ -156,7 +158,7 @@ Descriptions are routing instructions: `"ONLY for deal/pricing memories"` not `"
 ```
 synabun/
 ├── mcp-server/          # TS MCP server → dist/ (npm run build)
-├── hooks/claude-code/   # 5 hook scripts (.mjs, ESM)
+├── hooks/claude-code/   # 7 hook scripts (.mjs, ESM)
 ├── neural-interface/    # Express + public/{index,onboarding}.html
 ├── skills/              # Claude Code skill definitions
 ├── data/                # Runtime flags, features, API keys

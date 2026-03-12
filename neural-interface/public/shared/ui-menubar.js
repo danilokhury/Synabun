@@ -5,6 +5,8 @@
 // ═══════════════════════════════════════════
 
 import { state, emit, on } from './state.js';
+import { storage } from './storage.js';
+import { KEYS } from './constants.js';
 import { getMenuItems } from './registry.js';
 import { openHelp } from './ui-help.js';
 import { registerAction } from './ui-keybinds.js';
@@ -236,7 +238,7 @@ function wireGraphMenu() {
   const limitRadios = document.querySelectorAll('.menu-radio[data-group="node-limit"]');
   if (limitRadios.length > 0) {
     // Restore saved selection on load
-    const saved = localStorage.getItem('neural-node-limit') || '0';
+    const saved = storage.getItem(KEYS.NODE_LIMIT) || '0';
     limitRadios.forEach(r => r.classList.toggle('active', r.dataset.value === saved));
 
     limitRadios.forEach(item => {

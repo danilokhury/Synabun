@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════
 //
 // The most complex shared UI module. Builds a floating settings panel with
-// 6 shared tabs (General, Setup, Terminal, Database, Recall, Projects, Connections, Interface)
+// 6 shared tabs (General, Setup, Terminal, Database, Recall, Projects, Automations, Interface)
 // plus any variant-registered tabs (e.g. Graphics) injected via the registry.
 
 import { state, emit, on } from './state.js';
@@ -14,6 +14,7 @@ import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
 import { createTerminalSession } from './api.js';
 import { buildExplorePrompt } from './ui-tutorial-steps.js';
+import { FI, FI_MAP, getFileIcon } from './ui-file-explorer.js';
 
 // ── SVG icon constants ──
 
@@ -30,8 +31,12 @@ const TAB_ICONS = {
   memory: '<svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"/><line x1="9" y1="21" x2="15" y2="21"/><line x1="10" y1="24" x2="14" y2="24"/></svg>',
   interface: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="9" y1="9" x2="21" y2="9"/></svg>',
   graphics: '<svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+  icons: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
   setup: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
   skins: '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-1 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9zM6.5 13c-.83 0-1.5-.67-1.5-1.5S5.67 10 6.5 10 8 10.67 8 11.5 7.33 13 6.5 13zm3-4C8.67 9 8 8.33 8 7.5S8.67 6 9.5 6s1.5.67 1.5 1.5S10.33 9 9.5 9zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 6 14.5 6s1.5.67 1.5 1.5S15.33 9 14.5 9zm3 4c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>',
+  social: '<svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>',
+  skills: '<svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
+  permissions: '<svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3z"/></svg>',
   discord: '<svg viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>',
 };
 
@@ -246,7 +251,7 @@ export function restoreInterfaceConfig() {
 
 // ── Shared tab order (variant tabs injected by order) ──
 
-const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'collections', 'memory', 'projects', 'hooks', 'discord', 'skins', 'interface'];
+const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'collections', 'memory', 'projects', 'hooks', 'skills', 'discord', 'permissions', 'social', 'skins', 'interface', 'icons'];
 
 // ── Tab descriptor map ──
 const TAB_META = {
@@ -256,10 +261,14 @@ const TAB_META = {
   collections: { label: 'Database',    desc: 'SQLite storage',          group: 'Data' },
   memory:      { label: 'Recall',      desc: 'Token budget & sync',     group: 'Data' },
   projects:    { label: 'Projects',    desc: 'Workspace configs',       group: 'Data' },
-  hooks:       { label: 'Connections', desc: 'Integrations & bridges',  group: 'Connections' },
+  hooks:       { label: 'Automations', desc: 'Integrations & bridges',  group: 'Connections' },
+  skills:      { label: 'Skills',      desc: 'Slash commands',          group: 'Connections' },
   discord:     { label: 'Discord',     desc: 'Bot & server config',     group: 'Connections' },
+  permissions: { label: 'Permissions', desc: 'Tool access control',    group: 'Connections' },
+  social:      { label: 'Social Media', desc: 'Platform automations',   group: 'Connections' },
   skins:       { label: 'Skins',       desc: 'Community themes',        group: 'Appearance' },
   interface:   { label: 'Interface',   desc: 'Theme & appearance',      group: 'Appearance' },
+  icons:       { label: 'Icons',       desc: 'File type icons',         group: 'Appearance' },
 };
 
 // ═══════════════════════════════════════════
@@ -1277,11 +1286,90 @@ function buildCollectionsTab(connections, settings) {
       </div>`;
 }
 
-function buildToolPermissionsSection(categories, permissions, chevron, providerBadge) {
-  if (!categories || !categories.length) return '';
-  const perms = permissions || {};
+/** Generate tool toggle rows, marking items that are alone in their grid row with span-full */
+function buildToolRows(tools, perms) {
+  // Split tools into segments by group header
+  const segments = [];
+  let currentGroup = null;
+  let currentItems = [];
+  for (const t of tools) {
+    if (t.group && t.group !== currentGroup) {
+      if (currentItems.length) segments.push({ group: currentGroup, items: currentItems });
+      currentGroup = t.group;
+      currentItems = [t];
+    } else {
+      currentItems.push(t);
+    }
+  }
+  if (currentItems.length) segments.push({ group: currentGroup, items: currentItems });
 
-  // Count totals
+  let html = '';
+  for (const seg of segments) {
+    if (seg.group) html += `<div class="cc-tool-group-header">${seg.group}</div>`;
+    seg.items.forEach((t, i) => {
+      const isOn = perms[t.key] !== false;
+      const isOddLast = (seg.items.length % 2 === 1) && (i === seg.items.length - 1);
+      html += `<div class="cc-integration-item${isOn ? ' enabled' : ''}${isOddLast ? ' span-full' : ''}" data-tool-key="${t.key}">
+                <div class="cc-integration-info">
+                  <div class="cc-integration-label">${t.label}</div>
+                  <div class="cc-integration-path">${t.desc}</div>
+                </div>
+                <button class="cc-toggle${isOn ? ' on' : ''}" data-cc-tool="${t.key}"></button>
+              </div>`;
+    });
+  }
+  return html;
+}
+
+function buildSocialTab(toolCategories, toolPermissions) {
+  const socialCat = (toolCategories || []).find(c => c.id === 'social');
+  if (!socialCat) return `<div class="settings-tab-body" data-tab="social"><div class="cc-hint" style="padding:20px;color:var(--t-dim)">No social media tools registered.</div></div>`;
+
+  const perms = toolPermissions || {};
+  const onCount = socialCat.tools.filter(t => perms[t.key] !== false).length;
+  const allOn = onCount === socialCat.tools.length;
+
+  return `
+      <div class="settings-tab-body" data-tab="social">
+        <div class="cc-tool-category" data-tool-category="social" style="margin:0">
+          <div class="cc-tool-category-header" style="padding-bottom:8px">
+            <span class="cc-tool-category-label" style="font-size:12px">All Platforms</span>
+            <span class="cc-tool-category-count">${onCount}/${socialCat.tools.length}</span>
+            <button class="cc-tool-category-all${allOn ? ' on' : ''}" data-cc-tool-cat="social" title="Toggle all social media tools">${allOn ? 'All' : 'All'}</button>
+          </div>
+          <div class="cc-hook-toggles">${buildToolRows(socialCat.tools, perms)}
+          </div>
+        </div>
+      </div>`;
+}
+
+function buildSkillsTab(ccSkills) {
+  const skills = ccSkills || [];
+  if (!skills.length) return `<div class="settings-tab-body" data-tab="skills"><div class="cc-hint" style="padding:20px;color:var(--t-dim)">No skills registered.</div></div>`;
+
+  return `
+      <div class="settings-tab-body" data-tab="skills">
+        <div class="cc-tool-permissions-hint" style="font-size:11px;color:var(--t-dim);margin-bottom:12px;padding:0 2px">
+          Slash commands that extend Claude Code with specialized capabilities.
+        </div>
+        ${skills.map(skill => `
+          <div class="cc-skill-row${skill.installed ? ' installed' : ''}" data-skill-name="${skill.dirName}">
+            <div class="cc-skill-info">
+              <span class="cc-skill-name">/${skill.name}</span>
+              <span class="cc-skill-desc">${skill.description || ''}</span>
+            </div>
+            <button class="cc-toggle${skill.installed ? ' on' : ''}" data-cc-skill="${skill.dirName}"></button>
+          </div>
+        `).join('')}
+      </div>`;
+}
+
+function buildPermissionsTab(toolCategories, toolPermissions) {
+  const chevron = CHEVRON_ICON;
+  const categories = (toolCategories || []).filter(c => c.id !== 'social');
+  if (!categories.length) return `<div class="settings-tab-body" data-tab="permissions"><div class="cc-hint" style="padding:20px;color:var(--t-dim)">No tool categories registered.</div></div>`;
+  const perms = toolPermissions || {};
+
   let totalOn = 0, totalAll = 0;
   const catData = categories.map(cat => {
     const onCount = cat.tools.filter(t => perms[t.key] !== false).length;
@@ -1294,17 +1382,6 @@ function buildToolPermissionsSection(categories, permissions, chevron, providerB
 
   const categoryHTML = catData.map(cat => {
     const catAllOn = cat.onCount === cat.tools.length;
-    const toolRows = cat.tools.map(t => {
-      const isOn = perms[t.key] !== false;
-      return `
-              <div class="cc-integration-item${isOn ? ' enabled' : ''}" data-tool-key="${t.key}">
-                <div class="cc-integration-info">
-                  <div class="cc-integration-label">${t.label}</div>
-                  <div class="cc-integration-path">${t.desc}</div>
-                </div>
-                <button class="cc-toggle${isOn ? ' on' : ''}" data-cc-tool="${t.key}"></button>
-              </div>`;
-    }).join('');
 
     return `
             <div class="cc-tool-category" data-tool-category="${cat.id}">
@@ -1313,38 +1390,33 @@ function buildToolPermissionsSection(categories, permissions, chevron, providerB
                 <span class="cc-tool-category-count">${cat.onCount}/${cat.tools.length}</span>
                 <button class="cc-tool-category-all${catAllOn ? ' on' : ''}" data-cc-tool-cat="${cat.id}" title="Toggle all ${cat.label} tools">${catAllOn ? 'All' : 'All'}</button>
               </div>
-              <div class="cc-hook-toggles">${toolRows}
+              <div class="cc-hook-toggles">${buildToolRows(cat.tools, perms)}
               </div>
             </div>`;
   }).join('');
 
   return `
-        <div class="iface-section collapsed" data-collapsible id="cc-tool-permissions">
-          <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">
-              ${chevron} Permissions
-              <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-tools-badge">${totalOn}/${totalAll}</span>
-            </span>
-            ${providerBadge ? providerBadge({ cli: true, vscode: true, web: false, cowork: false }) : ''}
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-tool-permissions-hint" style="font-size:10px;color:var(--t-dim);margin-bottom:8px;padding:0 2px">
-              Choose which actions can run automatically without asking you first.
-            </div>
-            ${categoryHTML}
-          </div>
-        </div>`;
+      <div class="settings-tab-body" data-tab="permissions">
+        <div class="cc-tool-permissions-hint" style="font-size:11px;color:var(--t-dim);margin-bottom:12px;padding:0 2px">
+          Choose which actions can run automatically without asking you first.
+        </div>
+        <div class="cc-tool-category-header" style="padding-bottom:8px;margin-bottom:4px">
+          <span class="cc-tool-category-label" style="font-size:12px">All Tools</span>
+          <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-tools-badge">${totalOn}/${totalAll}</span>
+        </div>
+        ${categoryHTML}
+      </div>`;
 }
 
 function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, toolPermissions, toolCategories) {
   const gh = ccIntegrations.global.hooks || {};
   const projs = ccIntegrations.projects || [];
-  const ssOn = gh.SessionStart && projs.every(p => (p.hooks || {}).SessionStart);
-  const psOn = gh.UserPromptSubmit && projs.every(p => (p.hooks || {}).UserPromptSubmit);
-  const pcOn = gh.PreCompact && projs.every(p => (p.hooks || {}).PreCompact);
-  const stOn = gh.Stop && projs.every(p => (p.hooks || {}).Stop);
-  const prOn = gh.PreToolUse && projs.every(p => (p.hooks || {}).PreToolUse);
-  const ptOn = gh.PostToolUse && projs.every(p => (p.hooks || {}).PostToolUse);
+  const ssOn = !!gh.SessionStart;
+  const psOn = !!gh.UserPromptSubmit;
+  const pcOn = !!gh.PreCompact;
+  const stOn = !!gh.Stop;
+  const prOn = !!gh.PreToolUse;
+  const ptOn = !!gh.PostToolUse;
   const allOn = ssOn && psOn && pcOn && stOn && prOn && ptOn;
   const onCount = [ssOn, psOn, pcOn, stOn, prOn, ptOn].filter(Boolean).length;
   const hf = ccIntegrations.hookFeatures || {};
@@ -1475,6 +1547,7 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
                 </div>
                 <input type="hidden" id="cc-greeting-project" value="${firstKey}">
               </div>
+              <span style="font-size:10px;color:var(--t-faint);margin-left:8px">Per-project or global</span>
             </div>
             <div class="cc-greeting-field">
               <label class="cc-greeting-label">Template</label>
@@ -1530,7 +1603,7 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
         <!-- 2. HOOKS -->
         <div class="iface-section collapsed" data-collapsible data-cc-target="global">
           <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Automations <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/6</span></span>
+            <span style="display:flex;align-items:center;gap:6px">${chevron} Hooks <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/6</span></span>
             ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
           </div>
           <div class="cc-section-body">
@@ -1547,10 +1620,10 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
           </div>
         </div>
 
-        <!-- 3. FEATURES -->
+        <!-- 3. KNOWLEDGE -->
         <div class="iface-section collapsed" data-collapsible>
           <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Features</span>
+            <span style="display:flex;align-items:center;gap:6px">${chevron} Knowledge</span>
             ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
           </div>
           <div class="cc-section-body">
@@ -1581,13 +1654,10 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
           </div>
         </div>
 
-        <!-- 3.5 TOOL PERMISSIONS -->
-        ${buildToolPermissionsSection(toolCategories, toolPermissions, chevron, providerBadge)}
-
         <!-- 4. EXTERNAL ACCESS -->
         <div class="iface-section collapsed" data-collapsible>
           <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} External Access</span>
+            <span style="display:flex;align-items:center;gap:6px">${chevron} Go Online</span>
             ${providerBadge({ cli: true, vscode: true, web: true, webNote: 'via MCP URL', cowork: false })}
           </div>
           <div class="cc-section-body">
@@ -1649,25 +1719,6 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
           </div>
         </div>
 
-        <!-- 7. SKILLS (conditional) -->
-        ${ccSkills.length > 0 ? `
-        <div class="iface-section collapsed" data-collapsible>
-          <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Skills</span>
-            ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
-          </div>
-          <div class="cc-section-body">
-            ${ccSkills.map(skill => `
-              <div class="cc-skill-row${skill.installed ? ' installed' : ''}" data-skill-name="${skill.dirName}">
-                <div class="cc-skill-info">
-                  <span class="cc-skill-name">/${skill.name}</span>
-                  <span class="cc-skill-desc">${skill.description || ''}</span>
-                </div>
-                <button class="cc-toggle${skill.installed ? ' on' : ''}" data-cc-skill="${skill.dirName}"></button>
-              </div>
-            `).join('')}
-          </div>
-        </div>` : ''}
       </div>`;
 }
 
@@ -2037,6 +2088,172 @@ function detectIfacePreset(cfg) {
 }
 
 // ═══════════════════════════════════════════
+// ICONS TAB — builder + interaction
+// ═══════════════════════════════════════════
+
+// Known special filenames for the icon grid
+const SPECIAL_FILENAMES = [
+  'dockerfile', 'makefile', '.gitignore', '.env', 'readme', 'changelog', 'license',
+];
+
+function buildIconsTab(customIcons = {}) {
+  const exts = Object.keys(FI_MAP);
+  const hasAny = Object.keys(customIcons.extensions || {}).length > 0 || Object.keys(customIcons.filenames || {}).length > 0;
+
+  let cards = '';
+
+  // Extension cards
+  for (const ext of exts) {
+    const info = FI_MAP[ext];
+    const custom = customIcons.extensions?.[ext];
+    const hasCustom = !!custom;
+    const preview = hasCustom
+      ? `<img src="/custom-icons/${escapeHtml(custom.path)}?t=${Date.now()}" alt="${ext}">`
+      : `<span class="fe-icon" style="color:${info.c || 'rgba(255,255,255,0.4)'}"><span style="display:flex;align-items:center;justify-content:center;width:24px;height:24px">${FI[info.i]}</span></span>`;
+
+    cards += `<div class="icon-card${hasCustom ? ' has-custom' : ''}" data-icon-type="ext" data-icon-key="${ext}">
+      <div class="icon-card-preview">${preview}</div>
+      <span class="icon-card-label">.${ext}</span>
+      ${hasCustom ? '<span class="icon-card-badge">Custom</span><button class="icon-card-reset" data-reset-type="ext" data-reset-key="' + ext + '">&times;</button>' : ''}
+    </div>`;
+  }
+
+  // Special filename cards
+  for (const fname of SPECIAL_FILENAMES) {
+    const custom = customIcons.filenames?.[fname];
+    const hasCustom = !!custom;
+    const fi = getFileIcon(fname);
+    const preview = hasCustom
+      ? `<img src="/custom-icons/${escapeHtml(custom.path)}?t=${Date.now()}" alt="${fname}">`
+      : fi.img
+        ? `<img src="${fi.img}" alt="${fname}">`
+        : `<span class="fe-icon" style="color:${fi.color || 'rgba(255,255,255,0.4)'}"><span style="display:flex;align-items:center;justify-content:center;width:24px;height:24px">${fi.svg}</span></span>`;
+
+    cards += `<div class="icon-card${hasCustom ? ' has-custom' : ''}" data-icon-type="name" data-icon-key="${fname}">
+      <div class="icon-card-preview">${preview}</div>
+      <span class="icon-card-label">${fname}</span>
+      ${hasCustom ? '<span class="icon-card-badge">Custom</span><button class="icon-card-reset" data-reset-type="name" data-reset-key="' + fname + '">&times;</button>' : ''}
+    </div>`;
+  }
+
+  return `
+    <div class="settings-tab-body" data-tab="icons">
+      <div class="icon-filter-bar">
+        <input type="text" id="icon-filter-input" placeholder="Filter extensions..." autocomplete="off" spellcheck="false">
+        ${hasAny ? '<button class="conn-add-btn" id="icon-reset-all" style="margin:0;flex:0 0 auto;white-space:nowrap;padding:4px 10px">Reset All</button>' : ''}
+      </div>
+      <div class="settings-hint" style="margin-bottom:12px">Click any icon to upload a custom replacement. Supports PNG, SVG, JPG, and WebP (max 2 MB).</div>
+      <div class="icon-grid">${cards}</div>
+      <input type="file" id="icon-upload-input" accept=".png,.svg,.jpg,.jpeg,.webp" style="display:none">
+    </div>`;
+}
+
+function wireIconsTab(panel, customIcons) {
+  let _pendingType = null;
+  let _pendingKey = null;
+
+  const fileInput = panel.querySelector('#icon-upload-input');
+  const filterInput = panel.querySelector('#icon-filter-input');
+  const resetAllBtn = panel.querySelector('#icon-reset-all');
+
+  // Card click → open file picker
+  panel.querySelectorAll('.icon-card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.icon-card-reset')) return; // let reset handler fire
+      _pendingType = card.dataset.iconType;
+      _pendingKey = card.dataset.iconKey;
+      if (fileInput) { fileInput.value = ''; fileInput.click(); }
+    });
+  });
+
+  // File selected → upload
+  if (fileInput) {
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files?.[0];
+      if (!file || !_pendingType || !_pendingKey) return;
+
+      const ct = file.type || 'application/octet-stream';
+      try {
+        const buf = await file.arrayBuffer();
+        const resp = await fetch(`/api/file-icons/${_pendingType}/${_pendingKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': ct, 'X-Original-Name': file.name },
+          body: buf,
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          emit('sync:icons:changed');
+          refreshIconsTab(panel);
+        } else {
+          showCCToast(data.error || 'Upload failed');
+        }
+      } catch (err) {
+        showCCToast('Upload failed: ' + err.message);
+      }
+    });
+  }
+
+  // Reset single icon
+  panel.querySelectorAll('.icon-card-reset').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const type = btn.dataset.resetType;
+      const key = btn.dataset.resetKey;
+      try {
+        const resp = await fetch(`/api/file-icons/${type}/${key}`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.ok) {
+          emit('sync:icons:changed');
+          refreshIconsTab(panel);
+        }
+      } catch {}
+    });
+  });
+
+  // Reset all
+  if (resetAllBtn) {
+    resetAllBtn.addEventListener('click', async () => {
+      try {
+        const resp = await fetch('/api/file-icons', { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.ok) {
+          emit('sync:icons:changed');
+          refreshIconsTab(panel);
+          showCCToast('All custom icons reset');
+        }
+      } catch {}
+    });
+  }
+
+  // Filter
+  if (filterInput) {
+    filterInput.addEventListener('input', () => {
+      const q = filterInput.value.toLowerCase().trim();
+      panel.querySelectorAll('.icon-card').forEach(card => {
+        const key = card.dataset.iconKey || '';
+        card.style.display = !q || key.includes(q) ? '' : 'none';
+      });
+    });
+  }
+}
+
+async function refreshIconsTab(panel) {
+  try {
+    const resp = await fetch('/api/file-icons').then(r => r.json());
+    if (!resp.ok) return;
+    const tabBody = panel.querySelector('.settings-tab-body[data-tab="icons"]');
+    if (!tabBody) return;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = buildIconsTab(resp.custom);
+    const newBody = tmp.querySelector('.settings-tab-body[data-tab="icons"]');
+    if (newBody) {
+      tabBody.innerHTML = newBody.innerHTML;
+      wireIconsTab(panel, resp.custom);
+    }
+  } catch {}
+}
+
+// ═══════════════════════════════════════════
 // MAIN ENTRY — openSettingsModal
 // ═══════════════════════════════════════════
 
@@ -2060,9 +2277,10 @@ export async function openSettingsModal() {
   let toolCategories = [];
   let discordConfig = {};
   let skinsData = { skins: [], active: 'default' };
+  let customIconsData = { extensions: {}, filenames: {} };
 
   try {
-    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes] = await Promise.allSettled([
+    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes, iconsRes] = await Promise.allSettled([
       fetch('/api/settings').then(r => r.json()),
       fetch('/api/connections').then(r => r.json()),
       fetch('/api/claude-code/integrations').then(r => r.json()),
@@ -2077,6 +2295,7 @@ export async function openSettingsModal() {
       fetch('/api/claude-code/tool-categories').then(r => r.json()),
       fetch('/api/discord/config').then(r => r.json()),
       fetch('/api/skins').then(r => r.json()),
+      fetch('/api/file-icons').then(r => r.json()),
     ]);
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
     if (connRes.status === 'fulfilled' && connRes.value.connections) connections = connRes.value.connections;
@@ -2092,6 +2311,7 @@ export async function openSettingsModal() {
     if (toolCatsRes.status === 'fulfilled' && toolCatsRes.value.ok) toolCategories = toolCatsRes.value.categories;
     if (discordRes.status === 'fulfilled' && discordRes.value.ok) discordConfig = discordRes.value.config;
     if (skinsRes.status === 'fulfilled' && skinsRes.value.ok) skinsData = skinsRes.value;
+    if (iconsRes.status === 'fulfilled' && iconsRes.value.ok) customIconsData = iconsRes.value.custom;
   } catch {}
   let openclawBridge = _bridgeResult || { enabled: false };
 
@@ -2139,11 +2359,6 @@ export async function openSettingsModal() {
           SQLite
         </span>
       </div>
-      <button class="stg-focus-btn" id="stg-focus" data-tooltip="Focus mode">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
-          <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
-        </svg>
-      </button>
       <button class="settings-panel-close" id="stg-close" data-tooltip="Close">&times;</button>
     </div>
     <div class="settings-panel-body">
@@ -2162,9 +2377,13 @@ export async function openSettingsModal() {
         ${buildCollectionsTab(connections, settings)}
         ${buildProjectsTab(ccIntegrations)}
         ${buildMemoryTab()}
+        ${buildSkillsTab(ccSkills)}
         ${buildDiscordTab(discordConfig)}
+        ${buildPermissionsTab(toolCategories, toolPermissions)}
+        ${buildSocialTab(toolCategories, toolPermissions)}
         ${buildSkinsTab(skinsData.skins, skinsData.active)}
         ${buildInterfaceTab()}
+        ${buildIconsTab(customIconsData)}
         ${variantTabBodies}
       </div>
     </div>
@@ -2851,7 +3070,7 @@ export async function openSettingsModal() {
     });
   });
 
-  // Collapsible iface-section cards (Connections tab) — click anywhere on the card
+  // Collapsible iface-section cards (Automations tab) — click anywhere on the card
   overlay.querySelectorAll('.iface-section[data-collapsible]').forEach(section => {
     section.addEventListener('click', (e) => {
       if (e.target.closest('select, input, button, textarea, a, .cc-section-body')) return;
@@ -3152,18 +3371,20 @@ export async function openSettingsModal() {
 
   // ── Tool Permission toggles ──
   function updateToolBadges() {
-    const section = overlay.querySelector('#cc-tool-permissions');
-    if (!section) return;
+    // Update per-category counts across all tabs (Automations + Social)
     let totalOn = 0, totalAll = 0;
-    section.querySelectorAll('.cc-tool-category').forEach(catEl => {
+    overlay.querySelectorAll('.cc-tool-category').forEach(catEl => {
       const toggles = catEl.querySelectorAll('.cc-toggle[data-cc-tool]');
       const on = [...toggles].filter(t => t.classList.contains('on')).length;
-      totalOn += on;
-      totalAll += toggles.length;
       const countEl = catEl.querySelector('.cc-tool-category-count');
       if (countEl) countEl.textContent = `${on}/${toggles.length}`;
       const allBtn = catEl.querySelector('.cc-tool-category-all');
       if (allBtn) allBtn.classList.toggle('on', on === toggles.length);
+      // Only count toward the Automations badge for non-social categories
+      if (catEl.dataset.toolCategory !== 'social') {
+        totalOn += on;
+        totalAll += toggles.length;
+      }
     });
     const badge = overlay.querySelector('#cc-tools-badge');
     if (badge) {
@@ -3173,10 +3394,9 @@ export async function openSettingsModal() {
   }
 
   function applyToolPermissionResult(tools) {
-    const section = overlay.querySelector('#cc-tool-permissions');
-    if (!section) return;
+    // Apply across all tabs (Automations + Social)
     for (const [key, enabled] of Object.entries(tools)) {
-      const toggle = section.querySelector(`.cc-toggle[data-cc-tool="${key}"]`);
+      const toggle = overlay.querySelector(`.cc-toggle[data-cc-tool="${key}"]`);
       if (toggle) {
         toggle.classList.toggle('on', enabled);
         const row = toggle.closest('.cc-integration-item');
@@ -4735,6 +4955,9 @@ export async function openSettingsModal() {
 
   // ── Skins tab: wire interaction ──
   wireSkinsTab(overlay, skinsData.skins, skinsData.active);
+
+  // ── Icons tab: wire interaction ──
+  wireIconsTab(overlay, customIconsData);
 
   // ── Variant tabs: call afterRender ──
   for (const vTab of variantTabs) {
