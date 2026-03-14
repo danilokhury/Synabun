@@ -1943,6 +1943,12 @@ function handleClaudeSkinWebSocket(ws) {
   let procModel = null;
   let procCwd = null;
   let procEffort = null;
+  let inTurn = false;        // true while CLI is processing a user message
+  let lastEventTime = Date.now(); // shared with stall detector
+  const approvedTools = new Set(); // tools the user has approved — persists across respawns
+  let lastPermissionDenials = null; // cached for retry after approval
+  let awaitingPermission = false; // true when permission card shown, suppresses 'done' from close handler
+  const permCardToolNames = new Map(); // requestId → toolName, for proactive permission cards
 
   // Strip env vars that interfere with nested claude execution
   const cleanEnv = Object.fromEntries(
@@ -1956,34 +1962,74 @@ function handleClaudeSkinWebSocket(ws) {
 
   function killProc() {
     if (!activeProc) return;
-    try { activeProc.stdin?.end(); } catch {}
     try { activeProc.kill(); } catch {}
     activeProc = null;
   }
 
-  function spawnProc(sessionId, model, cwd, effort) {
+  function spawnProc(sessionId, model, cwd, effort, prompt) {
     killProc();
+    const workDir = cwd || PROJECT_ROOT;
     const args = [
+      '--print',
       '--output-format', 'stream-json',
-      '--input-format', 'stream-json',
       '--verbose',
-      '--include-partial-messages',
+      '--permission-mode', 'default',
+      // ============================================================
+      // NO --input-format stream-json: suppresses result events with open stdin.
+      // NO --include-partial-messages: each partial includes FULL cumulative
+      //   content → 50MB+ through pipe on long turns → backpressure stalls CLI.
+      //   Live text rendering uses stream_event deltas instead (small payloads).
+      // ============================================================
     ];
-    if (sessionId) args.push('--continue', sessionId);
+    // Pre-approve tools the user has already allowed this session
+    if (approvedTools.size > 0) {
+      args.push('--allowedTools', [...approvedTools].join(' '));
+    }
+    // Allow access to parent directory so the model can reach sibling projects
+    const parentDir = dirname(workDir);
+    if (parentDir && parentDir !== workDir) args.push('--add-dir', parentDir);
+    if (sessionId) args.push('--resume', sessionId);
     if (model) args.push('--model', model);
     if (effort && ['low', 'medium', 'high', 'max'].includes(effort)) args.push('--effort', effort);
-
-    const workDir = cwd || PROJECT_ROOT;
     const claudeBin = getClaudeBin();
     const useShell = process.platform === 'win32' && claudeBin === 'claude';
     console.log('[claude-skin] Spawning:', claudeBin, args.join(' '), 'cwd:', workDir);
 
+    // ── Zero-pipe spawn: temp files for stdin AND stdout ──
+    // Windows named pipes deadlock when CLI writes faster than Node.js reads.
+    // Even with only stdout as a pipe, the 4-64KB buffer fills during large
+    // assistant events → CLI blocks on write → Node waits for data → deadlock.
+    // (issues: anthropics/claude-code#771, #25629, nodejs/node#29238)
+    //
+    // Fix: ALL stdio goes through temp files. No pipes at all.
+    // - stdin: prompt written to file, fd passed to spawn
+    // - stdout: fd opened for writing, passed to spawn; polled every 50ms
+    // - stderr: inherited to server terminal (TTY, never blocks)
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let promptTmpFile = null;
+    let stdinFd = null;
+    if (prompt) {
+      promptTmpFile = join(os.tmpdir(), `claude-skin-${runId}-in.txt`);
+      writeFileSync(promptTmpFile, prompt, 'utf-8');
+      stdinFd = openSync(promptTmpFile, 'r');
+    }
+    const stdoutTmpFile = join(os.tmpdir(), `claude-skin-${runId}-out.jsonl`);
+    writeFileSync(stdoutTmpFile, '', 'utf-8');
+    const stdoutFd = openSync(stdoutTmpFile, 'w');
+
     const proc = spawn(claudeBin, args, {
       cwd: workDir,
       env: cleanEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: [stdinFd !== null ? stdinFd : 'inherit', stdoutFd, 'inherit'],
       shell: useShell,
     });
+
+    // Close parent copies of write fds (child has its own via dup2)
+    if (stdinFd !== null) { try { closeSync(stdinFd); } catch {} }
+    try { closeSync(stdoutFd); } catch {}
+    // Open a persistent read fd for polling (fstatSync on fd → real-time FCB size,
+    // unlike statSync on path which reads lazily-updated NTFS directory entries)
+    const readFd = openSync(stdoutTmpFile, 'r');
     activeProc = proc;
     procSessionId = sessionId;
     procModel = model;
@@ -1992,52 +2038,196 @@ function handleClaudeSkinWebSocket(ws) {
     console.log('[claude-skin] Process spawned, pid:', proc.pid);
 
     let buf = '';
-    proc.stdout.on('data', (chunk) => {
-      buf += chunk.toString();
-      const lines = buf.split('\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const event = JSON.parse(trimmed);
-          // Track cost server-side
-          if (event.type === 'result' && typeof event.total_cost_usd === 'number' && event.total_cost_usd > 0) {
+    lastEventTime = Date.now();
+    inTurn = false;
+    let eventCount = 0;
+    let lastLoggedType = '';
+
+    function sendToClient(data) {
+      if (ws.readyState === 1) ws.send(JSON.stringify(data));
+    }
+
+    // Stall detector — auto-retry when no stdout events for a while during an active turn.
+    // Effort-based timeout: extended thinking with max effort can take 5+ minutes.
+    // Killing during thinking causes a kill-restart loop that never lets the model finish.
+    const STALL_WARN_SEC = 30;
+    const STALL_KILL_SEC = effort === 'max' ? 300 : effort === 'high' ? 120 : 45;
+    const MAX_RETRIES = 2;
+    let stallRetries = 0;
+    console.log(`[claude-skin] Stall timeout: ${STALL_KILL_SEC}s (effort: ${effort || 'default'})`);
+    const stallCheck = setInterval(() => {
+      if (activeProc !== proc) { clearInterval(stallCheck); return; }
+      if (!inTurn) return;
+      const silentSec = Math.round((Date.now() - lastEventTime) / 1000);
+      if (silentSec >= STALL_WARN_SEC) {
+        // Diagnostic: check actual file size vs what we've read
+        let fileSize = 0;
+        try { fileSize = fstatSync(readFd).size; } catch {}
+        const unread = fileSize - tailOffset;
+        console.log(`[claude-skin] ⚠ STALL: no events for ${silentSec}s | fileSize=${fileSize} tailOffset=${tailOffset} unread=${unread}b | events=${eventCount} | last=${lastLoggedType} | pid=${proc.pid} killed=${proc.killed} exitCode=${proc.exitCode}`);
+        if (unread > 0) {
+          console.log(`[claude-skin] ℹ File has ${unread}b unread data — CLI is writing, polling may be stale`);
+        }
+      }
+      if (silentSec >= STALL_KILL_SEC && !proc.killed) {
+        if (stallRetries < MAX_RETRIES) {
+          stallRetries++;
+          console.log(`[claude-skin] ⚡ STALL RETRY ${stallRetries}/${MAX_RETRIES} — respawning with --resume`);
+          killProc();
+          sendToClient({ type: 'event', event: { type: 'system', subtype: 'retry', message: `Stream stalled — retrying (${stallRetries}/${MAX_RETRIES})...` } });
+          const sid = procSessionId;
+          spawnProc(sid, procModel, procCwd, procEffort, 'The previous turn was interrupted by an API stream drop. Please continue from where you left off.');
+          inTurn = true;
+          lastEventTime = Date.now();
+        } else {
+          console.log(`[claude-skin] ✗ STALL TIMEOUT — max retries exhausted`);
+          killProc();
+          sendToClient({ type: 'error', message: `Session stalled after ${MAX_RETRIES} retries. The API stream keeps dropping. Try a simpler message or switch to a faster model.` });
+          sendToClient({ type: 'done', code: -1 });
+        }
+      }
+    }, 15000);
+
+    // ── Process stdout events from a line of JSON ──
+    function processEvent(trimmed) {
+      try {
+        const event = JSON.parse(trimmed);
+        eventCount++;
+        // Track session_id from init event
+        if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
+          procSessionId = event.session_id;
+          console.log('[claude-skin] procSessionId updated from init:', procSessionId);
+        }
+        // Log non-stream events
+        if (event.type !== 'stream_event') {
+          const toolNames = (event.message?.content || []).filter(b => b.type === 'tool_use').map(b => b.name).join(',');
+          lastLoggedType = `${event.type}${event.subtype ? '/' + event.subtype : ''}${toolNames ? ':' + toolNames : ''}`;
+          console.log(`[claude-skin] Event #${eventCount}: ${lastLoggedType}`);
+        }
+        // Track session_id + cost from result events
+        if (event.type === 'result') {
+          inTurn = false;
+          if (event.session_id) procSessionId = event.session_id;
+          if (typeof event.total_cost_usd === 'number' && event.total_cost_usd > 0) {
             try { addCost(event.total_cost_usd, event.session_id); } catch {}
           }
-          // Forward ALL control_requests to client (permissions, AskUserQuestion, etc.)
-          if (event.type === 'control_request') {
-            const req = event.request || event;
-            const requestId = event.request_id || req.request_id;
-            console.log('[claude-skin] Control request → client:', req?.tool_name || req?.subtype, 'request_id:', requestId, 'raw keys:', Object.keys(event).join(','));
-            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'control_request', request_id: requestId, request: req }));
-          } else {
-            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event }));
+          // Force-kill if process doesn't exit within 5s after result
+          // (known Claude CLI issue #25629: process hangs with open stdout after completion)
+          setTimeout(() => {
+            if (proc.exitCode === null && !proc.killed && activeProc === proc) {
+              console.log('[claude-skin] Force-killing process after result (hung exit)');
+              try { proc.kill(); } catch {}
+            }
+          }, 5000);
+          // ── Permission denial → permission card ──
+          const denials = event.permission_denials;
+          if (denials?.length > 0) {
+            lastPermissionDenials = denials;
+            awaitingPermission = true;
+            for (const denial of denials) {
+              const requestId = `perm-${denial.tool_use_id}`;
+              const input = denial.tool_input || {};
+              console.log(`[claude-skin] ▶ Permission denied for ${denial.tool_name} → sending permission card ${requestId}`);
+              sendToClient({
+                type: 'control_request',
+                request_id: requestId,
+                request: { tool_name: denial.tool_name, subtype: 'can_use_tool', input },
+              });
+            }
+            return; // Don't send 'done' yet — wait for user response
           }
-        } catch (e) { console.log('[claude-skin] JSON parse error:', e.message, 'line:', trimmed.substring(0, 80)); }
-      }
-    });
+        }
+        // ── Proactive permission card ──
+        if (event.type === 'assistant') {
+          const GATED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'Bash'];
+          const toolUses = (event.message?.content || []).filter(b => b.type === 'tool_use');
+          for (const tool of toolUses) {
+            if (GATED_TOOLS.includes(tool.name) && !approvedTools.has(tool.name)) {
+              const requestId = `perm-${tool.id}`;
+              const input = tool.input || {};
+              permCardToolNames.set(requestId, tool.name);
+              console.log(`[claude-skin] ▶ PROACTIVE permission card for ${tool.name}: ${input.file_path || input.command || ''}`);
+              sendToClient({
+                type: 'control_request',
+                request_id: requestId,
+                request: { tool_name: tool.name, subtype: 'can_use_tool', input },
+              });
+            }
+          }
+        }
+        // Forward all events to client
+        sendToClient({ type: 'event', event });
+      } catch (e) { console.log('[claude-skin] JSON parse error:', e.message, 'line:', trimmed.substring(0, 120)); }
+    }
 
-    proc.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      if (text.trim()) console.log('[claude-skin] stderr:', text.substring(0, 200));
-      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'stderr', text }));
-    });
+    // ── Poll stdout temp file instead of using pipe ──
+    // No pipes = no deadlock. CLI writes to file (never blocks), we poll every 50ms.
+    // Uses persistent readFd + fstatSync for real-time file size (bypasses NTFS directory cache).
+    let tailOffset = 0;
+    const tailPoll = setInterval(() => {
+      if (activeProc !== proc) { clearInterval(tailPoll); return; }
+      try {
+        const size = fstatSync(readFd).size;
+        if (size <= tailOffset) return;
+        const chunk = Buffer.alloc(size - tailOffset);
+        readSync(readFd, chunk, 0, chunk.length, tailOffset);
+        tailOffset += chunk.length;
+        lastEventTime = Date.now();
+        buf += chunk.toString();
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          processEvent(trimmed);
+        }
+      } catch {}
+    }, 50);
 
     proc.on('close', (code) => {
-      console.log('[claude-skin] Process closed, code:', code);
+      clearInterval(stallCheck);
+      clearInterval(tailPoll);
+      // Final flush — read any remaining data from stdout file
+      try {
+        const size = fstatSync(readFd).size;
+        if (size > tailOffset) {
+          const chunk = Buffer.alloc(size - tailOffset);
+          readSync(readFd, chunk, 0, chunk.length, tailOffset);
+          buf += chunk.toString();
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            processEvent(trimmed);
+          }
+        }
+      } catch {}
+      // Close read fd and clean up temp files
+      try { closeSync(readFd); } catch {}
+      if (promptTmpFile) { try { unlinkSync(promptTmpFile); } catch {} }
+      try { unlinkSync(stdoutTmpFile); } catch {}
+      console.log(`[claude-skin] Process closed, code: ${code}, events: ${eventCount}, buf: ${buf.length}b, awaitingPermission: ${awaitingPermission}`);
+      if (activeProc !== proc) return;
+      // Process any remaining partial line in buf
       if (buf.trim()) {
-        try {
-          const event = JSON.parse(buf.trim());
-          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event }));
-        } catch {}
+        console.log(`[claude-skin] Flushing final buf (${buf.length}b): ${buf.substring(0, 200)}`);
+        processEvent(buf.trim());
       }
-      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'done', code }));
+      // Don't send 'done' if we're showing a permission card — the user hasn't responded yet.
+      // 'done' will be sent after the user allows (via respawn+retry) or denies.
+      if (!awaitingPermission) {
+        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'done', code }));
+      }
       activeProc = null;
     });
 
     proc.on('error', (err) => {
+      clearInterval(stallCheck);
+      clearInterval(tailPoll);
+      try { closeSync(readFd); } catch {}
       console.log('[claude-skin] Process error:', err.message);
+      if (activeProc !== proc) return;
       if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: err.message }));
       activeProc = null;
     });
@@ -2045,7 +2235,7 @@ function handleClaudeSkinWebSocket(ws) {
     return proc;
   }
 
-  // ── Skill injection for slash commands (pipe mode doesn't support them natively) ──
+  // ── Skill injection for slash commands (print mode doesn't support them natively) ──
   function resolveSkillPrompt(command, args) {
     const dirs = [
       join(SKILLS_SOURCE_DIR, command),
@@ -2083,65 +2273,75 @@ function handleClaudeSkinWebSocket(ws) {
           }
         }
 
-        // Respawn if session/model/cwd/effort changed or process exited
-        const needsSpawn = !activeProc ||
-          (sessionId || null) !== procSessionId ||
-          (model || null) !== procModel ||
-          (cwd || null) !== procCwd ||
-          (effort || null) !== procEffort;
-        if (needsSpawn) spawnProc(sessionId || null, model || null, cwd || null, effort || null);
-
-        // Build content (text + optional images)
-        let content;
-        if (images?.length) {
-          content = [];
-          for (const img of images) {
-            content.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType || 'image/png', data: img.base64 } });
-          }
-          if (prompt) content.push({ type: 'text', text: prompt });
-        } else {
-          content = prompt;
-        }
-
-        // Write user message to stdin
-        const userMsg = { type: 'user', session_id: sessionId || '', message: { role: 'user', content } };
-        console.log('[claude-skin] Sending user message, length:', JSON.stringify(content).length);
-        try { activeProc.stdin.write(JSON.stringify(userMsg) + '\n'); } catch (e) {
-          console.log('[claude-skin] stdin write error:', e.message);
-          ws.send(JSON.stringify({ type: 'error', message: 'Failed to send message to Claude process' }));
-        }
+        // Each message = fresh process. Without --input-format stream-json,
+        // the CLI reads text from stdin (temp file), processes one turn, emits result, and exits.
+        // Session continuity via --resume sessionId.
+        console.log('[claude-skin] Sending prompt, length:', prompt.length);
+        spawnProc(sessionId || null, model || null, cwd || null, effort || null, prompt);
+        inTurn = true;
+        lastEventTime = Date.now();
       }
 
       if (msg.type === 'control_response') {
-        // Forward client's control_response to Claude process stdin
-        console.log('[claude-skin] Control response →', JSON.stringify(msg).slice(0, 500));
-        if (activeProc?.stdin?.writable) {
-          try { activeProc.stdin.write(JSON.stringify(msg) + '\n'); } catch {}
+        const rid = msg.request_id || msg.response?.request_id;
+        const innerResponse = msg.response?.response || msg.response;
+        const behavior = innerResponse?.behavior || msg.response?.behavior;
+
+        // ── Permission card response (proactive or from permission_denials) ──
+        if (rid && rid.startsWith('perm-')) {
+          // Extract tool name from proactive card map, cached denials, or response
+          const toolName = permCardToolNames.get(rid) || lastPermissionDenials?.find(d => `perm-${d.tool_use_id}` === rid)?.tool_name || 'unknown';
+          permCardToolNames.delete(rid);
+          console.log(`[claude-skin] ▶ Permission response for ${toolName}: ${behavior}`);
+
+          if (behavior === 'allow') {
+            // Add tool to approved set
+            approvedTools.add(toolName);
+            // Check "always" flag
+            if (innerResponse?.always || msg.response?.always) {
+              console.log(`[claude-skin] ▶ Always-allow: ${toolName}`);
+            }
+            // Respawn with updated --allowedTools and retry
+            console.log(`[claude-skin] ▶ Respawning with approved tools: ${[...approvedTools].join(', ')}`);
+            const sid = procSessionId;
+            const retryPrompt = `Permission granted for ${toolName}. Please retry your previous action.`;
+            spawnProc(sid, procModel, procCwd, procEffort, retryPrompt);
+            inTurn = true;
+            lastEventTime = Date.now();
+          } else {
+            // User denied — send done to client
+            console.log(`[claude-skin] ✗ Permission denied for ${toolName} by user`);
+            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'done', code: 0 }));
+          }
+          lastPermissionDenials = null;
+          awaitingPermission = false;
+          return;
         }
+
+        // No stream-json input — control_responses are handled via respawn flows above
+        console.log('[claude-skin] Unhandled control_response:', rid);
       }
 
       if (msg.type === 'tool_result') {
-        // Forward client's tool_result (e.g. AskUserQuestion answer) to Claude process stdin
-        console.log('[claude-skin] Tool result →', msg.tool_use_id, JSON.stringify(msg.content).slice(0, 200));
-        if (activeProc?.stdin?.writable) {
-          try { activeProc.stdin.write(JSON.stringify(msg) + '\n'); } catch {}
-        }
+        // AskUserQuestion answer — process already exited (text input mode).
+        // Respawn with --resume to continue the session with the user's answer.
+        const answer = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+        console.log('[claude-skin] Tool result (AskUserQuestion) → respawn with answer:', answer.slice(0, 200));
+        const sid = procSessionId;
+        const answerPrompt = `The user answered your AskUserQuestion: ${answer}\nContinue with their selection.`;
+        spawnProc(sid, procModel, procCwd, procEffort, answerPrompt);
+        inTurn = true;
+        lastEventTime = Date.now();
       }
 
       if (msg.type === 'compact') {
-        // Send /compact as user message — Claude Code handles compaction natively
-        if (!activeProc?.stdin?.writable) {
-          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: 'No active process to compact' }));
-        } else {
-          const compactMsg = { type: 'user', session_id: procSessionId || '', message: { role: 'user', content: '/compact' } };
-          try {
-            activeProc.stdin.write(JSON.stringify(compactMsg) + '\n');
-            console.log('[claude-skin] Sent /compact to subprocess');
-            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event: { type: 'system', subtype: 'compact_started', message: 'Compacting context...' } }));
-          } catch (e) {
-            if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: 'Failed to send compact command' }));
-          }
-        }
+        // Compact via respawn with /compact as the prompt
+        const sid = procSessionId;
+        console.log('[claude-skin] Compact requested, spawning with /compact');
+        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event: { type: 'system', subtype: 'compact_started', message: 'Compacting context...' } }));
+        spawnProc(sid, procModel, procCwd, procEffort, '/compact');
+        inTurn = true;
+        lastEventTime = Date.now();
       }
 
       if (msg.type === 'abort') {
@@ -7758,8 +7958,8 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     // Loop driver capture — accumulates output for prompt detection
     if (session._loopDriverBuffer !== undefined) {
       session._loopDriverBuffer += data;
-      if (session._loopDriverBuffer.length > 4096) {
-        session._loopDriverBuffer = session._loopDriverBuffer.slice(-2048);
+      if (session._loopDriverBuffer.length > 16384) {
+        session._loopDriverBuffer = session._loopDriverBuffer.slice(-8192);
       }
     }
 
@@ -7803,7 +8003,8 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
 
 // ── Loop Driver — sends /clear + next iteration prompt between loop iterations ──
 
-const LOOP_ANSI_RE = /\x1b\[[\x20-\x3f]*[\x40-\x7e]|\x1b\][^\x07]*\x07|\x1b[()][AB012]/g;
+// Comprehensive ANSI escape stripping: CSI sequences, OSC sequences, charset selects, cursor keys, and \r
+const LOOP_ANSI_RE = /\x1b\[[\x20-\x3f]*[\x40-\x7e]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[=<>78HMND]|\x1bO[A-Z]|\r/g;
 
 /**
  * Writes text to a PTY in chunks to avoid ConPTY buffer overflow on Windows.
@@ -7826,10 +8027,26 @@ function writeToLoopPty(session, text, sendEnter = true) {
 
 /**
  * Check if the ANSI-stripped PTY output buffer contains a ready prompt (>).
+ * Matches: ">" at end of buffer, ">" on its own line, ">" followed by whitespace/newlines,
+ * or the box-style prompt used by newer Claude Code UI (│ > │).
  */
 function loopPromptReady(buffer) {
   const stripped = buffer.replace(LOOP_ANSI_RE, '');
-  return />\s*$/.test(stripped) || /^>\s*$/m.test(stripped);
+  // Current Claude Code prompt: "? for shortcuts" hint line
+  if (/\?\s*for shortcuts/i.test(stripped)) return true;
+  // End of buffer prompt
+  if (/>\s*$/.test(stripped)) return true;
+  // Prompt on its own line (possibly with surrounding whitespace/newlines)
+  if (/^>\s*$/m.test(stripped)) return true;
+  // Prompt followed by newlines then nothing meaningful (e.g. "> \n\n")
+  if (/>\s*\n\s*$/.test(stripped)) return true;
+  // Box-style prompt: newer Claude Code renders "│ > " inside a box — box chars survive ANSI strip
+  const tail = stripped.slice(-400);
+  if (/│\s*>/.test(tail)) return true;
+  // Last non-empty line contains > (catches any decorated prompt variant)
+  const lastLine = stripped.trimEnd().split('\n').pop() || '';
+  if (lastLine.includes('>')) return true;
+  return false;
 }
 
 /**
@@ -7845,10 +8062,14 @@ function attachLoopDriver(terminalSessionId) {
   session._loopDriverBuffer = '';
   let driving = false; // prevent re-entrance
 
+  let consecutiveFailures = 0;
+  const MAX_DRIVE_FAILURES = 3;
+
   const interval = setInterval(async () => {
     if (driving) return;
     if (!terminalSessions.has(terminalSessionId)) {
       clearInterval(interval);
+      console.log('[loop-driver] Terminal session gone, clearing driver interval');
       return;
     }
 
@@ -7866,11 +8087,33 @@ function attachLoopDriver(terminalSessionId) {
 
         // Found a loop awaiting next iteration — drive it
         driving = true;
+        let success = false;
         try {
-          await driveNextIteration(session, loopState, f);
+          success = await driveNextIteration(session, loopState, f);
         } catch (err) {
           console.error('[loop-driver] Error driving iteration:', err.message);
         }
+
+        if (success) {
+          consecutiveFailures = 0;
+        } else {
+          consecutiveFailures++;
+          console.warn(`[loop-driver] Iteration drive failed (${consecutiveFailures}/${MAX_DRIVE_FAILURES})`);
+          if (consecutiveFailures >= MAX_DRIVE_FAILURES) {
+            console.error(`[loop-driver] ${MAX_DRIVE_FAILURES} consecutive failures — deactivating loop`);
+            try {
+              const failPath = resolve(LOOP_DIR, f);
+              const failState = JSON.parse(readFileSync(failPath, 'utf-8'));
+              failState.active = false;
+              failState.stopped = true;
+              failState.stopReason = 'prompt-detection-failed';
+              failState.finishedAt = new Date().toISOString();
+              writeFileSync(failPath, JSON.stringify(failState, null, 2));
+            } catch { /* ok */ }
+            consecutiveFailures = 0;
+          }
+        }
+
         driving = false;
         break;
       }
@@ -7901,15 +8144,26 @@ function waitForLoopPrompt(session, timeoutMs = 15000) {
 }
 
 /**
- * Drive the next loop iteration: /clear → wait → iteration prompt → auto-confirm
+ * Drive the next loop iteration: /clear → wait → iteration prompt → auto-confirm.
+ * Returns true if successful, false if prompt detection failed (loop should retry).
  */
 async function driveNextIteration(session, loopState, filename) {
   const loopPath = resolve(LOOP_DIR, filename);
+  const iter = loopState.currentIteration;
 
-  console.log(`[loop-driver] Driving iteration ${loopState.currentIteration}/${loopState.totalIterations}`);
+  console.log(`[loop-driver] Driving iteration ${iter}/${loopState.totalIterations}`);
 
   // Step 1: Wait for > prompt (Claude finished stopping)
-  await waitForLoopPrompt(session, 15000);
+  // Try 30s first, then retry once with 45s if it fails
+  let promptReady = await waitForLoopPrompt(session, 30000);
+  if (!promptReady) {
+    console.warn(`[loop-driver] Prompt not detected after 30s for iteration ${iter}, retrying with 45s...`);
+    promptReady = await waitForLoopPrompt(session, 45000);
+  }
+  if (!promptReady) {
+    console.error(`[loop-driver] ABORT iteration ${iter}: prompt never appeared after 75s total. Buffer: ${JSON.stringify((session._loopDriverBuffer || '').slice(-200))}`);
+    return false;
+  }
 
   // Step 2: Send /clear to reset conversation context
   session._loopDriverBuffer = '';
@@ -7917,12 +8171,20 @@ async function driveNextIteration(session, loopState, filename) {
   console.log('[loop-driver] Sent /clear');
 
   // Step 3: Wait for > prompt after /clear completes
-  await waitForLoopPrompt(session, 15000);
+  promptReady = await waitForLoopPrompt(session, 30000);
+  if (!promptReady) {
+    console.warn(`[loop-driver] Prompt not detected after /clear (30s) for iteration ${iter}, retrying with 45s...`);
+    promptReady = await waitForLoopPrompt(session, 45000);
+  }
+  if (!promptReady) {
+    console.error(`[loop-driver] ABORT iteration ${iter}: prompt never appeared after /clear. Buffer: ${JSON.stringify((session._loopDriverBuffer || '').slice(-200))}`);
+    return false;
+  }
 
   // Step 4: Send the iteration message (prompt-submit hook will inject full context)
-  const iterMsg = `[SynaBun Loop] Iteration ${loopState.currentIteration}. Begin task.`;
+  const iterMsg = `[SynaBun Loop] Iteration ${iter}. Begin task.`;
   const chunkTime = writeToLoopPty(session, iterMsg, true);
-  console.log(`[loop-driver] Sent iteration ${loopState.currentIteration} message (${iterMsg.length} chars)`);
+  console.log(`[loop-driver] Sent iteration ${iter} message (${iterMsg.length} chars)`);
 
   // Step 5: Auto-confirm (Enter after all chunks + settle time)
   setTimeout(() => {
@@ -7938,6 +8200,8 @@ async function driveNextIteration(session, loopState, filename) {
   } catch (err) {
     console.warn('[loop-driver] Failed to clear awaitingNext:', err.message);
   }
+
+  return true;
 }
 
 // ── Last Session (resume after server restart) ──

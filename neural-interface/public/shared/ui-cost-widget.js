@@ -22,6 +22,7 @@ let _pinnedOpen = false;   // Toggled open from Claude Panel (independent of foc
 
 export function initCostWidget() {
   const container = document.getElementById('static-bg');
+  console.log('[cost-widget] init, container:', !!container);
   if (!container) return;
 
   _collapsed = storage.getItem(KEYS.COST_WIDGET_COLLAPSED) === 'true';
@@ -30,13 +31,16 @@ export function initCostWidget() {
   _widget.id = 'cost-widget';
   _widget.className = 'glass cost-widget' + (_collapsed ? ' collapsed' : '');
 
-  // Restore position or default to bottom-right
+  // Restore position or default to bottom-right (clamped to viewport)
   const savedPos = _loadPos();
-  _widget.style.right = savedPos ? 'auto' : '24px';
-  _widget.style.bottom = savedPos ? 'auto' : '24px';
   if (savedPos) {
-    _widget.style.left = savedPos.left + 'px';
-    _widget.style.top = savedPos.top + 'px';
+    const maxLeft = window.innerWidth - 270;
+    const maxTop = window.innerHeight - 60;
+    _widget.style.left = Math.max(0, Math.min(savedPos.left, maxLeft)) + 'px';
+    _widget.style.top = Math.max(0, Math.min(savedPos.top, maxTop)) + 'px';
+  } else {
+    _widget.style.right = '24px';
+    _widget.style.bottom = '24px';
   }
 
   _widget.innerHTML = `
@@ -84,6 +88,7 @@ export function initCostWidget() {
 
   // Toggle from Claude Panel cost label
   on('cost:toggle', () => {
+    console.log('[cost-widget] cost:toggle fired, _widget:', !!_widget, '_pinnedOpen:', _pinnedOpen);
     if (!_widget) return;
     _pinnedOpen = !_pinnedOpen;
     _widget.style.display = _pinnedOpen ? '' : 'none';
