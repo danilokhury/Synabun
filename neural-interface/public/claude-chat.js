@@ -666,6 +666,7 @@ function handleControlRequest(msg) {
   const req = msg.request || msg;
   const requestId = msg.request_id || req.request_id;
   const toolName = req.tool_name;
+  console.log('[claude-skin] handleControlRequest:', toolName, 'request_id:', requestId, 'keys:', Object.keys(msg).join(','));
   if (!requestId) return;
 
   if (toolName === 'AskUserQuestion') {
@@ -766,7 +767,7 @@ function sendControlResponse(requestId, questions, answers) {
   ws.send(JSON.stringify({
     type: 'control_response',
     request_id: rid,
-    response: { updatedInput: { questions, answers } },
+    response: { behavior: 'allow', updatedInput: { questions, answers } },
   }));
   pendingAskRequestId = null;
   pendingAskBufferedAnswer = null;

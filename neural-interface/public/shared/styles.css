@@ -10012,6 +10012,43 @@
   .fe-git-summary .gs-d { color: #ef5350; }
   .fe-git-summary .gs-u { color: rgba(255,255,255,0.35); }
 
+  /* Git commit output */
+  .fe-git-popover.fe-git-output-mode {
+    width: 300px;
+    transition: opacity 0.18s ease, transform 0.18s ease, width 0.18s ease;
+  }
+  .fe-git-output {
+    display: none;
+  }
+  .fe-git-output-header {
+    font-size: 9px;
+    font-family: var(--ff-mono);
+    color: rgba(255,255,255,0.5);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  .fe-git-output-pre {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 5px;
+    padding: 8px 10px;
+    font-family: var(--ff-mono);
+    font-size: 10px;
+    color: rgba(255,255,255,0.6);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 160px;
+    overflow-y: auto;
+    margin: 0;
+  }
+  .fe-git-output-pre.error {
+    background: rgba(255,82,82,0.06);
+    border-color: rgba(255,82,82,0.15);
+    color: #ef5350;
+  }
+
   /* Dropdown panel */
   .fe-project-dropdown {
     display: none;
@@ -14986,12 +15023,12 @@
     position: absolute;
     top: 0; left: 0; right: 0;
     will-change: transform;
-    contain: layout style;
+    contain: layout paint style;
   }
 
   .html-term-row {
     white-space: pre;
-    contain: inline-size style;
+    contain: layout paint style;
   }
 
   .html-term-cursor {

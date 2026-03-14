@@ -1655,6 +1655,11 @@ async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}
     const profileDef = PROFILES.find(p => p.id === profile);
     const cwdLabel = cwd ? cwd.split(/[\\/]/).pop() : '';
 
+    // PTY resize debounce — prevents Claude Code/Ink from re-rendering
+    // its TUI multiple times during a resize drag (250ms coalescing)
+    let _ptyResizeTimer = null;
+    const PTY_RESIZE_DEBOUNCE = 250;
+
     const htmlTerm = new _HtmlTermRenderer(viewport, null, {
       onTitle: (title) => {
         const sess = _sessions.find(s => s.id === sessionId);
@@ -1664,15 +1669,20 @@ async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}
         }
       },
       onResize: (cols, rows) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-        }
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (_ptyResizeTimer) clearTimeout(_ptyResizeTimer);
+        _ptyResizeTimer = setTimeout(() => {
+          _ptyResizeTimer = null;
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+          }
+        }, PTY_RESIZE_DEBOUNCE);
       },
     });
 
     ws.onopen = () => {
       htmlTerm.setWebSocket(ws);
-      // Send correct size to PTY
+      // Send correct size to PTY (immediate — not debounced for initial connect)
       htmlTerm.fit();
       if (htmlTerm.cols >= 2 && htmlTerm.rows >= 2) {
         ws.send(JSON.stringify({ type: 'resize', cols: htmlTerm.cols, rows: htmlTerm.rows }));
@@ -1787,6 +1797,9 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
 
+  // PTY resize debounce (reconnect path)
+  let _ptyResizeTimer2 = null;
+
   const htmlTerm = new _HtmlTermRenderer(viewport, null, {
     onTitle: (title) => {
       const sess = _sessions.find(s => s.id === sessionId);
@@ -1796,9 +1809,14 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
       }
     },
     onResize: (cols, rows) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-      }
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (_ptyResizeTimer2) clearTimeout(_ptyResizeTimer2);
+      _ptyResizeTimer2 = setTimeout(() => {
+        _ptyResizeTimer2 = null;
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+        }
+      }, 250);
     },
   });
 
@@ -3369,6 +3387,9 @@ function detachTab(idx) {
         <button class="term-float-tab-btn rename-btn" data-tooltip="Rename">
           <svg viewBox="0 0 24 24"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
         </button>
+        ${CLI_PROFILES.has(session.profile) ? `<button class="term-float-tab-btn changelog-btn" data-tooltip="Generate changelog">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        </button>` : ''}
         <button class="term-float-tab-btn pin-btn" data-tooltip="Pin on top">
           <svg viewBox="0 0 24 24"><path d="M9 4v6l-2 4h5v6" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 14h5l-2-4V4" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="7" y1="14" x2="17" y2="14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="9" y1="4" x2="15" y2="4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
@@ -3537,6 +3558,17 @@ function detachTab(idx) {
       if (ev.key === 'Escape') { titleEl.textContent = session.label; titleEl.blur(); }
     });
   });
+
+  // Wire changelog button (CLI profiles only)
+  const changelogBtn = win.querySelector('.changelog-btn');
+  if (changelogBtn) {
+    changelogBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (session.ws?.readyState === WebSocket.OPEN) {
+        session.ws.send(JSON.stringify({ type: 'input', data: '/synabun changelog\r' }));
+      }
+    });
+  }
 
   // Store in map
   const tabState = { el: win, cleanup: null };

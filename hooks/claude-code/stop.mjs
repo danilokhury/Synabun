@@ -259,6 +259,7 @@ async function main() {
     if (iterationsDone >= totalIterations || elapsed >= maxMs) {
       // Loop finished — deactivate and allow stop
       loop.active = false;
+      loop.stopReason = iterationsDone >= totalIterations ? 'iteration-cap' : 'time-cap';
       loop.finishedAt = new Date().toISOString();
       try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
       // Fall through to remember/conversation checks
