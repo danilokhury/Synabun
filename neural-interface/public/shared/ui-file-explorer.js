@@ -263,8 +263,9 @@ function positionGitPopover() {
 
   // If it would overflow the right edge, flip to the left
   let flipped = false;
-  if (left + 248 > window.innerWidth) {
-    left = r.left - 248 - 8;
+  const popWidth = pop.offsetWidth || 248;
+  if (left + popWidth > window.innerWidth) {
+    left = r.left - popWidth - 8;
     flipped = true;
   }
 
@@ -291,6 +292,7 @@ function openGitPopover() {
   const btn = $('fe-branch-btn');
   if (!pop) return;
 
+  resetCommitOutput();
   _gitPopoverOpen = true;
   btn?.classList.add('active');
   positionGitPopover();
@@ -315,6 +317,7 @@ function closeGitPopover() {
   const pop = $('fe-git-popover');
   const btn = $('fe-branch-btn');
   if (!pop) return;
+  resetCommitOutput();
   _gitPopoverOpen = false;
   pop.classList.remove('visible');
   btn?.classList.remove('active');
@@ -433,7 +436,7 @@ async function doGitCommit() {
     const data = await res.json();
     if (data.ok) {
       input.value = '';
-      showToast('Committed');
+      showCommitOutput(data.output, true);
       _cache.clear();
       _rootLoaded = false;
       loadDirectory(_selectedProject.path).then(() => {
@@ -442,13 +445,42 @@ async function doGitCommit() {
       });
       refreshGitStatus();
     } else {
-      showToast(data.error || 'Commit failed');
+      showCommitOutput(data.error || 'Commit failed', false);
     }
   } catch {
-    showToast('Commit failed');
+    showCommitOutput('Commit failed', false);
   } finally {
     btn?.classList.remove('loading');
   }
+}
+
+function showCommitOutput(text, isSuccess) {
+  const controls = $('fe-git-controls');
+  const output = $('fe-git-output');
+  const pop = $('fe-git-popover');
+  if (!controls || !output || !pop) return;
+
+  controls.style.display = 'none';
+
+  const icon = isSuccess
+    ? '<svg viewBox="0 0 24 24" style="width:11px;height:11px;stroke:#66bb6a;fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;vertical-align:-1px"><polyline points="20 6 9 17 4 12"/></svg>'
+    : '<svg viewBox="0 0 24 24" style="width:11px;height:11px;stroke:#ef5350;fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;vertical-align:-1px"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+
+  output.innerHTML =
+    `<div class="fe-git-output-header">${icon} ${isSuccess ? 'Committed' : 'Failed'}</div>` +
+    `<pre class="fe-git-output-pre${isSuccess ? '' : ' error'}">${escHtml(text)}</pre>`;
+  output.style.display = 'block';
+  pop.classList.add('fe-git-output-mode');
+  positionGitPopover();
+}
+
+function resetCommitOutput() {
+  const controls = $('fe-git-controls');
+  const output = $('fe-git-output');
+  const pop = $('fe-git-popover');
+  if (controls) controls.style.display = '';
+  if (output) { output.innerHTML = ''; output.style.display = 'none'; }
+  if (pop) pop.classList.remove('fe-git-output-mode');
 }
 
 async function generateCommitMessage() {
@@ -485,27 +517,30 @@ function createGitPopover() {
   pop.id = 'fe-git-popover';
   pop.innerHTML = `
     <div class="fe-git-popover-arrow"></div>
-    <div class="fe-git-pop-section">
-      <label class="fe-git-pop-label">Branch</label>
-      <select class="fe-git-branch-select" id="fe-git-branch-select"></select>
-    </div>
-    <div class="fe-git-pop-sep"></div>
-    <div class="fe-git-pop-section">
-      <label class="fe-git-pop-label">Commit</label>
-      <div class="fe-git-commit-area">
-        <button class="fe-git-gen-btn" id="fe-git-gen-btn" data-tooltip="Generate message">
-          <svg viewBox="0 0 24 24"><path d="M12 2L9.5 8.5 3 10l5 4-1.5 7L12 17.5 17.5 21 16 14l5-4-6.5-1.5z"/></svg>
-        </button>
-        <input type="text" class="fe-git-commit-input" id="fe-git-commit-input" placeholder="Message..." autocomplete="off" spellcheck="false" maxlength="200">
-        <button class="fe-git-commit-btn" id="fe-git-commit-btn">
-          <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-        </button>
+    <div class="fe-git-controls" id="fe-git-controls">
+      <div class="fe-git-pop-section">
+        <label class="fe-git-pop-label">Branch</label>
+        <select class="fe-git-branch-select" id="fe-git-branch-select"></select>
+      </div>
+      <div class="fe-git-pop-sep"></div>
+      <div class="fe-git-pop-section">
+        <label class="fe-git-pop-label">Commit</label>
+        <div class="fe-git-commit-area">
+          <button class="fe-git-gen-btn" id="fe-git-gen-btn" data-tooltip="Generate message">
+            <svg viewBox="0 0 24 24"><path d="M12 2L9.5 8.5 3 10l5 4-1.5 7L12 17.5 17.5 21 16 14l5-4-6.5-1.5z"/></svg>
+          </button>
+          <input type="text" class="fe-git-commit-input" id="fe-git-commit-input" placeholder="Message..." autocomplete="off" spellcheck="false" maxlength="200">
+          <button class="fe-git-commit-btn" id="fe-git-commit-btn">
+            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="fe-git-pop-sep"></div>
+      <div class="fe-git-pop-section">
+        <div class="fe-git-summary" id="fe-git-summary"></div>
       </div>
     </div>
-    <div class="fe-git-pop-sep"></div>
-    <div class="fe-git-pop-section">
-      <div class="fe-git-summary" id="fe-git-summary"></div>
-    </div>`;
+    <div class="fe-git-output" id="fe-git-output"></div>`;
   document.body.appendChild(pop);
   return pop;
 }

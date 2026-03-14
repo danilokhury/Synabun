@@ -42,8 +42,9 @@ for (let i = 0; i < 16; i++) {
 // HTML entity map for single-char escaping
 const HTML_ENTITIES = { '&': '&amp;', '<': '&lt;', '>': '&gt;' };
 
-// Resize debounce (ms) — prevents layout thrashing during continuous resize
-const RESIZE_DEBOUNCE_MS = 60;
+// Resize debounce (ms) — prevents layout thrashing during continuous resize.
+// 150ms is tuned for Ink/React TUIs that re-render their entire screen on SIGWINCH.
+const RESIZE_DEBOUNCE_MS = 150;
 
 export class HtmlTermRenderer {
   /**
@@ -90,9 +91,15 @@ export class HtmlTermRenderer {
     this._selectionDirty = false;
 
     // Scroll state
-    this._wasAtBottom = true;
     this._lastFirstVisible = -1;
     this._suppressScrollEvent = false;
+
+    // Live mode: when true, skip spacer math and always render from buffer bottom.
+    // Eliminates the scrollTop/spacer desync that causes blank rows.
+    this._isLive = true;
+
+    // Span pools for DOM diffing — avoids innerHTML replacement per row
+    this._rowSpanPools = [];
 
     // Resize debounce state
     this._resizeTimer = null;
@@ -126,9 +133,6 @@ export class HtmlTermRenderer {
   write(data) {
     if (this._disposed || !this._buffer) return;
 
-    // Track whether we were at bottom before new data
-    const wasBottom = this._isAtBottom();
-
     this._buffer.write(data);
 
     // Check title change
@@ -137,11 +141,17 @@ export class HtmlTermRenderer {
       if (this._options.onTitle) this._options.onTitle(this._lastTitle);
     }
 
+    // Alt screen transition → force live mode and reset scroll
+    if (this._buffer._altTransitionPending) {
+      this._isLive = true;
+      this._buffer._altTransitionPending = false;
+    }
+
     // Update spacer height (scrollback may have grown)
     this._updateSpacerHeight();
 
-    // Auto-scroll to bottom if we were already there (but not during selection)
-    if (wasBottom && !this._selecting) {
+    // In live mode, keep scroll pinned to bottom (skip _isAtBottom check — we know)
+    if (this._isLive && !this._selecting) {
       this._scrollToMax();
     }
 
@@ -162,6 +172,7 @@ export class HtmlTermRenderer {
       this._buffer.resize(this._cols, this._rows);
       this._rebuildRows();
       this._updateSpacerHeight();
+      this._isLive = true; // resize snaps back to live view
       this._scrollToMax();
       this._scheduleRender();
       if (this._options.onResize) {
@@ -191,6 +202,7 @@ export class HtmlTermRenderer {
   }
 
   scrollToBottom() {
+    this._isLive = true;
     this._scrollToMax();
     this._scheduleRender();
   }
@@ -297,6 +309,7 @@ export class HtmlTermRenderer {
     for (const el of this._rowEls) el.remove();
     this._rowEls = [];
     this._rowHashes = [];
+    this._rowSpanPools = [];
 
     // Insert row elements before the cursor
     const frag = document.createDocumentFragment();
@@ -308,6 +321,7 @@ export class HtmlTermRenderer {
       frag.appendChild(el);
       this._rowEls.push(el);
       this._rowHashes.push('');
+      this._rowSpanPools.push([]);
     }
     this._rowsEl.insertBefore(frag, this._cursorEl);
     this._lastFirstVisible = -1; // force full re-render
@@ -362,38 +376,37 @@ export class HtmlTermRenderer {
       this._rowsEl.insertBefore(el, this._cursorEl);
       this._rowEls.push(el);
       this._rowHashes.push('');
+      this._rowSpanPools.push([]);
     }
     while (this._rowEls.length > this._rows) {
       const el = this._rowEls.pop();
       this._rowHashes.pop();
+      this._rowSpanPools.pop();
       el.remove();
     }
 
     const scrollback = this._buffer.scrollbackLength;
+    let firstVisible;
 
-    // Force layout reflow so scrollTop is correctly clamped after spacer height changes.
-    // Without this, rAF can read stale scrollTop before browser recalculates layout,
-    // causing firstVisible to point beyond valid data → all rows render blank.
-    void this._scrollEl.scrollHeight;
-
-    // Clamp firstVisible to valid range: 0 .. scrollback (live view starts at scrollback)
-    // This prevents blank rendering when scrollTop is out of sync with spacer height
-    // (e.g. after alt screen transitions, buffer clears, or rapid data bursts)
-    let firstVisible = this._getFirstVisibleRow();
-    let clamped = false;
-    const maxFirstVisible = scrollback; // beyond this = live view, capped by screen rows
-    if (firstVisible > maxFirstVisible) {
-      firstVisible = maxFirstVisible;
-      clamped = true;
-      // Fix the scroll position to match (prevent repeated clamping)
-      this._suppressScrollEvent = true;
-      this._scrollEl.scrollTop = firstVisible * this._cellHeight;
-    }
-
-    // Guard against NaN/Infinity (e.g. from zero-size measurement)
-    if (!Number.isFinite(firstVisible) || firstVisible < 0) {
+    if (this._isLive) {
+      // Live mode: skip spacer math entirely — always render from buffer bottom.
+      // This eliminates the scrollTop/spacer desync timing window.
       firstVisible = scrollback;
-      clamped = true;
+    } else {
+      // Scrolled-up mode: use spacer-based positioning
+      // Force layout reflow so scrollTop is correctly clamped after spacer height changes
+      void this._scrollEl.scrollHeight;
+
+      firstVisible = this._getFirstVisibleRow();
+      const maxFirstVisible = scrollback;
+      if (firstVisible > maxFirstVisible) {
+        firstVisible = maxFirstVisible;
+        this._suppressScrollEvent = true;
+        this._scrollEl.scrollTop = firstVisible * this._cellHeight;
+      }
+      if (!Number.isFinite(firstVisible) || firstVisible < 0) {
+        firstVisible = scrollback;
+      }
     }
 
     // Position _rowsEl at the current viewport via GPU-composited transform
@@ -410,11 +423,10 @@ export class HtmlTermRenderer {
     const selDirty = this._selectionDirty;
     this._selectionDirty = false;
 
-    // At bottom (live view): firstVisible >= scrollback
     const isLive = firstVisible >= scrollback;
 
-    if (scrolled || selDirty || clamped) {
-      // Scroll position changed, selection changed, or position was clamped — full re-render
+    if (scrolled || selDirty) {
+      // Scroll position changed or selection changed — full re-render
       this._renderAllVisible(firstVisible, scrollback, sel);
     } else if ((dirty.size || dirty.length) > 0) {
       if (isLive) {
@@ -426,8 +438,7 @@ export class HtmlTermRenderer {
           }
         }
       } else {
-        // Scrolled up: dirty rows are in the screen buffer but we're showing
-        // scrollback. Just re-render everything visible to be safe.
+        // Scrolled up: re-render everything visible to be safe
         this._renderAllVisible(firstVisible, scrollback, sel);
       }
     }
@@ -459,9 +470,10 @@ export class HtmlTermRenderer {
   }
 
   /**
-   * Render a single row to its DOM element.
-   * Uses batched string building — zero intermediate array allocations.
-   * Skips rendering if row content hash matches previous (full re-render only).
+   * Render a single row to its DOM element using span pool diffing.
+   * Reuses existing span elements — updates className/style/textContent
+   * instead of rebuilding innerHTML. Falls back to innerHTML for rows
+   * with hyperlinks (data-url attribute).
    *
    * @param {number} screenIdx — screen row index (0-based)
    * @param {Array} row — cell array from buffer
@@ -472,15 +484,21 @@ export class HtmlTermRenderer {
   _renderRowData(screenIdx, row, sel, absoluteRow, forceDirty) {
     const el = this._rowEls[screenIdx];
     if (!el) return;
-    if (!row) { el.innerHTML = ''; this._rowHashes[screenIdx] = ''; return; }
-
-    let html = '';
-    let spanOpen = false;
-    let prevCls = '';
-    let prevStyle = '';
+    if (!row) {
+      el.innerHTML = '';
+      this._rowHashes[screenIdx] = '';
+      this._rowSpanPools[screenIdx] = [];
+      return;
+    }
 
     const cols = this._cols;
     const hasSel = sel !== null;
+
+    // Build span groups: [ { cls, style, text, url? }, ... ]
+    const groups = [];
+    let prevCls = '\0'; // sentinel — never matches first cell
+    let prevStyle = '\0';
+    let hasUrl = false;
 
     for (let c = 0; c < cols; c++) {
       const cell = row[c];
@@ -488,7 +506,6 @@ export class HtmlTermRenderer {
 
       const inSel = hasSel && this._cellInSelection(absoluteRow, c, sel);
 
-      // Inline _cellStyle — avoids object allocation per cell
       let cls = '';
       let style = '';
       let fg = cell.fg;
@@ -524,35 +541,82 @@ export class HtmlTermRenderer {
       if (cell.italic) cls = cls ? cls + ' ht-i' : 'ht-i';
       if (cell.underline) cls = cls ? cls + ' ht-u' : 'ht-u';
       if (cell.strikethrough) cls = cls ? cls + ' ht-s' : 'ht-s';
-      if (cell.url) cls = cls ? cls + ' ht-link' : 'ht-link';
+      if (cell.url) { cls = cls ? cls + ' ht-link' : 'ht-link'; hasUrl = true; }
 
       if (cls !== prevCls || style !== prevStyle) {
-        if (spanOpen) html += '</span>';
-        if (cls || style) {
-          html += '<span';
-          if (cls) html += ` class="${cls}"`;
-          if (style) html += ` style="${style}"`;
-          if (cell.url) html += ` data-url="${this._escAttr(cell.url)}"`;
-          html += '>';
-          spanOpen = true;
-        } else {
-          spanOpen = false;
-        }
+        groups.push({ cls, style, text: cell.char, url: cell.url || null });
         prevCls = cls;
         prevStyle = style;
+      } else {
+        groups[groups.length - 1].text += cell.char;
       }
-
-      // Inline HTML escaping — avoids function call overhead per character
-      const ch = cell.char;
-      html += HTML_ENTITIES[ch] || ch;
     }
 
-    if (spanOpen) html += '</span>';
+    // Build a lightweight hash for skip detection (concatenate group signatures)
+    let hash = '';
+    for (let g = 0; g < groups.length; g++) {
+      const gr = groups[g];
+      hash += gr.cls + '|' + gr.style + '|' + gr.text + '\n';
+    }
 
-    // Hash check: skip DOM update if content unchanged (only for full re-renders)
-    if (!forceDirty && this._rowHashes[screenIdx] === html) return;
-    this._rowHashes[screenIdx] = html;
-    el.innerHTML = html;
+    // Hash check: skip DOM update if content unchanged
+    if (!forceDirty && this._rowHashes[screenIdx] === hash) return;
+    this._rowHashes[screenIdx] = hash;
+
+    // If row has hyperlinks, fall back to innerHTML (need data-url attributes)
+    if (hasUrl) {
+      let html = '';
+      for (let g = 0; g < groups.length; g++) {
+        const gr = groups[g];
+        if (gr.cls || gr.style) {
+          html += '<span';
+          if (gr.cls) html += ` class="${gr.cls}"`;
+          if (gr.style) html += ` style="${gr.style}"`;
+          if (gr.url) html += ` data-url="${this._escAttr(gr.url)}"`;
+          html += '>';
+          // textContent-safe chars need entity escaping in innerHTML
+          const t = gr.text;
+          for (let i = 0; i < t.length; i++) html += HTML_ENTITIES[t[i]] || t[i];
+          html += '</span>';
+        } else {
+          const t = gr.text;
+          for (let i = 0; i < t.length; i++) html += HTML_ENTITIES[t[i]] || t[i];
+        }
+      }
+      el.innerHTML = html;
+      this._rowSpanPools[screenIdx] = [];
+      return;
+    }
+
+    // DOM diffing: reuse/update existing spans
+    const pool = this._rowSpanPools[screenIdx];
+    let spanIdx = 0;
+
+    for (let g = 0; g < groups.length; g++) {
+      const gr = groups[g];
+      // Groups with no styling → bare text node (merge into a single span for simplicity)
+      let span;
+      if (spanIdx < pool.length) {
+        span = pool[spanIdx];
+      } else {
+        span = document.createElement('span');
+        el.appendChild(span);
+        pool.push(span);
+      }
+
+      // Update only if changed
+      if (span.className !== gr.cls) span.className = gr.cls;
+      const css = gr.style || '';
+      if (span.style.cssText !== css) span.style.cssText = css;
+      if (span.textContent !== gr.text) span.textContent = gr.text;
+      spanIdx++;
+    }
+
+    // Remove excess spans from previous render
+    while (pool.length > spanIdx) {
+      const old = pool.pop();
+      old.remove();
+    }
   }
 
   // ─── Keyboard input ───────────────────────────────────
@@ -576,8 +640,9 @@ export class HtmlTermRenderer {
       const seq = this._keyToSequence(e);
       if (seq !== null) {
         e.preventDefault();
-        // Any keyboard input → snap to bottom
-        if (!this._isAtBottom()) {
+        // Any keyboard input → snap to live mode
+        if (!this._isLive) {
+          this._isLive = true;
           this._scrollToMax();
           this._scheduleRender();
         }
@@ -828,6 +893,9 @@ export class HtmlTermRenderer {
       this._suppressScrollEvent = false;
       return;
     }
+    // User scrolled — check if they scrolled away from bottom (exit live mode)
+    // or scrolled back to bottom (re-enter live mode)
+    this._isLive = this._isAtBottom();
     this._scheduleRender();
   }
 

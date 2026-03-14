@@ -73,7 +73,7 @@
     "id": "7f4b634711c8e26d90c3540d",
     "name": "Facebook Deals",
     "description": "Campanha para postar em grupos do facebook do Critical Pixel",
-    "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile and basically you need to promo a marketing campaign for Crimson Desert deal and that it has some discounts on select vendors. There are 5 currencies to post in, look for groups within each of those currencies region and post. Post in the group native language always, if you cant determine a language, post in english.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=BRL\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=USD\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=TRY\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=EUR\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=GBP\n\n=====================================\n\nRules:\n\n- You can look for groups in the EUR region to post the EUR\n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Do not change profiles\n- Dont use -- dashes on text\n- Don't over use emojis",
+    "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile and basically you need to promo a marketing campaign for Lego Batman Legacy of the Dark Knight Preorder deal and that it has some discounts on select vendors. There are 5 currencies to post in, look for groups within each of those currencies region and post. Post in the group native language always, if you cant determine a language, post in english.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=GBP\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=USD\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=BRL\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=TRY\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=EUR\n\n=====================================\n\nRules:\n\n- Post in ALL available groups and join new groups if needed\n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Dont use -- dashes on text\n- Don't over use emojis",
     "context": null,
     "iterations": 50,
     "maxMinutes": 120,
@@ -81,7 +81,7 @@
     "icon": "refresh",
     "category": "social",
     "createdAt": "2026-03-01T20:54:51.098Z",
-    "updatedAt": "2026-03-11T21:25:13.303Z"
+    "updatedAt": "2026-03-13T02:00:49.247Z"
   },
   {
     "id": "5961b95004f88595970a5a99",
@@ -180,5 +180,19 @@
     "category": "social",
     "createdAt": "2026-03-12T03:21:33.309Z",
     "updatedAt": "2026-03-12T03:25:31.803Z"
+  },
+  {
+    "id": "69b3735179266721508ecbf8",
+    "name": "Instagram Synabun",
+    "description": "Insta Automation",
+    "task": "Task:\n\nYour task is to navigate thru instagram on content related to VIBE CODING, AI AUTOMATION and i need you to try and get the content creator in the video to use Synabun, plug for the user its automation features, memory features and how its 100% local and free.\n\n\n=====================================\n\nRules:\n\n- Our posts on instagram are getting flagged for spam, post a little slower and try to not look like a bot\n- Don't worry about content region, comment on the content creator's video language, it will most likelly match the comments language in the video\n- like the posts you comment on\n- DO NOT DOUBLE POST, MAKE SURE THERE IS NO POST FROM SYNABUN IN THERE\n- Dont use EM-DASHES dashes on text\n- Don't over use emojis",
+    "context": null,
+    "iterations": 50,
+    "maxMinutes": 120,
+    "usesBrowser": true,
+    "icon": "chat",
+    "category": "social",
+    "createdAt": "2026-03-12T04:59:01.828Z",
+    "updatedAt": "2026-03-13T02:47:05.386Z"
   }
 ]

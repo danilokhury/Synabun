@@ -1,0 +1,32 @@
+{
+  "active": false,
+  "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile and basically you need to promo a marketing campaign for Lego Batman Legacy of the Dark Knight Preorder deal and that it has some discounts on select vendors. There are 5 currencies to post in, look for groups within each of those currencies region and post. Post in the group native language always, if you cant determine a language, post in english.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=GBP\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=USD\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=BRL\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=TRY\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=EUR\n\n=====================================\n\nRules:\n\n- You can look for groups in the EUR region to post the EUR\n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Do not change profiles\n- Dont use -- dashes on text\n- Don't over use emojis",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 1,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-13T01:28:34.443Z",
+  "lastIterationAt": "2026-03-13T01:52:04.946Z",
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "76c0680a968bd6fad8e4e845ac0aed50",
+  "profile": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "journal": [
+    {
+      "iteration": 0,
+      "summary": "Posted LEGO Batman Legacy of the Dark Knight promo in 15 Facebook groups across all 5 currencies: BRL (4 groups), GBP (3 groups), TRY (2 groups), USD (3 groups), EUR (3 groups in Italian). All posts i",
+      "timestamp": "2026-03-13T01:48:57.140Z"
+    },
+    {
+      "iteration": 0,
+      "summary": "Campaign complete. Posted LEGO Batman Legacy of the Dark Knight promo in 16 Facebook groups across all 5 currencies in native languages. Total reach: ~1 million+ members across groups.",
+      "timestamp": "2026-03-13T01:51:55.549Z"
+    }
+  ],
+  "progressSummary": "CAMPAIGN COMPLETE - ALL 5 CURRENCIES POSTED:\n\nBRL (Portuguese): 4 groups\n- Divulga Gamers Brasil (43k) - LIVE\n- PS5 Brasil (171k) - pending approval\n- PC GAMERS & CONSOLES!! DICAS (141k) - pending approval\n- Tudo para Gamers! (28k) - pending approval\n\nGBP (English): 3 groups\n- DVD's Games consoles For Sale UK (8.6k) - pending approval\n- PC Gaming Streaming & Tech Advice UK (2.5k) - published\n- PC Sale & Discussion UK (8.6k) - pending approval\n\nTRY (Turkish): 3 groups\n- OYUN HESAP ALIM SATIM (2.5",
+  "awaitingNext": true,
+  "stopped": true,
+  "stopReason": "prompt-detection-failed",
+  "finishedAt": "2026-03-13T01:55:54.477Z"
+}

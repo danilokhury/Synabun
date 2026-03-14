@@ -47,6 +47,7 @@ const STOR = {
   model: 'synabun-claude-panel-model',
   tabs: 'synabun-claude-panel-tabs',
   effort: 'synabun-claude-panel-effort',
+  autoAccept: 'synabun-claude-panel-autoaccept',
 };
 
 const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
@@ -56,7 +57,7 @@ const EFFORT_TITLES = {
   low: 'Thinking: low — minimal extended reasoning',
   medium: 'Thinking: medium — balanced reasoning',
   high: 'Thinking: high — deep reasoning',
-  max: 'Thinking: max — maximum reasoning depth',
+  max: 'Thinking: max — EXPERIMENTAL. Extended thinking can take 3-5 min with no visible output. May cause API timeouts.',
 };
 
 // ── Build panel DOM ──
@@ -78,8 +79,11 @@ function buildPanel() {
         <button class="cp-header-btn cp-minimize-btn" data-tooltip="Minimize to pill">
           <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
-        <button class="cp-header-btn cp-close-btn" data-tooltip="Close panel">
+        <button class="cp-header-btn cp-close-btn" data-tooltip="End session">
           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <button class="cp-header-btn cp-slide-btn" data-tooltip="Slide panel">
+          <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
         </button>
       </div>
       <div class="cp-session-menu" id="cp-session-menu"></div>
@@ -114,6 +118,7 @@ function buildPanel() {
         <div class="cp-toolbar-right">
           <button class="cp-think-toggle" id="cp-think-toggle" data-effort="off" data-tooltip="Extended thinking off — click to enable"><span class="cp-think-icon"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L4 9h4l-1 5.5L12 7H8l1-5.5z"/></svg></span><span class="cp-think-label">Think</span><span class="cp-think-dots"></span></button>
           <button class="cp-plan-toggle" id="cp-plan-toggle" data-tooltip="Toggle plan mode — think without acting">Plan</button>
+          <button class="cp-auto-toggle" id="cp-auto-toggle" data-tooltip="Auto-accept all tool permissions">Auto</button>
           <div class="cp-dropdown cp-dropdown-sm" id="cp-model" data-placeholder="model"><span class="cp-dd-label">model</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
           <span class="cp-cost" id="cp-cost">$0.00</span>
         </div>
@@ -313,6 +318,58 @@ function injectStyles() {
     .ask-hint {
       font-size: 10px; color: rgba(100,160,255,0.5);
       font-family: 'JetBrains Mono', monospace; font-style: italic;
+    }
+
+    /* ── Plan cards (inline rendered markdown) ── */
+    .cp-messages .plan-card {
+      border: 1px solid rgba(100,200,120,0.15); border-radius: 8px;
+      margin: 4px 0; overflow: hidden; font-size: 11px;
+      background: rgba(100,200,120,0.03);
+    }
+    .cp-messages .plan-card[open] { border-color: rgba(100,200,120,0.25); }
+    .cp-messages .plan-card > summary {
+      display: flex; align-items: center; gap: 7px;
+      padding: 5px 10px; cursor: pointer; user-select: none;
+      list-style: none; transition: background 0.15s;
+    }
+    .cp-messages .plan-card > summary::-webkit-details-marker { display: none; }
+    .cp-messages .plan-card > summary:hover { background: var(--s-hover); }
+    .cp-messages .plan-card .plan-icon {
+      width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+      font-size: 9px; font-weight: 700; color: rgba(100,200,120,0.9);
+      background: rgba(100,200,120,0.12); border-radius: 5px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .cp-messages .plan-card .plan-label {
+      font-family: 'JetBrains Mono', monospace; color: rgba(100,200,120,0.9);
+      font-weight: 600; font-size: 10.5px;
+    }
+    .cp-messages .plan-card .plan-file {
+      font-family: 'JetBrains Mono', monospace; color: var(--t-faint);
+      font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .cp-messages .plan-card .plan-chevron {
+      color: var(--t-faint); font-size: 13px; transition: transform 0.2s;
+    }
+    .cp-messages .plan-card[open] .plan-chevron { transform: rotate(90deg); color: rgba(100,200,120,0.6); }
+    .cp-messages .plan-card .plan-body {
+      border-top: 1px solid rgba(100,200,120,0.1); padding: 8px 12px;
+    }
+
+    /* ── Post-plan action buttons ── */
+    .post-plan-actions {
+      display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px;
+      padding: 0 36px;
+    }
+    .post-plan-action {
+      padding: 5px 12px; border-radius: 16px; cursor: pointer;
+      font-size: 11px; font-weight: 600; border: 1px solid rgba(100,200,120,0.2);
+      background: rgba(100,200,120,0.06); color: rgba(100,200,120,0.85);
+      transition: all 0.15s; font-family: 'JetBrains Mono', monospace;
+    }
+    .post-plan-action:hover {
+      background: rgba(100,200,120,0.12); border-color: rgba(100,200,120,0.35);
+      color: rgba(100,200,120,1);
     }
 
     /* ── Permission prompt cards ── */
@@ -753,6 +810,8 @@ function injectStyles() {
     .cp-header-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .cp-header-btn.cp-close-btn:hover { color: rgba(255,82,82,0.9); background: rgba(255,82,82,0.12); }
     .cp-header-btn.cp-close-btn svg { stroke-width: 2.5; }
+    .cp-header-btn.cp-slide-btn:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.06); }
+    .cp-header-btn.cp-slide-btn svg { stroke-width: 2.5; }
     .cp-session-btn {
       background: none; border: none;
       display: flex; align-items: center; gap: 4px;
@@ -990,6 +1049,24 @@ function injectStyles() {
       color: rgba(100,180,255,0.9);
       border-color: rgba(100,180,255,0.3);
       background: rgba(100,180,255,0.08);
+    }
+
+    /* ── Auto-accept toggle ── */
+    .cp-auto-toggle {
+      background: none; border: 1px solid rgba(255,255,255,0.06);
+      color: rgba(255,255,255,0.25); cursor: pointer;
+      font-size: 9px; font-family: 'JetBrains Mono', monospace;
+      padding: 2px 6px; border-radius: 4px;
+      transition: all 0.15s; flex-shrink: 0;
+    }
+    .cp-auto-toggle:hover {
+      color: rgba(255,255,255,0.5);
+      border-color: rgba(255,255,255,0.12);
+    }
+    .cp-auto-toggle.active {
+      color: rgba(80,200,120,0.9);
+      border-color: rgba(80,200,120,0.3);
+      background: rgba(80,200,120,0.08);
     }
 
     /* ── Thinking timer ── */
@@ -1735,7 +1812,7 @@ function handleTabMsg(tab, msg) {
     case 'event': handleTabEvent(tab, msg.event); break;
     case 'control_request': handleControlRequest(tab, msg); break;
     case 'stderr': if (msg.text?.trim()) appendStatus(tab, msg.text.trim()); break;
-    case 'done': finishTab(tab); break;
+    case 'done': finishTab(tab); if (tab._exitedPlan) { tab._exitedPlan = false; renderPostPlanActions(tab); } break;
     case 'aborted': finishTab(tab); appendStatus(tab, 'Aborted.'); break;
     case 'error': finishTab(tab); appendError(tab, msg.message); break;
   }
@@ -1810,7 +1887,51 @@ function handleTabEvent(tab, ev) {
       emit('cost:updated', { amount: ev.total_cost_usd, total: _totalCost });
     }
     if (ev.session_id) { tab.sessionId = ev.session_id; saveTabs(); }
+    // Show post-plan action buttons if this turn exited plan mode
+    if (tab._exitedPlan) {
+      tab._exitedPlan = false;
+      renderPostPlanActions(tab);
+    }
   }
+}
+
+function renderPostPlanActions(tab) {
+  const $msgs = tab.messagesEl;
+  if (!$msgs) return;
+  // Remove any existing post-plan actions
+  $msgs.querySelectorAll('.post-plan-actions').forEach(el => el.remove());
+  const row = document.createElement('div');
+  row.className = 'post-plan-actions';
+  const actions = [
+    { label: 'Continue with implementation', prompt: 'Continue with the implementation based on the approved plan.' },
+    { label: 'Compact context', action: 'compact' },
+    { label: 'Edit plan', action: 'plan' },
+  ];
+  for (const a of actions) {
+    const btn = document.createElement('button');
+    btn.className = 'post-plan-action';
+    btn.textContent = a.label;
+    btn.addEventListener('click', () => {
+      row.remove();
+      if (a.action === 'compact') {
+        if (tab.ws?.readyState === WebSocket.OPEN) {
+          tab.ws.send(JSON.stringify({ type: 'compact' }));
+          appendStatus(tab, 'Compacting context...');
+        }
+      } else if (a.action === 'plan') {
+        tab.planMode = true;
+        const $plan = _panel?.querySelector('#cp-plan-toggle');
+        if ($plan) $plan.classList.add('active');
+        appendStatus(tab, 'Plan mode ON — Claude will plan without making changes');
+      } else if (a.prompt) {
+        const $input = _panel?.querySelector('#cp-input');
+        if ($input) { $input.value = a.prompt; send(); }
+      }
+    });
+    row.appendChild(btn);
+  }
+  $msgs.appendChild(row);
+  if (tab === activeTab()) scrollEnd();
 }
 
 function renderAssistant(tab, msg) {
@@ -1826,6 +1947,14 @@ function renderAssistant(tab, msg) {
 
   const askTools = tools.filter(t => t.name === 'AskUserQuestion');
   const regularTools = tools.filter(t => t.name !== 'AskUserQuestion');
+
+  // Detect ExitPlanMode — auto-toggle plan mode off and flag for post-plan actions
+  if (tools.some(t => t.name === 'ExitPlanMode')) {
+    tab.planMode = false;
+    tab._exitedPlan = true;
+    const $plan = _panel?.querySelector('#cp-plan-toggle');
+    if ($plan) $plan.classList.remove('active');
+  }
 
   // Partial message dedup
   const msgId = msg.id || null;
@@ -1864,7 +1993,7 @@ function renderAssistant(tab, msg) {
           else wrap.insertBefore(body, wrap.firstChild);
         }
       }
-      const existingToolIds = new Set([...wrap.querySelectorAll('.tool-card')].map(c => c.dataset.toolId));
+      const existingToolIds = new Set([...wrap.querySelectorAll('.tool-card, .plan-card')].map(c => c.dataset.toolId));
       for (const t of regularTools) {
         if (!existingToolIds.has(t.id || '')) wrap.appendChild(buildTool(t));
       }
@@ -1991,22 +2120,31 @@ function sendAskAnswer(tab, questions, answers) {
   if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
 
   const requestId = tab.pendingAskRequestId;
-  console.log('[claude-panel] sendAskAnswer request_id:', requestId, 'answers:', JSON.stringify(answers).slice(0, 200));
+  const answerText = Object.values(answers).join(', ');
+  console.log('[claude-panel] sendAskAnswer request_id:', requestId, 'answer:', answerText);
 
-  if (!requestId) {
-    // control_request hasn't arrived yet — buffer the answer and send when it does
-    console.log('[claude-panel] No request_id yet, buffering answer');
-    tab.pendingAskBufferedAnswer = { questions, answers };
-    showThinking(tab);
-    setRunning(tab, true);
-    return;
+  if (requestId) {
+    // Control mode — send control_response with request_id at top level
+    tab.ws.send(JSON.stringify({
+      type: 'control_response',
+      request_id: requestId,
+      response: { behavior: 'allow', updatedInput: { questions, answers } },
+    }));
+  } else {
+    // Pipe mode — CLI auto-executed AskUserQuestion, send selection as follow-up query
+    const $model = _panel?.querySelector('#cp-model');
+    const $project = _panel?.querySelector('#cp-project');
+    console.log('[claude-panel] Sending ask answer as follow-up query:', answerText);
+    tab.ws.send(JSON.stringify({
+      type: 'query',
+      prompt: answerText,
+      sessionId: tab.sessionId || undefined,
+      model: ddGetValue($model) || undefined,
+      cwd: ddGetValue($project) || undefined,
+      effort: _getEffort() || undefined,
+    }));
   }
 
-  tab.ws.send(JSON.stringify({
-    type: 'control_response',
-    request_id: requestId,
-    response: { updatedInput: { questions, answers } },
-  }));
   tab.pendingAskRequestId = null;
   tab.pendingAskToolUseId = null;
   tab.pendingAskBufferedAnswer = null;
@@ -2014,7 +2152,37 @@ function sendAskAnswer(tab, questions, answers) {
   setRunning(tab, true);
 }
 
+function isPlanFile(filePath) {
+  return filePath && /[/\\]\.claude[/\\]plans[/\\]/.test(filePath);
+}
+
+function buildPlanCard(block) {
+  const i = block.input || {};
+  const fileName = (i.file_path || '').split(/[/\\]/).pop() || 'plan.md';
+  const card = document.createElement('details');
+  card.className = 'plan-card';
+  card.dataset.toolId = block.id || '';
+  card.open = true;
+  card.innerHTML = `<summary>
+    <span class="plan-icon">P</span>
+    <span class="plan-label">Plan</span>
+    <span class="plan-file">${fileName}</span>
+    <span class="plan-chevron">&#x203A;</span>
+  </summary>`;
+  const body = document.createElement('div');
+  body.className = 'plan-body msg-body';
+  body.innerHTML = md(i.content || '');
+  linkifyFilePaths(body);
+  card.appendChild(body);
+  return card;
+}
+
 function buildTool(block) {
+  // Plan files get a special rendered card
+  if (block.name === 'Write' && isPlanFile(block.input?.file_path)) {
+    return buildPlanCard(block);
+  }
+
   const card = document.createElement('div');
   card.className = 'tool-card';
   card.dataset.toolId = block.id || '';
@@ -2049,8 +2217,14 @@ function buildTool(block) {
 function updateToolResult(tab, ev) {
   const $msgs = tab.messagesEl;
   if (!$msgs) return;
-  const card = $msgs.querySelector(`.tool-card[data-tool-id="${CSS.escape(ev.tool_use_id)}"]`);
+  const escapedId = CSS.escape(ev.tool_use_id);
+  const card = $msgs.querySelector(`.tool-card[data-tool-id="${escapedId}"]`) || $msgs.querySelector(`.plan-card[data-tool-id="${escapedId}"]`);
   if (!card) return;
+  // Plan cards don't have result sections — just mark success/error via border
+  if (card.classList.contains('plan-card')) {
+    card.style.borderColor = ev.is_error ? 'rgba(255,82,82,0.3)' : 'rgba(100,200,120,0.3)';
+    return;
+  }
   const rLbl = card.querySelector('.tool-result-label');
   const rSec = card.querySelector('.tool-result-content');
   if (!rSec) return;
@@ -2088,7 +2262,12 @@ function updateToolResult(tab, ev) {
 }
 
 // ── Control requests (AskUserQuestion, permission prompts) ──
-const _autoAllowTools = new Set(); // per-session "always allow" set
+let _autoAcceptAll = false;
+const _autoAllowTools = new Set([
+  // Starts empty — permission prompts shown for every tool on first use.
+  // User clicks "Always" checkbox to build up auto-allow set during session (mirrors terminal CLI behavior).
+  // AskUserQuestion is always handled via the ask card flow, never auto-allowed.
+]);
 
 function handleControlRequest(tab, msg) {
   // Normalize: request may be nested or flat depending on CLI version
@@ -2117,7 +2296,12 @@ function handleControlRequest(tab, msg) {
   }
 
   if (toolName) {
-    // Permission prompt — auto-allow if previously approved, otherwise show UI
+    // Global auto-accept — skip all permission prompts (except AskUserQuestion, handled above)
+    if (_autoAcceptAll) {
+      sendPermissionResponse(tab, requestId, 'allow');
+      return;
+    }
+    // Permission prompt — auto-allow only if user clicked "Always" for this tool
     if (_autoAllowTools.has(toolName)) {
       sendPermissionResponse(tab, requestId, 'allow');
       return;
@@ -2281,11 +2465,12 @@ function renderPermissionPrompt(tab, requestId, req) {
   alwaysLbl.append(alwaysCb, document.createTextNode('Always'));
 
   const resolve = (behavior) => {
-    if (alwaysCb.checked && behavior === 'allow') _autoAllowTools.add(toolName);
+    const always = alwaysCb.checked && behavior === 'allow';
+    if (always) _autoAllowTools.add(toolName);
     card.classList.add('resolved');
     allowBtn.disabled = true;
     denyBtn.disabled = true;
-    sendPermissionResponse(tab, requestId, behavior);
+    sendPermissionResponse(tab, requestId, behavior, always);
   };
 
   allowBtn.addEventListener('click', () => resolve('allow'));
@@ -2299,13 +2484,13 @@ function renderPermissionPrompt(tab, requestId, req) {
   if (tab === activeTab()) scrollEnd();
 }
 
-function sendPermissionResponse(tab, requestId, behavior) {
+function sendPermissionResponse(tab, requestId, behavior, always = false) {
   if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
-  console.log('[claude-panel] sendPermissionResponse:', behavior, 'request_id:', requestId);
+  console.log('[claude-panel] sendPermissionResponse:', behavior, 'request_id:', requestId, 'always:', always);
   tab.ws.send(JSON.stringify({
     type: 'control_response',
     request_id: requestId,
-    response: { behavior },
+    response: { subtype: 'success', request_id: requestId, response: { behavior, always } },
   }));
   showThinking(tab);
   setRunning(tab, true);
@@ -2397,6 +2582,9 @@ function send() {
   if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
   if (tab.running) { tab.ws.send(JSON.stringify({ type: 'abort' })); return; }
   if (!text && !tab.attachedImages.length) return;
+
+  // Clear post-plan action buttons on new message
+  tab.messagesEl?.querySelectorAll('.post-plan-actions').forEach(el => el.remove());
 
   if (text === '/clear') { $input.value = ''; tab.messagesEl.innerHTML = ''; hideSlashHints(); return; }
   if (text === '/compact') {
@@ -2775,6 +2963,7 @@ function wireEvents() {
   const $branch = _panel.querySelector('#cp-branch');
   const $close = _panel.querySelector('.cp-close-btn');
   const $minimize = _panel.querySelector('.cp-minimize-btn');
+  const $slide = _panel.querySelector('.cp-slide-btn');
   const $new = _panel.querySelector('.cp-new-btn');
 
   $input.addEventListener('input', () => {
@@ -2804,7 +2993,8 @@ function wireEvents() {
     if (e.key === 'Escape' && activeTab()?.running) { activeTab()?.ws?.send(JSON.stringify({ type: 'abort' })); }
   });
   $send.addEventListener('click', send);
-  $close.addEventListener('click', () => toggleClaudePanel());
+  $close.addEventListener('click', () => closeTab(_activeTabIdx));
+  $slide.addEventListener('click', () => toggleClaudePanel());
   $minimize.addEventListener('click', () => {
     // Always minimize to a fresh blank panel — never swap in an existing session
     if (_tabs.length >= MAX_TABS) return;
@@ -2917,6 +3107,18 @@ function wireEvents() {
       if (!tab) return;
       tab.planMode = !tab.planMode;
       $plan.classList.toggle('active', tab.planMode);
+    });
+  }
+
+  // Auto-accept toggle
+  const $auto = _panel.querySelector('#cp-auto-toggle');
+  if ($auto) {
+    _autoAcceptAll = storage.getItem(STOR.autoAccept) === 'true';
+    $auto.classList.toggle('active', _autoAcceptAll);
+    $auto.addEventListener('click', () => {
+      _autoAcceptAll = !_autoAcceptAll;
+      $auto.classList.toggle('active', _autoAcceptAll);
+      storage.setItem(STOR.autoAccept, _autoAcceptAll);
     });
   }
 

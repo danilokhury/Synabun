@@ -1,0 +1,40 @@
+{
+  "active": false,
+  "task": "Task:\n\nYour task is to navigate thru instagram on content related to VIBE CODING, AI AUTOMATION and i need you to try and get the content creator in the video to use Synabun, plug for the user its automation features, memory features and how its 100% local and free.\n\n\n=====================================\n\nRules:\n\n- Don't worry about content region, comment on the content creator's video language, it will most likelly match the comments language in the video\n- like the posts you comment on\n- DO NOT DOUBLE POST, MAKE SURE THERE IS NO POST FROM SYNABUN IN THERE\n- Dont use -- dashes on text\n- Don't over use emojis",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 3,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-12T15:12:16.351Z",
+  "lastIterationAt": "2026-03-12T16:09:05.148Z",
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "fd47ef7067964a867e19bdc0dcf9eac6",
+  "profile": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "journal": [
+    {
+      "iteration": 0,
+      "summary": "Iteration 1 complete. Commented + liked on 19 Instagram posts across #vibecoding, #aiautomation, and #claudecode hashtags. Posts ranged from 2 likes to 10.9k likes. Mix of English and Portuguese comme",
+      "timestamp": "2026-03-12T15:26:55.973Z"
+    },
+    {
+      "iteration": 1,
+      "summary": "Iteration 2 complete. Commented and liked 16 new posts across #vibecoding, #claudecode, #aiautomation, #aiagents, and #aicoding. Skipped posts already commented in previous iteration. Engaged in Portu",
+      "timestamp": "2026-03-12T15:50:42.561Z"
+    },
+    {
+      "iteration": 2,
+      "summary": "Iteration 3 complete. Commented and liked ~22 new posts across #vibecoder, #aitools, #n8n, #cursorai, #aicoding, #claudeai, and #automatizacaoIA. Key posts hit: moneytrendz.ai (33.8k likes), woman.eng",
+      "timestamp": "2026-03-12T16:08:52.303Z"
+    },
+    {
+      "iteration": 3,
+      "summary": "Iteration 4 complete. Commented and liked ~19 new posts across #aibuilder, #buildinpublic, #windsurfai, #agenticai, #promptengineering, #mcpserver, #llmtools hashtags. High-value targets hit: @wecodei",
+      "timestamp": "2026-03-12T16:25:40.289Z"
+    }
+  ],
+  "progressSummary": "Total across iterations 1-4: ~76 posts commented and liked. Hashtags covered: #vibecoding, #aiautomation, #claudecode, #aiagents, #aicoding, #vibecoder, #aitools, #n8n, #cursorai, #claudeai, #automatizacaoIA, #aibuilder, #buildinpublic, #agenticai, #promptengineering, #mcpserver, #llmtools. Key creators: thekeshavkrishnan, ricneves.ai, skillfuelled, idealaneai, codewith_random, pablo_aa, viverdeia.ai, thefuturalab, wecodeinpython, danielbertini, theprompt.inc, sujeitoprogramador, fabricioveronez",
+  "awaitingNext": false,
+  "finishedAt": "2026-03-12T16:25:49.974Z"
+}

@@ -11,8 +11,8 @@ const LOOP_DIR = join(NI_DATA_DIR, 'loop');
 const LOOP_TEMPLATES_PATH = join(NI_DATA_DIR, 'loop-templates.json');
 const MAX_ITERATIONS = 50;
 const DEFAULT_ITERATIONS = 10;
-const MAX_MINUTES = 60;
-const DEFAULT_MINUTES = 30;
+const MAX_MINUTES = 480;
+const DEFAULT_MINUTES = 60;
 function ensureLoopDir() {
     if (!existsSync(LOOP_DIR)) {
         mkdirSync(LOOP_DIR, { recursive: true });

@@ -16,7 +16,7 @@
  * only when a recall-worthy signal is detected.
  */
 
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -78,7 +78,7 @@ function buildBrowserNote(state) {
     '=== BROWSER ENFORCEMENT (MANDATORY) ===',
     'This automation REQUIRES the SynaBun internal browser. You MUST:',
     '1. Call `browser_navigate` with your target URL to create or reuse a browser session',
-    '2. Use ONLY SynaBun MCP browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages',
+    '2. Use ONLY SynaBun MCP browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network',
     '3. NEVER use Playwright plugin tools (mcp__plugin_playwright_*) — they launch a separate browser that the user cannot see',
     '4. NEVER use WebFetch or WebSearch tools for tasks that require visual browsing — use the SynaBun browser instead',
     '5. If the browser shows a login page, CAPTCHA, or any wall requiring human action: STOP immediately. Report the blocker to the user and WAIT. Do NOT abandon the browser and fall back to web search. The user can interact with the browser panel to resolve it.',
@@ -505,19 +505,20 @@ async function main() {
           try { state = JSON.parse(readFileSync(existingPath, 'utf-8')); } catch { /* skip */ }
         }
         // Fallback: scan all loop files for an active loop (session ID may have changed after /clear)
-        // Only consider recently-modified files (< 5 min) to avoid stealing stale loop state.
+        // Use the loop's own maxMinutes as the age window (+ 5min grace) instead of a fixed 5min.
         if (!state?.active || !(state?.currentIteration > 0)) {
           const now = Date.now();
-          const FALLBACK_MAX_AGE_MS = 5 * 60 * 1000;
           const allLoopFiles = readdirSync(LOOP_DIR)
             .filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
           for (const f of allLoopFiles) {
             try {
               const fullPath = join(LOOP_DIR, f);
-              const mtime = statSync(fullPath).mtimeMs;
-              if ((now - mtime) > FALLBACK_MAX_AGE_MS) continue;
               const candidate = JSON.parse(readFileSync(fullPath, 'utf-8'));
               if (candidate.active && candidate.currentIteration > 0) {
+                // Validate the loop hasn't exceeded its own time cap + grace
+                const loopMaxMs = ((candidate.maxMinutes || 60) + 5) * 60 * 1000;
+                const loopElapsed = now - new Date(candidate.startedAt).getTime();
+                if (loopElapsed > loopMaxMs) continue;
                 state = candidate;
                 existingPath = fullPath;
                 // Rename state file to match new session ID for future lookups

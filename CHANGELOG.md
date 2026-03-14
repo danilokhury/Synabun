@@ -1,5 +1,19 @@
 # SynaBun Changelog
 
+## 2026-03-13
+
+### Fixed — Claude Skin Cannot Access Sibling Directories
+- **Added `--add-dir dirname(workDir)`** — The model self-restricted from accessing files outside the working directory, asking via text "I need permission to read X" instead of using tools. Adding the parent directory via `--add-dir` lets the model know it CAN access sibling project directories (e.g., `J:\Sites\Apps\SynaBunWebsite` when cwd is `J:\Sites\Apps\Synabun`). Confirmed working: Glob, Read, and Write on sibling directories now succeed.
+- **`--print` is REQUIRED for stream-json** — Previous fix (March 12) incorrectly removed `--print`. The CLI docs explicitly state `--input-format` and `--output-format` "only work with --print". Restored.
+
+### Added — Server-Side Permission Gate for Claude Skin
+- **`--print` mode auto-approves all tools — server implements its own permission layer** — Confirmed via debug logs: `--print + --permission-mode default` emits zero `control_request` events for any tool (Edit, Write, Bash all auto-approved). Since `--print` is required for stream-json, the server now intercepts `assistant` events containing `tool_use` blocks for gated tools (`Edit`, `Write`, `Bash`, `MultiEdit`) and generates synthetic `control_request` messages to the client. The client's existing `renderPermissionPrompt` / `sendPermissionResponse` UI handles the rest. The tool already executed in the CLI process (can't prevent in --print mode), but the result is buffered and only shown when the user clicks Allow. Deny kills the process.
+- **Server-side auto-allow set** — When the user checks "Always" and clicks Allow, the server adds that tool to `serverAutoAllow` set, bypassing the gate for future uses in the same session. Syncs with the client-side `_autoAllowTools` set.
+- **`always` flag in `sendPermissionResponse`** — Client now passes `always: true` in control_response when the Always checkbox is checked, so the server knows to add the tool to auto-allow.
+
+### Added — Stall Auto-Kill (120s Timeout)
+- **API stream drops cause infinite hangs** — After Write tool execution, the CLI process stays alive but produces no output (API stream dropped mid-generation, likely rate limit or output token limit on long blog posts). Added `STALL_KILL_SEC = 120` — if no events for 120 seconds, the process is killed and the client receives an error message prompting to retry. Stall detector still logs warnings at 30s+ for diagnostics.
+
 ## 2026-03-12
 
 ### Added — Permission Prompt UI for Claude Code Skin
@@ -14,6 +28,12 @@
 ### Fixed — Multi-Selection "More..." Navigation Broken
 - **`sendControlResponse()` nesting `request_id` inside response wrapper** — The function wrapped `request_id` inside `response.response` with an extra `subtype: 'success'` layer. Claude CLI expects `request_id` at the top level of the `control_response` message. Fixed format to `{ type: 'control_response', request_id, response: { behavior: 'allow', updatedInput } }`.
 - **Answer buffering for race conditions** — Added `pendingAskRequestId` and `pendingAskBufferedAnswer` state variables. If the user clicks a selection before the `control_request` arrives (race condition), the answer is buffered and flushed when the request comes in.
+
+### Fixed — control_response Protocol Format Wrong (Claude Code Skin)
+- **Flat format caused CLI to hang on all responses** — Both `sendControlResponse()` (AskUserQuestion answers) and `sendPermissionResponse()` (tool permission Allow/Deny) sent `{ type: "control_response", request_id: "...", response: { behavior: "allow" } }` with `request_id` at the top level. Extracted the actual format from the Claude Code SDK source (`node_modules/@anthropic-ai/claude-code/cli.js`) — 3 independent code paths (RemoteAgentTask, RemoteSessionManager, respondToPermissionRequest) and the Zod schema all use a doubly-nested structure: `{ type: "control_response", response: { subtype: "success", request_id: "...", response: { behavior: "allow", updatedInput?: {...} } } }`. The CLI reads `msg.response.request_id` and `msg.response.subtype` — our flat format left both as `undefined`, so the CLI couldn't match responses to pending requests.
+  - Fixed `sendControlResponse()` in `claude-chat.js` and `ui-claude-panel.js` — now includes `subtype: 'success'`, `request_id` inside `response`, and `behavior: 'allow'` alongside `updatedInput` for AskUserQuestion answers
+  - Fixed `sendPermissionResponse()` in `claude-chat.js` and `ui-claude-panel.js` — same nested structure with `{ behavior }` inside `response.response`
+  - Added `console.log` debug tracing in `handleControlRequest()` for verifying control_request events arrive
 
 ### Fixed — Thinking Indicator and Timer
 - **Thinking indicator disappeared on first streaming chunk** — `hideThinking()` was called in `handleEvent()` on the first `assistant` event, removing the activity indicator while Claude was still working. Replaced with `repositionThinking()` that moves the indicator below new content as messages stream in. Only `finish()` removes it.
@@ -38,6 +58,58 @@
 
 ### Changed — Greeting Settings Project Selector Hint
 - **"Per-project or global" helper text** — Added a faint hint label (`font-size:10px`, `color:var(--t-faint)`) next to the project dropdown in the greeting configuration section of `ui-settings.js`. Clarifies that greetings can be configured per-project or set globally via the selector.
+
+### Added — Changelog Button on Floating CLI Windows
+- **Changelog shortcut button** — Added a "Generate changelog" button to the floating terminal window header for CLI profiles (`claude-code`, `codex`, `gemini`). Uses a document-with-lines SVG icon, placed between the rename and pin buttons in `.term-float-tab-actions`. Clicking the button sends `/synabun changelog\r` as input to the session's websocket, spawning the changelog skill directly in the TUI. Button is conditionally rendered — does not appear on shell or browser floating windows.
+
+### Added — Git Commit Output Display in File Explorer
+- **In-popover commit log** — After a git commit via the file explorer, the popover now swaps its controls (branch selector, commit input, summary) for a result view showing the full git operation output. Success shows a green checkmark header with the raw `git commit` stdout (branch, hash, files changed, insertions/deletions). Errors show a red X header with stderr in a red-tinted `<pre>` block.
+- **`showCommitOutput(text, isSuccess)`** — New function in `ui-file-explorer.js` that hides `.fe-git-controls`, populates `.fe-git-output` with a header + monospace `<pre>`, and widens the popover to 300px via `.fe-git-output-mode` class. `resetCommitOutput()` restores normal state on popover close/reopen.
+- **Dynamic popover width** — `positionGitPopover()` now reads `pop.offsetWidth` instead of hardcoded `248`, so the flip-to-left overflow check works correctly in both normal (240px) and output (300px) modes.
+- **CSS** — `.fe-git-output-mode` (width transition), `.fe-git-output-header` (9px mono uppercase), `.fe-git-output-pre` (dark bg, 10px mono, `max-height:160px` with scroll), `.fe-git-output-pre.error` (red tint) in `styles.css`.
+
+### Fixed — Floating TUI/CLI Rendering Glitches (Terminal)
+- **Spacer/scrollTop desync causing blank rows** — Alt screen transitions and rapid buffer changes caused `scrollTop` to become stale within a single rAF frame, making `firstVisible` point beyond valid data. Added `_isLive` tracking mode in `html-term-renderer.js` that bypasses spacer math entirely during live viewing — always sets `firstVisible = scrollbackLength`. Scroll events toggle `_isLive` based on whether the user is at the bottom. Alt screen transitions, `fit()`, `scrollToBottom()`, and keyboard input all force `_isLive = true`.
+- **innerHTML DOM churn on every dirty row** — `_renderRowData()` rebuilt the entire row HTML string and set `el.innerHTML` on every render. During Ink/React full-screen redraws (most rows dirty every frame), this caused heavy DOM destruction/creation and GC pressure. Replaced with **span pool DOM diffing** via `_rowSpanPools[]` — reuses existing `<span>` elements, updating `className`/`style.cssText`/`textContent` instead of rebuilding HTML. Falls back to `innerHTML` only for rows with hyperlinks (`data-url` attribute).
+- **Alt screen transitions leaving stale scroll state** — Added `_altTransitionPending` flag in `vterm-buffer.js`, set by `_switchToAltBuffer()` and `_switchToMainBuffer()`. Renderer detects the flag in `write()`, forces `_isLive = true`, and clears it — ensuring clean scroll reset on every buffer switch.
+- **Redundant dirty Set operations during full-screen redraws** — Every cell write, erase, scroll, and insert/delete operation called `this._dirty.add(row)` even when `_allDirty` was already `true`. Guarded all `_dirty.add()` calls in `vterm-buffer.js` with `if (!this._allDirty)`. Also optimized `_eraseDisplay` modes 2/3 to set `_allDirty = true` directly. `print()` hot path uses local variable caching for `_allDirty`, `cols`, `_attr`, `_currentUrl`.
+
+### Changed — Terminal Resize Debounce Tuning
+- **Renderer debounce 60ms → 150ms** — `RESIZE_DEBOUNCE_MS` in `html-term-renderer.js` increased to reduce layout thrashing during continuous resize drag. Tuned for Ink/React TUIs that re-render their entire screen on every SIGWINCH.
+- **PTY resize coalescing at 250ms** — Added secondary debounce in `ui-terminal.js` `onResize` callbacks for both `openHtmlTermSession()` and `reconnectHtmlTermSession()`. Visual container adjusts at 150ms but PTY resize messages to the server are coalesced at 250ms, preventing Claude Code from re-rendering multiple times during a resize drag. Initial connect resize is still sent immediately.
+- **CSS paint containment on terminal rows** — Upgraded `.html-term-rows` from `contain: layout style` to `contain: layout paint style` and `.html-term-row` from `contain: inline-size style` to `contain: layout paint style` in `styles.css`. Tells the browser that row paint changes don't affect siblings, enabling more aggressive compositing.
+
+### Changed — Browser Tool Injection Lists Synced Across All Automation Entry Points
+- **12 missing Instagram & LinkedIn extractors added to prompt context** — When "Use Browser" is enabled in Automation Studio, three injection points tell Claude which `browser_*` tools are available. All three were missing the 5 Instagram extractors (`browser_extract_ig_feed`, `ig_profile`, `ig_post`, `ig_reels`, `ig_search`) and 7 LinkedIn extractors (`browser_extract_li_feed`, `li_profile`, `li_post`, `li_notifications`, `li_messages`, `li_search_people`, `li_network`). Claude would never use these tools during browser automations because it wasn't told they existed.
+  - `formatLoopCommand()` in `ui-automation-studio.js:732` — 18 → 38 tools (also added missing `browser_reload`, `browser_session`)
+  - `BROWSER_CONTEXT` constant in `ui-automation-studio.js:741` — 26 → 38 tools
+  - `buildBrowserNote()` in `hooks/claude-code/prompt-submit.mjs:81` — 26 → 38 tools
+- **Consistent tool ordering applied** — All three lists now use the same grouping: Navigation → Interaction → Observation → Advanced → Extractors by platform (Twitter → Facebook → TikTok → WhatsApp → Instagram → LinkedIn).
+
+### Fixed — Loop System Ending Abruptly After 3-4 Iterations
+- **`driveNextIteration()` ignored prompt detection failures** — `waitForLoopPrompt()` in `server.js` returned `false` on timeout, but the caller never checked the return value. If the `>` prompt wasn't detected within 15s (slow PTY, ANSI stripping miss, buffer overflow), the function silently proceeded — sending `/clear` and iteration messages to a terminal that wasn't ready. Now checks the return value, retries once with a longer timeout (30s → 45s fallback), and aborts with full buffer diagnostic logging on failure. Returns a boolean so the driver can react.
+- **No recovery from repeated prompt detection failures** — The loop driver interval had no failure tracking. A silently-failed `driveNextIteration()` would clear the `awaitingNext` flag and never retry, leaving the loop frozen forever. Added `consecutiveFailures` counter — after 3 failed drives, the loop is deactivated with `stopReason: 'prompt-detection-failed'` and logged to the server console.
+
+### Fixed — Loop Time Cap Too Aggressive for Browser Automations
+- **`MAX_MINUTES` hardcoded at 60** — Browser-based loop iterations take 15-20 minutes each (Instagram commenting, Facebook posting, etc.), so a 60-minute cap killed loops at iteration 3-4 out of 50. Raised `MAX_MINUTES` from 60 to 480 (8 hours) and `DEFAULT_MINUTES` from 30 to 60 in `mcp-server/src/tools/loop.ts`.
+
+### Fixed — Loop Session ID Orphaning After `/clear`
+- **Fallback scan window hardcoded at 5 minutes** — After `/clear` resets the Claude session (new session ID), `prompt-submit.mjs` scans for active loop files using `statSync().mtimeMs` with a 5-minute age cutoff. Browser iterations consistently exceed 5 minutes, so the scan skipped the loop file entirely — Claude received a bare `[SynaBun Loop]` message with no task context injected. Replaced the fixed 5-minute window with the loop's own `maxMinutes + 5min grace`, computed from `candidate.startedAt`. Removed unused `statSync` import.
+
+### Fixed — Prompt Detection Fragility (ANSI Stripping & Buffer Size)
+- **ANSI regex missed escape sequences** — `LOOP_ANSI_RE` in `server.js` didn't strip OSC sequences terminated by `\x1b\\`, cursor control codes (`\x1b[=<>78HMND]`), application mode keys (`\x1bO[A-Z]`), or carriage returns (`\r`). These leftover characters could prevent the `>` prompt regex from matching. Expanded the regex to cover all common terminal escape types.
+- **Ring buffer too small** — Prompt detection buffer was 4KB with a 2KB retention window. Heavy PTY output (e.g., Claude's tool use summaries) could push the `>` prompt out of the buffer before `loopPromptReady()` checked it. Increased to 16KB / 8KB.
+- **Prompt regex too strict** — Only matched `>\s*$` (end of buffer) or `^>\s*$/m` (own line). Added `>\s*\n\s*$` pattern to catch prompts followed by trailing newlines.
+
+### Changed — Loop Stop Reason Tracking
+- **`stopReason` field added to loop state** — `stop.mjs` now writes `'iteration-cap'` or `'time-cap'` when deactivating a loop that hit its limits. Previously, all loop endings looked identical in the state file — no way to tell if a loop completed naturally or was killed by the time cap. The prompt-detection-failed abort path in `server.js` also writes `stopReason: 'prompt-detection-failed'`.
+
+### Added — Plan Rendering & Post-Plan Actions in Claude Panel Skin
+- **Inline plan markdown rendering** — `buildPlanCard()` in `ui-claude-panel.js` detects when a `Write` tool targets `~/.claude/plans/*.md` (via `isPlanFile()` path regex) and renders the plan content as formatted markdown inside a collapsible `<details>` element (open by default) with green accent styling. Previously, plan content was buried in a collapsed tool card as raw JSON.
+- **Post-plan quick-action buttons** — `renderPostPlanActions()` shows three pill buttons after a plan turn finishes: "Continue with implementation" (sends prompt), "Compact context" (triggers `/compact` flow), "Edit plan" (re-enters plan mode). Buttons render on both `result` and `done` events when `tab._exitedPlan` is flagged. Buttons are auto-cleared on next message send.
+- **Auto-toggle planMode on ExitPlanMode** — `renderAssistant()` now detects `ExitPlanMode` tool in the turn's tool_use blocks, auto-sets `tab.planMode = false`, and updates the Plan toggle button UI.
+- **CSS** — `.plan-card`, `.plan-icon`, `.plan-label`, `.plan-file`, `.plan-chevron`, `.plan-body` (green accent collapsible), `.post-plan-actions`, `.post-plan-action` (pill buttons with hover states).
+- **Dedup & result handling** — Updated partial message dedup selector to include `.plan-card`, `updateToolResult()` handles plan cards by setting border color on success/error instead of looking for missing result sections.
 
 ## 2026-03-11
 

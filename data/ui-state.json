@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-12T04:39:37.826Z",
+  "_updated": "2026-03-14T00:19:01.039Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -51,10 +51,10 @@
   "neural-pinned-settings-panel": false,
   "neural-ui-scale": 1,
   "neural-panel-settings-panel": {
-    "left": "772.01px",
-    "top": "199px",
-    "width": "1046px",
-    "height": "777.989px"
+    "left": "416.01px",
+    "top": "51px",
+    "width": "1045.97px",
+    "height": "1184px"
   },
   "neural-explorer-visible": false,
   "neural-explorer-width": 323,
@@ -23794,17 +23794,7 @@
       "selectedNodeId": "dc33bfe5-2c6d-4b7d-be8d-826af43d09e9"
     }
   ],
-  "neural-terminal-active-sessions": [
-    {
-      "id": "a01b49d9b4807c8beb9ea0c1606e18c2",
-      "profile": "claude-code",
-      "label": "Permission Not Working",
-      "pinned": false,
-      "userRenamed": true,
-      "claudeSessionId": "5572d2f5-ca46-4b9d-b3ac-135eef910824",
-      "floatColor": "orange"
-    }
-  ],
+  "neural-terminal-active-sessions": [],
   "neural-terminal-active-sessions-layout": {
     "detached": false,
     "floatPos": null,
@@ -23812,13 +23802,13 @@
     "visible": false,
     "sessions": [
       {
-        "id": "a01b49d9b4807c8beb9ea0c1606e18c2",
+        "id": "929f95507f9dd82815c733caf4519c81",
         "profile": "claude-code",
-        "label": "Permission Not Working",
+        "label": "claude",
         "pinned": false,
         "isDetached": true,
-        "userRenamed": true,
-        "claudeSessionId": "5572d2f5-ca46-4b9d-b3ac-135eef910824"
+        "userRenamed": false,
+        "claudeSessionId": "eaae34cb-4486-49ff-9e26-12beabf45a04"
       }
     ],
     "splitMode": false,
@@ -23831,18 +23821,18 @@
     ],
     "detachedTabs": [
       {
-        "sessionId": "a01b49d9b4807c8beb9ea0c1606e18c2",
+        "sessionId": "929f95507f9dd82815c733caf4519c81",
         "sessionIdx": 0,
-        "left": 1691.7044677734375,
-        "top": 143.44886779785156,
+        "left": 930,
+        "top": 474.5,
         "width": 700,
         "height": 420,
         "pinned": false,
-        "label": "Permission Not Working",
-        "userRenamed": true,
-        "claudeSessionId": "5572d2f5-ca46-4b9d-b3ac-135eef910824",
+        "label": "claude",
+        "userRenamed": false,
+        "claudeSessionId": "eaae34cb-4486-49ff-9e26-12beabf45a04",
         "minimized": false,
-        "floatColor": "orange"
+        "floatColor": "lime"
       }
     ]
   },
@@ -42574,7 +42564,7 @@
   },
   "neural-whiteboard": {
     "elements": [],
-    "nextZIndex": 5
+    "nextZIndex": 65
   },
   "neural-panel-detail-card-ed517012": {
     "left": "1674px",
@@ -42718,18 +42708,18 @@
   },
   "neural-pinned-detail-card-91dd5d9b": false,
   "neural-panel-automation-studio-panel": {
-    "left": "904px",
-    "top": "201px",
+    "left": "560px",
+    "top": "94px",
     "right": "auto",
-    "width": "1352px",
-    "height": "704px",
+    "width": "1299px",
+    "height": "973px",
     "maxHeight": null
   },
   "neural-panel-automation-studio": {
-    "x": 904,
-    "y": 201,
-    "w": 1352,
-    "h": 704
+    "x": 560,
+    "y": 94,
+    "w": 1299,
+    "h": 973
   },
   "neural-panel-detail-card-41b95f2d": {
     "left": "1630px",
@@ -42829,8 +42819,8 @@
     "maxHeight": null
   },
   "neural-panel-command-runner-panel": {
-    "left": "1780px",
-    "top": "339px",
+    "left": "343px",
+    "top": "216px",
     "right": "auto",
     "width": "517px",
     "height": "534px",
@@ -42882,8 +42872,8 @@
     ]
   },
   "neural-panel-command-runner": {
-    "x": 1780,
-    "y": 339,
+    "x": 343,
+    "y": 216,
     "w": 517,
     "h": 534
   },
@@ -43078,12 +43068,7 @@
   "neural-file-explorer-visible": true,
   "neural-file-explorer-width": 321,
   "neural-file-explorer-project": "J:\\Sites\\Apps\\Synabun",
-  "neural-file-explorer-collapsed": [
-    "J:/Sites/Apps/Synabun/mcp-server",
-    "J:/Sites/Apps/Synabun/.github",
-    "J:/Sites/Apps/Synabun/memory-seed",
-    "J:/Sites/Apps/Synabun/neural-interface"
-  ],
+  "neural-file-explorer-collapsed": [],
   "neural-panel-detail-card-1503ba27": {
     "left": "1162px",
     "top": "239px",
@@ -43218,7 +43203,7 @@
   "synabun-chat-project": "J:\\Sites\\Apps\\Synabun",
   "synabun-session-label:3b93d4a5-2026-4cea-8f89-e6ea6a249528": "ChatAI Text",
   "synabun-claude-panel-model": "claude-opus-4-6",
-  "synabun-claude-panel-project": "J:\\Sites\\Apps\\Synabun",
+  "synabun-claude-panel-project": "j:\\Sites\\Apps\\SynaBunWebsite",
   "synabun-session-label:daf726aa-4c01-4491-91b2-53ab0a2e4de9": "Fix Chat/Overlay panel",
   "synabun-session-label:50c98175-a6e8-46bd-9805-72a09779d9a0": "FileExplorer",
   "synabun-session-label:eba6b388-e388-4735-9768-8a6fb9c9ea41": "Fix Website",
@@ -43244,8 +43229,8 @@
     "maxHeight": null
   },
   "neural-cost-widget-pos": {
-    "left": 0,
-    "top": 1171
+    "left": 373,
+    "top": 207
   },
   "neural-cost-widget-collapsed": true,
   "neural-file-explorer-folder-colors": {
@@ -43307,9 +43292,9 @@
   "synabun-claude-panel-tabs": {
     "tabs": [
       {
-        "id": "b7eecebb-34ad-4e8b-b5b5-faa256fad8e5",
-        "sessionId": null,
-        "label": "New chat"
+        "id": "2dce155a-d78a-4733-ba2c-3ac91a3521a9",
+        "sessionId": "be725e09-6acf-4602-bb59-9d19c27bef78",
+        "label": "We have a blog system within Synabyn Website. I need you to ..."
       }
     ],
     "activeIdx": 0
@@ -43371,7 +43356,7 @@
   "synabun-session-label:8f9ae640-bdcb-4d7a-8f2b-c1fa667d7a5d": "Claude Code Skin Fix #1111",
   "synabun-session-label:74f143fb-4d7b-4315-97d1-7185d65e8dc0": "Round Corner fix",
   "synabun-session-label:e831fbe4-c862-410a-9621-263cb0f22b3f": "File Explorer Context e File Edit fix",
-  "synabun-claude-panel-effort": "off",
+  "synabun-claude-panel-effort": "high",
   "synabun-session-label:e049def0-b804-4bfa-9689-7575fe068830": "Git",
   "synabun-session-label:b002e1e2-cea1-4f6b-be70-e42dbf5f4a61": "Fix Zindex Recolor",
   "synabun-session-label:da577505-5d4d-4cde-855b-9e1e62091af3": "TwitterBot",
@@ -51015,8 +51000,32 @@
     "height": null,
     "maxHeight": null
   },
-  "synabun-session-label:5572d2f5-ca46-4b9d-b3ac-135eef910824": "Permission Not Working",
+  "synabun-session-label:5572d2f5-ca46-4b9d-b3ac-135eef910824": "Imrpove CLaude Code CLI",
   "synabun-session-label:465af098-e686-4b00-99f1-1a8383515b1c": "TwitterLikeBot",
   "synabun-session-label:2dec3794-98bd-4d9d-80f0-e8382e56245a": "TwitterLikeBot",
-  "synabun-session-label:234955c4-ecc7-469d-8c97-e8792dac64ad": "SYnabyn Greeting"
+  "synabun-session-label:234955c4-ecc7-469d-8c97-e8792dac64ad": "SYnabyn Greeting",
+  "synabun-session-label:a4bf8d27-6bd3-440a-9af6-d720a3f015c5": "synabun changelog button",
+  "synabun-session-label:06726d69-2d30-4959-8417-e5e781fbde0f": "Automation Polishing",
+  "synabun-session-label:ab580dd7-d5b7-4039-90af-756ec25fad7d": "Claude Code Improve UI",
+  "synabun-session-label:5875b117-4613-4d39-a0c2-b26f1db4cb48": "Synabun Automation Stop FIX",
+  "synabun-session-label:902cc514-5721-40d1-83de-7ee6f006ee95": "SZfasg",
+  "synabun-session-label:79eccf6c-0cf8-4ed6-9d2b-afbb017662a3": "LoopFix",
+  "synabun-session-label:5661f614-efda-44d9-80f5-230dc6ec7798": "TwitterBot",
+  "synabun-session-label:f07f3072-bbcc-48e6-b1ec-f6e066e404e9": "FixLoop",
+  "synabun-session-label:3d44f94a-5658-46a5-95ec-fe44b0477654": "FixSkill",
+  "synabun-session-label:a2324d91-107b-4a02-81d2-55f616003d8a": "PlanFixGauge",
+  "synabun-session-label:bfc00f80-be9d-4ec6-9184-5d3f74f1a5b3": "PlanFeature Fix",
+  "synabun-session-label:db8b12d6-4760-45f4-b5a1-ce862704401a": "ClaudeCostFix",
+  "synabun-session-label:b2dda80e-3107-4100-954d-10208e032d5b": "FacebookBot",
+  "synabun-session-label:98e64864-0a97-437e-b1bf-b92b962a4361": "Auto_Accept",
+  "synabun-session-label:bc906be8-4e46-47b8-b5c5-fb11ce40ac6a": "FixPanel",
+  "synabun-claude-panel-autoaccept": false,
+  "synabun-session-label:26492a44-5af5-49ba-a52e-fa157685e21d": "InstaBot Noite",
+  "synabun-session-label:2d88175e-a8f3-4f93-9a33-98e919f55344": "Fix Sidepanel #1111111",
+  "synabun-session-label:f4eb319e-b06b-414e-97ee-59cd4dbe61d4": "EMailAddSite",
+  "synabun-session-label:028a6f33-5726-4d78-ba63-ae632ca71de4": "Git",
+  "synabun-session-label:7c6fdf36-6fff-458d-ba54-c30d32cb9ca4": "Attemp 1111000 to fix sudepanel",
+  "synabun-session-label:1b585cb4-8b8b-40ea-8911-af6b123303be": "Arrumar HOW session",
+  "synabun-session-label:0189fe3a-e0b7-45a2-bc0b-e24526e08681": "TwitterAuto",
+  "synabun-session-label:738f447e-b571-4fa8-8cb7-04500a3e7702": "Fix AStream"
 }
