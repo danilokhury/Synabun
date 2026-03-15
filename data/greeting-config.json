@@ -39,7 +39,7 @@
       "reminders": [
         {
           "label": "Local dev server",
-          "command": "node J:\\Sites\\CriticalPixel\\.000Settings\\server.js"
+          "command": "node /Users/danilokhury/Apps/CriticalPixel/.000Settings/server.js"
         },
         {
           "label": "Deploy SOCKS proxy",
@@ -50,6 +50,13 @@
           "command": "ssh -D 1081 -C -N coolify"
         }
       ]
+    },
+    "synabunweb": {
+      "label": "SynabunWeb",
+      "greetingTemplate": "{time_greeting}! Working on **{project_label}** today (`{branch}` branch). {date}.",
+      "showReminders": false,
+      "showLastSession": true,
+      "reminders": []
     }
   },
   "global": {

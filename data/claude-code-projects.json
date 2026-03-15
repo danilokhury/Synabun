@@ -1,14 +1,14 @@
 [
   {
-    "path": "J:\\Sites\\CriticalPixel",
-    "label": "CriticalPixel"
-  },
-  {
-    "path": "J:\\Sites\\Apps\\Synabun",
+    "path": "/Users/danilokhury/Apps/Synabun",
     "label": "Synabun"
   },
   {
-    "path": "j:\\Sites\\Apps\\SynaBunWebsite",
-    "label": "Synabun Website"
+    "path": "/Users/danilokhury/Apps/SynaBunWebsite",
+    "label": "SynabunWeb"
+  },
+  {
+    "path": "/Users/danilokhury/Apps/CriticalPixel",
+    "label": "CriticalPixel"
   }
 ]

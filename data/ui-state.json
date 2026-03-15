@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-15T00:26:38.917Z",
+  "_updated": "2026-03-15T05:56:57.994Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -51,10 +51,10 @@
   "neural-pinned-settings-panel": false,
   "neural-ui-scale": 1,
   "neural-panel-settings-panel": {
-    "left": "416.01px",
-    "top": "51px",
-    "width": "1045.97px",
-    "height": "1184px"
+    "left": "131.01px",
+    "top": "140px",
+    "width": "950.97px",
+    "height": "861px"
   },
   "neural-explorer-visible": false,
   "neural-explorer-width": 323,
@@ -43263,8 +43263,8 @@
     "maxHeight": null
   },
   "neural-cost-widget-pos": {
-    "left": 329,
-    "top": 1293
+    "left": 344,
+    "top": 946
   },
   "neural-cost-widget-collapsed": true,
   "neural-file-explorer-folder-colors": {
@@ -51100,6 +51100,49 @@
     "activeIdx": 1
   },
   "synabun-claude-panel-windows": {
-    "01bd6e64-9bcf-4fb5-8eb3-94f0334dda84": 1773534398403
+    "01bd6e64-9bcf-4fb5-8eb3-94f0334dda84": 1773534398403,
+    "794495fb-3458-4f1c-9638-84a8384acdb6": 1773550317865,
+    "470e0f20-4682-483f-ad6d-d1650fe235b4": 1773550770957,
+    "d751d56d-8e58-45fb-987f-e51094cdd5f0": 1773554217471
+  },
+  "synabun-claude-panel-tabs-794495fb-3458-4f1c-9638-84a8384acdb6": {
+    "tabs": [
+      {
+        "id": "a4e6f270-4eb4-4d78-9fc5-22d614efa8b2",
+        "sessionId": "fd0fb0d4-7e4d-49ca-b161-c2a5689d7018",
+        "label": "Got a small issue wi..."
+      },
+      {
+        "id": "b4f36783-0e3c-4334-8413-a7da8bb0b813",
+        "sessionId": "70851e7e-629e-4b77-8df8-e3a4c25f0f74",
+        "label": "THe compact componen..."
+      }
+    ],
+    "activeIdx": 1
+  },
+  "synabun-claude-panel-tabs-470e0f20-4682-483f-ad6d-d1650fe235b4": {
+    "tabs": [
+      {
+        "id": "52d739a8-f474-4806-8e5d-fa089e87933f",
+        "sessionId": "d0610ede-3db3-49e9-b447-b9236bb72d7c",
+        "label": "THe compact componen..."
+      }
+    ],
+    "activeIdx": 0
+  },
+  "synabun-claude-panel-tabs-d751d56d-8e58-45fb-987f-e51094cdd5f0": {
+    "tabs": [
+      {
+        "id": "61a16cd6-151b-46bb-90cc-ffbd1d6dea13",
+        "sessionId": "fd0fb0d4-7e4d-49ca-b161-c2a5689d7018",
+        "label": "Got a small issue wi..."
+      },
+      {
+        "id": "66a7f7b5-a8fc-4e4d-bd2a-1da86eb5e984",
+        "sessionId": "70851e7e-629e-4b77-8df8-e3a4c25f0f74",
+        "label": "THe compact componen..."
+      }
+    ],
+    "activeIdx": 0
   }
 }
