@@ -47,7 +47,7 @@ export function getSharedHTML() {
   <div id="loading-server-cmd">
     <div id="loading-server-cmd-hint">${t('loading.runCommand')}</div>
     <div id="loading-server-cmd-box">
-      <code id="loading-cmd-text">node path/to/synabun/neural-interface/server.js</code>
+      <code id="loading-cmd-text">npm start</code>
       <button id="loading-cmd-copy" title="${t('loading.copyToClipboard')}">
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       </button>
@@ -145,6 +145,11 @@ export function getSharedHTML() {
             <span class="menu-check">&#10003;</span>
             <span class="menu-text">${t('menu.apps.showTerminal')}</span>
             <span class="menu-shortcut">T</span>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" id="menu-restart-server">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></span> Restart Server</span>
           </div>
         </div>
       </div>
