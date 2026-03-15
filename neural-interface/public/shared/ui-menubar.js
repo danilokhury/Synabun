@@ -333,6 +333,14 @@ function wireTerminalMenu() {
     'menu-command-runner':   () => emit('command-runner:open'),
     'menu-terminal-link':    () => emit('link:toggle'),
     'menu-terminal-toggle':  () => emit('terminal:toggle'),
+    'menu-restart-server':   async () => {
+      try {
+        await fetch('/api/server/restart', { method: 'POST' });
+        // Show brief message then attempt reconnect after delay
+        document.title = 'Restarting...';
+        setTimeout(() => location.reload(), 2000);
+      } catch {}
+    },
   };
   Object.entries(items).forEach(([id, handler]) => {
     const el = $(id);

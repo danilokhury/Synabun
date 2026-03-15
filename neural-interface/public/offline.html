@@ -225,8 +225,8 @@
   <div class="subtext">The Neural Interface server isn't running.</div>
 
   <div class="cmd-block">
-    <div class="cmd-text">
-      <span>cd</span> J:\Sites\Apps\Synabun\neural-interface <span>&&</span> node server.js
+    <div class="cmd-text" id="cmdText">
+      <span>npm</span> start
     </div>
     <button class="copy-btn" id="copyBtn">Copy</button>
   </div>
@@ -238,8 +238,13 @@
 </div>
 
 <script>
-  // --- Copy command ---
-  const cmd = 'cd J:\\Sites\\Apps\\Synabun\\neural-interface && node server.js';
+  // --- Build command with full path ---
+  const projectDir = localStorage.getItem('synabun-project-dir');
+  const cmd = projectDir ? `cd ${projectDir} && npm start` : 'npm start';
+  const cmdText = document.getElementById('cmdText');
+  if (projectDir) {
+    cmdText.innerHTML = `<span>cd</span> ${projectDir} && <span>npm</span> start`;
+  }
   const copyBtn = document.getElementById('copyBtn');
 
   copyBtn.addEventListener('click', async () => {
