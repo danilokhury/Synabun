@@ -14,7 +14,7 @@ import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, dirname, extname, join, resolve, sep } from 'path';
 import { config as dotenvConfig } from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, appendFileSync, openSync, readSync, closeSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, appendFileSync, openSync, readSync, closeSync, chmodSync } from 'fs';
 import { randomBytes, randomUUID, createHash } from 'crypto';
 import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
@@ -46,6 +46,28 @@ const execAsync = promisify(exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Fix spawn-helper permissions on macOS (npm/cpSync don't preserve execute bit)
+if (process.platform === 'darwin') {
+  try {
+    const ptyBase = resolve(__dirname, 'node_modules', 'node-pty');
+    const spawnHelperPaths = [
+      resolve(ptyBase, 'prebuilds', `darwin-${process.arch}`, 'spawn-helper'),
+      resolve(ptyBase, 'build', 'Release', 'spawn-helper'),
+    ];
+    for (const p of spawnHelperPaths) {
+      if (existsSync(p)) {
+        const st = statSync(p);
+        if (!(st.mode & 0o111)) {
+          chmodSync(p, st.mode | 0o755);
+          console.log(`[pty] Fixed execute permission on ${p}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[pty] Could not verify spawn-helper permissions:', err.message);
+  }
+}
 
 // Load .env from parent directory
 dotenvConfig({ path: resolve(__dirname, '..', '.env') });
@@ -1380,6 +1402,16 @@ app.put('/api/settings', (req, res) => {
   }
 });
 
+// POST /api/server/restart — Gracefully restart the server process
+app.post('/api/server/restart', (req, res) => {
+  console.log('[server] Restart requested — shutting down in 500ms...');
+  res.json({ ok: true, message: 'Server restarting...' });
+  setTimeout(() => {
+    closeDb();
+    process.exit(0);
+  }, 500);
+});
+
 // POST /api/settings/move-db — Move SQLite database to a new directory
 app.post('/api/settings/move-db', (req, res) => {
   try {
@@ -1974,7 +2006,8 @@ function getClaudeBin() {
     try { _claudeBinPath = execSync('where claude', { encoding: 'utf-8' }).split('\n')[0].trim(); }
     catch { _claudeBinPath = 'claude'; }
   } else {
-    _claudeBinPath = 'claude';
+    try { _claudeBinPath = execSync('which claude', { encoding: 'utf-8' }).trim(); }
+    catch { _claudeBinPath = 'claude'; }
   }
   return _claudeBinPath;
 }
@@ -2036,7 +2069,7 @@ function handleClaudeSkinWebSocket(ws) {
     if (model) args.push('--model', model);
     if (effort && ['low', 'medium', 'high', 'max'].includes(effort)) args.push('--effort', effort);
     const claudeBin = getClaudeBin();
-    const useShell = process.platform === 'win32' && claudeBin === 'claude';
+    const useShell = !claudeBin.includes(sep);
     console.log('[claude-skin] Spawning:', claudeBin, args.join(' '), 'cwd:', workDir);
 
     // ── Zero-pipe spawn: temp files for stdin AND stdout ──
@@ -5068,6 +5101,74 @@ app.post('/api/setup/save-config', (req, res) => {
   }
 });
 
+// POST /api/setup/build — Install npm deps + build MCP server (SSE streaming)
+app.post('/api/setup/build', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  function send(event, data) {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  }
+
+  const dirs = [
+    { name: 'Neural Interface', path: resolve(PROJECT_ROOT, 'neural-interface') },
+    { name: 'MCP Server', path: resolve(PROJECT_ROOT, 'mcp-server') },
+  ];
+
+  // Phase 1: npm install for each directory
+  for (const dir of dirs) {
+    const hasModules = existsSync(resolve(dir.path, 'node_modules'));
+    if (hasModules) {
+      send('install', { dir: dir.name, status: 'skipped', output: 'node_modules already present' });
+      continue;
+    }
+
+    send('install', { dir: dir.name, status: 'start' });
+    try {
+      const { stdout, stderr } = await execAsync('npm install', {
+        cwd: dir.path,
+        timeout: 180_000,
+        env: { ...process.env, NODE_ENV: 'development' },
+      });
+      send('install', { dir: dir.name, status: 'done', output: (stdout || '').slice(-500) });
+    } catch (err) {
+      send('install', { dir: dir.name, status: 'error', output: (err.stderr || err.message || '').slice(-500) });
+      send('complete', { ok: false, error: `npm install failed for ${dir.name}` });
+      return res.end();
+    }
+  }
+
+  // Phase 2: Build MCP server
+  const mcpDist = resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'index.js');
+  const mcpSrc = resolve(PROJECT_ROOT, 'mcp-server', 'src', 'index.ts');
+  let needsBuild = !existsSync(mcpDist);
+  if (!needsBuild) {
+    try { needsBuild = statSync(mcpSrc).mtimeMs > statSync(mcpDist).mtimeMs; } catch { needsBuild = true; }
+  }
+
+  if (!needsBuild) {
+    send('build', { status: 'skipped', output: 'dist/index.js is up to date' });
+  } else {
+    send('build', { status: 'start' });
+    try {
+      const { stdout, stderr } = await execAsync('npm run build', {
+        cwd: resolve(PROJECT_ROOT, 'mcp-server'),
+        timeout: 60_000,
+      });
+      send('build', { status: 'done', output: (stdout || '').slice(-500) });
+    } catch (err) {
+      send('build', { status: 'error', output: (err.stderr || err.message || '').slice(-500) });
+      send('complete', { ok: false, error: 'MCP server build failed' });
+      return res.end();
+    }
+  }
+
+  send('complete', { ok: true });
+  res.end();
+});
+
 // Legacy setup stubs for UI compatibility
 app.post('/api/setup/start-docker-desktop', (req, res) => { res.json({ ok: true, message: 'Docker no longer required — using local SQLite.' }); });
 app.post('/api/setup/docker', (req, res) => { res.json({ ok: true, message: 'Docker no longer required — using local SQLite.' }); });
@@ -7520,7 +7621,7 @@ app.get('/api/health', (req, res) => {
     // getDb() auto-creates the directory, file, and schema if missing
     getDb();
     const count = countMemories();
-    res.json({ ok: true, storage: 'sqlite', memories: count });
+    res.json({ ok: true, storage: 'sqlite', memories: count, projectDir: PROJECT_ROOT });
   } catch (err) {
     res.json({ ok: false, reason: 'db_error', detail: err.message });
   }
@@ -8379,7 +8480,24 @@ app.post('/api/terminal/sessions', (req, res) => {
     if (profile === 'claude-code') setTimeout(saveSessionSnapshot, 2000); // update resume snapshot
     res.json({ sessionId, profile });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    let msg = err.message;
+    if (process.platform === 'darwin' && (msg.includes('posix_spawn') || msg.includes('EACCES'))) {
+      // Attempt auto-fix: chmod spawn-helper and retry once
+      try {
+        const ptyBase = resolve(__dirname, 'node_modules', 'node-pty');
+        const sh = resolve(ptyBase, 'prebuilds', `darwin-${process.arch}`, 'spawn-helper');
+        if (existsSync(sh)) {
+          chmodSync(sh, 0o755);
+          console.log(`[pty] Auto-fixed spawn-helper permissions, retrying...`);
+          const sessionId = createTerminalSession(profile, cols, rows, cwd, { resume, model });
+          broadcastSync({ type: 'terminal:session-created', sessionId, profile });
+          if (profile === 'claude-code') setTimeout(saveSessionSnapshot, 2000);
+          return res.json({ sessionId, profile });
+        }
+      } catch {}
+      msg = `Terminal failed: spawn-helper lacks execute permission. Try: chmod +x neural-interface/node_modules/node-pty/prebuilds/darwin-${process.arch}/spawn-helper`;
+    }
+    res.status(500).json({ error: msg });
   }
 });
 
