@@ -75,7 +75,8 @@
       "mcp__SynaBun__discord_onboarding",
       "mcp__SynaBun__discord_message",
       "mcp__SynaBun__discord_webhook",
-      "Bash(c:\\\\\\\\Users\\\\\\\\danil\\\\\\\\.local\\\\\\\\bin\\\\\\\\claude.exe --help 2>&1 | head -100)"
+      "Bash(c:\\\\\\\\Users\\\\\\\\danil\\\\\\\\.local\\\\\\\\bin\\\\\\\\claude.exe --help 2>&1 | head -100)",
+      "Bash(for f:*)"
     ]
   }
 }
