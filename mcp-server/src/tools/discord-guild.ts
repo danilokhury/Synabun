@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as discord from '../services/discord.js';
+import { text } from './response.js';
 
 export const discordGuildSchema = {
   action: z.enum(['info', 'channels', 'members', 'roles', 'audit_log'] as const)
@@ -19,7 +20,7 @@ export const discordGuildDescription =
 
 async function handleInfo(guildId: string) {
   const res = await discord.getGuild(guildId);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const g = res.data as {
     id: string; name: string; description?: string;
@@ -43,14 +44,14 @@ async function handleInfo(guildId: string) {
     g.features.length > 0 ? `Features: ${g.features.join(', ')}` : null,
   ].filter(Boolean).join('\n');
 
-  return { content: [{ type: 'text' as const, text: lines }] };
+  return text(lines);
 }
 
 // ── Channels ───────────────────────────────────────────────────
 
 async function handleChannels(guildId: string) {
   const channels = await discord.getGuildChannels(guildId);
-  if ('error' in channels) return { content: [{ type: 'text' as const, text: (channels as { error: string }).error }] };
+  if ('error' in channels) return text((channels as { error: string }).error);
 
   const list = channels as { id: string; name: string; type: number; parent_id?: string; position: number; topic?: string }[];
 
@@ -83,14 +84,14 @@ async function handleChannels(guildId: string) {
     lines.push('');
   }
 
-  return { content: [{ type: 'text' as const, text: `Guild channels (${list.length} total):\n\n${lines.join('\n')}` }] };
+  return text(`Guild channels (${list.length} total):\n\n${lines.join('\n')}`);
 }
 
 // ── Members ────────────────────────────────────────────────────
 
 async function handleMembers(guildId: string, limit: number) {
   const res = await discord.getGuildMembers(guildId, limit);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const members = res.data as {
     user: { id: string; username: string; global_name?: string; bot?: boolean };
@@ -107,14 +108,14 @@ async function handleMembers(guildId: string, limit: number) {
     return `  ${name} (${tag}, ${m.user.id})${bot}${roles}`;
   });
 
-  return { content: [{ type: 'text' as const, text: `Guild members (${members.length}):\n${lines.join('\n')}` }] };
+  return text(`Guild members (${members.length}):\n${lines.join('\n')}`);
 }
 
 // ── Roles ──────────────────────────────────────────────────────
 
 async function handleRoles(guildId: string) {
   const roles = await discord.getGuildRoles(guildId);
-  if ('error' in roles) return { content: [{ type: 'text' as const, text: (roles as { error: string }).error }] };
+  if ('error' in roles) return text((roles as { error: string }).error);
 
   const list = (roles as { id: string; name: string; color: number; position: number; managed?: boolean; mentionable?: boolean; hoist?: boolean }[])
     .sort((a, b) => b.position - a.position);
@@ -129,14 +130,14 @@ async function handleRoles(guildId: string) {
     return `  @${r.name} (${r.id})${color}${flagStr}`;
   });
 
-  return { content: [{ type: 'text' as const, text: `Guild roles (${list.length}):\n${lines.join('\n')}` }] };
+  return text(`Guild roles (${list.length}):\n${lines.join('\n')}`);
 }
 
 // ── Audit Log ──────────────────────────────────────────────────
 
 async function handleAuditLog(guildId: string, limit: number, actionType?: number) {
   const res = await discord.getAuditLog(guildId, { limit, action_type: actionType });
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const log = res.data as {
     audit_log_entries: {
@@ -151,7 +152,7 @@ async function handleAuditLog(guildId: string, limit: number, actionType?: numbe
 
   const entries = log.audit_log_entries || [];
   if (entries.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No audit log entries found.' }] };
+    return text('No audit log entries found.');
   }
 
   const lines = entries.map(e => {
@@ -159,7 +160,7 @@ async function handleAuditLog(guildId: string, limit: number, actionType?: numbe
     return `  [${e.action_type}] by ${e.user_id} → ${e.target_id || 'N/A'}${e.reason ? ` (${e.reason})` : ''}${changes ? `\n    ${changes}` : ''}`;
   });
 
-  return { content: [{ type: 'text' as const, text: `Audit log (${entries.length} entries):\n${lines.join('\n')}` }] };
+  return text(`Audit log (${entries.length} entries):\n${lines.join('\n')}`);
 }
 
 // ── Main dispatcher ────────────────────────────────────────────
@@ -171,7 +172,7 @@ export async function handleDiscordGuild(args: {
   action_type?: number;
 }) {
   const resolved = await discord.resolveGuildId(args.guild_id);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
   const guildId = resolved.guildId;
   const limit = args.limit || 50;
 
@@ -182,6 +183,6 @@ export async function handleDiscordGuild(args: {
     case 'roles': return handleRoles(guildId);
     case 'audit_log': return handleAuditLog(guildId, limit, args.action_type);
     default:
-      return { content: [{ type: 'text' as const, text: `Unknown action "${args.action}". Use: info, channels, members, roles, audit_log.` }] };
+      return text(`Unknown action "${args.action}". Use: info, channels, members, roles, audit_log.`);
   }
 }

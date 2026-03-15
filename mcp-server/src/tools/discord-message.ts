@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import * as discord from '../services/discord.js';
 import { coerceStringArray } from './utils.js';
+import { text } from './response.js';
 
 export const discordMessageSchema = {
   action: z.enum(['send', 'edit', 'delete', 'pin', 'unpin', 'react', 'bulk_delete', 'list'] as const)
@@ -54,11 +55,11 @@ async function handleSend(args: {
   reply_to?: string; guild_id?: string;
 }) {
   if (!args.content && !args.embed) {
-    return { content: [{ type: 'text' as const, text: 'content or embed is required for send action.' }] };
+    return text('content or embed is required for send action.');
   }
 
   const ch = await resolveChannelId(args.channel, args.guild_id);
-  if ('error' in ch) return { content: [{ type: 'text' as const, text: ch.error }] };
+  if ('error' in ch) return text(ch.error);
 
   const data: Record<string, unknown> = {};
   if (args.content) data.content = args.content;
@@ -68,10 +69,10 @@ async function handleSend(args: {
   }
 
   const res = await discord.sendMessage(ch.channelId, data);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const msg = res.data as { id: string };
-  return { content: [{ type: 'text' as const, text: `Sent message ${msg.id} in <#${ch.channelId}>.` }] };
+  return text(`Sent message ${msg.id} in <#${ch.channelId}>.`);
 }
 
 // ── Edit ───────────────────────────────────────────────────────
@@ -80,97 +81,97 @@ async function handleEdit(args: {
   channel: string; message_id?: string; content?: string;
   embed?: Record<string, unknown>; guild_id?: string;
 }) {
-  if (!args.message_id) return { content: [{ type: 'text' as const, text: 'message_id is required for edit action.' }] };
+  if (!args.message_id) return text('message_id is required for edit action.');
 
   const ch = await resolveChannelId(args.channel, args.guild_id);
-  if ('error' in ch) return { content: [{ type: 'text' as const, text: ch.error }] };
+  if ('error' in ch) return text(ch.error);
 
   const data: Record<string, unknown> = {};
   if (args.content !== undefined) data.content = args.content;
   if (args.embed) data.embeds = [args.embed];
 
   const res = await discord.editMessage(ch.channelId, args.message_id, data);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Edited message ${args.message_id}.` }] };
+  return text(`Edited message ${args.message_id}.`);
 }
 
 // ── Delete ─────────────────────────────────────────────────────
 
 async function handleDelete(args: { channel: string; message_id?: string; guild_id?: string }) {
-  if (!args.message_id) return { content: [{ type: 'text' as const, text: 'message_id is required for delete action.' }] };
+  if (!args.message_id) return text('message_id is required for delete action.');
 
   const ch = await resolveChannelId(args.channel, args.guild_id);
-  if ('error' in ch) return { content: [{ type: 'text' as const, text: ch.error }] };
+  if ('error' in ch) return text(ch.error);
 
   const res = await discord.deleteMessage(ch.channelId, args.message_id);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Deleted message ${args.message_id}.` }] };
+  return text(`Deleted message ${args.message_id}.`);
 }
 
 // ── Pin / Unpin ────────────────────────────────────────────────
 
 async function handlePin(args: { channel: string; message_id?: string; guild_id?: string }, unpin = false) {
-  if (!args.message_id) return { content: [{ type: 'text' as const, text: 'message_id is required.' }] };
+  if (!args.message_id) return text('message_id is required.');
 
   const ch = await resolveChannelId(args.channel, args.guild_id);
-  if ('error' in ch) return { content: [{ type: 'text' as const, text: ch.error }] };
+  if ('error' in ch) return text(ch.error);
 
   const res = unpin
     ? await discord.unpinMessage(ch.channelId, args.message_id)
     : await discord.pinMessage(ch.channelId, args.message_id);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `${unpin ? 'Unpinned' : 'Pinned'} message ${args.message_id}.` }] };
+  return text(`${unpin ? 'Unpinned' : 'Pinned'} message ${args.message_id}.`);
 }
 
 // ── React ──────────────────────────────────────────────────────
 
 async function handleReact(args: { channel: string; message_id?: string; emoji?: string; guild_id?: string }) {
-  if (!args.message_id) return { content: [{ type: 'text' as const, text: 'message_id is required for react action.' }] };
-  if (!args.emoji) return { content: [{ type: 'text' as const, text: 'emoji is required for react action.' }] };
+  if (!args.message_id) return text('message_id is required for react action.');
+  if (!args.emoji) return text('emoji is required for react action.');
 
   const ch = await resolveChannelId(args.channel, args.guild_id);
-  if ('error' in ch) return { content: [{ type: 'text' as const, text: ch.error }] };
+  if ('error' in ch) return text(ch.error);
 
   const res = await discord.addReaction(ch.channelId, args.message_id, args.emoji);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Reacted with ${args.emoji} on message ${args.message_id}.` }] };
+  return text(`Reacted with ${args.emoji} on message ${args.message_id}.`);
 }
 
 // ── Bulk Delete ────────────────────────────────────────────────
 
 async function handleBulkDelete(args: { channel: string; message_ids?: string[]; guild_id?: string }) {
   if (!args.message_ids || args.message_ids.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'message_ids is required for bulk_delete action (2-100 messages).' }] };
+    return text('message_ids is required for bulk_delete action (2-100 messages).');
   }
   if (args.message_ids.length < 2 || args.message_ids.length > 100) {
-    return { content: [{ type: 'text' as const, text: 'bulk_delete requires 2-100 message IDs.' }] };
+    return text('bulk_delete requires 2-100 message IDs.');
   }
 
   const ch = await resolveChannelId(args.channel, args.guild_id);
-  if ('error' in ch) return { content: [{ type: 'text' as const, text: ch.error }] };
+  if ('error' in ch) return text(ch.error);
 
   const res = await discord.bulkDeleteMessages(ch.channelId, args.message_ids);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Bulk deleted ${args.message_ids.length} messages.` }] };
+  return text(`Bulk deleted ${args.message_ids.length} messages.`);
 }
 
 // ── List ───────────────────────────────────────────────────────
 
 async function handleList(args: { channel: string; limit?: number; before?: string; after?: string; guild_id?: string }) {
   const ch = await resolveChannelId(args.channel, args.guild_id);
-  if ('error' in ch) return { content: [{ type: 'text' as const, text: ch.error }] };
+  if ('error' in ch) return text(ch.error);
 
   const res = await discord.getMessages(ch.channelId, {
     limit: Math.min(args.limit || 50, 100),
     before: args.before,
     after: args.after,
   });
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const messages = res.data as {
     id: string;
@@ -182,7 +183,7 @@ async function handleList(args: { channel: string; limit?: number; before?: stri
   }[];
 
   if (messages.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No messages found.' }] };
+    return text('No messages found.');
   }
 
   const lines = messages.reverse().map(m => {
@@ -196,7 +197,7 @@ async function handleList(args: { channel: string; limit?: number; before?: stri
     return `  [${m.id}] ${author}${bot}${pinned} (${time}): ${content}`;
   });
 
-  return { content: [{ type: 'text' as const, text: `Messages (${messages.length}):\n${lines.join('\n')}` }] };
+  return text(`Messages (${messages.length}):\n${lines.join('\n')}`);
 }
 
 // ── Main dispatcher ────────────────────────────────────────────
@@ -225,6 +226,6 @@ export async function handleDiscordMessage(args: {
     case 'bulk_delete': return handleBulkDelete(args);
     case 'list': return handleList(args);
     default:
-      return { content: [{ type: 'text' as const, text: `Unknown action "${args.action}". Use: send, edit, delete, pin, unpin, react, bulk_delete, list.` }] };
+      return text(`Unknown action "${args.action}". Use: send, edit, delete, pin, unpin, react, bulk_delete, list.`);
   }
 }

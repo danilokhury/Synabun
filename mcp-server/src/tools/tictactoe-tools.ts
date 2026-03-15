@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text } from './response.js';
 
 // ═══════════════════════════════════════════
 // tictactoe — Dedicated TicTacToe MCP tool
@@ -31,28 +32,28 @@ export async function handleTictactoe(args: { action: string; cell?: number; pie
     case 'end':
       return handleEnd();
     default:
-      return { content: [{ type: 'text' as const, text: `Unknown action: ${args.action}` }] };
+      return text(`Unknown action: ${args.action}`);
   }
 }
 
 async function handleStart(piece?: string) {
   const result = await ni.tictactoeStart(piece);
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Failed to start game: ${result.error}` }] };
+    return text(`Failed to start game: ${result.error}`);
   }
 
-  const text = `Game started! You are ${result.piece}.\n\n${result.ascii}\n\nTurn: ${result.turn} | Status: ${result.status}`;
-  return { content: [{ type: 'text' as const, text }] };
+  const msg = `Game started! You are ${result.piece}.\n\n${result.ascii}\n\nTurn: ${result.turn} | Status: ${result.status}`;
+  return text(msg);
 }
 
 async function handleMove(cell?: number) {
   if (cell === undefined) {
-    return { content: [{ type: 'text' as const, text: 'cell is required for move action (1-9)' }] };
+    return text('cell is required for move action (1-9)');
   }
 
   const result = await ni.tictactoeMove(cell);
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Move failed: ${result.error}` }] };
+    return text(`Move failed: ${result.error}`);
   }
 
   let statusLine = `Turn: ${result.turn} | Status: ${result.status}`;
@@ -62,18 +63,18 @@ async function handleMove(cell?: number) {
     statusLine = 'Status: draw';
   }
 
-  const text = `${result.ascii}\n\n${statusLine}`;
-  return { content: [{ type: 'text' as const, text }] };
+  const msg = `${result.ascii}\n\n${statusLine}`;
+  return text(msg);
 }
 
 async function handleState() {
   const result = await ni.tictactoeState();
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Failed to get state: ${result.error}` }] };
+    return text(`Failed to get state: ${result.error}`);
   }
 
   if (!result.active) {
-    return { content: [{ type: 'text' as const, text: 'No active TicTacToe game. Use action "start" to begin.' }] };
+    return text('No active TicTacToe game. Use action "start" to begin.');
   }
 
   let statusLine = `Turn: ${result.turn} | Status: ${result.status} | You are: ${result.piece}`;
@@ -83,15 +84,15 @@ async function handleState() {
     statusLine = `Status: draw | You were: ${result.piece}`;
   }
 
-  const text = `${result.ascii}\n\n${statusLine}`;
-  return { content: [{ type: 'text' as const, text }] };
+  const msg = `${result.ascii}\n\n${statusLine}`;
+  return text(msg);
 }
 
 async function handleEnd() {
   const result = await ni.tictactoeEnd();
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Failed to end game: ${result.error}` }] };
+    return text(`Failed to end game: ${result.error}`);
   }
 
-  return { content: [{ type: 'text' as const, text: 'Game ended. Board cleared.' }] };
+  return text('Game ended. Board cleared.');
 }

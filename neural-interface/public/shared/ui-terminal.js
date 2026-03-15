@@ -4345,6 +4345,13 @@ export async function initTerminal() {
 
   on('browser:open', (data) => openBrowserSession(data?.url, data?.fresh, data?.headless, data?.force));
 
+  // Reconnect to existing browser session (e.g. detached from Claude panel embed)
+  on('browser:reconnect', async (data) => {
+    if (!data?.sessionId) return;
+    if (_sessions.find(s => s.id === data.sessionId)) return;
+    await reconnectBrowserSession(data.sessionId, { url: data.url || '', title: data.title || '' }, null);
+  });
+
   // Register CLI launch keybind actions (open as detached floating tab)
   registerAction('launch-claude', () => launchDetached('claude-code'));
   registerAction('launch-codex',  () => launchDetached('codex'));
@@ -4396,6 +4403,8 @@ export async function initTerminal() {
     if (!msg.sessionId) return;
     if (_sessions.find(s => s.id === msg.sessionId)) return;
     if (document.querySelector(`.browser-viewport[data-session-id="${msg.sessionId}"]`)) return;
+    // If Claude panel is open, let it handle the browser embed instead
+    if (document.querySelector('.claude-panel.open')) return;
     await reconnectBrowserSession(msg.sessionId, { url: msg.url, title: '' }, null);
   });
 

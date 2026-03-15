@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as discord from '../services/discord.js';
+import { text } from './response.js';
 
 export const discordRoleSchema = {
   action: z.enum(['create', 'edit', 'delete', 'list', 'assign', 'remove'] as const)
@@ -36,7 +37,7 @@ async function handleCreate(guildId: string, args: {
   mentionable?: boolean; permissions?: string;
 }) {
   if (!args.name) {
-    return { content: [{ type: 'text' as const, text: 'name is required for create action.' }] };
+    return text('name is required for create action.');
   }
 
   const data: Record<string, unknown> = { name: args.name };
@@ -51,16 +52,16 @@ async function handleCreate(guildId: string, args: {
     try {
       data.permissions = discord.resolvePermissions(args.permissions);
     } catch (err) {
-      return { content: [{ type: 'text' as const, text: (err as Error).message }] };
+      return text((err as Error).message);
     }
   }
 
   const res = await discord.createRole(guildId, data);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const role = res.data as { id: string; name: string; color: number };
   const colorStr = role.color ? ` #${role.color.toString(16).padStart(6, '0')}` : '';
-  return { content: [{ type: 'text' as const, text: `Created role @${role.name} (${role.id})${colorStr}` }] };
+  return text(`Created role @${role.name} (${role.id})${colorStr}`);
 }
 
 // ── Edit ───────────────────────────────────────────────────────
@@ -70,11 +71,11 @@ async function handleEdit(guildId: string, args: {
   mentionable?: boolean; permissions?: string; position?: number;
 }) {
   if (!args.role) {
-    return { content: [{ type: 'text' as const, text: 'role is required for edit action.' }] };
+    return text('role is required for edit action.');
   }
 
   const resolved = await discord.resolveRole(args.role, guildId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const data: Record<string, unknown> = {};
   if (args.name !== undefined) data.name = args.name;
@@ -88,41 +89,41 @@ async function handleEdit(guildId: string, args: {
     try {
       data.permissions = discord.resolvePermissions(args.permissions);
     } catch (err) {
-      return { content: [{ type: 'text' as const, text: (err as Error).message }] };
+      return text((err as Error).message);
     }
   }
 
   if (Object.keys(data).length === 0 && args.position === undefined) {
-    return { content: [{ type: 'text' as const, text: 'No changes specified.' }] };
+    return text('No changes specified.');
   }
 
   const res = await discord.editRole(guildId, resolved.id, data);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Updated role @${resolved.name} (${resolved.id}).` }] };
+  return text(`Updated role @${resolved.name} (${resolved.id}).`);
 }
 
 // ── Delete ─────────────────────────────────────────────────────
 
 async function handleDelete(guildId: string, args: { role?: string }) {
   if (!args.role) {
-    return { content: [{ type: 'text' as const, text: 'role is required for delete action.' }] };
+    return text('role is required for delete action.');
   }
 
   const resolved = await discord.resolveRole(args.role, guildId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const res = await discord.deleteRole(guildId, resolved.id);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Deleted role @${resolved.name} (${resolved.id}).` }] };
+  return text(`Deleted role @${resolved.name} (${resolved.id}).`);
 }
 
 // ── List ───────────────────────────────────────────────────────
 
 async function handleList(guildId: string) {
   const roles = await discord.getGuildRoles(guildId);
-  if ('error' in roles) return { content: [{ type: 'text' as const, text: (roles as { error: string }).error }] };
+  if ('error' in roles) return text((roles as { error: string }).error);
 
   const list = (roles as { id: string; name: string; color: number; position: number; managed?: boolean; mentionable?: boolean; hoist?: boolean; permissions: string }[])
     .sort((a, b) => b.position - a.position);
@@ -137,43 +138,43 @@ async function handleList(guildId: string) {
     return `  @${r.name} (${r.id})${color}${flagStr}`;
   });
 
-  return { content: [{ type: 'text' as const, text: `Roles (${list.length}):\n${lines.join('\n')}` }] };
+  return text(`Roles (${list.length}):\n${lines.join('\n')}`);
 }
 
 // ── Assign ─────────────────────────────────────────────────────
 
 async function handleAssign(guildId: string, args: { role?: string; member?: string }) {
-  if (!args.role) return { content: [{ type: 'text' as const, text: 'role is required for assign action.' }] };
-  if (!args.member) return { content: [{ type: 'text' as const, text: 'member is required for assign action.' }] };
+  if (!args.role) return text('role is required for assign action.');
+  if (!args.member) return text('member is required for assign action.');
 
   const roleResolved = await discord.resolveRole(args.role, guildId);
-  if ('error' in roleResolved) return { content: [{ type: 'text' as const, text: roleResolved.error }] };
+  if ('error' in roleResolved) return text(roleResolved.error);
 
   const userResolved = await discord.resolveUser(args.member, guildId);
-  if ('error' in userResolved) return { content: [{ type: 'text' as const, text: userResolved.error }] };
+  if ('error' in userResolved) return text(userResolved.error);
 
   const res = await discord.addMemberRole(guildId, userResolved.id, roleResolved.id);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Assigned @${roleResolved.name} to ${userResolved.name}.` }] };
+  return text(`Assigned @${roleResolved.name} to ${userResolved.name}.`);
 }
 
 // ── Remove ─────────────────────────────────────────────────────
 
 async function handleRemove(guildId: string, args: { role?: string; member?: string }) {
-  if (!args.role) return { content: [{ type: 'text' as const, text: 'role is required for remove action.' }] };
-  if (!args.member) return { content: [{ type: 'text' as const, text: 'member is required for remove action.' }] };
+  if (!args.role) return text('role is required for remove action.');
+  if (!args.member) return text('member is required for remove action.');
 
   const roleResolved = await discord.resolveRole(args.role, guildId);
-  if ('error' in roleResolved) return { content: [{ type: 'text' as const, text: roleResolved.error }] };
+  if ('error' in roleResolved) return text(roleResolved.error);
 
   const userResolved = await discord.resolveUser(args.member, guildId);
-  if ('error' in userResolved) return { content: [{ type: 'text' as const, text: userResolved.error }] };
+  if ('error' in userResolved) return text(userResolved.error);
 
   const res = await discord.removeMemberRole(guildId, userResolved.id, roleResolved.id);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Removed @${roleResolved.name} from ${userResolved.name}.` }] };
+  return text(`Removed @${roleResolved.name} from ${userResolved.name}.`);
 }
 
 // ── Main dispatcher ────────────────────────────────────────────
@@ -192,7 +193,7 @@ export async function handleDiscordRole(args: {
   reason?: string;
 }) {
   const resolved = await discord.resolveGuildId(args.guild_id);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
   const guildId = resolved.guildId;
 
   switch (args.action) {
@@ -203,6 +204,6 @@ export async function handleDiscordRole(args: {
     case 'assign': return handleAssign(guildId, args);
     case 'remove': return handleRemove(guildId, args);
     default:
-      return { content: [{ type: 'text' as const, text: `Unknown action "${args.action}". Use: create, edit, delete, list, assign, remove.` }] };
+      return text(`Unknown action "${args.action}". Use: create, edit, delete, list, assign, remove.`);
   }
 }

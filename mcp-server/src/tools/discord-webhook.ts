@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as discord from '../services/discord.js';
+import { text } from './response.js';
 
 export const discordWebhookSchema = {
   action: z.enum(['create', 'edit', 'delete', 'list', 'execute'] as const)
@@ -30,15 +31,15 @@ export const discordWebhookDescription =
 // ── Create ─────────────────────────────────────────────────────
 
 async function handleCreate(args: { channel?: string; name?: string; avatar_url?: string; guild_id?: string }) {
-  if (!args.channel) return { content: [{ type: 'text' as const, text: 'channel is required for create action.' }] };
-  if (!args.name) return { content: [{ type: 'text' as const, text: 'name is required for create action.' }] };
+  if (!args.channel) return text('channel is required for create action.');
+  if (!args.name) return text('name is required for create action.');
 
   let channelId = args.channel;
   if (!/^\d{17,20}$/.test(channelId)) {
     const resolved = await discord.resolveGuildId(args.guild_id);
-    if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+    if ('error' in resolved) return text(resolved.error);
     const ch = await discord.resolveChannel(args.channel, resolved.guildId);
-    if ('error' in ch) return { content: [{ type: 'text' as const, text: ch.error }] };
+    if ('error' in ch) return text(ch.error);
     channelId = ch.id;
   }
 
@@ -46,16 +47,16 @@ async function handleCreate(args: { channel?: string; name?: string; avatar_url?
   // Note: avatar in create expects base64 data URI, not URL. avatar_url is for execute override.
 
   const res = await discord.createWebhook(channelId, data);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const wh = res.data as { id: string; name: string; token: string; channel_id: string };
-  return { content: [{ type: 'text' as const, text: `Created webhook "${wh.name}" (${wh.id}) in <#${wh.channel_id}>.\nToken: ${wh.token}\nURL: https://discord.com/api/webhooks/${wh.id}/${wh.token}` }] };
+  return text(`Created webhook "${wh.name}" (${wh.id}) in <#${wh.channel_id}>.\nToken: ${wh.token}\nURL: https://discord.com/api/webhooks/${wh.id}/${wh.token}`);
 }
 
 // ── Edit ───────────────────────────────────────────────────────
 
 async function handleEdit(args: { webhook_id?: string; name?: string; channel?: string; guild_id?: string }) {
-  if (!args.webhook_id) return { content: [{ type: 'text' as const, text: 'webhook_id is required for edit action.' }] };
+  if (!args.webhook_id) return text('webhook_id is required for edit action.');
 
   const data: Record<string, unknown> = {};
   if (args.name) data.name = args.name;
@@ -64,29 +65,29 @@ async function handleEdit(args: { webhook_id?: string; name?: string; channel?: 
     let channelId = args.channel;
     if (!/^\d{17,20}$/.test(channelId)) {
       const resolved = await discord.resolveGuildId(args.guild_id);
-      if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+      if ('error' in resolved) return text(resolved.error);
       const ch = await discord.resolveChannel(args.channel, resolved.guildId);
-      if ('error' in ch) return { content: [{ type: 'text' as const, text: ch.error }] };
+      if ('error' in ch) return text(ch.error);
       channelId = ch.id;
     }
     data.channel_id = channelId;
   }
 
   const res = await discord.editWebhook(args.webhook_id, data);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Updated webhook ${args.webhook_id}.` }] };
+  return text(`Updated webhook ${args.webhook_id}.`);
 }
 
 // ── Delete ─────────────────────────────────────────────────────
 
 async function handleDelete(args: { webhook_id?: string }) {
-  if (!args.webhook_id) return { content: [{ type: 'text' as const, text: 'webhook_id is required for delete action.' }] };
+  if (!args.webhook_id) return text('webhook_id is required for delete action.');
 
   const res = await discord.deleteWebhook(args.webhook_id);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Deleted webhook ${args.webhook_id}.` }] };
+  return text(`Deleted webhook ${args.webhook_id}.`);
 }
 
 // ── List ───────────────────────────────────────────────────────
@@ -98,23 +99,23 @@ async function handleList(args: { channel?: string; guild_id?: string }) {
     let channelId = args.channel;
     if (!/^\d{17,20}$/.test(channelId)) {
       const resolved = await discord.resolveGuildId(args.guild_id);
-      if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+      if ('error' in resolved) return text(resolved.error);
       const ch = await discord.resolveChannel(args.channel, resolved.guildId);
-      if ('error' in ch) return { content: [{ type: 'text' as const, text: ch.error }] };
+      if ('error' in ch) return text(ch.error);
       channelId = ch.id;
     }
     res = await discord.listChannelWebhooks(channelId);
   } else {
     const resolved = await discord.resolveGuildId(args.guild_id);
-    if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+    if ('error' in resolved) return text(resolved.error);
     res = await discord.listGuildWebhooks(resolved.guildId);
   }
 
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const webhooks = res.data as { id: string; name: string; channel_id: string; token?: string; type: number }[];
   if (!webhooks || webhooks.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No webhooks found.' }] };
+    return text('No webhooks found.');
   }
 
   const typeNames: Record<number, string> = { 1: 'Incoming', 2: 'Channel Follower', 3: 'Application' };
@@ -123,7 +124,7 @@ async function handleList(args: { channel?: string; guild_id?: string }) {
     return `  ${wh.name} (${wh.id}, ${type}) in <#${wh.channel_id}>${wh.token ? `\n    URL: https://discord.com/api/webhooks/${wh.id}/${wh.token}` : ''}`;
   });
 
-  return { content: [{ type: 'text' as const, text: `Webhooks (${webhooks.length}):\n${lines.join('\n')}` }] };
+  return text(`Webhooks (${webhooks.length}):\n${lines.join('\n')}`);
 }
 
 // ── Execute ────────────────────────────────────────────────────
@@ -133,9 +134,9 @@ async function handleExecute(args: {
   content?: string; username?: string; avatar_url?: string;
   embeds?: Record<string, unknown>[];
 }) {
-  if (!args.webhook_id) return { content: [{ type: 'text' as const, text: 'webhook_id is required for execute action.' }] };
-  if (!args.webhook_token) return { content: [{ type: 'text' as const, text: 'webhook_token is required for execute action.' }] };
-  if (!args.content && !args.embeds) return { content: [{ type: 'text' as const, text: 'content or embeds is required for execute action.' }] };
+  if (!args.webhook_id) return text('webhook_id is required for execute action.');
+  if (!args.webhook_token) return text('webhook_token is required for execute action.');
+  if (!args.content && !args.embeds) return text('content or embeds is required for execute action.');
 
   const data: Record<string, unknown> = {};
   if (args.content) data.content = args.content;
@@ -144,9 +145,9 @@ async function handleExecute(args: {
   if (args.embeds) data.embeds = args.embeds;
 
   const res = await discord.executeWebhook(args.webhook_id, args.webhook_token, data);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Webhook message sent.` }] };
+  return text(`Webhook message sent.`);
 }
 
 // ── Main dispatcher ────────────────────────────────────────────
@@ -170,6 +171,6 @@ export async function handleDiscordWebhook(args: {
     case 'list': return handleList(args);
     case 'execute': return handleExecute(args);
     default:
-      return { content: [{ type: 'text' as const, text: `Unknown action "${args.action}". Use: create, edit, delete, list, execute.` }] };
+      return text(`Unknown action "${args.action}". Use: create, edit, delete, list, execute.`);
   }
 }

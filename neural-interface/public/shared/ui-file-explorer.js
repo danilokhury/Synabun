@@ -1918,23 +1918,25 @@ function doFind(query) {
 function findNext() {
   if (_findMatches.length === 0) return;
   _findIndex = (_findIndex + 1) % _findMatches.length;
-  selectFindMatch();
+  selectFindMatch(true);
   updateFindCount();
 }
 
 function findPrev() {
   if (_findMatches.length === 0) return;
   _findIndex = (_findIndex - 1 + _findMatches.length) % _findMatches.length;
-  selectFindMatch();
+  selectFindMatch(true);
   updateFindCount();
 }
 
-function selectFindMatch() {
+function selectFindMatch(focusTextarea) {
   const textarea = $('fe-editor-textarea');
   if (!textarea || _findIndex < 0 || _findIndex >= _findMatches.length) return;
   const m = _findMatches[_findIndex];
-  textarea.focus();
-  textarea.setSelectionRange(m.start, m.end);
+  if (focusTextarea) {
+    textarea.focus();
+    textarea.setSelectionRange(m.start, m.end);
+  }
   // Scroll match into view
   const text = textarea.value.substring(0, m.start);
   const lineNum = text.split('\n').length;
@@ -1960,11 +1962,18 @@ function doReplace() {
   if (!textarea || !replaceInput || _findMatches.length === 0 || _findIndex < 0) return;
   const m = _findMatches[_findIndex];
   const replacement = replaceInput.value;
+  const savedIndex = _findIndex;
   editorReplaceRange(textarea, m.start, m.end, replacement);
   textarea.selectionStart = textarea.selectionEnd = m.start + replacement.length;
   updateEditorDirtyState();
   updateGutter();
   doFind($('fe-editor-find-input')?.value || '');
+  // Stay at same index (next match slid into this position)
+  if (_findMatches.length > 0) {
+    _findIndex = Math.min(savedIndex, _findMatches.length - 1);
+    selectFindMatch(true);
+    updateFindCount();
+  }
 }
 
 function doReplaceAll() {
@@ -1990,6 +1999,7 @@ function doReplaceAll() {
   textarea.value = parts.join('');
   updateEditorDirtyState();
   updateGutter();
+  updateHighlight();
   doFind(query);
 }
 

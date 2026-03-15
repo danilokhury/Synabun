@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as discord from '../services/discord.js';
+import { text } from './response.js';
 
 export const discordMemberSchema = {
   action: z.enum(['info', 'kick', 'ban', 'unban', 'timeout', 'nickname'] as const)
@@ -25,10 +26,10 @@ export const discordMemberDescription =
 
 async function handleInfo(guildId: string, args: { member: string }) {
   const user = await discord.resolveUser(args.member, guildId);
-  if ('error' in user) return { content: [{ type: 'text' as const, text: user.error }] };
+  if ('error' in user) return text(user.error);
 
   const res = await discord.getMember(guildId, user.id);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const m = res.data as {
     user: { id: string; username: string; global_name?: string; bot?: boolean; avatar?: string };
@@ -53,34 +54,34 @@ async function handleInfo(guildId: string, args: { member: string }) {
     timeout,
   ].filter(Boolean).join('\n');
 
-  return { content: [{ type: 'text' as const, text: lines }] };
+  return text(lines);
 }
 
 // ── Kick ───────────────────────────────────────────────────────
 
 async function handleKick(guildId: string, args: { member: string; reason?: string }) {
   const user = await discord.resolveUser(args.member, guildId);
-  if ('error' in user) return { content: [{ type: 'text' as const, text: user.error }] };
+  if ('error' in user) return text(user.error);
 
   const res = await discord.kickMember(guildId, user.id, args.reason);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Kicked ${user.name} (${user.id}).${args.reason ? ` Reason: ${args.reason}` : ''}` }] };
+  return text(`Kicked ${user.name} (${user.id}).${args.reason ? ` Reason: ${args.reason}` : ''}`);
 }
 
 // ── Ban ────────────────────────────────────────────────────────
 
 async function handleBan(guildId: string, args: { member: string; reason?: string; delete_days?: number }) {
   const user = await discord.resolveUser(args.member, guildId);
-  if ('error' in user) return { content: [{ type: 'text' as const, text: user.error }] };
+  if ('error' in user) return text(user.error);
 
   const deleteSeconds = (args.delete_days || 0) * 86400;
   const res = await discord.banMember(guildId, user.id, {
     delete_message_seconds: deleteSeconds,
   });
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Banned ${user.name} (${user.id}).${args.reason ? ` Reason: ${args.reason}` : ''}` }] };
+  return text(`Banned ${user.name} (${user.id}).${args.reason ? ` Reason: ${args.reason}` : ''}`);
 }
 
 // ── Unban ──────────────────────────────────────────────────────
@@ -88,45 +89,45 @@ async function handleBan(guildId: string, args: { member: string; reason?: strin
 async function handleUnban(guildId: string, args: { member: string }) {
   // For unban, member must be a user ID since they're not in the guild
   if (!/^\d{17,20}$/.test(args.member)) {
-    return { content: [{ type: 'text' as const, text: 'member must be a user ID for unban action (the user is not in the guild).' }] };
+    return text('member must be a user ID for unban action (the user is not in the guild).');
   }
 
   const res = await discord.unbanMember(guildId, args.member);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Unbanned user ${args.member}.` }] };
+  return text(`Unbanned user ${args.member}.`);
 }
 
 // ── Timeout ────────────────────────────────────────────────────
 
 async function handleTimeout(guildId: string, args: { member: string; duration?: number; reason?: string }) {
   if (args.duration === undefined) {
-    return { content: [{ type: 'text' as const, text: 'duration (minutes) is required for timeout action. Use 0 to remove timeout.' }] };
+    return text('duration (minutes) is required for timeout action. Use 0 to remove timeout.');
   }
 
   const user = await discord.resolveUser(args.member, guildId);
-  if ('error' in user) return { content: [{ type: 'text' as const, text: user.error }] };
+  if ('error' in user) return text(user.error);
 
   const res = await discord.timeoutMember(guildId, user.id, args.duration);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   if (args.duration === 0) {
-    return { content: [{ type: 'text' as const, text: `Removed timeout from ${user.name}.` }] };
+    return text(`Removed timeout from ${user.name}.`);
   }
-  return { content: [{ type: 'text' as const, text: `Timed out ${user.name} for ${args.duration} minutes.${args.reason ? ` Reason: ${args.reason}` : ''}` }] };
+  return text(`Timed out ${user.name} for ${args.duration} minutes.${args.reason ? ` Reason: ${args.reason}` : ''}`);
 }
 
 // ── Nickname ───────────────────────────────────────────────────
 
 async function handleNickname(guildId: string, args: { member: string; nickname?: string }) {
   const user = await discord.resolveUser(args.member, guildId);
-  if ('error' in user) return { content: [{ type: 'text' as const, text: user.error }] };
+  if ('error' in user) return text(user.error);
 
   const nick = args.nickname === '' ? null : (args.nickname || null);
   const res = await discord.setNickname(guildId, user.id, nick);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: nick ? `Set nickname of ${user.name} to "${nick}".` : `Reset nickname of ${user.name}.` }] };
+  return text(nick ? `Set nickname of ${user.name} to "${nick}".` : `Reset nickname of ${user.name}.`);
 }
 
 // ── Main dispatcher ────────────────────────────────────────────
@@ -141,7 +142,7 @@ export async function handleDiscordMember(args: {
   delete_days?: number;
 }) {
   const resolved = await discord.resolveGuildId(args.guild_id);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
   const guildId = resolved.guildId;
 
   switch (args.action) {
@@ -152,6 +153,6 @@ export async function handleDiscordMember(args: {
     case 'timeout': return handleTimeout(guildId, args);
     case 'nickname': return handleNickname(guildId, args);
     default:
-      return { content: [{ type: 'text' as const, text: `Unknown action "${args.action}". Use: info, kick, ban, unban, timeout, nickname.` }] };
+      return text(`Unknown action "${args.action}". Use: info, kick, ban, unban, timeout, nickname.`);
   }
 }
