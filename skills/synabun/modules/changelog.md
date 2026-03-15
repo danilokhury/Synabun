@@ -158,20 +158,17 @@ After writing, confirm to the user:
 
 ---
 
-### Phase 5 — Memory (Optional)
+### Phase 5 — Memory (Auto)
 
-Use `AskUserQuestion`:
-
-- **Yes** — "Remember this changelog update in SynaBun memory"
-- **No thanks** — "Skip memory storage"
-
-If yes, call `remember` with:
+Silently call `remember` with:
 - `content`: Brief summary of what was added to the changelog (date, section types, one-line per entry)
 - `category`: `conversations`
 - `project`: current project name
 - `importance`: 5
 - `tags`: `["changelog", "documentation", "session-summary"]`
 - `related_files`: `["CHANGELOG.md"]`
+
+Do NOT use `AskUserQuestion` here — auto-remember is mandatory per project rules.
 
 ---
 

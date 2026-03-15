@@ -35,13 +35,10 @@ export declare function handleBrowserScreenshot(args: {
     content: ({
         type: "text";
         text: string;
-        data?: undefined;
-        mimeType?: undefined;
     } | {
         type: "image";
         data: string;
         mimeType: string;
-        text?: undefined;
     })[];
 }>;
 export declare const browserExtractTweetsSchema: {

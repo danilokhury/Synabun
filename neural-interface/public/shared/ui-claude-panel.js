@@ -4,10 +4,96 @@
 // ═══════════════════════════════════════════
 
 import { storage } from './storage.js';
-import { emit } from './state.js';
-import { fetchClaudeSessions } from './api.js';
+import { emit, on } from './state.js';
+import { fetchClaudeSessions, fetchBrowserSessions } from './api.js';
 
 const CLAUDE_ICON = '<svg fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
+
+// ── Tool SVG icons (16x16 viewBox, stroke-based) ──
+const TOOL_ICONS = {
+  Read: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h8.5v13H4a1.5 1.5 0 01-1.5-1.5V3A1.5 1.5 0 014 1.5z"/><path d="M5.5 5h5M5.5 7.5h3"/></svg>',
+  Edit: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5l4 4L5 15H1v-4z"/><path d="M8 4l4 4"/></svg>',
+  Write: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5H4A1.5 1.5 0 002.5 3v10A1.5 1.5 0 004 14.5h8a1.5 1.5 0 001.5-1.5V6z"/><path d="M9 1.5V6h4.5"/></svg>',
+  Bash: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2" width="13" height="12" rx="2"/><path d="M4.5 6l2.5 2-2.5 2M8.5 10h3"/></svg>',
+  Glob: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3.5h4l1.5 1.5H14v8.5H2z"/><circle cx="9" cy="9" r="2.5"/><path d="M11 11l2 2"/></svg>',
+  Grep: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/><path d="M5 7h4"/></svg>',
+  Agent: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1l2 3.5H6L8 1z"/><circle cx="8" cy="9" r="3.5"/><path d="M6 8.5l1.5 1.5L10 7.5"/></svg>',
+  WebSearch: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="3" ry="6"/><path d="M2 8h12M2.5 5h11M2.5 11h11"/></svg>',
+  WebFetch: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v9M5 8l3 3 3-3"/><path d="M2.5 12v1.5h11V12"/></svg>',
+  TodoWrite: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4l1.5 1.5L7 3M3 8.5l1.5 1.5L7 7.5M3 13l1.5 1.5L7 12"/><path d="M9 4.5h4.5M9 9h4.5M9 13.5h4.5"/></svg>',
+  Skill: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2l-3 12M11 2L8 14"/></svg>',
+  NotebookEdit: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="1.5" width="10" height="13" rx="1.5"/><path d="M1 4h2M1 8h2M1 12h2M6 5h4M6 8h2"/></svg>',
+};
+const TOOL_ICON_DEFAULT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg>';
+const TOOL_ICON_MCP = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="8" r="2.5"/><circle cx="10.5" cy="8" r="2.5"/><path d="M8 8h0"/></svg>';
+const THINKING_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 14c0-1.5 1-2 1-3.5a2.5 2.5 0 115 0c0 1.5 1 2 1 3.5"/><path d="M6.5 14h4M7 15h3"/><path d="M8.5 6V4M5.3 7.2L3.8 5.7M11.7 7.2l1.5-1.5M4 10H2m12 0h-2"/></svg>';
+const ICON_CHECK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5 6.5-7"/></svg>';
+const ICON_X = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+
+// ── SynaBun MCP tool registry ──
+const SYNABUN_PREFIX = 'mcp__SynaBun__';
+function isSynaBunTool(name) { return name?.startsWith(SYNABUN_PREFIX); }
+function synaBunToolKey(name) { return name?.replace(SYNABUN_PREFIX, '') || ''; }
+
+const SB_ICON_RECALL = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2C5.2 2 3 4.2 3 7c0 1.8 1 3.4 2.4 4.2V13h5.2v-1.8C12 10.4 13 8.8 13 7c0-2.8-2.2-5-5-5z"/><path d="M6 13.5h4M6.5 15h3"/><circle cx="11.5" cy="4" r="2.5"/><path d="M10.5 4h2M11.5 3v2"/></svg>';
+const SB_ICON_REMEMBER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2C5.2 2 3 4.2 3 7c0 1.8 1 3.4 2.4 4.2V13h5.2v-1.8C12 10.4 13 8.8 13 7c0-2.8-2.2-5-5-5z"/><path d="M6 13.5h4M6.5 15h3"/><path d="M7 6.5h2M8 5.5v2"/></svg>';
+const SB_ICON_REFLECT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2C5.2 2 3 4.2 3 7c0 1.8 1 3.4 2.4 4.2V13h5.2v-1.8C12 10.4 13 8.8 13 7c0-2.8-2.2-5-5-5z"/><path d="M6 13.5h4M6.5 15h3"/><path d="M6.5 6a2.5 2.5 0 013 0M9.5 8a2.5 2.5 0 01-3 0"/></svg>';
+const SB_ICON_FORGET = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2C5.2 2 3 4.2 3 7c0 1.8 1 3.4 2.4 4.2V13h5.2v-1.8C12 10.4 13 8.8 13 7c0-2.8-2.2-5-5-5z"/><path d="M6 13.5h4M6.5 15h3"/><path d="M6.5 6l3 3M9.5 6l-3 3"/></svg>';
+const SB_ICON_RESTORE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2C5.2 2 3 4.2 3 7c0 1.8 1 3.4 2.4 4.2V13h5.2v-1.8C12 10.4 13 8.8 13 7c0-2.8-2.2-5-5-5z"/><path d="M6 13.5h4M6.5 15h3"/><path d="M6 7.5l2-2 2 2"/></svg>';
+const SB_ICON_MEMORIES = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="10" height="4" rx="1"/><rect x="3" y="7" width="10" height="4" rx="1"/><path d="M5 13h6"/></svg>';
+const SB_ICON_SYNC = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8a5.5 5.5 0 019.2-4M13.5 8a5.5 5.5 0 01-9.2 4"/><path d="M11.5 2v2.5H14M4.5 14v-2.5H2"/></svg>';
+const SB_ICON_CATEGORY = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10M6 7.5h7M6 11h7M3 7.5h1M3 11h1"/></svg>';
+const SB_ICON_BROWSER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2a10 10 0 013 6 10 10 0 01-3 6M8 2a10 10 0 00-3 6 10 10 0 003 6"/></svg>';
+const SB_ICON_DISCORD = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3C4 3.5 3 4.5 2.5 5.5c0 0-.5 2 0 4.5.8 1 2 1.8 3 2l.5-1.2M10.5 3c1.5.5 2.5 1.5 3 2.5 0 0 .5 2 0 4.5-.8 1-2 1.8-3 2l-.5-1.2"/><circle cx="6" cy="8.5" r="1"/><circle cx="10" cy="8.5" r="1"/></svg>';
+const SB_ICON_WHITEBOARD = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="10" rx="1.5"/><path d="M5 14h6M8 12v2"/><path d="M5 6l2 2-2 2"/><path d="M8.5 10h3"/></svg>';
+const SB_ICON_CARD = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 6h12"/><circle cx="4.5" cy="4.5" r="0.5" fill="currentColor"/><circle cx="6.5" cy="4.5" r="0.5" fill="currentColor"/></svg>';
+const SB_ICON_GIT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="3.5" r="1.5"/><circle cx="5" cy="12.5" r="1.5"/><circle cx="11" cy="12.5" r="1.5"/><path d="M8 5v3M8 8c0 2-3 2.5-3 3M8 8c0 2 3 2.5 3 3"/></svg>';
+const SB_ICON_LOOP = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8c0-2 1.5-3.5 3.5-3.5s3 1.5 3 3.5-1.5 3.5-3.5 3.5"/><path d="M14 8c0 2-1.5 3.5-3.5 3.5S7.5 10 7.5 8 9 4.5 11 4.5"/></svg>';
+const SB_ICON_TICTACTOE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 2v12M10.5 2v12M2 5.5h12M2 10.5h12"/><path d="M3.5 3.5l1.5 1.5M5 3.5L3.5 5"/><circle cx="8" cy="8" r="1.2"/></svg>';
+
+const SYNABUN_TOOLS = {
+  recall:    { label: 'Recall',    group: 'memory', icon: SB_ICON_RECALL,    detailFn: i => (i.query || '').slice(0, 50) },
+  remember:  { label: 'Remember',  group: 'memory', icon: SB_ICON_REMEMBER,  detailFn: i => ((i.category ? i.category + ': ' : '') + (i.content || '')).slice(0, 50) },
+  reflect:   { label: 'Reflect',   group: 'memory', icon: SB_ICON_REFLECT,   detailFn: i => 'Update ' + (i.memory_id || '').slice(0, 8) },
+  forget:    { label: 'Forget',    group: 'memory', icon: SB_ICON_FORGET,    detailFn: i => (i.memory_id || '').slice(0, 8) },
+  restore:   { label: 'Restore',   group: 'memory', icon: SB_ICON_RESTORE,   detailFn: i => (i.memory_id || '').slice(0, 8) },
+  memories:  { label: 'Memories',  group: 'memory', icon: SB_ICON_MEMORIES,  detailFn: i => i.action || '' },
+  sync:      { label: 'Sync',      group: 'memory', icon: SB_ICON_SYNC,      detailFn: () => 'Check stale' },
+  category:  { label: 'Category',  group: 'memory', icon: SB_ICON_CATEGORY,  detailFn: i => (i.action || '') + (i.name ? ': ' + i.name : '') },
+  git:       { label: 'Git',       group: 'dev',    icon: SB_ICON_GIT,       detailFn: i => i.action || '' },
+  loop:      { label: 'Loop',      group: 'system', icon: SB_ICON_LOOP,      detailFn: i => i.action || '' },
+  tictactoe: { label: 'Tic-Tac-Toe', group: 'fun',  icon: SB_ICON_TICTACTOE, detailFn: i => i.action || '' },
+};
+const SYNABUN_GROUPS = {
+  browser:    { label: 'Browser',    group: 'browser',    icon: SB_ICON_BROWSER,    detailFn: i => i.url || i.selector || i.text || '' },
+  discord:    { label: 'Discord',    group: 'discord',    icon: SB_ICON_DISCORD,    detailFn: i => i.action || i.channel_id || '' },
+  whiteboard: { label: 'Whiteboard', group: 'whiteboard', icon: SB_ICON_WHITEBOARD, detailFn: i => i.id || '' },
+  card:       { label: 'Card',       group: 'card',       icon: SB_ICON_CARD,       detailFn: i => i.card_id || '' },
+  browser_extract: { label: 'Extract', group: 'browser', icon: SB_ICON_BROWSER, detailFn: i => i.url || i.selector || '' },
+};
+
+function getSynaBunMeta(name) {
+  const key = synaBunToolKey(name);
+  if (SYNABUN_TOOLS[key]) return SYNABUN_TOOLS[key];
+  for (const [prefix, meta] of Object.entries(SYNABUN_GROUPS)) {
+    if (key.startsWith(prefix + '_') || key === prefix) {
+      const action = key.slice(prefix.length + 1) || '';
+      const actionLabel = action.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      return { ...meta, label: actionLabel ? `${meta.label}: ${actionLabel}` : meta.label };
+    }
+  }
+  return null;
+}
+
+function toolIconSvg(name) {
+  if (TOOL_ICONS[name]) return TOOL_ICONS[name];
+  if (isSynaBunTool(name)) {
+    const meta = getSynaBunMeta(name);
+    if (meta) return meta.icon;
+  }
+  if (name?.startsWith('mcp__')) return TOOL_ICON_MCP;
+  return TOOL_ICON_DEFAULT;
+}
 
 let _panel = null;
 let _visible = false;
@@ -16,11 +102,18 @@ let _projects = [];
 let _models = [];
 let _skillsCache = null;    // cached skills list for slash command hints
 
+// ── Window identity (per browser tab — sessionStorage is NOT shared across windows) ──
+const _windowId = sessionStorage.getItem('cp-window-id') || (() => { const id = crypto.randomUUID(); sessionStorage.setItem('cp-window-id', id); return id; })();
+
 // ── Multi-session tab system ──
 let _tabs = [];           // TabState[]
 let _activeTabIdx = -1;
 const MAX_TABS = 5;
 function activeTab() { return _tabs[_activeTabIdx] || null; }
+
+// ── Browser embed state ──
+let _browserEmbed = null;   // { sessionId, ws, canvas, ctx, urlBar, container }
+let _browserEmbedVisible = false;
 
 // Marked.js (lazy loaded)
 let _marked = null;
@@ -45,9 +138,11 @@ const STOR = {
   session: 'synabun-claude-panel-session',
   project: 'synabun-claude-panel-project',
   model: 'synabun-claude-panel-model',
-  tabs: 'synabun-claude-panel-tabs',
+  tabs: `synabun-claude-panel-tabs-${_windowId}`,  // window-scoped
+  tabsLegacy: 'synabun-claude-panel-tabs',          // old global key (migration)
   effort: 'synabun-claude-panel-effort',
   autoAccept: 'synabun-claude-panel-autoaccept',
+  windowRegistry: 'synabun-claude-panel-windows',   // JSON map of windowId → lastSeen timestamp
 };
 
 const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
@@ -89,36 +184,50 @@ function buildPanel() {
       <div class="cp-session-menu" id="cp-session-menu"></div>
     </div>
     <div class="cp-context-bar" id="cp-context-bar">
-      <div class="cp-gauge" id="cp-gauge"></div>
-      <span class="cp-gauge-label" id="cp-gauge-label"></span>
+      <div class="cp-gauge" id="cp-gauge">
+        <span class="cp-gauge-label" id="cp-gauge-label"></span>
+      </div>
       <button class="cp-compact-btn" id="cp-compact-btn" title="Compress conversation context to free up space">compact</button>
     </div>
     <div class="cp-messages-container" id="cp-messages-container"></div>
+    <div class="cp-browser-embed" id="cp-browser-embed">
+      <div class="cp-browser-toolbar">
+        <div class="cp-browser-nav">
+          <button class="cp-browser-nav-btn cp-browser-back" title="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg></button>
+          <button class="cp-browser-nav-btn cp-browser-fwd" title="Forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button>
+          <button class="cp-browser-nav-btn cp-browser-reload" title="Reload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+        </div>
+        <div class="cp-browser-url-wrap"><input class="cp-browser-url" type="text" spellcheck="false" autocomplete="off" placeholder="URL"></div>
+        <button class="cp-browser-detach" title="Detach to floating window"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></button>
+        <button class="cp-browser-close-embed" title="Close browser view">&times;</button>
+      </div>
+      <div class="cp-browser-canvas-wrap"><canvas class="cp-browser-canvas" width="1280" height="800"></canvas></div>
+    </div>
     <div class="cp-bottom">
-      <div class="cp-image-preview" id="cp-image-preview"></div>
       <div class="cp-input-area">
         <div class="cp-input-wrap">
+          <div class="cp-image-preview" id="cp-image-preview"></div>
           <div class="cp-input-inner">
-            <button class="cp-attach" id="cp-attach" title="Attach file">
-              <svg viewBox="0 0 24 24" width="14" height="14"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.49" fill="none" stroke="currentColor" stroke-width="2"/></svg>
-              <span class="cp-attach-badge" hidden></span>
-            </button>
             <textarea class="cp-input" id="cp-input" placeholder="Message SynaBun..." rows="1" autocomplete="off" spellcheck="false"></textarea>
             <div class="cp-slash-hints" id="cp-slash-hints"></div>
-            <button class="cp-send" id="cp-send" disabled><svg viewBox="0 0 24 24"><path d="M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M12 5l7 7-7 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg></button>
+            <button class="cp-send" id="cp-send" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
           </div>
         </div>
       </div>
       <div class="cp-toolbar">
         <div class="cp-toolbar-left">
           <img class="cp-brand" src="favicon-32x32.png" alt="S">
+          <button class="cp-attach" id="cp-attach" title="Attach file">
+            <svg viewBox="0 0 24 24" width="13" height="13"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.49" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            <span class="cp-attach-badge" hidden></span>
+          </button>
           <div class="cp-dropdown" id="cp-project" data-placeholder="project..."><span class="cp-dd-label">project...</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
           <div class="cp-dropdown cp-dropdown-sm" id="cp-branch" data-placeholder="branch"><span class="cp-dd-label">branch</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
         </div>
         <div class="cp-toolbar-right">
           <button class="cp-think-toggle" id="cp-think-toggle" data-effort="off" data-tooltip="Extended thinking off — click to enable"><span class="cp-think-icon"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L4 9h4l-1 5.5L12 7H8l1-5.5z"/></svg></span><span class="cp-think-label">Think</span><span class="cp-think-dots"></span></button>
-          <button class="cp-plan-toggle" id="cp-plan-toggle" data-tooltip="Toggle plan mode — think without acting">Plan</button>
-          <button class="cp-auto-toggle" id="cp-auto-toggle" data-tooltip="Auto-accept all tool permissions">Auto</button>
+          <button class="cp-plan-toggle" id="cp-plan-toggle" data-tooltip="Toggle plan mode — think without acting"><svg class="cp-toggle-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12M2 7h8M2 11h10M2 15h6"/></svg><span>Plan</span></button>
+          <button class="cp-auto-toggle" id="cp-auto-toggle" data-tooltip="Auto-accept all tool permissions"><svg class="cp-toggle-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5 6.5-7"/></svg><span>Auto</span></button>
           <div class="cp-dropdown cp-dropdown-sm" id="cp-model" data-placeholder="model"><span class="cp-dd-label">model</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
           <span class="cp-cost" id="cp-cost">$0.00</span>
         </div>
@@ -195,6 +304,98 @@ function injectStyles() {
     .cp-messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
     .cp-messages::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
 
+    /* ── Browser embed (live screencast inside panel) ── */
+    .cp-browser-embed {
+      display: none;
+      flex-direction: column;
+      margin: 6px 8px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      background: rgba(0,0,0,0.3);
+      overflow: hidden;
+    }
+    .cp-browser-embed.active {
+      display: flex;
+      flex-shrink: 0;
+    }
+    .cp-browser-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      background: rgba(0,0,0,0.35);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      border-radius: 10px 10px 0 0;
+      flex-shrink: 0;
+      height: 30px;
+    }
+    .cp-browser-nav {
+      display: flex;
+      gap: 1px;
+    }
+    .cp-browser-nav-btn {
+      background: none; border: none; color: rgba(255,255,255,0.4);
+      cursor: pointer; padding: 2px; width: 20px; height: 20px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 4px;
+    }
+    .cp-browser-nav-btn:hover { color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.06); }
+    .cp-browser-nav-btn svg { width: 12px; height: 12px; }
+    .cp-browser-url-wrap {
+      flex: 1; min-width: 0;
+    }
+    .cp-browser-url {
+      width: 100%;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 4px;
+      color: rgba(255,255,255,0.6);
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      padding: 2px 6px;
+      height: 20px;
+      outline: none;
+    }
+    .cp-browser-url:focus {
+      border-color: rgba(255,255,255,0.15);
+      color: rgba(255,255,255,0.8);
+    }
+    .cp-browser-detach, .cp-browser-close-embed {
+      background: none; border: none; color: rgba(255,255,255,0.35);
+      cursor: pointer; padding: 2px; width: 20px; height: 20px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 4px; font-size: 14px; line-height: 1;
+    }
+    .cp-browser-detach:hover, .cp-browser-close-embed:hover {
+      color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.06);
+    }
+    .cp-browser-detach svg { width: 12px; height: 12px; }
+    .cp-browser-canvas-wrap {
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      overflow: hidden;
+      position: relative;
+      background: #0a0a0a;
+    }
+    .cp-browser-canvas {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      cursor: pointer;
+    }
+    .cp-browser-canvas:focus {
+      outline: 1px solid rgba(255,255,255,0.1);
+      outline-offset: -1px;
+    }
+    @keyframes cp-browser-slide-in {
+      0% { opacity: 0; max-height: 0; }
+      100% { opacity: 1; max-height: 50vh; }
+    }
+    .cp-browser-embed.cp-browser-enter {
+      animation: cp-browser-slide-in 0.3s cubic-bezier(0.2, 0, 0.2, 1) forwards;
+    }
+
     /* ── User messages ── */
     .cp-messages .msg { padding: 3px 14px; }
     .cp-messages .msg-user { display: flex; justify-content: flex-end; padding: 10px 14px 4px; }
@@ -249,6 +450,35 @@ function injectStyles() {
     .cp-messages .msg-body a:hover { text-decoration: underline; }
     .cp-messages .msg-body strong { color: var(--t-bright); }
     .cp-messages .msg-body ul, .cp-messages .msg-body ol { padding-left: 1.3em; margin: 0.3em 0; }
+    .cp-messages .msg-body ul { list-style: none; }
+    .cp-messages .msg-body ul li { position: relative; }
+    .cp-messages .msg-body ul li::before {
+      content: ''; position: absolute; left: -1em; top: 0.6em;
+      width: 4px; height: 4px; border-radius: 50%;
+      background: rgba(255,255,255,0.2);
+    }
+    .cp-messages .msg-body ol li { color: var(--t-primary); }
+    .cp-messages .msg-body ol li::marker { color: var(--t-faint); font-size: 11px; }
+    .cp-messages .msg-body blockquote {
+      margin: 0.5em 0; padding: 4px 0 4px 12px;
+      border-left: 2px solid rgba(200,160,80,0.3);
+      color: var(--t-secondary); font-style: italic;
+    }
+    .cp-messages .msg-body hr {
+      border: none; height: 1px; margin: 0.8em 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08) 20%, rgba(255,255,255,0.08) 80%, transparent);
+    }
+    .cp-messages .msg-body table {
+      width: 100%; border-collapse: collapse; margin: 0.5em 0; font-size: 11px;
+    }
+    .cp-messages .msg-body th {
+      text-align: left; padding: 4px 8px; font-weight: 600; color: var(--t-bright);
+      background: rgba(255,255,255,0.04); border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .cp-messages .msg-body td {
+      padding: 3px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); color: var(--t-primary);
+    }
+    .cp-messages .msg-body tr:hover td { background: rgba(255,255,255,0.02); }
 
     /* ── Tool cards ── */
     .cp-messages .tool-card {
@@ -266,9 +496,9 @@ function injectStyles() {
     .cp-messages .tool-hdr:hover { background: var(--s-hover); }
     .cp-messages .tool-icon {
       width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
-      font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700;
       color: var(--t-primary); background: var(--s-light); border-radius: 5px;
     }
+    .cp-messages .tool-icon svg { width: 12px; height: 12px; }
     .cp-messages .tool-name { font-family: 'JetBrains Mono', monospace; color: var(--t-primary); font-weight: 600; font-size: 10.5px; }
     .cp-messages .tool-detail { font-family: 'JetBrains Mono', monospace; color: var(--t-faint); font-size: 10px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cp-messages .tool-chevron { color: var(--t-faint); font-size: 13px; transition: transform 0.2s; }
@@ -278,37 +508,102 @@ function injectStyles() {
     .cp-messages .tool-section-label { font-size: 8.5px; color: var(--t-faint); padding: 5px 10px 2px; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 700; }
     .cp-messages .tool-section { padding: 4px 10px 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--t-muted); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; margin: 0; background: none; border: none; }
 
+    /* ── SynaBun branded tool cards ── */
+    .cp-messages .synabun-card { border-color: rgba(255,195,0,0.15); background: rgba(255,195,0,0.025); }
+    .cp-messages .synabun-card:hover { border-color: rgba(255,195,0,0.25); }
+    .cp-messages .synabun-card.tool-ok { border-left: 3px solid rgba(255,195,0,0.5); }
+    .cp-messages .synabun-card.tool-error { border-left: 3px solid rgba(255,82,82,0.5); }
+    .cp-messages .synabun-icon { background: rgba(255,195,0,0.10); color: rgba(255,210,60,0.85); }
+    .cp-messages .synabun-name { color: rgba(255,210,60,0.85); }
+    .cp-messages .synabun-section-label { color: rgba(255,195,0,0.45) !important; }
+    .cp-messages .synabun-input { white-space: normal !important; word-break: normal !important; }
+    .synabun-kv { padding: 2px 0; display: flex; gap: 6px; align-items: baseline; font-size: 10px; line-height: 1.4; font-family: 'JetBrains Mono', monospace; color: var(--t-muted); }
+    .synabun-kv-key { color: rgba(255,210,60,0.55); font-weight: 600; flex-shrink: 0; min-width: 55px; }
+    .synabun-kv-key::after { content: ':'; }
+    .synabun-tag { display: inline-block; background: rgba(255,195,0,0.08); border: 1px solid rgba(255,195,0,0.15); border-radius: 3px; padding: 0 4px; font-size: 9px; color: rgba(255,210,60,0.7); margin-right: 3px; }
+    .synabun-value { color: rgba(255,210,60,0.8); font-weight: 600; }
+    .cp-messages .synabun-result { white-space: normal !important; word-break: normal !important; max-height: 400px !important; }
+    .synabun-recall-results { display: flex; flex-direction: column; gap: 6px; }
+    .synabun-recall-header { font-size: 9px; color: rgba(255,210,60,0.5); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding-bottom: 4px; border-bottom: 1px solid rgba(255,195,0,0.08); font-family: 'JetBrains Mono', monospace; }
+    .synabun-memory-card { background: rgba(255,195,0,0.03); border: 1px solid rgba(255,195,0,0.08); border-radius: 6px; padding: 6px 8px; transition: border-color 0.15s; }
+    .synabun-memory-card:hover { border-color: rgba(255,195,0,0.2); }
+    .synabun-mem-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+    .synabun-mem-score { background: rgba(255,195,0,0.12); color: rgba(255,210,60,0.9); font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; flex-shrink: 0; }
+    .synabun-mem-imp { font-size: 8px; color: rgba(255,195,0,0.4); font-family: 'JetBrains Mono', monospace; flex-shrink: 0; }
+    .synabun-mem-cat { font-size: 9px; color: var(--t-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'JetBrains Mono', monospace; }
+    .synabun-mem-age { font-size: 8.5px; color: var(--t-faint); flex-shrink: 0; font-family: 'JetBrains Mono', monospace; }
+    .synabun-mem-tags { display: flex; gap: 3px; flex-wrap: wrap; margin: 3px 0; }
+    .synabun-mem-content { font-size: 10px; color: var(--t-primary); line-height: 1.4; white-space: pre-wrap; word-break: break-word; max-height: 60px; overflow: hidden; mask-image: linear-gradient(to bottom, #fff 75%, transparent 100%); -webkit-mask-image: linear-gradient(to bottom, #fff 75%, transparent 100%); }
+    .synabun-mem-id { font-size: 8px; color: var(--t-faint); font-family: 'JetBrains Mono', monospace; margin-top: 3px; opacity: 0.5; }
+    .synabun-mem-files { font-size: 9px; color: var(--t-faint); margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
+    .synabun-confirmation { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; }
+    .synabun-confirm-icon { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: rgba(255,195,0,0.10); color: rgba(255,210,60,0.8); }
+    .synabun-confirm-icon svg { width: 11px; height: 11px; }
+    .synabun-confirm-body { flex: 1; font-size: 10px; color: var(--t-primary); line-height: 1.5; font-family: 'JetBrains Mono', monospace; }
+    .synabun-confirm-action { font-size: 9px; color: rgba(255,210,60,0.55); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 2px; }
+    .synabun-result-pre { margin: 0; background: none; border: none; white-space: pre-wrap; word-break: break-all; font-size: 10px; color: var(--t-muted); font-family: 'JetBrains Mono', monospace; }
+    .synabun-stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+    .synabun-stats-label { color: var(--t-faint); }
+    .synabun-stats-value { color: rgba(255,210,60,0.8); font-weight: 600; }
+    .perm-card.synabun-perm.active-perm { border-color: rgba(255,195,0,0.3); background: rgba(255,195,0,0.04); }
+    .synabun-perm .perm-header { color: rgba(255,210,60,0.7); }
+    .synabun-perm .perm-tool-icon { background: rgba(255,195,0,0.10); color: rgba(255,210,60,0.85); }
+    .synabun-summary { color: rgba(255,195,0,0.35) !important; }
+
     /* ── AskUserQuestion interactive cards ── */
     .ask-card {
-      background: rgba(255,255,255,0.03);
+      background: rgba(255,255,255,0.025);
       border: 1px solid rgba(100,160,255,0.12);
       border-radius: 10px; padding: 10px 12px;
       margin-top: 6px;
     }
     .ask-header {
-      font-size: 10px; font-weight: 700; color: rgba(100,160,255,0.7);
-      text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+      font-size: 9px; font-weight: 700; color: rgba(100,160,255,0.6);
+      text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .ask-header::before {
+      content: '';
+      display: inline-block; width: 14px; height: 14px;
+      background: url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' fill='none' stroke='rgba(100,160,255,0.6)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='8' cy='8' r='6'/%3E%3Cpath d='M6 6.5a2 2 0 013.5 1.5c0 1-1.5 1.5-1.5 1.5'/%3E%3Cpath d='M8 11.5h0'/%3E%3C/svg%3E") no-repeat center;
+      flex-shrink: 0;
     }
     .ask-question {
-      font-size: 12px; color: rgba(255,255,255,0.8); margin-bottom: 8px; line-height: 1.4;
+      font-size: 12px; color: rgba(255,255,255,0.8); margin-bottom: 8px; line-height: 1.45;
     }
     .ask-options { display: flex; flex-direction: column; gap: 4px; }
     .ask-option {
-      display: flex; flex-direction: column; gap: 1px;
+      display: flex; align-items: flex-start; gap: 8px;
       padding: 7px 10px; border-radius: 8px; cursor: pointer;
-      background: rgba(255,255,255,0.04);
+      background: rgba(255,255,255,0.03);
       border: 1px solid rgba(255,255,255,0.06);
       text-align: left; transition: all 0.15s;
     }
+    .ask-option::before {
+      content: '';
+      width: 14px; height: 14px; flex-shrink: 0; margin-top: 1px;
+      border: 1.5px solid rgba(255,255,255,0.15); border-radius: 50%;
+      transition: all 0.15s;
+    }
     .ask-option:hover:not(:disabled) {
-      background: rgba(100,160,255,0.08);
-      border-color: rgba(100,160,255,0.2);
+      background: rgba(100,160,255,0.06);
+      border-color: rgba(100,160,255,0.18);
+    }
+    .ask-option:hover:not(:disabled)::before {
+      border-color: rgba(100,160,255,0.4);
     }
     .ask-option.selected {
-      background: rgba(100,160,255,0.12);
-      border-color: rgba(100,160,255,0.35);
+      background: rgba(100,160,255,0.10);
+      border-color: rgba(100,160,255,0.3);
     }
-    .ask-option:disabled:not(.selected) { opacity: 0.35; cursor: default; }
+    .ask-option.selected::before {
+      border-color: rgba(100,160,255,0.8);
+      background: rgba(100,160,255,0.8);
+      box-shadow: inset 0 0 0 2px rgba(14,14,18,0.85);
+    }
+    .ask-option:disabled:not(.selected) { opacity: 0.3; cursor: default; }
+    .ask-option-wrap { display: flex; flex-direction: column; gap: 1px; }
     .ask-option-label {
       font-size: 11.5px; font-weight: 600; color: rgba(255,255,255,0.85);
     }
@@ -316,8 +611,36 @@ function injectStyles() {
       font-size: 10px; color: rgba(255,255,255,0.35); line-height: 1.3;
     }
     .ask-hint {
-      font-size: 10px; color: rgba(100,160,255,0.5);
+      font-size: 10px; color: rgba(100,160,255,0.45);
       font-family: 'JetBrains Mono', monospace; font-style: italic;
+    }
+
+    /* ── SynaBun-branded ask card ── */
+    .ask-card.synabun-ask { position: relative; overflow: hidden; }
+    .ask-card.synabun-ask .ask-header,
+    .ask-card.synabun-ask .ask-question,
+    .ask-card.synabun-ask .ask-options,
+    .ask-card.synabun-ask .ask-hint { position: relative; z-index: 1; }
+    .synabun-ask-bg-logo {
+      position: absolute;
+      right: -12px;
+      top: 50%;
+      transform: translateY(-50%) scale(0.85);
+      width: 90px;
+      opacity: 0;
+      transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+                  transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .synabun-ask-bg-logo img {
+      width: 100%;
+      height: auto;
+      opacity: 0.07;
+    }
+    .synabun-ask:hover .synabun-ask-bg-logo {
+      opacity: 1;
+      transform: translateY(-50%) scale(1);
     }
 
     /* ── Plan cards (inline rendered markdown) ── */
@@ -356,60 +679,137 @@ function injectStyles() {
       border-top: 1px solid rgba(100,200,120,0.1); padding: 8px 12px;
     }
 
-    /* ── Post-plan action buttons ── */
+    /* ── Post-plan action card ── */
+    .post-plan-card {
+      background: var(--s-subtle);
+      border: 1px solid rgba(100,200,120,0.25);
+      border-radius: 8px; padding: 8px 10px;
+      margin-top: 4px; position: relative;
+      background: rgba(100,200,120,0.04);
+      box-shadow: 0 0 16px rgba(100,200,120,0.06), 0 0 40px rgba(100,200,120,0.03);
+      transition: opacity 0.3s, border-color 0.2s;
+    }
+    .post-plan-card:hover { border-color: rgba(100,200,120,0.35); }
+    .post-plan-header {
+      font-size: 8.5px; font-weight: 700; color: rgba(100,200,120,0.7);
+      letter-spacing: 0.6px; margin-bottom: 6px;
+      font-family: 'JetBrains Mono', monospace; text-transform: uppercase;
+    }
     .post-plan-actions {
-      display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px;
-      padding: 0 36px;
+      display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
     }
     .post-plan-action {
-      padding: 5px 12px; border-radius: 16px; cursor: pointer;
-      font-size: 11px; font-weight: 600; border: 1px solid rgba(100,200,120,0.2);
-      background: rgba(100,200,120,0.06); color: rgba(100,200,120,0.85);
-      transition: all 0.15s; font-family: 'JetBrains Mono', monospace;
+      padding: 4px 10px; border-radius: 5px; font-size: 10px; font-weight: 600;
+      cursor: pointer; border: 1px solid transparent; transition: all 0.15s;
+      font-family: 'JetBrains Mono', monospace;
     }
-    .post-plan-action:hover {
-      background: rgba(100,200,120,0.12); border-color: rgba(100,200,120,0.35);
-      color: rgba(100,200,120,1);
+    .post-plan-action.pp-primary {
+      background: rgba(100,200,120,0.12); color: rgba(130,220,150,0.85);
+      border-color: rgba(100,200,120,0.2);
+    }
+    .post-plan-action.pp-primary:hover {
+      background: rgba(100,200,120,0.2); color: rgba(150,230,160,1);
+      border-color: rgba(100,200,120,0.35);
+    }
+    .post-plan-action.pp-secondary {
+      background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.35);
+      border-color: rgba(255,255,255,0.06);
+    }
+    .post-plan-action.pp-secondary:hover {
+      background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);
+      border-color: rgba(255,255,255,0.15);
     }
 
     /* ── Permission prompt cards ── */
     .perm-card {
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,180,60,0.15);
-      border-radius: 10px; padding: 10px 12px;
-      margin-top: 6px;
+      background: var(--s-subtle);
+      border: 1px solid var(--b-subtle);
+      border-radius: 8px; padding: 8px 10px;
+      margin-top: 4px; transition: opacity 0.3s, border-color 0.2s, box-shadow 0.3s;
+    }
+    .perm-card { position: relative; }
+    .perm-card::before {
+      content: '';
+      position: absolute; inset: 0;
+      border-radius: 8px;
+      padding: 1px;
+      pointer-events: none;
+      background: conic-gradient(
+        from var(--cp-border-angle, 0deg),
+        rgba(245,180,60,0.0) 0%,
+        rgba(245,180,60,0.55) 25%,
+        rgba(245,180,60,0.1) 50%,
+        rgba(245,180,60,0.55) 75%,
+        rgba(245,180,60,0.0) 100%
+      );
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask-composite: exclude;
+      opacity: 0;
+      transition: opacity 0.4s;
+    }
+    .perm-card.active-perm {
+      border-color: rgba(245,180,60,0.25);
+      background: rgba(245,180,60,0.04);
+      box-shadow: 0 0 16px rgba(245,180,60,0.08), 0 0 40px rgba(245,180,60,0.04);
+      animation: cp-perm-glow 2.5s ease-in-out infinite;
+    }
+    .perm-card.active-perm::before {
+      opacity: 1;
+      animation: cp-border-spin 3s linear infinite;
+    }
+    .perm-card:hover { border-color: var(--b-light); }
+    .perm-card.active-perm:hover { border-color: rgba(245,180,60,0.4); }
+    .perm-header {
+      font-size: 8.5px; font-weight: 700; color: rgba(245,180,60,0.7);
+      letter-spacing: 0.6px; margin-bottom: 5px;
+      font-family: 'JetBrains Mono', monospace; text-transform: uppercase;
     }
     .perm-tool-line {
-      display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
+      display: flex; align-items: center; gap: 7px; margin-bottom: 4px;
     }
     .perm-tool-icon {
       width: 20px; height: 20px; border-radius: 5px;
       display: flex; align-items: center; justify-content: center;
-      font-size: 10px; font-weight: 700; font-family: 'JetBrains Mono', monospace;
-      background: rgba(255,180,60,0.10); color: rgba(255,180,60,0.7);
+      background: var(--s-light); color: var(--t-primary);
     }
-    .perm-tool-name { font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.85); }
+    .perm-tool-icon svg { width: 12px; height: 12px; }
+    .perm-tool-name { font-size: 10.5px; font-weight: 600; font-family: 'JetBrains Mono', monospace; color: var(--t-primary); }
     .perm-detail {
       font-size: 10px; font-family: 'JetBrains Mono', monospace;
-      color: var(--t-faint); word-break: break-all; margin-bottom: 8px;
-      padding: 4px 6px; background: rgba(0,0,0,0.15); border-radius: 4px;
+      color: var(--t-faint); word-break: break-all; margin-bottom: 6px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .perm-actions { display: flex; gap: 6px; align-items: center; }
     .perm-btn {
-      padding: 5px 14px; border-radius: 6px; font-size: 11px; font-weight: 600;
+      padding: 4px 10px; border-radius: 5px; font-size: 10px; font-weight: 600;
       cursor: pointer; border: 1px solid transparent; transition: all 0.15s;
+      display: flex; align-items: center; gap: 3px;
+      font-family: 'JetBrains Mono', monospace;
     }
-    .perm-btn-allow { background: rgba(80,200,120,0.12); color: rgba(80,200,120,0.9); border-color: rgba(80,200,120,0.2); }
-    .perm-btn-allow:hover { background: rgba(80,200,120,0.2); }
-    .perm-btn-deny { background: rgba(255,80,80,0.08); color: rgba(255,80,80,0.8); border-color: rgba(255,80,80,0.15); }
-    .perm-btn-deny:hover { background: rgba(255,80,80,0.15); }
+    .perm-btn-icon { width: 10px; height: 10px; display: flex; align-items: center; }
+    .perm-btn-icon svg { width: 9px; height: 9px; }
+    .perm-btn-allow { background: rgba(245,180,60,0.12); color: rgba(245,195,90,0.85); border-color: rgba(245,180,60,0.2); }
+    .perm-btn-allow:hover:not(:disabled) { background: rgba(245,180,60,0.2); color: rgba(245,200,100,1); border-color: rgba(245,180,60,0.35); }
+    .perm-btn-deny { background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.35); border-color: rgba(255,255,255,0.06); }
+    .perm-btn-deny:hover:not(:disabled) { background: rgba(255,80,80,0.08); color: rgba(255,120,120,0.7); border-color: rgba(255,80,80,0.15); }
     .perm-always {
       font-size: 9px; color: var(--t-faint); margin-left: auto;
       display: flex; align-items: center; gap: 3px; cursor: pointer;
+      transition: color 0.15s; font-family: 'JetBrains Mono', monospace;
     }
-    .perm-always input { width: 11px; height: 11px; cursor: pointer; }
-    .perm-card.resolved { opacity: 0.5; }
+    .perm-always:hover { color: var(--t-secondary); }
+    .perm-always input { width: 10px; height: 10px; cursor: pointer; }
+    .perm-status {
+      font-size: 9px; font-weight: 600; font-family: 'JetBrains Mono', monospace;
+      color: var(--t-faint); letter-spacing: 0.3px;
+    }
+    .perm-card.resolved { opacity: 0.45; box-shadow: none; animation: none; background: var(--s-subtle); border-color: var(--b-subtle); }
     .perm-card.resolved .perm-btn { pointer-events: none; }
+    .perm-card.resolved .perm-btn-allow { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.4); border-color: rgba(255,255,255,0.08); }
+    .perm-card.resolved .perm-always { display: none; }
+    .perm-card.resolved .perm-header { color: var(--t-faint); }
 
     /* ── Status / errors / thinking ── */
     .cp-messages .msg-status { padding: 2px 14px 2px 48px; font-size: 10px; color: var(--t-faint); font-family: 'JetBrains Mono', monospace; }
@@ -449,8 +849,9 @@ function injectStyles() {
     .msg-thinking summary:hover { background: var(--s-hover); }
     .msg-thinking .msg-thinking-icon {
       width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
-      font-size: 10px; color: var(--t-primary); background: var(--s-light); border-radius: 5px;
+      color: var(--t-primary); background: var(--s-light); border-radius: 5px;
     }
+    .msg-thinking .msg-thinking-icon svg { width: 12px; height: 12px; }
     .msg-thinking .msg-thinking-label {
       font-family: 'JetBrains Mono', monospace; color: var(--t-primary);
       font-weight: 600; font-size: 10.5px;
@@ -482,35 +883,35 @@ function injectStyles() {
     /* ── Bottom area (input + toolbar) ── */
     .cp-bottom {
       flex-shrink: 0;
-      border-top: 1px solid rgba(255,255,255,0.04);
-      background: rgba(14,14,18,0.4);
+      border-top: 1px solid rgba(255,255,255,0.03);
+      background: rgba(10,10,14,0.6);
     }
 
     .cp-input-area {
-      padding: 8px 12px 4px;
+      padding: 8px 12px 2px;
       display: flex; gap: 0; align-items: flex-end;
     }
 
     /* Animated border wrapper — conic gradient border on focus */
     .cp-input-wrap {
       flex: 1; position: relative;
-      border-radius: 16px;
-      padding: 1px; /* border thickness */
-      background: rgba(255,255,255,0.06);
+      border-radius: 14px;
+      padding: 1px;
+      background: rgba(255,255,255,0.05);
       transition: background 0.4s;
     }
     .cp-input-wrap::before {
       content: '';
       position: absolute; inset: 0;
-      border-radius: 16px;
+      border-radius: 14px;
       padding: 1px;
       pointer-events: none;
       background: conic-gradient(
         from var(--cp-border-angle, 0deg),
         rgba(255,255,255,0.0) 0%,
-        rgba(255,255,255,0.3) 25%,
-        rgba(255,255,255,0.08) 50%,
-        rgba(255,255,255,0.3) 75%,
+        rgba(255,255,255,0.22) 25%,
+        rgba(255,255,255,0.06) 50%,
+        rgba(255,255,255,0.22) 75%,
         rgba(255,255,255,0.0) 100%
       );
       -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
@@ -526,10 +927,14 @@ function injectStyles() {
     }
     .cp-input-wrap:focus-within {
       background: rgba(255,255,255,0.03);
-      box-shadow: 0 0 20px rgba(255,255,255,0.04), 0 0 60px rgba(255,255,255,0.015);
+      box-shadow: 0 0 20px rgba(255,255,255,0.03), 0 0 60px rgba(255,255,255,0.01);
     }
     @keyframes cp-border-spin {
       to { --cp-border-angle: 360deg; }
+    }
+    @keyframes cp-perm-glow {
+      0%, 100% { box-shadow: 0 0 16px rgba(245,180,60,0.08), 0 0 40px rgba(245,180,60,0.04); }
+      50% { box-shadow: 0 0 20px rgba(245,180,60,0.14), 0 0 50px rgba(245,180,60,0.07); }
     }
     @property --cp-border-angle {
       syntax: '<angle>';
@@ -538,63 +943,119 @@ function injectStyles() {
     }
 
     .cp-input-inner {
-      display: flex; align-items: center;
-      background: rgba(14,14,18,0.85);
-      border-radius: 15px;
-      padding: 4px 4px 4px 10px;
-      gap: 2px;
+      display: flex; align-items: flex-end;
+      background: rgba(12,12,16,0.9);
+      border-radius: 13px;
+      padding: 5px 5px 5px 14px;
+      gap: 4px;
       position: relative;
+    }
+    .cp-input-wrap .cp-image-preview:not(:empty) + .cp-input-inner {
+      border-radius: 0 0 13px 13px;
     }
 
     .cp-input {
       flex: 1; background: transparent; border: none;
-      color: var(--t-bright); font-size: 12.5px;
+      color: var(--t-bright); font-size: 13px;
       font-family: 'Inter', -apple-system, sans-serif; padding: 6px 0;
       resize: none; outline: none; line-height: 1.5;
-      max-height: 150px; overflow-y: auto;
+      max-height: 180px;
+      overflow-y: auto;
+      overflow-wrap: break-word;
+      word-break: break-word;
+      scrollbar-width: thin;
+      scrollbar-color: transparent transparent;
+      transition: scrollbar-color 0.3s;
     }
-    .cp-input::placeholder { color: rgba(255,255,255,0.18); transition: color 0.3s; }
-    .cp-input:focus::placeholder { color: rgba(255,255,255,0.25); }
+    .cp-input:hover, .cp-input:focus {
+      scrollbar-color: rgba(255,255,255,0.08) transparent;
+    }
+    .cp-input::-webkit-scrollbar { width: 4px; }
+    .cp-input::-webkit-scrollbar-track { background: transparent; }
+    .cp-input::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+    .cp-input:hover::-webkit-scrollbar-thumb, .cp-input:focus::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); }
+    .cp-input::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+    .cp-input.scrollable {
+      -webkit-mask-image: linear-gradient(to bottom, transparent 0px, black 6px, black calc(100% - 10px), transparent 100%);
+      mask-image: linear-gradient(to bottom, transparent 0px, black 6px, black calc(100% - 10px), transparent 100%);
+    }
+    .cp-input::placeholder { color: rgba(255,255,255,0.16); transition: color 0.3s; }
+    .cp-input:focus::placeholder { color: rgba(255,255,255,0.22); }
 
+    /* ── Send button — flat square, sweep fill on enable ── */
     .cp-send {
-      background: linear-gradient(135deg, rgba(100,160,255,0.12), rgba(100,160,255,0.04));
-      border: 1px solid rgba(100,160,255,0.1);
-      border-radius: 10px;
-      color: rgba(100,160,255,0.6); width: 28px; height: 28px;
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px;
+      color: rgba(255,255,255,0.15); width: 28px; height: 28px;
       display: flex; align-items: center; justify-content: center;
       cursor: pointer; flex-shrink: 0;
-      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: all 0.25s cubic-bezier(0.22, 0.68, 0, 1.2);
+      position: sticky; bottom: 3px; align-self: flex-end;
+      overflow: hidden;
+    }
+    .cp-send::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04));
+      border-radius: 7px;
+      transform: scaleX(0);
+      transform-origin: left;
+      transition: transform 0.3s cubic-bezier(0.22, 0.68, 0, 1.2);
+    }
+    .cp-send:not(:disabled)::before {
+      transform: scaleX(1);
+    }
+    .cp-send:not(:disabled) {
+      color: rgba(255,255,255,0.7);
+      border-color: rgba(255,255,255,0.1);
     }
     .cp-send:hover:not(:disabled) {
-      transform: scale(1.08);
-      background: linear-gradient(135deg, rgba(100,160,255,0.25), rgba(100,160,255,0.1));
-      color: rgba(130,180,255,1);
-      box-shadow: 0 0 12px rgba(100,160,255,0.15);
+      border-color: rgba(255,255,255,0.2);
+      color: rgba(255,255,255,0.95);
+      box-shadow: 0 0 12px rgba(255,255,255,0.06);
+      transform: translateY(-1px);
     }
-    .cp-send:disabled { opacity: 0.12; cursor: default; }
+    .cp-send:hover:not(:disabled)::before {
+      background: linear-gradient(135deg, rgba(255,255,255,0.18), rgba(255,255,255,0.06));
+    }
+    .cp-send:active:not(:disabled) {
+      transform: translateY(0px) scale(0.95);
+      transition-duration: 0.08s;
+    }
+    .cp-send:disabled { opacity: 0.4; cursor: default; }
     .cp-send.abort {
-      background: linear-gradient(135deg, rgba(255,82,82,0.25), rgba(255,60,60,0.1));
-      border-color: rgba(255,82,82,0.2);
-      color: rgba(255,100,100,0.9);
-      animation: cp-abort-pulse 1.5s ease-in-out infinite;
+      border-color: rgba(255,70,70,0.2);
+      color: rgba(255,100,100,0.85);
+    }
+    .cp-send.abort::before {
+      transform: scaleX(1);
+      background: linear-gradient(135deg, rgba(255,70,70,0.15), rgba(255,50,50,0.05));
+      animation: cp-abort-sweep 2s ease-in-out infinite;
     }
     .cp-send.abort:hover {
-      background: linear-gradient(135deg, rgba(255,82,82,0.4), rgba(255,60,60,0.2));
       color: #ff6666;
-      box-shadow: 0 0 12px rgba(255,82,82,0.2);
+      border-color: rgba(255,70,70,0.35);
+      box-shadow: 0 0 12px rgba(255,70,70,0.12);
+      transform: translateY(-1px);
     }
-    @keyframes cp-abort-pulse {
-      0%, 100% { border-color: rgba(255,82,82,0.2); }
-      50% { border-color: rgba(255,82,82,0.45); }
+    .cp-send.abort:active {
+      transform: translateY(0px) scale(0.95);
     }
-    .cp-send svg { width: 12px; height: 12px; }
+    @keyframes cp-abort-sweep {
+      0%, 100% { opacity: 0.6; }
+      50% { opacity: 1; }
+    }
+    .cp-send svg { width: 12px; height: 12px; position: relative; z-index: 1; }
 
+    /* ── Attach button ── */
     .cp-attach {
       background: none; border: none; cursor: pointer; padding: 2px 4px;
-      color: rgba(235,235,240,0.25); position: relative; display: flex; align-items: center;
-      flex-shrink: 0; transition: color 0.2s, transform 0.2s;
+      color: rgba(255,255,255,0.2); position: relative; display: flex; align-items: center;
+      flex-shrink: 0; transition: color 0.2s, transform 0.25s;
     }
-    .cp-attach:hover { color: rgba(100,160,255,0.6); transform: rotate(-10deg); }
+    .cp-attach:hover { color: rgba(255,255,255,0.55); transform: translateY(-1px); }
+    .cp-attach:active { transform: translateY(0px) scale(0.92); }
     .cp-attach-badge {
       position: absolute; top: -2px; right: -4px;
       background: #c8a050; color: #000; border-radius: 50%;
@@ -611,16 +1072,16 @@ function injectStyles() {
     }
     .file-link:hover { text-decoration: underline; }
 
-    /* ── Bottom toolbar ── */
+    /* ── Bottom toolbar — status bar style ── */
     .cp-toolbar {
       display: flex; align-items: center;
-      flex-wrap: wrap;
-      gap: 4px;
-      padding: 4px 12px 8px;
+      flex-wrap: nowrap;
+      gap: 0;
+      padding: 4px 14px 6px;
       flex-shrink: 0;
     }
-    .cp-toolbar-left { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }
-    .cp-toolbar-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+    .cp-toolbar-left { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+    .cp-toolbar-right { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 
     .cp-brand {
       height: 16px; width: auto; opacity: 0.6; flex-shrink: 0;
@@ -629,29 +1090,30 @@ function injectStyles() {
     .cp-dropdown {
       position: relative;
       display: flex; align-items: center; gap: 2px;
-      background: rgba(255,255,255,0.04);
-      border: 1px solid rgba(255,255,255,0.06);
-      border-radius: 5px;
-      padding: 2px 5px;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      padding: 3px 5px;
       cursor: pointer; user-select: none;
       max-width: 90px;
       flex-shrink: 1; min-width: 0;
-      transition: border-color 0.15s, background 0.15s;
+      transition: background 0.15s;
     }
-    .cp-dropdown:hover { border-color: rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); }
-    .cp-dropdown.open { border-color: rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); }
+    .cp-dropdown:hover { background: rgba(255,255,255,0.04); }
+    .cp-dropdown.open { background: rgba(255,255,255,0.06); }
     .cp-dropdown-sm { max-width: 72px; }
     .cp-dd-label {
       font-size: 9.5px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.4);
+      color: rgba(255,255,255,0.3);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
     }
-    .cp-dropdown.has-value .cp-dd-label { color: rgba(255,255,255,0.6); }
+    .cp-dropdown.has-value .cp-dd-label { color: rgba(255,255,255,0.5); }
     .cp-dd-arrow {
-      font-size: 8px; color: rgba(255,255,255,0.2); flex-shrink: 0;
-      transition: transform 0.15s;
+      font-size: 7px; color: rgba(255,255,255,0.15); flex-shrink: 0;
+      transition: transform 0.2s, color 0.2s;
     }
-    .cp-dropdown.open .cp-dd-arrow { transform: rotate(180deg); }
+    .cp-dropdown:hover .cp-dd-arrow { color: rgba(255,255,255,0.3); }
+    .cp-dropdown.open .cp-dd-arrow { transform: rotate(180deg); color: rgba(255,255,255,0.4); }
     .cp-dd-menu {
       display: none;
       position: absolute; bottom: calc(100% + 4px); left: 0;
@@ -681,11 +1143,12 @@ function injectStyles() {
 
     .cp-cost {
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      color: var(--t-faint); padding: 1px 4px; border-radius: 6px;
+      color: rgba(255,255,255,0.18); padding: 2px 6px;
       white-space: nowrap; flex-shrink: 0;
+      transition: color 0.2s;
     }
-    .cp-cost:hover { color: var(--t-secondary); }
-    .cp-cost.flash { color: var(--t-primary); }
+    .cp-cost:hover { color: rgba(255,255,255,0.45); }
+    .cp-cost.flash { color: rgba(255,255,255,0.7); }
 
     .cp-btn {
       background: none; border: 1px solid var(--b-subtle); color: var(--t-faint);
@@ -699,12 +1162,15 @@ function injectStyles() {
 
     /* Header button styles moved to .cp-header-btn */
 
-    /* ── Image preview strip ── */
+    /* ── Image preview strip (inside input wrap) ── */
     .cp-image-preview {
-      display: flex; gap: 6px; padding: 8px 12px 0;
+      display: flex; gap: 6px; padding: 8px 12px 6px;
       overflow-x: auto; flex-shrink: 0;
+      background: rgba(12,12,16,0.9);
+      border-radius: 13px 13px 0 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
     }
-    .cp-image-preview:empty { display: none; }
+    .cp-image-preview:empty { display: none; border-bottom: none; }
     .cp-thumb {
       position: relative; flex-shrink: 0;
       border-radius: 8px; overflow: hidden;
@@ -728,17 +1194,22 @@ function injectStyles() {
     /* ── File attachment chips ── */
     .cp-file-chip {
       display: flex; align-items: center; gap: 4px;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 6px; padding: 3px 6px 3px 8px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px; padding: 3px 6px 3px 8px;
       flex-shrink: 0;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .cp-file-chip:hover {
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.1);
     }
     .cp-file-chip-name {
       font-size: 10px; font-family: 'JetBrains Mono', monospace;
       color: rgba(255,255,255,0.5); white-space: nowrap;
     }
     .cp-file-chip-x {
-      background: none; border: none; color: rgba(255,255,255,0.25);
+      background: none; border: none; color: rgba(255,255,255,0.2);
       cursor: pointer; font-size: 12px; line-height: 1; padding: 0 1px;
       transition: color 0.15s;
     }
@@ -920,153 +1391,205 @@ function injectStyles() {
     /* ── Context gauge bar ── */
     .cp-context-bar {
       display: flex; align-items: center; gap: 6px;
-      padding: 3px 12px 5px; flex-shrink: 0;
+      padding: 4px 12px 5px; flex-shrink: 0;
     }
     .cp-gauge {
-      flex: 1; height: 6px; border-radius: 3px;
-      background: rgba(255,255,255,0.04);
+      flex: 1; height: 18px; border-radius: 4px;
+      background: rgba(255,255,255,0.03);
       display: flex; overflow: hidden;
       position: relative; cursor: default;
-      transition: background 0.4s;
+      transition: background 0.5s, box-shadow 0.5s;
     }
-    .cp-gauge[data-urgency="warn"] { background: rgba(200,180,50,0.08); }
-    .cp-gauge[data-urgency="high"] { background: rgba(220,130,50,0.12); }
-    .cp-gauge[data-urgency="critical"] { background: rgba(220,60,60,0.15); }
+    .cp-gauge[data-urgency="warn"] { background: rgba(200,180,50,0.06); box-shadow: 0 0 6px rgba(200,180,50,0.08); }
+    .cp-gauge[data-urgency="high"] { background: rgba(220,130,50,0.08); box-shadow: 0 0 8px rgba(220,130,50,0.1); }
+    .cp-gauge[data-urgency="critical"] { background: rgba(220,60,60,0.1); box-shadow: 0 0 10px rgba(220,60,60,0.12); }
     .cp-gauge-section {
       height: 100%; min-width: 1px;
-      transition: width 0.4s ease;
-      position: relative; border-radius: 1px;
+      transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative; border-radius: 2px;
     }
-    .cp-gauge-section[data-cat="cache-read"] { background: rgba(100,140,200,0.5); }
-    .cp-gauge-section[data-cat="cache-write"] { background: rgba(160,100,200,0.5); }
-    .cp-gauge-section[data-cat="input"] { background: rgba(100,200,150,0.5); }
-    .cp-gauge-section[data-cat="output"] { background: rgba(220,170,80,0.5); }
+    .cp-gauge-section[data-cat="cache-read"] { background: rgba(100,140,200,0.45); }
+    .cp-gauge-section[data-cat="cache-write"] { background: rgba(150,100,200,0.45); }
+    .cp-gauge-section[data-cat="input"] { background: rgba(100,200,150,0.45); }
+    .cp-gauge-section[data-cat="output"] { background: rgba(220,170,80,0.45); }
     .cp-gauge-tip {
-      position: absolute; bottom: calc(100% + 8px); left: 50%;
+      position: absolute; bottom: calc(100% + 6px); left: 50%;
       transform: translateX(-50%);
-      background: rgba(8,8,10,0.95); border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 4px; padding: 3px 7px;
-      font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.7);
+      background: rgba(8,8,10,0.95); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px; padding: 2px 6px;
+      font-size: 8.5px; font-family: 'JetBrains Mono', monospace;
+      color: rgba(255,255,255,0.6);
       white-space: nowrap; pointer-events: none;
       opacity: 0; transition: opacity 0.15s;
       z-index: 10;
     }
     .cp-gauge-section:hover .cp-gauge-tip { opacity: 1; }
     .cp-gauge-label {
-      font-size: 8px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.2); white-space: nowrap; flex-shrink: 0;
-      transition: color 0.4s;
+      position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+      font-size: 9px; font-family: 'JetBrains Mono', monospace;
+      color: rgba(255,255,255,0.35); white-space: nowrap;
+      z-index: 2; pointer-events: none; letter-spacing: 0.3px;
+      transition: color 0.5s;
     }
-    .cp-context-bar:has(.cp-gauge[data-urgency="warn"]) .cp-gauge-label { color: rgba(220,200,80,0.6); }
-    .cp-context-bar:has(.cp-gauge[data-urgency="high"]) .cp-gauge-label { color: rgba(220,150,60,0.7); }
-    .cp-context-bar:has(.cp-gauge[data-urgency="critical"]) .cp-gauge-label { color: rgba(220,80,60,0.8); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="warn"]) .cp-gauge-label { color: rgba(220,200,80,0.5); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="high"]) .cp-gauge-label { color: rgba(220,150,60,0.6); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="critical"]) .cp-gauge-label { color: rgba(220,80,60,0.7); }
     .cp-compact-btn {
-      background: none; border: 1px solid rgba(255,255,255,0.06);
-      color: rgba(255,255,255,0.2); cursor: pointer;
-      font-size: 8px; font-family: 'JetBrains Mono', monospace;
-      padding: 1px 5px; border-radius: 3px;
-      transition: all 0.15s; flex-shrink: 0;
-      text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+      color: rgba(255,255,255,0.3); cursor: pointer;
+      font-size: 10px; font-family: 'JetBrains Mono', monospace;
+      padding: 3px 10px; border-radius: 4px;
+      transition: color 0.2s, background 0.2s, border-color 0.2s; flex-shrink: 0;
+      text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600;
+      position: relative; overflow: hidden;
     }
     .cp-compact-btn:hover {
-      color: rgba(255,255,255,0.5);
-      border-color: rgba(255,255,255,0.15);
-      background: rgba(255,255,255,0.04);
+      color: rgba(255,255,255,0.6);
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.12);
     }
+    .cp-compact-btn.compacting {
+      color: rgba(140,130,220,0.7);
+      border-color: rgba(140,130,220,0.2);
+      background: rgba(140,130,220,0.06);
+      pointer-events: none;
+    }
+    .cp-compact-btn.compacting::after {
+      content: '';
+      position: absolute; left: 0; bottom: 0;
+      width: 100%; height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(140,130,220,0.6), transparent);
+      animation: cp-compact-sweep 1.2s ease-in-out infinite;
+    }
+    @keyframes cp-compact-sweep {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
+    @keyframes cp-gauge-flow {
+      0% { background-position: 100% 0; }
+      100% { background-position: -100% 0; }
+    }
+    .cp-gauge.compacting .cp-gauge-section {
+      background-image: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(140,130,220,0.2) 30%,
+        rgba(140,130,220,0.35) 50%,
+        rgba(140,130,220,0.2) 70%,
+        transparent 100%
+      );
+      background-size: 200% 100%;
+      animation: cp-gauge-flow 2s ease-in-out infinite;
+    }
+    .cp-gauge.compacting { opacity: 0.6; box-shadow: 0 0 8px rgba(140,130,220,0.08); }
+    .cp-gauge-label.compacting { color: rgba(140,130,220,0.4) !important; }
 
     /* ── Think intensity toggle ── */
-    .cp-think-toggle {
-      background: none; border: 1px solid rgba(255,255,255,0.06);
-      color: rgba(255,255,255,0.3); cursor: pointer;
-      font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      padding: 2px 7px; border-radius: 4px;
-      transition: all 0.25s ease; flex-shrink: 0;
-      display: inline-flex; align-items: center; gap: 4px;
-      position: relative; letter-spacing: 0.02em;
+    /* ── Shared toggle base ── */
+    .cp-toggle-icon { width: 10px; height: 10px; display: block; flex-shrink: 0; }
+
+    /* ── Toggle buttons — flat text + underline indicator ── */
+    .cp-think-toggle, .cp-plan-toggle, .cp-auto-toggle {
+      background: transparent; border: none;
+      color: rgba(255,255,255,0.22); cursor: pointer;
+      font-size: 9px; font-family: 'JetBrains Mono', monospace; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.6px;
+      padding: 4px 7px 6px;
+      transition: color 0.2s, transform 0.2s;
+      flex-shrink: 0;
+      display: inline-flex; align-items: center; gap: 3px;
+      position: relative;
     }
-    .cp-think-toggle:hover {
-      color: rgba(255,255,255,0.55);
-      border-color: rgba(255,255,255,0.14);
-      background: rgba(255,255,255,0.03);
+    /* underline indicator — hidden by default */
+    .cp-think-toggle::after, .cp-plan-toggle::after, .cp-auto-toggle::after {
+      content: '';
+      position: absolute; bottom: 0; left: 25%; right: 25%;
+      height: 1.5px; border-radius: 1px;
+      background: rgba(255,255,255,0.35);
+      transform: scaleX(0);
+      transition: transform 0.25s cubic-bezier(0.22, 0.68, 0, 1.2), background 0.2s;
     }
-    .cp-think-icon { display: flex; align-items: center; transition: opacity 0.25s, transform 0.25s; opacity: 0.35; }
+    .cp-think-toggle:hover, .cp-plan-toggle:hover, .cp-auto-toggle:hover {
+      color: rgba(255,255,255,0.5);
+      transform: translateY(-1px);
+    }
+    .cp-think-toggle:hover::after, .cp-plan-toggle:hover::after, .cp-auto-toggle:hover::after {
+      transform: scaleX(1);
+      background: rgba(255,255,255,0.2);
+    }
+    .cp-think-toggle:active, .cp-plan-toggle:active, .cp-auto-toggle:active {
+      transform: translateY(0px) scale(0.96);
+      transition-duration: 0.08s;
+    }
+
+    /* ── Think toggle specifics ── */
+    .cp-think-icon { display: flex; align-items: center; transition: opacity 0.25s; opacity: 0.35; }
     .cp-think-icon svg { display: block; }
-    .cp-think-label { transition: color 0.25s; font-weight: 500; }
+    .cp-think-label { transition: color 0.25s; }
     .cp-think-dots {
-      display: flex; gap: 3px; align-items: center; margin-left: 1px;
+      display: flex; gap: 2px; align-items: center; margin-left: 2px;
     }
     .cp-think-dots i {
-      display: block; width: 4px; height: 4px; border-radius: 50%;
-      background: currentColor; opacity: 0.12; font-style: normal;
-      transition: opacity 0.3s, background 0.3s, box-shadow 0.3s, transform 0.3s;
+      display: block; width: 3px; height: 3px; border-radius: 50%;
+      background: currentColor; opacity: 0.1; font-style: normal;
+      transition: opacity 0.3s, background 0.3s, transform 0.3s;
     }
-    .cp-think-dots i.lit { opacity: 1; transform: scale(1.15); }
-    /* off state — hide dots */
+    .cp-think-dots i.lit { opacity: 1; transform: scale(1.2); }
     .cp-think-toggle[data-effort="off"] .cp-think-dots { display: none; }
-    /* low */
+
+    /* Think effort levels — progressive brightness + underline */
     .cp-think-toggle[data-effort="low"] {
-      color: rgba(120,180,255,0.8); border-color: rgba(120,180,255,0.22);
-      background: rgba(120,180,255,0.05);
+      color: rgba(255,255,255,0.35);
     }
-    .cp-think-toggle[data-effort="low"] .cp-think-icon { opacity: 0.7; }
-    .cp-think-toggle[data-effort="low"] .cp-think-dots i.lit { background: rgba(120,180,255,0.9); }
-    /* medium */
+    .cp-think-toggle[data-effort="low"]::after { transform: scaleX(0.4); background: rgba(255,255,255,0.2); }
+    .cp-think-toggle[data-effort="low"] .cp-think-icon { opacity: 0.45; }
+    .cp-think-toggle[data-effort="low"] .cp-think-dots i.lit { background: rgba(255,255,255,0.35); }
+
     .cp-think-toggle[data-effort="medium"] {
-      color: rgba(140,170,255,0.8); border-color: rgba(140,170,255,0.2);
-      background: rgba(140,170,255,0.05);
+      color: rgba(255,255,255,0.45);
     }
-    .cp-think-toggle[data-effort="medium"] .cp-think-icon { opacity: 0.8; }
-    .cp-think-toggle[data-effort="medium"] .cp-think-dots i.lit { background: rgba(140,170,255,0.9); }
-    /* high */
+    .cp-think-toggle[data-effort="medium"]::after { transform: scaleX(0.6); background: rgba(255,255,255,0.3); }
+    .cp-think-toggle[data-effort="medium"] .cp-think-icon { opacity: 0.55; }
+    .cp-think-toggle[data-effort="medium"] .cp-think-dots i.lit { background: rgba(255,255,255,0.4); }
+
     .cp-think-toggle[data-effort="high"] {
-      color: rgba(160,155,255,0.85); border-color: rgba(160,155,255,0.25);
-      background: rgba(160,155,255,0.06);
+      color: rgba(255,255,255,0.55);
     }
-    .cp-think-toggle[data-effort="high"] .cp-think-icon { opacity: 0.9; }
-    .cp-think-toggle[data-effort="high"] .cp-think-dots i.lit { background: rgba(160,155,255,0.9); }
-    /* max */
+    .cp-think-toggle[data-effort="high"]::after { transform: scaleX(0.8); background: rgba(255,255,255,0.4); }
+    .cp-think-toggle[data-effort="high"] .cp-think-icon { opacity: 0.65; }
+    .cp-think-toggle[data-effort="high"] .cp-think-dots i.lit { background: rgba(255,255,255,0.5); }
+
     .cp-think-toggle[data-effort="max"] {
-      color: rgba(180,160,255,0.9); border-color: rgba(180,160,255,0.28);
-      background: rgba(180,160,255,0.07);
+      color: rgba(255,255,255,0.7);
     }
-    .cp-think-toggle[data-effort="max"] .cp-think-icon { opacity: 1; }
-    .cp-think-toggle[data-effort="max"] .cp-think-dots i.lit { background: rgba(180,160,255,0.9); }
+    .cp-think-toggle[data-effort="max"]::after { transform: scaleX(1); background: rgba(255,255,255,0.5); }
+    .cp-think-toggle[data-effort="max"] .cp-think-icon { opacity: 0.8; }
+    .cp-think-toggle[data-effort="max"] .cp-think-dots i.lit { background: rgba(255,255,255,0.6); }
 
-    /* ── Plan mode toggle ── */
-    .cp-plan-toggle {
-      background: none; border: 1px solid rgba(255,255,255,0.06);
-      color: rgba(255,255,255,0.25); cursor: pointer;
-      font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      padding: 2px 6px; border-radius: 4px;
-      transition: all 0.15s; flex-shrink: 0;
-    }
-    .cp-plan-toggle:hover {
-      color: rgba(255,255,255,0.5);
-      border-color: rgba(255,255,255,0.12);
-    }
+    /* ── Plan toggle active — underline + color ── */
     .cp-plan-toggle.active {
-      color: rgba(100,180,255,0.9);
-      border-color: rgba(100,180,255,0.3);
-      background: rgba(100,180,255,0.08);
+      color: rgba(130, 175, 255, 0.85);
+    }
+    .cp-plan-toggle.active::after {
+      transform: scaleX(1);
+      background: rgba(130, 175, 255, 0.6);
+    }
+    .cp-plan-toggle.active:hover {
+      color: rgba(150, 190, 255, 1);
+      transform: translateY(-1px);
     }
 
-    /* ── Auto-accept toggle ── */
-    .cp-auto-toggle {
-      background: none; border: 1px solid rgba(255,255,255,0.06);
-      color: rgba(255,255,255,0.25); cursor: pointer;
-      font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      padding: 2px 6px; border-radius: 4px;
-      transition: all 0.15s; flex-shrink: 0;
-    }
-    .cp-auto-toggle:hover {
-      color: rgba(255,255,255,0.5);
-      border-color: rgba(255,255,255,0.12);
-    }
+    /* ── Auto toggle active — underline + color ── */
     .cp-auto-toggle.active {
-      color: rgba(80,200,120,0.9);
-      border-color: rgba(80,200,120,0.3);
-      background: rgba(80,200,120,0.08);
+      color: rgba(100, 210, 140, 0.85);
+    }
+    .cp-auto-toggle.active::after {
+      transform: scaleX(1);
+      background: rgba(100, 210, 140, 0.6);
+    }
+    .cp-auto-toggle.active:hover {
+      color: rgba(120, 230, 160, 1);
+      transform: translateY(-1px);
     }
 
     /* ── Thinking timer ── */
@@ -1186,11 +1709,15 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } =
     pillEl: null,
     draft: '',
     usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
+    compacting: false,
     turns: 0,
     thinkStartedAt: null,
     thinkTimerInterval: null,
     sendStartedAt: null,
     planMode: false,
+    _permQueue: [],
+    _activePerm: false,
+    _msgBuffer: [],
   };
   // Create messages div
   const container = _panel.querySelector('#cp-messages-container');
@@ -1294,6 +1821,8 @@ function closeTab(idx) {
   const tab = _tabs[idx];
   clearTimeout(tab.reconnectTimer);
   if (tab.ws) { tab.ws.onclose = null; tab.ws.close(); }
+  // Release session lock
+  if (tab.sessionId) _releaseSessionLock(tab.sessionId);
   tab.messagesEl.remove();
   if (tab.pillEl) tab.pillEl.remove();
   _tabs.splice(idx, 1);
@@ -1381,10 +1910,42 @@ function saveTabs() {
       tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label })),
       activeIdx: _activeTabIdx,
     }));
+    _updateWindowRegistry();
+  } catch {}
+}
+
+// ── Window registry: tracks active windows for stale-key cleanup ──
+function _updateWindowRegistry() {
+  try {
+    const raw = storage.getItem(STOR.windowRegistry);
+    const reg = raw ? JSON.parse(raw) : {};
+    reg[_windowId] = Date.now();
+    storage.setItem(STOR.windowRegistry, JSON.stringify(reg));
+  } catch {}
+}
+
+function _cleanStaleWindows() {
+  try {
+    const raw = storage.getItem(STOR.windowRegistry);
+    if (!raw) return;
+    const reg = JSON.parse(raw);
+    const STALE_MS = 24 * 60 * 60 * 1000; // 24h
+    const now = Date.now();
+    for (const [wid, ts] of Object.entries(reg)) {
+      if (wid === _windowId) continue;
+      if (now - ts > STALE_MS) {
+        // Remove stale window's tab key
+        storage.removeItem(`synabun-claude-panel-tabs-${wid}`);
+        delete reg[wid];
+      }
+    }
+    storage.setItem(STOR.windowRegistry, JSON.stringify(reg));
   } catch {}
 }
 
 function restoreTabs() {
+  _cleanStaleWindows();
+  // Try window-scoped tabs first
   try {
     const raw = storage.getItem(STOR.tabs);
     if (raw) {
@@ -1398,6 +1959,21 @@ function restoreTabs() {
       }
     }
   } catch {}
+  // Migration: check legacy global key (one-time, only if this window has no saved tabs)
+  try {
+    const legacyRaw = storage.getItem(STOR.tabsLegacy);
+    if (legacyRaw) {
+      const data = JSON.parse(legacyRaw);
+      if (data.tabs?.length) {
+        for (const saved of data.tabs) {
+          createTab(saved.sessionId, saved.label, { autoSwitch: false });
+        }
+        switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
+        // Don't remove legacy key — other windows may still need it during rollout
+        return;
+      }
+    }
+  } catch {}
   // Backward compat: old single-session storage
   const oldSid = storage.getItem(STOR.session);
   if (oldSid) {
@@ -1407,6 +1983,91 @@ function restoreTabs() {
     createTab(null, 'New chat');
   }
 }
+
+// ── Session lock helpers (client-side) ──
+let _heartbeatInterval = null;
+
+function _startHeartbeat() {
+  if (_heartbeatInterval) return;
+  _heartbeatInterval = setInterval(() => {
+    for (const tab of _tabs) {
+      if (tab.sessionId && tab.ws?.readyState === WebSocket.OPEN) {
+        tab.ws.send(JSON.stringify({ type: 'heartbeat', sessionId: tab.sessionId, windowId: _windowId }));
+      }
+    }
+  }, 15_000); // Every 15s
+}
+
+function _stopHeartbeat() {
+  if (_heartbeatInterval) { clearInterval(_heartbeatInterval); _heartbeatInterval = null; }
+}
+
+async function _checkSessionLock(sessionId) {
+  if (!sessionId) return { ok: true };
+  try {
+    const res = await fetch('/api/claude-skin/session-lock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'acquire', sessionId, windowId: _windowId }),
+    });
+    return await res.json();
+  } catch { return { ok: true }; } // If server unreachable, allow
+}
+
+async function _releaseSessionLock(sessionId) {
+  if (!sessionId) return;
+  try {
+    await fetch('/api/claude-skin/session-lock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'release', sessionId, windowId: _windowId }),
+    });
+  } catch {}
+}
+
+async function _releaseAllSessionLocks() {
+  try {
+    await fetch('/api/claude-skin/session-lock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'release', windowId: _windowId }),
+    });
+  } catch {}
+}
+
+// Release locks when window closes
+window.addEventListener('beforeunload', () => {
+  _stopHeartbeat();
+  // Use sendBeacon for reliable delivery on close
+  navigator.sendBeacon(
+    '/api/claude-skin/session-lock',
+    new Blob([JSON.stringify({ action: 'release', windowId: _windowId })], { type: 'application/json' })
+  );
+});
+
+// Re-sync UI state when window regains focus (catches stale running states from background tabs)
+window.addEventListener('focus', () => {
+  if (!_panel) return;
+  const tab = activeTab();
+  if (!tab) return;
+  // If tab says it's running but WS is dead, force finish
+  if (tab.running && (!tab.ws || tab.ws.readyState > WebSocket.OPEN)) {
+    console.warn('[claude-panel] Focus re-sync: tab running but WS dead — forcing finish');
+    finishTab(tab);
+    appendStatus(tab, 'Connection lost — session recovered.');
+  }
+  // Re-sync input disabled state with current tab
+  const $input = _panel?.querySelector('#cp-input');
+  const $send = _panel?.querySelector('#cp-send');
+  if ($input && $send) {
+    $input.disabled = tab.running;
+    if (!tab.running) {
+      $send.classList.remove('abort');
+      $send.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M12 5l7 7-7 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+      $send.disabled = !$input.value.trim() && !tab.attachedImages.length;
+    }
+  }
+});
 
 // ── Session selector helpers ──
 const LABEL_PREFIX = 'synabun-session-label:';
@@ -1532,15 +2193,27 @@ async function renderSessionMenu() {
   }
 }
 
-function selectSession(sid, label) {
+async function selectSession(sid, label) {
   const tab = activeTab();
   if (!tab) return;
+  // Check lock before selecting an existing session
+  if (sid) {
+    const lock = await _checkSessionLock(sid);
+    if (!lock.ok) {
+      appendStatus(tab, `Session is active in another window. Close it there first, or force-take.`);
+      return;
+    }
+  }
+  // Release previous session lock if switching
+  if (tab.sessionId && tab.sessionId !== sid) _releaseSessionLock(tab.sessionId);
   tab.sessionId = sid;
   tab.sessionCost = 0;
   tab.currentMsgEl = null;
   tab.currentMsgId = null;
   tab.label = label || 'New chat';
   tab.usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 };
+  tab.compacting = false;
+  _setCompactingUI(false);
   tab.turns = 0;
   _updateCostLabel();
   renderGauge(tab);
@@ -1626,8 +2299,15 @@ async function loadSessionHistory(sid, $msgs) {
               wrap.appendChild(buildTool(t));
             } else {
               // Legacy: tool name string only
+              const tName = String(t);
               const summary = document.createElement('div'); summary.className = 'msg-tools-summary';
-              summary.textContent = String(t).replace(/^mcp__SynaBun__/, '');
+              if (isSynaBunTool(tName)) {
+                const sMeta = getSynaBunMeta(tName);
+                summary.textContent = sMeta?.label || synaBunToolKey(tName);
+                summary.classList.add('synabun-summary');
+              } else {
+                summary.textContent = tName;
+              }
               wrap.appendChild(summary);
             }
           }
@@ -1636,7 +2316,9 @@ async function loadSessionHistory(sid, $msgs) {
       } else if (m.role === 'tool_result' && m.toolUseId) {
         // Match result to its tool card
         const card = $msgs.querySelector(`.tool-card[data-tool-id="${CSS.escape(m.toolUseId)}"]`);
-        if (card) {
+        if (card && card.classList.contains('synabun-card') && m.text) {
+          updateSynaBunResult(card, { content: m.text, is_error: m.isError });
+        } else if (card) {
           const rLbl = card.querySelector('.tool-result-label');
           const rSec = card.querySelector('.tool-result-content');
           if (rSec && m.text) {
@@ -1727,36 +2409,84 @@ function _updateCostLabel() {
 // ── Context gauge ──
 const CONTEXT_WINDOW = 200000;
 
+function _setCompactingUI(on) {
+  const $gauge = _panel?.querySelector('#cp-gauge');
+  const $label = _panel?.querySelector('#cp-gauge-label');
+  const $btn = _panel?.querySelector('#cp-compact-btn');
+  if (on) {
+    $gauge?.classList.add('compacting');
+    $label?.classList.add('compacting');
+    if ($btn) { $btn.classList.add('compacting'); $btn.textContent = 'compacting'; }
+  } else {
+    $gauge?.classList.remove('compacting');
+    $label?.classList.remove('compacting');
+    if ($btn) { $btn.classList.remove('compacting'); $btn.textContent = 'compact'; }
+  }
+}
+
 function renderGauge(tab) {
   const $gauge = _panel?.querySelector('#cp-gauge');
   const $label = _panel?.querySelector('#cp-gauge-label');
   if (!$gauge) return;
 
   const u = tab.usage;
-  const total = u.inputTokens;
+  const cacheRead = u.cacheRead || 0;
+  const cacheWrite = u.cacheWrite || 0;
+  const uncachedInput = u.inputTokens || 0;
+  const total = uncachedInput + cacheRead + cacheWrite;
+  const fmt = (v) => v >= 1000 ? (v / 1000).toFixed(1) + 'K' : String(v);
+
   if (total === 0) {
-    $gauge.innerHTML = '';
+    // Animate existing sections to 0 width before removing
+    const existing = $gauge.querySelectorAll('.cp-gauge-section');
+    if (existing.length) {
+      existing.forEach(el => { el.style.width = '0%'; el.querySelector('.cp-gauge-tip')?.remove(); });
+      setTimeout(() => { $gauge.innerHTML = ''; }, 450);
+    }
     $gauge.dataset.urgency = '';
     if ($label) { $label.textContent = ''; $label.title = ''; }
     return;
   }
 
-  const cacheRead = u.cacheRead || 0;
-  const cacheWrite = u.cacheWrite || 0;
-  const uncachedInput = Math.max(0, u.inputTokens - cacheRead - cacheWrite);
-
   const pct = (v) => Math.max(0, (v / CONTEXT_WINDOW) * 100).toFixed(2) + '%';
-  const fmt = (v) => v >= 1000 ? (v / 1000).toFixed(1) + 'K' : String(v);
+  const CATS = ['cache-read', 'cache-write', 'input'];
+  const data = {
+    'cache-read': { val: cacheRead, label: `Cached: ${fmt(cacheRead)} tokens` },
+    'cache-write': { val: cacheWrite, label: `New cache: ${fmt(cacheWrite)} tokens` },
+    'input': { val: uncachedInput, label: `Input: ${fmt(uncachedInput)} tokens` },
+  };
 
-  const sections = [
-    { cat: 'cache-read', val: cacheRead, label: `Cached: ${fmt(cacheRead)} tokens` },
-    { cat: 'cache-write', val: cacheWrite, label: `New cache: ${fmt(cacheWrite)} tokens` },
-    { cat: 'input', val: uncachedInput, label: `Input: ${fmt(uncachedInput)} tokens` },
-  ].filter(s => s.val > 0);
-
-  $gauge.innerHTML = sections.map(s =>
-    `<div class="cp-gauge-section" data-cat="${s.cat}" style="width:${pct(s.val)}"><div class="cp-gauge-tip">${s.label}</div></div>`
-  ).join('');
+  // Reuse existing section elements for smooth CSS transitions
+  for (const cat of CATS) {
+    const d = data[cat];
+    let el = $gauge.querySelector(`.cp-gauge-section[data-cat="${cat}"]`);
+    if (d.val > 0) {
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'cp-gauge-section';
+        el.dataset.cat = cat;
+        el.innerHTML = `<div class="cp-gauge-tip"></div>`;
+        // Insert in order: find the next sibling that should come after this cat
+        const catIdx = CATS.indexOf(cat);
+        let inserted = false;
+        for (let i = catIdx + 1; i < CATS.length; i++) {
+          const sibling = $gauge.querySelector(`.cp-gauge-section[data-cat="${CATS[i]}"]`);
+          if (sibling) { $gauge.insertBefore(el, sibling); inserted = true; break; }
+        }
+        if (!inserted) $gauge.appendChild(el);
+        // Force layout so initial width:0 is registered before transition
+        el.style.width = '0%';
+        el.offsetWidth; // force reflow
+      }
+      el.style.width = pct(d.val);
+      const tip = el.querySelector('.cp-gauge-tip');
+      if (tip) tip.textContent = d.label;
+    } else if (el) {
+      // Animate to 0 then remove
+      el.style.width = '0%';
+      el.addEventListener('transitionend', () => el.remove(), { once: true });
+    }
+  }
 
   const pctUsed = Math.round((total / CONTEXT_WINDOW) * 100);
   $gauge.dataset.urgency = pctUsed < 50 ? '' : pctUsed < 75 ? 'warn' : pctUsed < 90 ? 'high' : 'critical';
@@ -1807,14 +2537,44 @@ function updateAttachBadge() {
 
 // ── WebSocket (per-tab) ──
 function handleTabMsg(tab, msg) {
+  // Track WS activity for running timeout safety net
+  tab._lastWsActivity = Date.now();
   if (msg.type === 'control_request') console.log('[claude-panel] Got control_request msg:', msg.type, msg.request_id, msg.request?.subtype, msg.request?.tool_name);
+  // Buffer non-permission messages while a permission prompt is active
+  if (tab._activePerm && msg.type !== 'control_request') {
+    tab._msgBuffer.push(msg);
+    return;
+  }
+  _processTabMsg(tab, msg);
+}
+
+function _flushMsgBuffer(tab) {
+  while (tab._msgBuffer.length) {
+    const msg = tab._msgBuffer.shift();
+    _processTabMsg(tab, msg);
+  }
+}
+
+function _processTabMsg(tab, msg) {
   switch (msg.type) {
     case 'event': handleTabEvent(tab, msg.event); break;
     case 'control_request': handleControlRequest(tab, msg); break;
     case 'stderr': if (msg.text?.trim()) appendStatus(tab, msg.text.trim()); break;
-    case 'done': finishTab(tab); if (tab._exitedPlan) { tab._exitedPlan = false; renderPostPlanActions(tab); } break;
-    case 'aborted': finishTab(tab); appendStatus(tab, 'Aborted.'); break;
-    case 'error': finishTab(tab); appendError(tab, msg.message); break;
+    case 'done':
+      finishTab(tab);
+      if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
+      if (tab.planMode) renderPostPlanActions(tab);
+      break;
+    case 'aborted':
+      finishTab(tab);
+      if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
+      appendStatus(tab, 'Aborted.');
+      break;
+    case 'error':
+      finishTab(tab);
+      if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
+      appendError(tab, msg.message);
+      break;
   }
 }
 
@@ -1822,7 +2582,26 @@ function handleTabEvent(tab, ev) {
   if (!ev?.type) return;
 
   if (ev.type === 'system' && (ev.subtype === 'compact' || ev.subtype === 'compact_started')) {
-    appendStatus(tab, ev.message || 'Compacting context...');
+    tab.compacting = true;
+    // Reuse a single compact status element to avoid duplicate lines
+    const $msgs = tab.messagesEl;
+    if ($msgs) {
+      let el = $msgs.querySelector('.msg-compact-status');
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'msg-status msg-compact-status';
+        $msgs.appendChild(el);
+      }
+      el.textContent = 'Compacting context\u2026';
+      if (tab === activeTab()) scrollEnd();
+    }
+    if (tab === activeTab()) _setCompactingUI(true);
+    return;
+  }
+  if (ev.type === 'system' && ev.subtype === 'compact_boundary') {
+    // Update existing compact status instead of appending a new line
+    const el = tab.messagesEl?.querySelector('.msg-compact-status');
+    if (el) el.textContent = 'Context compacted';
     return;
   }
   if (ev.type === 'system' && ev.subtype === 'init') {
@@ -1844,10 +2623,14 @@ function handleTabEvent(tab, ev) {
   if (ev.type === 'assistant' && ev.message) {
     if (ev.message.usage) {
       const u = ev.message.usage;
-      tab.usage.inputTokens = u.input_tokens || 0;
-      tab.usage.outputTokens = u.output_tokens || 0;
-      tab.usage.cacheRead = u.cache_read_input_tokens || 0;
-      tab.usage.cacheWrite = u.cache_creation_input_tokens || 0;
+      tab.usage.inputTokens = u.input_tokens ?? 0;
+      tab.usage.outputTokens = u.output_tokens ?? 0;
+      tab.usage.cacheRead = u.cache_read_input_tokens ?? 0;
+      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? 0;
+      if (tab.compacting) {
+        tab.compacting = false;
+        if (tab === activeTab()) _setCompactingUI(false);
+      }
       if (tab === activeTab()) renderGauge(tab);
     }
     renderAssistant(tab, ev.message);
@@ -1870,49 +2653,72 @@ function handleTabEvent(tab, ev) {
     tab.turns++;
     if (ev.usage) {
       const u = ev.usage;
-      tab.usage.inputTokens = u.input_tokens || tab.usage.inputTokens;
-      tab.usage.outputTokens = u.output_tokens || tab.usage.outputTokens;
-      tab.usage.cacheRead = u.cache_read_input_tokens || tab.usage.cacheRead;
-      tab.usage.cacheWrite = u.cache_creation_input_tokens || tab.usage.cacheWrite;
+      tab.usage.inputTokens = u.input_tokens ?? tab.usage.inputTokens;
+      tab.usage.outputTokens = u.output_tokens ?? tab.usage.outputTokens;
+      tab.usage.cacheRead = u.cache_read_input_tokens ?? tab.usage.cacheRead;
+      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? tab.usage.cacheWrite;
+      if (tab.compacting) {
+        tab.compacting = false;
+        if (tab === activeTab()) _setCompactingUI(false);
+      }
       if (tab === activeTab()) renderGauge(tab);
     }
     if (ev.total_cost_usd != null) {
-      tab.sessionCost += ev.total_cost_usd;
-      _totalCost += ev.total_cost_usd;
+      const prevCost = tab.sessionCost;
+      tab.sessionCost = ev.total_cost_usd;
+      const delta = ev.total_cost_usd - prevCost;
+      if (delta > 0) _totalCost += delta;
       if (tab === activeTab()) {
         _updateCostLabel();
         const $cost = _panel?.querySelector('#cp-cost');
         if ($cost) { $cost.classList.add('flash'); setTimeout(() => $cost.classList.remove('flash'), 800); }
       }
-      emit('cost:updated', { amount: ev.total_cost_usd, total: _totalCost });
+      emit('cost:updated', { amount: delta > 0 ? delta : 0, total: _totalCost });
     }
     if (ev.session_id) { tab.sessionId = ev.session_id; saveTabs(); }
-    // Show post-plan action buttons if this turn exited plan mode
-    if (tab._exitedPlan) {
-      tab._exitedPlan = false;
-      renderPostPlanActions(tab);
-    }
+    // Post-plan actions shown only on 'done' (handleTabMsg), not mid-stream
   }
 }
 
 function renderPostPlanActions(tab) {
   const $msgs = tab.messagesEl;
   if (!$msgs) return;
-  // Remove any existing post-plan actions
-  $msgs.querySelectorAll('.post-plan-actions').forEach(el => el.remove());
-  const row = document.createElement('div');
-  row.className = 'post-plan-actions';
+  // Remove any existing post-plan cards
+  $msgs.querySelectorAll('.post-plan-card').forEach(el => el.remove());
+
+  const el = document.createElement('div');
+  el.className = 'msg msg-assistant';
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+  avatar.innerHTML = CLAUDE_ICON;
+  el.appendChild(avatar);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-content';
+
+  const card = document.createElement('div');
+  card.className = 'post-plan-card';
+
+  const hdr = document.createElement('div');
+  hdr.className = 'post-plan-header';
+  hdr.textContent = 'PLAN COMPLETE';
+  card.appendChild(hdr);
+
+  const actionsRow = document.createElement('div');
+  actionsRow.className = 'post-plan-actions';
+
   const actions = [
-    { label: 'Continue with implementation', prompt: 'Continue with the implementation based on the approved plan.' },
+    { label: 'Continue with implementation', prompt: 'Continue with the implementation based on the approved plan.', primary: true },
     { label: 'Compact context', action: 'compact' },
     { label: 'Edit plan', action: 'plan' },
   ];
   for (const a of actions) {
     const btn = document.createElement('button');
-    btn.className = 'post-plan-action';
+    btn.className = 'post-plan-action ' + (a.primary ? 'pp-primary' : 'pp-secondary');
     btn.textContent = a.label;
     btn.addEventListener('click', () => {
-      row.remove();
+      card.style.opacity = '0.45';
+      card.style.pointerEvents = 'none';
       if (a.action === 'compact') {
         if (tab.ws?.readyState === WebSocket.OPEN) {
           tab.ws.send(JSON.stringify({ type: 'compact' }));
@@ -1924,13 +2730,20 @@ function renderPostPlanActions(tab) {
         if ($plan) $plan.classList.add('active');
         appendStatus(tab, 'Plan mode ON — Claude will plan without making changes');
       } else if (a.prompt) {
+        // Exit plan mode before sending implementation prompt
+        tab.planMode = false;
+        const $plan = _panel?.querySelector('#cp-plan-toggle');
+        if ($plan) $plan.classList.remove('active');
         const $input = _panel?.querySelector('#cp-input');
         if ($input) { $input.value = a.prompt; send(); }
       }
     });
-    row.appendChild(btn);
+    actionsRow.appendChild(btn);
   }
-  $msgs.appendChild(row);
+  card.appendChild(actionsRow);
+  wrap.appendChild(card);
+  el.appendChild(wrap);
+  $msgs.appendChild(el);
   if (tab === activeTab()) scrollEnd();
 }
 
@@ -1948,12 +2761,12 @@ function renderAssistant(tab, msg) {
   const askTools = tools.filter(t => t.name === 'AskUserQuestion');
   const regularTools = tools.filter(t => t.name !== 'AskUserQuestion');
 
-  // Detect ExitPlanMode — auto-toggle plan mode off and flag for post-plan actions
+  // Detect ExitPlanMode — auto-toggle plan mode off and show post-plan actions immediately
   if (tools.some(t => t.name === 'ExitPlanMode')) {
     tab.planMode = false;
-    tab._exitedPlan = true;
     const $plan = _panel?.querySelector('#cp-plan-toggle');
     if ($plan) $plan.classList.remove('active');
+    renderPostPlanActions(tab);
   }
 
   // Partial message dedup
@@ -1971,7 +2784,7 @@ function renderAssistant(tab, msg) {
           } else {
             thinkEl = document.createElement('details');
             thinkEl.className = 'msg-thinking';
-            thinkEl.innerHTML = `<summary><span class="msg-thinking-icon">&#x26A1;</span><span class="msg-thinking-label">Thinking</span><span class="msg-thinking-chevron">&#x203A;</span></summary><div class="msg-thinking-content"></div>`;
+            thinkEl.innerHTML = `<summary><span class="msg-thinking-icon">${THINKING_ICON}</span><span class="msg-thinking-label">Thinking</span><span class="msg-thinking-chevron">&#x203A;</span></summary><div class="msg-thinking-content"></div>`;
             thinkEl.querySelector('.msg-thinking-content').textContent = thinkText;
             wrap.insertBefore(thinkEl, wrap.firstChild);
           }
@@ -2022,7 +2835,7 @@ function renderAssistant(tab, msg) {
     if (thinkText) {
       const thinkEl = document.createElement('details');
       thinkEl.className = 'msg-thinking';
-      thinkEl.innerHTML = `<summary><span class="msg-thinking-icon">&#x26A1;</span><span class="msg-thinking-label">Thinking</span><span class="msg-thinking-chevron">&#x203A;</span></summary><div class="msg-thinking-content"></div>`;
+      thinkEl.innerHTML = `<summary><span class="msg-thinking-icon">${THINKING_ICON}</span><span class="msg-thinking-label">Thinking</span><span class="msg-thinking-chevron">&#x203A;</span></summary><div class="msg-thinking-content"></div>`;
       thinkEl.querySelector('.msg-thinking-content').textContent = thinkText;
       wrap.appendChild(thinkEl);
     }
@@ -2049,6 +2862,15 @@ function buildAskFromToolUse(tab, block) {
   const toolUseId = block.id || '';
   tab.pendingAskToolUseId = toolUseId;
 
+  // If renderAskUserQuestion already rendered this ask via control_request, return hidden placeholder
+  if (tab.askRenderedViaControl) {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'ask-card';
+    placeholder.dataset.toolId = toolUseId;
+    placeholder.style.display = 'none';
+    return placeholder;
+  }
+
   // Normalize: accept questions array, single question object, or flat input
   const questions = Array.isArray(input.questions) ? input.questions
     : (input.question || input.text || input.options) ? [input]
@@ -2056,6 +2878,15 @@ function buildAskFromToolUse(tab, block) {
   const container = document.createElement('div');
   container.className = 'ask-card';
   container.dataset.toolId = toolUseId;
+
+  // SynaBun-branded card — detect by question/header text or known menu options
+  if (_isSynaBunAsk(questions)) {
+    container.classList.add('synabun-ask');
+    const bgLogo = document.createElement('div');
+    bgLogo.className = 'synabun-ask-bg-logo';
+    bgLogo.innerHTML = '<img src="logoHD.png" alt="">';
+    container.appendChild(bgLogo);
+  }
 
   for (const q of questions) {
     const questionText = q.question || q.text || q.header || '';
@@ -2081,16 +2912,19 @@ function buildAskFromToolUse(tab, block) {
         const optDesc = typeof opt === 'string' ? '' : (opt.description || '');
         const btn = document.createElement('button');
         btn.className = 'ask-option';
+        const optWrap = document.createElement('span');
+        optWrap.className = 'ask-option-wrap';
         const lbl = document.createElement('span');
         lbl.className = 'ask-option-label';
         lbl.textContent = optLabel;
-        btn.appendChild(lbl);
+        optWrap.appendChild(lbl);
         if (optDesc) {
           const desc = document.createElement('span');
           desc.className = 'ask-option-desc';
           desc.textContent = optDesc;
-          btn.appendChild(desc);
+          optWrap.appendChild(desc);
         }
+        btn.appendChild(optWrap);
         btn.addEventListener('click', () => {
           opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
           btn.classList.add('selected');
@@ -2148,6 +2982,7 @@ function sendAskAnswer(tab, questions, answers) {
   tab.pendingAskRequestId = null;
   tab.pendingAskToolUseId = null;
   tab.pendingAskBufferedAnswer = null;
+  tab.askRenderedViaControl = false;
   showThinking(tab);
   setRunning(tab, true);
 }
@@ -2177,10 +3012,256 @@ function buildPlanCard(block) {
   return card;
 }
 
+// ── SynaBun branded tool card builder ──
+function formatSynaBunInput(input) {
+  const pairs = [];
+  for (const [key, val] of Object.entries(input)) {
+    const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    let displayVal;
+    if (typeof val === 'string') {
+      displayVal = esc(val.length > 200 ? val.slice(0, 200) + '\u2026' : val);
+    } else if (Array.isArray(val)) {
+      displayVal = val.map(v => `<span class="synabun-tag">${esc(String(v))}</span>`).join(' ');
+    } else if (typeof val === 'number' || typeof val === 'boolean') {
+      displayVal = `<span class="synabun-value">${val}</span>`;
+    } else {
+      displayVal = esc(JSON.stringify(val));
+    }
+    pairs.push(`<div class="synabun-kv"><span class="synabun-kv-key">${esc(label)}</span> ${displayVal}</div>`);
+  }
+  return pairs.join('');
+}
+
+function buildSynaBunTool(block) {
+  const meta = getSynaBunMeta(block.name);
+  if (!meta) return null;
+  const card = document.createElement('div');
+  card.className = 'tool-card synabun-card';
+  card.dataset.toolId = block.id || '';
+  card.dataset.toolName = block.name;
+
+  const hdr = document.createElement('div');
+  hdr.className = 'tool-hdr synabun-hdr';
+  const icon = document.createElement('span'); icon.className = 'tool-icon synabun-icon';
+  icon.innerHTML = meta.icon;
+  const name = document.createElement('span'); name.className = 'tool-name synabun-name';
+  name.textContent = meta.label;
+  const detail = document.createElement('span'); detail.className = 'tool-detail';
+  detail.textContent = meta.detailFn ? meta.detailFn(block.input || {}) : '';
+  const chevron = document.createElement('span'); chevron.className = 'tool-chevron'; chevron.innerHTML = '&#x203A;';
+  hdr.append(icon, name, detail, chevron);
+  hdr.addEventListener('click', () => card.classList.toggle('open'));
+
+  const body = document.createElement('div'); body.className = 'tool-body';
+  if (block.input && Object.keys(block.input).length) {
+    const lbl = document.createElement('div'); lbl.className = 'tool-section-label synabun-section-label'; lbl.textContent = 'INPUT';
+    const sec = document.createElement('div'); sec.className = 'tool-section synabun-input';
+    sec.innerHTML = formatSynaBunInput(block.input);
+    body.append(lbl, sec);
+  }
+  const rLbl = document.createElement('div'); rLbl.className = 'tool-section-label tool-result-label synabun-section-label'; rLbl.textContent = 'RESULT'; rLbl.hidden = true;
+  const rSec = document.createElement('div'); rSec.className = 'tool-section tool-result-content synabun-result'; rSec.hidden = true;
+  body.append(rLbl, rSec);
+  card.append(hdr, body);
+  return card;
+}
+
+// ── SynaBun result formatters ──
+function extractSBResultText(ev) {
+  if (Array.isArray(ev.content)) return ev.content.filter(b => b.type !== 'image').map(b => b.text || b.data || '').join('\n');
+  if (typeof ev.content === 'string') return ev.content;
+  return '';
+}
+
+function formatRecallResult(text) {
+  const container = document.createElement('div');
+  container.className = 'synabun-recall-results';
+  // Header line
+  const headerMatch = text.match(/^(Found .+?):\s*\n/);
+  if (headerMatch) {
+    const h = document.createElement('div'); h.className = 'synabun-recall-header';
+    h.textContent = headerMatch[1]; container.appendChild(h);
+  }
+  // Parse memory entries: N. [UUID] (SCORE% match, importance: IMP, AGE)
+  const entryRegex = /(\d+)\.\s+\[([^\]]+)\]\s+\((\d+)%\s*match,\s*importance:\s*(\d+),\s*([^)]+)\)\n\s+([^\n]+)\n([\s\S]*?)(?=\n\n\d+\.\s+\[|--- Session Context ---|$)/g;
+  let m;
+  while ((m = entryRegex.exec(text)) !== null) {
+    const [, , id, score, imp, age, catLine, rest] = m;
+    const lines = rest.trim().split('\n').map(l => l.trim());
+    let content = '', files = '', tags = '';
+    // catLine may contain tags like [tag1, tag2]
+    const tagMatch = catLine.match(/\[([^\]]+)\]\s*$/);
+    const catClean = tagMatch ? catLine.slice(0, tagMatch.index).trim() : catLine;
+    if (tagMatch) tags = tagMatch[1];
+    // Separate content lines from Files: lines
+    const contentLines = [], fileLines = [];
+    for (const l of lines) {
+      if (l.startsWith('Files:')) fileLines.push(l.slice(6).trim());
+      else contentLines.push(l);
+    }
+    content = contentLines.join('\n');
+    files = fileLines.join(', ');
+
+    const card = document.createElement('div'); card.className = 'synabun-memory-card';
+    let html = `<div class="synabun-mem-header">
+      <span class="synabun-mem-score">${esc(score)}%</span>
+      <span class="synabun-mem-imp">imp:${esc(imp)}</span>
+      <span class="synabun-mem-cat">${esc(catClean)}</span>
+      <span class="synabun-mem-age">${esc(age)}</span>
+    </div>`;
+    if (tags) {
+      html += '<div class="synabun-mem-tags">' + tags.split(',').map(t => `<span class="synabun-tag">${esc(t.trim())}</span>`).join('') + '</div>';
+    }
+    if (content) html += `<div class="synabun-mem-content">${esc(content)}</div>`;
+    if (files) html += `<div class="synabun-mem-files">Files: ${esc(files)}</div>`;
+    html += `<div class="synabun-mem-id">${esc(id.slice(0, 8))}</div>`;
+    card.innerHTML = html;
+    container.appendChild(card);
+  }
+  // Session context section
+  const sessIdx = text.indexOf('--- Session Context ---');
+  if (sessIdx !== -1) {
+    const sessText = text.slice(sessIdx);
+    const sessRegex = /SESSION:\s+\[([^\]]+)\]\s+\((\d+)%\s*match,\s*([^)]+)\)\n([\s\S]*?)(?=\n\nSESSION:|$)/g;
+    let sm;
+    while ((sm = sessRegex.exec(sessText)) !== null) {
+      const [, sid, sscore, sinfo, sbody] = sm;
+      const sc = document.createElement('div'); sc.className = 'synabun-memory-card';
+      sc.style.borderColor = 'rgba(100,160,255,0.12)';
+      sc.innerHTML = `<div class="synabun-mem-header">
+        <span class="synabun-mem-score" style="background:rgba(100,160,255,0.12);color:rgba(130,180,255,0.9)">${esc(sscore)}%</span>
+        <span class="synabun-mem-cat">Session</span>
+        <span class="synabun-mem-age">${esc(sinfo)}</span>
+      </div><div class="synabun-mem-content">${esc(sbody.trim())}</div>
+      <div class="synabun-mem-id">${esc(sid.slice(0, 8))}</div>`;
+      container.appendChild(sc);
+    }
+  }
+  // Fallback if no entries parsed
+  if (container.children.length <= (headerMatch ? 1 : 0)) {
+    const pre = document.createElement('pre'); pre.className = 'synabun-result-pre';
+    pre.textContent = text.slice(0, 2000); container.appendChild(pre);
+  }
+  return container;
+}
+
+function formatRememberResult(text) {
+  const container = document.createElement('div'); container.className = 'synabun-confirmation';
+  const icon = document.createElement('div'); icon.className = 'synabun-confirm-icon';
+  icon.innerHTML = ICON_CHECK;
+  const body = document.createElement('div'); body.className = 'synabun-confirm-body';
+  // Parse: Remembered [UUID] (cat/proj, importance: N): "content..."
+  const m = text.match(/Remembered\s+\[([^\]]+)\]\s+\(([^)]+)\):\s*"?(.+?)"?\s*$/s);
+  if (m) {
+    body.innerHTML = `<div class="synabun-confirm-action">Remembered</div>
+      <div style="margin-bottom:2px">${esc(m[3].slice(0, 150))}</div>
+      <div style="font-size:9px;color:var(--t-faint)">${esc(m[2])} \u00B7 ${esc(m[1].slice(0, 8))}</div>`;
+  } else {
+    body.innerHTML = `<div class="synabun-confirm-action">Remembered</div><div>${esc(text.slice(0, 300))}</div>`;
+  }
+  container.append(icon, body);
+  return container;
+}
+
+function formatMemoriesResult(text) {
+  const container = document.createElement('div'); container.className = 'synabun-recall-results';
+  // Check if it's stats output
+  if (text.includes('Memory Statistics:')) {
+    const pre = document.createElement('pre'); pre.className = 'synabun-result-pre';
+    pre.textContent = text.slice(0, 2000); container.appendChild(pre);
+    return container;
+  }
+  // Header
+  const headerMatch = text.match(/^(.+?)\s*\((\d+)\):\s*\n/);
+  if (headerMatch) {
+    const h = document.createElement('div'); h.className = 'synabun-recall-header';
+    h.textContent = `${headerMatch[1]} (${headerMatch[2]})`; container.appendChild(h);
+  }
+  // Parse: N. [UUID] CATEGORY | PROJECT | imp:IMP | AGE [TAGS]
+  const entryRegex = /(\d+)\.\s+\[([^\]]+)\]\s+(.+?)(?:\s+\[([^\]]+)\])?\n\s+([\s\S]*?)(?=\n\n\d+\.\s+\[|$)/g;
+  let m;
+  while ((m = entryRegex.exec(text)) !== null) {
+    const [, , id, meta, tags, content] = m;
+    const card = document.createElement('div'); card.className = 'synabun-memory-card';
+    let html = `<div class="synabun-mem-header"><span class="synabun-mem-cat">${esc(meta.trim())}</span></div>`;
+    if (tags) html += '<div class="synabun-mem-tags">' + tags.split(',').map(t => `<span class="synabun-tag">${esc(t.trim())}</span>`).join('') + '</div>';
+    html += `<div class="synabun-mem-content">${esc(content.trim())}</div>`;
+    html += `<div class="synabun-mem-id">${esc(id.slice(0, 8))}</div>`;
+    card.innerHTML = html; container.appendChild(card);
+  }
+  if (container.children.length <= (headerMatch ? 1 : 0)) {
+    const pre = document.createElement('pre'); pre.className = 'synabun-result-pre';
+    pre.textContent = text.slice(0, 2000); container.appendChild(pre);
+  }
+  return container;
+}
+
+function formatSBConfirmation(text, action) {
+  const container = document.createElement('div'); container.className = 'synabun-confirmation';
+  const icon = document.createElement('div'); icon.className = 'synabun-confirm-icon';
+  icon.innerHTML = action === 'Forgot' ? ICON_X : ICON_CHECK;
+  const body = document.createElement('div'); body.className = 'synabun-confirm-body';
+  body.innerHTML = `<div class="synabun-confirm-action">${esc(action)}</div><div>${esc(text.slice(0, 400))}</div>`;
+  container.append(icon, body);
+  return container;
+}
+
+function updateSynaBunResult(card, ev) {
+  const rLbl = card.querySelector('.tool-result-label');
+  const rSec = card.querySelector('.tool-result-content');
+  if (!rSec) return;
+  rSec.innerHTML = '';
+
+  const toolName = card.dataset.toolName || '';
+  const key = synaBunToolKey(toolName);
+  const rawText = extractSBResultText(ev);
+
+  // Check for images first (browser screenshots)
+  if (Array.isArray(ev.content)) {
+    for (const b of ev.content) {
+      if (b.type === 'image') {
+        const data = b.source?.data || b.data || '';
+        const mime = b.source?.media_type || b.media_type || 'image/png';
+        if (data) { const img = document.createElement('img'); img.src = `data:${mime};base64,${data}`; img.style.cssText = 'max-width:100%;border-radius:4px;'; rSec.appendChild(img); }
+      }
+    }
+  }
+
+  if (key === 'recall') {
+    rSec.appendChild(formatRecallResult(rawText));
+  } else if (key === 'remember') {
+    rSec.appendChild(formatRememberResult(rawText));
+  } else if (key === 'memories') {
+    rSec.appendChild(formatMemoriesResult(rawText));
+  } else if (key === 'reflect') {
+    rSec.appendChild(formatSBConfirmation(rawText, 'Updated'));
+  } else if (key === 'forget') {
+    rSec.appendChild(formatSBConfirmation(rawText, 'Forgot'));
+  } else if (key === 'restore') {
+    rSec.appendChild(formatSBConfirmation(rawText, 'Restored'));
+  } else if (key === 'category') {
+    rSec.appendChild(formatSBConfirmation(rawText, rawText.startsWith('Deleted') ? 'Deleted' : rawText.startsWith('Created') ? 'Created' : rawText.startsWith('Updated') ? 'Updated' : 'Categories'));
+  } else if (key === 'sync') {
+    rSec.appendChild(formatSBConfirmation(rawText, 'Synced'));
+  } else {
+    // Default: formatted pre
+    const pre = document.createElement('pre'); pre.className = 'synabun-result-pre';
+    pre.textContent = rawText.slice(0, 2000); rSec.appendChild(pre);
+  }
+
+  rLbl.hidden = false; rSec.hidden = false;
+  card.classList.add(ev.is_error ? 'tool-error' : 'tool-ok');
+}
+
 function buildTool(block) {
   // Plan files get a special rendered card
   if (block.name === 'Write' && isPlanFile(block.input?.file_path)) {
     return buildPlanCard(block);
+  }
+  // SynaBun MCP tools get branded cards
+  if (isSynaBunTool(block.name)) {
+    const synCard = buildSynaBunTool(block);
+    if (synCard) return synCard;
   }
 
   const card = document.createElement('div');
@@ -2189,8 +3270,7 @@ function buildTool(block) {
   const hdr = document.createElement('div');
   hdr.className = 'tool-hdr';
   const icon = document.createElement('span'); icon.className = 'tool-icon';
-  const iconMap = { Read:'F', Edit:'E', Write:'W', Bash:'$', Glob:'*', Grep:'?', Agent:'A', WebSearch:'S', WebFetch:'U' };
-  icon.textContent = iconMap[block.name] || '#';
+  icon.innerHTML = toolIconSvg(block.name);
   const name = document.createElement('span'); name.className = 'tool-name'; name.textContent = block.name;
   const detail = document.createElement('span'); detail.className = 'tool-detail';
   const i = block.input || {};
@@ -2223,6 +3303,11 @@ function updateToolResult(tab, ev) {
   // Plan cards don't have result sections — just mark success/error via border
   if (card.classList.contains('plan-card')) {
     card.style.borderColor = ev.is_error ? 'rgba(255,82,82,0.3)' : 'rgba(100,200,120,0.3)';
+    return;
+  }
+  // SynaBun branded cards get rich result formatting
+  if (card.classList.contains('synabun-card')) {
+    updateSynaBunResult(card, ev);
     return;
   }
   const rLbl = card.querySelector('.tool-result-label');
@@ -2306,17 +3391,39 @@ function handleControlRequest(tab, msg) {
       sendPermissionResponse(tab, requestId, 'allow');
       return;
     }
-    renderPermissionPrompt(tab, requestId, req);
+    tab._permQueue.push({ requestId, req });
+    _showNextPerm(tab);
     return;
   }
 
   console.warn('[claude-panel] Unhandled control_request:', JSON.stringify(msg).slice(0, 500));
 }
 
+function _showNextPerm(tab) {
+  if (tab._activePerm) return;
+  const next = tab._permQueue.shift();
+  if (!next) { _flushMsgBuffer(tab); return; }
+  tab._activePerm = true;
+  renderPermissionPrompt(tab, next.requestId, next.req);
+}
+
+/** Detect SynaBun skill ask cards by question/header text or known menu option labels */
+function _isSynaBunAsk(questions) {
+  const _SB_OPTS = /\b(Brainstorm Ideas|Audit Memories|Memorize Context|Memory Health|Search Memories|Auto Changelog)\b/;
+  for (const q of questions) {
+    const txt = q.question || q.text || q.header || '';
+    if (/synabun/i.test(txt) || /synabun/i.test(q.header || '')) return true;
+    const labels = (q.options || []).map(o => typeof o === 'string' ? o : (o.label || o.value || '')).join(' ');
+    if (_SB_OPTS.test(labels)) return true;
+  }
+  return false;
+}
+
 function renderAskUserQuestion(tab, requestId, input) {
   const $msgs = tab.messagesEl;
   if (!$msgs) return;
   hideThinking(tab);
+  tab.askRenderedViaControl = true;
 
   // Normalize: accept questions array, single question object, or flat input
   const questions = Array.isArray(input?.questions) ? input.questions
@@ -2337,6 +3444,15 @@ function renderAskUserQuestion(tab, requestId, input) {
     const questionText = q.question || q.text || q.header || '';
     const card = document.createElement('div');
     card.className = 'ask-card';
+
+    // SynaBun-branded card
+    if (_isSynaBunAsk([q])) {
+      card.classList.add('synabun-ask');
+      const bgLogo = document.createElement('div');
+      bgLogo.className = 'synabun-ask-bg-logo';
+      bgLogo.innerHTML = '<img src="logoHD.png" alt="">';
+      card.appendChild(bgLogo);
+    }
 
     if (q.header) {
       const hdr = document.createElement('div');
@@ -2359,16 +3475,19 @@ function renderAskUserQuestion(tab, requestId, input) {
         const optDesc = typeof opt === 'string' ? '' : (opt.description || '');
         const btn = document.createElement('button');
         btn.className = 'ask-option';
+        const optWrap = document.createElement('span');
+        optWrap.className = 'ask-option-wrap';
         const lbl = document.createElement('span');
         lbl.className = 'ask-option-label';
         lbl.textContent = optLabel;
-        btn.appendChild(lbl);
+        optWrap.appendChild(lbl);
         if (optDesc) {
           const desc = document.createElement('span');
           desc.className = 'ask-option-desc';
           desc.textContent = optDesc;
-          btn.appendChild(desc);
+          optWrap.appendChild(desc);
         }
+        btn.appendChild(optWrap);
         btn.addEventListener('click', () => {
           opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
           btn.classList.add('selected');
@@ -2403,11 +3522,13 @@ function renderPermissionPrompt(tab, requestId, req) {
 
   const toolName = req.tool_name || 'Unknown';
   const input = req.input || {};
-  const iconMap = { Read:'F', Edit:'E', Write:'W', Bash:'$', Glob:'*', Grep:'?', Agent:'A', WebSearch:'S', WebFetch:'U' };
+  const isSynaBun = isSynaBunTool(toolName);
+  const synMeta = isSynaBun ? getSynaBunMeta(toolName) : null;
 
   // Detail line
   let detail = '';
-  if (['Read','Edit','Write'].includes(toolName)) detail = input.file_path || '';
+  if (isSynaBun && synMeta?.detailFn) detail = synMeta.detailFn(input);
+  else if (['Read','Edit','Write'].includes(toolName)) detail = input.file_path || '';
   else if (toolName === 'Bash') detail = input.command || '';
   else if (toolName === 'Glob' || toolName === 'Grep') detail = input.pattern || '';
   else if (toolName === 'Agent') detail = input.description || input.prompt?.slice(0, 80) || '';
@@ -2424,17 +3545,23 @@ function renderPermissionPrompt(tab, requestId, req) {
   wrap.className = 'msg-content';
 
   const card = document.createElement('div');
-  card.className = 'perm-card';
+  card.className = 'perm-card active-perm' + (isSynaBun ? ' synabun-perm' : '');
+
+  // Header label
+  const hdr = document.createElement('div');
+  hdr.className = 'perm-header';
+  hdr.textContent = 'PERMISSION';
+  card.appendChild(hdr);
 
   // Tool line
   const toolLine = document.createElement('div');
   toolLine.className = 'perm-tool-line';
   const icon = document.createElement('span');
   icon.className = 'perm-tool-icon';
-  icon.textContent = iconMap[toolName] || '#';
+  icon.innerHTML = toolIconSvg(toolName);
   const name = document.createElement('span');
   name.className = 'perm-tool-name';
-  name.textContent = toolName;
+  name.textContent = synMeta?.label || toolName;
   toolLine.append(icon, name);
   card.appendChild(toolLine);
 
@@ -2452,31 +3579,43 @@ function renderPermissionPrompt(tab, requestId, req) {
 
   const allowBtn = document.createElement('button');
   allowBtn.className = 'perm-btn perm-btn-allow';
-  allowBtn.textContent = 'Allow';
+  allowBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_CHECK + '</span>Allow';
 
   const denyBtn = document.createElement('button');
   denyBtn.className = 'perm-btn perm-btn-deny';
-  denyBtn.textContent = 'Deny';
+  denyBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_X + '</span>Deny';
 
   const alwaysLbl = document.createElement('label');
   alwaysLbl.className = 'perm-always';
   const alwaysCb = document.createElement('input');
   alwaysCb.type = 'checkbox';
-  alwaysLbl.append(alwaysCb, document.createTextNode('Always'));
+  const alwaysText = document.createElement('span');
+  alwaysText.textContent = 'Always';
+  alwaysLbl.append(alwaysCb, alwaysText);
+
+  // Status badge for resolved state
+  const statusBadge = document.createElement('span');
+  statusBadge.className = 'perm-status';
+  statusBadge.hidden = true;
 
   const resolve = (behavior) => {
     const always = alwaysCb.checked && behavior === 'allow';
     if (always) _autoAllowTools.add(toolName);
-    card.classList.add('resolved');
+    card.classList.remove('active-perm');
+    card.classList.add('resolved', behavior === 'allow' ? 'resolved-allow' : 'resolved-deny');
     allowBtn.disabled = true;
     denyBtn.disabled = true;
+    statusBadge.textContent = behavior === 'allow' ? 'Allowed' : 'Denied';
+    statusBadge.hidden = false;
     sendPermissionResponse(tab, requestId, behavior, always);
+    tab._activePerm = false;
+    _showNextPerm(tab);
   };
 
   allowBtn.addEventListener('click', () => resolve('allow'));
   denyBtn.addEventListener('click', () => resolve('deny'));
 
-  actions.append(allowBtn, denyBtn, alwaysLbl);
+  actions.append(allowBtn, denyBtn, alwaysLbl, statusBadge);
   card.appendChild(actions);
   wrap.appendChild(card);
   el.appendChild(wrap);
@@ -2555,8 +3694,23 @@ function scrollEnd() {
   if ($msgs) requestAnimationFrame(() => requestAnimationFrame(() => { $msgs.scrollTop = $msgs.scrollHeight; }));
 }
 
+const RUNNING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes — safety net for stuck running state
+
 function setRunning(tab, r) {
   tab.running = r;
+  // Clear any previous running timeout
+  if (tab._runningTimeout) { clearTimeout(tab._runningTimeout); tab._runningTimeout = null; }
+  if (r) {
+    tab._lastWsActivity = Date.now();
+    // Safety timeout: if running=true for too long with no WS activity, force finish
+    tab._runningTimeout = setTimeout(() => {
+      if (tab.running && (!tab._lastWsActivity || Date.now() - tab._lastWsActivity > RUNNING_TIMEOUT_MS - 5000)) {
+        console.warn('[claude-panel] Running timeout for tab', tab.id, '— forcing finish');
+        finishTab(tab);
+        appendStatus(tab, 'Session timed out — no response received.');
+      }
+    }, RUNNING_TIMEOUT_MS);
+  }
   updatePillRunning(tab);
   if (tab !== activeTab()) return;
   const $send = _panel?.querySelector('#cp-send');
@@ -2583,14 +3737,16 @@ function send() {
   if (tab.running) { tab.ws.send(JSON.stringify({ type: 'abort' })); return; }
   if (!text && !tab.attachedImages.length) return;
 
-  // Clear post-plan action buttons on new message
-  tab.messagesEl?.querySelectorAll('.post-plan-actions').forEach(el => el.remove());
+  // Clear post-plan action cards on new message
+  tab.messagesEl?.querySelectorAll('.post-plan-card').forEach(el => { const msg = el.closest('.msg'); if (msg) msg.remove(); else el.remove(); });
 
   if (text === '/clear') { $input.value = ''; tab.messagesEl.innerHTML = ''; hideSlashHints(); return; }
   if (text === '/compact') {
     $input.value = ''; hideSlashHints();
     if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); return; }
     if (tab.ws?.readyState === WebSocket.OPEN) {
+      tab.compacting = true;
+      _setCompactingUI(true);
       tab.ws.send(JSON.stringify({ type: 'compact' }));
       appendStatus(tab, 'Compacting context...');
     }
@@ -2638,6 +3794,7 @@ function send() {
     sessionId: tab.sessionId || undefined,
     model: ddGetValue($model) || undefined,
     effort: _getEffort() || undefined,
+    windowId: _windowId,
   };
   if (pendingImages) {
     msg.images = pendingImages.map(i => ({ base64: i.base64, mediaType: i.mediaType }));
@@ -2650,11 +3807,206 @@ function send() {
   tab.ws.send(JSON.stringify(msg));
 }
 
+// ── Browser embed: live screencast inside the panel ──
+
+function showBrowserEmbed(sessionId, url) {
+  if (_browserEmbed?.sessionId === sessionId) return; // already showing this session
+  hideBrowserEmbed(); // clean up any previous
+
+  const container = _panel?.querySelector('#cp-browser-embed');
+  if (!container) return;
+
+  const canvas = container.querySelector('.cp-browser-canvas');
+  const ctx = canvas.getContext('2d');
+  const urlBar = container.querySelector('.cp-browser-url');
+  if (url) urlBar.value = url;
+
+  // Connect screencast WebSocket
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/browser/${sessionId}`);
+
+  _browserEmbed = { sessionId, ws, canvas, ctx, urlBar, container };
+  _browserEmbedVisible = true;
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'frame' && msg.data) {
+        const img = new Image();
+        img.onload = () => {
+          if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+          }
+          ctx.drawImage(img, 0, 0);
+        };
+        img.src = 'data:image/jpeg;base64,' + msg.data;
+      } else if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
+        if (msg.url) urlBar.value = msg.url;
+      } else if (msg.type === 'error') {
+        console.warn('[claude-panel] Browser embed error:', msg.message);
+      }
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    if (_browserEmbed?.sessionId === sessionId) hideBrowserEmbed();
+  };
+
+  // Show with animation
+  container.classList.add('active', 'cp-browser-enter');
+  container.addEventListener('animationend', () => {
+    container.classList.remove('cp-browser-enter');
+  }, { once: true });
+
+  // Wire nav buttons
+  _wireBrowserEmbedEvents();
+
+  // Resize observer — update canvas display size only (do NOT resize browser viewport)
+  // The browser stays at its original viewport (e.g. 1280x800) and frames scale to fit.
+  const canvasWrap = container.querySelector('.cp-browser-canvas-wrap');
+  const ro = new ResizeObserver(() => {
+    const rect = canvasWrap.getBoundingClientRect();
+    const w = Math.round(rect.width), h = Math.round(rect.height);
+    if (w < 10 || h < 10) return;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+  });
+  ro.observe(canvasWrap);
+  _browserEmbed.ro = ro;
+}
+
+function hideBrowserEmbed() {
+  if (!_browserEmbed) return;
+  const { ws, container, ro } = _browserEmbed;
+  if (ro) ro.disconnect();
+  if (ws && ws.readyState <= WebSocket.OPEN) ws.close();
+  if (container) {
+    container.classList.remove('active', 'cp-browser-enter');
+  }
+  _browserEmbed = null;
+  _browserEmbedVisible = false;
+}
+
+function _browserSend(msg) {
+  if (_browserEmbed?.ws?.readyState === WebSocket.OPEN) {
+    _browserEmbed.ws.send(JSON.stringify(msg));
+  }
+}
+
+function _wireBrowserEmbedEvents() {
+  const container = _panel?.querySelector('#cp-browser-embed');
+  if (!container || container._cpWired) return;
+  container._cpWired = true;
+
+  const canvas = container.querySelector('.cp-browser-canvas');
+  const urlBar = container.querySelector('.cp-browser-url');
+
+  // Nav buttons
+  container.querySelector('.cp-browser-back')?.addEventListener('click', () => _browserSend({ type: 'back' }));
+  container.querySelector('.cp-browser-fwd')?.addEventListener('click', () => _browserSend({ type: 'forward' }));
+  container.querySelector('.cp-browser-reload')?.addEventListener('click', () => _browserSend({ type: 'reload' }));
+
+  // URL bar enter to navigate
+  urlBar?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      let navUrl = urlBar.value.trim();
+      if (navUrl && !navUrl.match(/^https?:\/\//)) navUrl = 'https://' + navUrl;
+      _browserSend({ type: 'navigate', url: navUrl });
+    }
+  });
+
+  // Close embed button
+  container.querySelector('.cp-browser-close-embed')?.addEventListener('click', () => hideBrowserEmbed());
+
+  // Detach button — pop into floating window
+  container.querySelector('.cp-browser-detach')?.addEventListener('click', () => detachBrowserEmbed());
+
+  // ── Forward mouse/keyboard from canvas to browser ──
+  function canvasCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+  }
+
+  canvas.addEventListener('click', (e) => {
+    const { x, y } = canvasCoords(e);
+    _browserSend({ type: 'click', x, y });
+  });
+  canvas.addEventListener('dblclick', (e) => {
+    const { x, y } = canvasCoords(e);
+    _browserSend({ type: 'dblclick', x, y });
+  });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    _browserSend({ type: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY });
+  }, { passive: false });
+
+  canvas.tabIndex = 0;
+  canvas.addEventListener('keydown', (e) => {
+    e.preventDefault();
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      _browserSend({ type: 'keypress', text: e.key });
+    } else {
+      _browserSend({ type: 'keydown', key: e.key });
+    }
+  });
+  canvas.addEventListener('keyup', (e) => {
+    e.preventDefault();
+    if (e.key.length > 1) _browserSend({ type: 'keyup', key: e.key });
+  });
+}
+
+function detachBrowserEmbed() {
+  if (!_browserEmbed) return;
+  const { sessionId, urlBar } = _browserEmbed;
+  const url = urlBar?.value || '';
+  // Close the embedded view (WS disconnect) — server supports multiple WS clients,
+  // so the floating window will connect its own WS to the same session
+  hideBrowserEmbed();
+  // Reconnect as a floating window via the terminal system
+  emit('browser:reconnect', { sessionId, url });
+}
+
+// ── Browser embed sync listeners (wired once on init) ──
+let _browserSyncWired = false;
+function _wireBrowserSync() {
+  if (_browserSyncWired) return;
+  _browserSyncWired = true;
+
+  // Auto-show browser embed ONLY when the panel's Claude process triggered it
+  on('sync:browser:created', async (msg) => {
+    if (!_panel || !_visible) return; // panel not open, let terminal handle it
+    const tab = activeTab();
+    if (!tab?.running) return; // Claude not actively processing — browser was opened externally
+    if (!msg.sessionId) return;
+    if (_browserEmbedVisible && _browserEmbed?.sessionId === msg.sessionId) return;
+    showBrowserEmbed(msg.sessionId, msg.url);
+  });
+
+  // Auto-hide when browser session is destroyed
+  on('sync:browser:deleted', (msg) => {
+    if (_browserEmbed?.sessionId === msg.sessionId) {
+      hideBrowserEmbed();
+    }
+  });
+}
+
 function autoResize() {
   const $input = _panel?.querySelector('#cp-input');
   if (!$input) return;
   $input.style.height = 'auto';
-  $input.style.height = Math.min($input.scrollHeight, 120) + 'px';
+  const maxH = 180;
+  const h = Math.min($input.scrollHeight, maxH);
+  $input.style.height = h + 'px';
+  // Add fade mask when content overflows
+  if ($input.scrollHeight > $input.clientHeight + 2) {
+    $input.classList.add('scrollable');
+  } else {
+    $input.classList.remove('scrollable');
+  }
 }
 
 // ── Config loading ──
@@ -2707,6 +4059,8 @@ export function toggleClaudePanel() {
     loadSkills();
     restoreTabs();
     loadMonthlyCost();
+    _wireBrowserSync();
+    _startHeartbeat();
   }
   _visible = !_visible;
   if (_visible) {
@@ -3129,6 +4483,8 @@ function wireEvents() {
       const tab = activeTab();
       if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
       if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); return; }
+      tab.compacting = true;
+      _setCompactingUI(true);
       tab.ws.send(JSON.stringify({ type: 'compact' }));
       appendStatus(tab, 'Compacting context...');
     });

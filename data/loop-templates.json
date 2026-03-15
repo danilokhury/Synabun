@@ -87,7 +87,7 @@
     "id": "5961b95004f88595970a5a99",
     "name": "Twitter SynaBun",
     "description": "Custom loop para interações no twitter",
-    "task": "IMPORTANT\n- Do NOT use — dashes on text\n- DO NOT USE EM-DASHES ON TEXT\n- DO NOT USE EM-DASHES ON TEXT\n- Do noot fucking comment on Synabuns own post\n- DO NOT DOUBLE POST. Ensure there is no other Synabun post on that same thread\n- Talk about Synabun features without making it look like spam. \n\nTask:\n\nYour task is to navigate thru twitter trending tags related to vibe coding and try to have casual conversations with users about how Synabun can help out on their vibecoding journey and it has what user needs. To code via CLI in a more effective way.\n\n=====================================\n\nRules:\n\n- Interact with portuguese speaking vibe coders\n- Dont use -- dashes on text\n- Try to find opportunities to talk about synabum features, you have access to all Synabun features from synabun memory\n- Double check how you access the \"publish\" button, you are not publishing the replies or content, usually drafting or skipping\n- You are here to chat about AI, only plug https://synabun.ai/ if it actually calls for\n- look mostly for english and portuguese speaking threads and hashtags\n- Don't over use emojis",
+    "task": "IMPORTANT\n- Do NOT use — dashes on text\n- DO NOT USE EM-DASHES ON TEXT\n- DO NOT USE EM-DASHES ON TEXT\n- Do noot fucking comment on Synabuns own post\n- DO NOT DOUBLE POST. Ensure there is no other Synabun post on that same thread\n- Talk about Synabun features without making it look like spam. \n\nTask:\n\nYour task is to navigate thru twitter trending tags related to vibe coding and try to have casual conversations with users about how Synabun can help out on their vibecoding journey and it has what user needs. To code via CLI in a more effective way.\n\n=====================================\n\nRules:\n\n- try to speak about more broad contents in twitter, mix of vibe coding, memory and MCP. The responses are too robotic an mono topical.\n- Interact with portuguese speaking vibe coders\n- Dont use -- dashes on text\n- Try to find opportunities to talk about synabum features, you have access to all Synabun features from synabun memory\n- Double check how you access the \"publish\" button, you are not publishing the replies or content, usually drafting or skipping\n- You are here to chat about AI, only plug https://synabun.ai/ if it actually calls for\n- look mostly for english and portuguese speaking threads and hashtags\n- Don't over use emojis",
     "context": null,
     "iterations": 50,
     "maxMinutes": 120,
@@ -95,7 +95,7 @@
     "icon": "chat",
     "category": "social",
     "createdAt": "2026-03-01T21:53:12.510Z",
-    "updatedAt": "2026-03-11T04:41:26.656Z"
+    "updatedAt": "2026-03-14T03:38:49.351Z"
   },
   {
     "id": "0a11e66fa69f0d2593debaa2",

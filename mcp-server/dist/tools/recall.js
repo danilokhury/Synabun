@@ -6,6 +6,7 @@ import { searchMemories, searchMemoriesFTS, updatePayload, searchSessionChunks }
 import { validateCategory } from '../services/categories.js';
 import { coerceStringArray } from './utils.js';
 import { config, detectProject } from '../config.js';
+import { text } from './response.js';
 export function buildRecallSchema() {
     return {
         query: z.string().describe('What to search for, in natural language.'),
@@ -101,9 +102,7 @@ export async function handleRecall(args) {
     if (category) {
         const catCheck = validateCategory(category);
         if (!catCheck.valid) {
-            return {
-                content: [{ type: 'text', text: catCheck.error }],
-            };
+            return text(catCheck.error);
         }
     }
     const vector = await generateEmbedding(query);
@@ -169,14 +168,7 @@ export async function handleRecall(args) {
         }).catch(() => { });
     }
     if (scored.length === 0) {
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `No memories found for "${query}"${category ? ` in category ${category}` : ''}${project ? ` for project ${project}` : ''}.`,
-                },
-            ],
-        };
+        return text(`No memories found for "${query}"${category ? ` in category ${category}` : ''}${project ? ` for project ${project}` : ''}.`);
     }
     const maxChars = getRecallMaxChars();
     const lines = scored.map((r, i) => {
@@ -256,13 +248,6 @@ export async function handleRecall(args) {
     const label = sessionLines.length > 0
         ? `Found ${scored.length} memories and ${sessionLines.length} session chunks`
         : `Found ${scored.length} memories`;
-    return {
-        content: [
-            {
-                type: 'text',
-                text: `${label} for "${query}":\n\n${allLines.join('\n\n')}`,
-            },
-        ],
-    };
+    return text(`${label} for "${query}":\n\n${allLines.join('\n\n')}`);
 }
 //# sourceMappingURL=recall.js.map

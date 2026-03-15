@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text, image } from './response.js';
 
 // ── browser_snapshot ──
 
@@ -60,24 +61,24 @@ function formatSnapshotNode(node: Record<string, unknown>, indent = 0): string {
 
 export async function handleBrowserSnapshot(args: { selector?: string; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.snapshot(resolved.sessionId, args.selector);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Snapshot failed: ${result.error}` }] };
+  if (result.error) return text(`Snapshot failed: ${result.error}`);
 
   const tree = result.snapshot as Record<string, unknown> | null;
   const formatted = tree ? formatSnapshotNode(tree) : '(empty page)';
 
-  let text = `Page: ${result.url}\nTitle: "${result.title}"\n`;
-  if (args.selector) text += `Scope: ${args.selector}\n`;
-  text += '\n' + formatted;
+  let msg = `Page: ${result.url}\nTitle: "${result.title}"\n`;
+  if (args.selector) msg += `Scope: ${args.selector}\n`;
+  msg += '\n' + formatted;
 
   // Truncate if very long
-  if (text.length > 30000) {
-    text = text.slice(0, 30000) + '\n... (truncated — narrow scope with selector param)';
+  if (msg.length > 30000) {
+    msg = msg.slice(0, 30000) + '\n... (truncated — narrow scope with selector param)';
   }
 
-  return { content: [{ type: 'text' as const, text }] };
+  return text(msg);
 }
 
 // ── browser_content ──
@@ -91,15 +92,15 @@ export const browserContentDescription =
 
 export async function handleBrowserContent(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.getContent(resolved.sessionId);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Content failed: ${result.error}` }] };
+  if (result.error) return text(`Content failed: ${result.error}`);
 
-  let text = `URL: ${result.url}\nTitle: "${result.title}"\n\n`;
-  text += (result.text as string) || '(empty page)';
+  let msg = `URL: ${result.url}\nTitle: "${result.title}"\n\n`;
+  msg += (result.text as string) || '(empty page)';
 
-  return { content: [{ type: 'text' as const, text }] };
+  return text(msg);
 }
 
 // ── browser_screenshot ──
@@ -113,15 +114,15 @@ export const browserScreenshotDescription =
 
 export async function handleBrowserScreenshot(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.screenshot(resolved.sessionId);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Screenshot failed: ${result.error}` }] };
+  if (result.error) return text(`Screenshot failed: ${result.error}`);
 
   return {
     content: [
-      { type: 'text' as const, text: `Screenshot of ${result.url} — "${result.title}"` },
-      { type: 'image' as const, data: result.data as string, mimeType: 'image/jpeg' },
+      ...text(`Screenshot of ${result.url} — "${result.title}"`).content,
+      ...image(result.data as string, 'image/jpeg').content,
     ],
   };
 }
@@ -156,20 +157,18 @@ export const browserExtractTweetsDescription =
 
 export async function handleBrowserExtractTweets(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, TWEET_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const tweets = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(tweets) || tweets.length === 0) {
-    return { content: [{ type: 'text' as const, text: `No tweets found. Try browser_scroll then retry.` }] };
+    return text(`No tweets found. Try browser_scroll then retry.`);
   }
 
   const json = JSON.stringify(tweets, null, 2);
-  return {
-    content: [{ type: 'text' as const, text: `${tweets.length} tweet(s):\n\n${json}` }],
-  };
+  return text(`${tweets.length} tweet(s):\n\n${json}`);
 }
 
 // ── browser_extract_fb_posts ──
@@ -203,19 +202,17 @@ export const browserExtractFbPostsDescription =
 
 export async function handleBrowserExtractFbPosts(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, FB_POST_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const posts = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(posts) || posts.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No posts found. Try browser_scroll down then retry.' }] };
+    return text('No posts found. Try browser_scroll down then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}` }],
-  };
+  return text(`${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}`);
 }
 
 // ── browser_extract_tiktok_videos ──
@@ -258,19 +255,17 @@ export const browserExtractTiktokVideosDescription =
 
 export async function handleBrowserExtractTiktokVideos(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, TIKTOK_FEED_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const videos = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(videos) || videos.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No TikTok videos found. Make sure you are on tiktok.com/ or tiktok.com/following, then try browser_scroll down and retry.' }] };
+    return text('No TikTok videos found. Make sure you are on tiktok.com/ or tiktok.com/following, then try browser_scroll down and retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${videos.length} video(s):\n\n${JSON.stringify(videos, null, 2)}` }],
-  };
+  return text(`${videos.length} video(s):\n\n${JSON.stringify(videos, null, 2)}`);
 }
 
 // ── browser_extract_tiktok_search ──
@@ -304,19 +299,17 @@ export const browserExtractTiktokSearchDescription =
 
 export async function handleBrowserExtractTiktokSearch(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, TIKTOK_SEARCH_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const videos = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(videos) || videos.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No search results found. Make sure you are on tiktok.com/search?q=... then retry.' }] };
+    return text('No search results found. Make sure you are on tiktok.com/search?q=... then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${videos.length} result(s):\n\n${JSON.stringify(videos, null, 2)}` }],
-  };
+  return text(`${videos.length} result(s):\n\n${JSON.stringify(videos, null, 2)}`);
 }
 
 // ── browser_extract_tiktok_studio ──
@@ -352,19 +345,17 @@ export const browserExtractTiktokStudioDescription =
 
 export async function handleBrowserExtractTiktokStudio(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, TIKTOK_STUDIO_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const posts = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(posts) || posts.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No Studio posts found. Make sure you are on tiktok.com/tiktokstudio/content then retry.' }] };
+    return text('No Studio posts found. Make sure you are on tiktok.com/tiktokstudio/content then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}` }],
-  };
+  return text(`${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}`);
 }
 
 // ── browser_extract_tiktok_profile ──
@@ -401,19 +392,17 @@ export const browserExtractTiktokProfileDescription =
 
 export async function handleBrowserExtractTiktokProfile(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, TIKTOK_PROFILE_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const profile = result.result as Record<string, unknown>;
   if (!profile || (!profile.name && !profile.handle)) {
-    return { content: [{ type: 'text' as const, text: 'No profile found. Make sure you are on tiktok.com/@username then retry.' }] };
+    return text('No profile found. Make sure you are on tiktok.com/@username then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `Profile:\n\n${JSON.stringify(profile, null, 2)}` }],
-  };
+  return text(`Profile:\n\n${JSON.stringify(profile, null, 2)}`);
 }
 
 // ── browser_extract_wa_chats ──
@@ -451,19 +440,17 @@ export const browserExtractWaChatsDescription =
 
 export async function handleBrowserExtractWaChats(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, WA_CHATS_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const chats = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(chats) || chats.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No chats found. Make sure you are on web.whatsapp.com with the chat list visible.' }] };
+    return text('No chats found. Make sure you are on web.whatsapp.com with the chat list visible.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${chats.length} chat(s):\n\n${JSON.stringify(chats, null, 2)}` }],
-  };
+  return text(`${chats.length} chat(s):\n\n${JSON.stringify(chats, null, 2)}`);
 }
 
 // ── browser_extract_wa_messages ──
@@ -499,19 +486,17 @@ export const browserExtractWaMessagesDescription =
 
 export async function handleBrowserExtractWaMessages(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, WA_MESSAGES_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const messages = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(messages) || messages.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No messages found. Open a chat first, then retry.' }] };
+    return text('No messages found. Open a chat first, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${messages.length} message(s):\n\n${JSON.stringify(messages, null, 2)}` }],
-  };
+  return text(`${messages.length} message(s):\n\n${JSON.stringify(messages, null, 2)}`);
 }
 
 // ── browser_extract_ig_feed ──
@@ -548,19 +533,17 @@ export const browserExtractIgFeedDescription =
 
 export async function handleBrowserExtractIgFeed(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, IG_FEED_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const posts = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(posts) || posts.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No feed posts found. Navigate to instagram.com/ and scroll down, then retry.' }] };
+    return text('No feed posts found. Navigate to instagram.com/ and scroll down, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}` }],
-  };
+  return text(`${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}`);
 }
 
 // ── browser_extract_ig_profile ──
@@ -612,19 +595,17 @@ export const browserExtractIgProfileDescription =
 
 export async function handleBrowserExtractIgProfile(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, IG_PROFILE_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const profile = result.result as Record<string, unknown>;
   if (!profile || !profile.username) {
-    return { content: [{ type: 'text' as const, text: 'No profile data found. Navigate to instagram.com/username/ first, then retry.' }] };
+    return text('No profile data found. Navigate to instagram.com/username/ first, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `Profile:\n\n${JSON.stringify(profile, null, 2)}` }],
-  };
+  return text(`Profile:\n\n${JSON.stringify(profile, null, 2)}`);
 }
 
 // ── browser_extract_ig_post ──
@@ -690,19 +671,17 @@ export const browserExtractIgPostDescription =
 
 export async function handleBrowserExtractIgPost(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, IG_POST_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const post = result.result as Record<string, unknown>;
   if (!post || !post.author) {
-    return { content: [{ type: 'text' as const, text: 'No post data found. Navigate to instagram.com/p/POST_ID/ first, then retry.' }] };
+    return text('No post data found. Navigate to instagram.com/p/POST_ID/ first, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `Post:\n\n${JSON.stringify(post, null, 2)}` }],
-  };
+  return text(`Post:\n\n${JSON.stringify(post, null, 2)}`);
 }
 
 // ── browser_extract_ig_reels ──
@@ -757,19 +736,17 @@ export const browserExtractIgReelsDescription =
 
 export async function handleBrowserExtractIgReels(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, IG_REELS_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const reels = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(reels) || reels.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No reels found. Navigate to instagram.com/reels/ and scroll down, then retry.' }] };
+    return text('No reels found. Navigate to instagram.com/reels/ and scroll down, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${reels.length} reel(s):\n\n${JSON.stringify(reels, null, 2)}` }],
-  };
+  return text(`${reels.length} reel(s):\n\n${JSON.stringify(reels, null, 2)}`);
 }
 
 // ── browser_extract_ig_search ──
@@ -793,19 +770,17 @@ export const browserExtractIgSearchDescription =
 
 export async function handleBrowserExtractIgSearch(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, IG_SEARCH_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const posts = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(posts) || posts.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No explore posts found. Navigate to instagram.com/explore/ and scroll down, then retry.' }] };
+    return text('No explore posts found. Navigate to instagram.com/explore/ and scroll down, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}` }],
-  };
+  return text(`${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}`);
 }
 
 // ── LinkedIn Extraction Tools ──
@@ -857,19 +832,17 @@ export const browserExtractLiFeedDescription =
 
 export async function handleBrowserExtractLiFeed(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, LI_FEED_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const posts = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(posts) || posts.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No LinkedIn feed posts found. Navigate to linkedin.com/feed/ and scroll down, then retry.' }] };
+    return text('No LinkedIn feed posts found. Navigate to linkedin.com/feed/ and scroll down, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}` }],
-  };
+  return text(`${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}`);
 }
 
 // ── browser_extract_li_profile ──
@@ -914,19 +887,17 @@ export const browserExtractLiProfileDescription =
 
 export async function handleBrowserExtractLiProfile(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, LI_PROFILE_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const profile = result.result as Record<string, unknown>;
   if (!profile || !profile.name) {
-    return { content: [{ type: 'text' as const, text: 'No profile data found. Navigate to linkedin.com/in/USERNAME/ first, then retry.' }] };
+    return text('No profile data found. Navigate to linkedin.com/in/USERNAME/ first, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `Profile:\n\n${JSON.stringify(profile, null, 2)}` }],
-  };
+  return text(`Profile:\n\n${JSON.stringify(profile, null, 2)}`);
 }
 
 // ── browser_extract_li_post ──
@@ -972,19 +943,17 @@ export const browserExtractLiPostDescription =
 
 export async function handleBrowserExtractLiPost(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, LI_POST_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const post = result.result as Record<string, unknown>;
   if (!post || !post.author) {
-    return { content: [{ type: 'text' as const, text: 'No post data found. Navigate to linkedin.com/feed/update/urn:li:activity:ID/ first, then retry.' }] };
+    return text('No post data found. Navigate to linkedin.com/feed/update/urn:li:activity:ID/ first, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `Post:\n\n${JSON.stringify(post, null, 2)}` }],
-  };
+  return text(`Post:\n\n${JSON.stringify(post, null, 2)}`);
 }
 
 // ── browser_extract_li_notifications ──
@@ -1014,19 +983,17 @@ export const browserExtractLiNotificationsDescription =
 
 export async function handleBrowserExtractLiNotifications(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, LI_NOTIFICATIONS_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const notifs = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(notifs) || notifs.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No notifications found. Navigate to linkedin.com/notifications/ first, then retry.' }] };
+    return text('No notifications found. Navigate to linkedin.com/notifications/ first, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${notifs.length} notification(s):\n\n${JSON.stringify(notifs, null, 2)}` }],
-  };
+  return text(`${notifs.length} notification(s):\n\n${JSON.stringify(notifs, null, 2)}`);
 }
 
 // ── browser_extract_li_messages ──
@@ -1066,21 +1033,19 @@ export const browserExtractLiMessagesDescription =
 
 export async function handleBrowserExtractLiMessages(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, LI_MESSAGES_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const data = result.result as Record<string, unknown>;
   const convos = data?.conversations as Array<Record<string, unknown>> || [];
   const msgs = data?.activeThread as Array<Record<string, unknown>> || [];
   if (convos.length === 0 && msgs.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No messages found. Navigate to linkedin.com/messaging/ first, then retry.' }] };
+    return text('No messages found. Navigate to linkedin.com/messaging/ first, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${convos.length} conversation(s), ${msgs.length} message(s) in active thread:\n\n${JSON.stringify(data, null, 2)}` }],
-  };
+  return text(`${convos.length} conversation(s), ${msgs.length} message(s) in active thread:\n\n${JSON.stringify(data, null, 2)}`);
 }
 
 // ── browser_extract_li_search_people ──
@@ -1136,19 +1101,17 @@ export const browserExtractLiSearchPeopleDescription =
 
 export async function handleBrowserExtractLiSearchPeople(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, LI_SEARCH_PEOPLE_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const people = result.result as Array<Record<string, unknown>>;
   if (!Array.isArray(people) || people.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No search results found. Navigate to linkedin.com/search/results/people/?keywords=QUERY first, then retry.' }] };
+    return text('No search results found. Navigate to linkedin.com/search/results/people/?keywords=QUERY first, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${people.length} result(s):\n\n${JSON.stringify(people, null, 2)}` }],
-  };
+  return text(`${people.length} result(s):\n\n${JSON.stringify(people, null, 2)}`);
 }
 
 // ── browser_extract_li_network ──
@@ -1211,19 +1174,17 @@ export const browserExtractLiNetworkDescription =
 
 export async function handleBrowserExtractLiNetwork(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, LI_NETWORK_EXTRACTOR_SCRIPT);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Extract failed: ${result.error}` }] };
+  if (result.error) return text(`Extract failed: ${result.error}`);
 
   const data = result.result as Record<string, unknown>;
   const invitations = data?.invitations as Array<Record<string, unknown>> || [];
   const suggestions = data?.suggestions as Array<Record<string, unknown>> || [];
   if (invitations.length === 0 && suggestions.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No network data found. Navigate to linkedin.com/mynetwork/ first, then retry.' }] };
+    return text('No network data found. Navigate to linkedin.com/mynetwork/ first, then retry.');
   }
 
-  return {
-    content: [{ type: 'text' as const, text: `${invitations.length} invitation(s), ${suggestions.length} suggestion(s):\n\n${JSON.stringify(data, null, 2)}` }],
-  };
+  return text(`${invitations.length} invitation(s), ${suggestions.length} suggestion(s):\n\n${JSON.stringify(data, null, 2)}`);
 }

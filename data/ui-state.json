@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-14T00:19:01.039Z",
+  "_updated": "2026-03-15T00:26:38.917Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -10,7 +10,7 @@
     "height": "682px",
     "maxHeight": null
   },
-  "neural-terminal-open": 0,
+  "neural-terminal-open": 1,
   "neural-terminal-detached": 0,
   "neural-panel-skills-studio": {
     "x": 964,
@@ -23799,16 +23799,34 @@
     "detached": false,
     "floatPos": null,
     "dockedHeight": 378,
-    "visible": false,
+    "visible": true,
     "sessions": [
       {
-        "id": "929f95507f9dd82815c733caf4519c81",
+        "id": "3634f24eab6ab8404b486ef458fb9727",
+        "profile": "shell",
+        "label": "Admin Server",
+        "pinned": false,
+        "isDetached": false,
+        "userRenamed": false,
+        "claudeSessionId": null
+      },
+      {
+        "id": "0fb3ba1b032675e575e1d5f313909d9d",
         "profile": "claude-code",
-        "label": "claude",
+        "label": "✳ Claude Code",
         "pinned": false,
         "isDetached": true,
         "userRenamed": false,
-        "claudeSessionId": "eaae34cb-4486-49ff-9e26-12beabf45a04"
+        "claudeSessionId": null
+      },
+      {
+        "id": "4526b5f5b086a32d8fe677f655cbc374",
+        "profile": "claude-code",
+        "label": "Claude Code · Synabun",
+        "pinned": false,
+        "isDetached": true,
+        "userRenamed": false,
+        "claudeSessionId": null
       }
     ],
     "splitMode": false,
@@ -23821,18 +23839,32 @@
     ],
     "detachedTabs": [
       {
-        "sessionId": "929f95507f9dd82815c733caf4519c81",
-        "sessionIdx": 0,
-        "left": 930,
-        "top": 474.5,
+        "sessionId": "0fb3ba1b032675e575e1d5f313909d9d",
+        "sessionIdx": 1,
+        "left": 1840,
+        "top": 870.5,
         "width": 700,
         "height": 420,
         "pinned": false,
-        "label": "claude",
+        "label": "✳ Claude Code",
         "userRenamed": false,
-        "claudeSessionId": "eaae34cb-4486-49ff-9e26-12beabf45a04",
+        "claudeSessionId": null,
         "minimized": false,
-        "floatColor": "lime"
+        "floatColor": "teal"
+      },
+      {
+        "sessionId": "4526b5f5b086a32d8fe677f655cbc374",
+        "sessionIdx": 2,
+        "left": 960,
+        "top": 504.5,
+        "width": 700,
+        "height": 420,
+        "pinned": false,
+        "label": "Claude Code · Synabun",
+        "userRenamed": false,
+        "claudeSessionId": null,
+        "minimized": false,
+        "floatColor": "teal"
       }
     ]
   },
@@ -42564,7 +42596,7 @@
   },
   "neural-whiteboard": {
     "elements": [],
-    "nextZIndex": 65
+    "nextZIndex": 1
   },
   "neural-panel-detail-card-ed517012": {
     "left": "1674px",
@@ -42708,16 +42740,16 @@
   },
   "neural-pinned-detail-card-91dd5d9b": false,
   "neural-panel-automation-studio-panel": {
-    "left": "560px",
-    "top": "94px",
+    "left": "544px",
+    "top": "172px",
     "right": "auto",
     "width": "1299px",
     "height": "973px",
     "maxHeight": null
   },
   "neural-panel-automation-studio": {
-    "x": 560,
-    "y": 94,
+    "x": 544,
+    "y": 172,
     "w": 1299,
     "h": 973
   },
@@ -43068,7 +43100,9 @@
   "neural-file-explorer-visible": true,
   "neural-file-explorer-width": 321,
   "neural-file-explorer-project": "J:\\Sites\\Apps\\Synabun",
-  "neural-file-explorer-collapsed": [],
+  "neural-file-explorer-collapsed": [
+    "J:/Sites/Apps/Synabun/public"
+  ],
   "neural-panel-detail-card-1503ba27": {
     "left": "1162px",
     "top": "239px",
@@ -43113,7 +43147,7 @@
   "neural-panel-keybinds-panel": {
     "left": "1689px",
     "top": "383px",
-    "right": "auto",
+    "right": null,
     "width": "660px",
     "height": null,
     "maxHeight": null
@@ -43203,7 +43237,7 @@
   "synabun-chat-project": "J:\\Sites\\Apps\\Synabun",
   "synabun-session-label:3b93d4a5-2026-4cea-8f89-e6ea6a249528": "ChatAI Text",
   "synabun-claude-panel-model": "claude-opus-4-6",
-  "synabun-claude-panel-project": "j:\\Sites\\Apps\\SynaBunWebsite",
+  "synabun-claude-panel-project": "J:\\Sites\\Apps\\Synabun",
   "synabun-session-label:daf726aa-4c01-4491-91b2-53ab0a2e4de9": "Fix Chat/Overlay panel",
   "synabun-session-label:50c98175-a6e8-46bd-9805-72a09779d9a0": "FileExplorer",
   "synabun-session-label:eba6b388-e388-4735-9768-8a6fb9c9ea41": "Fix Website",
@@ -43229,8 +43263,8 @@
     "maxHeight": null
   },
   "neural-cost-widget-pos": {
-    "left": 373,
-    "top": 207
+    "left": 329,
+    "top": 1293
   },
   "neural-cost-widget-collapsed": true,
   "neural-file-explorer-folder-colors": {
@@ -43292,12 +43326,17 @@
   "synabun-claude-panel-tabs": {
     "tabs": [
       {
-        "id": "2dce155a-d78a-4733-ba2c-3ac91a3521a9",
-        "sessionId": "be725e09-6acf-4602-bb59-9d19c27bef78",
-        "label": "We have a blog system within Synabyn Website. I need you to ..."
+        "id": "0af00ef3-10d1-4cc4-9640-7faf989e5d41",
+        "sessionId": "fd0fb0d4-7e4d-49ca-b161-c2a5689d7018",
+        "label": "Got a small issue wi..."
+      },
+      {
+        "id": "0a86ec3c-dcb5-4438-a165-f85189a72b3c",
+        "sessionId": "70851e7e-629e-4b77-8df8-e3a4c25f0f74",
+        "label": "THe compact componen..."
       }
     ],
-    "activeIdx": 0
+    "activeIdx": 1
   },
   "synabun-session-label:286f410f-adcf-449c-b1d4-84921a2b3af5": "Side Panel Fix",
   "synabun-session-label:a9bf6186-4093-4165-a3f5-94d01c5f4592": "Twitter",
@@ -51019,7 +51058,7 @@
   "synabun-session-label:b2dda80e-3107-4100-954d-10208e032d5b": "FacebookBot",
   "synabun-session-label:98e64864-0a97-437e-b1bf-b92b962a4361": "Auto_Accept",
   "synabun-session-label:bc906be8-4e46-47b8-b5c5-fb11ce40ac6a": "FixPanel",
-  "synabun-claude-panel-autoaccept": false,
+  "synabun-claude-panel-autoaccept": true,
   "synabun-session-label:26492a44-5af5-49ba-a52e-fa157685e21d": "InstaBot Noite",
   "synabun-session-label:2d88175e-a8f3-4f93-9a33-98e919f55344": "Fix Sidepanel #1111111",
   "synabun-session-label:f4eb319e-b06b-414e-97ee-59cd4dbe61d4": "EMailAddSite",
@@ -51027,5 +51066,40 @@
   "synabun-session-label:7c6fdf36-6fff-458d-ba54-c30d32cb9ca4": "Attemp 1111000 to fix sudepanel",
   "synabun-session-label:1b585cb4-8b8b-40ea-8911-af6b123303be": "Arrumar HOW session",
   "synabun-session-label:0189fe3a-e0b7-45a2-bc0b-e24526e08681": "TwitterAuto",
-  "synabun-session-label:738f447e-b571-4fa8-8cb7-04500a3e7702": "Fix AStream"
+  "synabun-session-label:738f447e-b571-4fa8-8cb7-04500a3e7702": "Fix AStream",
+  "synabun-session-label:ed68af83-5c74-4391-963c-71a4e784625a": "Polishing Panel",
+  "synabun-session-label:faef0cdc-cdbb-4cc2-948a-5581e536952c": "SteamBrowserInChat",
+  "synabun-session-label:ec05947a-b0fa-4998-8c72-d08c5b9f9a58": "Compact Polish",
+  "synabun-session-label:92752e2c-0530-48c0-bbce-49fbdb0e4f65": "PLAN MODE FIX",
+  "synabun-session-label:a31c9491-f19f-45f7-b7fe-633c012f31b4": "ToolsStyle",
+  "synabun-session-label:aff75ec8-6e64-4252-a751-730026f0abc0": "Fix Edit Find and Replace",
+  "synabun-session-label:1a472f90-9704-4953-8126-8a436b839b1b": "Synabuyn Skill Style",
+  "neural-panel-detail-card-904a7c1d": {
+    "left": "838px",
+    "top": "673px",
+    "right": "auto",
+    "width": null,
+    "height": null,
+    "maxHeight": null
+  },
+  "synabun-session-label:181744d6-52c4-4ac7-a94d-06d1d125b021": "Restyle Bottom of Prompt",
+  "synabun-session-label:ec01884c-2c0b-44be-b5b9-0b7adc184f96": "Fix Changelog Skill",
+  "synabun-claude-panel-tabs-01bd6e64-9bcf-4fb5-8eb3-94f0334dda84": {
+    "tabs": [
+      {
+        "id": "7948458a-f4b5-4a65-b39b-38a1af9ca83a",
+        "sessionId": "fd0fb0d4-7e4d-49ca-b161-c2a5689d7018",
+        "label": "Got a small issue wi..."
+      },
+      {
+        "id": "9f7e526b-1ffd-4195-86ad-78b2a296b1d0",
+        "sessionId": "787f51ff-ba2a-4370-b088-6add6c3070a1",
+        "label": "Im trying to configu..."
+      }
+    ],
+    "activeIdx": 1
+  },
+  "synabun-claude-panel-windows": {
+    "01bd6e64-9bcf-4fb5-8eb3-94f0334dda84": 1773534398403
+  }
 }

@@ -1924,6 +1924,48 @@ app.delete('/api/file-icons', (req, res) => {
 // Spawns claude subprocess, streams NDJSON events to client
 // ═══════════════════════════════════════════
 
+// ── Session lock registry: prevents two windows from using the same session simultaneously ──
+// Map<sessionId, { windowId, wsId, lockedAt, lastHeartbeat }>
+const _sessionLocks = new Map();
+const SESSION_LOCK_STALE_MS = 45_000; // 45s — locks expire if no heartbeat
+
+function _acquireSessionLock(sessionId, windowId, wsId) {
+  if (!sessionId) return { ok: true };
+  const existing = _sessionLocks.get(sessionId);
+  if (existing && existing.windowId !== windowId) {
+    // Check if the lock is stale
+    if (Date.now() - existing.lastHeartbeat > SESSION_LOCK_STALE_MS) {
+      // Stale lock — take over
+      console.log(`[session-lock] Stale lock for ${sessionId} (window ${existing.windowId}) — claimed by ${windowId}`);
+    } else {
+      return { ok: false, owner: existing.windowId, lockedAt: existing.lockedAt };
+    }
+  }
+  _sessionLocks.set(sessionId, { windowId, wsId, lockedAt: Date.now(), lastHeartbeat: Date.now() });
+  return { ok: true };
+}
+
+function _releaseSessionLock(sessionId, windowId) {
+  if (!sessionId) return;
+  const existing = _sessionLocks.get(sessionId);
+  if (existing && existing.windowId === windowId) {
+    _sessionLocks.delete(sessionId);
+  }
+}
+
+function _releaseAllLocks(windowId) {
+  for (const [sid, lock] of _sessionLocks) {
+    if (lock.windowId === windowId) _sessionLocks.delete(sid);
+  }
+}
+
+function _heartbeatLock(sessionId, windowId) {
+  const existing = _sessionLocks.get(sessionId);
+  if (existing && existing.windowId === windowId) {
+    existing.lastHeartbeat = Date.now();
+  }
+}
+
 // Cache resolved claude binary path (avoids running `where` every query)
 let _claudeBinPath = null;
 function getClaudeBin() {
@@ -1949,6 +1991,8 @@ function handleClaudeSkinWebSocket(ws) {
   let lastPermissionDenials = null; // cached for retry after approval
   let awaitingPermission = false; // true when permission card shown, suppresses 'done' from close handler
   const permCardToolNames = new Map(); // requestId → toolName, for proactive permission cards
+  const lastCostBySession = new Map(); // sessionId → last cumulative cost (total_cost_usd is cumulative)
+  let wsWindowId = null; // set by first query message — used for lock cleanup on close
 
   // Strip env vars that interfere with nested claude execution
   const cleanEnv = Object.fromEntries(
@@ -2100,7 +2144,8 @@ function handleClaudeSkinWebSocket(ws) {
         }
         // Log non-stream events
         if (event.type !== 'stream_event') {
-          const toolNames = (event.message?.content || []).filter(b => b.type === 'tool_use').map(b => b.name).join(',');
+          const contentArr = Array.isArray(event.message?.content) ? event.message.content : [];
+          const toolNames = contentArr.filter(b => b.type === 'tool_use').map(b => b.name).join(',');
           lastLoggedType = `${event.type}${event.subtype ? '/' + event.subtype : ''}${toolNames ? ':' + toolNames : ''}`;
           console.log(`[claude-skin] Event #${eventCount}: ${lastLoggedType}`);
         }
@@ -2109,7 +2154,11 @@ function handleClaudeSkinWebSocket(ws) {
           inTurn = false;
           if (event.session_id) procSessionId = event.session_id;
           if (typeof event.total_cost_usd === 'number' && event.total_cost_usd > 0) {
-            try { addCost(event.total_cost_usd, event.session_id); } catch {}
+            const sid = event.session_id || procSessionId;
+            const prev = lastCostBySession.get(sid) || 0;
+            const delta = event.total_cost_usd - prev;
+            lastCostBySession.set(sid, event.total_cost_usd);
+            if (delta > 0) { try { addCost(delta, sid); } catch {} }
           }
           // Force-kill if process doesn't exit within 5s after result
           // (known Claude CLI issue #25629: process hangs with open stdout after completion)
@@ -2257,8 +2306,18 @@ function handleClaudeSkinWebSocket(ws) {
       const msg = JSON.parse(raw.toString());
 
       if (msg.type === 'query') {
-        let { prompt, cwd, sessionId, model, effort, images } = msg;
+        let { prompt, cwd, sessionId, model, effort, images, windowId } = msg;
+        if (windowId) wsWindowId = windowId;
         if (!prompt && !images?.length) return ws.send(JSON.stringify({ type: 'error', message: 'No prompt provided' }));
+
+        // ── Session lock: prevent two windows from using the same session ──
+        if (sessionId && wsWindowId) {
+          const lockResult = _acquireSessionLock(sessionId, wsWindowId, null);
+          if (!lockResult.ok) {
+            ws.send(JSON.stringify({ type: 'error', message: `Session locked by another window` }));
+            return;
+          }
+        }
 
         // ── Slash command → skill injection ──
         if (prompt && prompt.startsWith('/')) {
@@ -2348,10 +2407,19 @@ function handleClaudeSkinWebSocket(ws) {
         killProc();
         if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'aborted' }));
       }
+
+      if (msg.type === 'heartbeat') {
+        if (msg.windowId) wsWindowId = msg.windowId;
+        if (msg.sessionId && wsWindowId) _heartbeatLock(msg.sessionId, wsWindowId);
+      }
     } catch { /* ignore malformed */ }
   });
 
-  ws.on('close', () => killProc());
+  ws.on('close', () => {
+    killProc();
+    // Release all session locks held by this window
+    if (wsWindowId) _releaseAllLocks(wsWindowId);
+  });
 }
 
 // GET /api/claude/config — config for the skin UI (cwd, model, projects, models)
@@ -2580,6 +2648,46 @@ app.post('/api/claude-skin/cost/scan', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// --- Session Lock API ---
+
+app.post('/api/claude-skin/session-lock', express.json(), (req, res) => {
+  const { action, sessionId, windowId } = req.body || {};
+  if (!windowId) return res.status(400).json({ error: 'windowId required' });
+
+  if (action === 'acquire') {
+    if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+    const result = _acquireSessionLock(sessionId, windowId, null);
+    return res.json(result);
+  }
+  if (action === 'release') {
+    if (sessionId) {
+      _releaseSessionLock(sessionId, windowId);
+    } else {
+      _releaseAllLocks(windowId);
+    }
+    return res.json({ ok: true });
+  }
+  if (action === 'heartbeat') {
+    if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+    _heartbeatLock(sessionId, windowId);
+    return res.json({ ok: true });
+  }
+  if (action === 'force-take') {
+    if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+    _sessionLocks.set(sessionId, { windowId, wsId: null, lockedAt: Date.now(), lastHeartbeat: Date.now() });
+    return res.json({ ok: true });
+  }
+  res.status(400).json({ error: 'Unknown action' });
+});
+
+app.get('/api/claude-skin/session-locks', (req, res) => {
+  const locks = {};
+  for (const [sid, lock] of _sessionLocks) {
+    locks[sid] = { windowId: lock.windowId, lockedAt: lock.lockedAt, lastHeartbeat: lock.lastHeartbeat };
+  }
+  res.json({ locks });
 });
 
 // --- Keybinds Persistence ---

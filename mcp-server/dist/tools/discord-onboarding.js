@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as discord from '../services/discord.js';
+import { text } from './response.js';
 export const discordOnboardingSchema = {
     action: z.enum(['get', 'set_welcome', 'set_rules', 'set_verification', 'set_onboarding'])
         .describe('Action: get (current config), set_welcome (welcome screen), set_rules (rules channel), set_verification (level), set_onboarding (prompts & defaults).'),
@@ -81,7 +82,7 @@ async function handleGet(guildId) {
     else {
         lines.push('**Onboarding:** not configured');
     }
-    return { content: [{ type: 'text', text: lines.join('\n') }] };
+    return text(lines.join('\n'));
 }
 // ── Set Welcome ────────────────────────────────────────────────
 async function handleSetWelcome(guildId, args) {
@@ -92,46 +93,46 @@ async function handleSetWelcome(guildId, args) {
         data.welcome_channels = args.welcome_channels;
     const res = await discord.setWelcomeScreen(guildId, data);
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
-    return { content: [{ type: 'text', text: `Updated welcome screen.${args.description ? ` Description: "${args.description}"` : ''}${args.welcome_channels ? ` Channels: ${args.welcome_channels.length}` : ''}` }] };
+        return text(res.error);
+    return text(`Updated welcome screen.${args.description ? ` Description: "${args.description}"` : ''}${args.welcome_channels ? ` Channels: ${args.welcome_channels.length}` : ''}`);
 }
 // ── Set Rules ──────────────────────────────────────────────────
 async function handleSetRules(guildId, args) {
     if (!args.rules_channel && !args.system_channel) {
-        return { content: [{ type: 'text', text: 'Provide rules_channel and/or system_channel.' }] };
+        return text('Provide rules_channel and/or system_channel.');
     }
     const data = {};
     if (args.rules_channel) {
         const ch = await discord.resolveChannel(args.rules_channel, guildId);
         if ('error' in ch)
-            return { content: [{ type: 'text', text: `Rules channel: ${ch.error}` }] };
+            return text(`Rules channel: ${ch.error}`);
         data.rules_channel_id = ch.id;
     }
     if (args.system_channel) {
         const ch = await discord.resolveChannel(args.system_channel, guildId);
         if ('error' in ch)
-            return { content: [{ type: 'text', text: `System channel: ${ch.error}` }] };
+            return text(`System channel: ${ch.error}`);
         data.system_channel_id = ch.id;
     }
     const res = await discord.editGuildSettings(guildId, data);
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
+        return text(res.error);
     const changes = Object.entries(data).map(([k, v]) => `${k}: ${v}`).join(', ');
-    return { content: [{ type: 'text', text: `Updated guild settings: ${changes}` }] };
+    return text(`Updated guild settings: ${changes}`);
 }
 // ── Set Verification ───────────────────────────────────────────
 async function handleSetVerification(guildId, args) {
     if (!args.verification_level) {
-        return { content: [{ type: 'text', text: 'verification_level is required.' }] };
+        return text('verification_level is required.');
     }
     const level = discord.VERIFICATION_LEVELS[args.verification_level];
     if (level === undefined) {
-        return { content: [{ type: 'text', text: `Unknown verification level "${args.verification_level}". Use: none, low, medium, high, very_high.` }] };
+        return text(`Unknown verification level "${args.verification_level}". Use: none, low, medium, high, very_high.`);
     }
     const res = await discord.editGuildSettings(guildId, { verification_level: level });
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
-    return { content: [{ type: 'text', text: `Set verification level to ${args.verification_level} (${level}).` }] };
+        return text(res.error);
+    return text(`Set verification level to ${args.verification_level} (${level}).`);
 }
 // ── Set Onboarding ─────────────────────────────────────────────
 async function handleSetOnboarding(guildId, args) {
@@ -149,7 +150,7 @@ async function handleSetOnboarding(guildId, args) {
         data.enabled = args.enabled;
     const res = await discord.setOnboarding(guildId, data);
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
+        return text(res.error);
     const changes = [];
     if (args.enabled !== undefined)
         changes.push(`enabled: ${args.enabled}`);
@@ -157,13 +158,13 @@ async function handleSetOnboarding(guildId, args) {
         changes.push(`prompts: ${args.prompts.length}`);
     if (args.default_channels)
         changes.push(`default channels: ${args.default_channels.length}`);
-    return { content: [{ type: 'text', text: `Updated onboarding: ${changes.join(', ')}` }] };
+    return text(`Updated onboarding: ${changes.join(', ')}`);
 }
 // ── Main dispatcher ────────────────────────────────────────────
 export async function handleDiscordOnboarding(args) {
     const resolved = await discord.resolveGuildId(args.guild_id);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const guildId = resolved.guildId;
     switch (args.action) {
         case 'get': return handleGet(guildId);
@@ -172,7 +173,7 @@ export async function handleDiscordOnboarding(args) {
         case 'set_verification': return handleSetVerification(guildId, args);
         case 'set_onboarding': return handleSetOnboarding(guildId, args);
         default:
-            return { content: [{ type: 'text', text: `Unknown action "${args.action}". Use: get, set_welcome, set_rules, set_verification, set_onboarding.` }] };
+            return text(`Unknown action "${args.action}". Use: get, set_welcome, set_rules, set_verification, set_onboarding.`);
     }
 }
 //# sourceMappingURL=discord-onboarding.js.map

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as discord from '../services/discord.js';
+import { text } from './response.js';
 
 export const discordChannelSchema = {
   action: z.enum(['create', 'edit', 'delete', 'list', 'permissions'] as const)
@@ -47,12 +48,12 @@ async function handleCreate(guildId: string, args: {
   bitrate?: number; user_limit?: number; reason?: string;
 }) {
   if (!args.name) {
-    return { content: [{ type: 'text' as const, text: 'name is required for create action.' }] };
+    return text('name is required for create action.');
   }
 
   const channelType = args.type ? discord.CHANNEL_TYPES[args.type] : 0;
   if (channelType === undefined) {
-    return { content: [{ type: 'text' as const, text: `Unknown channel type "${args.type}". Use: text, voice, category, announcement, forum, stage.` }] };
+    return text(`Unknown channel type "${args.type}". Use: text, voice, category, announcement, forum, stage.`);
   }
 
   const data: Record<string, unknown> = {
@@ -70,16 +71,16 @@ async function handleCreate(guildId: string, args: {
   // Resolve parent category
   if (args.parent) {
     const parentResolved = await discord.resolveChannel(args.parent, guildId);
-    if ('error' in parentResolved) return { content: [{ type: 'text' as const, text: `Parent category: ${parentResolved.error}` }] };
+    if ('error' in parentResolved) return text(`Parent category: ${parentResolved.error}`);
     data.parent_id = parentResolved.id;
   }
 
   const res = await discord.createChannel(guildId, data);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const ch = res.data as { id: string; name: string; type: number };
   const typeName = discord.CHANNEL_TYPE_NAMES[ch.type] || 'unknown';
-  return { content: [{ type: 'text' as const, text: `Created ${typeName} channel #${ch.name} (${ch.id})${args.topic ? ` — "${args.topic}"` : ''}` }] };
+  return text(`Created ${typeName} channel #${ch.name} (${ch.id})${args.topic ? ` — "${args.topic}"` : ''}`);
 }
 
 // ── Edit ───────────────────────────────────────────────────────
@@ -90,11 +91,11 @@ async function handleEdit(guildId: string, args: {
   bitrate?: number; user_limit?: number; reason?: string;
 }) {
   if (!args.channel) {
-    return { content: [{ type: 'text' as const, text: 'channel is required for edit action.' }] };
+    return text('channel is required for edit action.');
   }
 
   const resolved = await discord.resolveChannel(args.channel, guildId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const data: Record<string, unknown> = {};
   if (args.name !== undefined) data.name = args.name;
@@ -110,43 +111,43 @@ async function handleEdit(guildId: string, args: {
       data.parent_id = null;
     } else {
       const parentResolved = await discord.resolveChannel(args.parent, guildId);
-      if ('error' in parentResolved) return { content: [{ type: 'text' as const, text: `Parent category: ${parentResolved.error}` }] };
+      if ('error' in parentResolved) return text(`Parent category: ${parentResolved.error}`);
       data.parent_id = parentResolved.id;
     }
   }
 
   if (Object.keys(data).length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No changes specified. Provide at least one field to update.' }] };
+    return text('No changes specified. Provide at least one field to update.');
   }
 
   const res = await discord.editChannel(resolved.id, data);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const changes = Object.entries(data).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ');
-  return { content: [{ type: 'text' as const, text: `Updated #${resolved.name} (${resolved.id}): ${changes}` }] };
+  return text(`Updated #${resolved.name} (${resolved.id}): ${changes}`);
 }
 
 // ── Delete ─────────────────────────────────────────────────────
 
 async function handleDelete(guildId: string, args: { channel?: string; reason?: string }) {
   if (!args.channel) {
-    return { content: [{ type: 'text' as const, text: 'channel is required for delete action.' }] };
+    return text('channel is required for delete action.');
   }
 
   const resolved = await discord.resolveChannel(args.channel, guildId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const res = await discord.deleteChannel(resolved.id);
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
-  return { content: [{ type: 'text' as const, text: `Deleted channel #${resolved.name} (${resolved.id}).` }] };
+  return text(`Deleted channel #${resolved.name} (${resolved.id}).`);
 }
 
 // ── List ───────────────────────────────────────────────────────
 
 async function handleList(guildId: string) {
   const channels = await discord.getGuildChannels(guildId);
-  if ('error' in channels) return { content: [{ type: 'text' as const, text: (channels as { error: string }).error }] };
+  if ('error' in channels) return text((channels as { error: string }).error);
 
   const list = channels as { id: string; name: string; type: number; parent_id?: string; position: number; topic?: string }[];
   const categories = list.filter(c => c.type === 4).sort((a, b) => a.position - b.position);
@@ -174,7 +175,7 @@ async function handleList(guildId: string) {
     lines.push('');
   }
 
-  return { content: [{ type: 'text' as const, text: `Channels (${list.length}):\n\n${lines.join('\n')}` }] };
+  return text(`Channels (${list.length}):\n\n${lines.join('\n')}`);
 }
 
 // ── Permissions ────────────────────────────────────────────────
@@ -183,14 +184,14 @@ async function handlePermissions(guildId: string, args: {
   channel?: string; target?: string; allow?: string; deny?: string;
 }) {
   if (!args.channel) {
-    return { content: [{ type: 'text' as const, text: 'channel is required for permissions action.' }] };
+    return text('channel is required for permissions action.');
   }
   if (!args.target) {
-    return { content: [{ type: 'text' as const, text: 'target (role or user name/ID) is required for permissions action.' }] };
+    return text('target (role or user name/ID) is required for permissions action.');
   }
 
   const channelResolved = await discord.resolveChannel(args.channel, guildId);
-  if ('error' in channelResolved) return { content: [{ type: 'text' as const, text: channelResolved.error }] };
+  if ('error' in channelResolved) return text(channelResolved.error);
 
   // Determine if target is a role (type 0) or member (type 1)
   // Try role first, then user
@@ -206,7 +207,7 @@ async function handlePermissions(guildId: string, args: {
   } else {
     const userResolved = await discord.resolveUser(args.target, guildId);
     if ('error' in userResolved) {
-      return { content: [{ type: 'text' as const, text: `Could not resolve target "${args.target}" as a role or user.` }] };
+      return text(`Could not resolve target "${args.target}" as a role or user.`);
     }
     targetId = userResolved.id;
     targetType = 1; // member
@@ -220,7 +221,7 @@ async function handlePermissions(guildId: string, args: {
     if (args.allow) allowBits = discord.resolvePermissions(args.allow);
     if (args.deny) denyBits = discord.resolvePermissions(args.deny);
   } catch (err) {
-    return { content: [{ type: 'text' as const, text: (err as Error).message }] };
+    return text((err as Error).message);
   }
 
   const res = await discord.setChannelPermissions(channelResolved.id, targetId, {
@@ -228,13 +229,13 @@ async function handlePermissions(guildId: string, args: {
     allow: allowBits,
     deny: denyBits,
   });
-  if (res.error) return { content: [{ type: 'text' as const, text: res.error }] };
+  if (res.error) return text(res.error);
 
   const parts: string[] = [];
   if (args.allow) parts.push(`allow: ${args.allow}`);
   if (args.deny) parts.push(`deny: ${args.deny}`);
 
-  return { content: [{ type: 'text' as const, text: `Set permissions on #${channelResolved.name} for ${targetName}: ${parts.join(', ')}` }] };
+  return text(`Set permissions on #${channelResolved.name} for ${targetName}: ${parts.join(', ')}`);
 }
 
 // ── Main dispatcher ────────────────────────────────────────────
@@ -258,7 +259,7 @@ export async function handleDiscordChannel(args: {
   reason?: string;
 }) {
   const resolved = await discord.resolveGuildId(args.guild_id);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
   const guildId = resolved.guildId;
 
   switch (args.action) {
@@ -268,6 +269,6 @@ export async function handleDiscordChannel(args: {
     case 'list': return handleList(guildId);
     case 'permissions': return handlePermissions(guildId, args);
     default:
-      return { content: [{ type: 'text' as const, text: `Unknown action "${args.action}". Use: create, edit, delete, list, permissions.` }] };
+      return text(`Unknown action "${args.action}". Use: create, edit, delete, list, permissions.`);
   }
 }

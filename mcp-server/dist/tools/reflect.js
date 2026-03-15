@@ -5,6 +5,7 @@ import { validateCategory } from '../services/categories.js';
 import { coerceStringArray } from './utils.js';
 import { invalidateCache } from '../services/neural-interface.js';
 import { computeChecksums } from '../services/file-checksums.js';
+import { text } from './response.js';
 export function buildReflectSchema() {
     return {
         memory_id: z.string().describe('The ID of the memory to update. MUST be the full UUID format (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), not a shortened version. Use recall to get the full UUID.'),
@@ -40,33 +41,17 @@ export async function handleReflect(args) {
     // Validate UUID format
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidRegex.test(memoryId)) {
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `Invalid memory_id format. Expected full UUID (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), got: ${memoryId}\n\nUse the full UUID returned by 'remember', or call 'recall' to find the full UUID of an existing memory.`,
-                },
-            ],
-        };
+        return text(`Invalid memory_id format. Expected full UUID (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), got: ${memoryId}\n\nUse the full UUID returned by 'remember', or call 'recall' to find the full UUID of an existing memory.`);
     }
     if (args.category) {
         const catCheck = validateCategory(args.category);
         if (!catCheck.valid) {
-            return {
-                content: [{ type: 'text', text: catCheck.error }],
-            };
+            return text(catCheck.error);
         }
     }
     const existing = await getMemory(memoryId);
     if (!existing) {
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `Memory "${memoryId}" not found.`,
-                },
-            ],
-        };
+        return text(`Memory "${memoryId}" not found.`);
     }
     const payload = existing.payload;
     const now = new Date().toISOString();
@@ -110,9 +95,7 @@ export async function handleReflect(args) {
         changes.push(`project -> ${args.project}`);
     }
     if (changes.length === 0) {
-        return {
-            content: [{ type: 'text', text: 'No changes specified.' }],
-        };
+        return text('No changes specified.');
     }
     // Recompute file checksums whenever the memory is updated
     const finalFiles = (updates.related_files ?? payload.related_files);
@@ -130,13 +113,6 @@ export async function handleReflect(args) {
     }
     // Invalidate Neural Interface link cache (fire-and-forget)
     invalidateCache('reflect');
-    return {
-        content: [
-            {
-                type: 'text',
-                text: `Updated [${memoryId.slice(0, 8)}]: ${changes.join(', ')}`,
-            },
-        ],
-    };
+    return text(`Updated [${memoryId.slice(0, 8)}]: ${changes.join(', ')}`);
 }
 //# sourceMappingURL=reflect.js.map

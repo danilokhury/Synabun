@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { validateCategoryName, addCategory, getAllCategories, getCategories, categoryExists, updateCategory, removeCategory, validateCategory, getChildCategories, getParentCategories, getCategoryTree, } from '../services/categories.js';
 import { countMemories, updatePayloadByFilter } from '../services/sqlite.js';
 import { refreshCategorySchemas } from '../index.js';
+import { text } from './response.js';
 export const categorySchema = {
     action: z
         .enum(['create', 'update', 'delete', 'list'])
@@ -47,17 +48,17 @@ export const categoryDescription = 'Manage memory categories. Actions: create, u
 // ── Create ──────────────────────────────────────────────────────
 async function handleCreate(args) {
     if (!args.name) {
-        return { content: [{ type: 'text', text: 'name is required for create action.' }] };
+        return text('name is required for create action.');
     }
     if (!args.description?.trim()) {
-        return { content: [{ type: 'text', text: 'description is required for create action.' }] };
+        return text('description is required for create action.');
     }
     const nameCheck = validateCategoryName(args.name);
     if (!nameCheck.valid) {
-        return { content: [{ type: 'text', text: nameCheck.error }] };
+        return text(nameCheck.error);
     }
     if (args.color && !/^#[0-9a-f]{6}$/i.test(args.color)) {
-        return { content: [{ type: 'text', text: 'Invalid color format. Use hex format: #rrggbb (e.g., #3b82f6)' }] };
+        return text('Invalid color format. Use hex format: #rrggbb (e.g., #3b82f6)');
     }
     addCategory(args.name, args.description.trim(), args.parent, args.color, args.is_parent);
     refreshCategorySchemas();
@@ -70,52 +71,50 @@ async function handleCreate(args) {
     if (args.color)
         msg += ` with color ${args.color}`;
     msg += `.\n\nAll categories (${all.length}): ${all.join(', ')}`;
-    return { content: [{ type: 'text', text: msg }] };
+    return text(msg);
 }
 // ── Update ──────────────────────────────────────────────────────
 async function handleUpdate(args) {
     const { name, new_name, description, parent, color } = args;
     if (!name) {
-        return { content: [{ type: 'text', text: 'name is required for update action.' }] };
+        return text('name is required for update action.');
     }
     if (!categoryExists(name)) {
-        return {
-            content: [{ type: 'text', text: `Category "${name}" does not exist. Available: ${getAllCategories().join(', ')}` }],
-        };
+        return text(`Category "${name}" does not exist. Available: ${getAllCategories().join(', ')}`);
     }
     if (new_name) {
         const NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
         const MIN_LENGTH = 2;
         const MAX_LENGTH = 30;
         if (new_name.length < MIN_LENGTH || new_name.length > MAX_LENGTH) {
-            return { content: [{ type: 'text', text: `New category name must be ${MIN_LENGTH}-${MAX_LENGTH} characters. Got ${new_name.length}.` }] };
+            return text(`New category name must be ${MIN_LENGTH}-${MAX_LENGTH} characters. Got ${new_name.length}.`);
         }
         if (!NAME_PATTERN.test(new_name)) {
-            return { content: [{ type: 'text', text: 'New category name must match /^[a-z][a-z0-9-]*$/ (lowercase, starts with letter, only letters/digits/hyphens).' }] };
+            return text('New category name must match /^[a-z][a-z0-9-]*$/ (lowercase, starts with letter, only letters/digits/hyphens).');
         }
         if (new_name !== name && categoryExists(new_name)) {
-            return { content: [{ type: 'text', text: `Category "${new_name}" already exists.` }] };
+            return text(`Category "${new_name}" already exists.`);
         }
     }
     if (parent !== undefined && parent !== '') {
         if (parent === name) {
-            return { content: [{ type: 'text', text: `Cannot set category "${name}" as its own parent. This would create a circular reference.` }] };
+            return text(`Cannot set category "${name}" as its own parent. This would create a circular reference.`);
         }
         if (!categoryExists(parent)) {
-            return { content: [{ type: 'text', text: `Parent category "${parent}" does not exist. Available: ${getAllCategories().join(', ')}` }] };
+            return text(`Parent category "${parent}" does not exist. Available: ${getAllCategories().join(', ')}`);
         }
         const categories = getCategories();
         let currentParent = parent;
         while (currentParent) {
             if (currentParent === (new_name || name)) {
-                return { content: [{ type: 'text', text: `Cannot set parent to "${parent}": would create circular dependency.` }] };
+                return text(`Cannot set parent to "${parent}": would create circular dependency.`);
             }
             const parentCat = categories.find(c => c.name === currentParent);
             currentParent = parentCat?.parent || '';
         }
     }
     if (color !== undefined && color !== '' && !/^#[0-9a-f]{6}$/i.test(color)) {
-        return { content: [{ type: 'text', text: 'Invalid color format. Use hex format: #rrggbb (e.g., #3b82f6) or empty string to remove.' }] };
+        return text('Invalid color format. Use hex format: #rrggbb (e.g., #3b82f6) or empty string to remove.');
     }
     const children = getChildCategories(name);
     const isBecomingChild = parent !== undefined && parent !== '';
@@ -151,52 +150,38 @@ async function handleUpdate(args) {
     }
     msg += warningMsg;
     msg += `\n\nAll categories (${all.length}): ${all.join(', ')}`;
-    return { content: [{ type: 'text', text: msg }] };
+    return text(msg);
 }
 // ── Delete ──────────────────────────────────────────────────────
 async function handleDelete(args) {
     const { name, reassign_to, reassign_children_to } = args;
     if (!name) {
-        return { content: [{ type: 'text', text: 'name is required for delete action.' }] };
+        return text('name is required for delete action.');
     }
     if (!categoryExists(name)) {
-        return {
-            content: [{ type: 'text', text: `Category "${name}" does not exist. Available: ${getAllCategories().join(', ')}` }],
-        };
+        return text(`Category "${name}" does not exist. Available: ${getAllCategories().join(', ')}`);
     }
     if (reassign_to) {
         const targetCheck = validateCategory(reassign_to);
         if (!targetCheck.valid) {
-            return { content: [{ type: 'text', text: `Invalid reassign target: ${targetCheck.error}` }] };
+            return text(`Invalid reassign target: ${targetCheck.error}`);
         }
         if (reassign_to === name) {
-            return { content: [{ type: 'text', text: 'Cannot reassign to the same category being deleted.' }] };
+            return text('Cannot reassign to the same category being deleted.');
         }
     }
     const children = getChildCategories(name);
     if (children.length > 0 && reassign_children_to === undefined) {
-        return {
-            content: [{
-                    type: 'text',
-                    text: `Cannot delete parent category "${name}": it has ${children.length} child categor${children.length === 1 ? 'y' : 'ies'} (${children.map(c => c.name).join(', ')}).\n\nProvide reassign_children_to to specify a new parent for them, or use empty string "" to make them top-level categories.`,
-                }],
-        };
+        return text(`Cannot delete parent category "${name}": it has ${children.length} child categor${children.length === 1 ? 'y' : 'ies'} (${children.map(c => c.name).join(', ')}).\n\nProvide reassign_children_to to specify a new parent for them, or use empty string "" to make them top-level categories.`);
     }
     if (reassign_children_to !== undefined && reassign_children_to !== '' && !categoryExists(reassign_children_to)) {
-        return {
-            content: [{ type: 'text', text: `Invalid reassign_children_to: category "${reassign_children_to}" does not exist.` }],
-        };
+        return text(`Invalid reassign_children_to: category "${reassign_children_to}" does not exist.`);
     }
     const memoryCount = await countMemories({
         must: [{ key: 'category', match: { value: name } }],
     });
     if (memoryCount > 0 && !reassign_to) {
-        return {
-            content: [{
-                    type: 'text',
-                    text: `Cannot delete category "${name}": ${memoryCount} memories use it. Provide reassign_to to move them to another category first.`,
-                }],
-        };
+        return text(`Cannot delete category "${name}": ${memoryCount} memories use it. Provide reassign_to to move them to another category first.`);
     }
     if (memoryCount > 0 && reassign_to) {
         await updatePayloadByFilter({ must: [{ key: 'category', match: { value: name } }] }, { category: reassign_to });
@@ -220,12 +205,7 @@ async function handleDelete(args) {
     const reassignMsg = memoryCount > 0
         ? ` ${memoryCount} memories reassigned to "${reassign_to}".`
         : '';
-    return {
-        content: [{
-                type: 'text',
-                text: `Deleted category "${name}".${reassignMsg}${childrenMsg}\n\nRemaining categories (${all.length}): ${all.join(', ')}`,
-            }],
-    };
+    return text(`Deleted category "${name}".${reassignMsg}${childrenMsg}\n\nRemaining categories (${all.length}): ${all.join(', ')}`);
 }
 // ── List ────────────────────────────────────────────────────────
 async function handleList(args) {
@@ -240,9 +220,7 @@ async function handleList(args) {
                 line += ` [${cat.color}]`;
             return line;
         });
-        return {
-            content: [{ type: 'text', text: `All categories (${categories.length}):\n\n${lines.join('\n')}` }],
-        };
+        return text(`All categories (${categories.length}):\n\n${lines.join('\n')}`);
     }
     if (format === 'parents-only') {
         const parents = getParentCategories();
@@ -256,9 +234,7 @@ async function handleList(args) {
             }
             return line;
         });
-        return {
-            content: [{ type: 'text', text: `Parent categories (${parents.length}):\n\n${lines.join('\n')}` }],
-        };
+        return text(`Parent categories (${parents.length}):\n\n${lines.join('\n')}`);
     }
     // Tree format (default)
     const tree = getCategoryTree();
@@ -294,12 +270,7 @@ async function handleList(args) {
             lines.push(line);
         });
     }
-    return {
-        content: [{
-                type: 'text',
-                text: `Category Tree (${categories.length} total, ${parents.length} parent clusters):\n\n${lines.join('\n')}`,
-            }],
-    };
+    return text(`Category Tree (${categories.length} total, ${parents.length} parent clusters):\n\n${lines.join('\n')}`);
 }
 // ── Main dispatcher ─────────────────────────────────────────────
 export async function handleCategory(args) {
@@ -313,7 +284,7 @@ export async function handleCategory(args) {
         case 'list':
             return handleList(args);
         default:
-            return { content: [{ type: 'text', text: `Unknown action "${args.action}". Use: create, update, delete, list.` }] };
+            return text(`Unknown action "${args.action}". Use: create, update, delete, list.`);
     }
 }
 //# sourceMappingURL=category.js.map

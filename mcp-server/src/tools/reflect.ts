@@ -6,6 +6,7 @@ import { coerceStringArray } from './utils.js';
 import type { MemoryPayload } from '../types.js';
 import { invalidateCache } from '../services/neural-interface.js';
 import { computeChecksums } from '../services/file-checksums.js';
+import { text } from './response.js';
 
 export function buildReflectSchema() {
   return {
@@ -60,35 +61,19 @@ export async function handleReflect(args: {
   // Validate UUID format
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(memoryId)) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Invalid memory_id format. Expected full UUID (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), got: ${memoryId}\n\nUse the full UUID returned by 'remember', or call 'recall' to find the full UUID of an existing memory.`,
-        },
-      ],
-    };
+    return text(`Invalid memory_id format. Expected full UUID (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), got: ${memoryId}\n\nUse the full UUID returned by 'remember', or call 'recall' to find the full UUID of an existing memory.`);
   }
 
   if (args.category) {
     const catCheck = validateCategory(args.category);
     if (!catCheck.valid) {
-      return {
-        content: [{ type: 'text' as const, text: catCheck.error! }],
-      };
+      return text(catCheck.error!);
     }
   }
 
   const existing = await getMemory(memoryId);
   if (!existing) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Memory "${memoryId}" not found.`,
-        },
-      ],
-    };
+    return text(`Memory "${memoryId}" not found.`);
   }
 
   const payload = existing.payload as unknown as MemoryPayload;
@@ -135,9 +120,7 @@ export async function handleReflect(args: {
   }
 
   if (changes.length === 0) {
-    return {
-      content: [{ type: 'text' as const, text: 'No changes specified.' }],
-    };
+    return text('No changes specified.');
   }
 
   // Recompute file checksums whenever the memory is updated
@@ -158,12 +141,5 @@ export async function handleReflect(args: {
   // Invalidate Neural Interface link cache (fire-and-forget)
   invalidateCache('reflect');
 
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: `Updated [${memoryId.slice(0, 8)}]: ${changes.join(', ')}`,
-      },
-    ],
-  };
+  return text(`Updated [${memoryId.slice(0, 8)}]: ${changes.join(', ')}`);
 }

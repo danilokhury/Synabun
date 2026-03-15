@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text } from './response.js';
 
 function formatClickHints(result: Record<string, unknown>): string {
   const hints = result.hints as Array<{ role: string; text: string; ariaLabel: string; placeholder: string }> | undefined;
@@ -74,14 +75,12 @@ export const browserClickDescription =
 
 export async function handleBrowserClick(args: { selector: string; nthMatch?: number; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.click(resolved.sessionId, args.selector, args.nthMatch);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Click failed: ${result.error}${formatClickHints(result)}` }] };
+  if (result.error) return text(`Click failed: ${result.error}${formatClickHints(result)}`);
 
-  return {
-    content: [{ type: 'text' as const, text: `Clicked "${args.selector}" — now at ${result.url} "${result.title}"` }],
-  };
+  return text(`Clicked "${args.selector}" — now at ${result.url} "${result.title}"`);
 }
 
 // ── browser_fill ──
@@ -98,15 +97,13 @@ export const browserFillDescription =
 
 export async function handleBrowserFill(args: { selector: string; value: string; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.fill(resolved.sessionId, args.selector, args.value);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Fill failed: ${result.error}` }] };
+  if (result.error) return text(`Fill failed: ${result.error}`);
 
   const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-  return {
-    content: [{ type: 'text' as const, text: `Filled "${args.selector}" with "${args.value.slice(0, 100)}"${location}` }],
-  };
+  return text(`Filled "${args.selector}" with "${args.value.slice(0, 100)}"${location}`);
 }
 
 // ── browser_type ──
@@ -130,16 +127,14 @@ export const browserTypeDescription =
 
 export async function handleBrowserType(args: { selector?: string; text: string; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.type(resolved.sessionId, args.selector ?? null, args.text);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Type failed: ${result.error}` }] };
+  if (result.error) return text(`Type failed: ${result.error}`);
 
   const target = args.selector ? `"${args.selector}"` : 'focused element';
   const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-  return {
-    content: [{ type: 'text' as const, text: `Typed "${args.text.slice(0, 100)}" into ${target}${location}` }],
-  };
+  return text(`Typed "${args.text.slice(0, 100)}" into ${target}${location}`);
 }
 
 // ── browser_hover ──
@@ -154,15 +149,13 @@ export const browserHoverDescription =
 
 export async function handleBrowserHover(args: { selector: string; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.hover(resolved.sessionId, args.selector);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Hover failed: ${result.error}` }] };
+  if (result.error) return text(`Hover failed: ${result.error}`);
 
   const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-  return {
-    content: [{ type: 'text' as const, text: `Hovered over "${args.selector}"${location}` }],
-  };
+  return text(`Hovered over "${args.selector}"${location}`);
 }
 
 // ── browser_select ──
@@ -178,15 +171,13 @@ export const browserSelectDescription =
 
 export async function handleBrowserSelect(args: { selector: string; value: string; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.selectOption(resolved.sessionId, args.selector, args.value);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Select failed: ${result.error}` }] };
+  if (result.error) return text(`Select failed: ${result.error}`);
 
   const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-  return {
-    content: [{ type: 'text' as const, text: `Selected "${args.value}" in "${args.selector}"${location}` }],
-  };
+  return text(`Selected "${args.value}" in "${args.selector}"${location}`);
 }
 
 // ── browser_press ──
@@ -201,15 +192,13 @@ export const browserPressDescription =
 
 export async function handleBrowserPress(args: { key: string; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.pressKey(resolved.sessionId, args.key);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Press failed: ${result.error}` }] };
+  if (result.error) return text(`Press failed: ${result.error}`);
 
   const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-  return {
-    content: [{ type: 'text' as const, text: `Pressed "${args.key}"${location}` }],
-  };
+  return text(`Pressed "${args.key}"${location}`);
 }
 
 // ── browser_scroll ──
@@ -228,13 +217,13 @@ export const browserScrollDescription =
 
 export async function handleBrowserScroll(args: { direction: string; distance?: number; selector?: string; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.scroll(resolved.sessionId, { direction: args.direction, distance: args.distance, selector: args.selector });
-  if (result.error) return { content: [{ type: 'text' as const, text: `Scroll failed: ${result.error}` }] };
+  if (result.error) return text(`Scroll failed: ${result.error}`);
 
   const target = args.selector ? `"${args.selector}"` : 'page';
-  return { content: [{ type: 'text' as const, text: `Scrolled ${args.direction} ${args.distance ?? 500}px in ${target} — now at ${result.url} "${result.title}"` }] };
+  return text(`Scrolled ${args.direction} ${args.distance ?? 500}px in ${target} — now at ${result.url} "${result.title}"`);
 }
 
 // ── browser_upload ──
@@ -252,10 +241,10 @@ export const browserUploadDescription =
 
 export async function handleBrowserUpload(args: { selector: string; filePaths: string[]; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.upload(resolved.sessionId, args.selector, args.filePaths);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Upload failed: ${result.error}` }] };
+  if (result.error) return text(`Upload failed: ${result.error}`);
 
-  return { content: [{ type: 'text' as const, text: `Uploaded ${args.filePaths.length} file(s) via "${args.selector}" — now at ${result.url} "${result.title}"` }] };
+  return text(`Uploaded ${args.filePaths.length} file(s) via "${args.selector}" — now at ${result.url} "${result.title}"`);
 }
