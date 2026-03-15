@@ -1,0 +1,11 @@
+{
+  "claude-code": {
+    "command": "/opt/homebrew/bin/claude"
+  },
+  "codex": {
+    "command": "codex"
+  },
+  "gemini": {
+    "command": "gemini"
+  }
+}

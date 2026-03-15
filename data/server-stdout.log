@@ -1,0 +1,82 @@
+  MCP HTTP endpoint mounted at /mcp (key required for tunnel)
+  Config reloaded — SQLite: /Users/danilokhury/Apps/Synabun/mcp-server/data/memory.db, Embedding: local (384d)
+
+  Neural Memory Interface
+  ──────────────────────
+  Server:    http://localhost:3344
+  MCP:       http://localhost:3344/mcp
+  Storage:   SQLite (/Users/danilokhury/Apps/Synabun/mcp-server/data/memory.db)
+  Embedding: local (384d)
+  Terminal:  WebSocket on ws://localhost:3344/ws/terminal/*
+  Browser:   WebSocket on ws://localhost:3344/ws/browser/*
+  Whiteboard: WebSocket on ws://localhost:3344/ws/whiteboard
+  Cards:      WebSocket on ws://localhost:3344/ws/cards
+
+[ws-cards] Client connected (total: 1)
+[last-session] Check: file=false, activeClaude=0
+[sync] Client connected (owner), total: 1
+[sync] broadcast "clients" → 1/1 clients
+[ws-cards] Viewport: 1200x991
+[last-session] Check: file=false, activeClaude=0
+[ws-whiteboard] Client connected (total: 1)
+[ws-whiteboard] Viewport: 1130x942 (xOffset: 70, yOffset: 49)
+[ws-cards] Viewport: 1200x991
+[ws-whiteboard] Viewport: 1130x942 (xOffset: 70, yOffset: 49)
+[ws-cards] Viewport: 1200x991
+[ws-whiteboard] Viewport: 1130x942 (xOffset: 70, yOffset: 49)
+[ws-cards] Viewport: 1710x1035
+[ws-whiteboard] Viewport: 1640x986 (xOffset: 70, yOffset: 49)
+[ws-cards] Viewport: 1710x1035
+[ws-whiteboard] Viewport: 1640x986 (xOffset: 70, yOffset: 49)
+[ws-cards] Viewport: 1710x1073
+[ws-whiteboard] Viewport: 1640x1024 (xOffset: 70, yOffset: 49)
+[ws-cards] Viewport: 1710x1035
+[ws-whiteboard] Viewport: 1640x986 (xOffset: 70, yOffset: 49)
+[links] Computed 0 raw links from 1 nodes in 0ms
+[cache] Link cache invalidated (remember)
+  MCP HTTP endpoint mounted at /mcp (key required for tunnel)
+  Config reloaded — SQLite: /Users/danilokhury/Apps/Synabun/mcp-server/data/memory.db, Embedding: local (384d)
+
+  Neural Memory Interface
+  ──────────────────────
+  Server:    http://localhost:3344
+  MCP:       http://localhost:3344/mcp
+  Storage:   SQLite (/Users/danilokhury/Apps/Synabun/mcp-server/data/memory.db)
+  Embedding: local (384d)
+  Terminal:  WebSocket on ws://localhost:3344/ws/terminal/*
+  Browser:   WebSocket on ws://localhost:3344/ws/browser/*
+  Whiteboard: WebSocket on ws://localhost:3344/ws/whiteboard
+  Cards:      WebSocket on ws://localhost:3344/ws/cards
+
+[ws-cards] Client connected (total: 1)
+[last-session] Check: file=false, activeClaude=0
+[ws-cards] Viewport: 1710x1035
+[sync] Client connected (owner), total: 1
+[sync] broadcast "clients" → 1/1 clients
+[last-session] Check: file=false, activeClaude=0
+[ws-whiteboard] Client connected (total: 1)
+[ws-whiteboard] Viewport: 1640x986 (xOffset: 70, yOffset: 49)
+[server] Restart requested — shutting down in 500ms...
+  MCP HTTP endpoint mounted at /mcp (key required for tunnel)
+  Config reloaded — SQLite: /Users/danilokhury/Apps/Synabun/mcp-server/data/memory.db, Embedding: local (384d)
+
+  Neural Memory Interface
+  ──────────────────────
+  Server:    http://localhost:3344
+  MCP:       http://localhost:3344/mcp
+  Storage:   SQLite (/Users/danilokhury/Apps/Synabun/mcp-server/data/memory.db)
+  Embedding: local (384d)
+  Terminal:  WebSocket on ws://localhost:3344/ws/terminal/*
+  Browser:   WebSocket on ws://localhost:3344/ws/browser/*
+  Whiteboard: WebSocket on ws://localhost:3344/ws/whiteboard
+  Cards:      WebSocket on ws://localhost:3344/ws/cards
+
+[ws-cards] Client connected (total: 1)
+[last-session] Check: file=false, activeClaude=0
+[ws-cards] Viewport: 1710x1035
+[sync] Client connected (owner), total: 1
+[sync] broadcast "clients" → 1/1 clients
+[last-session] Check: file=false, activeClaude=0
+[ws-whiteboard] Client connected (total: 1)
+[ws-whiteboard] Viewport: 1640x986 (xOffset: 70, yOffset: 49)
+[cost-tracker] Imported 1 CLI sessions (+$23.30)
