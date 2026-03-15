@@ -7,6 +7,7 @@ import { coerceStringArray } from './utils.js';
 import { detectProject } from '../config.js';
 import { computeChecksums } from '../services/file-checksums.js';
 import { invalidateCache } from '../services/neural-interface.js';
+import { text } from './response.js';
 export function buildRememberSchema() {
     return {
         content: z
@@ -46,9 +47,7 @@ export const rememberDescription = 'Store a piece of information in persistent m
 export async function handleRemember(args) {
     const catCheck = validateCategory(args.category);
     if (!catCheck.valid) {
-        return {
-            content: [{ type: 'text', text: catCheck.error }],
-        };
+        return text(catCheck.error);
     }
     const content = args.content;
     const category = args.category;
@@ -84,13 +83,6 @@ export async function handleRemember(args) {
     await upsertMemory(id, vector, payload);
     // Invalidate Neural Interface link cache (fire-and-forget)
     invalidateCache('remember');
-    return {
-        content: [
-            {
-                type: 'text',
-                text: `Remembered [${id}] (${category}/${project}, importance: ${importance}): "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`,
-            },
-        ],
-    };
+    return text(`Remembered [${id}] (${category}/${project}, importance: ${importance}): "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`);
 }
 //# sourceMappingURL=remember.js.map

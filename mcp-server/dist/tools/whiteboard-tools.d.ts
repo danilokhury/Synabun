@@ -33,7 +33,7 @@ export declare const whiteboardAddSchema: {
         sectionType: z.ZodOptional<z.ZodEnum<["navbar", "hero", "sidebar", "content", "footer", "card", "form", "image-placeholder", "button", "text-block", "grid", "modal"]>>;
         label: z.ZodOptional<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
-        type: "text" | "list" | "image" | "shape" | "arrow" | "pen" | "section";
+        type: "text" | "image" | "list" | "shape" | "arrow" | "pen" | "section";
         bold?: boolean | undefined;
         color?: string | undefined;
         content?: string | undefined;
@@ -55,7 +55,7 @@ export declare const whiteboardAddSchema: {
         sectionType?: "content" | "grid" | "navbar" | "hero" | "sidebar" | "footer" | "card" | "form" | "image-placeholder" | "button" | "text-block" | "modal" | undefined;
         label?: string | undefined;
     }, {
-        type: "text" | "list" | "image" | "shape" | "arrow" | "pen" | "section";
+        type: "text" | "image" | "list" | "shape" | "arrow" | "pen" | "section";
         bold?: boolean | undefined;
         color?: string | undefined;
         content?: string | undefined;

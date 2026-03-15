@@ -1,5 +1,57 @@
 # SynaBun Changelog
 
+## 2026-03-14
+
+### Fixed — Find & Replace Focus Loss and Replace Accuracy (File Editor)
+- **Find input losing focus on every keystroke** — Each character typed in the find input triggered `doFind()` → `selectFindMatch()` which unconditionally called `textarea.focus()`, stealing focus from the find input. Added `focusTextarea` parameter to `selectFindMatch()` — only `findNext()`/`findPrev()` (Enter/Shift+Enter) pass `true`. Live typing keeps focus in the find input while still scrolling to matches.
+- **Replace jumping back to first match** — After replacing match N, `doFind()` recalculated all matches and reset `_findIndex` to 0, jumping back to the first match instead of staying at the current position. Now saves and restores `_findIndex` after recalculation, clamped to the new match count.
+- **Replace All not refreshing syntax highlighting** — `doReplaceAll()` sets `textarea.value` directly without dispatching an `input` event, so `updateHighlight()` was never called. Added explicit `updateHighlight()` call after replace-all operations.
+
+### Added — SynaBun Branded Tool Cards in Claude Code Side Panel
+- **Gold-themed tool card rendering for all SynaBun MCP tools** — SynaBun tool interactions (`recall`, `remember`, `reflect`, `forget`, `restore`, `memories`, `sync`, `category`, browser/discord/whiteboard/card/git/loop tools) now render with a distinct gold/amber visual identity instead of the generic grey MCP tool card. Cards use `rgba(255,195,0,...)` border tints, gold icon backgrounds, and gold tool name text via the `.synabun-card` CSS class family.
+- **Friendly tool names** — Raw MCP identifiers like `mcp__SynaBun__recall` are replaced with clean labels: "Recall", "Remember", "Reflect", etc. Grouped tools auto-format (e.g., `mcp__SynaBun__browser_navigate` → "Browser: Navigate"). Implemented via `SYNABUN_TOOLS` registry map, `SYNABUN_GROUPS` wildcard prefix matching, and `getSynaBunMeta()` lookup in `ui-claude-panel.js`.
+- **Custom SVG icons per tool** — 15 unique 16×16 stroke-based SVGs: memory tools share a lightbulb base with unique overlays (magnifier for recall, plus for remember, X for forget, circular arrows for reflect/sync), plus distinct icons for browser (globe), discord (chat bubble), whiteboard (board+pen), card (window frame), git (branch), loop (infinity), tictactoe (grid).
+- **Formatted inputs** — `formatSynaBunInput()` renders tool parameters as readable key-value pairs with styled `.synabun-tag` pills for arrays, `.synabun-value` highlighting for numbers/booleans, and truncated strings — replacing raw `JSON.stringify` dumps.
+- **Rich result rendering** — `formatRecallResult()` parses recall output into mini `.synabun-memory-card` elements with `.synabun-mem-score` percentage badges, category lines, tag pills, content previews with gradient-fade overflow, and short UUIDs. `formatRememberResult()` shows confirmation cards with checkmarks. `formatSBConfirmation()` handles reflect/forget/restore/category/sync results. Session context entries render with blue-tinted score badges. Falls back to `<pre>` for unparseable output.
+  - `buildSynaBunTool(block)` — intercepts `buildTool()` for SynaBun tools, stores `block.name` in `dataset.toolName` for result routing
+  - `updateSynaBunResult(card, ev)` — intercepts `updateToolResult()`, routes to per-tool formatter based on `synaBunToolKey()`
+- **Permission prompts enhanced** — `renderPermissionPrompt()` detects SynaBun tools via `isSynaBunTool()`, applies `.synabun-perm` class for gold-tinted border/header, and shows friendly name instead of raw MCP identifier.
+- **Session history support** — Tool summary lines use friendly labels via `getSynaBunMeta()`, and session history result rendering routes SynaBun cards through `updateSynaBunResult()`.
+
+### Fixed — Post-Plan "Continue with Implementation" Infinite Loop (Claude Skin)
+- **Plan mode not disabled before sending implementation prompt** — Clicking "Continue with implementation" in the post-plan action buttons called `send()` while `tab.planMode` was still `true`, so the prompt got wrapped in `[PLAN MODE — do NOT make code changes]`. This contradicted the "implement" instruction, causing Claude to respond "exit plan mode first" in a loop. Fix: `renderPostPlanActions()` now sets `tab.planMode = false` and removes the `.active` class from the plan toggle before calling `send()` in the prompt-based action branch.
+
+### Changed — Post-Plan Actions Restyled as Card Panel (Claude Skin)
+- **Replaced flat floating buttons with card panel** — Post-plan actions now render as a full message bubble with Claude avatar and a `.post-plan-card` panel, matching the permission prompt card style. Features a green-themed border/glow (matching plan mode identity), `PLAN COMPLETE` uppercase header label, primary green button for "Continue with implementation", and secondary subtle buttons for "Compact context" / "Edit plan". Card dims to 0.45 opacity after click, consistent with resolved permission cards.
+- **Updated cleanup selector in `send()`** — Changed from `.post-plan-actions` to `.post-plan-card`, traversing up to the parent `.msg` element to remove the entire message bubble on new input.
+
+### Changed — Context Gauge Bar Restyle (Claude Panel)
+- **Thinner, more refined gauge** — Reduced gauge height from 6px to 3px with tighter border-radius (2px). Added subtle `box-shadow` glow on urgency states (`warn`, `high`, `critical`). Section width transitions now use `cubic-bezier(0.4, 0, 0.2, 1)` for smoother easing. Section colors softened from 0.5 to 0.45 opacity.
+- **Compact button redesign** — Removed border entirely for a cleaner borderless text button. Lighter font weight (600→500), wider letter-spacing (0.5px). Compacting state replaced opacity pulse (`cp-compact-pulse`) with a sweeping gradient underline animation (`cp-compact-sweep`) — a 1px purple line slides beneath the text. Button text simplified to `compacting` without trailing ellipsis.
+- **Cohesive compacting animation** — Gauge shimmer replaced with purple-tinted flow animation (`cp-gauge-flow`, `rgba(140,130,220)`) matching the button's color scheme. Gauge opacity reduced to 0.6 with a subtle purple `box-shadow` glow during compaction.
+
+### Fixed — Duplicate Compacting Status Messages (Claude Panel)
+- **Two status lines appearing during context compaction** — `compact_started` and `compact_boundary` events each called `appendStatus()` independently, creating two separate status lines in the message area. Replaced with a single reusable `.msg-compact-status` element: `compact_started` creates it (or reuses existing), `compact_boundary` updates its text in-place. Result: one clean status line throughout the entire compaction process.
+
+### Added — Live Browser Embed in Claude Code Side Panel
+- **CDP screencast rendered inside the panel** — When MCP browser tools create a browser session while the Claude panel is open, a live screencast canvas auto-appears at the bottom of the panel (above the input area). Uses `sync:browser:created` / `sync:browser:deleted` events from `ui-sync.js` to auto-show/hide. WebSocket connection to `/ws/browser/${sessionId}` receives CDP `Page.screencastFrame` JPEG frames drawn to a `<canvas>` element.
+- **Full interaction forwarding** — Mouse events (click, dblclick, wheel) forwarded with coordinate scaling from display-size canvas to full browser viewport. Keyboard events (keydown/keyup/keypress) forwarded. Canvas is focusable (`tabIndex=0`).
+- **Toolbar with nav controls** — Back, forward, reload buttons, URL bar with Enter-to-navigate, detach-to-floating-window button, and close button.
+- **Detach to floating window** — "Detach" button emits `browser:reconnect` event (distinct from `browser:open`) which triggers `reconnectBrowserSession()` in `ui-terminal.js` to reattach the existing session as a floating window without creating a new browser.
+- **Terminal coordination** — Terminal's `sync:browser:created` listener checks for `.claude-panel.open` and skips if the panel is already handling the session, preventing double-open.
+- **Aspect-ratio responsive layout** — Canvas wrapper uses `aspect-ratio: 16/10` instead of fixed height, so the browser view scales proportionally with panel width. Positioned between messages container and input area.
+
+### Fixed — Browser Embed Shrinking Viewport to Mobile Size (Claude Panel)
+- **Panel ResizeObserver sent `resize` messages to the server** — When the browser embed connected, the `ResizeObserver` on the canvas wrapper sent the display-size dimensions (e.g., 562×351) as a `resize` WebSocket message. The server handler at `server.js:11338` called `page.setViewportSize()` with those dimensions, shrinking the actual Playwright browser viewport from 1280×800 to the small canvas size. This caused pages to render in mobile/responsive mode. Fixed by removing the viewport resize from the panel embed — the browser stays at its original viewport and the canvas just scales the received frames to fit via `drawImage()`. The floating terminal window can still resize the viewport since it's full-size.
+
+### Changed — MCP Response Boilerplate Elimination (FastMCP-Inspired Refactor)
+- **New `text()` and `image()` response helpers** — Created `mcp-server/src/tools/response.ts` with two functions that wrap the verbose MCP response format. `text(msg)` replaces `{ content: [{ type: 'text' as const, text: msg }] }`, `image(data, mimeType)` replaces the equivalent image pattern. Inspired by FastMCP's approach of letting tools return simple values — full migration was evaluated and rejected (too opinionated for SynaBun's custom architecture with dynamic schemas, file watchers, and dual transport), but the response helper pattern was worth stealing.
+- **Applied across all 25 tool source files** — Every MCP tool handler (`remember`, `recall`, `reflect`, `forget`, `restore`, `memories`, `sync`, `category`, `loop`, `browser-navigate`, `browser-interact`, `browser-observe`, `browser-advanced`, `card-tools`, `git-tools`, `tictactoe-tools`, `whiteboard-tools`, and all 8 `discord-*.ts` files) now imports from `response.ts`. Local `text` variables renamed to `msg` or `output` where they conflicted with the helper name.
+- **Net reduction of ~423 lines** — 102 files changed (26 source + 76 compiled), removing ~1505 lines of verbose response objects and adding ~1082 lines of clean `text(...)` calls. Zero behavioral changes — purely mechanical boilerplate elimination.
+
+### Fixed — Changelog Skill Double-Panel Prompt
+- **`/synabun changelog` spawned two acceptance panels** — Phase 5 (Memory) used `AskUserQuestion` to ask whether to remember the changelog update, creating a second panel after the Phase 3 save confirmation. Removed the interactive prompt and replaced with silent auto-remember, consistent with the mandatory auto-remember rule in `CLAUDE.md`. Only one panel (Save/Edit/Cancel) now appears. (`skills/synabun/modules/changelog.md`)
+
 ## 2026-03-13
 
 ### Fixed — Claude Skin Cannot Access Sibling Directories

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text } from './response.js';
 function formatClickHints(result) {
     const hints = result.hints;
     if (!hints?.length)
@@ -70,13 +71,11 @@ export const browserClickDescription = 'Click an element on the page. Accepts Pl
 export async function handleBrowserClick(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.click(resolved.sessionId, args.selector, args.nthMatch);
     if (result.error)
-        return { content: [{ type: 'text', text: `Click failed: ${result.error}${formatClickHints(result)}` }] };
-    return {
-        content: [{ type: 'text', text: `Clicked "${args.selector}" — now at ${result.url} "${result.title}"` }],
-    };
+        return text(`Click failed: ${result.error}${formatClickHints(result)}`);
+    return text(`Clicked "${args.selector}" — now at ${result.url} "${result.title}"`);
 }
 // ── browser_fill ──
 export const browserFillSchema = {
@@ -89,14 +88,12 @@ export const browserFillDescription = 'Clear an input field and fill it with new
 export async function handleBrowserFill(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.fill(resolved.sessionId, args.selector, args.value);
     if (result.error)
-        return { content: [{ type: 'text', text: `Fill failed: ${result.error}` }] };
+        return text(`Fill failed: ${result.error}`);
     const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-    return {
-        content: [{ type: 'text', text: `Filled "${args.selector}" with "${args.value.slice(0, 100)}"${location}` }],
-    };
+    return text(`Filled "${args.selector}" with "${args.value.slice(0, 100)}"${location}`);
 }
 // ── browser_type ──
 export const browserTypeSchema = {
@@ -116,15 +113,13 @@ export const browserTypeDescription = 'Type text character by character (simulat
 export async function handleBrowserType(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.type(resolved.sessionId, args.selector ?? null, args.text);
     if (result.error)
-        return { content: [{ type: 'text', text: `Type failed: ${result.error}` }] };
+        return text(`Type failed: ${result.error}`);
     const target = args.selector ? `"${args.selector}"` : 'focused element';
     const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-    return {
-        content: [{ type: 'text', text: `Typed "${args.text.slice(0, 100)}" into ${target}${location}` }],
-    };
+    return text(`Typed "${args.text.slice(0, 100)}" into ${target}${location}`);
 }
 // ── browser_hover ──
 export const browserHoverSchema = {
@@ -135,14 +130,12 @@ export const browserHoverDescription = 'Hover over an element. Useful for reveal
 export async function handleBrowserHover(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.hover(resolved.sessionId, args.selector);
     if (result.error)
-        return { content: [{ type: 'text', text: `Hover failed: ${result.error}` }] };
+        return text(`Hover failed: ${result.error}`);
     const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-    return {
-        content: [{ type: 'text', text: `Hovered over "${args.selector}"${location}` }],
-    };
+    return text(`Hovered over "${args.selector}"${location}`);
 }
 // ── browser_select ──
 export const browserSelectSchema = {
@@ -154,14 +147,12 @@ export const browserSelectDescription = 'Select an option from a <select> dropdo
 export async function handleBrowserSelect(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.selectOption(resolved.sessionId, args.selector, args.value);
     if (result.error)
-        return { content: [{ type: 'text', text: `Select failed: ${result.error}` }] };
+        return text(`Select failed: ${result.error}`);
     const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-    return {
-        content: [{ type: 'text', text: `Selected "${args.value}" in "${args.selector}"${location}` }],
-    };
+    return text(`Selected "${args.value}" in "${args.selector}"${location}`);
 }
 // ── browser_press ──
 export const browserPressSchema = {
@@ -172,14 +163,12 @@ export const browserPressDescription = 'Press a keyboard key or key combination.
 export async function handleBrowserPress(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.pressKey(resolved.sessionId, args.key);
     if (result.error)
-        return { content: [{ type: 'text', text: `Press failed: ${result.error}` }] };
+        return text(`Press failed: ${result.error}`);
     const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-    return {
-        content: [{ type: 'text', text: `Pressed "${args.key}"${location}` }],
-    };
+    return text(`Pressed "${args.key}"${location}`);
 }
 // ── browser_scroll ──
 export const browserScrollSchema = {
@@ -194,12 +183,12 @@ export const browserScrollDescription = 'Scroll the page or a specific element. 
 export async function handleBrowserScroll(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.scroll(resolved.sessionId, { direction: args.direction, distance: args.distance, selector: args.selector });
     if (result.error)
-        return { content: [{ type: 'text', text: `Scroll failed: ${result.error}` }] };
+        return text(`Scroll failed: ${result.error}`);
     const target = args.selector ? `"${args.selector}"` : 'page';
-    return { content: [{ type: 'text', text: `Scrolled ${args.direction} ${args.distance ?? 500}px in ${target} — now at ${result.url} "${result.title}"` }] };
+    return text(`Scrolled ${args.direction} ${args.distance ?? 500}px in ${target} — now at ${result.url} "${result.title}"`);
 }
 // ── browser_upload ──
 export const browserUploadSchema = {
@@ -213,10 +202,10 @@ export const browserUploadDescription = 'Upload one or more files via a file inp
 export async function handleBrowserUpload(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.upload(resolved.sessionId, args.selector, args.filePaths);
     if (result.error)
-        return { content: [{ type: 'text', text: `Upload failed: ${result.error}` }] };
-    return { content: [{ type: 'text', text: `Uploaded ${args.filePaths.length} file(s) via "${args.selector}" — now at ${result.url} "${result.title}"` }] };
+        return text(`Upload failed: ${result.error}`);
+    return text(`Uploaded ${args.filePaths.length} file(s) via "${args.selector}" — now at ${result.url} "${result.title}"`);
 }
 //# sourceMappingURL=browser-interact.js.map

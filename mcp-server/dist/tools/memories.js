@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { scrollMemories, getMemoryStats } from '../services/sqlite.js';
 import { validateCategory } from '../services/categories.js';
+import { text } from './response.js';
 export function buildMemoriesSchema() {
     return {
         action: z
@@ -46,9 +47,7 @@ export async function handleMemories(args) {
     if (category) {
         const catCheck = validateCategory(category);
         if (!catCheck.valid) {
-            return {
-                content: [{ type: 'text', text: catCheck.error }],
-            };
+            return text(catCheck.error);
         }
     }
     if (action === 'stats') {
@@ -60,14 +59,7 @@ export async function handleMemories(args) {
         const projectLines = Object.entries(stats.by_project)
             .map(([proj, count]) => `  ${proj}: ${count}`)
             .join('\n');
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `Memory Statistics:\n\nTotal memories: ${stats.total}\n\nBy category:\n${categoryLines || '  (none)'}\n\nBy project:\n${projectLines || '  (none)'}\n\nOldest: ${stats.oldest ? formatAge(stats.oldest) : 'n/a'}\nNewest: ${stats.newest ? formatAge(stats.newest) : 'n/a'}`,
-                },
-            ],
-        };
+        return text(`Memory Statistics:\n\nTotal memories: ${stats.total}\n\nBy category:\n${categoryLines || '  (none)'}\n\nBy project:\n${projectLines || '  (none)'}\n\nOldest: ${stats.oldest ? formatAge(stats.oldest) : 'n/a'}\nNewest: ${stats.newest ? formatAge(stats.newest) : 'n/a'}`);
     }
     const must = [];
     if ((action === 'by-category' || action === 'recent') && category) {
@@ -86,14 +78,7 @@ export async function handleMemories(args) {
         .filter((m) => m.payload?.content && m.payload?.created_at)
         .sort((a, b) => b.payload.created_at.localeCompare(a.payload.created_at));
     if (sorted.length === 0) {
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `No memories found${category ? ` for category "${category}"` : ''}${project ? ` for project "${project}"` : ''}.`,
-                },
-            ],
-        };
+        return text(`No memories found${category ? ` for category "${category}"` : ''}${project ? ` for project "${project}"` : ''}.`);
     }
     const lines = sorted.map((m, i) => {
         const p = m.payload;
@@ -106,13 +91,6 @@ export async function handleMemories(args) {
         : action === 'by-category'
             ? `Memories in "${category}"`
             : `Memories for "${project}"`;
-    return {
-        content: [
-            {
-                type: 'text',
-                text: `${title} (${sorted.length}):\n\n${lines.join('\n\n')}`,
-            },
-        ],
-    };
+    return text(`${title} (${sorted.length}):\n\n${lines.join('\n\n')}`);
 }
 //# sourceMappingURL=memories.js.map

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text, image } from './response.js';
 // ═══════════════════════════════════════════
 // card_list
 // ═══════════════════════════════════════════
@@ -22,7 +23,7 @@ function describeCard(card, index) {
 export async function handleCardList() {
     const result = await ni.getCards();
     if (result.error) {
-        return { content: [{ type: 'text', text: `Failed to read cards: ${result.error}` }] };
+        return text(`Failed to read cards: ${result.error}`);
     }
     const cards = (result.cards || []);
     const viewport = result.viewport;
@@ -30,14 +31,14 @@ export async function handleCardList() {
         let emptyText = 'No memory cards are currently open.';
         if (viewport)
             emptyText += `\nViewport: ${viewport.width}x${viewport.height}`;
-        return { content: [{ type: 'text', text: emptyText }] };
+        return text(emptyText);
     }
-    let text = `Open cards: ${cards.length}`;
+    let msg = `Open cards: ${cards.length}`;
     if (viewport)
-        text += ` | Viewport: ${viewport.width}x${viewport.height}`;
-    text += '\n\n';
-    text += cards.map((c, i) => describeCard(c, i)).join('\n');
-    return { content: [{ type: 'text', text }] };
+        msg += ` | Viewport: ${viewport.width}x${viewport.height}`;
+    msg += '\n\n';
+    msg += cards.map((c, i) => describeCard(c, i)).join('\n');
+    return text(msg);
 }
 // ═══════════════════════════════════════════
 // card_open
@@ -58,12 +59,12 @@ export async function handleCardOpen(args) {
         coordMode: args.coordMode,
     });
     if (result.error) {
-        return { content: [{ type: 'text', text: `Failed to open card: ${result.error}` }] };
+        return text(`Failed to open card: ${result.error}`);
     }
     const r = result.result;
     const alreadyOpen = r?.alreadyOpen ? ' (was already open, brought to front)' : '';
     const pos = r ? `at (${r.left}, ${r.top})` : '';
-    return { content: [{ type: 'text', text: `Card opened${alreadyOpen}: ${args.memoryId} ${pos}` }] };
+    return text(`Card opened${alreadyOpen}: ${args.memoryId} ${pos}`);
 }
 // ═══════════════════════════════════════════
 // card_close
@@ -75,12 +76,12 @@ export const cardCloseDescription = 'Close a memory card by its UUID, or close a
 export async function handleCardClose(args) {
     const result = await ni.closeCard(args.memoryId);
     if (result.error) {
-        return { content: [{ type: 'text', text: `Failed to close card: ${result.error}` }] };
+        return text(`Failed to close card: ${result.error}`);
     }
     if (!args.memoryId) {
-        return { content: [{ type: 'text', text: 'All cards closed.' }] };
+        return text('All cards closed.');
     }
-    return { content: [{ type: 'text', text: `Card closed: ${args.memoryId}` }] };
+    return text(`Card closed: ${args.memoryId}`);
 }
 // ═══════════════════════════════════════════
 // card_update
@@ -101,11 +102,11 @@ export async function handleCardUpdate(args) {
     // Check at least one update field provided
     const hasUpdate = Object.values(updates).some(v => v !== undefined);
     if (!hasUpdate) {
-        return { content: [{ type: 'text', text: 'No update fields provided. Specify at least one of: left, top, width, height, compact, pinned.' }] };
+        return text('No update fields provided. Specify at least one of: left, top, width, height, compact, pinned.');
     }
     const result = await ni.updateCard(memoryId, updates, coordMode);
     if (result.error) {
-        return { content: [{ type: 'text', text: `Failed to update card: ${result.error}` }] };
+        return text(`Failed to update card: ${result.error}`);
     }
     const r = result.result;
     const parts = [];
@@ -119,7 +120,7 @@ export async function handleCardUpdate(args) {
         if (r.width)
             parts.push(`size: ${r.width} x ${r.height || 'auto'}`);
     }
-    return { content: [{ type: 'text', text: `Card updated: ${memoryId}${parts.length ? ' — ' + parts.join(', ') : ''}` }] };
+    return text(`Card updated: ${memoryId}${parts.length ? ' — ' + parts.join(', ') : ''}`);
 }
 // ═══════════════════════════════════════════
 // card_screenshot
@@ -129,12 +130,8 @@ export const cardScreenshotDescription = 'Take a visual screenshot of the Neural
 export async function handleCardScreenshot() {
     const result = await ni.cardsScreenshot();
     if (result.error) {
-        return { content: [{ type: 'text', text: `Screenshot failed: ${result.error}` }] };
+        return text(`Screenshot failed: ${result.error}`);
     }
-    return {
-        content: [
-            { type: 'image', data: result.data, mimeType: 'image/jpeg' },
-        ],
-    };
+    return image(result.data, 'image/jpeg');
 }
 //# sourceMappingURL=card-tools.js.map

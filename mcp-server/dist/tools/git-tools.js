@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text } from './response.js';
 // ═══════════════════════════════════════════
 // git — Git operations MCP tool
 // ═══════════════════════════════════════════
@@ -14,7 +15,7 @@ export const gitSchema = {
 export const gitDescription = 'Git repository operations. Actions: "status" shows branch and changed files, "diff" returns raw diff content for analysis, "commit" stages and commits with a message, "log" shows recent commit history, "branches" lists all branches. Use "diff" to analyze changes before generating commit messages.';
 export async function handleGit(args) {
     if (!args.path) {
-        return { content: [{ type: 'text', text: 'path is required' }] };
+        return text('path is required');
     }
     switch (args.action) {
         case 'status': return handleStatus(args.path);
@@ -23,16 +24,16 @@ export async function handleGit(args) {
         case 'log': return handleLog(args.path, args.count);
         case 'branches': return handleBranches(args.path);
         default:
-            return { content: [{ type: 'text', text: `Unknown action: ${args.action}` }] };
+            return text(`Unknown action: ${args.action}`);
     }
 }
 async function handleStatus(path) {
     const result = await ni.gitStatus(path);
     if (result.error) {
-        return { content: [{ type: 'text', text: `Git status failed: ${result.error}` }] };
+        return text(`Git status failed: ${result.error}`);
     }
     if (!result.isGit) {
-        return { content: [{ type: 'text', text: `Not a git repository: ${path}` }] };
+        return text(`Not a git repository: ${path}`);
     }
     const changes = (result.changes || []);
     const grouped = {};
@@ -42,18 +43,18 @@ async function handleStatus(path) {
             grouped[key] = [];
         grouped[key].push(c.path);
     }
-    let text = `Branch: ${result.branch}\nChanges: ${changes.length} file${changes.length !== 1 ? 's' : ''}\n`;
+    let msg = `Branch: ${result.branch}\nChanges: ${changes.length} file${changes.length !== 1 ? 's' : ''}\n`;
     for (const [status, files] of Object.entries(grouped)) {
-        text += `\n${status}:\n${files.map(f => '  ' + f).join('\n')}\n`;
+        msg += `\n${status}:\n${files.map(f => '  ' + f).join('\n')}\n`;
     }
     if (changes.length === 0)
-        text += '\nWorking tree clean.';
-    return { content: [{ type: 'text', text: text.trim() }] };
+        msg += '\nWorking tree clean.';
+    return text(msg.trim());
 }
 async function handleDiff(path, maxLines) {
     const result = await ni.gitDiff(path, maxLines);
     if (result.error) {
-        return { content: [{ type: 'text', text: `Git diff failed: ${result.error}` }] };
+        return text(`Git diff failed: ${result.error}`);
     }
     const parts = [`Branch: ${result.branch}`];
     const diff = result.diff;
@@ -69,38 +70,38 @@ async function handleDiff(path, maxLines) {
         parts.push('\nNo changes.');
     if (result.truncated)
         parts.push('\n(output truncated)');
-    return { content: [{ type: 'text', text: parts.join('\n') }] };
+    return text(parts.join('\n'));
 }
 async function handleCommit(path, message, files) {
     if (!message) {
-        return { content: [{ type: 'text', text: 'message is required for commit action' }] };
+        return text('message is required for commit action');
     }
     const result = await ni.gitCommit(path, message, files);
     if (result.error) {
-        return { content: [{ type: 'text', text: `Commit failed: ${result.error}` }] };
+        return text(`Commit failed: ${result.error}`);
     }
-    return { content: [{ type: 'text', text: `Committed: ${message}\n\n${result.output || ''}`.trim() }] };
+    return text(`Committed: ${message}\n\n${result.output || ''}`.trim());
 }
 async function handleLog(path, count) {
     const result = await ni.gitLog(path, count);
     if (result.error) {
-        return { content: [{ type: 'text', text: `Git log failed: ${result.error}` }] };
+        return text(`Git log failed: ${result.error}`);
     }
     const commits = (result.commits || []);
     if (commits.length === 0) {
-        return { content: [{ type: 'text', text: 'No commits found.' }] };
+        return text('No commits found.');
     }
-    const text = commits.map(c => `${c.hash} ${c.message}`).join('\n');
-    return { content: [{ type: 'text', text: `Recent commits:\n\n${text}` }] };
+    const msg = commits.map(c => `${c.hash} ${c.message}`).join('\n');
+    return text(`Recent commits:\n\n${msg}`);
 }
 async function handleBranches(path) {
     const result = await ni.gitBranches(path);
     if (result.error) {
-        return { content: [{ type: 'text', text: `Failed to list branches: ${result.error}` }] };
+        return text(`Failed to list branches: ${result.error}`);
     }
     const branches = (result.branches || []);
     const current = result.current || '';
-    const text = branches.map(b => (b === current ? `* ${b}` : `  ${b}`)).join('\n');
-    return { content: [{ type: 'text', text: `Branches:\n\n${text}` }] };
+    const msg = branches.map(b => (b === current ? `* ${b}` : `  ${b}`)).join('\n');
+    return text(`Branches:\n\n${msg}`);
 }
 //# sourceMappingURL=git-tools.js.map

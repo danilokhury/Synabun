@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text } from './response.js';
 
 // ═══════════════════════════════════════════
 // git — Git operations MCP tool
@@ -38,7 +39,7 @@ export async function handleGit(args: {
   count?: number;
 }) {
   if (!args.path) {
-    return { content: [{ type: 'text' as const, text: 'path is required' }] };
+    return text('path is required');
   }
 
   switch (args.action) {
@@ -48,17 +49,17 @@ export async function handleGit(args: {
     case 'log': return handleLog(args.path, args.count);
     case 'branches': return handleBranches(args.path);
     default:
-      return { content: [{ type: 'text' as const, text: `Unknown action: ${args.action}` }] };
+      return text(`Unknown action: ${args.action}`);
   }
 }
 
 async function handleStatus(path: string) {
   const result = await ni.gitStatus(path);
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Git status failed: ${result.error}` }] };
+    return text(`Git status failed: ${result.error}`);
   }
   if (!result.isGit) {
-    return { content: [{ type: 'text' as const, text: `Not a git repository: ${path}` }] };
+    return text(`Not a git repository: ${path}`);
   }
 
   const changes = (result.changes || []) as Array<{ path: string; status: string; staged: boolean }>;
@@ -69,19 +70,19 @@ async function handleStatus(path: string) {
     grouped[key].push(c.path);
   }
 
-  let text = `Branch: ${result.branch}\nChanges: ${changes.length} file${changes.length !== 1 ? 's' : ''}\n`;
+  let msg = `Branch: ${result.branch}\nChanges: ${changes.length} file${changes.length !== 1 ? 's' : ''}\n`;
   for (const [status, files] of Object.entries(grouped)) {
-    text += `\n${status}:\n${files.map(f => '  ' + f).join('\n')}\n`;
+    msg += `\n${status}:\n${files.map(f => '  ' + f).join('\n')}\n`;
   }
 
-  if (changes.length === 0) text += '\nWorking tree clean.';
-  return { content: [{ type: 'text' as const, text: text.trim() }] };
+  if (changes.length === 0) msg += '\nWorking tree clean.';
+  return text(msg.trim());
 }
 
 async function handleDiff(path: string, maxLines?: number) {
   const result = await ni.gitDiff(path, maxLines);
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Git diff failed: ${result.error}` }] };
+    return text(`Git diff failed: ${result.error}`);
   }
 
   const parts: string[] = [`Branch: ${result.branch}`];
@@ -96,45 +97,45 @@ async function handleDiff(path: string, maxLines?: number) {
   if (!diff && !stagedDiff && untrackedFiles.length === 0) parts.push('\nNo changes.');
   if (result.truncated) parts.push('\n(output truncated)');
 
-  return { content: [{ type: 'text' as const, text: parts.join('\n') }] };
+  return text(parts.join('\n'));
 }
 
 async function handleCommit(path: string, message?: string, files?: string[]) {
   if (!message) {
-    return { content: [{ type: 'text' as const, text: 'message is required for commit action' }] };
+    return text('message is required for commit action');
   }
 
   const result = await ni.gitCommit(path, message, files);
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Commit failed: ${result.error}` }] };
+    return text(`Commit failed: ${result.error}`);
   }
 
-  return { content: [{ type: 'text' as const, text: `Committed: ${message}\n\n${result.output || ''}`.trim() }] };
+  return text(`Committed: ${message}\n\n${result.output || ''}`.trim());
 }
 
 async function handleLog(path: string, count?: number) {
   const result = await ni.gitLog(path, count);
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Git log failed: ${result.error}` }] };
+    return text(`Git log failed: ${result.error}`);
   }
 
   const commits = (result.commits || []) as Array<{ hash: string; message: string }>;
   if (commits.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No commits found.' }] };
+    return text('No commits found.');
   }
 
-  const text = commits.map(c => `${c.hash} ${c.message}`).join('\n');
-  return { content: [{ type: 'text' as const, text: `Recent commits:\n\n${text}` }] };
+  const msg = commits.map(c => `${c.hash} ${c.message}`).join('\n');
+  return text(`Recent commits:\n\n${msg}`);
 }
 
 async function handleBranches(path: string) {
   const result = await ni.gitBranches(path);
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Failed to list branches: ${result.error}` }] };
+    return text(`Failed to list branches: ${result.error}`);
   }
 
   const branches = (result.branches || []) as string[];
   const current = result.current as string || '';
-  const text = branches.map(b => (b === current ? `* ${b}` : `  ${b}`)).join('\n');
-  return { content: [{ type: 'text' as const, text: `Branches:\n\n${text}` }] };
+  const msg = branches.map(b => (b === current ? `* ${b}` : `  ${b}`)).join('\n');
+  return text(`Branches:\n\n${msg}`);
 }

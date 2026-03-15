@@ -7,6 +7,7 @@ import { validateCategory } from '../services/categories.js';
 import { coerceStringArray } from './utils.js';
 import type { MemoryPayload, SessionChunkPayload } from '../types.js';
 import { config, detectProject } from '../config.js';
+import { text } from './response.js';
 
 export function buildRecallSchema() {
   return {
@@ -126,9 +127,7 @@ export async function handleRecall(args: {
   if (category) {
     const catCheck = validateCategory(category);
     if (!catCheck.valid) {
-      return {
-        content: [{ type: 'text' as const, text: catCheck.error! }],
-      };
+      return text(catCheck.error!);
     }
   }
 
@@ -204,14 +203,7 @@ export async function handleRecall(args: {
   }
 
   if (scored.length === 0) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `No memories found for "${query}"${category ? ` in category ${category}` : ''}${project ? ` for project ${project}` : ''}.`,
-        },
-      ],
-    };
+    return text(`No memories found for "${query}"${category ? ` in category ${category}` : ''}${project ? ` for project ${project}` : ''}.`);
   }
 
   const maxChars = getRecallMaxChars();
@@ -295,12 +287,5 @@ export async function handleRecall(args: {
     ? `Found ${scored.length} memories and ${sessionLines.length} session chunks`
     : `Found ${scored.length} memories`;
 
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: `${label} for "${query}":\n\n${allLines.join('\n\n')}`,
-      },
-    ],
-  };
+  return text(`${label} for "${query}":\n\n${allLines.join('\n\n')}`);
 }

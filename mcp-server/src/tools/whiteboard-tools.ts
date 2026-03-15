@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text, image } from './response.js';
 
 // ═══════════════════════════════════════════
 // whiteboard_read
@@ -90,7 +91,7 @@ function describeElement(el: WhiteboardElement): string {
 export async function handleWhiteboardRead() {
   const result = await ni.getWhiteboard();
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Failed to read whiteboard: ${result.error}` }] };
+    return text(`Failed to read whiteboard: ${result.error}`);
   }
 
   const elements = (result.elements || []) as WhiteboardElement[];
@@ -99,23 +100,23 @@ export async function handleWhiteboardRead() {
   if (elements.length === 0) {
     let emptyText = 'Whiteboard is empty. No elements present.';
     if (viewport) emptyText += `\nUsable viewport: ${viewport.width}x${viewport.height} (origin offset: x=${viewport.xOffset || 0}, y=${viewport.yOffset || 0})\n⚠️ Design compact layouts centered in the viewport. Do NOT fill the entire width — use ~70-80% of viewport width, centered. All sections must fit vertically within the viewport height. Scale section heights proportionally to fit.`;
-    return { content: [{ type: 'text' as const, text: emptyText }] };
+    return text(emptyText);
   }
 
-  let text = `Whiteboard: ${elements.length} element(s)`;
-  if (viewport) text += ` | Usable viewport: ${viewport.width}x${viewport.height} (origin: x=${viewport.xOffset || 0}, y=${viewport.yOffset || 0})`;
-  text += '\n\n';
-  text += elements.map(describeElement).join('\n');
+  let msg = `Whiteboard: ${elements.length} element(s)`;
+  if (viewport) msg += ` | Usable viewport: ${viewport.width}x${viewport.height} (origin: x=${viewport.xOffset || 0}, y=${viewport.yOffset || 0})`;
+  msg += '\n\n';
+  msg += elements.map(describeElement).join('\n');
 
   // Spatial bounds summary
   const positioned = elements.filter(e => e.x != null && e.y != null);
   if (positioned.length > 0) {
     const xs = positioned.map(e => e.x);
     const ys = positioned.map(e => e.y);
-    text += `\n\nBounds: x=[${Math.round(Math.min(...xs))}, ${Math.round(Math.max(...xs))}], y=[${Math.round(Math.min(...ys))}, ${Math.round(Math.max(...ys))}]`;
+    msg += `\n\nBounds: x=[${Math.round(Math.min(...xs))}, ${Math.round(Math.max(...xs))}], y=[${Math.round(Math.min(...ys))}, ${Math.round(Math.max(...ys))}]`;
   }
 
-  return { content: [{ type: 'text' as const, text }] };
+  return text(msg);
 }
 
 
@@ -157,12 +158,12 @@ export const whiteboardAddDescription =
 export async function handleWhiteboardAdd(args: { elements: Record<string, unknown>[]; coordMode?: string; layout?: string }) {
   const result = await ni.addWhiteboardElements(args.elements, args.coordMode, args.layout);
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Failed to add elements: ${result.error}` }] };
+    return text(`Failed to add elements: ${result.error}`);
   }
 
   const added = result.added as { id: string; type: string; zIndex: number }[];
   const summary = added.map(a => `  ${a.id} (${a.type}, z:${a.zIndex})`).join('\n');
-  return { content: [{ type: 'text' as const, text: `Added ${added.length} element(s):\n${summary}` }] };
+  return text(`Added ${added.length} element(s):\n${summary}`);
 }
 
 
@@ -202,11 +203,11 @@ export const whiteboardUpdateDescription =
 export async function handleWhiteboardUpdate(args: { id: string; updates: Record<string, unknown>; coordMode?: string }) {
   const result = await ni.updateWhiteboardElement(args.id, args.updates, args.coordMode);
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Failed to update element: ${result.error}` }] };
+    return text(`Failed to update element: ${result.error}`);
   }
 
   const el = result.element as WhiteboardElement;
-  return { content: [{ type: 'text' as const, text: `Updated: ${describeElement(el)}` }] };
+  return text(`Updated: ${describeElement(el)}`);
 }
 
 
@@ -225,18 +226,18 @@ export async function handleWhiteboardRemove(args: { id?: string }) {
   if (!args.id) {
     const result = await ni.clearWhiteboard();
     if (result.error) {
-      return { content: [{ type: 'text' as const, text: `Failed to clear whiteboard: ${result.error}` }] };
+      return text(`Failed to clear whiteboard: ${result.error}`);
     }
-    return { content: [{ type: 'text' as const, text: 'Whiteboard cleared.' }] };
+    return text('Whiteboard cleared.');
   }
 
   const result = await ni.removeWhiteboardElement(args.id);
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Failed to remove element: ${result.error}` }] };
+    return text(`Failed to remove element: ${result.error}`);
   }
 
   const removed = result.removed as { id: string; type: string };
-  return { content: [{ type: 'text' as const, text: `Removed ${removed.type} element ${removed.id}` }] };
+  return text(`Removed ${removed.type} element ${removed.id}`);
 }
 
 
@@ -252,12 +253,8 @@ export const whiteboardScreenshotDescription =
 export async function handleWhiteboardScreenshot() {
   const result = await ni.whiteboardScreenshot();
   if (result.error) {
-    return { content: [{ type: 'text' as const, text: `Screenshot failed: ${result.error}` }] };
+    return text(`Screenshot failed: ${result.error}`);
   }
 
-  return {
-    content: [
-      { type: 'image' as const, data: result.data as string, mimeType: 'image/jpeg' },
-    ],
-  };
+  return image(result.data as string, 'image/jpeg');
 }

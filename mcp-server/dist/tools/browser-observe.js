@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text, image } from './response.js';
 // ── browser_snapshot ──
 export const browserSnapshotSchema = {
     selector: z.string().optional().describe('Scope snapshot to a specific element\'s subtree. Dramatically reduces output on complex pages. Twitter: [data-testid="primaryColumn"] for main feed, [data-testid="tweet"] for a single tweet card.'),
@@ -48,21 +49,21 @@ function formatSnapshotNode(node, indent = 0) {
 export async function handleBrowserSnapshot(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.snapshot(resolved.sessionId, args.selector);
     if (result.error)
-        return { content: [{ type: 'text', text: `Snapshot failed: ${result.error}` }] };
+        return text(`Snapshot failed: ${result.error}`);
     const tree = result.snapshot;
     const formatted = tree ? formatSnapshotNode(tree) : '(empty page)';
-    let text = `Page: ${result.url}\nTitle: "${result.title}"\n`;
+    let msg = `Page: ${result.url}\nTitle: "${result.title}"\n`;
     if (args.selector)
-        text += `Scope: ${args.selector}\n`;
-    text += '\n' + formatted;
+        msg += `Scope: ${args.selector}\n`;
+    msg += '\n' + formatted;
     // Truncate if very long
-    if (text.length > 30000) {
-        text = text.slice(0, 30000) + '\n... (truncated — narrow scope with selector param)';
+    if (msg.length > 30000) {
+        msg = msg.slice(0, 30000) + '\n... (truncated — narrow scope with selector param)';
     }
-    return { content: [{ type: 'text', text }] };
+    return text(msg);
 }
 // ── browser_content ──
 export const browserContentSchema = {
@@ -72,13 +73,13 @@ export const browserContentDescription = 'Get the text content of the current pa
 export async function handleBrowserContent(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.getContent(resolved.sessionId);
     if (result.error)
-        return { content: [{ type: 'text', text: `Content failed: ${result.error}` }] };
-    let text = `URL: ${result.url}\nTitle: "${result.title}"\n\n`;
-    text += result.text || '(empty page)';
-    return { content: [{ type: 'text', text }] };
+        return text(`Content failed: ${result.error}`);
+    let msg = `URL: ${result.url}\nTitle: "${result.title}"\n\n`;
+    msg += result.text || '(empty page)';
+    return text(msg);
 }
 // ── browser_screenshot ──
 export const browserScreenshotSchema = {
@@ -88,14 +89,14 @@ export const browserScreenshotDescription = 'Take a screenshot of the current pa
 export async function handleBrowserScreenshot(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.screenshot(resolved.sessionId);
     if (result.error)
-        return { content: [{ type: 'text', text: `Screenshot failed: ${result.error}` }] };
+        return text(`Screenshot failed: ${result.error}`);
     return {
         content: [
-            { type: 'text', text: `Screenshot of ${result.url} — "${result.title}"` },
-            { type: 'image', data: result.data, mimeType: 'image/jpeg' },
+            ...text(`Screenshot of ${result.url} — "${result.title}"`).content,
+            ...image(result.data, 'image/jpeg').content,
         ],
     };
 }
@@ -125,18 +126,16 @@ export const browserExtractTweetsDescription = 'Extract all currently visible tw
 export async function handleBrowserExtractTweets(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, TWEET_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const tweets = result.result;
     if (!Array.isArray(tweets) || tweets.length === 0) {
-        return { content: [{ type: 'text', text: `No tweets found. Try browser_scroll then retry.` }] };
+        return text(`No tweets found. Try browser_scroll then retry.`);
     }
     const json = JSON.stringify(tweets, null, 2);
-    return {
-        content: [{ type: 'text', text: `${tweets.length} tweet(s):\n\n${json}` }],
-    };
+    return text(`${tweets.length} tweet(s):\n\n${json}`);
 }
 // ── browser_extract_fb_posts ──
 const FB_POST_EXTRACTOR_SCRIPT = `
@@ -165,17 +164,15 @@ export const browserExtractFbPostsDescription = 'Extract all currently visible F
 export async function handleBrowserExtractFbPosts(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, FB_POST_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const posts = result.result;
     if (!Array.isArray(posts) || posts.length === 0) {
-        return { content: [{ type: 'text', text: 'No posts found. Try browser_scroll down then retry.' }] };
+        return text('No posts found. Try browser_scroll down then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}` }],
-    };
+    return text(`${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}`);
 }
 // ── browser_extract_tiktok_videos ──
 const TIKTOK_FEED_EXTRACTOR_SCRIPT = `
@@ -213,17 +210,15 @@ export const browserExtractTiktokVideosDescription = 'Extract all currently visi
 export async function handleBrowserExtractTiktokVideos(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, TIKTOK_FEED_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const videos = result.result;
     if (!Array.isArray(videos) || videos.length === 0) {
-        return { content: [{ type: 'text', text: 'No TikTok videos found. Make sure you are on tiktok.com/ or tiktok.com/following, then try browser_scroll down and retry.' }] };
+        return text('No TikTok videos found. Make sure you are on tiktok.com/ or tiktok.com/following, then try browser_scroll down and retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${videos.length} video(s):\n\n${JSON.stringify(videos, null, 2)}` }],
-    };
+    return text(`${videos.length} video(s):\n\n${JSON.stringify(videos, null, 2)}`);
 }
 // ── browser_extract_tiktok_search ──
 const TIKTOK_SEARCH_EXTRACTOR_SCRIPT = `
@@ -252,17 +247,15 @@ export const browserExtractTiktokSearchDescription = 'Extract all currently visi
 export async function handleBrowserExtractTiktokSearch(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, TIKTOK_SEARCH_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const videos = result.result;
     if (!Array.isArray(videos) || videos.length === 0) {
-        return { content: [{ type: 'text', text: 'No search results found. Make sure you are on tiktok.com/search?q=... then retry.' }] };
+        return text('No search results found. Make sure you are on tiktok.com/search?q=... then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${videos.length} result(s):\n\n${JSON.stringify(videos, null, 2)}` }],
-    };
+    return text(`${videos.length} result(s):\n\n${JSON.stringify(videos, null, 2)}`);
 }
 // ── browser_extract_tiktok_studio ──
 const TIKTOK_STUDIO_EXTRACTOR_SCRIPT = `
@@ -293,17 +286,15 @@ export const browserExtractTiktokStudioDescription = 'Extract all visible posts 
 export async function handleBrowserExtractTiktokStudio(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, TIKTOK_STUDIO_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const posts = result.result;
     if (!Array.isArray(posts) || posts.length === 0) {
-        return { content: [{ type: 'text', text: 'No Studio posts found. Make sure you are on tiktok.com/tiktokstudio/content then retry.' }] };
+        return text('No Studio posts found. Make sure you are on tiktok.com/tiktokstudio/content then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}` }],
-    };
+    return text(`${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}`);
 }
 // ── browser_extract_tiktok_profile ──
 const TIKTOK_PROFILE_EXTRACTOR_SCRIPT = `
@@ -335,17 +326,15 @@ export const browserExtractTiktokProfileDescription = 'Extract profile info and 
 export async function handleBrowserExtractTiktokProfile(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, TIKTOK_PROFILE_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const profile = result.result;
     if (!profile || (!profile.name && !profile.handle)) {
-        return { content: [{ type: 'text', text: 'No profile found. Make sure you are on tiktok.com/@username then retry.' }] };
+        return text('No profile found. Make sure you are on tiktok.com/@username then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `Profile:\n\n${JSON.stringify(profile, null, 2)}` }],
-    };
+    return text(`Profile:\n\n${JSON.stringify(profile, null, 2)}`);
 }
 // ── browser_extract_wa_chats ──
 const WA_CHATS_EXTRACTOR_SCRIPT = `
@@ -378,17 +367,15 @@ export const browserExtractWaChatsDescription = 'Extract all currently visible W
 export async function handleBrowserExtractWaChats(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, WA_CHATS_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const chats = result.result;
     if (!Array.isArray(chats) || chats.length === 0) {
-        return { content: [{ type: 'text', text: 'No chats found. Make sure you are on web.whatsapp.com with the chat list visible.' }] };
+        return text('No chats found. Make sure you are on web.whatsapp.com with the chat list visible.');
     }
-    return {
-        content: [{ type: 'text', text: `${chats.length} chat(s):\n\n${JSON.stringify(chats, null, 2)}` }],
-    };
+    return text(`${chats.length} chat(s):\n\n${JSON.stringify(chats, null, 2)}`);
 }
 // ── browser_extract_wa_messages ──
 const WA_MESSAGES_EXTRACTOR_SCRIPT = `
@@ -419,17 +406,15 @@ export const browserExtractWaMessagesDescription = 'Extract all currently visibl
 export async function handleBrowserExtractWaMessages(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, WA_MESSAGES_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const messages = result.result;
     if (!Array.isArray(messages) || messages.length === 0) {
-        return { content: [{ type: 'text', text: 'No messages found. Open a chat first, then retry.' }] };
+        return text('No messages found. Open a chat first, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${messages.length} message(s):\n\n${JSON.stringify(messages, null, 2)}` }],
-    };
+    return text(`${messages.length} message(s):\n\n${JSON.stringify(messages, null, 2)}`);
 }
 // ── browser_extract_ig_feed ──
 const IG_FEED_EXTRACTOR_SCRIPT = `
@@ -461,17 +446,15 @@ export const browserExtractIgFeedDescription = 'Extract all currently visible In
 export async function handleBrowserExtractIgFeed(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, IG_FEED_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const posts = result.result;
     if (!Array.isArray(posts) || posts.length === 0) {
-        return { content: [{ type: 'text', text: 'No feed posts found. Navigate to instagram.com/ and scroll down, then retry.' }] };
+        return text('No feed posts found. Navigate to instagram.com/ and scroll down, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}` }],
-    };
+    return text(`${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}`);
 }
 // ── browser_extract_ig_profile ──
 const IG_PROFILE_EXTRACTOR_SCRIPT = `
@@ -518,17 +501,15 @@ export const browserExtractIgProfileDescription = 'Extract Instagram profile dat
 export async function handleBrowserExtractIgProfile(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, IG_PROFILE_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const profile = result.result;
     if (!profile || !profile.username) {
-        return { content: [{ type: 'text', text: 'No profile data found. Navigate to instagram.com/username/ first, then retry.' }] };
+        return text('No profile data found. Navigate to instagram.com/username/ first, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `Profile:\n\n${JSON.stringify(profile, null, 2)}` }],
-    };
+    return text(`Profile:\n\n${JSON.stringify(profile, null, 2)}`);
 }
 // ── browser_extract_ig_post ──
 const IG_POST_EXTRACTOR_SCRIPT = `
@@ -589,17 +570,15 @@ export const browserExtractIgPostDescription = 'Extract a single Instagram post 
 export async function handleBrowserExtractIgPost(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, IG_POST_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const post = result.result;
     if (!post || !post.author) {
-        return { content: [{ type: 'text', text: 'No post data found. Navigate to instagram.com/p/POST_ID/ first, then retry.' }] };
+        return text('No post data found. Navigate to instagram.com/p/POST_ID/ first, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `Post:\n\n${JSON.stringify(post, null, 2)}` }],
-    };
+    return text(`Post:\n\n${JSON.stringify(post, null, 2)}`);
 }
 // ── browser_extract_ig_reels ──
 const IG_REELS_EXTRACTOR_SCRIPT = `
@@ -649,17 +628,15 @@ export const browserExtractIgReelsDescription = 'Extract visible Instagram Reels
 export async function handleBrowserExtractIgReels(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, IG_REELS_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const reels = result.result;
     if (!Array.isArray(reels) || reels.length === 0) {
-        return { content: [{ type: 'text', text: 'No reels found. Navigate to instagram.com/reels/ and scroll down, then retry.' }] };
+        return text('No reels found. Navigate to instagram.com/reels/ and scroll down, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${reels.length} reel(s):\n\n${JSON.stringify(reels, null, 2)}` }],
-    };
+    return text(`${reels.length} reel(s):\n\n${JSON.stringify(reels, null, 2)}`);
 }
 // ── browser_extract_ig_search ──
 const IG_SEARCH_EXTRACTOR_SCRIPT = `
@@ -678,17 +655,15 @@ export const browserExtractIgSearchDescription = 'Extract posts from the Instagr
 export async function handleBrowserExtractIgSearch(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, IG_SEARCH_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const posts = result.result;
     if (!Array.isArray(posts) || posts.length === 0) {
-        return { content: [{ type: 'text', text: 'No explore posts found. Navigate to instagram.com/explore/ and scroll down, then retry.' }] };
+        return text('No explore posts found. Navigate to instagram.com/explore/ and scroll down, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}` }],
-    };
+    return text(`${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}`);
 }
 // ── LinkedIn Extraction Tools ──
 // ── browser_extract_li_feed ──
@@ -734,17 +709,15 @@ export const browserExtractLiFeedDescription = 'Extract all currently visible Li
 export async function handleBrowserExtractLiFeed(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, LI_FEED_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const posts = result.result;
     if (!Array.isArray(posts) || posts.length === 0) {
-        return { content: [{ type: 'text', text: 'No LinkedIn feed posts found. Navigate to linkedin.com/feed/ and scroll down, then retry.' }] };
+        return text('No LinkedIn feed posts found. Navigate to linkedin.com/feed/ and scroll down, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}` }],
-    };
+    return text(`${posts.length} post(s):\n\n${JSON.stringify(posts, null, 2)}`);
 }
 // ── browser_extract_li_profile ──
 const LI_PROFILE_EXTRACTOR_SCRIPT = `
@@ -784,17 +757,15 @@ export const browserExtractLiProfileDescription = 'Extract LinkedIn profile data
 export async function handleBrowserExtractLiProfile(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, LI_PROFILE_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const profile = result.result;
     if (!profile || !profile.name) {
-        return { content: [{ type: 'text', text: 'No profile data found. Navigate to linkedin.com/in/USERNAME/ first, then retry.' }] };
+        return text('No profile data found. Navigate to linkedin.com/in/USERNAME/ first, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `Profile:\n\n${JSON.stringify(profile, null, 2)}` }],
-    };
+    return text(`Profile:\n\n${JSON.stringify(profile, null, 2)}`);
 }
 // ── browser_extract_li_post ──
 const LI_POST_EXTRACTOR_SCRIPT = `
@@ -835,17 +806,15 @@ export const browserExtractLiPostDescription = 'Extract a single LinkedIn post w
 export async function handleBrowserExtractLiPost(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, LI_POST_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const post = result.result;
     if (!post || !post.author) {
-        return { content: [{ type: 'text', text: 'No post data found. Navigate to linkedin.com/feed/update/urn:li:activity:ID/ first, then retry.' }] };
+        return text('No post data found. Navigate to linkedin.com/feed/update/urn:li:activity:ID/ first, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `Post:\n\n${JSON.stringify(post, null, 2)}` }],
-    };
+    return text(`Post:\n\n${JSON.stringify(post, null, 2)}`);
 }
 // ── browser_extract_li_notifications ──
 const LI_NOTIFICATIONS_EXTRACTOR_SCRIPT = `
@@ -870,17 +839,15 @@ export const browserExtractLiNotificationsDescription = 'Extract LinkedIn notifi
 export async function handleBrowserExtractLiNotifications(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, LI_NOTIFICATIONS_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const notifs = result.result;
     if (!Array.isArray(notifs) || notifs.length === 0) {
-        return { content: [{ type: 'text', text: 'No notifications found. Navigate to linkedin.com/notifications/ first, then retry.' }] };
+        return text('No notifications found. Navigate to linkedin.com/notifications/ first, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${notifs.length} notification(s):\n\n${JSON.stringify(notifs, null, 2)}` }],
-    };
+    return text(`${notifs.length} notification(s):\n\n${JSON.stringify(notifs, null, 2)}`);
 }
 // ── browser_extract_li_messages ──
 const LI_MESSAGES_EXTRACTOR_SCRIPT = `
@@ -915,19 +882,17 @@ export const browserExtractLiMessagesDescription = 'Extract LinkedIn messaging d
 export async function handleBrowserExtractLiMessages(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, LI_MESSAGES_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const data = result.result;
     const convos = data?.conversations || [];
     const msgs = data?.activeThread || [];
     if (convos.length === 0 && msgs.length === 0) {
-        return { content: [{ type: 'text', text: 'No messages found. Navigate to linkedin.com/messaging/ first, then retry.' }] };
+        return text('No messages found. Navigate to linkedin.com/messaging/ first, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${convos.length} conversation(s), ${msgs.length} message(s) in active thread:\n\n${JSON.stringify(data, null, 2)}` }],
-    };
+    return text(`${convos.length} conversation(s), ${msgs.length} message(s) in active thread:\n\n${JSON.stringify(data, null, 2)}`);
 }
 // ── browser_extract_li_search_people ──
 const LI_SEARCH_PEOPLE_EXTRACTOR_SCRIPT = `
@@ -978,17 +943,15 @@ export const browserExtractLiSearchPeopleDescription = 'Extract LinkedIn people 
 export async function handleBrowserExtractLiSearchPeople(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, LI_SEARCH_PEOPLE_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const people = result.result;
     if (!Array.isArray(people) || people.length === 0) {
-        return { content: [{ type: 'text', text: 'No search results found. Navigate to linkedin.com/search/results/people/?keywords=QUERY first, then retry.' }] };
+        return text('No search results found. Navigate to linkedin.com/search/results/people/?keywords=QUERY first, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${people.length} result(s):\n\n${JSON.stringify(people, null, 2)}` }],
-    };
+    return text(`${people.length} result(s):\n\n${JSON.stringify(people, null, 2)}`);
 }
 // ── browser_extract_li_network ──
 const LI_NETWORK_EXTRACTOR_SCRIPT = `
@@ -1046,18 +1009,16 @@ export const browserExtractLiNetworkDescription = 'Extract LinkedIn My Network d
 export async function handleBrowserExtractLiNetwork(args) {
     const resolved = await ni.resolveSession(args.sessionId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const result = await ni.evaluate(resolved.sessionId, LI_NETWORK_EXTRACTOR_SCRIPT);
     if (result.error)
-        return { content: [{ type: 'text', text: `Extract failed: ${result.error}` }] };
+        return text(`Extract failed: ${result.error}`);
     const data = result.result;
     const invitations = data?.invitations || [];
     const suggestions = data?.suggestions || [];
     if (invitations.length === 0 && suggestions.length === 0) {
-        return { content: [{ type: 'text', text: 'No network data found. Navigate to linkedin.com/mynetwork/ first, then retry.' }] };
+        return text('No network data found. Navigate to linkedin.com/mynetwork/ first, then retry.');
     }
-    return {
-        content: [{ type: 'text', text: `${invitations.length} invitation(s), ${suggestions.length} suggestion(s):\n\n${JSON.stringify(data, null, 2)}` }],
-    };
+    return text(`${invitations.length} invitation(s), ${suggestions.length} suggestion(s):\n\n${JSON.stringify(data, null, 2)}`);
 }
 //# sourceMappingURL=browser-observe.js.map

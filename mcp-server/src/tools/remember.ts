@@ -8,6 +8,7 @@ import type { MemoryPayload, MemorySource } from '../types.js';
 import { detectProject } from '../config.js';
 import { computeChecksums } from '../services/file-checksums.js';
 import { invalidateCache } from '../services/neural-interface.js';
+import { text } from './response.js';
 
 export function buildRememberSchema() {
   return {
@@ -69,9 +70,7 @@ export async function handleRemember(args: {
 }) {
   const catCheck = validateCategory(args.category);
   if (!catCheck.valid) {
-    return {
-      content: [{ type: 'text' as const, text: catCheck.error! }],
-    };
+    return text(catCheck.error!);
   }
 
   const content = args.content;
@@ -112,12 +111,5 @@ export async function handleRemember(args: {
   // Invalidate Neural Interface link cache (fire-and-forget)
   invalidateCache('remember');
 
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: `Remembered [${id}] (${category}/${project}, importance: ${importance}): "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`,
-      },
-    ],
-  };
+  return text(`Remembered [${id}] (${category}/${project}, importance: ${importance}): "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`);
 }

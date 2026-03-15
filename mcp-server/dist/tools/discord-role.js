@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as discord from '../services/discord.js';
+import { text } from './response.js';
 export const discordRoleSchema = {
     action: z.enum(['create', 'edit', 'delete', 'list', 'assign', 'remove'])
         .describe('Action: create, edit, delete, list, assign (to member), remove (from member).'),
@@ -28,7 +29,7 @@ export const discordRoleDescription = 'Discord role management. Actions: create,
 // ── Create ─────────────────────────────────────────────────────
 async function handleCreate(guildId, args) {
     if (!args.name) {
-        return { content: [{ type: 'text', text: 'name is required for create action.' }] };
+        return text('name is required for create action.');
     }
     const data = { name: args.name };
     if (args.color) {
@@ -44,24 +45,24 @@ async function handleCreate(guildId, args) {
             data.permissions = discord.resolvePermissions(args.permissions);
         }
         catch (err) {
-            return { content: [{ type: 'text', text: err.message }] };
+            return text(err.message);
         }
     }
     const res = await discord.createRole(guildId, data);
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
+        return text(res.error);
     const role = res.data;
     const colorStr = role.color ? ` #${role.color.toString(16).padStart(6, '0')}` : '';
-    return { content: [{ type: 'text', text: `Created role @${role.name} (${role.id})${colorStr}` }] };
+    return text(`Created role @${role.name} (${role.id})${colorStr}`);
 }
 // ── Edit ───────────────────────────────────────────────────────
 async function handleEdit(guildId, args) {
     if (!args.role) {
-        return { content: [{ type: 'text', text: 'role is required for edit action.' }] };
+        return text('role is required for edit action.');
     }
     const resolved = await discord.resolveRole(args.role, guildId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const data = {};
     if (args.name !== undefined)
         data.name = args.name;
@@ -78,35 +79,35 @@ async function handleEdit(guildId, args) {
             data.permissions = discord.resolvePermissions(args.permissions);
         }
         catch (err) {
-            return { content: [{ type: 'text', text: err.message }] };
+            return text(err.message);
         }
     }
     if (Object.keys(data).length === 0 && args.position === undefined) {
-        return { content: [{ type: 'text', text: 'No changes specified.' }] };
+        return text('No changes specified.');
     }
     const res = await discord.editRole(guildId, resolved.id, data);
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
-    return { content: [{ type: 'text', text: `Updated role @${resolved.name} (${resolved.id}).` }] };
+        return text(res.error);
+    return text(`Updated role @${resolved.name} (${resolved.id}).`);
 }
 // ── Delete ─────────────────────────────────────────────────────
 async function handleDelete(guildId, args) {
     if (!args.role) {
-        return { content: [{ type: 'text', text: 'role is required for delete action.' }] };
+        return text('role is required for delete action.');
     }
     const resolved = await discord.resolveRole(args.role, guildId);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const res = await discord.deleteRole(guildId, resolved.id);
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
-    return { content: [{ type: 'text', text: `Deleted role @${resolved.name} (${resolved.id}).` }] };
+        return text(res.error);
+    return text(`Deleted role @${resolved.name} (${resolved.id}).`);
 }
 // ── List ───────────────────────────────────────────────────────
 async function handleList(guildId) {
     const roles = await discord.getGuildRoles(guildId);
     if ('error' in roles)
-        return { content: [{ type: 'text', text: roles.error }] };
+        return text(roles.error);
     const list = roles
         .sort((a, b) => b.position - a.position);
     const lines = list.map(r => {
@@ -121,47 +122,47 @@ async function handleList(guildId) {
         const flagStr = flags.length > 0 ? ` [${flags.join(', ')}]` : '';
         return `  @${r.name} (${r.id})${color}${flagStr}`;
     });
-    return { content: [{ type: 'text', text: `Roles (${list.length}):\n${lines.join('\n')}` }] };
+    return text(`Roles (${list.length}):\n${lines.join('\n')}`);
 }
 // ── Assign ─────────────────────────────────────────────────────
 async function handleAssign(guildId, args) {
     if (!args.role)
-        return { content: [{ type: 'text', text: 'role is required for assign action.' }] };
+        return text('role is required for assign action.');
     if (!args.member)
-        return { content: [{ type: 'text', text: 'member is required for assign action.' }] };
+        return text('member is required for assign action.');
     const roleResolved = await discord.resolveRole(args.role, guildId);
     if ('error' in roleResolved)
-        return { content: [{ type: 'text', text: roleResolved.error }] };
+        return text(roleResolved.error);
     const userResolved = await discord.resolveUser(args.member, guildId);
     if ('error' in userResolved)
-        return { content: [{ type: 'text', text: userResolved.error }] };
+        return text(userResolved.error);
     const res = await discord.addMemberRole(guildId, userResolved.id, roleResolved.id);
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
-    return { content: [{ type: 'text', text: `Assigned @${roleResolved.name} to ${userResolved.name}.` }] };
+        return text(res.error);
+    return text(`Assigned @${roleResolved.name} to ${userResolved.name}.`);
 }
 // ── Remove ─────────────────────────────────────────────────────
 async function handleRemove(guildId, args) {
     if (!args.role)
-        return { content: [{ type: 'text', text: 'role is required for remove action.' }] };
+        return text('role is required for remove action.');
     if (!args.member)
-        return { content: [{ type: 'text', text: 'member is required for remove action.' }] };
+        return text('member is required for remove action.');
     const roleResolved = await discord.resolveRole(args.role, guildId);
     if ('error' in roleResolved)
-        return { content: [{ type: 'text', text: roleResolved.error }] };
+        return text(roleResolved.error);
     const userResolved = await discord.resolveUser(args.member, guildId);
     if ('error' in userResolved)
-        return { content: [{ type: 'text', text: userResolved.error }] };
+        return text(userResolved.error);
     const res = await discord.removeMemberRole(guildId, userResolved.id, roleResolved.id);
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
-    return { content: [{ type: 'text', text: `Removed @${roleResolved.name} from ${userResolved.name}.` }] };
+        return text(res.error);
+    return text(`Removed @${roleResolved.name} from ${userResolved.name}.`);
 }
 // ── Main dispatcher ────────────────────────────────────────────
 export async function handleDiscordRole(args) {
     const resolved = await discord.resolveGuildId(args.guild_id);
     if ('error' in resolved)
-        return { content: [{ type: 'text', text: resolved.error }] };
+        return text(resolved.error);
     const guildId = resolved.guildId;
     switch (args.action) {
         case 'create': return handleCreate(guildId, args);
@@ -171,7 +172,7 @@ export async function handleDiscordRole(args) {
         case 'assign': return handleAssign(guildId, args);
         case 'remove': return handleRemove(guildId, args);
         default:
-            return { content: [{ type: 'text', text: `Unknown action "${args.action}". Use: create, edit, delete, list, assign, remove.` }] };
+            return text(`Unknown action "${args.action}". Use: create, edit, delete, list, assign, remove.`);
     }
 }
 //# sourceMappingURL=discord-role.js.map

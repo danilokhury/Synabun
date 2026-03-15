@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { softDeleteMemory, getMemory } from '../services/sqlite.js';
 import type { MemoryPayload } from '../types.js';
 import { invalidateCache } from '../services/neural-interface.js';
+import { text } from './response.js';
 
 export const forgetSchema = {
   memory_id: z
@@ -19,27 +20,13 @@ export async function handleForget(args: { memory_id: string }) {
 
   const existing = await getMemory(memoryId);
   if (!existing) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Memory "${memoryId}" not found. Use recall to search for the memory first.`,
-        },
-      ],
-    };
+    return text(`Memory "${memoryId}" not found. Use recall to search for the memory first.`);
   }
 
   const payload = existing.payload as unknown as MemoryPayload;
 
   if (payload.trashed_at) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Memory [${memoryId.slice(0, 8)}] is already in trash (trashed ${payload.trashed_at}).`,
-        },
-      ],
-    };
+    return text(`Memory [${memoryId.slice(0, 8)}] is already in trash (trashed ${payload.trashed_at}).`);
   }
 
   await softDeleteMemory(memoryId);
@@ -47,12 +34,5 @@ export async function handleForget(args: { memory_id: string }) {
   // Invalidate Neural Interface link cache (fire-and-forget)
   invalidateCache('forget');
 
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: `Moved to trash [${memoryId.slice(0, 8)}]: "${(payload.content ?? '(empty)').slice(0, 80)}..." — can be restored from the Neural Interface trash panel or via the restore tool.`,
-      },
-    ],
-  };
+  return text(`Moved to trash [${memoryId.slice(0, 8)}]: "${(payload.content ?? '(empty)').slice(0, 80)}..." — can be restored from the Neural Interface trash panel or via the restore tool.`);
 }

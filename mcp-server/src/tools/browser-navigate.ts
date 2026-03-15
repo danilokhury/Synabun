@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text } from './response.js';
 
 // ── browser_navigate ──
 
@@ -13,14 +14,12 @@ export const browserNavigateDescription =
 
 export async function handleBrowserNavigate(args: { url: string; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId, { url: args.url });
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.navigate(resolved.sessionId, args.url);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Navigation failed: ${result.error}` }] };
+  if (result.error) return text(`Navigation failed: ${result.error}`);
 
-  return {
-    content: [{ type: 'text' as const, text: `Navigated to ${result.url} — "${result.title}"` }],
-  };
+  return text(`Navigated to ${result.url} — "${result.title}"`);
 }
 
 // ── browser_go_back ──
@@ -33,14 +32,12 @@ export const browserGoBackDescription = 'Go back to the previous page in browser
 
 export async function handleBrowserGoBack(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.goBack(resolved.sessionId);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Go back failed: ${result.error}` }] };
+  if (result.error) return text(`Go back failed: ${result.error}`);
 
-  return {
-    content: [{ type: 'text' as const, text: `Went back to ${result.url} — "${result.title}"` }],
-  };
+  return text(`Went back to ${result.url} — "${result.title}"`);
 }
 
 // ── browser_go_forward ──
@@ -53,14 +50,12 @@ export const browserGoForwardDescription = 'Go forward to the next page in brows
 
 export async function handleBrowserGoForward(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.goForward(resolved.sessionId);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Go forward failed: ${result.error}` }] };
+  if (result.error) return text(`Go forward failed: ${result.error}`);
 
-  return {
-    content: [{ type: 'text' as const, text: `Went forward to ${result.url} — "${result.title}"` }],
-  };
+  return text(`Went forward to ${result.url} — "${result.title}"`);
 }
 
 // ── browser_reload ──
@@ -73,12 +68,10 @@ export const browserReloadDescription = 'Reload the current page. Useful after m
 
 export async function handleBrowserReload(args: { sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.reload(resolved.sessionId);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Reload failed: ${result.error}` }] };
+  if (result.error) return text(`Reload failed: ${result.error}`);
 
-  return {
-    content: [{ type: 'text' as const, text: `Reloaded — now at ${result.url} "${result.title}"` }],
-  };
+  return text(`Reloaded — now at ${result.url} "${result.title}"`);
 }

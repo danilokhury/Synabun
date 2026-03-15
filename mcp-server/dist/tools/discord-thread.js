@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as discord from '../services/discord.js';
+import { text } from './response.js';
 export const discordThreadSchema = {
     action: z.enum(['create', 'archive', 'unarchive', 'lock', 'delete'])
         .describe('Action: create, archive, unarchive, lock, delete.'),
@@ -22,17 +23,17 @@ export const discordThreadDescription = 'Discord thread management. Actions: cre
 // ── Create ─────────────────────────────────────────────────────
 async function handleCreate(args) {
     if (!args.channel)
-        return { content: [{ type: 'text', text: 'channel is required for create action.' }] };
+        return text('channel is required for create action.');
     if (!args.name)
-        return { content: [{ type: 'text', text: 'name is required for create action.' }] };
+        return text('name is required for create action.');
     let channelId = args.channel;
     if (!/^\d{17,20}$/.test(channelId)) {
         const resolved = await discord.resolveGuildId(args.guild_id);
         if ('error' in resolved)
-            return { content: [{ type: 'text', text: resolved.error }] };
+            return text(resolved.error);
         const ch = await discord.resolveChannel(args.channel, resolved.guildId);
         if ('error' in ch)
-            return { content: [{ type: 'text', text: ch.error }] };
+            return text(ch.error);
         channelId = ch.id;
     }
     const data = {
@@ -50,27 +51,27 @@ async function handleCreate(args) {
         res = await discord.createThread(channelId, data);
     }
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
+        return text(res.error);
     const thread = res.data;
-    return { content: [{ type: 'text', text: `Created thread "${thread.name}" (${thread.id})${args.message_id ? ` from message ${args.message_id}` : ''}.` }] };
+    return text(`Created thread "${thread.name}" (${thread.id})${args.message_id ? ` from message ${args.message_id}` : ''}.`);
 }
 // ── Archive / Unarchive / Lock ─────────────────────────────────
 async function handleModify(args, updates, actionName) {
     if (!args.thread)
-        return { content: [{ type: 'text', text: `thread ID is required for ${actionName} action.` }] };
+        return text(`thread ID is required for ${actionName} action.`);
     const res = await discord.modifyThread(args.thread, updates);
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
-    return { content: [{ type: 'text', text: `Thread ${args.thread} ${actionName}d.` }] };
+        return text(res.error);
+    return text(`Thread ${args.thread} ${actionName}d.`);
 }
 // ── Delete ─────────────────────────────────────────────────────
 async function handleDelete(args) {
     if (!args.thread)
-        return { content: [{ type: 'text', text: 'thread ID is required for delete action.' }] };
+        return text('thread ID is required for delete action.');
     const res = await discord.deleteThread(args.thread);
     if (res.error)
-        return { content: [{ type: 'text', text: res.error }] };
-    return { content: [{ type: 'text', text: `Deleted thread ${args.thread}.` }] };
+        return text(res.error);
+    return text(`Deleted thread ${args.thread}.`);
 }
 // ── Main dispatcher ────────────────────────────────────────────
 export async function handleDiscordThread(args) {
@@ -81,7 +82,7 @@ export async function handleDiscordThread(args) {
         case 'lock': return handleModify(args, { locked: true }, 'lock');
         case 'delete': return handleDelete(args);
         default:
-            return { content: [{ type: 'text', text: `Unknown action "${args.action}". Use: create, archive, unarchive, lock, delete.` }] };
+            return text(`Unknown action "${args.action}". Use: create, archive, unarchive, lock, delete.`);
     }
 }
 //# sourceMappingURL=discord-thread.js.map

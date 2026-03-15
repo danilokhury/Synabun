@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
+import { text } from './response.js';
 
 // ── browser_evaluate ──
 
@@ -14,24 +15,24 @@ export const browserEvaluateDescription =
 
 export async function handleBrowserEvaluate(args: { script?: string; expression?: string; sessionId?: string }) {
   const code = args.script || args.expression;
-  if (!code) return { content: [{ type: 'text' as const, text: 'Either "script" or "expression" is required.' }] };
+  if (!code) return text('Either "script" or "expression" is required.');
 
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, code);
-  if (result.error) return { content: [{ type: 'text' as const, text: `Evaluate failed: ${result.error}` }] };
+  if (result.error) return text(`Evaluate failed: ${result.error}`);
 
-  let text: string;
+  let msg: string;
   try {
     // Guard against undefined — JSON.stringify(undefined) returns undefined (not a string)
     const val = result.result ?? null;
-    text = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
+    msg = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
   } catch {
-    text = String(result.result ?? 'undefined');
+    msg = String(result.result ?? 'undefined');
   }
 
-  return { content: [{ type: 'text' as const, text }] };
+  return text(msg);
 }
 
 // ── browser_wait ──
@@ -57,7 +58,7 @@ export async function handleBrowserWait(args: {
   sessionId?: string;
 }) {
   const resolved = await ni.resolveSession(args.sessionId);
-  if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+  if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.waitFor(resolved.sessionId, {
     selector: args.selector,
@@ -65,15 +66,15 @@ export async function handleBrowserWait(args: {
     loadState: args.loadState,
     timeout: args.timeout,
   });
-  if (result.error) return { content: [{ type: 'text' as const, text: `Wait failed: ${result.error}` }] };
+  if (result.error) return text(`Wait failed: ${result.error}`);
 
   if (args.loadState) {
-    return { content: [{ type: 'text' as const, text: `Page reached "${args.loadState}" — now at ${result.url} "${result.title}"` }] };
+    return text(`Page reached "${args.loadState}" — now at ${result.url} "${result.title}"`);
   }
   if (args.selector) {
-    return { content: [{ type: 'text' as const, text: `"${args.selector}" is now ${result.state}` }] };
+    return text(`"${args.selector}" is now ${result.state}`);
   }
-  return { content: [{ type: 'text' as const, text: `Waited ${args.timeout || 1000}ms — now at ${result.url} "${result.title}"` }] };
+  return text(`Waited ${args.timeout || 1000}ms — now at ${result.url} "${result.title}"`);
 }
 
 // ── browser_session ──
@@ -94,29 +95,29 @@ export async function handleBrowserSession(args: {
 }) {
   if (args.action === 'list') {
     const result = await ni.listSessions();
-    if (result.error) return { content: [{ type: 'text' as const, text: `List failed: ${result.error}` }] };
+    if (result.error) return text(`List failed: ${result.error}`);
     const sessions = (result.sessions || []) as Array<{ id: string; url: string; title: string; createdAt: number }>;
     if (sessions.length === 0) {
-      return { content: [{ type: 'text' as const, text: 'No browser sessions open.' }] };
+      return text('No browser sessions open.');
     }
     const lines = sessions.map(s => `  ${s.id} — ${s.title || s.url} (opened ${new Date(s.createdAt).toLocaleTimeString()})`);
-    return { content: [{ type: 'text' as const, text: `${sessions.length} session(s):\n${lines.join('\n')}` }] };
+    return text(`${sessions.length} session(s):\n${lines.join('\n')}`);
   }
 
   if (args.action === 'create') {
     const result = await ni.createSession(args.url);
-    if (result.error) return { content: [{ type: 'text' as const, text: `Create failed: ${result.error}` }] };
-    return { content: [{ type: 'text' as const, text: `Created session ${result.sessionId} at ${args.url || 'about:blank'}` }] };
+    if (result.error) return text(`Create failed: ${result.error}`);
+    return text(`Created session ${result.sessionId} at ${args.url || 'about:blank'}`);
   }
 
   if (args.action === 'close') {
     const resolved = await ni.resolveSession(args.sessionId);
-    if ('error' in resolved) return { content: [{ type: 'text' as const, text: resolved.error }] };
+    if ('error' in resolved) return text(resolved.error);
 
     const result = await ni.closeSession(resolved.sessionId);
-    if (result.error) return { content: [{ type: 'text' as const, text: `Close failed: ${result.error}` }] };
-    return { content: [{ type: 'text' as const, text: `Closed session ${resolved.sessionId}` }] };
+    if (result.error) return text(`Close failed: ${result.error}`);
+    return text(`Closed session ${resolved.sessionId}`);
   }
 
-  return { content: [{ type: 'text' as const, text: `Unknown action "${args.action}". Use "list", "create", or "close".` }] };
+  return text(`Unknown action "${args.action}". Use "list", "create", or "close".`);
 }
