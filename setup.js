@@ -51,7 +51,9 @@ function checkNodeVersion() {
 // ── Phase 2: Dependency installation ──
 
 function needsInstall(dir) {
-  return !existsSync(resolve(dir, 'node_modules'));
+  // Check for .package-lock.json which npm creates after a successful install
+  // A bare node_modules/ directory (e.g. from a failed npx or partial install) is not enough
+  return !existsSync(resolve(dir, 'node_modules', '.package-lock.json'));
 }
 
 function installDeps(name, dir) {
