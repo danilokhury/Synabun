@@ -2357,7 +2357,7 @@ export async function openSettingsModal() {
       <nav class="settings-nav">
         ${buildNavHTML(variantTabs, {
           server: settings.storage === 'sqlite' ? 'connected' : 'disconnected',
-          setup: (setupStatus.claude?.installed || setupStatus.gemini?.installed || setupStatus.codex?.installed) ? 'connected' : 'disconnected',
+          setup: (setupStatus.claude?.connected || setupStatus.gemini?.connected || setupStatus.codex?.connected) ? 'connected' : 'disconnected',
           discord: discordConfig.botToken ? 'connected' : 'disconnected',
         })}
       </nav>
