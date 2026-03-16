@@ -1,5 +1,91 @@
 # SynaBun Changelog
 
+## 2026-03-16
+
+### Changed — Standardize Floating Panel Margins to 16px
+- **Uniform 16px edge margins across all floating whiteboard panels** — Previously inconsistent: whiteboard toolbar had `left: 16px`, workspace toolbar had `right: 12px`, terminal and Claude Code panel used `10px`. Standardized all to 16px by updating `#topright-controls` right from `calc(12px + var)` to `calc(16px + var)`, `#terminal-panel` bottom/left/right from `10px` to `16px` (including hidden `translateY` offset), and `.claude-panel` right/bottom from `10px` to `16px` in `ui-claude-panel.js`
+  - Updated `--claude-panel-width` JS offset from `+30` to `+16` in both toggle and resize handlers to tighten the gap between terminal and Claude Code panel
+  - Resize drag calculation updated from `window.innerWidth - e.clientX - 10` to `- 16`
+
+### Fixed — Autonomous Loop Cross-Session Contamination
+- **`findActiveLoop()` rewritten to exact-match only** — `hooks/claude-code/prompt-submit.mjs` previously scanned all `data/loop/*.json` files and renamed any active loop file to the current session's ID, causing any concurrently open Claude session (e.g., a Skins panel) to steal and inject a TUI session's active loop. Replaced with an exact-match-only lookup: only `data/loop/{sessionId}.json` is read — no directory scanning, no renaming of other sessions' files.
+  - `buildAutonomyBlock()` updated to accept a `sessionId` parameter and inject `` session_id `{id}` `` into the generated `loop update` call — so Claude always passes the explicit ID rather than relying on ambiguous env-based resolution in the MCP server
+- **`stop.mjs` fallback scan restricted to unclaimed loops** — The Stop hook's directory scan previously claimed any active loop where `currentIteration > 0`, stealing running loops from other sessions. Changed the condition to `currentIteration === 0` so the fallback only touches genuinely unclaimed new loops. Running loops (iteration > 0) are exclusively re-claimed via the `[SynaBun Loop]` message path in `prompt-submit.mjs`.
+
+### Changed — Stale Loop State File Cleanup
+- **185 old `data/loop/*.json` files removed** — All inactive and corrupt loop state files accumulated across sessions were deleted. The cross-session fix makes remaining files safe since they're only ever accessed by their owning session.
+
+### Changed — Terminal File Sidebar Inner Padding & Rounded Border
+- **`.ft-inner` wrapper matching terminal viewport style** — The file tree sidebar inside the docked terminal (`term-file-sidebar`) had a flat `rgba(14, 14, 16, 0.98)` background with a `border-right` and no rounded corners, while the terminal viewport (`term-viewport`) to its right had `border-radius: 12px`, `background: #0a0a0c`, and an inset `box-shadow`. Added a `.ft-inner` wrapper div in `toggleFileTree()` that wraps all sidebar content (no-CWD project picker, loading state, header+search+tree) with matching styles: `border-radius: 12px`, `background: #0a0a0c`, `box-shadow: 0 0 0 1px rgba(255,255,255,0.06), 0 2px 12px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.03)`
+  - Sidebar background changed to `transparent`, `border-right` removed
+  - `.term-file-sidebar.open` gets `padding: 6px 0 8px 8px` for inset gap from terminal panel edge
+  - Detached tab sidebar updated to apply `border-radius: 10px` to `.ft-inner` instead of the sidebar itself
+
+## 2026-03-15
+
+### Fixed — Resume Dropdown Shows 0 Sessions on macOS
+- **Cross-platform path conversion** — The project path → Claude directory name conversion in `neural-interface/server.js` only replaced Windows backslashes (`\`) via `replace(/\\/g, '-')`, leaving Unix forward slashes (`/`) untouched. On macOS, `/Users/danilokhury/Apps/Synabun` stayed unchanged instead of becoming `-Users-danilokhury-Apps-Synabun`, so the Claude projects directory was never found. Changed all 6 occurrences across 3 locations to `replace(/[\\/]/g, '-')`:
+  - `GET /api/claude-code/sessions` — `projKeyLower` and `projKeyUpper` (lines 5802–5808)
+  - `GET /api/claude-code/sessions/:sessionId/messages` — `projKeyLower` and `projKeyUpper` (lines 5881–5882)
+  - `detectClaudeSessionForCwd()` — `projKeyLower` and `projKeyUpper` (lines 8545–8546)
+
+### Changed — DRY Refactor for Path-to-Key Conversion
+- **`pathToClaudeKey()` helper function** — Extracted the repeated `replace(/[\\/]/g, '-').replace(/:/g, '-')` pattern into a single `pathToClaudeKey(p)` function at line ~2027 in `neural-interface/server.js`. All 6 inline occurrences across `GET /api/claude-code/sessions`, `GET /api/claude-code/sessions/:sessionId/messages`, and `detectClaudeSessionForCwd()` now call the helper instead of duplicating the regex chain.
+
+### Fixed — Claude Skin Crash on macOS from Stale Windows Paths
+- **`spawnProc()` ENOENT on cross-platform `cwd`** — Windows-style paths (e.g., `J:\Sites\Apps\Synabun`) from stale browser localStorage or cached API responses were passed as `cwd` to `spawn()`. On POSIX, `path.dirname('J:\\Sites\\Apps\\Synabun')` returns `.` (backslash isn't a separator), so the Claude CLI process crashed with ENOENT — exit code 1, 0 events, no response. Added `validateWorkDir(cwd)` helper in `neural-interface/server.js` that rejects Windows drive-letter paths on POSIX (`/^[A-Za-z]:[\\\/]/`), POSIX paths on Windows, and non-existent directories via `existsSync()`. Returns `null` to trigger `PROJECT_ROOT` fallback. Replaced `const workDir = cwd || PROJECT_ROOT` with `validateWorkDir(cwd) || PROJECT_ROOT`.
+- **Stale artifact directories cleaned up** — Removed three directories created in `neural-interface/` by prior broken spawn attempts: `J:\Sites\Apps\Synabun/`, `J:\Sites\CriticalPixel/`, `j:\Sites\Apps\SynaBunWebsite/`.
+
+### Changed — Combined Task-End Obligations in Stop Hook
+- **Single-block enforcement** — Restructured `hooks/claude-code/stop.mjs` to collect all pending task-end obligations (task memory, user learning, conversation turn, session summary) into one `obligations[]` array and emit a single combined block instead of 3-4 separate sequential blocks. Previously, each CHECK (2, 2.5, 3, 4) returned early with its own block, causing a cascade of stop-block cycles where Claude produced separate visible messages for each obligation.
+- **Dual-format output** — Each obligation stores both a `short` (concise, for combined lists) and `verbose` (detailed, for solo display) format. When only one obligation triggers, the original verbose message is preserved for full context. When multiple trigger, a numbered list is emitted.
+- **Single flag write** — The pending-remember flag file is now read once and written once after all checks, instead of separate `readFileSync`/`writeFileSync` per check.
+- **Updated JSDoc** — Header comment updated to document the combined task-end architecture replacing the old sequential CHECK 2/2.5/3/4 pattern.
+
+### Added — Client-Side Stream Event Rendering (Claude Skin)
+- **Real-time text streaming via `stream_event` deltas** — The server already forwarded `stream_event` events to the client, but `handleTabEvent()` silently dropped them (no handler). Added a `stream_event` routing case that delegates to the new `handleStreamDelta(tab, apiEvent)` function in `ui-claude-panel.js`. Text now streams word-by-word instead of appearing all at once after the full response completes.
+- **`handleStreamDelta()` function** — Handles the full API streaming lifecycle: `message_start` (initialize stream state, capture `message.id` for dedup), `content_block_start` (create DOM skeleton with Claude avatar + `.msg-content` wrapper), `content_block_delta` (append text/thinking deltas), `content_block_stop` (flush pending render), `message_stop` (finalize and clear state).
+  - Thinking blocks render into `<details class="msg-thinking">` — only created when effort toggle is on, via `_getEffort()` check
+  - Markdown re-rendering throttled to 100ms via `setTimeout` to avoid jank on rapid deltas
+  - Message ID from `message_start` wired to `tab.currentMsgId` so the subsequent full `assistant` event dedup-updates the streamed element via the existing `renderAssistant()` logic instead of creating a duplicate
+- **`finishTab()` cleanup** — Now clears `tab._stream` state and cancels any pending markdown throttle timer on tab finish.
+
+### Added — Graceful node-pty Failure (Cross-Platform)
+- **Lazy `await import('node-pty')` with try/catch** — Replaced the top-level `import pty from 'node-pty'` in `neural-interface/server.js` with a lazy dynamic import wrapped in error handling. If node-pty fails to compile (common on fresh Windows/Linux installs without build tools), the server starts normally — Claude skin works via `child_process.spawn`, only the terminal feature is disabled.
+- **`createTerminalSession()` guard** — Throws a descriptive error (`"Terminal not available: node-pty failed to load. Run: cd neural-interface && npm run postinstall"`) if `pty` is null, giving users a clear recovery path.
+
+### Added — Better Claude CLI Detection
+- **Bundled CLI checked first** — `getClaudeBin()` in `neural-interface/server.js` now tries `resolve(__dirname, 'node_modules', '.bin', 'claude')` before falling back to `which`/`where` for global installs. Logs a clear warning if neither found: `[claude-skin] Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code`.
+- **User-visible ENOENT error** — `proc.on('error')` handler now detects `err.code === 'ENOENT'` and sends `"Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code"` instead of a cryptic spawn error.
+
+### Fixed — Spawn-Helper Permissions on Linux
+- **Platform check broadened from macOS-only to all Unix** — Changed `process.platform === 'darwin'` to `process.platform !== 'win32'` in the server startup spawn-helper chmod fix (`neural-interface/server.js:53`). Linux also needs the execute bit set since npm/cpSync don't preserve it.
+- **Prebuild path generalized** — Changed hardcoded `darwin-${process.arch}` to `${process.platform}-${process.arch}` in both the startup fix and the auto-retry block in `POST /api/terminal/sessions`.
+
+### Changed — Node Version Alignment
+- **`package.json` engines bumped to `>=22.0.0`** — Was `>=18.0.0`, but `setup.js` hard-exits below Node 22. Now consistent.
+
+### Changed — Windows Build Instructions Updated
+- **Deprecated `windows-build-tools` replaced** — `neural-interface/scripts/rebuild-pty.js` error message updated from `npm install -g windows-build-tools` (deprecated for Node 22+) to `Install Visual Studio Build Tools 2022 with "Desktop development with C++" workload` with a `winget` alternative command.
+
+### Fixed — TUI Input Loss After macOS Screen Sleep/Wake
+- **Focus lost on screen wake** — When macOS screen sleeps (lid close, screensaver, `Cmd+Ctrl+Q`), the hidden `<textarea>` (HtmlTermRenderer) or xterm's internal textarea loses focus. On wake, no handler re-focused it, so keystrokes went nowhere. Added a global `visibilitychange` listener in `initTerminal()` that re-focuses the active docked terminal, floating windows, and browser canvas sessions on page wake via `requestAnimationFrame`.
+- **Terminal WebSocket dies during sleep with no reconnection** — Terminal WebSockets disconnected during sleep and immediately called `markSessionDead()`. The server keeps PTYs alive for 30 minutes (`TERMINAL_GRACE_PERIOD_MS`) and already supports reconnection (output replay, `session.clients.add(ws)`), but the client never attempted it. Added `_reconnectTerminalWs(session, attempt)` function that creates a fresh WebSocket to `/ws/terminal/${session.id}`, replaces `session.ws`, re-wires HtmlTermRenderer via `setWebSocket()`, sends resize, and handles all message types. Retries 3× with 2s delay before marking dead. All 4 `ws.onclose` handlers (`openSession`, `openHtmlTermSession`, `reconnectHtmlTermSession`, `reconnectSession`) now call `_reconnectTerminalWs()` instead of `markSessionDead()`.
+- **`_exitReceived` flag prevents reconnect loops** — Legitimately exited sessions (PTY sent `exit` message) are now flagged with `session._exitReceived = true` so `_reconnectTerminalWs()` skips them. All 4 exit message handlers updated.
+- **xterm `term.onData` closures captured stale local `ws`** — In `openSession()` and `reconnectSession()`, `term.onData` callbacks captured the local `ws` variable via closure. After WS reconnect, `session.ws` pointed to the new WebSocket but the `onData` handler still sent input through the dead old one. Changed to `_sessions.find(s => s.id === sessionId)?.ws` lookup so input always routes through the live WebSocket.
+- **Proactive WS health check on wake** — The `visibilitychange` handler iterates all non-browser sessions and calls `_reconnectTerminalWs()` for any with a dead or missing WebSocket, catching disconnections before the user discovers them.
+
+### Changed — Whiteboard Image Button: Drag-to-Terminal → Copy Path
+- **Click-to-copy replaces drag grip** — The `>_` terminal icon drag grip (`.wb-drag-to-term`) on whiteboard images has been replaced with a compact clipboard icon button (`.wb-copy-path`). Clicking saves the image to a temp file via the whiteboard WebSocket and copies the path to clipboard, so users can paste it into the terminal or anywhere else — no longer restricted to drag-and-drop into a terminal tab.
+  - `ui-whiteboard.js` — Replaced `draggable="true"` span with click handler that sends `{ type: 'image_save', data, mimeType }` over `_ws`, listens for `{ type: 'image_saved', path }`, calls `navigator.clipboard.writeText(path)`, and flashes green `.wb-copied` confirmation for 1.5s
+  - `server.js` — Added `image_save` handler in the whiteboard WS message handler, saves base64 to `$TMPDIR/synabun-wbimg-{timestamp}.{ext}`, responds with `{ type: 'image_saved', path }`
+  - `styles.css` — Renamed `.wb-drag-to-term` → `.wb-copy-path`, shrunk from 28×28px to 20×20px (12px icon), changed cursor from `grab` to `pointer`, added `.wb-copied` state with green color feedback
+
+### Fixed — Session Switch Output Bleed in Claude Panel Sidepanel
+- **Running session output leaks into resumed session** — When switching to a different session via the Resume dropdown while a Claude session is actively running, the old process's output kept appearing in the newly selected session's panel. Root cause: `selectSession()` in `ui-claude-panel.js` switched the tab's session ID and reloaded history but never killed the running process — its WebSocket output continued flowing into the now-wrong panel. Added a pre-switch guard that sends `abort`, sets `_discardingOldSession` flag, clears orphaned state (`_btwPending`, `_activePerm`, `_permQueue`, `_msgBuffer`), and calls `finishTab()`.
+- **Stale message discard guard in `handleTabMsg()`** — Added early-return guard that drops all messages from the killed process until the terminal `aborted`/`done` signal arrives and clears the `_discardingOldSession` flag.
+- **Server-side stale flush prevented** — In `neural-interface/server.js`, `proc.on('close')` did a final flush of buffered stdout lines via `processEvent()` BEFORE checking `activeProc !== proc`, sending stale events to the client after the `aborted` message. Moved the `activeProc !== proc` guard before the flush so stale processes skip `processEvent()` entirely. Temp file cleanup (`closeSync`, `unlinkSync`) always runs regardless.
+
 ## 2026-03-14
 
 ### Fixed — Find & Replace Focus Loss and Replace Accuracy (File Editor)

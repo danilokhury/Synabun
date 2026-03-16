@@ -87,7 +87,10 @@ function buildBrowserNote(state) {
   ].join('\n');
 }
 
-function buildAutonomyBlock(blockerRule) {
+function buildAutonomyBlock(blockerRule, sessionId) {
+  const updateCall = sessionId
+    ? `- After completing this iteration, call \`loop\` with action \`update\`, session_id \`${sessionId}\`, and a brief summary.`
+    : '- After completing this iteration, call `loop` with action `update` and a brief summary.';
   return [
     '',
     '--- LOOP AUTONOMY MODE ---',
@@ -99,7 +102,7 @@ function buildAutonomyBlock(blockerRule) {
     '- Use all available tools (browser, memory, file system) as needed without asking.',
     '- Each iteration should produce concrete output or progress.',
     '- If something fails due to a technical issue, try an alternative approach.',
-    '- After completing this iteration, call `loop` with action `update` and a brief summary.',
+    updateCall,
     '- The server will automatically advance to the next iteration when you finish.',
     blockerRule || '',
     '--- END LOOP AUTONOMY ---',
@@ -126,6 +129,24 @@ function computeTimeLeft(state) {
   const elapsed = Date.now() - new Date(state.startedAt).getTime();
   const maxMs = (state.maxMinutes || 30) * 60 * 1000;
   return Math.max(0, Math.round((maxMs - elapsed) / 60000));
+}
+
+/**
+ * Find an active loop owned by this session (exact file name match only).
+ * Does NOT scan other sessions' loop files — cross-session injection is
+ * the source of loop leaks between concurrent Claude panels/TUI sessions.
+ * Returns the loop state, or null if this session has no active loop.
+ */
+function findActiveLoop(sessionId) {
+  try {
+    const exactPath = join(LOOP_DIR, `${sessionId}.json`);
+    if (!existsSync(exactPath)) return null;
+    const candidate = JSON.parse(readFileSync(exactPath, 'utf-8'));
+    if (!candidate.active) return null;
+    const loopMaxMs = ((candidate.maxMinutes || 60) + 5) * 60 * 1000;
+    if (Date.now() - new Date(candidate.startedAt).getTime() > loopMaxMs) return null;
+    return candidate;
+  } catch { return null; }
 }
 
 // ============================================================
@@ -479,7 +500,7 @@ async function main() {
           const blockerRule = state.usesBrowser
             ? '- CRITICAL: If the browser shows a login page, CAPTCHA, 2FA, or ANY wall requiring human action — STOP IMMEDIATELY. Output what the user needs to do (e.g. "Please log into Twitter in the browser panel"). Do NOT use WebSearch, WebFetch, or any workaround. Do NOT try to bypass it. Just STOP and WAIT.'
             : '';
-          const autonomy = buildAutonomyBlock(blockerRule);
+          const autonomy = buildAutonomyBlock(blockerRule, sessionId);
 
           // Extract formatting rules and place them prominently
           const formattingRules = extractFormattingRules(state.task);
@@ -537,7 +558,7 @@ async function main() {
             const blockerRule2 = state.usesBrowser
               ? '- CRITICAL: If the browser shows a login page, CAPTCHA, 2FA, or ANY wall requiring human action — STOP IMMEDIATELY. Output what the user needs to do. Do NOT use WebSearch, WebFetch, or any workaround. Just STOP and WAIT.'
               : '';
-            const autonomy2 = buildAutonomyBlock(blockerRule2);
+            const autonomy2 = buildAutonomyBlock(blockerRule2, sessionId);
             const journal = buildJournalBlock(state);
             const timeLeft = computeTimeLeft(state);
 
@@ -585,6 +606,33 @@ async function main() {
           }
         }
     } catch { /* fall through to normal processing */ }
+  }
+
+  // --- Active loop detection for non-loop-marker messages ---
+  // When user sends a regular message during an active browser loop, inject
+  // loop context so Claude knows where it was, and sync the session ID file.
+  let activeLoopNotice = '';
+  if (sessionId && !/^\[SynaBun Loop\]/i.test(trimmed)) {
+    const activeLoop = findActiveLoop(sessionId);
+    if (activeLoop) {
+      const journal = buildJournalBlock(activeLoop);
+      const timeLeft = computeTimeLeft(activeLoop);
+      const browserNote = activeLoop.usesBrowser ? buildBrowserNote(activeLoop) : '';
+      const parts = [
+        `=== ACTIVE LOOP NOTICE ===`,
+        `You are mid-loop: Iteration ${activeLoop.currentIteration}/${activeLoop.totalIterations} (${timeLeft}min remaining).`,
+        `Task: ${activeLoop.task}`,
+      ];
+      if (activeLoop.context) parts.push(`Context: ${activeLoop.context}`);
+      if (journal) parts.push('', journal);
+      parts.push(
+        '',
+        `The user sent a message. Respond to it, then call \`loop\` action \`update\` with your current progress, then continue the loop task from where you left off.`,
+      );
+      if (browserNote) parts.push(browserNote);
+      parts.push(`=== END LOOP NOTICE ===`);
+      activeLoopNotice = parts.filter(p => p !== undefined).join('\n');
+    }
   }
 
   // --- Track message count (BEFORE skip check — all messages count) ---
@@ -695,7 +743,7 @@ async function main() {
     : '';
 
   // --- Emit combined output ---
-  const combined = [bootCancel, primaryContext, userLearningContext].filter(Boolean).join('\n\n');
+  const combined = [bootCancel, activeLoopNotice, primaryContext, userLearningContext].filter(Boolean).join('\n\n');
 
   if (combined) {
     process.stdout.write(JSON.stringify({

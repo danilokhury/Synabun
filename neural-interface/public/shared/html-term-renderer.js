@@ -90,6 +90,12 @@ export class HtmlTermRenderer {
     this._selEnd = null;
     this._selectionDirty = false;
 
+    // Auto-scroll state for selection drag
+    this._autoScrollRAF = null;
+    this._autoScrollSpeed = 0;
+    this._lastMouseX = 0;
+    this._lastMouseY = 0;
+
     // Scroll state
     this._lastFirstVisible = -1;
     this._suppressScrollEvent = false;
@@ -294,8 +300,11 @@ export class HtmlTermRenderer {
   _calculateSize() {
     const rect = this._scrollEl.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return false;
-    const cols = Math.max(2, Math.floor(rect.width / this._cellWidth));
-    const rows = Math.max(1, Math.floor(rect.height / this._cellHeight));
+    const cs = getComputedStyle(this._scrollEl);
+    const w = rect.width - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    const h = rect.height - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+    const cols = Math.max(2, Math.floor(w / this._cellWidth));
+    const rows = Math.max(1, Math.floor(h / this._cellHeight));
     if (cols !== this._cols || rows !== this._rows) {
       this._cols = cols;
       this._rows = rows;
@@ -791,7 +800,6 @@ export class HtmlTermRenderer {
   _wireMouse() {
     this._scrollEl.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
-      e.preventDefault(); // Block native text selection — we handle selection ourselves
       this._selecting = true;
       // Clear previous selection first, THEN set new start
       this._selStart = null;
@@ -805,9 +813,25 @@ export class HtmlTermRenderer {
         this._selEnd = this._mouseToCell(ev);
         this._selectionDirty = true;
         this._scheduleRender();
+
+        // Auto-scroll when dragging near edges
+        this._lastMouseX = ev.clientX;
+        this._lastMouseY = ev.clientY;
+        const rect = this._scrollEl.getBoundingClientRect();
+        const edgeZone = 40;
+        if (ev.clientY < rect.top + edgeZone) {
+          const proximity = Math.max(0, rect.top + edgeZone - ev.clientY);
+          this._startAutoScroll(-Math.ceil(proximity / 8));
+        } else if (ev.clientY > rect.bottom - edgeZone) {
+          const proximity = Math.max(0, ev.clientY - (rect.bottom - edgeZone));
+          this._startAutoScroll(Math.ceil(proximity / 8));
+        } else {
+          this._stopAutoScroll();
+        }
       };
 
       const onUp = () => {
+        this._stopAutoScroll();
         this._selecting = false;
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
@@ -822,6 +846,7 @@ export class HtmlTermRenderer {
         this._selectionDirty = true;
         this._scheduleRender();
         this._input.focus();
+        window.getSelection()?.removeAllRanges();
       };
 
       document.addEventListener('mousemove', onMove);
@@ -884,6 +909,34 @@ export class HtmlTermRenderer {
     if (this._selStart || this._selEnd) this._selectionDirty = true;
     this._selStart = null;
     this._selEnd = null;
+  }
+
+  _startAutoScroll(speed) {
+    this._autoScrollSpeed = speed;
+    if (this._autoScrollRAF) return; // already running
+    const tick = () => {
+      if (!this._autoScrollSpeed) { this._autoScrollRAF = null; return; }
+      this._suppressScrollEvent = true;
+      this._scrollEl.scrollTop += this._autoScrollSpeed;
+      this._isLive = this._isAtBottom();
+      // Update selection endpoint at current mouse position
+      if (this._selecting) {
+        const synth = { clientX: this._lastMouseX, clientY: this._lastMouseY };
+        this._selEnd = this._mouseToCell(synth);
+        this._selectionDirty = true;
+      }
+      this._scheduleRender();
+      this._autoScrollRAF = requestAnimationFrame(tick);
+    };
+    this._autoScrollRAF = requestAnimationFrame(tick);
+  }
+
+  _stopAutoScroll() {
+    this._autoScrollSpeed = 0;
+    if (this._autoScrollRAF) {
+      cancelAnimationFrame(this._autoScrollRAF);
+      this._autoScrollRAF = null;
+    }
   }
 
   // ─── Scroll + Resize ──────────────────────────────────

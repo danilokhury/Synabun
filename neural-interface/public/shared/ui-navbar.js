@@ -37,8 +37,8 @@ export function initNavbar() {
     });
   }
 
-  // ── Claude panel toggle ──
-  const claudePanelBtn = $('nav-claude-panel-btn');
+  // ── Claude panel toggle (topright workspace toolbar) ──
+  const claudePanelBtn = $('topright-claude-panel-btn');
   if (claudePanelBtn) {
     claudePanelBtn.addEventListener('click', (e) => {
       e.preventDefault();
@@ -108,6 +108,14 @@ export function initNavbar() {
       const isFs = !!document.fullscreenElement;
       fsBtn.innerHTML = isFs ? exitIcon : enterIcon;
       fsBtn.classList.toggle('active', isFs);
+      // Lock height so macOS menu bar overlays instead of pushing content down
+      if (isFs) {
+        document.body.classList.add('is-fullscreen');
+        document.documentElement.style.setProperty('--fs-locked-height', window.screen.height + 'px');
+      } else {
+        document.body.classList.remove('is-fullscreen');
+        document.documentElement.style.removeProperty('--fs-locked-height');
+      }
     }
 
     fsBtn.addEventListener('click', async () => {
@@ -125,6 +133,15 @@ export function initNavbar() {
     document.addEventListener('fullscreenchange', updateFsIcon);
   }
 
+  // ── Window Controls Overlay (PWA standalone) ──
+  // Dormant until browsers support WCO on macOS. Activates automatically when supported.
+  if ('windowControlsOverlay' in navigator) {
+    const wco = navigator.windowControlsOverlay;
+    const updateWco = () => document.body.classList.toggle('wco-active', wco.visible);
+    updateWco();
+    wco.addEventListener('geometrychange', updateWco);
+  }
+
   // ── Clock ──
   const clockEl = $('titlebar-clock');
   if (clockEl) {
@@ -136,5 +153,24 @@ export function initNavbar() {
     }
     updateClock();
     setInterval(updateClock, 15000);
+  }
+
+  // ── Workspace toolbar collapse toggle ──
+  const collapseBtn = $('topright-collapse-btn');
+  const controls = $('topright-controls');
+  if (collapseBtn && controls) {
+    // Restore persisted state
+    const wasCollapsed = localStorage.getItem('synabun-toolbar-collapsed') === '1';
+    if (wasCollapsed) controls.classList.add('collapsed');
+
+    collapseBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isCollapsed = controls.classList.toggle('collapsed');
+      localStorage.setItem('synabun-toolbar-collapsed', isCollapsed ? '1' : '0');
+      // Close any open dropdowns when collapsing
+      if (isCollapsed) emit('panel:close-all-dropdowns');
+    });
+
+    registerAction('toggle-toolbar', () => collapseBtn.click());
   }
 }

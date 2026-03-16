@@ -108,7 +108,7 @@ const _windowId = sessionStorage.getItem('cp-window-id') || (() => { const id = 
 // ── Multi-session tab system ──
 let _tabs = [];           // TabState[]
 let _activeTabIdx = -1;
-const MAX_TABS = 5;
+const MAX_TABS = 10;
 function activeTab() { return _tabs[_activeTabIdx] || null; }
 
 // ── Browser embed state ──
@@ -143,6 +143,7 @@ const STOR = {
   effort: 'synabun-claude-panel-effort',
   autoAccept: 'synabun-claude-panel-autoaccept',
   windowRegistry: 'synabun-claude-panel-windows',   // JSON map of windowId → lastSeen timestamp
+  bootId: 'synabun-claude-panel-boot-id',           // server boot ID — detect restarts
 };
 
 const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
@@ -166,6 +167,9 @@ function buildPanel() {
       <button class="cp-session-btn" id="cp-session-btn">
         <span class="cp-session-label">New chat</span>
         <span class="cp-dd-arrow">&#x25BE;</span>
+      </button>
+      <button class="cp-header-rename-btn" id="cp-header-rename" title="Rename session">
+        <svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
       </button>
       <div class="cp-header-actions">
         <button class="cp-header-btn cp-new-btn" data-tooltip="New session">
@@ -204,6 +208,10 @@ function buildPanel() {
       <div class="cp-browser-canvas-wrap"><canvas class="cp-browser-canvas" width="1280" height="800"></canvas></div>
     </div>
     <div class="cp-bottom">
+      <div class="cp-project-bar">
+        <div class="cp-dropdown" id="cp-project" data-placeholder="project..."><span class="cp-dd-label">project...</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
+        <div class="cp-dropdown cp-dropdown-sm" id="cp-branch" data-placeholder="branch"><span class="cp-dd-label">branch</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
+      </div>
       <div class="cp-input-area">
         <div class="cp-input-wrap">
           <div class="cp-image-preview" id="cp-image-preview"></div>
@@ -221,8 +229,6 @@ function buildPanel() {
             <svg viewBox="0 0 24 24" width="13" height="13"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.49" fill="none" stroke="currentColor" stroke-width="2"/></svg>
             <span class="cp-attach-badge" hidden></span>
           </button>
-          <div class="cp-dropdown" id="cp-project" data-placeholder="project..."><span class="cp-dd-label">project...</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
-          <div class="cp-dropdown cp-dropdown-sm" id="cp-branch" data-placeholder="branch"><span class="cp-dd-label">branch</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
         </div>
         <div class="cp-toolbar-right">
           <button class="cp-think-toggle" id="cp-think-toggle" data-effort="off" data-tooltip="Extended thinking off — click to enable"><span class="cp-think-icon"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L4 9h4l-1 5.5L12 7H8l1-5.5z"/></svg></span><span class="cp-think-label">Think</span><span class="cp-think-dots"></span></button>
@@ -243,35 +249,55 @@ function injectStyles() {
   const style = document.createElement('style');
   style.id = 'claude-panel-styles';
   style.textContent = `
-    /* ── Panel shell — matches Neural Interface glass system ── */
+    /* ── Panel shell — floating macOS-style container ── */
     .claude-panel {
       position: fixed;
-      top: 42px; right: 0;
+      top: 64px; right: 16px;
       width: 22%; min-width: 320px; max-width: 700px;
-      bottom: 0;
+      bottom: 16px;
       z-index: 200;
       display: flex;
       flex-direction: column;
       background: rgba(18, 18, 20, 0.92);
-      backdrop-filter: blur(40px) saturate(1.4);
-      -webkit-backdrop-filter: blur(40px) saturate(1.4);
-      border-left: 1px solid rgba(255,255,255,0.04);
-      transform: translateX(100%);
-      transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+      backdrop-filter: blur(60px) saturate(1.5);
+      -webkit-backdrop-filter: blur(60px) saturate(1.5);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 16px;
+      box-shadow:
+        0 0 0 0.5px rgba(255,255,255,0.05),
+        0 20px 60px rgba(0,0,0,0.7),
+        0 8px 24px rgba(0,0,0,0.4),
+        0 0 80px rgba(0,0,0,0.3),
+        inset 0 1px 0 rgba(255,255,255,0.07);
+      overflow: hidden;
+      transform: translateX(calc(100% + 20px));
+      transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1),
+                  opacity 0.28s ease;
+      opacity: 0;
     }
-    .claude-panel.open { transform: translateX(0); }
+    .claude-panel.open {
+      transform: translateX(0);
+      opacity: 1;
+    }
 
     /* ── Resize handle (left edge) ── */
     .cp-resize-handle {
-      position: absolute; top: 0; left: -3px; width: 6px; height: 100%;
-      cursor: col-resize; z-index: 10;
+      position: absolute; top: 14px; left: 0; width: 6px; height: calc(100% - 28px);
+      cursor: col-resize; z-index: 10; border-radius: 0 3px 3px 0;
     }
     .cp-resize-handle:hover, .cp-resize-handle:active {
       background: linear-gradient(180deg, rgba(255,255,255,0.06), transparent 50%, rgba(255,255,255,0.06));
     }
 
     /* ── Messages container (holds per-tab message divs) ── */
-    .cp-messages-container { flex: 1; overflow: hidden; position: relative; }
+    .cp-messages-container {
+      flex: 1; overflow: hidden; position: relative;
+      margin: 4px 8px 6px;
+      background: rgba(0,0,0,0.18);
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.03);
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
+    }
     .cp-messages {
       position: absolute; inset: 0;
       overflow-y: auto;
@@ -623,10 +649,10 @@ function injectStyles() {
     .ask-card.synabun-ask .ask-hint { position: relative; z-index: 1; }
     .synabun-ask-bg-logo {
       position: absolute;
-      right: -12px;
-      top: 50%;
-      transform: translateY(-50%) scale(0.85);
-      width: 90px;
+      right: 10px;
+      top: 6px;
+      transform: scale(0.85);
+      width: 28px;
       opacity: 0;
       transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
                   transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
@@ -640,7 +666,7 @@ function injectStyles() {
     }
     .synabun-ask:hover .synabun-ask-bg-logo {
       opacity: 1;
-      transform: translateY(-50%) scale(1);
+      transform: scale(1);
     }
 
     /* ── Plan cards (inline rendered markdown) ── */
@@ -883,12 +909,13 @@ function injectStyles() {
     /* ── Bottom area (input + toolbar) ── */
     .cp-bottom {
       flex-shrink: 0;
-      border-top: 1px solid rgba(255,255,255,0.03);
-      background: rgba(10,10,14,0.6);
+      border-top: 1px solid rgba(255,255,255,0.04);
+      background: rgba(255,255,255,0.015);
+      padding-bottom: 4px;
     }
 
     .cp-input-area {
-      padding: 8px 12px 2px;
+      padding: 8px 8px 2px;
       display: flex; gap: 0; align-items: flex-end;
     }
 
@@ -1047,6 +1074,19 @@ function injectStyles() {
       50% { opacity: 1; }
     }
     .cp-send svg { width: 12px; height: 12px; position: relative; z-index: 1; }
+    .cp-send.btw {
+      border-color: rgba(100,180,255,0.3);
+      color: rgba(120,180,255,0.9);
+    }
+    .cp-send.btw::before {
+      transform: scaleX(1);
+      background: linear-gradient(135deg, rgba(100,180,255,0.15), rgba(80,140,255,0.05));
+    }
+    .cp-send.btw:hover {
+      color: #78b4ff;
+      border-color: rgba(100,180,255,0.45);
+      box-shadow: 0 0 12px rgba(100,180,255,0.12);
+    }
 
     /* ── Attach button ── */
     .cp-attach {
@@ -1077,7 +1117,7 @@ function injectStyles() {
       display: flex; align-items: center;
       flex-wrap: nowrap;
       gap: 0;
-      padding: 4px 14px 6px;
+      padding: 4px 10px 2px;
       flex-shrink: 0;
     }
     .cp-toolbar-left { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
@@ -1262,39 +1302,58 @@ function injectStyles() {
     /* ── Session selector header ── */
     .cp-header {
       position: relative;
-      padding: 6px 12px;
-      border-bottom: 1px solid rgba(255,255,255,0.04);
+      padding: 10px 10px 10px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
       flex-shrink: 0;
       display: flex; align-items: center;
+      background: rgba(255,255,255,0.02);
     }
     .cp-header-actions {
-      display: flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0;
+      display: flex; align-items: center; gap: 3px; margin-left: auto; flex-shrink: 0;
     }
     .cp-header-btn {
       display: flex; align-items: center; justify-content: center;
-      width: 26px; height: 26px; border-radius: 5px;
-      border: none; background: transparent;
-      color: rgba(255,255,255,0.35); cursor: pointer;
-      transition: all 0.15s ease; position: relative;
+      width: 24px; height: 24px; border-radius: 7px;
+      border: none; background: rgba(255,255,255,0.04);
+      color: rgba(255,255,255,0.4); cursor: pointer;
+      transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1); position: relative;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
     }
-    .cp-header-btn:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.7); }
-    .cp-header-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    .cp-header-btn.cp-close-btn:hover { color: rgba(255,82,82,0.9); background: rgba(255,82,82,0.12); }
+    .cp-header-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.75); transform: scale(1.05); }
+    .cp-header-btn:active { transform: scale(0.92); transition-duration: 0.06s; }
+    .cp-header-btn svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+    .cp-header-btn.cp-new-btn:hover { color: rgba(110,181,255,0.95); background: rgba(110,181,255,0.14); }
+    .cp-header-btn.cp-minimize-btn:hover { color: rgba(255,200,50,0.95); background: rgba(255,200,50,0.14); }
+    .cp-header-btn.cp-close-btn:hover { color: rgba(255,82,82,0.95); background: rgba(255,82,82,0.14); }
     .cp-header-btn.cp-close-btn svg { stroke-width: 2.5; }
-    .cp-header-btn.cp-slide-btn:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.06); }
+    .cp-header-btn.cp-slide-btn:hover { color: rgba(255,255,255,0.75); background: rgba(255,255,255,0.08); }
     .cp-header-btn.cp-slide-btn svg { stroke-width: 2.5; }
     .cp-session-btn {
-      background: none; border: none;
-      display: flex; align-items: center; gap: 4px;
-      color: rgba(255,255,255,0.45);
+      background: rgba(255,255,255,0.03); border: none;
+      display: flex; align-items: center; gap: 5px;
+      color: rgba(255,255,255,0.55);
       font-size: 11px; font-family: 'JetBrains Mono', monospace;
-      cursor: pointer; padding: 4px 8px; border-radius: 6px;
+      cursor: pointer; padding: 5px 10px; border-radius: 8px;
       transition: background 0.15s, color 0.15s;
       max-width: 100%; overflow: hidden;
     }
-    .cp-session-btn:hover { background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.65); }
+    .cp-session-btn:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.75); }
     .cp-session-btn .cp-session-label {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .cp-header-rename-btn {
+      background: none; border: none; cursor: pointer; padding: 3px;
+      color: rgba(255,255,255,0.2); display: flex; align-items: center;
+      border-radius: 5px; transition: color 0.15s, background 0.15s;
+      flex-shrink: 0;
+    }
+    .cp-header-rename-btn:hover { color: rgba(100,160,255,0.7); background: rgba(100,160,255,0.1); }
+    .cp-header-rename-btn svg { width: 11px; height: 11px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+    .cp-project-bar {
+      display: flex; align-items: center; gap: 4px;
+      padding: 4px 10px 0;
+      flex-shrink: 0;
     }
     .cp-session-menu {
       display: none; position: absolute;
@@ -1391,10 +1450,13 @@ function injectStyles() {
     /* ── Context gauge bar ── */
     .cp-context-bar {
       display: flex; align-items: center; gap: 6px;
-      padding: 4px 12px 5px; flex-shrink: 0;
+      padding: 5px 8px 6px; flex-shrink: 0;
+      margin: 0 8px;
+      background: rgba(0,0,0,0.1);
+      border-radius: 8px;
     }
     .cp-gauge {
-      flex: 1; height: 18px; border-radius: 4px;
+      flex: 1; height: 16px; border-radius: 6px;
       background: rgba(255,255,255,0.03);
       display: flex; overflow: hidden;
       position: relative; cursor: default;
@@ -1435,19 +1497,21 @@ function injectStyles() {
     .cp-context-bar:has(.cp-gauge[data-urgency="high"]) .cp-gauge-label { color: rgba(220,150,60,0.6); }
     .cp-context-bar:has(.cp-gauge[data-urgency="critical"]) .cp-gauge-label { color: rgba(220,80,60,0.7); }
     .cp-compact-btn {
-      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
-      color: rgba(255,255,255,0.3); cursor: pointer;
-      font-size: 10px; font-family: 'JetBrains Mono', monospace;
-      padding: 3px 10px; border-radius: 4px;
-      transition: color 0.2s, background 0.2s, border-color 0.2s; flex-shrink: 0;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
+      color: rgba(255,255,255,0.35); cursor: pointer;
+      font-size: 9px; font-family: 'JetBrains Mono', monospace;
+      padding: 2px 10px; border-radius: 10px;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); flex-shrink: 0;
       text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600;
       position: relative; overflow: hidden;
     }
     .cp-compact-btn:hover {
-      color: rgba(255,255,255,0.6);
-      background: rgba(255,255,255,0.06);
-      border-color: rgba(255,255,255,0.12);
+      color: rgba(255,255,255,0.65);
+      background: rgba(255,255,255,0.08);
+      border-color: rgba(255,255,255,0.14);
+      transform: scale(1.03);
     }
+    .cp-compact-btn:active { transform: scale(0.96); }
     .cp-compact-btn.compacting {
       color: rgba(140,130,220,0.7);
       border-color: rgba(140,130,220,0.2);
@@ -1661,6 +1725,19 @@ function ddPopulate(dd, items, selectedValue) {
 }
 function ddGetValue(dd) { return dd?._value || ''; }
 
+// ── Model helpers (composite value = "modelId:contextWindow") ──
+function _getModelId() {
+  const $model = _panel?.querySelector('#cp-model');
+  const raw = ddGetValue($model);
+  return raw.split(':')[0] || '';
+}
+function _getContextWindow() {
+  const $model = _panel?.querySelector('#cp-model');
+  const raw = ddGetValue($model);
+  const parts = raw.split(':');
+  return parts[1] ? parseInt(parts[1], 10) : 200000;
+}
+
 // ── Think intensity helpers ──
 function _setEffort(btn, level) {
   if (!btn) return;
@@ -1740,12 +1817,20 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } =
 }
 
 function connectTab(tab) {
+  if (tab.closed) return;
   if (tab.ws && (tab.ws.readyState === WebSocket.OPEN || tab.ws.readyState === WebSocket.CONNECTING)) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   tab.ws = new WebSocket(`${proto}//${location.host}/ws/claude-skin`);
-  tab.ws.addEventListener('open', () => clearTimeout(tab.reconnectTimer));
+  tab.ws.addEventListener('open', () => {
+    clearTimeout(tab.reconnectTimer);
+    // If this tab was running before disconnect (page refresh), try to reattach
+    if (tab._wasRunning && tab.sessionId) {
+      console.log('[claude-panel] Attempting reattach for session', tab.sessionId);
+      tab.ws.send(JSON.stringify({ type: 'reattach', windowId: _windowId, sessionId: tab.sessionId }));
+    }
+  });
   tab.ws.addEventListener('message', (e) => { try { handleTabMsg(tab, JSON.parse(e.data)); } catch (err) { console.error('[claude-panel] handleTabMsg error:', err, e.data?.slice?.(0, 200)); } });
-  tab.ws.addEventListener('close', () => { tab.reconnectTimer = setTimeout(() => connectTab(tab), 2000); });
+  tab.ws.addEventListener('close', () => { if (!tab.closed) tab.reconnectTimer = setTimeout(() => connectTab(tab), 2000); });
   tab.ws.addEventListener('error', () => tab.ws.close());
 }
 
@@ -1783,13 +1868,11 @@ function switchTab(idx) {
   const $send = _panel?.querySelector('#cp-send');
   if ($send && $input) {
     if (tab.running) {
-      $send.disabled = false;
-      $send.classList.add('abort');
-      $send.innerHTML = '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
-      $input.disabled = true;
+      $input.disabled = false;
+      _updateSendIcon($send, $input);
     } else {
-      $send.classList.remove('abort');
-      $send.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M12 5l7 7-7 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+      $send.classList.remove('abort'); $send.classList.remove('btw');
+      $send.innerHTML = _ICON_SEND;
       $input.disabled = false;
       $send.disabled = !$input.value.trim() && !tab.attachedImages.length;
     }
@@ -1819,8 +1902,10 @@ function switchTab(idx) {
 function closeTab(idx) {
   if (idx < 0 || idx >= _tabs.length) return;
   const tab = _tabs[idx];
+  tab.closed = true;
   clearTimeout(tab.reconnectTimer);
-  if (tab.ws) { tab.ws.onclose = null; tab.ws.close(); }
+  finishTab(tab);
+  if (tab.ws) tab.ws.close();
   // Release session lock
   if (tab.sessionId) _releaseSessionLock(tab.sessionId);
   tab.messagesEl.remove();
@@ -1851,7 +1936,7 @@ function _createTrayPill(tab) {
   pill.dataset.tabId = tab.id;
   pill.innerHTML = `
     <span class="term-minimized-pill-icon">${_CP_ICON_SVG}</span>
-    <span class="term-minimized-pill-label">${escH(trunc(tab.label, 16))}</span>
+    <span class="term-minimized-pill-label">${escH(tab.label)}</span>
     <button class="term-minimized-pill-close" data-tooltip="Close">&times;</button>
   `;
   pill.addEventListener('click', () => {
@@ -1897,7 +1982,7 @@ function renderPills() {
 function updatePillLabel(tab) {
   if (!tab.pillEl) return;
   const lbl = tab.pillEl.querySelector('.term-minimized-pill-label');
-  if (lbl) lbl.textContent = trunc(tab.label, 16);
+  if (lbl) lbl.textContent = tab.label;
 }
 
 function updatePillRunning(tab) {
@@ -1907,7 +1992,7 @@ function updatePillRunning(tab) {
 function saveTabs() {
   try {
     storage.setItem(STOR.tabs, JSON.stringify({
-      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label })),
+      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false })),
       activeIdx: _activeTabIdx,
     }));
     _updateWindowRegistry();
@@ -1952,7 +2037,9 @@ function restoreTabs() {
       const data = JSON.parse(raw);
       if (data.tabs?.length) {
         for (const saved of data.tabs) {
-          createTab(saved.sessionId, saved.label, { autoSwitch: false });
+          const t = createTab(saved.sessionId, saved.label, { autoSwitch: false });
+          if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
+          if (t && saved.running) t._wasRunning = true; // trigger reattach on WS open
         }
         switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
         return;
@@ -1966,7 +2053,9 @@ function restoreTabs() {
       const data = JSON.parse(legacyRaw);
       if (data.tabs?.length) {
         for (const saved of data.tabs) {
-          createTab(saved.sessionId, saved.label, { autoSwitch: false });
+          const t = createTab(saved.sessionId, saved.label, { autoSwitch: false });
+          if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
+          if (t && saved.running) t._wasRunning = true;
         }
         switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
         // Don't remove legacy key — other windows may still need it during rollout
@@ -2196,6 +2285,15 @@ async function renderSessionMenu() {
 async function selectSession(sid, label) {
   const tab = activeTab();
   if (!tab) return;
+  // If current tab is running, spawn a new tab instead of killing the running session
+  if (tab.running) {
+    if (_tabs.length >= MAX_TABS) {
+      appendStatus(tab, 'Max tabs reached — close a tab first.');
+      return;
+    }
+    createTab(sid, label || 'New chat');
+    return;
+  }
   // Check lock before selecting an existing session
   if (sid) {
     const lock = await _checkSessionLock(sid);
@@ -2221,7 +2319,17 @@ async function selectSession(sid, label) {
   const btn = _panel?.querySelector('.cp-session-label');
   if (btn) btn.textContent = tab.label;
   tab.messagesEl.innerHTML = '';
-  if (sid) loadSessionHistory(sid, tab.messagesEl);
+  if (sid) {
+    loadSessionHistory(sid, tab.messagesEl);
+    // Restore session cost from server
+    fetch(`/api/claude-skin/cost/session/${sid}`).then(r => r.json()).then(data => {
+      if (typeof data.cost === 'number' && data.cost > 0) {
+        tab.sessionCost = data.cost;
+        if (tab === activeTab()) _updateCostLabel();
+        saveTabs();
+      }
+    }).catch(() => {});
+  }
   saveTabs();
 }
 
@@ -2397,6 +2505,22 @@ async function loadMonthlyCost() {
   _updateCostLabel();
 }
 
+async function syncSessionCosts() {
+  for (const tab of _tabs) {
+    if (!tab.sessionId) continue;
+    try {
+      const res = await fetch(`/api/claude-skin/cost/session/${tab.sessionId}`);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (typeof data.cost === 'number' && data.cost > 0) {
+        tab.sessionCost = data.cost;
+      }
+    } catch {}
+  }
+  _updateCostLabel();
+  saveTabs();
+}
+
 function _updateCostLabel() {
   const $cost = _panel?.querySelector('#cp-cost');
   if (!$cost) return;
@@ -2407,7 +2531,6 @@ function _updateCostLabel() {
 }
 
 // ── Context gauge ──
-const CONTEXT_WINDOW = 200000;
 
 function _setCompactingUI(on) {
   const $gauge = _panel?.querySelector('#cp-gauge');
@@ -2434,7 +2557,8 @@ function renderGauge(tab) {
   const cacheWrite = u.cacheWrite || 0;
   const uncachedInput = u.inputTokens || 0;
   const total = uncachedInput + cacheRead + cacheWrite;
-  const fmt = (v) => v >= 1000 ? (v / 1000).toFixed(1) + 'K' : String(v);
+  const ctxWindow = _getContextWindow();
+  const fmt = (v) => v >= 1000000 ? (v / 1000000).toFixed(v % 1000000 === 0 ? 0 : 1) + 'M' : v >= 1000 ? (v / 1000).toFixed(1) + 'K' : String(v);
 
   if (total === 0) {
     // Animate existing sections to 0 width before removing
@@ -2448,7 +2572,7 @@ function renderGauge(tab) {
     return;
   }
 
-  const pct = (v) => Math.max(0, (v / CONTEXT_WINDOW) * 100).toFixed(2) + '%';
+  const pct = (v) => Math.max(0, (v / ctxWindow) * 100).toFixed(2) + '%';
   const CATS = ['cache-read', 'cache-write', 'input'];
   const data = {
     'cache-read': { val: cacheRead, label: `Cached: ${fmt(cacheRead)} tokens` },
@@ -2488,11 +2612,11 @@ function renderGauge(tab) {
     }
   }
 
-  const pctUsed = Math.round((total / CONTEXT_WINDOW) * 100);
+  const pctUsed = Math.round((total / ctxWindow) * 100);
   $gauge.dataset.urgency = pctUsed < 50 ? '' : pctUsed < 75 ? 'warn' : pctUsed < 90 ? 'high' : 'critical';
 
   if ($label) {
-    $label.textContent = `${fmt(total)}/${fmt(CONTEXT_WINDOW)}`;
+    $label.textContent = `${fmt(total)}/${fmt(ctxWindow)}`;
     $label.title = `${pctUsed}% context · ${fmt(u.outputTokens || 0)} output · ${tab.turns} turn${tab.turns !== 1 ? 's' : ''}`;
   }
 }
@@ -2539,6 +2663,13 @@ function updateAttachBadge() {
 function handleTabMsg(tab, msg) {
   // Track WS activity for running timeout safety net
   tab._lastWsActivity = Date.now();
+  // Discard stale messages from a killed process until terminal signal arrives
+  if (tab._discardingOldSession) {
+    if (msg.type === 'aborted' || msg.type === 'done') {
+      tab._discardingOldSession = false;
+    }
+    return;
+  }
   if (msg.type === 'control_request') console.log('[claude-panel] Got control_request msg:', msg.type, msg.request_id, msg.request?.subtype, msg.request?.tool_name);
   // Buffer non-permission messages while a permission prompt is active
   if (tab._activePerm && msg.type !== 'control_request') {
@@ -2557,6 +2688,24 @@ function _flushMsgBuffer(tab) {
 
 function _processTabMsg(tab, msg) {
   switch (msg.type) {
+    case 'reattach_result':
+      tab._wasRunning = false;
+      if (msg.ok) {
+        console.log('[claude-panel] Reattached to running process, session:', msg.sessionId);
+        if (msg.sessionId) tab.sessionId = msg.sessionId;
+        if (msg.running) {
+          tab.sendStartedAt = Date.now();
+          showThinking(tab);
+          setRunning(tab, true);
+        }
+        saveTabs();
+      } else {
+        // No orphan found — process died during refresh, clear running state
+        console.log('[claude-panel] No orphan to reattach — session idle');
+        finishTab(tab);
+        saveTabs();
+      }
+      break;
     case 'event': handleTabEvent(tab, msg.event); break;
     case 'control_request': handleControlRequest(tab, msg); break;
     case 'stderr': if (msg.text?.trim()) appendStatus(tab, msg.text.trim()); break;
@@ -2568,7 +2717,34 @@ function _processTabMsg(tab, msg) {
     case 'aborted':
       finishTab(tab);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
-      appendStatus(tab, 'Aborted.');
+      // /btw: if there's a pending message, send it immediately instead of showing "Aborted"
+      if (tab._btwPending) {
+        const btw = tab._btwPending;
+        tab._btwPending = null;
+        const $project = _panel?.querySelector('#cp-project');
+        const $model = _panel?.querySelector('#cp-model');
+        tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
+        let prompt = btw.text;
+        if (tab.planMode && prompt) prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes]\n\n${prompt}`;
+        const btwMsg = {
+          type: 'query', prompt,
+          cwd: ddGetValue($project) || undefined,
+          sessionId: tab.sessionId || undefined,
+          model: _getModelId() || undefined,
+          effort: _getEffort() || undefined,
+          windowId: _windowId,
+        };
+        if (btw.images) {
+          btwMsg.images = btw.images.map(i => ({ base64: i.base64, mediaType: i.mediaType }));
+          tab.attachedImages = [];
+          updateAttachBadge();
+          const preview = _panel?.querySelector('#cp-image-preview');
+          if (preview) preview.innerHTML = '';
+        }
+        tab.ws.send(JSON.stringify(btwMsg));
+      } else {
+        appendStatus(tab, 'Aborted.');
+      }
       break;
     case 'error':
       finishTab(tab);
@@ -2604,6 +2780,19 @@ function handleTabEvent(tab, ev) {
     if (el) el.textContent = 'Context compacted';
     return;
   }
+  if (ev.type === 'system' && ev.subtype === 'session_reset') {
+    // Server auto-retried without --resume because the session was deleted
+    tab.sessionId = null;
+    tab.label = 'New chat';
+    updatePillLabel(tab);
+    if (tab === activeTab()) {
+      const btn = _panel?.querySelector('.cp-session-label');
+      if (btn) btn.textContent = tab.label;
+    }
+    saveTabs();
+    appendStatus(tab, ev.message || 'Session reset — starting fresh.');
+    return;
+  }
   if (ev.type === 'system' && ev.subtype === 'init') {
     if (ev.session_id) {
       tab.sessionId = ev.session_id;
@@ -2618,6 +2807,10 @@ function handleTabEvent(tab, ev) {
       }
       saveTabs();
     }
+    return;
+  }
+  if (ev.type === 'stream_event' && ev.event) {
+    handleStreamDelta(tab, ev.event);
     return;
   }
   if (ev.type === 'assistant' && ev.message) {
@@ -2649,6 +2842,10 @@ function handleTabEvent(tab, ev) {
     return;
   }
   if (ev.type === 'result') {
+    // Display error for error_during_execution results
+    if ((ev.subtype === 'error_during_execution' || ev.subtype === 'error') && (ev.error || ev.result)) {
+      appendError(tab, ev.error || ev.result);
+    }
     finishTab(tab);
     tab.turns++;
     if (ev.usage) {
@@ -2674,9 +2871,123 @@ function handleTabEvent(tab, ev) {
         if ($cost) { $cost.classList.add('flash'); setTimeout(() => $cost.classList.remove('flash'), 800); }
       }
       emit('cost:updated', { amount: delta > 0 ? delta : 0, total: _totalCost });
+      saveTabs();
     }
     if (ev.session_id) { tab.sessionId = ev.session_id; saveTabs(); }
     // Post-plan actions shown only on 'done' (handleTabMsg), not mid-stream
+  }
+}
+
+// ── Stream event handler — renders text as it arrives from the API ──
+function handleStreamDelta(tab, apiEvent) {
+  const $msgs = tab.messagesEl;
+  if (!$msgs) return;
+  const evType = apiEvent.type;
+
+  if (evType === 'message_start') {
+    // Initialize stream state early — element created on first content_block_start
+    const msgId = apiEvent.message?.id || null;
+    tab._stream = { el: null, textBuf: '', thinkBuf: '', bodyEl: null, thinkEl: null, blockIdx: -1, blockType: null, mdTimer: null, msgId };
+    hideThinking(tab);
+    return;
+  }
+
+  if (evType === 'message_stop') {
+    // Finalize: flush any pending markdown render
+    if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer);
+    if (tab._stream?.bodyEl && tab._stream.textBuf) {
+      tab._stream.bodyEl.innerHTML = md(tab._stream.textBuf);
+      linkifyFilePaths(tab._stream.bodyEl);
+    }
+    tab._stream = null;
+    return;
+  }
+
+  if (evType === 'content_block_start') {
+    if (!tab._stream) tab._stream = { el: null, textBuf: '', thinkBuf: '', bodyEl: null, thinkEl: null, blockIdx: -1, blockType: null, mdTimer: null };
+    tab._stream.blockIdx = apiEvent.index ?? (tab._stream.blockIdx + 1);
+    tab._stream.blockType = apiEvent.content_block?.type || null;
+
+    // Create the message skeleton on first content block
+    if (!tab._stream.el) {
+      const el = document.createElement('div');
+      el.className = 'msg msg-assistant';
+      const avatar = document.createElement('div');
+      avatar.className = 'msg-avatar';
+      avatar.innerHTML = CLAUDE_ICON;
+      el.appendChild(avatar);
+      const wrap = document.createElement('div');
+      wrap.className = 'msg-content';
+      el.appendChild(wrap);
+      $msgs.appendChild(el);
+      tab._stream.el = el;
+      // Wire this as the current message so renderAssistant dedup finds it
+      if (tab._stream.msgId) { tab.currentMsgId = tab._stream.msgId; tab.currentMsgEl = el; }
+    }
+
+    const wrap = tab._stream.el.querySelector('.msg-content');
+
+    if (tab._stream.blockType === 'thinking' && _getEffort()) {
+      // Create thinking details block
+      if (!tab._stream.thinkEl) {
+        const thinkEl = document.createElement('details');
+        thinkEl.className = 'msg-thinking';
+        thinkEl.innerHTML = `<summary><span class="msg-thinking-icon">${THINKING_ICON}</span><span class="msg-thinking-label">Thinking</span><span class="msg-thinking-chevron">&#x203A;</span></summary><div class="msg-thinking-content"></div>`;
+        wrap.insertBefore(thinkEl, wrap.firstChild);
+        tab._stream.thinkEl = thinkEl;
+      }
+    } else if (tab._stream.blockType === 'text') {
+      if (!tab._stream.bodyEl) {
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        wrap.appendChild(body);
+        tab._stream.bodyEl = body;
+      }
+    }
+    return;
+  }
+
+  if (evType === 'content_block_delta') {
+    if (!tab._stream) return;
+    const delta = apiEvent.delta;
+    if (!delta) return;
+
+    if (delta.type === 'thinking_delta' && delta.thinking && tab._stream.thinkEl) {
+      tab._stream.thinkBuf += delta.thinking;
+      const contentEl = tab._stream.thinkEl.querySelector('.msg-thinking-content');
+      if (contentEl) contentEl.textContent = tab._stream.thinkBuf;
+    } else if (delta.type === 'text_delta' && delta.text != null) {
+      tab._stream.textBuf += delta.text;
+      // Throttle markdown re-rendering to every 100ms to avoid jank
+      if (!tab._stream.mdTimer) {
+        tab._stream.mdTimer = setTimeout(() => {
+          tab._stream.mdTimer = null;
+          if (tab._stream?.bodyEl) {
+            tab._stream.bodyEl.innerHTML = md(tab._stream.textBuf);
+            linkifyFilePaths(tab._stream.bodyEl);
+            if (tab === activeTab()) scrollEnd();
+          }
+        }, 100);
+      }
+    }
+    if (tab === activeTab()) scrollEnd();
+    return;
+  }
+
+  if (evType === 'content_block_stop') {
+    if (!tab._stream) return;
+    // Flush pending markdown render immediately on block stop
+    if (tab._stream.mdTimer) {
+      clearTimeout(tab._stream.mdTimer);
+      tab._stream.mdTimer = null;
+    }
+    if (tab._stream.bodyEl && tab._stream.textBuf) {
+      tab._stream.bodyEl.innerHTML = md(tab._stream.textBuf);
+      linkifyFilePaths(tab._stream.bodyEl);
+    }
+    tab._stream.blockType = null;
+    if (tab === activeTab()) scrollEnd();
+    return;
   }
 }
 
@@ -2966,14 +3277,13 @@ function sendAskAnswer(tab, questions, answers) {
     }));
   } else {
     // Pipe mode — CLI auto-executed AskUserQuestion, send selection as follow-up query
-    const $model = _panel?.querySelector('#cp-model');
     const $project = _panel?.querySelector('#cp-project');
     console.log('[claude-panel] Sending ask answer as follow-up query:', answerText);
     tab.ws.send(JSON.stringify({
       type: 'query',
       prompt: answerText,
       sessionId: tab.sessionId || undefined,
-      model: ddGetValue($model) || undefined,
+      model: _getModelId() || undefined,
       cwd: ddGetValue($project) || undefined,
       effort: _getEffort() || undefined,
     }));
@@ -3718,12 +4028,33 @@ function setRunning(tab, r) {
   if (!$send || !$input) return;
   $send.disabled = false;
   if (r) {
-    $send.classList.add('abort'); $send.innerHTML = '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>'; $input.disabled = true;
+    // Keep input enabled for /btw — user can type while Claude runs
+    $input.disabled = false;
+    _updateSendIcon($send, $input);
   } else {
-    $send.classList.remove('abort'); $send.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M12 5l7 7-7 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'; $input.disabled = false; $input.focus();
+    $send.classList.remove('abort'); $send.classList.remove('btw'); $send.innerHTML = _ICON_SEND; $input.disabled = false; $input.focus();
   }
 }
-function finishTab(tab) { hideThinking(tab); setRunning(tab, false); tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.sendStartedAt = null; }
+
+// Dynamic send icon: while running, show send arrow if text present, stop icon if empty
+const _ICON_STOP = '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
+const _ICON_SEND = '<svg viewBox="0 0 24 24"><path d="M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M12 5l7 7-7 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+function _updateSendIcon($send, $input) {
+  if (!$send || !$input) return;
+  const tab = activeTab();
+  if (!tab?.running) return;
+  const hasText = $input.value.trim().length > 0;
+  $send.disabled = false;
+  if (hasText) {
+    $send.classList.remove('abort'); $send.classList.add('btw');
+    $send.innerHTML = _ICON_SEND;
+  } else {
+    $send.classList.add('abort'); $send.classList.remove('btw');
+    $send.innerHTML = _ICON_STOP;
+  }
+}
+
+function finishTab(tab) { hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.sendStartedAt = null; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs(); }
 
 function send() {
   const tab = activeTab();
@@ -3734,7 +4065,19 @@ function send() {
   if (!$input) return;
   const text = $input.value.trim();
   if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
-  if (tab.running) { tab.ws.send(JSON.stringify({ type: 'abort' })); return; }
+  if (tab.running) {
+    if (!text && !tab.attachedImages.length) {
+      // Empty send while running = abort (stop)
+      tab.ws.send(JSON.stringify({ type: 'abort' })); return;
+    }
+    // /btw: has text while running — interrupt and continue with new context
+    tab.ws.send(JSON.stringify({ type: 'abort' }));
+    tab._btwPending = { text, images: tab.attachedImages.length ? [...tab.attachedImages] : null };
+    $input.value = ''; autoResize();
+    appendUser(tab, text, tab._btwPending.images);
+    hideSlashHints();
+    return;
+  }
   if (!text && !tab.attachedImages.length) return;
 
   // Clear post-plan action cards on new message
@@ -3792,7 +4135,7 @@ function send() {
     type: 'query', prompt,
     cwd: ddGetValue($project) || undefined,
     sessionId: tab.sessionId || undefined,
-    model: ddGetValue($model) || undefined,
+    model: _getModelId() || undefined,
     effort: _getEffort() || undefined,
     windowId: _windowId,
   };
@@ -4017,6 +4360,18 @@ async function loadConfig() {
     _projects = res.projects || [];
     _models = res.models || [];
 
+    // Detect server restart — clear stale tab state so fresh sessions start clean
+    if (res.bootId) {
+      const savedBoot = storage.getItem(STOR.bootId);
+      if (savedBoot && savedBoot !== res.bootId) {
+        // Server restarted since last visit — wipe saved tabs for this window
+        storage.removeItem(STOR.tabs);
+        storage.removeItem(STOR.tabsLegacy);
+        storage.removeItem(STOR.session);
+      }
+      storage.setItem(STOR.bootId, res.bootId);
+    }
+
     const $project = _panel?.querySelector('#cp-project');
     const $model = _panel?.querySelector('#cp-model');
 
@@ -4028,7 +4383,8 @@ async function loadConfig() {
     }
 
     if ($model) {
-      const items = _models.map(m => ({ value: m.id, label: m.label }));
+      // Composite value: "modelId:contextWindow" to differentiate models with same id but different context
+      const items = _models.map(m => ({ value: `${m.id}:${m.contextWindow || 200000}`, label: m.label }));
       const saved = storage.getItem(STOR.model);
       ddPopulate($model, items, saved || '');
     }
@@ -4049,23 +4405,25 @@ async function loadBranches(path) {
 }
 
 // ── Public API ──
-export function toggleClaudePanel() {
+export async function toggleClaudePanel() {
   if (!_panel) {
     injectStyles();
     _panel = buildPanel();
     document.body.appendChild(_panel);
     wireEvents();
-    loadConfig();
+    await loadConfig();   // must complete before restoreTabs — checks server boot ID
     loadSkills();
     restoreTabs();
     loadMonthlyCost();
+    syncSessionCosts();
     _wireBrowserSync();
     _startHeartbeat();
   }
   _visible = !_visible;
   if (_visible) {
     _panel.classList.add('open');
-    document.documentElement.style.setProperty('--claude-panel-width', _panel.style.width || '22%');
+    const pw = _panel.style.width || '22%';
+    document.documentElement.style.setProperty('--claude-panel-width', pw.endsWith('px') ? (parseFloat(pw) + 16) + 'px' : 'calc(' + pw + ' + 16px)');
     _panel.querySelector('#cp-input')?.focus();
   } else {
     _panel.classList.remove('open');
@@ -4170,6 +4528,7 @@ async function loadSkills() {
     const seen = new Set(_skillsCache.map(s => s.name));
     // Add built-in client/Claude Code commands
     const builtins = [
+      { name: 'btw', description: 'Add context while Claude is processing' },
       { name: 'clear', description: 'Clear all messages' },
       { name: 'compact', description: 'Compact context — reload session' },
       { name: 'commit', description: 'Stage and commit changes' },
@@ -4323,7 +4682,12 @@ function wireEvents() {
   $input.addEventListener('input', () => {
     autoResize();
     const tab = activeTab();
-    $send.disabled = !$input.value.trim() && !tab?.attachedImages.length && !tab?.running;
+    if (tab?.running) {
+      // While running, dynamically switch send icon based on text content
+      _updateSendIcon($send, $input);
+    } else {
+      $send.disabled = !$input.value.trim() && !tab?.attachedImages.length;
+    }
     // Slash command hints
     const text = $input.value;
     if (text.startsWith('/') && !text.includes('\n')) {
@@ -4340,18 +4704,18 @@ function wireEvents() {
       if (e.key === 'Tab') { e.preventDefault(); acceptSlashHint(); return; }
       if (e.key === 'Escape') { e.preventDefault(); hideSlashHints(); return; }
     }
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); hideSlashHints(); if (!$send.disabled) send(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); hideSlashHints(); send(); }
     // Ctrl+L to clear
     if (e.key === 'l' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const tab = activeTab(); if (tab?.messagesEl) tab.messagesEl.innerHTML = ''; }
-    // Escape to abort
-    if (e.key === 'Escape' && activeTab()?.running) { activeTab()?.ws?.send(JSON.stringify({ type: 'abort' })); }
+    // Escape to abort — only if no btw text typed
+    if (e.key === 'Escape' && activeTab()?.running && !$input.value.trim()) { activeTab()?.ws?.send(JSON.stringify({ type: 'abort' })); }
   });
   $send.addEventListener('click', send);
   $close.addEventListener('click', () => closeTab(_activeTabIdx));
   $slide.addEventListener('click', () => toggleClaudePanel());
   $minimize.addEventListener('click', () => {
     // Always minimize to a fresh blank panel — never swap in an existing session
-    if (_tabs.length >= MAX_TABS) return;
+    if (_tabs.length >= MAX_TABS) { appendStatus(activeTab(), 'Max sessions reached — close one first.'); return; }
     createTab(null, 'New chat');
   });
 
@@ -4505,6 +4869,14 @@ function wireEvents() {
     const tab = activeTab();
     if (tab?.sessionId) renameSession(tab.sessionId, $sessLabel.textContent);
   });
+  // Rename button (explicit pencil icon next to session label)
+  const $renameBtn = _panel.querySelector('#cp-header-rename');
+  $renameBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    $sessMenu.classList.remove('open');
+    const tab = activeTab();
+    if (tab?.sessionId) renameSession(tab.sessionId, $sessLabel.textContent);
+  });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.cp-header')) $sessMenu?.classList.remove('open');
   });
@@ -4523,7 +4895,11 @@ function wireEvents() {
     // Reset session when switching projects
     selectSession(null, 'New chat');
   });
-  $model.addEventListener('change', () => storage.setItem(STOR.model, ddGetValue($model)));
+  $model.addEventListener('change', () => {
+    storage.setItem(STOR.model, ddGetValue($model));
+    const tab = activeTab();
+    if (tab) renderGauge(tab);
+  });
   $branch.addEventListener('change', async () => {
     if (!ddGetValue($branch) || !ddGetValue($project)) return;
     try {
@@ -4547,9 +4923,9 @@ function wireEvents() {
     });
     window.addEventListener('mousemove', (e) => {
       if (!dragging) return;
-      const w = Math.min(700, Math.max(320, window.innerWidth - e.clientX));
+      const w = Math.min(700, Math.max(320, window.innerWidth - e.clientX - 16));
       _panel.style.width = w + 'px';
-      document.documentElement.style.setProperty('--claude-panel-width', w + 'px');
+      document.documentElement.style.setProperty('--claude-panel-width', (w + 16) + 'px');
     });
     window.addEventListener('mouseup', () => {
       if (!dragging) return;
@@ -4560,6 +4936,23 @@ function wireEvents() {
       window.dispatchEvent(new Event('resize'));
     });
   }
+
+  // ── Whiteboard "Send to Panel" — receive image via event bus ──
+  on('wb:send-to-panel', ({ dataUrl }) => {
+    if (!dataUrl) return;
+    if (!_visible) toggleClaudePanel();
+    const tab = activeTab();
+    if (!tab) return;
+    const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+    if (!match) return;
+    const mediaType = match[1];
+    const base64 = match[2];
+    tab.attachedImages.push({ base64, mediaType });
+    updateAttachBadge();
+    addImagePreview(dataUrl, tab.attachedImages.length - 1);
+    const $send = _panel?.querySelector('#cp-send');
+    if ($send) $send.disabled = false;
+  });
 }
 
 export function initClaudePanel() {
