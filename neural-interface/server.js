@@ -2014,9 +2014,33 @@ function _heartbeatLock(sessionId, windowId) {
 let _claudeBinPath = null;
 function getClaudeBin() {
   if (_claudeBinPath) return _claudeBinPath;
+  // 0. User-configured path from cli-config.json (set via Settings > Terminal)
+  try {
+    const cfg = loadCliConfig();
+    const userCmd = cfg['claude-code']?.command?.trim();
+    if (userCmd && userCmd !== 'claude') {
+      // Absolute or relative path — verify it exists
+      if (existsSync(userCmd)) {
+        _claudeBinPath = userCmd;
+        return _claudeBinPath;
+      }
+      // Might be a bare command in PATH — try which/where
+      try {
+        const lookup = process.platform === 'win32'
+          ? execSync(`where "${userCmd}"`, { encoding: 'utf-8' }).split('\n')[0].trim()
+          : execSync(`which "${userCmd}"`, { encoding: 'utf-8' }).trim();
+        if (lookup) { _claudeBinPath = lookup; return _claudeBinPath; }
+      } catch {}
+    }
+  } catch {}
   // 1. Try bundled @anthropic-ai/claude-code in node_modules/.bin
-  const bundled = resolve(__dirname, 'node_modules', '.bin', 'claude');
-  if (existsSync(bundled)) {
+  const bundledBase = resolve(__dirname, 'node_modules', '.bin', 'claude');
+  // On Windows npm creates .cmd shims — check for those too
+  const bundledCandidates = process.platform === 'win32'
+    ? [bundledBase + '.cmd', bundledBase + '.ps1', bundledBase]
+    : [bundledBase];
+  for (const bundled of bundledCandidates) {
+    if (!existsSync(bundled)) continue;
     const st = statSync(bundled);
     // npm sometimes creates a plain text stub instead of a symlink — resolve through to cli.js
     if (st.isFile() && st.size < 256) {
@@ -8267,6 +8291,8 @@ function saveCliConfig(config) {
   const dir = dirname(CLI_CONFIG_PATH);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(CLI_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  // Clear cached claude binary so getClaudeBin() re-resolves with new config
+  _claudeBinPath = null;
 }
 
 const SHELL_PROFILE = { shell: DEFAULT_SHELL, args: [], env: {} };
