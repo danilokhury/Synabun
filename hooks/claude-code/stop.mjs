@@ -3,7 +3,7 @@
 /**
  * SynaBun Stop Hook for Claude Code
  *
- * Fires when Claude finishes responding. Enforces three requirements:
+ * Fires when Claude finishes responding. Enforces requirements:
  *
  * 1. COMPACTION AUTO-STORE — If a pending-compact flag exists (set by
  *    PreCompact hook), blocks Claude until it stores the session via
@@ -13,9 +13,11 @@
  *    MCP tool), blocks Claude to continue the next iteration until
  *    iteration cap or time cap is reached.
  *
- * 2. TASK AUTO-REMEMBER — If a pending-remember flag exists with 3+
- *    unremembered edits, blocks Claude until it stores the completed
- *    work via `remember` with any non-conversations category.
+ * 2. COMBINED TASK-END — Collects ALL pending obligations (task memory,
+ *    user learning, conversation turn, session summary) and emits ONE
+ *    combined block. This prevents the cascade of separate stop-block
+ *    cycles that create chat noise. Claude handles all obligations in
+ *    a single response.
  *
  * Safety: Max 3 retries per flag to prevent infinite loops.
  * Loop: Max 50 iterations / 60 minutes hard cap.
@@ -29,7 +31,7 @@
  *   {} to allow Claude to stop normally
  */
 
-import { readFileSync, writeFileSync, existsSync, unlinkSync, appendFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync, appendFileSync, readdirSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -245,9 +247,37 @@ async function main() {
     }
   }
 
-  // Note: No fallback scan here. The prompt-submit hook handles session ID
-  // rename when the [SynaBun Loop] marker arrives after /clear. By the time
-  // the stop hook fires, the file should be at the correct session ID path.
+  // Fallback scan: ONLY for unclaimed loops (currentIteration === 0) where the
+  // session ID may have changed before the first [SynaBun Loop] marker arrived.
+  // We deliberately do NOT pick up running loops (currentIteration > 0) — those
+  // are owned by a specific session and renaming them causes cross-session leaks
+  // when multiple Claude panels are open simultaneously. Running loops are always
+  // re-claimed via the [SynaBun Loop] message path in prompt-submit, which is
+  // the safe/intentional claim point.
+  if (!loop) {
+    try {
+      const allFiles = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
+      const now = Date.now();
+      for (const f of allFiles) {
+        const fp = join(LOOP_DIR, f);
+        try {
+          const candidate = JSON.parse(readFileSync(fp, 'utf-8'));
+          if (candidate.active && candidate.currentIteration === 0) {
+            const loopMaxMs = ((candidate.maxMinutes || 60) + 5) * 60 * 1000;
+            if (now - new Date(candidate.startedAt).getTime() > loopMaxMs) continue;
+            loop = candidate;
+            const newPath = join(LOOP_DIR, `${sessionId}.json`);
+            if (fp !== newPath) {
+              try { renameSync(fp, newPath); loopFlagPath = newPath; } catch { loopFlagPath = fp; }
+            } else {
+              loopFlagPath = fp;
+            }
+            break;
+          }
+        } catch { continue; }
+      }
+    } catch { /* ok */ }
+  }
 
   if (loop?.active) {
     const elapsed = Date.now() - new Date(loop.startedAt).getTime();
@@ -283,14 +313,34 @@ async function main() {
       // Agent is waiting for human action (login, CAPTCHA, etc.) — pause loop
       process.stdout.write(JSON.stringify({}));
       return;
-    } else {
+    } else if (loop.usesBrowser && iterationsDone > 0) {
+      // Browser loop: enforce journal update before advancing so next iteration
+      // has context of what was accomplished (critical after /clear resets context)
+      const lastJournalIter = Array.isArray(loop.journal) && loop.journal.length > 0
+        ? loop.journal[loop.journal.length - 1].iteration
+        : 0;
+      const loopUpdateRetries = loop.loopUpdateRetries || 0;
+      if (lastJournalIter < iterationsDone && loopUpdateRetries < MAX_RETRIES) {
+        loop.loopUpdateRetries = loopUpdateRetries + 1;
+        try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
+        process.stdout.write(JSON.stringify({
+          decision: 'block',
+          reason: `SynaBun Loop: Before this iteration ends, call \`loop\` action \`update\` with a brief summary of what you accomplished (e.g. which groups were posted, which platforms covered, what's left to do). This preserves context for the next iteration after /clear. Then stop — the loop will advance automatically.`,
+        }));
+        return;
+      }
+      // Reset loopUpdateRetries for next iteration
+      loop.loopUpdateRetries = 0;
       // Fresh-context iteration: let Claude stop, server drives next via /clear
       loop.currentIteration = iterationsDone + 1;
       loop.lastIterationAt = new Date().toISOString();
       loop.retries = 0;
 
-      // Memory enforcement check
-      const memoryInterval = loop.memoryInterval || 5;
+      // Memory enforcement check — browser loops get a higher default interval
+      // to avoid blocking mid-task at unpredictable points
+      const memoryInterval = loop.usesBrowser
+        ? (loop.memoryInterval || 15)
+        : (loop.memoryInterval || 5);
       const iterationsSinceMemory = loop.currentIteration - (loop.lastMemoryAt || 0);
       if (iterationsSinceMemory >= memoryInterval) {
         loop.memoryPending = true;
@@ -310,144 +360,167 @@ async function main() {
       // Allow stop — server loop driver will send /clear + next iteration message
       process.stdout.write(JSON.stringify({}));
       return;
+    } else {
+      // Non-browser loop (or iteration 0): advance normally
+      loop.currentIteration = iterationsDone + 1;
+      loop.lastIterationAt = new Date().toISOString();
+      loop.retries = 0;
+
+      const memoryInterval = loop.memoryInterval || 5;
+      const iterationsSinceMemory = loop.currentIteration - (loop.lastMemoryAt || 0);
+      if (iterationsSinceMemory >= memoryInterval) {
+        loop.memoryPending = true;
+        loop.memoryRetries = 0;
+      }
+
+      loop.awaitingNext = true;
+      try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
+
+      const rememberFlagForReset = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+      if (existsSync(rememberFlagForReset)) {
+        try { unlinkSync(rememberFlagForReset); } catch { /* ok */ }
+      }
+
+      process.stdout.write(JSON.stringify({}));
+      return;
     }
   }
 
-  // ─── CHECK 2: Pending remember (task enforcement) ───
+  // ─── COMBINED TASK-END OBLIGATIONS ───
+  // Collect ALL pending obligations and emit ONE combined block instead of
+  // separate sequential blocks. This prevents the cascade of 3-4 stop-block
+  // cycles that create chat noise. Claude handles everything in one response.
+  const obligations = [];
   const rememberFlagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+  let flag = null;
+
   if (existsSync(rememberFlagPath)) {
-    let flag;
     try {
       flag = JSON.parse(readFileSync(rememberFlagPath, 'utf-8'));
     } catch {
       try { unlinkSync(rememberFlagPath); } catch { /* ok */ }
-      process.stdout.write(JSON.stringify({}));
-      return;
     }
+  }
 
+  if (flag) {
     const editCount = flag.editCount || 0;
+    const messageCount = flag.messageCount || 0;
+    const rememberCount = flag.rememberCount || 0;
 
-    // Above edit threshold → enforce remember
+    // CHECK 2: Task remember (3+ edits without memory entry)
     if (editCount >= EDIT_THRESHOLD) {
       const retries = flag.retries || 0;
       if (retries < MAX_RETRIES) {
         flag.retries = retries + 1;
-        try { writeFileSync(rememberFlagPath, JSON.stringify(flag)); } catch { /* ok */ }
-
-        const rememberCount = flag.rememberCount || 0;
         const statsNote = rememberCount > 0
           ? ` (${rememberCount} task${rememberCount !== 1 ? 's' : ''} already stored this session)`
           : '';
-        const reason = `SynaBun: ${editCount} edits without a memory entry — store this work before you finish.${statsNote} (${retries + 1}/${MAX_RETRIES})`;
-
-        process.stdout.write(JSON.stringify({ decision: 'block', reason }));
-        return;
+        const files = Array.isArray(flag.files) ? flag.files : [];
+        const fileList = files.length > 0
+          ? ` Files: ${files.slice(0, 5).join(', ')}${files.length > 5 ? ` (+${files.length - 5} more)` : ''}`
+          : '';
+        obligations.push({
+          type: 'task',
+          short: `**Task memory**: ${editCount} edits not stored${statsNote} — call \`remember\` with what/why/how.${fileList}`,
+          verbose: `SynaBun: ${editCount} edits without a memory entry — store this work before you finish.${statsNote} (${retries + 1}/${MAX_RETRIES})`,
+        });
       }
     }
 
-    // ─── CHECK 2.5: User learning enforcement ───
+    // CHECK 2.5: User learning enforcement
     debugUL(`CHECK 2.5: pending=${flag.userLearningPending} retries=${flag.userLearningRetries || 0} editCount=${editCount}`);
     if (flag.userLearningPending) {
       const ulRetries = flag.userLearningRetries || 0;
       if (ulRetries < MAX_RETRIES) {
         flag.userLearningRetries = ulRetries + 1;
-        flag.userLearningBlockActive = true; // Signal that stop hook enforced UL — post-remember uses this to validate reflect-based clears
-        try { writeFileSync(rememberFlagPath, JSON.stringify(flag)); } catch { /* ok */ }
-
-        const reason = ulRetries === 0
-          ? [
-            `SynaBun: User behavioral observation required before stopping.`,
-            `Category MUST be \`communication-style\` — NOT \`conversations\` or anything else.`,
-            `Content MUST describe HOW the user works with you — NOT what was worked on. This is NOT a session summary.`,
-            `AVOID DUPLICATES: If an existing memory already covers the same patterns, use \`reflect\` to UPDATE it.`,
-            ``,
-            `GOOD: "User chains tasks with no acknowledgment of completion. Gives terse corrections ('not that one') expecting you to re-derive context. Reports bugs by symptoms, iterates by testing. Prefers diving in over planning."`,
-            `BAD: "User asked about hooks and we fixed bugs." ← session summary, not behavioral observation.`,
-            `BAD: "User types in lowercase." ← too shallow. Capture patterns that change how you should respond.`,
-            ``,
-            `1. \`recall\` category \`communication-style\` — check existing entries`,
-            `2. If existing entry matches → \`reflect\` (memory_id=<full UUID>, content=merged observation)`,
-            `   If no match → \`remember\` category \`communication-style\`, project "global", importance 5-7`,
-            `   Observe: instruction patterns, response expectations, correction style, expertise signals, frustration triggers, workflow preferences`,
-            `(${ulRetries + 1}/${MAX_RETRIES})`,
-          ].join('\n')
-          : `SynaBun: User learning STILL pending. \`recall\` category \`communication-style\`, then \`reflect\` to update an existing entry or \`remember\` if none exists. Content must describe HOW the user works with you — NOT what was discussed. Focus on: instruction patterns, correction style, response expectations, workflow preferences. (${ulRetries + 1}/${MAX_RETRIES})`;
-
-        debugUL(`BLOCK: user learning retry ${ulRetries + 1}/${MAX_RETRIES}`);
-        process.stdout.write(JSON.stringify({ decision: 'block', reason }));
-        return;
+        flag.userLearningBlockActive = true;
+        debugUL(`FIRE: user learning obligation (retry ${ulRetries + 1}/${MAX_RETRIES})`);
+        const verboseFirst = [
+          `SynaBun: User behavioral observation required before stopping.`,
+          `Category MUST be \`communication-style\` — NOT \`conversations\` or anything else.`,
+          `Content MUST describe HOW the user works with you — NOT what was worked on. This is NOT a session summary.`,
+          `AVOID DUPLICATES: If an existing memory already covers the same patterns, use \`reflect\` to UPDATE it.`,
+          ``,
+          `GOOD: "User chains tasks with no acknowledgment of completion. Gives terse corrections ('not that one') expecting you to re-derive context. Reports bugs by symptoms, iterates by testing. Prefers diving in over planning."`,
+          `BAD: "User asked about hooks and we fixed bugs." ← session summary, not behavioral observation.`,
+          `BAD: "User types in lowercase." ← too shallow. Capture patterns that change how you should respond.`,
+          ``,
+          `1. \`recall\` category \`communication-style\` — check existing entries`,
+          `2. If existing entry matches → \`reflect\` (memory_id=<full UUID>, content=merged observation)`,
+          `   If no match → \`remember\` category \`communication-style\`, project "global", importance 5-7`,
+          `   Observe: instruction patterns, response expectations, correction style, expertise signals, frustration triggers, workflow preferences`,
+          `(${ulRetries + 1}/${MAX_RETRIES})`,
+        ].join('\n');
+        const verboseRetry = `SynaBun: User learning STILL pending. \`recall\` category \`communication-style\`, then \`reflect\` to update an existing entry or \`remember\` if none exists. Content must describe HOW the user works with you — NOT what was discussed. Focus on: instruction patterns, correction style, response expectations, workflow preferences. (${ulRetries + 1}/${MAX_RETRIES})`;
+        obligations.push({
+          type: 'ul',
+          short: `**User learning**: \`recall\` category \`communication-style\` → check existing → \`reflect\` to update or \`remember\` new. Content: HOW the user works (instruction patterns, correction style, workflow) — NOT what was discussed.`,
+          verbose: ulRetries === 0 ? verboseFirst : verboseRetry,
+        });
+      } else {
+        debugUL(`GIVE UP: max retries reached for user learning`);
+        flag.userLearningPending = false;
+        flag.userLearningBlockActive = false;
+        flag.userLearningRetries = 0;
       }
-      // Max retries — clear pending and fall through
-      debugUL(`GIVE UP: max retries reached for user learning`);
-      flag.userLearningPending = false;
-      flag.userLearningBlockActive = false;
-      flag.userLearningRetries = 0;
-      try { writeFileSync(rememberFlagPath, JSON.stringify(flag)); } catch { /* ok */ }
     }
 
-    // ─── CHECK 3: Conversation turn enforcement ───
-    const messageCount = flag.messageCount || 0;
-    const rememberCount = flag.rememberCount || 0;
+    // CHECK 3: Conversation turn enforcement (mutually exclusive with CHECK 2)
     if (messageCount >= MESSAGE_THRESHOLD && rememberCount === 0 && editCount < EDIT_THRESHOLD) {
       const retries = flag.retries || 0;
       if (retries < MAX_RETRIES) {
         flag.retries = retries + 1;
-        try { writeFileSync(rememberFlagPath, JSON.stringify(flag)); } catch { /* ok */ }
-
-        process.stdout.write(JSON.stringify({
-          decision: 'block',
-          reason: `SynaBun: ${messageCount} exchanges and nothing saved yet — drop a quick memory before wrapping up. (${retries + 1}/${MAX_RETRIES})`,
-        }));
-        return;
+        obligations.push({
+          type: 'conversation',
+          short: `**Quick memory**: ${messageCount} exchanges and nothing saved — call \`remember\` with a brief summary.`,
+          verbose: `SynaBun: ${messageCount} exchanges and nothing saved yet — drop a quick memory before wrapping up. (${retries + 1}/${MAX_RETRIES})`,
+        });
       }
     }
 
-    // No blocking conditions → soft cleanup and allow stop
-    softCleanupFlag(rememberFlagPath);
-  }
-
-  // ─── CHECK 4: Auto-store session on end ───
-  // When enabled, blocks once to ask Claude to store a session summary in
-  // "conversations" if the session had meaningful activity. This ensures every
-  // non-trivial session gets a conversation memory without manual intervention.
-  const features = getHookFeatures();
-  if (features.autoStoreOnEnd !== false) {
-    const rememberFlagPath2 = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
-    let flag = null;
-    try {
-      if (existsSync(rememberFlagPath2)) {
-        flag = JSON.parse(readFileSync(rememberFlagPath2, 'utf-8'));
-      }
-    } catch { /* ok */ }
-
-    if (flag) {
+    // CHECK 4: Auto-store session on end
+    const features = getHookFeatures();
+    if (features.autoStoreOnEnd !== false) {
       const totalMessages = flag.totalSessionMessages || flag.messageCount || 0;
       const totalEdits = flag.totalEdits || 0;
-      const rememberCount = flag.rememberCount || 0;
       const autoStoreTriggered = flag.autoStoreTriggered || false;
-
-      // Trigger if: meaningful session, not already triggered, and no conversation
-      // memory was stored via the compact chain
       const hasMeaningfulActivity =
         totalMessages >= AUTO_STORE_MESSAGE_THRESHOLD || totalEdits > 0;
 
       if (hasMeaningfulActivity && !autoStoreTriggered) {
-        // Mark triggered so we only block once
         flag.autoStoreTriggered = true;
-        try { writeFileSync(rememberFlagPath2, JSON.stringify(flag)); } catch { /* ok */ }
-
-        const statsNote = rememberCount > 0
-          ? ` You stored ${rememberCount} task memor${rememberCount !== 1 ? 'ies' : 'y'} this session — now add a brief session summary.`
+        const editNote = totalEdits > 0 ? `, ${totalEdits} edits` : '';
+        const sessionStatsNote = rememberCount > 0
+          ? ` You stored ${rememberCount} task memor${rememberCount !== 1 ? 'ies' : 'y'} — now add a brief session summary.`
           : '';
-        const editNote = totalEdits > 0 ? ` ${totalEdits} file edits made.` : '';
-
-        process.stdout.write(JSON.stringify({
-          decision: 'block',
-          reason: `SynaBun: Session ending — store a brief session summary in category \`conversations\` (${totalMessages} messages.${editNote}).${statsNote} Include: what was worked on, key decisions, and current state. Use source: "auto-saved".`,
-        }));
-        return;
+        obligations.push({
+          type: 'autostore',
+          short: `**Session summary**: \`remember\` category \`conversations\` — brief summary (${totalMessages} messages${editNote}).${sessionStatsNote} Include: what was worked on, key decisions, current state.`,
+          verbose: `SynaBun: Session ending — store a brief session summary in category \`conversations\` (${totalMessages} messages.${editNote}).${sessionStatsNote} Include: what was worked on, key decisions, and current state. Use source: "auto-saved".`,
+        });
       }
     }
+
+    // Write flag once after all checks (single write instead of per-check writes)
+    try { writeFileSync(rememberFlagPath, JSON.stringify(flag)); } catch { /* ok */ }
+
+    // ─── Emit combined block or soft cleanup ───
+    if (obligations.length > 0) {
+      let reason;
+      if (obligations.length === 1) {
+        // Single obligation — use verbose format for full context
+        reason = obligations[0].verbose;
+      } else {
+        // Multiple obligations — combined concise format
+        const items = obligations.map((o, i) => `${i + 1}. ${o.short}`).join('\n');
+        reason = `SynaBun: Complete before stopping:\n\n${items}\n\nHandle all items in ONE response, then stop.`;
+      }
+      process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+      return;
+    }
+
+    // No blocking conditions → soft cleanup and allow stop
+    softCleanupFlag(rememberFlagPath);
   }
 
   // No flags → allow stop

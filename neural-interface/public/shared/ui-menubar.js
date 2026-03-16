@@ -335,6 +335,12 @@ function wireTerminalMenu() {
     'menu-terminal-toggle':  () => emit('terminal:toggle'),
     'menu-restart-server':   async () => {
       try {
+        // Cache project path before server goes down
+        try {
+          const h = await fetch('/api/health');
+          const hd = await h.json();
+          if (hd.projectDir) localStorage.setItem('synabun-project-dir', hd.projectDir);
+        } catch {}
         await fetch('/api/server/restart', { method: 'POST' });
         // Show brief message then attempt reconnect after delay
         document.title = 'Restarting...';

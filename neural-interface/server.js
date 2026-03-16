@@ -14,7 +14,7 @@ import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, dirname, extname, join, resolve, sep } from 'path';
 import { config as dotenvConfig } from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, appendFileSync, openSync, readSync, closeSync, chmodSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, appendFileSync, openSync, readSync, closeSync, chmodSync, watch as fsWatch } from 'fs';
 import { randomBytes, randomUUID, createHash } from 'crypto';
 import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
@@ -22,7 +22,9 @@ import { Readable } from 'stream';
 import { createConnection as netConnect } from 'net';
 import { WebSocketServer } from 'ws';
 import os from 'node:os';
-import pty from 'node-pty';
+let pty = null;
+try { pty = (await import('node-pty')).default; }
+catch (err) { console.warn('[pty] node-pty not available — terminal features disabled:', err.message); }
 import archiver from 'archiver';
 import AdmZip from 'adm-zip';
 import { chromium } from 'playwright-core';
@@ -47,12 +49,12 @@ const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Fix spawn-helper permissions on macOS (npm/cpSync don't preserve execute bit)
-if (process.platform === 'darwin') {
+// Fix spawn-helper permissions on Unix (npm/cpSync don't preserve execute bit)
+if (process.platform !== 'win32') {
   try {
     const ptyBase = resolve(__dirname, 'node_modules', 'node-pty');
     const spawnHelperPaths = [
-      resolve(ptyBase, 'prebuilds', `darwin-${process.arch}`, 'spawn-helper'),
+      resolve(ptyBase, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper'),
       resolve(ptyBase, 'build', 'Release', 'spawn-helper'),
     ];
     for (const p of spawnHelperPaths) {
@@ -73,6 +75,7 @@ if (process.platform === 'darwin') {
 dotenvConfig({ path: resolve(__dirname, '..', '.env') });
 
 const app = express();
+const SERVER_BOOT_ID = randomUUID();
 app.use(express.json({ limit: '5mb' }));
 
 // Block tunnel traffic from accessing anything except /mcp and /invite
@@ -397,6 +400,15 @@ app.get('/', (req, res, next) => {
   // SQLite + local embeddings need no external config — check if DB exists
   if (existsSync(getDbPath())) return next();
   res.redirect('/onboarding.html');
+});
+
+// Serve offline.html dynamically with the real project path injected
+app.get('/offline.html', (req, res) => {
+  const html = readFileSync(join(__dirname, 'public', 'offline.html'), 'utf-8');
+  res.type('html').send(html.replace(
+    `const projectDir = localStorage.getItem('synabun-project-dir');`,
+    `const projectDir = localStorage.getItem('synabun-project-dir') || ${JSON.stringify(PROJECT_ROOT)};`
+  ));
 });
 
 app.use('/i18n', express.static(join(__dirname, 'i18n')));
@@ -2002,15 +2014,40 @@ function _heartbeatLock(sessionId, windowId) {
 let _claudeBinPath = null;
 function getClaudeBin() {
   if (_claudeBinPath) return _claudeBinPath;
+  // 1. Try bundled @anthropic-ai/claude-code in node_modules/.bin
+  const bundled = resolve(__dirname, 'node_modules', '.bin', 'claude');
+  if (existsSync(bundled)) {
+    _claudeBinPath = bundled;
+    return _claudeBinPath;
+  }
+  // 2. Fall back to global install via which/where
   if (process.platform === 'win32') {
     try { _claudeBinPath = execSync('where claude', { encoding: 'utf-8' }).split('\n')[0].trim(); }
-    catch { _claudeBinPath = 'claude'; }
+    catch { _claudeBinPath = null; }
   } else {
     try { _claudeBinPath = execSync('which claude', { encoding: 'utf-8' }).trim(); }
-    catch { _claudeBinPath = 'claude'; }
+    catch { _claudeBinPath = null; }
+  }
+  if (!_claudeBinPath) {
+    console.warn('[claude-skin] Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code');
+    _claudeBinPath = 'claude'; // last resort — will fail at spawn time with a clear error
   }
   return _claudeBinPath;
 }
+
+// Convert a project path to Claude Code's directory name format.
+// Claude stores sessions at ~/.claude/projects/<key>/<sessionId>.jsonl
+// where <key> is the path with all separators replaced by hyphens.
+function pathToClaudeKey(p) {
+  return p.replace(/[/\\]/g, '-').replace(/:/g, '-');
+}
+
+// ── Orphan process registry ──
+// When a WebSocket closes (page refresh), we don't kill the process immediately.
+// Instead we "orphan" it: buffer events for up to 30s, allowing the reconnecting
+// client to reattach via a `reattach` message with the same windowId.
+const _orphanedProcs = new Map(); // windowId → { proc, state, buffer, killTimer, sendToClient, ... }
+const ORPHAN_GRACE_MS = 30_000;
 
 function handleClaudeSkinWebSocket(ws) {
   let activeProc = null;
@@ -2018,6 +2055,7 @@ function handleClaudeSkinWebSocket(ws) {
   let procModel = null;
   let procCwd = null;
   let procEffort = null;
+  let lastPrompt = null;     // last prompt text — used for auto-retry on session-not-found
   let inTurn = false;        // true while CLI is processing a user message
   let lastEventTime = Date.now(); // shared with stall detector
   const approvedTools = new Set(); // tools the user has approved — persists across respawns
@@ -2026,6 +2064,7 @@ function handleClaudeSkinWebSocket(ws) {
   const permCardToolNames = new Map(); // requestId → toolName, for proactive permission cards
   const lastCostBySession = new Map(); // sessionId → last cumulative cost (total_cost_usd is cumulative)
   let wsWindowId = null; // set by first query message — used for lock cleanup on close
+  let _orphanBuffer = null; // when non-null, sendToClient buffers here instead of sending over WS
 
   // Strip env vars that interfere with nested claude execution
   const cleanEnv = Object.fromEntries(
@@ -2043,9 +2082,29 @@ function handleClaudeSkinWebSocket(ws) {
     activeProc = null;
   }
 
+  function validateWorkDir(cwd) {
+    if (!cwd) return null;
+    // Reject Windows-style paths on POSIX (e.g., "J:\Sites\Apps\Synabun")
+    if (process.platform !== 'win32' && /^[A-Za-z]:[\\\/]/.test(cwd)) {
+      console.log('[claude-skin] Rejected Windows path on POSIX:', cwd);
+      return null;
+    }
+    // Reject POSIX-style paths on Windows (e.g., "/Users/foo/bar")
+    if (process.platform === 'win32' && cwd.startsWith('/')) {
+      console.log('[claude-skin] Rejected POSIX path on Windows:', cwd);
+      return null;
+    }
+    // Reject non-existent directories
+    if (!existsSync(cwd)) {
+      console.log('[claude-skin] Rejected non-existent cwd:', cwd);
+      return null;
+    }
+    return cwd;
+  }
+
   function spawnProc(sessionId, model, cwd, effort, prompt) {
     killProc();
-    const workDir = cwd || PROJECT_ROOT;
+    const workDir = validateWorkDir(cwd) || PROJECT_ROOT;
     const args = [
       '--print',
       '--output-format', 'stream-json',
@@ -2121,6 +2180,8 @@ function handleClaudeSkinWebSocket(ws) {
     let lastLoggedType = '';
 
     function sendToClient(data) {
+      // If orphaned, buffer events for replay on reattach
+      if (_orphanBuffer) { _orphanBuffer.push(data); return; }
       if (ws.readyState === 1) ws.send(JSON.stringify(data));
     }
 
@@ -2185,6 +2246,21 @@ function handleClaudeSkinWebSocket(ws) {
         // Track session_id + cost from result events
         if (event.type === 'result') {
           inTurn = false;
+          // Log error details for error_during_execution results
+          if (event.subtype === 'error_during_execution' || event.subtype === 'error') {
+            const errMsg = (event.errors && event.errors[0]) || event.error || event.result || 'unknown';
+            console.log(`[claude-skin] ✗ CLI error: ${errMsg}`);
+            // Auto-retry without --resume if session was deleted
+            if (typeof errMsg === 'string' && errMsg.includes('No conversation found')) {
+              console.log('[claude-skin] Session not found — retrying as new conversation');
+              procSessionId = null;
+              sendToClient({ type: 'event', event: { type: 'system', subtype: 'session_reset', message: 'Previous session was deleted. Starting fresh conversation.' } });
+              // Re-spawn without --resume, reusing the last prompt from the temp file
+              killProc();
+              spawnProc(null, procModel, procCwd, procEffort, lastPrompt);
+              return;
+            }
+          }
           if (event.session_id) procSessionId = event.session_id;
           if (typeof event.total_cost_usd === 'number' && event.total_cost_usd > 0) {
             const sid = event.session_id || procSessionId;
@@ -2269,28 +2345,31 @@ function handleClaudeSkinWebSocket(ws) {
     proc.on('close', (code) => {
       clearInterval(stallCheck);
       clearInterval(tailPoll);
-      // Final flush — read any remaining data from stdout file
-      try {
-        const size = fstatSync(readFd).size;
-        if (size > tailOffset) {
-          const chunk = Buffer.alloc(size - tailOffset);
-          readSync(readFd, chunk, 0, chunk.length, tailOffset);
-          buf += chunk.toString();
-          const lines = buf.split('\n');
-          buf = lines.pop();
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            processEvent(trimmed);
+      const isStale = activeProc !== proc;
+      if (!isStale) {
+        // Final flush — read any remaining data from stdout file (only for active process)
+        try {
+          const size = fstatSync(readFd).size;
+          if (size > tailOffset) {
+            const chunk = Buffer.alloc(size - tailOffset);
+            readSync(readFd, chunk, 0, chunk.length, tailOffset);
+            buf += chunk.toString();
+            const lines = buf.split('\n');
+            buf = lines.pop();
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              processEvent(trimmed);
+            }
           }
-        }
-      } catch {}
-      // Close read fd and clean up temp files
+        } catch {}
+      }
+      // Always clean up temp files
       try { closeSync(readFd); } catch {}
       if (promptTmpFile) { try { unlinkSync(promptTmpFile); } catch {} }
       try { unlinkSync(stdoutTmpFile); } catch {}
-      console.log(`[claude-skin] Process closed, code: ${code}, events: ${eventCount}, buf: ${buf.length}b, awaitingPermission: ${awaitingPermission}`);
-      if (activeProc !== proc) return;
+      console.log(`[claude-skin] Process closed, code: ${code}, events: ${eventCount}, buf: ${buf.length}b, stale: ${isStale}, awaitingPermission: ${awaitingPermission}`);
+      if (isStale) return;
       // Process any remaining partial line in buf
       if (buf.trim()) {
         console.log(`[claude-skin] Flushing final buf (${buf.length}b): ${buf.substring(0, 200)}`);
@@ -2299,7 +2378,7 @@ function handleClaudeSkinWebSocket(ws) {
       // Don't send 'done' if we're showing a permission card — the user hasn't responded yet.
       // 'done' will be sent after the user allows (via respawn+retry) or denies.
       if (!awaitingPermission) {
-        if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'done', code }));
+        sendToClient({ type: 'done', code });
       }
       activeProc = null;
     });
@@ -2310,7 +2389,10 @@ function handleClaudeSkinWebSocket(ws) {
       try { closeSync(readFd); } catch {}
       console.log('[claude-skin] Process error:', err.message);
       if (activeProc !== proc) return;
-      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: err.message }));
+      const userMsg = err.code === 'ENOENT'
+        ? 'Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code'
+        : err.message;
+      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: userMsg }));
       activeProc = null;
     });
 
@@ -2341,6 +2423,8 @@ function handleClaudeSkinWebSocket(ws) {
       if (msg.type === 'query') {
         let { prompt, cwd, sessionId, model, effort, images, windowId } = msg;
         if (windowId) wsWindowId = windowId;
+        // Strip composite ":contextWindow" suffix (e.g. "claude-opus-4-6:1000000" → "claude-opus-4-6")
+        if (model && model.includes(':')) model = model.split(':')[0];
         if (!prompt && !images?.length) return ws.send(JSON.stringify({ type: 'error', message: 'No prompt provided' }));
 
         // ── Session lock: prevent two windows from using the same session ──
@@ -2365,10 +2449,17 @@ function handleClaudeSkinWebSocket(ws) {
           }
         }
 
+        // Seed lastCostBySession from persisted data to prevent double-counting on reconnect
+        if (sessionId && !lastCostBySession.has(sessionId)) {
+          const stored = getSessionCost(sessionId);
+          if (stored > 0) lastCostBySession.set(sessionId, stored);
+        }
+
         // Each message = fresh process. Without --input-format stream-json,
         // the CLI reads text from stdin (temp file), processes one turn, emits result, and exits.
         // Session continuity via --resume sessionId.
         console.log('[claude-skin] Sending prompt, length:', prompt.length);
+        lastPrompt = prompt;
         spawnProc(sessionId || null, model || null, cwd || null, effort || null, prompt);
         inTurn = true;
         lastEventTime = Date.now();
@@ -2448,7 +2539,82 @@ function handleClaudeSkinWebSocket(ws) {
     } catch { /* ignore malformed */ }
   });
 
+  // ── Reattach: reconnecting client reclaims orphaned process ──
+  ws.on('message', function _reattachHandler(raw) {
+    try {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type !== 'reattach') return;
+      const wid = msg.windowId;
+      if (!wid) return;
+      wsWindowId = wid;
+      const orphan = _orphanedProcs.get(wid);
+      if (!orphan || !orphan.proc || orphan.proc.killed || orphan.proc.exitCode !== null) {
+        // No live orphan — tell client nothing to reattach
+        ws.send(JSON.stringify({ type: 'reattach_result', ok: false }));
+        if (orphan) { clearTimeout(orphan.killTimer); _orphanedProcs.delete(wid); }
+        return;
+      }
+      // Reclaim the orphaned process
+      clearTimeout(orphan.killTimer);
+      activeProc = orphan.proc;
+      procSessionId = orphan.sessionId;
+      procModel = orphan.model;
+      procCwd = orphan.cwd;
+      procEffort = orphan.effort;
+      inTurn = orphan.inTurn;
+      lastEventTime = orphan.lastEventTime;
+      awaitingPermission = orphan.awaitingPermission;
+      lastPrompt = orphan.lastPrompt;
+      // Restore approved tools
+      for (const t of orphan.approvedTools) approvedTools.add(t);
+      // Swap the orphan's sendToClient to use our new WS
+      orphan.swapWs(ws);
+      console.log(`[claude-skin] ♻ Reattached orphan for window ${wid}, pid ${activeProc.pid}, buffered ${orphan.buffer.length} events`);
+      // Replay buffered events
+      for (const evt of orphan.buffer) {
+        if (ws.readyState === 1) ws.send(JSON.stringify(evt));
+      }
+      _orphanedProcs.delete(wid);
+      ws.send(JSON.stringify({ type: 'reattach_result', ok: true, sessionId: procSessionId, running: inTurn || awaitingPermission }));
+    } catch {}
+  });
+
   ws.on('close', () => {
+    // If there's a running process AND we know the windowId, orphan it instead of killing
+    if (activeProc && !activeProc.killed && activeProc.exitCode === null && wsWindowId) {
+      console.log(`[claude-skin] 🔌 WS closed — orphaning process pid ${activeProc.pid} for window ${wsWindowId} (${ORPHAN_GRACE_MS / 1000}s grace)`);
+      _orphanBuffer = []; // switch sendToClient to buffer mode
+      const orphan = {
+        proc: activeProc,
+        sessionId: procSessionId,
+        model: procModel,
+        cwd: procCwd,
+        effort: procEffort,
+        inTurn,
+        lastEventTime,
+        awaitingPermission,
+        lastPrompt,
+        approvedTools: new Set(approvedTools),
+        buffer: _orphanBuffer,
+        // swapWs: called by reattach to point sendToClient at the new WS
+        swapWs(newWs) {
+          ws = newWs;
+          _orphanBuffer = null; // stop buffering, send directly
+        },
+        // Kill the process from within the old closure so activeProc guard works
+        kill() { killProc(); },
+        killTimer: setTimeout(() => {
+          console.log(`[claude-skin] ⏱ Orphan grace expired for window ${wsWindowId} — killing pid ${orphan.proc?.pid}`);
+          orphan.kill();
+          _orphanedProcs.delete(wsWindowId);
+        }, ORPHAN_GRACE_MS),
+      };
+      _orphanedProcs.set(wsWindowId, orphan);
+      // Keep activeProc set — polling and stall detector use `activeProc === proc` guard.
+      // The old closure keeps running and buffering events until reattach or grace expiry.
+      // DON'T release session locks — client is refreshing, not leaving
+      return;
+    }
     killProc();
     // Release all session locks held by this window
     if (wsWindowId) _releaseAllLocks(wsWindowId);
@@ -2467,11 +2633,13 @@ app.get('/api/claude/config', (req, res) => {
       catch { return []; }
     })();
     const models = [
-      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', tier: 'fast' },
-      { id: 'claude-opus-4-6', label: 'Opus 4.6', tier: 'capable' },
-      { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', tier: 'instant' },
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', tier: 'fast', contextWindow: 200000 },
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (1M)', tier: 'fast', contextWindow: 1000000 },
+      { id: 'claude-opus-4-6', label: 'Opus 4.6', tier: 'capable', contextWindow: 200000 },
+      { id: 'claude-opus-4-6', label: 'Opus 4.6 (1M)', tier: 'capable', contextWindow: 1000000 },
+      { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', tier: 'instant', contextWindow: 200000 },
     ];
-    res.json({ ok: true, config: cliCfg, projects, models });
+    res.json({ ok: true, config: cliCfg, projects, models, bootId: SERVER_BOOT_ID });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2499,6 +2667,11 @@ function addCost(amount, sessionId) {
   month.totalUsd = Math.round((month.totalUsd + amount) * 1e6) / 1e6; // avoid float drift
   month.queries += 1;
   if (sessionId && !month.sessions.includes(sessionId)) month.sessions.push(sessionId);
+  // Per-session cost accumulation
+  if (sessionId) {
+    if (!data.sessionCosts) data.sessionCosts = {};
+    data.sessionCosts[sessionId] = Math.round(((data.sessionCosts[sessionId] || 0) + amount) * 1e6) / 1e6;
+  }
   // Daily granularity
   if (!month.days) month.days = {};
   const day = now.getDate().toString().padStart(2, '0');
@@ -2509,6 +2682,16 @@ function addCost(amount, sessionId) {
   saveCostData(data);
   return month;
 }
+
+function getSessionCost(sessionId) {
+  const data = loadCostData();
+  return data.sessionCosts?.[sessionId] || 0;
+}
+
+app.get('/api/claude-skin/cost/session/:sid', (req, res) => {
+  const cost = getSessionCost(req.params.sid);
+  res.json({ sessionId: req.params.sid, cost });
+});
 
 app.get('/api/claude-skin/cost', (req, res) => {
   const data = loadCostData();
@@ -5790,13 +5973,8 @@ app.get('/api/claude-code/sessions', (req, res) => {
       // Convert project path to Claude's directory name format
       // "D:\Projects\MyApp" -> "d--Projects-MyApp"
       // Try both lowercase and uppercase drive letter (Claude is inconsistent)
-      const projKeyLower = proj.path
-        .replace(/\\/g, '-')
-        .replace(/:/g, '-')
-        .replace(/^([A-Z])/, (m) => m.toLowerCase());
-      const projKeyUpper = proj.path
-        .replace(/\\/g, '-')
-        .replace(/:/g, '-');
+      const projKeyLower = pathToClaudeKey(proj.path).replace(/^([A-Z])/, (m) => m.toLowerCase());
+      const projKeyUpper = pathToClaudeKey(proj.path);
 
       let projDir = join(claudeProjectsDir, projKeyLower);
       if (!existsSync(projDir)) projDir = join(claudeProjectsDir, projKeyUpper);
@@ -5869,8 +6047,8 @@ app.get('/api/claude-code/sessions/:sessionId/messages', (req, res) => {
 
     for (const proj of searchOrder) {
       if (filePath) break;
-      const projKeyLower = proj.path.replace(/\\/g, '-').replace(/:/g, '-').replace(/^([A-Z])/, m => m.toLowerCase());
-      const projKeyUpper = proj.path.replace(/\\/g, '-').replace(/:/g, '-');
+      const projKeyLower = pathToClaudeKey(proj.path).replace(/^([A-Z])/, m => m.toLowerCase());
+      const projKeyUpper = pathToClaudeKey(proj.path);
 
       for (const key of [projKeyLower, projKeyUpper]) {
         const candidate = join(claudeProjectsDir, key, `${sessionId}.jsonl`);
@@ -8095,13 +8273,15 @@ function getTerminalProfile(profileId, opts = {}) {
   }
   // Append model flag for CLIs that support it
   else if (opts.model) {
+    // Strip composite ":contextWindow" suffix if present
+    const cleanModel = opts.model.includes(':') ? opts.model.split(':')[0] : opts.model;
     const modelMap = {
       'claude-code': (m) => `${cmd} --model ${m}`,
       'codex':       (m) => `${cmd} --model ${m}`,
       'gemini':      (m) => `${cmd} --model ${m}`,
     };
     const builder = modelMap[profileId];
-    if (builder) cmd = builder(opts.model);
+    if (builder) cmd = builder(cleanModel);
   }
 
   return {
@@ -8112,6 +8292,7 @@ function getTerminalProfile(profileId, opts = {}) {
 }
 
 function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
+  if (!pty) throw new Error('Terminal not available: node-pty failed to load. Run: cd neural-interface && npm run postinstall');
   const sessionId = randomBytes(16).toString('hex');
   const profileCfg = getTerminalProfile(profile, opts);
 
@@ -8363,6 +8544,9 @@ async function driveNextIteration(session, loopState, filename) {
   console.log(`[loop-driver] Driving iteration ${iter}/${loopState.totalIterations}`);
 
   // Step 1: Wait for > prompt (Claude finished stopping)
+  // Reset buffer first so we only match NEW output after awaitingNext was set,
+  // preventing false positives from > characters in Claude's previous output content.
+  session._loopDriverBuffer = '';
   // Try 30s first, then retry once with 45s if it fails
   let promptReady = await waitForLoopPrompt(session, 30000);
   if (!promptReady) {
@@ -8375,7 +8559,7 @@ async function driveNextIteration(session, loopState, filename) {
   }
 
   // Step 2: Send /clear to reset conversation context
-  session._loopDriverBuffer = '';
+  session._loopDriverBuffer = ''; // reset again to capture only post-/clear output
   session.pty.write('/clear\r');
   console.log('[loop-driver] Sent /clear');
 
@@ -8481,11 +8665,11 @@ app.post('/api/terminal/sessions', (req, res) => {
     res.json({ sessionId, profile });
   } catch (err) {
     let msg = err.message;
-    if (process.platform === 'darwin' && (msg.includes('posix_spawn') || msg.includes('EACCES'))) {
+    if (process.platform !== 'win32' && (msg.includes('posix_spawn') || msg.includes('EACCES'))) {
       // Attempt auto-fix: chmod spawn-helper and retry once
       try {
         const ptyBase = resolve(__dirname, 'node_modules', 'node-pty');
-        const sh = resolve(ptyBase, 'prebuilds', `darwin-${process.arch}`, 'spawn-helper');
+        const sh = resolve(ptyBase, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper');
         if (existsSync(sh)) {
           chmodSync(sh, 0o755);
           console.log(`[pty] Auto-fixed spawn-helper permissions, retrying...`);
@@ -8495,7 +8679,7 @@ app.post('/api/terminal/sessions', (req, res) => {
           return res.json({ sessionId, profile });
         }
       } catch {}
-      msg = `Terminal failed: spawn-helper lacks execute permission. Try: chmod +x neural-interface/node_modules/node-pty/prebuilds/darwin-${process.arch}/spawn-helper`;
+      msg = `Terminal failed: spawn-helper lacks execute permission. Try: chmod +x neural-interface/node_modules/node-pty/prebuilds/${process.platform}-${process.arch}/spawn-helper`;
     }
     res.status(500).json({ error: msg });
   }
@@ -8533,8 +8717,8 @@ function detectClaudeSessionForCwd(cwd, createdAfter = 0, exclude = null) {
   try {
     const homeDir = process.env.USERPROFILE || process.env.HOME;
     const claudeProjectsDir = join(homeDir, '.claude', 'projects');
-    const projKeyLower = cwd.replace(/\\/g, '-').replace(/:/g, '-').replace(/^([A-Z])/, m => m.toLowerCase());
-    const projKeyUpper = cwd.replace(/\\/g, '-').replace(/:/g, '-');
+    const projKeyLower = pathToClaudeKey(cwd).replace(/^([A-Z])/, m => m.toLowerCase());
+    const projKeyUpper = pathToClaudeKey(cwd);
     let projDir = join(claudeProjectsDir, projKeyLower);
     if (!existsSync(projDir)) projDir = join(claudeProjectsDir, projKeyUpper);
     if (!existsSync(projDir)) return null;
@@ -11396,6 +11580,18 @@ function handleWhiteboardWebSocket(ws) {
         }
       }
 
+      // Save whiteboard image to temp file and return path for clipboard copy
+      if (msg.type === 'image_save' && msg.data) {
+        const ext = (msg.mimeType === 'image/jpeg') ? 'jpg' : 'png';
+        const tmpPath = join(os.tmpdir(), `synabun-wbimg-${Date.now()}.${ext}`);
+        try {
+          writeFileSync(tmpPath, Buffer.from(msg.data, 'base64'));
+          ws.send(JSON.stringify({ type: 'image_saved', path: tmpPath }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: `Image save failed: ${err.message}` }));
+        }
+      }
+
       // Client pushes full state sync after local mutation — save and relay to other clients
       if (msg.type === 'state:sync' && msg.snapshot) {
         mergeUiState({ 'neural-whiteboard': msg.snapshot });
@@ -11408,6 +11604,56 @@ function handleWhiteboardWebSocket(ws) {
     whiteboardClients.delete(ws);
     console.log(`[ws-whiteboard] Client disconnected (remaining: ${whiteboardClients.size})`);
   });
+}
+
+// ── macOS Screenshot Watcher → auto-paste to whiteboard ──
+// Only active on macOS. Watches the screenshot directory for new files and broadcasts to whiteboard clients.
+if (process.platform === 'darwin') {
+  let _screenshotDir = null;
+  try {
+    _screenshotDir = execSync('defaults read com.apple.screencapture location', { encoding: 'utf8' }).trim();
+  } catch { /* not set — use default */ }
+  if (!_screenshotDir || !existsSync(_screenshotDir)) _screenshotDir = join(os.homedir(), 'Desktop');
+
+  // Track files we've already seen so we only process genuinely new ones
+  const _seenScreenshots = new Set();
+  // Seed with existing files so we don't process old screenshots on startup
+  try {
+    for (const f of readdirSync(_screenshotDir)) {
+      if (/^Screenshot\b.*\.png$/i.test(f) || /^Captura de/i.test(f)) _seenScreenshots.add(f);
+    }
+  } catch { /* ignore */ }
+
+  let _debounceTimer = null;
+  try {
+    fsWatch(_screenshotDir, (eventType, filename) => {
+      if (!filename) return;
+      // Match macOS screenshot filenames (English, Spanish, Portuguese, etc.)
+      if (!/^Screenshot\b.*\.png$/i.test(filename) && !/^Captura de/i.test(filename)) return;
+      if (_seenScreenshots.has(filename)) return;
+      _seenScreenshots.add(filename);
+
+      // Debounce — macOS fires multiple events per file
+      clearTimeout(_debounceTimer);
+      _debounceTimer = setTimeout(() => {
+        const filePath = join(_screenshotDir, filename);
+        try {
+          if (!existsSync(filePath)) return;
+          const stat = statSync(filePath);
+          if (stat.size < 100) return; // still being written
+          const buf = readFileSync(filePath);
+          const dataUrl = 'data:image/png;base64,' + buf.toString('base64');
+          console.log(`[screenshot-watcher] New screenshot detected: ${filename} (${(stat.size / 1024).toFixed(0)}KB)`);
+          broadcastToWhiteboard({ type: 'screenshot:auto', dataUrl, filename });
+        } catch (err) {
+          console.warn(`[screenshot-watcher] Failed to process ${filename}:`, err.message);
+        }
+      }, 500);
+    });
+    console.log(`[screenshot-watcher] Watching: ${_screenshotDir}`);
+  } catch (err) {
+    console.warn('[screenshot-watcher] Could not watch screenshot directory:', err.message);
+  }
 }
 
 // ── Cards WebSocket clients (Claude MCP integration) ──

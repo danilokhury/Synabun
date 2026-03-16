@@ -674,6 +674,9 @@ function ensurePanel() {
   const html = `
     <div id="terminal-resize-handle"></div>
     <div class="term-header">
+      <button class="term-action-btn term-minimize-btn" id="term-minimize-btn" data-tooltip="Minimize terminal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
       <div class="term-tab-bar" id="term-tab-bar"></div>
       <div class="term-actions">
         <button class="term-action-btn" id="term-files-btn" data-tooltip="Toggle file tree">
@@ -701,7 +704,6 @@ function ensurePanel() {
       <div class="term-file-sidebar" id="term-file-sidebar"></div>
       <div class="term-container" id="term-container"></div>
     </div>
-    <div class="term-profile-flyout" id="term-profile-flyout"></div>
   `;
 
   const panel = document.createElement('div');
@@ -711,8 +713,12 @@ function ensurePanel() {
   document.body.appendChild(panel);
   _panel = panel;
 
-  // Build profile flyout
-  const flyout = $('term-profile-flyout');
+  // Build profile flyout — appended to document.body to escape
+  // terminal panel's contain:paint + overflow:hidden clipping
+  const flyout = document.createElement('div');
+  flyout.id = 'term-profile-flyout';
+  flyout.className = 'term-profile-flyout';
+  document.body.appendChild(flyout);
   PROFILES.forEach(p => {
     const item = document.createElement('div');
     item.className = 'term-profile-item';
@@ -744,6 +750,9 @@ function ensurePanel() {
 
   // Wire close button
   $('term-close-btn').addEventListener('click', () => hidePanel());
+
+  // Wire minimize button (chevron down)
+  $('term-minimize-btn').addEventListener('click', () => hidePanel());
 
   // Wire new button — toggle profile picker flyout
   $('term-new-btn').addEventListener('click', () => {
@@ -988,7 +997,7 @@ function showPanel() {
   // Bring docked panel above any floating TUI windows
   _panel.style.zIndex = ++_floatZCounter;
 
-  // Remove hidden class to trigger slide-up transition
+  // Remove hidden class to trigger morph-open transition
   _panel.classList.remove('hidden');
 
   storage.setItem(KEYS.TERMINAL_OPEN, '1');
@@ -997,17 +1006,18 @@ function showPanel() {
   const toggle = $('menu-terminal-toggle');
   if (toggle) toggle.classList.add('active');
 
-  // Refit terminals after slide-up transition completes (250ms)
+  // Refit terminals after morph transition completes (500ms)
   setTimeout(() => _sessions.forEach(s => {
     if (s._isHtmlTerm) s._htmlTerm?.fit();
     else _scheduleFit(s);
-  }), 260);
+  }), 520);
 }
 
 function hidePanel() {
   if (!_panel || _panelPinned) return;
+  closeFlyout();
 
-  // Slide down — content area shrinks simultaneously
+  // Morph closed — clip-path collapses to button shape
   _panel.classList.add('hidden');
   document.documentElement.style.setProperty('--terminal-height', '0px');
   storage.setItem(KEYS.TERMINAL_OPEN, '0');
@@ -1015,8 +1025,8 @@ function hidePanel() {
   const toggle = $('menu-terminal-toggle');
   if (toggle) toggle.classList.remove('active');
 
-  // Show peek dock after slide-down completes (only for docked mode)
-  if (!_detached) setTimeout(() => showPeekDock(), 260);
+  // Show peek dock after morph-close completes (only for docked mode)
+  if (!_detached) setTimeout(() => showPeekDock(), 520);
 }
 
 function togglePanel() {
@@ -1523,8 +1533,13 @@ async function openSession(profile, cwd, existingSessionId) {
           term.scrollToBottom();
         }
       }
-      if (msg.type === 'exit') markSessionDead(sessionId);
+      if (msg.type === 'exit') {
+        const _s = _sessions.find(s => s.id === sessionId);
+        if (_s) _s._exitReceived = true;
+        markSessionDead(sessionId);
+      }
       if (msg.type === 'error') {
+        if (msg.message === 'Session not found') { markSessionDead(sessionId); return; }
         term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
@@ -1546,15 +1561,15 @@ async function openSession(profile, cwd, existingSessionId) {
   };
 
   ws.onclose = () => {
-    // Mark dead if not already cleaned up
     const session = _sessions.find(s => s.id === sessionId);
-    if (session && !session.dead) markSessionDead(sessionId);
+    if (session && !session.dead && !session._exitReceived) _reconnectTerminalWs(session);
   };
 
-  // Forward terminal input to PTY
+  // Forward terminal input to PTY (use session.ws lookup so reconnected WS is used)
   term.onData((data) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'input', data }));
+    const s = _sessions.find(s => s.id === sessionId);
+    if (s?.ws?.readyState === WebSocket.OPEN) {
+      s.ws.send(JSON.stringify({ type: 'input', data }));
     }
   });
 
@@ -1699,8 +1714,13 @@ async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}
           htmlTerm.write(msg.data);
           if (CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
         }
-        if (msg.type === 'exit') markSessionDead(sessionId);
+        if (msg.type === 'exit') {
+          const _s = _sessions.find(s => s.id === sessionId);
+          if (_s) _s._exitReceived = true;
+          markSessionDead(sessionId);
+        }
         if (msg.type === 'error') {
+          if (msg.message === 'Session not found') { markSessionDead(sessionId); return; }
           htmlTerm.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
         }
         if (msg.type === 'image_saved' && msg.path) {
@@ -1720,7 +1740,7 @@ async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}
 
     ws.onclose = () => {
       const session = _sessions.find(s => s.id === sessionId);
-      if (session && !session.dead) markSessionDead(sessionId);
+      if (session && !session.dead && !session._exitReceived) _reconnectTerminalWs(session);
     };
 
     // Register session
@@ -1791,6 +1811,7 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
   viewport.className = 'term-viewport';
   viewport.dataset.sessionId = sessionId;
   $('term-container').appendChild(viewport);
+  if (_restoringLayout) viewport.style.display = 'none';
 
   if (document.fonts?.ready) await document.fonts.ready;
 
@@ -1838,7 +1859,11 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
         htmlTerm.write(msg.data);
         if (CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
       }
-      if (msg.type === 'exit') markSessionDead(sessionId);
+      if (msg.type === 'exit') {
+        const _s = _sessions.find(s => s.id === sessionId);
+        if (_s) _s._exitReceived = true;
+        markSessionDead(sessionId);
+      }
       if (msg.type === 'error') {
         if (msg.message === 'Session not found') {
           markSessionDead(sessionId);
@@ -1863,7 +1888,7 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
 
   ws.onclose = () => {
     const s = _sessions.find(s => s.id === sessionId);
-    if (s && !s.dead) markSessionDead(sessionId);
+    if (s && !s.dead && !s._exitReceived) _reconnectTerminalWs(s);
   };
 
   const profileDef = PROFILES.find(p => p.id === profile);
@@ -1900,7 +1925,7 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
     showPeekDock();
   }
   renderTabBar();
-  switchToSession(_activeIdx);
+  if (!_restoringLayout) switchToSession(_activeIdx);
   saveSessionRegistry();
 }
 
@@ -2366,6 +2391,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
   viewport.className = 'term-viewport';
   viewport.dataset.sessionId = sessionId;
   $('term-container').appendChild(viewport);
+  if (_restoringLayout) viewport.style.display = 'none';
 
   // Wait for fonts before opening (same FOUT fix as openSession)
   if (document.fonts?.ready) await document.fonts.ready;
@@ -2513,7 +2539,11 @@ async function reconnectSession(sessionId, profile, options = {}) {
           term.scrollToBottom();
         }
       }
-      if (msg.type === 'exit') markSessionDead(sessionId);
+      if (msg.type === 'exit') {
+        const _s = _sessions.find(s => s.id === sessionId);
+        if (_s) _s._exitReceived = true;
+        markSessionDead(sessionId);
+      }
       if (msg.type === 'error') {
         if (msg.message === 'Session not found') {
           markSessionDead(sessionId);
@@ -2538,12 +2568,14 @@ async function reconnectSession(sessionId, profile, options = {}) {
 
   ws.onclose = () => {
     const s = _sessions.find(s => s.id === sessionId);
-    if (s && !s.dead) markSessionDead(sessionId);
+    if (s && !s.dead && !s._exitReceived) _reconnectTerminalWs(s);
   };
 
+  // Forward terminal input to PTY (use session.ws lookup so reconnected WS is used)
   term.onData((data) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'input', data }));
+    const s = _sessions.find(s => s.id === sessionId);
+    if (s?.ws?.readyState === WebSocket.OPEN) {
+      s.ws.send(JSON.stringify({ type: 'input', data }));
     }
   });
 
@@ -2581,7 +2613,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
     showPeekDock();
   }
   renderTabBar();
-  switchToSession(_activeIdx);
+  if (!_restoringLayout) switchToSession(_activeIdx);
   saveSessionRegistry();
 }
 
@@ -2791,6 +2823,91 @@ export function disconnectAllSessions() {
     document.documentElement.style.setProperty('--terminal-height', '0px');
   }
   showPeekDock();
+}
+
+function _reconnectTerminalWs(session, attempt = 0) {
+  if (session.dead || session._exitReceived) return;
+  // Guard: prevent multiple simultaneous reconnect attempts (visibilitychange + ws.onclose race)
+  if (attempt === 0 && session._reconnecting) return;
+  session._reconnecting = true;
+  const maxAttempts = 3;
+  const delay = 2000;
+
+  // Close any stale WS still in CONNECTING/OPEN state to prevent duplicate server connections
+  if (session.ws && session.ws.readyState <= WebSocket.OPEN) {
+    try { session.ws.close(); } catch {}
+  }
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${session.id}`);
+
+  ws.onopen = () => {
+    session._reconnecting = false;
+    session.ws = ws;
+    if (session._isHtmlTerm && session._htmlTerm) {
+      session._htmlTerm.setWebSocket(ws);
+      session._htmlTerm.fit();
+      if (session._htmlTerm.cols >= 2 && session._htmlTerm.rows >= 2) {
+        ws.send(JSON.stringify({ type: 'resize', cols: session._htmlTerm.cols, rows: session._htmlTerm.rows }));
+      }
+    } else if (session.term) {
+      const dims = session.fitAddon?.proposeDimensions();
+      if (dims?.cols >= 2 && dims?.rows >= 2) {
+        session.fitAddon.fit();
+        ws.send(JSON.stringify({ type: 'resize', cols: session.term.cols, rows: session.term.rows }));
+      }
+    }
+  };
+
+  ws.onmessage = (e) => {
+    // Ignore messages from superseded WS connections
+    if (session.ws !== ws) return;
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'output' || msg.type === 'replay') {
+        if (session._isHtmlTerm) {
+          session._htmlTerm?.write(msg.data);
+          if (CLI_PROFILES.has(session.profile)) _scheduleCliStatusCheck(session.id);
+        } else if (session.term) {
+          session.term.write(msg.data);
+          if (session._autoScroll && session.term.buffer?.active?.type === 'normal' && !session.term.hasSelection?.()) {
+            session.term.scrollToBottom();
+          }
+        }
+      }
+      if (msg.type === 'exit') {
+        session._exitReceived = true;
+        markSessionDead(session.id);
+      }
+      if (msg.type === 'error') {
+        if (msg.message === 'Session not found') { markSessionDead(session.id); return; }
+        if (session._isHtmlTerm) session._htmlTerm?.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
+        else if (session.term) session.term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
+      }
+      if (msg.type === 'image_saved' && msg.path) {
+        navigator.clipboard.writeText(msg.path).catch(() => {});
+        showTermToast(`Image saved — path copied to clipboard`);
+      }
+      if (msg.type === 'image_dropped' && msg.path) {
+        session.ws?.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Image dropped — ${msg.path.split(/[\\/]/).pop()}`);
+      }
+      if (msg.type === 'memory_saved' && msg.path) {
+        session.ws?.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Memory dropped — ${msg.path.split(/[\\/]/).pop()}`);
+      }
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    if (session.dead || session._exitReceived) return;
+    if (attempt < maxAttempts - 1) {
+      setTimeout(() => _reconnectTerminalWs(session, attempt + 1), delay);
+    } else {
+      session._reconnecting = false;
+      markSessionDead(session.id);
+    }
+  };
 }
 
 function markSessionDead(sessionId) {
@@ -4030,7 +4147,7 @@ function ensurePeekDock() {
   const dock = document.createElement('div');
   dock.id = 'term-peek-dock';
   dock.innerHTML = `
-    <span class="peek-pull"><svg viewBox="0 0 16 16" fill="none"><path d="M4 10l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+    <span class="peek-pull"><svg viewBox="0 0 16 16" fill="none"><path d="M3 5l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 11h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span>
     <div class="peek-tabs"></div>
     <span class="peek-count"></span>
   `;
@@ -4302,6 +4419,38 @@ export async function initTerminal() {
     }, 150);
   });
 
+  // ── Visibility change — reconnect WSes + re-focus after screen sleep/wake ──
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    // Reconnect any dropped terminal WebSockets (PTYs survive 30min on server)
+    for (const s of _sessions) {
+      if (s.dead || s._isBrowser) continue;
+      if (!s.ws || s.ws.readyState !== WebSocket.OPEN) {
+        _reconnectTerminalWs(s);
+      }
+    }
+    // Re-focus active terminal after screen wake
+    const session = _sessions[_activeIdx];
+    if (session && !session.dead) {
+      requestAnimationFrame(() => {
+        if (session._isBrowser) {
+          session._browserCanvas?.focus();
+        } else if (session._isHtmlTerm) {
+          session._htmlTerm?.focus();
+        } else if (session.term) {
+          session.term.focus();
+        }
+      });
+    }
+    // Also re-focus any floating windows
+    for (const [id] of _detachedTabs) {
+      const s = _sessions.find(s => s.id === id);
+      if (!s || s.dead) continue;
+      if (s._isHtmlTerm) s._htmlTerm?.focus();
+      else if (s.term) s.term.focus();
+    }
+  });
+
   on('terminal:open', (data) => {
     const profile = data?.profile || 'shell';
     openSessionWithPicker(profile);
@@ -4482,6 +4631,16 @@ export async function initTerminal() {
         }
       } catch {}
       _restoringLayout = false;
+
+      // Unhide all viewports that were hidden during restore
+      for (const s of _sessions) {
+        if (s.viewport) s.viewport.style.display = '';
+      }
+
+      // Activate first docked session, or hide panel if all are floating
+      const firstDocked = _sessions.findIndex(s => !_detachedTabs.has(s.id));
+      if (firstDocked >= 0) switchToSession(firstDocked);
+      else if (_panel && !_panel.classList.contains('hidden')) hidePanel();
     }
 
     // Clean up dead sessions from registry
@@ -4506,6 +4665,22 @@ export async function initTerminal() {
   if (!_panel || _panel.classList.contains('hidden')) {
     showPeekDock();
   }
+
+  // ── Whiteboard "Send to Terminal" — receive image via event bus ──
+  on('wb:send-to-terminal', ({ dataUrl }) => {
+    if (!dataUrl) return;
+    const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+    if (!match) return;
+    // Find active session with open WS
+    const activeIdx = _activePaneIdx[0] >= 0 ? _activePaneIdx[0] : _activePaneIdx[1];
+    const session = _sessions[activeIdx];
+    if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) {
+      showTermToast('No active terminal session');
+      return;
+    }
+    session.ws.send(JSON.stringify({ type: 'image_drop', data: match[2], mimeType: match[1] }));
+    showTermToast('Image sent to terminal');
+  });
 }
 
 export function openTerminalPanel(profile) {
@@ -4915,6 +5090,8 @@ async function toggleFileTree(sidebar, session) {
     sidebar.innerHTML = '';
     initSidebarResize(sidebar, session);
 
+    const inner = document.createElement('div');
+    inner.className = 'ft-inner';
     const nocwd = document.createElement('div');
     nocwd.className = 'ft-no-cwd';
     nocwd.innerHTML = `
@@ -4926,7 +5103,8 @@ async function toggleFileTree(sidebar, session) {
       <div class="ft-no-cwd-section-label">Registered projects</div>
       <div class="ft-no-cwd-projects"><div class="ft-loading">Loading…</div></div>
     `;
-    sidebar.appendChild(nocwd);
+    inner.appendChild(nocwd);
+    sidebar.appendChild(inner);
 
     const input = nocwd.querySelector('.ft-path-input');
     const browseBtn = nocwd.querySelector('.ft-no-cwd-browse');
@@ -4974,13 +5152,16 @@ async function toggleFileTree(sidebar, session) {
   }
 
   sidebar.classList.add('open');
-  sidebar.innerHTML = '<div class="ft-loading">Loading...</div>';
+  sidebar.innerHTML = '<div class="ft-inner"><div class="ft-loading">Loading...</div></div>';
   initSidebarResize(sidebar, session);
   refitActiveSession(session);
 
   try {
     const data = await fetchTerminalFiles(session.cwd);
     sidebar.innerHTML = '';
+
+    const inner = document.createElement('div');
+    inner.className = 'ft-inner';
 
     // Header
     const header = document.createElement('div');
@@ -5008,18 +5189,20 @@ async function toggleFileTree(sidebar, session) {
       });
     }
 
-    sidebar.appendChild(header);
+    inner.appendChild(header);
 
     // Search filter
     const search = document.createElement('div');
     search.className = 'ft-search';
     search.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="ft-search-input" type="text" placeholder="Filter files..." spellcheck="false" />`;
-    sidebar.appendChild(search);
+    inner.appendChild(search);
 
     // Tree container
     const tree = document.createElement('div');
     tree.className = 'ft-tree';
-    sidebar.appendChild(tree);
+    inner.appendChild(tree);
+
+    sidebar.appendChild(inner);
 
     // Store original items for restoring after search
     const originalItems = data.items;

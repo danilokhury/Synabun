@@ -74,13 +74,63 @@
     --claude-panel-width: 0px;
   }
 
+  html {
+    position: fixed;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+  }
   body {
     background: #050505;
     color: #e0e0e0;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
     overflow: hidden;
-    height: 100vh;
-    width: 100vw;
+    height: 100dvh;
+    width: 100%;
+    overscroll-behavior: none;
+  }
+
+  /* macOS fullscreen: lock height so menu bar overlays instead of pushing content */
+  body.is-fullscreen {
+    height: var(--fs-locked-height) !important;
+    max-height: var(--fs-locked-height) !important;
+  }
+  body.is-fullscreen #title-bar {
+    position: absolute;
+  }
+  body.is-fullscreen #explorer-panel {
+    position: absolute;
+    height: var(--fs-locked-height);
+  }
+  body.is-fullscreen #file-explorer-panel {
+    position: absolute;
+    height: var(--fs-locked-height);
+  }
+  body.is-fullscreen .fe-editor-panel {
+    position: absolute;
+    height: var(--fs-locked-height);
+  }
+  body.is-fullscreen #tutorial-overlay {
+    position: absolute;
+    height: var(--fs-locked-height);
+  }
+
+  /* ── Window Controls Overlay (PWA standalone on macOS / Windows / Linux) ── */
+  @media (display-mode: window-controls-overlay) {
+    #title-bar {
+      -webkit-app-region: drag;
+      padding-left: calc(env(titlebar-area-x, 0px) + 10px);
+      padding-top: env(titlebar-area-y, 0px);
+      min-height: env(titlebar-area-height, auto);
+    }
+    #title-bar button,
+    #title-bar a,
+    #title-bar input,
+    #title-bar .menubar,
+    #title-bar .view-toggle,
+    #title-bar .bar-right {
+      -webkit-app-region: no-drag;
+    }
   }
 
   ::-webkit-scrollbar { width: 6px; }
@@ -140,8 +190,8 @@
     position: fixed;
     top: 0;
     left: var(--sidebar-total-width, 0px);
-    width: calc(100vw - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px));
-    height: calc(100vh - var(--terminal-height, 0px));
+    width: calc(100% - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px));
+    height: calc(100dvh - var(--terminal-height, 0px));
     z-index: 1;
     opacity: 1;
     filter: blur(0px);
@@ -180,8 +230,8 @@
     position: fixed;
     top: 0;
     left: 0;
-    width: 100vw;
-    height: calc(100vh - var(--terminal-height, 0px));
+    width: 100%;
+    height: calc(100dvh - var(--terminal-height, 0px));
     z-index: 1;
     display: flex;
     align-items: center;
@@ -200,8 +250,8 @@
     pointer-events: auto;
   }
   .static-bg-logo {
-    position: fixed;
-    left: calc(var(--sidebar-total-width, 0px) + (100vw - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
+    position: absolute;
+    left: calc(var(--sidebar-total-width, 0px) + (100% - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
     top: 50%;
     transform: translate(-50%, -50%);
     height: 80px;
@@ -220,8 +270,8 @@
     opacity: 0.12;
   }
   .focus-breathe {
-    position: fixed;
-    left: calc(var(--sidebar-total-width, 0px) + (100vw - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
+    position: absolute;
+    left: calc(var(--sidebar-total-width, 0px) + (100% - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
     top: 50%;
     margin-left: -150px;
     margin-top: -150px;
@@ -576,43 +626,43 @@
     display: block;
   }
 
-  /* Drag-to-terminal grip on whiteboard images */
-  .wb-drag-to-term {
+  /* Copy-path button on whiteboard images */
+  .wb-copy-path {
     position: absolute;
     top: 6px;
     right: 6px;
-    width: 28px;
-    height: 28px;
+    width: 20px;
+    height: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
     background: rgba(0,0,0,0.55);
     backdrop-filter: blur(8px);
-    border-radius: 8px;
+    border-radius: 5px;
     border: 1px solid rgba(255,255,255,0.1);
     color: var(--accent-blue, #6ab5ff);
-    cursor: grab;
+    cursor: pointer;
     opacity: 0;
-    transition: opacity 0.15s, background 0.15s;
+    transition: opacity 0.15s, background 0.15s, color 0.15s;
     z-index: 2;
     pointer-events: auto;
   }
-  .wb-drag-to-term svg {
-    width: 16px;
-    height: 16px;
+  .wb-copy-path svg {
+    width: 12px;
+    height: 12px;
   }
-  .wb-image:hover .wb-drag-to-term,
-  .wb-image.selected .wb-drag-to-term {
+  .wb-image:hover .wb-copy-path,
+  .wb-image.selected .wb-copy-path {
     opacity: 0.7;
   }
-  .wb-drag-to-term:hover {
+  .wb-copy-path:hover {
     opacity: 1 !important;
     background: rgba(0,0,0,0.75);
   }
-  .wb-drag-to-term:active { cursor: grabbing; }
-  .wb-image.wb-dragging-to-term {
-    opacity: 0.45;
-    transition: opacity 0.15s;
+  .wb-copy-path:active { transform: scale(0.9); }
+  .wb-copy-path.wb-copied {
+    color: #4ade80;
+    opacity: 1 !important;
   }
 
   /* ── Game active: all whiteboard images borderless + click-through ── */
@@ -1144,7 +1194,7 @@
     right: 0;
     transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1);
     z-index: 50000;
-    padding: 10px 18px;
+    padding: 10px 18px 10px 10px;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -2140,7 +2190,7 @@
   #help-overlay {
     position: fixed;
     inset: 0;
-    z-index: 500;
+    z-index: 999999;
     background: rgba(0, 0, 0, 0.35);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
@@ -2158,7 +2208,7 @@
 
   #help-modal {
     width: 480px;
-    max-height: calc(100vh - 80px);
+    max-height: calc(100dvh - 200px);
     overflow-y: auto;
     padding: 28px 30px;
     animation: helpSlideIn 0.2s ease-out;
@@ -2263,7 +2313,7 @@
     min-height: 200px;
     display: flex;
     flex-direction: column;
-    max-height: calc(100vh - 52px);
+    max-height: calc(100dvh - 52px);
     overflow: hidden;
     opacity: 0;
     transform: scale(calc(var(--ui-scale, 1) * 0.97));
@@ -4875,7 +4925,7 @@
   #topright-controls {
     position: fixed;
     top: 64px;
-    right: calc(12px + var(--claude-panel-width, 0px));
+    right: calc(16px + var(--claude-panel-width, 0px));
     transition: right 0.3s cubic-bezier(0.22, 1, 0.36, 1);
     z-index: 400;
     display: flex;
@@ -4897,6 +4947,132 @@
   /* Hide workspace toolbar when file editor is open */
   body.fe-editor-open #topright-controls {
     display: none;
+  }
+
+  /* ── Collapsible toolbar inner wrapper ── */
+  #topright-inner {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    max-width: 2000px;
+    opacity: 1;
+    transition: max-width 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 0.3s ease,
+                gap 0.35s ease;
+  }
+
+  #topright-controls.collapsed #topright-inner {
+    max-width: 0;
+    opacity: 0;
+    gap: 0;
+    pointer-events: none;
+  }
+
+  /* ── Collapse toggle button ── */
+  .topright-collapse-btn {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(20, 20, 24, 0.7);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    color: var(--t-muted);
+    cursor: pointer;
+    transition: all 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+    position: relative;
+    padding: 0;
+    flex-shrink: 0;
+    z-index: 2;
+    overflow: hidden;
+  }
+
+  .topright-collapse-btn:hover {
+    background: rgba(30, 30, 36, 0.8);
+    border-color: rgba(255,255,255,0.08);
+    color: var(--t-primary);
+  }
+
+  .topright-collapse-btn .collapse-chevron {
+    width: 11px;
+    height: 11px;
+    stroke: currentColor;
+    stroke-width: 2.5;
+    fill: none;
+    transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 0.3s ease;
+    flex-shrink: 0;
+  }
+
+  /* Dots — hidden when expanded */
+  .topright-collapse-btn .collapse-dots {
+    position: absolute;
+    display: flex;
+    gap: 3px;
+    align-items: center;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+  }
+
+  .topright-collapse-btn .collapse-dots span {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: rgba(160, 200, 255, 0.45);
+    transition: background 0.3s ease;
+  }
+
+  /* ── Collapsed state — vertical pill with staggered dots ── */
+  #topright-controls.collapsed .topright-collapse-btn {
+    width: 18px;
+    height: 36px;
+    border-radius: 10px;
+    background: rgba(16, 16, 20, 0.7);
+    border-color: rgba(110, 181, 255, 0.08);
+    box-shadow: 0 0 12px rgba(110, 181, 255, 0.04),
+                inset 0 0 8px rgba(110, 181, 255, 0.02);
+  }
+
+  #topright-controls.collapsed .topright-collapse-btn:hover {
+    width: 22px;
+    border-color: rgba(110, 181, 255, 0.2);
+    background: rgba(22, 22, 28, 0.85);
+    box-shadow: 0 0 16px rgba(110, 181, 255, 0.08);
+  }
+
+  /* Chevron hides, dots show */
+  #topright-controls.collapsed .collapse-chevron {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+
+  #topright-controls.collapsed .collapse-dots {
+    opacity: 1;
+    flex-direction: column;
+  }
+
+  /* Staggered breathing on the dots */
+  #topright-controls.collapsed .collapse-dots span {
+    animation: dotPulse 2.4s ease-in-out infinite;
+  }
+  #topright-controls.collapsed .collapse-dots span:nth-child(1) { animation-delay: 0s; }
+  #topright-controls.collapsed .collapse-dots span:nth-child(2) { animation-delay: 0.3s; }
+  #topright-controls.collapsed .collapse-dots span:nth-child(3) { animation-delay: 0.6s; }
+
+  /* On hover, dots go solid */
+  #topright-controls.collapsed .topright-collapse-btn:hover .collapse-dots span {
+    animation: none;
+    background: rgba(110, 181, 255, 0.7);
+  }
+
+  @keyframes dotPulse {
+    0%, 100% { opacity: 0.25; transform: scale(0.8); }
+    50% { opacity: 0.85; transform: scale(1.15); }
   }
 
   .topright-icon-btn {
@@ -5362,6 +5538,43 @@
       linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
       linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
     background-size: 20px 20px;
+  }
+
+  /* ═══════════════════════════════════════════
+     BOOKMARKS OVERLAY DROPDOWN
+     ═══════════════════════════════════════════ */
+
+  #bookmarks-overlay {
+    position: relative;
+    user-select: none;
+  }
+
+  #bookmarks-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 10;
+    width: 260px;
+    max-height: 360px;
+    overflow-y: auto;
+    border-radius: 12px;
+    background: rgba(18, 18, 22, 0.95);
+    backdrop-filter: blur(32px) saturate(1.4);
+    -webkit-backdrop-filter: blur(32px) saturate(1.4);
+    border: 1px solid rgba(255,255,255,0.07);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5),
+                0 2px 8px rgba(0,0,0,0.2);
+    overflow-x: hidden;
+    animation: menuDropIn 0.14s ease-out;
+    padding: 4px 0;
+  }
+
+  #bookmarks-dropdown::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 16px; right: 16px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06) 30%, rgba(255,255,255,0.06) 70%, transparent);
   }
 
   /* ═══════════════════════════════════════════
@@ -6012,7 +6225,7 @@
     left: auto;
     z-index: 100;
     padding: 0;
-    max-height: calc(100vh - 120px);
+    max-height: calc(100dvh - 120px);
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -6707,7 +6920,7 @@
     width: 520px;
     min-width: 360px;
     min-height: 200px;
-    max-height: min(580px, calc(100vh - 80px));
+    max-height: min(580px, calc(100dvh - 80px));
     overflow-y: auto;
     padding: 0;
     opacity: 0;
@@ -8050,17 +8263,31 @@
   }
   .styled-select-option .styled-select-dot { flex-shrink: 0; }
 
+  /* ── Studio backdrop overlay ── */
+  .studio-backdrop {
+    position: fixed; inset: 0;
+    z-index: 299999;
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    pointer-events: auto;
+  }
+  .studio-backdrop.open { opacity: 1; }
+
   /* ── Settings Panel (draggable/pinnable) ── */
   .settings-panel {
     position: fixed;
-    z-index: 50100;
-    width: 680px;
-    max-width: 92vw;
-    min-width: 420px;
-    min-height: 400px;
+    z-index: 300000;
+    width: 720px;
+    max-width: 95vw;
+    min-width: 480px;
+    height: 500px;
+    max-height: 88vh;
+    min-height: 320px;
     display: flex;
     flex-direction: column;
-    max-height: calc(100vh - 52px);
     overflow: hidden;
     opacity: 0;
     transform: scale(calc(var(--ui-scale, 1) * 0.97));
@@ -9216,7 +9443,7 @@
     left: 0;
     width: var(--explorer-width, 300px);
     min-width: 280px;
-    height: 100vh;
+    height: 100dvh;
     z-index: 200;
     display: flex;
     flex-direction: column;
@@ -9653,7 +9880,7 @@
     left: var(--explorer-width, 0px);
     width: var(--file-explorer-width, 280px);
     min-width: 240px;
-    height: 100vh;
+    height: 100dvh;
     z-index: 199;
     display: flex;
     flex-direction: column;
@@ -10450,7 +10677,7 @@
     top: 0;
     left: calc(var(--sidebar-total-width, 0px));
     right: var(--claude-panel-width, 0px);
-    height: 100vh;
+    height: 100dvh;
     z-index: 198;
     display: flex;
     flex-direction: column;
@@ -10934,7 +11161,7 @@
   #multi-select-bar {
     position: fixed;
     top: 62px;
-    left: calc(var(--sidebar-total-width, 0px) + (100vw - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
+    left: calc(var(--sidebar-total-width, 0px) + (100% - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
     transform: translateX(-50%);
     transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1);
     z-index: 95;
@@ -10970,7 +11197,7 @@
   #stats-bar {
     position: fixed;
     bottom: calc(20px + var(--terminal-height, 0px) + var(--peek-dock-height, 0px));
-    left: calc(var(--sidebar-total-width, 0px) + (100vw - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
+    left: calc(var(--sidebar-total-width, 0px) + (100% - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
     transform: translateX(-50%);
     transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1),
                 bottom 0.3s cubic-bezier(0.22, 1, 0.36, 1);
@@ -11649,9 +11876,9 @@
     --accent-hue: 215;
     --accent-saturation: 16%;
     --accent-lightness: 65%;
-    position: fixed; z-index: 50100;
-    width: 980px; max-width: 95vw; min-width: 580px;
-    height: 640px; max-height: 88vh; min-height: 360px;
+    position: fixed; z-index: 300000;
+    width: 720px; max-width: 95vw; min-width: 480px;
+    height: 500px; max-height: 88vh; min-height: 320px;
     display: flex; flex-direction: column;
     overflow: hidden;
     opacity: 0; transform: scale(0.97);
@@ -12834,9 +13061,9 @@
     --accent-hue: 160;
     --accent-saturation: 20%;
     --accent-lightness: 58%;
-    position: fixed; z-index: 50100;
-    width: 980px; max-width: 95vw; min-width: 580px;
-    height: 640px; max-height: 88vh; min-height: 360px;
+    position: fixed; z-index: 300000;
+    width: 720px; max-width: 95vw; min-width: 480px;
+    height: 500px; max-height: 88vh; min-height: 320px;
     display: flex; flex-direction: column;
     overflow: hidden;
     opacity: 0; transform: scale(0.97);
@@ -14154,28 +14381,37 @@
 
   #terminal-panel {
     position: fixed;
-    bottom: 0;
-    left: var(--sidebar-total-width, 0px);
-    right: var(--claude-panel-width, 0px);
+    bottom: 16px;
+    left: calc(var(--sidebar-total-width, 0px) + 16px);
+    right: calc(var(--claude-panel-width, 0px) + 16px);
     height: var(--terminal-height, 0px);
     z-index: 150;
     display: flex;
     flex-direction: column;
-    background: rgb(10, 10, 12);
-    border-top: 1px solid rgba(255,255,255,0.08);
-    transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+    background: rgba(18, 18, 20, 0.92);
+    backdrop-filter: blur(40px) saturate(1.4);
+    -webkit-backdrop-filter: blur(40px) saturate(1.4);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 16px;
+    box-shadow: 0 0 0 0.5px rgba(255,255,255,0.05),
+                0 20px 60px rgba(0,0,0,0.5),
+                0 8px 24px rgba(0,0,0,0.3);
+    clip-path: inset(0 0 0 0 round 16px);
+    transition: clip-path 0.5s cubic-bezier(0.22, 1, 0.36, 1),
                 left 0.3s cubic-bezier(0.22, 1, 0.36, 1);
     overflow: hidden;
+    isolation: isolate;
+    contain: layout paint style;
   }
   #terminal-panel.hidden {
-    transform: translateY(100%);
+    clip-path: inset(100% 100% 0 0 round 20px);
     pointer-events: none;
   }
 
   /* Panel pinned state */
   #terminal-panel.panel-pinned {
-    border-top: 2px solid rgba(110, 181, 255, 0.5);
-    box-shadow: 0 -2px 20px rgba(110, 181, 255, 0.08), 0 0 0 1px rgba(110, 181, 255, 0.1);
+    border-color: rgba(110, 181, 255, 0.35);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(110, 181, 255, 0.2);
   }
 
   /* Pinned + detached combined state */
@@ -14191,11 +14427,12 @@
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 10px;
     box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
+    clip-path: none;
     transition: none;
     resize: none;
   }
   #terminal-panel.detached.hidden {
-    transform: none;
+    clip-path: none;
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
@@ -14256,6 +14493,30 @@
     border-bottom: 1px solid rgba(255,255,255,0.06);
     flex-shrink: 0;
     gap: 4px;
+  }
+
+  .term-minimize-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.3);
+    cursor: pointer;
+    border-radius: 4px;
+    flex-shrink: 0;
+    transition: color 0.15s, background 0.15s;
+  }
+  .term-minimize-btn:hover {
+    color: rgba(255,255,255,0.7);
+    background: rgba(255,255,255,0.06);
+  }
+  .term-minimize-btn svg {
+    width: 14px;
+    height: 14px;
   }
 
   /* Tab bar */
@@ -14352,7 +14613,8 @@
     overflow: hidden;
     min-width: 280px;
     min-height: 160px;
-    contain: layout style;
+    contain: layout paint style;
+    isolation: isolate;
     will-change: transform;
     transition: border-radius 0.15s ease, box-shadow 0.2s ease;
   }
@@ -14445,6 +14707,8 @@
     transition: color 0.15s, background 0.15s;
     flex-shrink: 0;
     position: relative;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
   }
   .term-float-tab-btn:hover {
     color: rgba(255,255,255,0.8);
@@ -14531,6 +14795,10 @@
     color: rgba(109,213,140,0.9);
     background: rgba(109,213,140,0.12);
   }
+  .term-float-tab-btn.minimize-btn:hover {
+    color: rgba(255,200,50,0.9);
+    background: rgba(255,200,50,0.12);
+  }
   .term-float-tab-btn.close-btn:hover {
     color: rgba(255,82,82,0.9);
     background: rgba(255,82,82,0.12);
@@ -14567,7 +14835,7 @@
     display: flex;
     overflow: hidden;
     background: #0a0a0c;
-    contain: layout style;
+    contain: layout paint style;
   }
 
   /* ── Floating tab/panel edge resize handles ── */
@@ -14662,7 +14930,7 @@
   .term-float-viewport-wrap .term-viewport {
     flex: 1;
     position: relative;
-    padding: 4px 4px 4px 8px;
+    padding: 20px 18px 20px 24px;
     min-height: 0;
   }
 
@@ -14717,6 +14985,7 @@
     gap: 4px;
   }
   #term-minimized-tray:empty { display: none; }
+  #topright-controls.collapsed #term-minimized-tray { display: none; }
 
   .term-minimized-pill {
     display: flex;
@@ -14750,6 +15019,13 @@
   .term-minimized-pill-label {
     font-size: 11px;
     color: rgba(255,255,255,0.7);
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: max-width 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  }
+  .term-minimized-pill:hover .term-minimized-pill-label {
+    max-width: 300px;
   }
   .term-minimized-pill-close {
     background: none; border: none;
@@ -14802,6 +15078,8 @@
     font-size: 16px;
     transition: all 0.15s ease;
     position: relative;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
   }
   .term-action-btn:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.7); }
   .term-action-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.8; }
@@ -14814,7 +15092,7 @@
     border-color: rgba(110, 181, 255, 0.3);
   }
 
-  /* Profile picker flyout */
+  /* Profile picker flyout — lives on document.body to escape panel containment */
   .term-profile-flyout {
     position: fixed;
     background: rgba(18,18,20,0.95);
@@ -14825,6 +15103,8 @@
     display: none;
     z-index: 100001;
     backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
   }
   .term-profile-flyout.open { display: block; }
   .term-profile-item {
@@ -14837,6 +15117,8 @@
     font-size: 13px;
     color: rgba(255,255,255,0.6);
     transition: all 0.1s ease;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
   }
   .term-profile-item:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.9); }
   .term-profile-icon { display: flex; align-items: center; justify-content: center; width: 18px; }
@@ -14847,6 +15129,16 @@
     flex: 1;
     overflow: hidden;
     position: relative;
+    padding: 12px 14px 14px 14px;
+    transition: padding 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Sidebar open — push terminal away + rounder left corners */
+  .term-file-sidebar.open + .term-container {
+    padding-left: 14px;
+  }
+  .term-file-sidebar.open + .term-container .term-viewport {
+    border-radius: 16px 10px 10px 16px;
   }
 
   /* Split pane layout */
@@ -14864,8 +15156,7 @@
     min-height: 0;
   }
   .term-pane.focused {
-    outline: 1px solid rgba(100, 160, 255, 0.25);
-    outline-offset: -1px;
+    box-shadow: inset 0 2px 0 rgba(110, 181, 255, 0.45);
   }
   .term-pane-tabs {
     display: flex;
@@ -14916,8 +15207,13 @@
 
   .term-viewport {
     position: absolute;
-    inset: 0;
-    padding: 8px 4px 8px 12px;
+    inset: 6px 8px 8px 8px;
+    padding: 20px 18px 20px 24px;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #0a0a0c;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.06), 0 2px 12px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.03);
+    transition: border-radius 0.3s cubic-bezier(0.22, 1, 0.36, 1);
   }
   .term-viewport.term-drop-active {
     outline: 2px solid rgba(110,181,255,0.5);
@@ -14995,13 +15291,15 @@
     inset: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 4px 4px 4px 8px;
+    padding: 20px 18px 20px 24px;
     scrollbar-width: thin;
     scrollbar-color: rgb(60,60,65) rgb(16,16,18);
     user-select: none;
     -webkit-user-select: none;
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable;
+    will-change: scroll-position;
   }
   .html-term-scroll:hover {
     scrollbar-color: rgb(80,80,88) rgb(16,16,18);
@@ -15021,7 +15319,7 @@
 
   .html-term-rows {
     position: absolute;
-    top: 0; left: 0; right: 0;
+    top: 20px; left: 24px; right: 18px;
     will-change: transform;
     contain: layout paint style;
   }
@@ -15274,25 +15572,26 @@
 
   #term-peek-dock {
     position: fixed;
-    bottom: 0;
-    left: var(--sidebar-total-width, 0px);
-    right: var(--claude-panel-width, 0px);
+    bottom: 10px;
+    left: calc(var(--sidebar-total-width, 0px) + 10px);
     z-index: 149;
     display: none;
     align-items: center;
-    height: 28px;
-    padding: 0 10px;
-    background: rgba(14, 14, 16, 0.92);
-    border-top: 1px solid rgba(255,255,255,0.06);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    transform: translateY(100%);
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    background: rgba(18, 18, 20, 0.85);
+    backdrop-filter: blur(40px) saturate(1.4);
+    -webkit-backdrop-filter: blur(40px) saturate(1.4);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--r-small, 6px);
     opacity: 0;
-    transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
-                opacity 0.3s ease,
+    transform: translateY(8px);
+    transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 0.25s ease,
                 left 0.3s cubic-bezier(0.22, 1, 0.36, 1);
     cursor: pointer;
-    gap: 6px;
   }
   #term-peek-dock.visible {
     display: flex;
@@ -15300,72 +15599,27 @@
     opacity: 1;
   }
   #term-peek-dock:hover {
-    background: rgba(18, 18, 22, 0.96);
-    border-top-color: rgba(110, 181, 255, 0.2);
+    background: rgba(24, 24, 28, 0.95);
+    border-color: rgba(110, 181, 255, 0.25);
   }
 
   .peek-pull {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 16px; height: 16px;
-    color: rgba(255,255,255,0.25);
-    flex-shrink: 0;
+    color: rgba(255,255,255,0.4);
     transition: color 0.2s;
   }
   #term-peek-dock:hover .peek-pull {
-    color: rgba(110, 181, 255, 0.7);
+    color: rgba(110, 181, 255, 0.8);
   }
   .peek-pull svg {
-    width: 12px; height: 12px;
+    width: 16px; height: 16px;
   }
 
-  .peek-tabs {
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    flex: 1;
-    overflow: hidden;
-  }
-  .peek-tab {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.05);
-    transition: background 0.2s, border-color 0.2s;
-    white-space: nowrap;
-    max-width: 160px;
-    overflow: hidden;
-  }
-  .peek-tab.active {
-    background: rgba(255,255,255,0.07);
-    border-color: rgba(255,255,255,0.1);
-  }
-  #term-peek-dock:hover .peek-tab.active {
-    border-color: rgba(110, 181, 255, 0.25);
-  }
-  .peek-tab-icon {
-    display: flex; align-items: center;
-    width: 10px; height: 10px;
-    flex-shrink: 0;
-  }
-  .peek-tab-icon svg {
-    width: 10px; height: 10px;
-    fill: currentColor;
-  }
-  .peek-tab-label {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 10px;
-    font-weight: 400;
-    color: rgba(255,255,255,0.35);
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .peek-tab.active .peek-tab-label {
-    color: rgba(255,255,255,0.6);
+  .peek-tabs,
+  .peek-count {
+    display: none;
   }
 
   .peek-count {
@@ -15565,14 +15819,23 @@
     overflow: hidden;
     flex-shrink: 0;
     transition: width 0.2s cubic-bezier(0.22, 1, 0.36, 1);
-    background: rgba(14, 14, 16, 0.98);
-    border-right: 1px solid rgba(255,255,255,0.06);
+    background: transparent;
     display: flex;
     flex-direction: column;
   }
   .term-file-sidebar.open {
     width: 280px;
     position: relative;
+    padding: 6px 0 8px 8px;
+  }
+  .ft-inner {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 12px;
+    background: #0a0a0c;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.06), 0 2px 12px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.03);
   }
   .term-file-sidebar.resizing {
     transition: none;
@@ -15594,7 +15857,10 @@
 
   /* Detached tab sidebar */
   .term-float-tab-body > .term-file-sidebar {
-    border-radius: 0 0 0 10px;
+    border-radius: 0;
+  }
+  .term-float-tab-body > .term-file-sidebar .ft-inner {
+    border-radius: 10px;
   }
   .term-float-tab-body > .term-file-sidebar.open + .term-float-viewport-wrap .term-viewport {
     border-radius: 0 0 10px 0;
@@ -16970,8 +17236,8 @@
 #tutorial-overlay {
   position: fixed;
   inset: 0;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100dvh;
   z-index: 9998;
   pointer-events: none;
   overflow: visible;
