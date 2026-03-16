@@ -150,17 +150,67 @@ export function renderBookmarks() {
   });
 }
 
+// ── Dropdown toggle (topright overlay) ──
+
+let _bookmarksOpen = false;
+
+function openBookmarksDropdown() {
+  const dd = $('bookmarks-dropdown');
+  if (!dd) return;
+  emit('panel:close-all-dropdowns');
+  dd.style.display = '';
+  _bookmarksOpen = true;
+  renderBookmarks();
+  const btn = $('topright-bookmarks-btn');
+  if (btn) btn.classList.add('active');
+}
+
+function closeBookmarksDropdown() {
+  const dd = $('bookmarks-dropdown');
+  if (!dd) return;
+  dd.style.display = 'none';
+  _bookmarksOpen = false;
+  const btn = $('topright-bookmarks-btn');
+  if (btn) btn.classList.remove('active');
+}
+
+function toggleBookmarksDropdown() {
+  if (_bookmarksOpen) closeBookmarksDropdown();
+  else openBookmarksDropdown();
+}
+
 // ── Initialization ──
 
 /**
  * Wire up all bookmark-related event listeners.
  * Call once after the DOM is ready.
- * Open/close is handled by the menubar (ui-menubar.js).
  */
 export function initBookmarks() {
   const detailBookmarkBtn = $('detail-bookmark-btn');
 
-  // Menubar triggers rendering when Bookmarks menu opens
+  // Topright bookmarks button toggle
+  const toprightBtn = $('topright-bookmarks-btn');
+  if (toprightBtn) {
+    toprightBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleBookmarksDropdown();
+    });
+  }
+
+  // Close on outside click
+  document.addEventListener('click', (e) => {
+    if (_bookmarksOpen && !e.target.closest('#bookmarks-overlay')) {
+      closeBookmarksDropdown();
+    }
+  });
+
+  // Close when other dropdowns request exclusivity
+  on('panel:close-all-dropdowns', () => closeBookmarksDropdown());
+  on('panel:close-all-dropdowns-except', (name) => {
+    if (name !== 'bookmarks') closeBookmarksDropdown();
+  });
+
+  // Legacy event still supported
   on('bookmarks:render', renderBookmarks);
 
   // Detail panel bookmark toggle
