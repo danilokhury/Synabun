@@ -1113,3 +1113,6 @@
 [2026-03-16T19:43:39.778Z] STOP: GIVE UP: max retries reached for user learning
 [2026-03-16T19:43:45.431Z] STOP: CHECK 2.5: pending=false retries=0 editCount=4
 [2026-03-16T19:43:51.821Z] STOP: CHECK 2.5: pending=false retries=0 editCount=4
+[2026-03-16T20:10:51.129Z] CHECK: session=bf7f00e4... msgCount=4 threshold=3 nudgeCount=1 maxNudges=3 observed=false
+[2026-03-16T20:10:51.129Z] SKIP: expectedNudges 1 <= nudgeCount 1
+[2026-03-16T20:11:08.373Z] STOP: CHECK 2.5: pending=false retries=0 editCount=1
