@@ -2304,27 +2304,41 @@
 
   /* ── Keybinds Floating Panel ── */
 
+  .kb-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9998;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+  .kb-backdrop.open {
+    opacity: 1;
+  }
+
   .keybinds-panel {
     position: fixed;
-    z-index: 510;
+    z-index: 9999;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.95);
     width: 660px;
     max-width: 92vw;
     min-width: 440px;
     min-height: 200px;
     display: flex;
     flex-direction: column;
-    max-height: calc(100dvh - 52px);
+    max-height: 80dvh;
     overflow: hidden;
     opacity: 0;
-    transform: scale(calc(var(--ui-scale, 1) * 0.97));
-    transform-origin: top left;
-    transition: opacity 0.15s ease, transform 0.15s ease;
+    transition: opacity 0.2s ease, transform 0.2s ease;
   }
   .keybinds-panel.open {
     opacity: 1;
-    transform: scale(var(--ui-scale, 1));
+    transform: translate(-50%, -50%) scale(1);
   }
-  .keybinds-panel.dragging { transition: none; }
 
   .kb-hint {
     padding: 6px 16px 0;
@@ -4954,7 +4968,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    overflow: hidden;
+    overflow: visible;
     max-width: 2000px;
     opacity: 1;
     transition: max-width 0.45s cubic-bezier(0.22, 1, 0.36, 1),
@@ -4966,6 +4980,7 @@
     max-width: 0;
     opacity: 0;
     gap: 0;
+    overflow: hidden;
     pointer-events: none;
   }
 
@@ -5029,9 +5044,9 @@
 
   /* ── Collapsed state — vertical pill with staggered dots ── */
   #topright-controls.collapsed .topright-collapse-btn {
-    width: 18px;
-    height: 36px;
-    border-radius: 10px;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
     background: rgba(16, 16, 20, 0.7);
     border-color: rgba(110, 181, 255, 0.08);
     box-shadow: 0 0 12px rgba(110, 181, 255, 0.04),
@@ -5039,7 +5054,6 @@
   }
 
   #topright-controls.collapsed .topright-collapse-btn:hover {
-    width: 22px;
     border-color: rgba(110, 181, 255, 0.2);
     background: rgba(22, 22, 28, 0.85);
     box-shadow: 0 0 16px rgba(110, 181, 255, 0.08);
@@ -14391,11 +14405,10 @@
     background: rgba(18, 18, 20, 0.92);
     backdrop-filter: blur(40px) saturate(1.4);
     -webkit-backdrop-filter: blur(40px) saturate(1.4);
-    border: 1px solid rgba(255,255,255,0.10);
+    border: 0.5px solid rgba(255,255,255,0.06);
     border-radius: 16px;
-    box-shadow: 0 0 0 0.5px rgba(255,255,255,0.05),
-                0 20px 60px rgba(0,0,0,0.5),
-                0 8px 24px rgba(0,0,0,0.3);
+    box-shadow: 0 16px 48px rgba(0,0,0,0.4),
+                0 4px 16px rgba(0,0,0,0.25);
     clip-path: inset(0 0 0 0 round 16px);
     transition: clip-path 0.5s cubic-bezier(0.22, 1, 0.36, 1),
                 left 0.3s cubic-bezier(0.22, 1, 0.36, 1);
@@ -14424,9 +14437,9 @@
   #terminal-panel.detached {
     bottom: auto;
     right: auto;
-    border: 1px solid rgba(255,255,255,0.1);
+    border: 0.5px solid rgba(255,255,255,0.06);
     border-radius: 10px;
-    box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
+    box-shadow: 0 12px 48px rgba(0,0,0,0.4);
     clip-path: none;
     transition: none;
     resize: none;
@@ -14489,10 +14502,15 @@
     padding: 0 8px;
     height: 34px;
     min-height: 34px;
-    background: rgba(18, 18, 20, 0.85);
-    border-bottom: 1px solid rgba(255,255,255,0.06);
+    background: rgba(22, 22, 26, 0.95);
+    border-bottom: none;
+    border-radius: 10px;
+    margin: 8px 8px 0 8px;
     flex-shrink: 0;
     gap: 4px;
+    position: relative;
+    z-index: 2;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.06);
   }
 
   .term-minimize-btn {
