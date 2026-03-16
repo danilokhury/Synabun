@@ -97,10 +97,11 @@ function buildMcpServer() {
 
   info('Building MCP server...');
   try {
-    execSync('npm run build', {
+    execSync('npx tsc', {
       cwd: resolve(__dirname, 'mcp-server'),
       stdio: 'pipe',
       timeout: 60_000,
+      shell: true,
     });
     ok('MCP server built');
   } catch (err) {
