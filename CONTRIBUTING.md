@@ -2,7 +2,7 @@
 
 ## How to Contribute
 
-SynaBun is open-source software maintained by a single author. We welcome bug reports, feature requests, and discussions through [GitHub Issues](https://github.com/danilokhury/Synabun/issues), but **we do not accept pull requests**.
+SynaBun is open-source software maintained by a single author. We welcome bug reports, feature requests, and discussions through [GitHub Issues](https://github.com/ZaphreBR/synabun/issues), but **we do not accept pull requests**.
 
 You are free to fork and modify SynaBun under the [Apache 2.0 license](./LICENSE).
 
@@ -76,13 +76,13 @@ npm start            # Express server on port 3344
 synabun/
 ├── mcp-server/         # MCP Protocol server (TypeScript)
 │   └── src/
-│       ├── tools/      # 46 MCP tools (memory, browser, whiteboard, cards, loop, tictactoe)
+│       ├── tools/      # 66 MCP tools (memory, browser, whiteboard, cards, discord, loop, tictactoe)
 │       └── services/   # SQLite, local embeddings, categories, file-checksums
 ├── neural-interface/   # 3D visualization UI (Express + Three.js)
 │   ├── server.js       # REST API backend (55+ endpoints)
 │   └── public/         # Frontend HTML/JS (3D + 2D variants)
 ├── hooks/              # Claude Code lifecycle hooks
-│   └── claude-code/    # 5 hooks: SessionStart, PromptSubmit, PreCompact, Stop, PostToolUse
+│   └── claude-code/    # 7 hooks: SessionStart, PromptSubmit, PreCompact, Stop, PreToolUse, PostToolUse (x2)
 ├── skills/             # Claude Code skills (slash commands)
 │   └── synabun/        # /synabun command hub (brainstorm, audit, health, search)
 ├── data/               # Runtime data (flags, caches, feature toggles)
@@ -107,7 +107,7 @@ See the [README File Structure](./README.md#file-structure) section for a comple
 | 3D visualization | `neural-interface/public/index.html` |
 | 2D visualization | `neural-interface/public/index2d.html` |
 | Setup wizard | `neural-interface/public/onboarding.html` |
-| Claude Code hooks | `hooks/claude-code/` (5 hook files) |
+| Claude Code hooks | `hooks/claude-code/` (7 hook files) |
 | Claude Code skills | `skills/synabun/` (SKILL.md + modules/) |
 | Hook feature flags | `data/hook-features.json` |
 | Seed data | `memory-seed/` (categorized markdown files) |
@@ -149,7 +149,7 @@ npx vitest run scenarios # Scenario/cost tests only
 
 ### Manual Testing
 
-1. **MCP tools:** Restart Claude Code, run `/mcp` to verify all 46 tools are listed, then use `remember`, `recall`, etc.
+1. **MCP tools:** Restart Claude Code, run `/mcp` to verify all 66 tools are listed, then use `remember`, `recall`, etc.
 2. **Neural Interface:** Open `http://localhost:3344`, verify the 3D graph renders, test search, category management, trash, sync, and memory editing.
 3. **Hooks:** Start a new Claude Code session and verify the category tree and 5 directives appear in the system context.
 4. **Skills:** Run `/synabun` to access the command hub, test all menu options (Brainstorm Ideas, Audit Memories, Memory Health, Search Memories).

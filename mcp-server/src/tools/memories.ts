@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { scrollMemories, getMemoryStats } from '../services/sqlite.js';
 import { validateCategory } from '../services/categories.js';
 import type { MemoryPayload } from '../types.js';
+import { text } from './response.js';
 
 export function buildMemoriesSchema() {
   return {
@@ -57,9 +58,7 @@ export async function handleMemories(args: {
   if (category) {
     const catCheck = validateCategory(category);
     if (!catCheck.valid) {
-      return {
-        content: [{ type: 'text' as const, text: catCheck.error! }],
-      };
+      return text(catCheck.error!);
     }
   }
 
@@ -75,14 +74,7 @@ export async function handleMemories(args: {
       .map(([proj, count]) => `  ${proj}: ${count}`)
       .join('\n');
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Memory Statistics:\n\nTotal memories: ${stats.total}\n\nBy category:\n${categoryLines || '  (none)'}\n\nBy project:\n${projectLines || '  (none)'}\n\nOldest: ${stats.oldest ? formatAge(stats.oldest) : 'n/a'}\nNewest: ${stats.newest ? formatAge(stats.newest) : 'n/a'}`,
-        },
-      ],
-    };
+    return text(`Memory Statistics:\n\nTotal memories: ${stats.total}\n\nBy category:\n${categoryLines || '  (none)'}\n\nBy project:\n${projectLines || '  (none)'}\n\nOldest: ${stats.oldest ? formatAge(stats.oldest) : 'n/a'}\nNewest: ${stats.newest ? formatAge(stats.newest) : 'n/a'}`);
   }
 
   const must: Record<string, unknown>[] = [];
@@ -105,14 +97,7 @@ export async function handleMemories(args: {
     .sort((a, b) => b.payload.created_at.localeCompare(a.payload.created_at));
 
   if (sorted.length === 0) {
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `No memories found${category ? ` for category "${category}"` : ''}${project ? ` for project "${project}"` : ''}.`,
-        },
-      ],
-    };
+    return text(`No memories found${category ? ` for category "${category}"` : ''}${project ? ` for project "${project}"` : ''}.`);
   }
 
   const lines = sorted.map((m, i) => {
@@ -129,12 +114,5 @@ export async function handleMemories(args: {
         ? `Memories in "${category}"`
         : `Memories for "${project}"`;
 
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: `${title} (${sorted.length}):\n\n${lines.join('\n\n')}`,
-      },
-    ],
-  };
+  return text(`${title} (${sorted.length}):\n\n${lines.join('\n\n')}`);
 }
