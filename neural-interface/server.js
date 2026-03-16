@@ -2017,6 +2017,25 @@ function getClaudeBin() {
   // 1. Try bundled @anthropic-ai/claude-code in node_modules/.bin
   const bundled = resolve(__dirname, 'node_modules', '.bin', 'claude');
   if (existsSync(bundled)) {
+    const st = statSync(bundled);
+    // npm sometimes creates a plain text stub instead of a symlink — resolve through to cli.js
+    if (st.isFile() && st.size < 256) {
+      const target = readFileSync(bundled, 'utf-8').trim();
+      if (target && !target.startsWith('#')) {
+        const resolved = resolve(__dirname, 'node_modules', '.bin', target);
+        if (existsSync(resolved)) {
+          if (process.platform !== 'win32') {
+            try { const rs = statSync(resolved); if (!(rs.mode & 0o111)) chmodSync(resolved, rs.mode | 0o755); } catch {}
+          }
+          _claudeBinPath = resolved;
+          return _claudeBinPath;
+        }
+      }
+    }
+    // Normal symlink or executable — ensure +x
+    if (process.platform !== 'win32' && !(st.mode & 0o111)) {
+      try { chmodSync(bundled, st.mode | 0o755); } catch {}
+    }
     _claudeBinPath = bundled;
     return _claudeBinPath;
   }
