@@ -29,6 +29,12 @@ if (process.platform !== 'win32') {
     const sh = resolve(ptyDir, dir, 'spawn-helper');
     if (existsSync(sh)) try { chmodSync(sh, 0o755); } catch {}
   }
+
+  // Fix claude CLI binary permissions (same npm +x issue)
+  const claudeBin = resolve(__dirname, '..', 'node_modules', '.bin', 'claude');
+  if (existsSync(claudeBin)) try { chmodSync(claudeBin, 0o755); } catch {}
+  const claudeCli = resolve(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+  if (existsSync(claudeCli)) try { chmodSync(claudeCli, 0o755); } catch {}
 }
 
 // Step 1b: Check if node-pty actually works (spawn test, not just module load)
