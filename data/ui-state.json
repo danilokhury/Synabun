@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-16T23:01:08.569Z",
+  "_updated": "2026-03-16T23:40:16.585Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -23796,26 +23796,7 @@
       "selectedNodeId": "dc33bfe5-2c6d-4b7d-be8d-826af43d09e9"
     }
   ],
-  "neural-terminal-active-sessions": [
-    {
-      "id": "b5b997b8a5d441440d052780e2bf84d5",
-      "profile": "shell",
-      "label": "Shell",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": null,
-      "floatColor": "orange"
-    },
-    {
-      "id": "f6cb4cc4e754dc7b3ef541f3cd411042",
-      "profile": "shell",
-      "label": "Shell",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": null,
-      "floatColor": "purple"
-    }
-  ],
+  "neural-terminal-active-sessions": [],
   "neural-terminal-active-sessions-layout": {
     "detached": false,
     "floatPos": null,
@@ -51080,9 +51061,6 @@
   "synabun-session-label:181744d6-52c4-4ac7-a94d-06d1d125b021": "Restyle Bottom of Prompt",
   "synabun-session-label:ec01884c-2c0b-44be-b5b9-0b7adc184f96": "Fix Changelog Skill",
   "synabun-claude-panel-windows": {
-    "fecd3559-88c6-4550-824f-7e04a7c9dfb5": 1773615724633,
-    "5735cb26-87dd-4c12-9f1e-cf3eedf13bed": 1773616422417,
-    "775ec7d5-7a7d-4344-b174-04da80875421": 1773617194098,
     "f3982375-98bd-4e7d-a09a-67663e412681": 1773623651357,
     "75c3210f-57df-4d50-8f96-ada1eb6577e3": 1773626336002,
     "6cea6112-9029-472e-9eb4-bef9b5d8cab2": 1773628199525,
@@ -51097,7 +51075,8 @@
     "f42401d5-d6f4-486b-a579-4f01888e2748": 1773698059600,
     "2f53e950-0983-4ab7-b892-6a1a8c2fae38": 1773699384571,
     "bf573195-f5da-4899-92d3-f85c3de47112": 1773700346625,
-    "cae6aea5-013f-48eb-967e-989aa972e446": 1773702068037
+    "cae6aea5-013f-48eb-967e-989aa972e446": 1773702068037,
+    "055cddf0-c874-4d39-83a6-1c2b8b13f02b": 1773704416045
   },
   "synabun-session-label:d39b3f7a-c484-482e-9602-a2984827f755": "ssh",
   "synabun-session-label:b5721cc7-a80b-4c73-a632-85ce57d08959": "Claude Code · CriticalPixel",
@@ -51111,39 +51090,9 @@
   "synabun-session-label:b18843a7-688a-4f54-ad9a-27e76944a4c0": "Polishing Panel and adding btw",
   "synabun-session-label:afddf8fc-33a7-4998-87f1-361aa46d19fd": "FixMacOsTool",
   "synabun-session-label:9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4": "SkillContainer Fix",
-  "synabun-claude-panel-tabs-fecd3559-88c6-4550-824f-7e04a7c9dfb5": {
-    "tabs": [
-      {
-        "id": "7949997b-ee22-482b-970f-56290151bb2c",
-        "sessionId": "afddf8fc-33a7-4998-87f1-361aa46d19fd",
-        "label": "FixMacOsTool"
-      }
-    ],
-    "activeIdx": 0
-  },
   "synabun-session-label:d1f00d04-5b29-47d4-87ab-8ba80e594997": "Fix Resume",
   "synabun-session-label:563411a1-1b04-40ab-b4a2-88964883e09e": "Face",
-  "synabun-claude-panel-tabs-5735cb26-87dd-4c12-9f1e-cf3eedf13bed": {
-    "tabs": [
-      {
-        "id": "858fa319-6cb4-41d3-9f02-ceb33272f260",
-        "sessionId": "fd0fb0d4-7e4d-49ca-b161-c2a5689d7018",
-        "label": "Got a small issue wi..."
-      }
-    ],
-    "activeIdx": 0
-  },
   "synabun-session-label:746ce6e7-c1fd-4a13-97e0-fb0c42d5a6f1": "Output Bleed Fix",
-  "synabun-claude-panel-tabs-775ec7d5-7a7d-4344-b174-04da80875421": {
-    "tabs": [
-      {
-        "id": "2feacdf7-d117-442b-88d4-48d025e30f96",
-        "sessionId": "c6f3bdea-9ee0-4934-849f-c96682d9ae80",
-        "label": "c6f3bdea..."
-      }
-    ],
-    "activeIdx": 0
-  },
   "synabun-session-label:3780977f-7be5-4f63-a036-dccb10c21172": "Facebook",
   "synabun-claude-panel-tabs-f3982375-98bd-4e7d-a09a-67663e412681": {
     "tabs": [
@@ -51274,7 +51223,7 @@
     "activeIdx": 2
   },
   "synabun-session-label:f360ab87-951f-4e0e-9f85-74ef6ebdfcd4": "Notification",
-  "synabun-claude-panel-boot-id": "a891a01f-06e5-43b6-9692-786b04dc6360",
+  "synabun-claude-panel-boot-id": "b24794ea-9430-425e-b942-1d7147e15d06",
   "synabun-claude-panel-tabs-6b3bfd92-66a7-4027-9bf0-a14e10583bc1": {
     "tabs": [
       {
@@ -51476,5 +51425,24 @@
       }
     ],
     "activeIdx": 0
+  },
+  "synabun-claude-panel-tabs-055cddf0-c874-4d39-83a6-1c2b8b13f02b": {
+    "tabs": [
+      {
+        "id": "0f695b92-4319-4421-bcfa-f1de814d283f",
+        "sessionId": null,
+        "label": "New chat",
+        "sessionCost": 0,
+        "running": false
+      },
+      {
+        "id": "63c95a02-c5cd-4942-9374-c5b27fc93ebd",
+        "sessionId": "276e62bc-36a8-4e94-90ea-9dcc5f59cbcc",
+        "label": "i need you to look i...",
+        "sessionCost": 1.2222065,
+        "running": false
+      }
+    ],
+    "activeIdx": 1
   }
 }
