@@ -3,6 +3,7 @@ import { scrollMemories } from '../services/sqlite.js';
 import { hashFile } from '../services/file-checksums.js';
 import type { MemoryPayload } from '../types.js';
 import { coerceStringArray } from './utils.js';
+import { text } from './response.js';
 
 export const syncSchema = {
   project: z
@@ -85,14 +86,7 @@ export async function handleSync(args: { project?: string; categories?: string[]
 
   if (filtered.length === 0) {
     const scopeMsg = args.categories ? ` in categories [${args.categories.join(', ')}]` : '';
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `All clear — checked ${withChecksums.length} memories with stored checksums${scopeMsg}, none are stale.`,
-        },
-      ],
-    };
+    return text(`All clear — checked ${withChecksums.length} memories with stored checksums${scopeMsg}, none are stale.`);
   }
 
   // Sort by importance descending
@@ -105,18 +99,16 @@ export async function handleSync(args: { project?: string; categories?: string[]
 
   // Compact output — IDs and changed files only, no full content
   const scopeMsg = args.categories ? ` in [${args.categories.join(', ')}]` : '';
-  let text = `Found ${filtered.length} stale memories${scopeMsg} (out of ${withChecksums.length} with checksums)`;
-  if (truncated) text += ` — showing first ${maxResults}`;
-  text += `:\n\n`;
+  let msg = `Found ${filtered.length} stale memories${scopeMsg} (out of ${withChecksums.length} with checksums)`;
+  if (truncated) msg += ` — showing first ${maxResults}`;
+  msg += `:\n\n`;
 
   for (const mem of limited) {
-    text += `${mem.id} | ${mem.category} | imp:${mem.importance}\n`;
-    text += `  Changed: ${mem.stale_files.join(', ')}\n`;
+    msg += `${mem.id} | ${mem.category} | imp:${mem.importance}\n`;
+    msg += `  Changed: ${mem.stale_files.join(', ')}\n`;
   }
 
-  text += `\nTo get full content: use recall with the memory ID, or memories with action "by-category".`;
+  msg += `\nTo get full content: use recall with the memory ID, or memories with action "by-category".`;
 
-  return {
-    content: [{ type: 'text' as const, text }],
-  };
+  return text(msg);
 }

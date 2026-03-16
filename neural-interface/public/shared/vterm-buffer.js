@@ -163,6 +163,9 @@ export class VTermBuffer {
     this._dirty = new Set();
     this._allDirty = true; // first render paints everything
 
+    // Alt screen transition flag — renderer uses this to force scroll reset
+    this._altTransitionPending = false;
+
     // Wrap-pending flag: cursor at right margin, next char wraps
     this._wrapPending = false;
 
@@ -275,13 +278,18 @@ export class VTermBuffer {
 
   /** Printable characters */
   print(text) {
+    const ad = this._allDirty;
+    const cols = this.cols;
+    const attr = this._attr;
+    const url = this._currentUrl;
+
     for (let i = 0; i < text.length; i++) {
       const ch = text[i];
 
       // Handle wrap-pending
       if (this._wrapPending) {
         if (this._autoWrap) {
-          this._dirty.add(this._cursorY);
+          if (!ad) this._dirty.add(this._cursorY);
           this._cursorX = 0;
           this._lineFeed();
         }
@@ -289,32 +297,32 @@ export class VTermBuffer {
       }
 
       // Insert mode: shift chars right
-      if (this._insertMode && this._cursorX < this.cols) {
+      if (this._insertMode && this._cursorX < cols) {
         const row = this._buffer[this._cursorY];
-        for (let c = this.cols - 1; c > this._cursorX; c--) {
+        for (let c = cols - 1; c > this._cursorX; c--) {
           row[c] = row[c - 1];
         }
       }
 
       // Write cell
       const row = this._buffer[this._cursorY];
-      if (this._cursorX < this.cols) {
+      if (this._cursorX < cols) {
         const cell = row[this._cursorX];
         cell.char = ch;
-        cell.fg = this._attr.fg;
-        cell.bg = this._attr.bg;
-        cell.bold = this._attr.bold;
-        cell.dim = this._attr.dim;
-        cell.italic = this._attr.italic;
-        cell.underline = this._attr.underline;
-        cell.inverse = this._attr.inverse;
-        cell.strikethrough = this._attr.strikethrough;
-        cell.url = this._currentUrl;
-        this._dirty.add(this._cursorY);
+        cell.fg = attr.fg;
+        cell.bg = attr.bg;
+        cell.bold = attr.bold;
+        cell.dim = attr.dim;
+        cell.italic = attr.italic;
+        cell.underline = attr.underline;
+        cell.inverse = attr.inverse;
+        cell.strikethrough = attr.strikethrough;
+        cell.url = url;
+        if (!ad) this._dirty.add(this._cursorY);
       }
 
       // Advance cursor
-      if (this._cursorX >= this.cols - 1) {
+      if (this._cursorX >= cols - 1) {
         this._wrapPending = true;
       } else {
         this._cursorX++;
@@ -831,8 +839,10 @@ export class VTermBuffer {
       this._buffer[this._scrollBottom] = blankRow(this.cols);
     }
     // Mark all rows in scroll region dirty
-    for (let r = this._scrollTop; r <= this._scrollBottom; r++) {
-      this._dirty.add(r);
+    if (!this._allDirty) {
+      for (let r = this._scrollTop; r <= this._scrollBottom; r++) {
+        this._dirty.add(r);
+      }
     }
   }
 
@@ -843,8 +853,10 @@ export class VTermBuffer {
       }
       this._buffer[this._scrollTop] = blankRow(this.cols);
     }
-    for (let r = this._scrollTop; r <= this._scrollBottom; r++) {
-      this._dirty.add(r);
+    if (!this._allDirty) {
+      for (let r = this._scrollTop; r <= this._scrollBottom; r++) {
+        this._dirty.add(r);
+      }
     }
   }
 
@@ -857,7 +869,9 @@ export class VTermBuffer {
       }
       this._buffer[top] = blankRow(this.cols);
     }
-    for (let r = top; r <= bot; r++) this._dirty.add(r);
+    if (!this._allDirty) {
+      for (let r = top; r <= bot; r++) this._dirty.add(r);
+    }
   }
 
   _deleteLines(n) {
@@ -869,7 +883,9 @@ export class VTermBuffer {
       }
       this._buffer[bot] = blankRow(this.cols);
     }
-    for (let r = top; r <= bot; r++) this._dirty.add(r);
+    if (!this._allDirty) {
+      for (let r = top; r <= bot; r++) this._dirty.add(r);
+    }
   }
 
   // ─── Character operations ─────────────────────────────
@@ -883,14 +899,14 @@ export class VTermBuffer {
     // Ensure row stays correct length
     while (row.length < this.cols) row.push(blankCell());
     if (row.length > this.cols) row.length = this.cols;
-    this._dirty.add(this._cursorY);
+    if (!this._allDirty) this._dirty.add(this._cursorY);
   }
 
   _deleteChars(n) {
     const row = this._buffer[this._cursorY];
     row.splice(this._cursorX, n);
     while (row.length < this.cols) row.push(blankCell());
-    this._dirty.add(this._cursorY);
+    if (!this._allDirty) this._dirty.add(this._cursorY);
   }
 
   _eraseChars(n) {
@@ -899,39 +915,40 @@ export class VTermBuffer {
     for (let c = this._cursorX; c < end; c++) {
       resetCell(row[c]);
     }
-    this._dirty.add(this._cursorY);
+    if (!this._allDirty) this._dirty.add(this._cursorY);
   }
 
   // ─── Erase operations ─────────────────────────────────
 
   _eraseDisplay(mode) {
+    const ad = this._allDirty;
     switch (mode) {
       case 0: // Cursor to end
         this._eraseLineFrom(this._cursorY, this._cursorX);
         for (let r = this._cursorY + 1; r < this.rows; r++) {
           resetRow(this._buffer[r], this.cols);
-          this._dirty.add(r);
+          if (!ad) this._dirty.add(r);
         }
         break;
       case 1: // Start to cursor
         for (let r = 0; r < this._cursorY; r++) {
           resetRow(this._buffer[r], this.cols);
-          this._dirty.add(r);
+          if (!ad) this._dirty.add(r);
         }
         this._eraseLineTo(this._cursorY, this._cursorX);
         break;
       case 2: // Entire display
         for (let r = 0; r < this.rows; r++) {
           resetRow(this._buffer[r], this.cols);
-          this._dirty.add(r);
         }
+        this._allDirty = true;
         break;
       case 3: // Entire display + scrollback
         for (let r = 0; r < this.rows; r++) {
           resetRow(this._buffer[r], this.cols);
-          this._dirty.add(r);
         }
         this._scrollback.clear();
+        this._allDirty = true;
         break;
     }
   }
@@ -946,7 +963,7 @@ export class VTermBuffer {
         break;
       case 2: // Entire line
         resetRow(this._buffer[this._cursorY], this.cols);
-        this._dirty.add(this._cursorY);
+        if (!this._allDirty) this._dirty.add(this._cursorY);
         break;
     }
   }
@@ -956,7 +973,7 @@ export class VTermBuffer {
     for (let c = col; c < this.cols; c++) {
       resetCell(r[c]);
     }
-    this._dirty.add(row);
+    if (!this._allDirty) this._dirty.add(row);
   }
 
   _eraseLineTo(row, col) {
@@ -964,7 +981,7 @@ export class VTermBuffer {
     for (let c = 0; c <= col && c < this.cols; c++) {
       resetCell(r[c]);
     }
-    this._dirty.add(row);
+    if (!this._allDirty) this._dirty.add(row);
   }
 
   // ─── Cursor save/restore ──────────────────────────────
@@ -998,6 +1015,7 @@ export class VTermBuffer {
     this._useAlt = true;
     this._buffer = this._altBuffer;
     this._allDirty = true;
+    this._altTransitionPending = true;
   }
 
   _switchToMainBuffer() {
@@ -1006,6 +1024,7 @@ export class VTermBuffer {
     this._altBuffer = null;
     this._buffer = this._mainBuffer;
     this._allDirty = true;
+    this._altTransitionPending = true;
   }
 
   // ─── Full reset ───────────────────────────────────────

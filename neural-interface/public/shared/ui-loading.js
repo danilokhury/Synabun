@@ -104,6 +104,11 @@ function resetLoadingToConnecting() {
 export async function checkHealth() {
   try {
     const health = await fetchHealth();
+    // Cache projectDir for the server-offline command display
+    if (health.projectDir) {
+      localStorage.setItem('synabun-project-dir', health.projectDir);
+      updateCmdText(health.projectDir);
+    }
     if (!health.ok) {
       const messages = {
         db_missing:         [t('loading.health.databaseUnreachable.title'), health.detail || t('loading.health.databaseUnreachable.sub')],
@@ -117,9 +122,19 @@ export async function checkHealth() {
     }
     return true;
   } catch {
-    // /api/health itself failed — proceed and let the caller try loading data directly
+    // /api/health itself failed — try to restore cached path for offline display
+    const cached = localStorage.getItem('synabun-project-dir');
+    if (cached) updateCmdText(cached);
     return true;
   }
+}
+
+/**
+ * Update the command text element with the full path to npm start.
+ */
+function updateCmdText(projectDir) {
+  const cmdEl = $('loading-cmd-text');
+  if (cmdEl) cmdEl.textContent = `cd ${projectDir} && npm start`;
 }
 
 // ═══════════════════════════════════════════
@@ -221,6 +236,10 @@ async function handleRetryConnection() {
 export function initLoading({ onInit } = {}) {
   _initCallback = onInit || null;
   _statusDot = $('status-dot');
+
+  // ── Populate command with cached path ──
+  const cached = localStorage.getItem('synabun-project-dir');
+  if (cached) updateCmdText(cached);
 
   // ── Start Server / retry action button ──
   const actionBtn = $('loading-action-btn');

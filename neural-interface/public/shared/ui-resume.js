@@ -141,7 +141,7 @@ async function renderResume() {
 async function loadAllProjects(search = '') {
   _loading = true;
   try {
-    const data = await fetchClaudeSessions({ limit: 20, search });
+    const data = await fetchClaudeSessions({ limit: 50, search });
     _cachedProjects = data.projects || [];
   } catch (err) {
     console.error('[resume] Failed to load sessions:', err);
@@ -182,6 +182,9 @@ function renderProjectList(container) {
                placeholder="Search past sessions..."
                value="${escHtml(_currentSearch)}"
                autocomplete="off" spellcheck="false">
+        <button class="resume-refresh-btn" title="Refresh session list">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+        </button>
         <button class="resume-index-btn" title="Index sessions for deep search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
         </button>
@@ -198,6 +201,21 @@ function renderProjectList(container) {
     });
     input.addEventListener('click', (e) => e.stopPropagation());
     input.addEventListener('keydown', (e) => e.stopPropagation());
+
+    // Refresh button handler
+    const refreshBtn = searchBox.querySelector('.resume-refresh-btn');
+    refreshBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      refreshBtn.classList.add('resume-refresh-spinning');
+      try {
+        const data = await fetchClaudeSessions({ limit: 50, search: _currentSearch, refresh: true });
+        _cachedProjects = data.projects || [];
+      } catch (err) {
+        console.error('[resume] Refresh failed:', err);
+      }
+      refreshBtn.classList.remove('resume-refresh-spinning');
+      renderProjectList(container);
+    });
 
     // Index button handler
     const indexBtn = searchBox.querySelector('.resume-index-btn');

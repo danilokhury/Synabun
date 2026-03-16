@@ -47,7 +47,7 @@ export function getSharedHTML() {
   <div id="loading-server-cmd">
     <div id="loading-server-cmd-hint">${t('loading.runCommand')}</div>
     <div id="loading-server-cmd-box">
-      <code id="loading-cmd-text">node path/to/synabun/neural-interface/server.js</code>
+      <code id="loading-cmd-text">npm start</code>
       <button id="loading-cmd-copy" title="${t('loading.copyToClipboard')}">
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       </button>
@@ -77,6 +77,8 @@ export function getSharedHTML() {
     <div class="view-toggle">
       <a class="view-toggle-btn${is3D ? '' : ' active'}" href="${is3D ? '/index2d.html' : '#'}" id="nav-2d-link">${t('nav.toggle2d')}</a>
       <a class="view-toggle-btn${is3D ? ' active' : ''}" href="${is3D ? '#' : '/'}" id="nav-3d-link">${t('nav.toggle3d')}</a>
+      <span class="view-toggle-sep"></span>
+      <a class="view-toggle-btn" href="/claude-chat.html" id="nav-chat-link" data-tooltip="SynaBun Chat — full Claude Code UI" style="display:none">Chat</a>
     </div>
     <div class="bar-sep"></div>
 
@@ -142,6 +144,11 @@ export function getSharedHTML() {
             <span class="menu-check">&#10003;</span>
             <span class="menu-text">${t('menu.apps.showTerminal')}</span>
             <span class="menu-shortcut">T</span>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" id="menu-restart-server">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></span> Restart Server</span>
           </div>
         </div>
       </div>
@@ -291,14 +298,6 @@ export function getSharedHTML() {
         </div>
       </div>
 
-      <!-- Bookmarks menu -->
-      <div class="menubar-item" data-menu="bookmarks">
-        <button class="menubar-label">${t('nav.bookmarks')}<span class="count-badge count-badge--gold" id="bookmark-count"></span></button>
-        <div class="menubar-dropdown glass menubar-dropdown--wide">
-          <div id="bookmarks-list"></div>
-        </div>
-      </div>
-
       <!-- Settings (text button) -->
       <button class="menubar-label menubar-action" id="menubar-settings-btn">${t('nav.settings')}</button>
 
@@ -324,6 +323,7 @@ export function getSharedHTML() {
 
 <!-- Top-Right Controls (Trash + Grid + Workspace) -->
 <div id="topright-controls">
+  <div id="topright-inner">
   <button id="topright-trash-btn" class="topright-icon-btn" data-tooltip="${t('nav.trash')}">
     <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
     <span class="count-badge count-badge--red" id="titlebar-trash-count"></span>
@@ -333,10 +333,38 @@ export function getSharedHTML() {
     <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3z" fill="none"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
   </button>
 
+  <button id="ws-tile-btn" class="topright-icon-btn" data-tooltip="Tile terminals">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+  </button>
+
   <button id="topright-keybinds-btn" class="topright-icon-btn" data-tooltip="Keybinds">
     <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2" fill="none"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg>
   </button>
 
+  <button id="topright-memory-explorer-btn" class="topright-icon-btn" data-tooltip="Memory Explorer">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4"/><path d="M12 19v4"/><path d="M4.22 4.22l2.83 2.83"/><path d="M16.95 16.95l2.83 2.83"/><path d="M1 12h4"/><path d="M19 12h4"/><path d="M4.22 19.78l2.83-2.83"/><path d="M16.95 7.05l2.83-2.83"/></svg>
+  </button>
+
+  <button id="topright-file-explorer-btn" class="topright-icon-btn" data-tooltip="File Explorer">
+    <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+  </button>
+
+  <div id="bookmarks-overlay">
+    <button id="topright-bookmarks-btn" class="topright-icon-btn" data-tooltip="Bookmarks">
+      <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      <span class="count-badge count-badge--gold" id="bookmark-count"></span>
+    </button>
+    <div id="bookmarks-dropdown" style="display:none;">
+      <div id="bookmarks-list"></div>
+    </div>
+  </div>
+  <div id="invite-overlay">
+    <button id="invite-btn" class="topright-icon-btn" data-tooltip="Share / Invite">
+      <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+      <span class="count-badge count-badge--blue" id="invite-session-count" style="display:none"></span>
+    </button>
+    <div id="invite-dropdown" style="display:none;"></div>
+  </div>
   <div id="workspace-overlay">
     <div id="ws-indicator">
       <svg class="ws-icon" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
@@ -360,13 +388,16 @@ export function getSharedHTML() {
       <input type="file" id="ws-import-file" accept=".json" style="display:none;">
     </div>
   </div>
-  <div id="invite-overlay">
-    <button id="invite-btn" class="topright-icon-btn" data-tooltip="Share / Invite">
-      <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-      <span class="count-badge count-badge--blue" id="invite-session-count" style="display:none"></span>
-    </button>
-    <div id="invite-dropdown" style="display:none;"></div>
   </div>
+  <button id="topright-claude-panel-btn" class="topright-icon-btn" data-tooltip="Claude Code side panel">
+    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+  </button>
+  <button id="topright-collapse-btn" class="topright-collapse-btn" data-tooltip="Toggle toolbar">
+    <svg viewBox="0 0 24 24" class="collapse-chevron"><polyline points="9 18 15 12 9 6"/></svg>
+    <span class="collapse-dots">
+      <span></span><span></span><span></span>
+    </span>
+  </button>
   <div id="term-minimized-tray"></div>
 </div>
 
@@ -462,13 +493,20 @@ export function getSharedHTML() {
 
 <!-- File Explorer (docked sidebar) -->
 <div id="file-explorer-panel">
-  <div class="fe-project-selector" id="fe-project-selector">
-    <button class="fe-project-btn" id="fe-project-btn">
-      <svg class="fe-project-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-      <span class="fe-project-label" id="fe-project-label">Project</span>
-      <svg class="fe-project-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+  <div class="fe-project-row">
+    <div class="fe-project-selector" id="fe-project-selector">
+      <button class="fe-project-btn" id="fe-project-btn">
+        <svg class="fe-project-icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span class="fe-project-label" id="fe-project-label">Project</span>
+        <svg class="fe-project-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="fe-project-dropdown" id="fe-project-dropdown"></div>
+    </div>
+    <button class="fe-branch-btn" id="fe-branch-btn" style="display:none">
+      <svg viewBox="0 0 24 24"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+      <span class="fe-branch-btn-name" id="fe-branch-btn-name"></span>
+      <span class="fe-branch-btn-badge" id="fe-branch-btn-badge"></span>
     </button>
-    <div class="fe-project-dropdown" id="fe-project-dropdown"></div>
   </div>
   <div class="fe-filter">
     <svg class="fe-filter-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
@@ -480,6 +518,9 @@ export function getSharedHTML() {
     <button class="detail-action-btn" id="fe-expand-all" data-tooltip="Expand all"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h16M18 9v6"/></svg></button>
     <div class="detail-action-sep"></div>
     <button class="detail-action-btn" id="fe-sort-btn" data-tooltip="Sort: name"><svg viewBox="0 0 24 24"><path d="M3 6h7M3 12h5M3 18h3M16 4v16M12 16l4 4 4-4"/></svg></button>
+    <div class="detail-action-sep"></div>
+    <button class="detail-action-btn fe-disabled" id="fe-undo-btn" data-tooltip="Undo delete"><svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>
+    <button class="detail-action-btn fe-disabled" id="fe-redo-btn" data-tooltip="Redo delete"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
     <div class="detail-action-sep"></div>
     <button class="detail-action-btn" id="fe-refresh" data-tooltip="Refresh"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
   </div>
@@ -560,6 +601,7 @@ export function getSharedHTML() {
   <div class="fe-editor-body">
     <div class="fe-editor-gutter" id="fe-editor-gutter"></div>
     <div class="fe-editor-line-highlight" id="fe-editor-line-highlight"></div>
+    <pre class="fe-editor-highlight" id="fe-editor-highlight" aria-hidden="true"><code id="fe-editor-highlight-code"></code></pre>
     <textarea class="fe-editor-textarea" id="fe-editor-textarea"
       spellcheck="false" autocorrect="off" autocapitalize="off"></textarea>
     <div class="fe-editor-preview" id="fe-editor-preview"></div>
@@ -629,6 +671,10 @@ export function getSharedHTML() {
       <button class="wb-tool" data-tool="pen" data-tooltip="Pencil · hold Ctrl = multi">
         <svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
       </button>
+      <button class="wb-tool" data-tool="section" data-tooltip="Wireframe section · hold Ctrl = multi">
+        <svg viewBox="0 0 24 24" fill="none"><rect x="2" y="2" width="20" height="6" rx="1"/><rect x="2" y="10" width="9" height="12" rx="1"/><rect x="13" y="10" width="9" height="12" rx="1"/></svg>
+      </button>
+      <div id="wb-section-picker" class="glass" style="display:none;"></div>
       <div class="wb-tool-sep"></div>
       <button class="wb-tool" id="wb-color-btn" data-tooltip="Color">
         <span id="wb-color-dot"></span>
@@ -654,11 +700,11 @@ export function getSharedHTML() {
     <div id="wb-canvas">
       <svg id="wb-arrows" class="wb-arrow-layer">
         <defs>
-          <marker id="wb-arrowhead" markerWidth="42" markerHeight="44" refX="4" refY="22" orient="auto" markerUnits="userSpaceOnUse" overflow="visible">
-            <path d="M 4 4 L 40 22 L 4 40 Z" fill="rgba(255,255,255,0.9)" stroke="none"/>
+          <marker id="wb-arrowhead" markerWidth="20" markerHeight="20" refX="2" refY="10" orient="auto" markerUnits="userSpaceOnUse" overflow="visible">
+            <path d="M 2 2 L 18 10 L 2 18 Z" fill="rgba(255,255,255,0.9)" stroke="none"/>
           </marker>
-          <marker id="wb-arrowhead-sel" markerWidth="42" markerHeight="44" refX="4" refY="22" orient="auto" markerUnits="userSpaceOnUse" overflow="visible">
-            <path d="M 4 4 L 40 22 L 4 40 Z" fill="var(--accent-blue, #60a5fa)" stroke="none"/>
+          <marker id="wb-arrowhead-sel" markerWidth="20" markerHeight="20" refX="2" refY="10" orient="auto" markerUnits="userSpaceOnUse" overflow="visible">
+            <path d="M 2 2 L 18 10 L 2 18 Z" fill="var(--accent-blue, #60a5fa)" stroke="none"/>
           </marker>
         </defs>
       </svg>
@@ -667,8 +713,8 @@ export function getSharedHTML() {
 
     <svg id="wb-arrow-preview" class="wb-arrow-preview">
       <defs>
-        <marker id="wb-arrowhead-preview" markerWidth="42" markerHeight="44" refX="4" refY="22" orient="auto" markerUnits="userSpaceOnUse" overflow="visible">
-          <path d="M 4 4 L 40 22 L 4 40 Z" fill="rgba(255,255,255,0.3)" stroke="none"/>
+        <marker id="wb-arrowhead-preview" markerWidth="20" markerHeight="20" refX="2" refY="10" orient="auto" markerUnits="userSpaceOnUse" overflow="visible">
+          <path d="M 2 2 L 18 10 L 2 18 Z" fill="rgba(255,255,255,0.3)" stroke="none"/>
         </marker>
       </defs>
     </svg>

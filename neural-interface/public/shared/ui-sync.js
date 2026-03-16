@@ -60,6 +60,9 @@ const SYNC_HANDLERS = {
   'link:error':          (msg) => emit('sync:link:error', msg),
   'link:chunk':          (msg) => emit('sync:link:chunk', msg),
 
+  // Skin change sync
+  'skin:changed': (msg) => emit('sync:skin:changed', msg),
+
   // Session indexing progress
   'indexing:started':          (msg) => emit('ws:message', msg),
   'indexing:session-started':  (msg) => emit('ws:message', msg),

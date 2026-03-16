@@ -4416,7 +4416,7 @@
   <div id="loading-server-cmd">
     <div id="loading-server-cmd-hint">Run this command to start the server:</div>
     <div id="loading-server-cmd-box">
-      <code id="loading-cmd-text">node path/to/synabun/neural-interface/server.js</code>
+      <code id="loading-cmd-text">npm start</code>
       <button id="loading-cmd-copy" title="Copy to clipboard">
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       </button>
@@ -5157,6 +5157,11 @@ async function init() {
     try {
       const healthRes = await fetch('/api/health');
       const health = await healthRes.json();
+      if (health.projectDir) {
+        localStorage.setItem('synabun-project-dir', health.projectDir);
+        const cmdEl = document.getElementById('loading-cmd-text');
+        if (cmdEl) cmdEl.textContent = 'cd ' + health.projectDir + ' && npm start';
+      }
       if (!health.ok) {
         const messages = {
           db_missing:         ['Database Unreachable', 'The SQLite database file is missing'],
@@ -5168,7 +5173,13 @@ async function init() {
         showLoadingError(title, sub, !!health.canAutoStart);
         return;
       }
-    } catch {}
+    } catch {
+      const cached = localStorage.getItem('synabun-project-dir');
+      if (cached) {
+        const cmdEl = document.getElementById('loading-cmd-text');
+        if (cmdEl) cmdEl.textContent = 'cd ' + cached + ' && npm start';
+      }
+    }
 
     const res = await fetch('/api/memories');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

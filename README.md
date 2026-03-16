@@ -38,7 +38,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - **OpenClaw Bridge** — read-only integration overlays OpenClaw workspace memories as ephemeral nodes in the 3D graph
 - **Category Logos** — upload custom logos for parent categories, rendered on sun nodes in the 3D visualization
 - **Backup & Restore** — export and import SQLite database snapshots via the Neural Interface
-- **Claude Code Hooks** — 5 lifecycle hooks automate memory recall, storage, and session indexing
+- **Claude Code Hooks** — 7 lifecycle hooks automate memory recall, storage, and session indexing
 - **User Learning** — autonomous observation of user communication patterns, preferences, and behavioral singularity across sessions
 - **Claude Code `/synabun` Command** — single slash command hub with interactive menu for brainstorming, auditing, health checks, and memory search
 
@@ -71,7 +71,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 | **[README](./README.md)** | Quick start, architecture, configuration |
 | **[Usage Guide](./docs/usage-guide.md)** | Detailed usage patterns, tool quirks, best practices |
 | **[API Reference](./docs/api-reference.md)** | Neural Interface REST API (55+ endpoints) |
-| **[Hooks Guide](./docs/hooks.md)** | Claude Code hooks: 5 lifecycle hooks for memory automation |
+| **[Hooks Guide](./docs/hooks.md)** | Claude Code hooks: 7 lifecycle hooks for memory automation |
 | **[Contributing](./CONTRIBUTING.md)** | Bug reports, feature requests, and forking guide |
 | **[Security](./SECURITY.md)** | Security model and vulnerability reporting |
 | **[Changelog](./CHANGELOG.md)** | Version history |
@@ -141,7 +141,7 @@ No environment variables needed — SQLite and local embeddings work out of the 
 
 ### 3. Verify
 
-Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 46 tools listed.
+Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 66 tools listed.
 
 </details>
 
@@ -170,12 +170,12 @@ AI Assistant (any project)
 ┌───┴──────────────────────┐
 │   SynaBun MCP Server     │  Node.js 22.5+ / TypeScript
 │                          │
-│  46 tools across 6       │
+│  66 tools across 8       │
 │  groups: Memory (9),     │
-│  Browser (26),           │
+│  Browser (38),           │
 │  Whiteboard (5),         │
-│  Cards (5), Loop (1),    │
-│  TicTacToe (1)           │
+│  Cards (5), Discord (8), │
+│  Loop (1), TicTacToe (1) │
 │                          │
 │  Transformers.js         │  Local embeddings
 │  all-MiniLM-L6-v2        │  (384 dims, ~23MB model)
@@ -190,9 +190,9 @@ AI Assistant (any project)
 
 Everything runs in a single Node.js process — no external services, no Docker, no API keys.
 
-## MCP Tools (46)
+## MCP Tools (66)
 
-SynaBun exposes 46 tools via the Model Context Protocol, organized into 6 groups:
+SynaBun exposes 66 tools via the Model Context Protocol, organized into 8 groups:
 
 ### Memory (9 tools)
 
@@ -208,15 +208,15 @@ SynaBun exposes 46 tools via the Model Context Protocol, organized into 6 groups
 | `category` | Create, update, delete, or list categories | `action` (create, update, delete, list), `name`, `description`, `parent` |
 | `tictactoe` | Play tic-tac-toe with your AI | `action` (start, move, state, end) |
 
-### Browser (26 tools)
+### Browser (38 tools)
 
-18 general browser automation tools + 8 social media extraction tools, all powered by Playwright with persistent Chromium sessions.
+18 general browser automation tools + 20 social media extraction tools, all powered by Playwright with persistent Chromium sessions.
 
 **General automation:**
 `browser_navigate`, `browser_click`, `browser_fill`, `browser_type`, `browser_hover`, `browser_select`, `browser_press`, `browser_evaluate`, `browser_snapshot`, `browser_content`, `browser_screenshot`, `browser_session`, `browser_go_back`, `browser_go_forward`, `browser_reload`, `browser_wait`, `browser_scroll`, `browser_upload`
 
 **Social media extraction:**
-`browser_extract_tweets`, `browser_extract_fb_posts`, `browser_extract_tiktok_videos`, `browser_extract_tiktok_search`, `browser_extract_tiktok_studio`, `browser_extract_tiktok_profile`, `browser_extract_wa_chats`, `browser_extract_wa_messages`
+`browser_extract_tweets`, `browser_extract_fb_posts`, `browser_extract_tiktok_videos`, `browser_extract_tiktok_search`, `browser_extract_tiktok_studio`, `browser_extract_tiktok_profile`, `browser_extract_wa_chats`, `browser_extract_wa_messages`, `browser_extract_ig_feed`, `browser_extract_ig_profile`, `browser_extract_ig_post`, `browser_extract_ig_reels`, `browser_extract_ig_search`, `browser_extract_li_feed`, `browser_extract_li_profile`, `browser_extract_li_post`, `browser_extract_li_notifications`, `browser_extract_li_messages`, `browser_extract_li_search_people`, `browser_extract_li_network`
 
 ### Whiteboard (5 tools)
 
@@ -237,6 +237,19 @@ SynaBun exposes 46 tools via the Model Context Protocol, organized into 6 groups
 | `card_close` | Dismiss open memory cards |
 | `card_update` | Move, resize, pin, or compact cards |
 | `card_screenshot` | Capture open cards as an image |
+
+### Discord (8 tools)
+
+| Tool | Purpose |
+|------|---------|
+| `discord_guild` | Server info, channels, members, roles, audit log |
+| `discord_channel` | Create, edit, delete channels and set permissions |
+| `discord_role` | Create, edit, delete roles, assign/remove from members |
+| `discord_message` | Send, edit, delete, pin, react, bulk delete, list messages |
+| `discord_member` | Member info, kick, ban, unban, timeout, nickname |
+| `discord_onboarding` | Welcome screen, rules, verification, onboarding prompts |
+| `discord_webhook` | Create, edit, delete, list, execute webhooks |
+| `discord_thread` | Create, archive, unarchive, lock, delete threads |
 
 ### Automation (1 tool)
 
@@ -537,9 +550,9 @@ Add this to any project's `CLAUDE.md` to instruct Claude to use memory automatic
 ```markdown
 ## Persistent Memory
 
-You have persistent vector memory via the `SynaBun` MCP server (46 tools).
+You have persistent vector memory via the `SynaBun` MCP server (66 tools).
 Core memory tools: remember, recall, forget, restore, reflect, memories, sync, category.
-Also available: browser automation (26 tools), whiteboard (5), cards (5), loop, tictactoe.
+Also available: browser automation (38 tools), whiteboard (5), cards (5), discord (8), loop, tictactoe.
 
 ### Auto-Recall (do this automatically)
 - At session start: recall context about the current project
@@ -713,7 +726,7 @@ Synabun/
     │   └── display-settings.json    # MCP response display config
     ├── dist/                        # Compiled JS (generated by npm run build)
     └── src/
-        ├── index.ts                 # Tool registration + schema refresh (46 tools)
+        ├── index.ts                 # Tool registration + schema refresh (66 tools)
         ├── config.ts                # Namespaced env config, project detection
         ├── types.ts                 # MemoryPayload interface (incl. file_checksums)
         ├── http.ts                  # HTTP MCP transport

@@ -64,8 +64,8 @@ function installDeps(name, dir) {
   try {
     execSync('npm install', {
       cwd: dir,
-      stdio: 'pipe',
-      timeout: 120_000,
+      stdio: 'inherit',
+      timeout: 300_000,
     });
     ok(`${name} dependencies installed`);
   } catch (err) {
@@ -130,23 +130,32 @@ function isSetupComplete() {
 
 function openBrowser(url) {
   const plat = platform();
+  const fallback = () => { warn('Could not open browser automatically'); info(`Open manually: ${url}`); };
 
+  // Try app mode (no tabs/URL bar) with Chrome or Edge, then fall back to default browser
   if (plat === 'win32') {
-    // Try Edge app mode first, then Chrome, then fallback to regular tab
-    exec(`start msedge --app=${url}`, (err) => {
-      if (err) exec(`start chrome --app=${url}`, (err2) => {
-        if (err2) exec(`start "" "${url}"`, (err3) => {
-          if (err3) { warn('Could not open browser automatically'); info(`Open manually: ${url}`); }
-        });
+    // Windows: try Edge app mode → Chrome app mode → default browser
+    exec(`start msedge --app="${url}"`, (err) => {
+      if (err) exec(`start chrome --app="${url}"`, (err2) => {
+        if (err2) exec(`start "" "${url}"`, (err3) => { if (err3) fallback(); });
       });
     });
   } else if (plat === 'darwin') {
-    exec(`open -a "Google Chrome" --args --app=${url}`, (err) => {
-      if (err) exec(`open "${url}"`);
+    // macOS: try Chrome app mode → Edge app mode → default browser
+    // Use --args to pass --app flag without triggering protocol handler prompts
+    exec(`open -na "Google Chrome" --args --new-window --app="${url}"`, (err) => {
+      if (err) exec(`open -na "Microsoft Edge" --args --new-window --app="${url}"`, (err2) => {
+        if (err2) exec(`open "${url}"`, (err3) => { if (err3) fallback(); });
+      });
     });
   } else {
-    exec(`google-chrome --app=${url}`, (err) => {
-      if (err) exec(`xdg-open "${url}"`);
+    // Linux: try Chrome app mode → Chromium app mode → default browser
+    exec(`google-chrome --app="${url}"`, (err) => {
+      if (err) exec(`chromium --app="${url}"`, (err2) => {
+        if (err2) exec(`chromium-browser --app="${url}"`, (err3) => {
+          if (err3) exec(`xdg-open "${url}"`, (err4) => { if (err4) fallback(); });
+        });
+      });
     });
   }
 }

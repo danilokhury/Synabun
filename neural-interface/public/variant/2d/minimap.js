@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════
 
 import { state } from '../../shared/state.js';
+import { storage } from '../../shared/storage.js';
 import { catColor } from '../../shared/colors.js';
 import { getViewport, getAllCards, getGraph } from './graph.js';
 import { CARD_W, CARD_H } from './layout.js';
@@ -241,7 +242,7 @@ function _onDragEnd() {
 function _savePosition() {
   if (!_minimapEl) return;
   try {
-    localStorage.setItem(MINIMAP_POS_KEY, JSON.stringify({
+    storage.setItem(MINIMAP_POS_KEY, JSON.stringify({
       left: _minimapEl.style.left,
       top: _minimapEl.style.top,
     }));
@@ -251,7 +252,7 @@ function _savePosition() {
 function _restorePosition() {
   if (!_minimapEl) return;
   try {
-    const raw = localStorage.getItem(MINIMAP_POS_KEY);
+    const raw = storage.getItem(MINIMAP_POS_KEY);
     if (!raw) return;
     const pos = JSON.parse(raw);
     if (!pos.left || !pos.top) return;

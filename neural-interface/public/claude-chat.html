@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SynaBun Chat</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/shared/styles.css">
+  <link rel="stylesheet" href="/claude-chat.css">
+</head>
+<body class="chat-body">
+  <div id="chat-app">
+
+    <!-- Toolbar -->
+    <header id="chat-toolbar">
+      <a href="/" id="chat-back" title="Back to Neural Interface">
+        <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+      </a>
+
+      <div class="toolbar-brand">
+        <div class="toolbar-brand-icon">S</div>
+        <span class="toolbar-brand-label">SynaBun</span>
+      </div>
+
+      <!-- Project selector -->
+      <div class="toolbar-select" id="project-select-wrap">
+        <select id="project-select"><option value="">project...</option></select>
+      </div>
+
+      <!-- Branch selector -->
+      <div class="toolbar-select" id="branch-select-wrap">
+        <select id="branch-select"><option value="">branch</option></select>
+      </div>
+
+      <div class="toolbar-spacer"></div>
+
+      <!-- Model selector -->
+      <div class="toolbar-select" id="model-select-wrap">
+        <select id="model-select"><option value="">model</option></select>
+      </div>
+
+      <!-- Cost -->
+      <span id="chat-cost" class="toolbar-badge">$0.00</span>
+
+      <!-- Session history -->
+      <div class="toolbar-session-wrap">
+        <button id="chat-session-btn" class="toolbar-btn" title="Session history">
+          <svg viewBox="0 0 24 24"><path d="M12 8v4l3 3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </button>
+        <div id="chat-session-menu" class="session-menu"></div>
+      </div>
+
+      <!-- New session -->
+      <button id="chat-new-btn" class="toolbar-btn" title="New session">
+        <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+    </header>
+
+    <!-- Message stream -->
+    <div id="messages"></div>
+
+    <!-- Input -->
+    <div id="chat-input-area">
+      <div id="chat-input-wrap">
+        <div id="chat-input-inner">
+          <button id="chat-attach-btn" class="attach-btn" title="Attach file">
+            <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.49" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            <span id="chat-attach-badge" hidden></span>
+          </button>
+          <textarea id="chat-input" placeholder="Message SynaBun..." rows="1" autocomplete="off" spellcheck="false"></textarea>
+          <button id="chat-send-btn" disabled title="Send (Enter)">
+            <svg viewBox="0 0 24 24"><path d="M22 2L11 13" stroke="currentColor" stroke-width="2" fill="none"/><path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script type="module" src="/claude-chat.js"></script>
+</body>
+</html>
