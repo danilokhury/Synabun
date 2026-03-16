@@ -58,7 +58,8 @@ try {
   console.error('[rebuild-pty] Terminal features may not work. Ensure build tools are installed:');
   console.error('  macOS:  xcode-select --install');
   console.error('  Linux:  sudo apt install build-essential python3');
-  console.error('  Windows: npm install -g windows-build-tools');
+  console.error('  Windows: Install Visual Studio Build Tools 2022 with "Desktop development with C++" workload');
+  console.error('           Or: winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools"');
   process.exit(0); // non-fatal — the rest of the app can still run
 }
 

@@ -381,17 +381,32 @@ function createElementDOM(el) {
     div.appendChild(handle);
   } else if (el.type === 'image') {
     div.className = 'wb-image';
-    div.innerHTML = `<img src="" alt=""><span class="wb-drag-to-term" draggable="true" data-tooltip="Drag to terminal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span><div class="wb-resize-handle"></div>`;
-    // Wire drag-to-terminal on the grip
-    const grip = div.querySelector('.wb-drag-to-term');
-    grip.addEventListener('dragstart', (e) => {
+    div.innerHTML = `<img src="" alt=""><span class="wb-copy-path" data-tooltip="Copy image path"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span><div class="wb-resize-handle"></div>`;
+    // Wire click-to-copy-path
+    const copyBtn = div.querySelector('.wb-copy-path');
+    copyBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      e.dataTransfer.setData('application/x-synabun-wb-image', el.id);
-      e.dataTransfer.effectAllowed = 'copy';
-      div.classList.add('wb-dragging-to-term');
-    });
-    grip.addEventListener('dragend', () => {
-      div.classList.remove('wb-dragging-to-term');
+      if (!_ws || _ws.readyState !== WebSocket.OPEN || !el.dataUrl) return;
+      const match = el.dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+      if (!match) return;
+      const handler = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === 'image_saved' && msg.path) {
+            _ws.removeEventListener('message', handler);
+            navigator.clipboard.writeText(msg.path).catch(() => {});
+            copyBtn.dataset.tooltip = 'Copied!';
+            copyBtn.classList.add('wb-copied');
+            setTimeout(() => {
+              copyBtn.dataset.tooltip = 'Copy image path';
+              copyBtn.classList.remove('wb-copied');
+            }, 1500);
+          }
+        } catch {}
+      };
+      _ws.addEventListener('message', handler);
+      setTimeout(() => _ws.removeEventListener('message', handler), 5000);
+      _ws.send(JSON.stringify({ type: 'image_save', data: match[2], mimeType: match[1] }));
     });
   } else if (el.type === 'section') {
     div.className = 'wb-section';
@@ -723,8 +738,16 @@ function showContextMenu(id) {
     <div class="wb-ctx-divider"></div>
   ` : '';
 
+  // "Send to" buttons for image elements
+  const sendControls = el.type === 'image' ? `
+    <button class="wb-ctx-btn" data-action="send-terminal" data-tooltip="Send to Terminal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></button>
+    <button class="wb-ctx-btn" data-action="send-panel" data-tooltip="Send to Panel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+    <div class="wb-ctx-divider"></div>
+  ` : '';
+
   _ctxMenu.innerHTML = `
     ${textControls}
+    ${sendControls}
     <button class="wb-ctx-btn" data-action="duplicate" data-tooltip="Duplicate"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     <button class="wb-ctx-btn" data-action="copy" data-tooltip="Copy"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     <button class="wb-ctx-btn wb-ctx-danger" data-action="delete" data-tooltip="Delete"><svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
@@ -770,6 +793,16 @@ function showContextMenu(id) {
         renderAll();
         persistDebounced();
         showContextMenu(id);
+      }
+    } else if (action === 'send-terminal') {
+      const src = _elements.find(el2 => el2.id === id);
+      if (src?.type === 'image' && src.dataUrl) {
+        emit('wb:send-to-terminal', { dataUrl: src.dataUrl });
+      }
+    } else if (action === 'send-panel') {
+      const src = _elements.find(el2 => el2.id === id);
+      if (src?.type === 'image' && src.dataUrl) {
+        emit('wb:send-to-panel', { dataUrl: src.dataUrl });
       }
     } else if (action === 'duplicate') {
       const src = _elements.find(el2 => el2.id === id);
@@ -2840,6 +2873,30 @@ function _handleExternalCommand(msg) {
     case 'screenshot:request':
       _captureScreenshot(msg.requestId);
       break;
+
+    case 'screenshot:auto': {
+      // macOS screenshot auto-paste — add image centered in viewport
+      if (!msg.dataUrl) break;
+      const img = new Image();
+      img.onload = () => {
+        const rect = _root?.getBoundingClientRect();
+        const vw = rect?.width || 1200;
+        const vh = rect?.height || 800;
+        const dispW = Math.min(img.width, 400);
+        const dispH = Math.round(img.height * (dispW / img.width));
+        addElement({
+          id: _genId(),
+          type: 'image',
+          x: (vw - dispW) / 2,
+          y: (vh - dispH) / 2,
+          width: dispW,
+          height: dispH,
+          dataUrl: msg.dataUrl,
+        });
+      };
+      img.src = msg.dataUrl;
+      break;
+    }
   }
 }
 

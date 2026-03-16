@@ -78,8 +78,7 @@ export function getSharedHTML() {
       <a class="view-toggle-btn${is3D ? '' : ' active'}" href="${is3D ? '/index2d.html' : '#'}" id="nav-2d-link">${t('nav.toggle2d')}</a>
       <a class="view-toggle-btn${is3D ? ' active' : ''}" href="${is3D ? '#' : '/'}" id="nav-3d-link">${t('nav.toggle3d')}</a>
       <span class="view-toggle-sep"></span>
-      <a class="view-toggle-btn" href="/claude-chat.html" id="nav-chat-link" data-tooltip="SynaBun Chat — full Claude Code UI">Chat</a>
-      <button class="view-toggle-btn" id="nav-claude-panel-btn" data-tooltip="Claude Code side panel">Panel</button>
+      <a class="view-toggle-btn" href="/claude-chat.html" id="nav-chat-link" data-tooltip="SynaBun Chat — full Claude Code UI" style="display:none">Chat</a>
     </div>
     <div class="bar-sep"></div>
 
@@ -299,14 +298,6 @@ export function getSharedHTML() {
         </div>
       </div>
 
-      <!-- Bookmarks menu -->
-      <div class="menubar-item" data-menu="bookmarks">
-        <button class="menubar-label">${t('nav.bookmarks')}<span class="count-badge count-badge--gold" id="bookmark-count"></span></button>
-        <div class="menubar-dropdown glass menubar-dropdown--wide">
-          <div id="bookmarks-list"></div>
-        </div>
-      </div>
-
       <!-- Settings (text button) -->
       <button class="menubar-label menubar-action" id="menubar-settings-btn">${t('nav.settings')}</button>
 
@@ -332,6 +323,7 @@ export function getSharedHTML() {
 
 <!-- Top-Right Controls (Trash + Grid + Workspace) -->
 <div id="topright-controls">
+  <div id="topright-inner">
   <button id="topright-trash-btn" class="topright-icon-btn" data-tooltip="${t('nav.trash')}">
     <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
     <span class="count-badge count-badge--red" id="titlebar-trash-count"></span>
@@ -357,6 +349,22 @@ export function getSharedHTML() {
     <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
   </button>
 
+  <div id="bookmarks-overlay">
+    <button id="topright-bookmarks-btn" class="topright-icon-btn" data-tooltip="Bookmarks">
+      <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      <span class="count-badge count-badge--gold" id="bookmark-count"></span>
+    </button>
+    <div id="bookmarks-dropdown" style="display:none;">
+      <div id="bookmarks-list"></div>
+    </div>
+  </div>
+  <div id="invite-overlay">
+    <button id="invite-btn" class="topright-icon-btn" data-tooltip="Share / Invite">
+      <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+      <span class="count-badge count-badge--blue" id="invite-session-count" style="display:none"></span>
+    </button>
+    <div id="invite-dropdown" style="display:none;"></div>
+  </div>
   <div id="workspace-overlay">
     <div id="ws-indicator">
       <svg class="ws-icon" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
@@ -380,13 +388,16 @@ export function getSharedHTML() {
       <input type="file" id="ws-import-file" accept=".json" style="display:none;">
     </div>
   </div>
-  <div id="invite-overlay">
-    <button id="invite-btn" class="topright-icon-btn" data-tooltip="Share / Invite">
-      <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-      <span class="count-badge count-badge--blue" id="invite-session-count" style="display:none"></span>
-    </button>
-    <div id="invite-dropdown" style="display:none;"></div>
   </div>
+  <button id="topright-claude-panel-btn" class="topright-icon-btn" data-tooltip="Claude Code side panel">
+    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+  </button>
+  <button id="topright-collapse-btn" class="topright-collapse-btn" data-tooltip="Toggle toolbar">
+    <svg viewBox="0 0 24 24" class="collapse-chevron"><polyline points="9 18 15 12 9 6"/></svg>
+    <span class="collapse-dots">
+      <span></span><span></span><span></span>
+    </span>
+  </button>
   <div id="term-minimized-tray"></div>
 </div>
 

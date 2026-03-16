@@ -2260,7 +2260,7 @@ async function refreshIconsTab(panel) {
 export async function openSettingsModal() {
   // If already open, just bring it to front
   const existing = document.getElementById('settings-panel');
-  if (existing) { existing.style.zIndex = '50101'; return; }
+  if (existing) { existing.style.zIndex = '300001'; return; }
 
   // ── Fetch all data in parallel ──
   let settings = {};
@@ -2323,17 +2323,9 @@ export async function openSettingsModal() {
   overlay.className = 'settings-panel glass resizable';
   overlay.id = 'settings-panel';
 
-  const navbarH = 48; // title-bar height (padding + content)
-  const savedPanel = JSON.parse(storage.getItem('neural-panel-settings-panel') || 'null');
-  if (savedPanel) {
-    if (savedPanel.left && savedPanel.left !== 'auto') overlay.style.left = savedPanel.left;
-    if (savedPanel.top) overlay.style.top = Math.max(navbarH, parseInt(savedPanel.top, 10) || 0) + 'px';
-    if (savedPanel.width) overlay.style.width = savedPanel.width;
-    if (savedPanel.height) overlay.style.height = savedPanel.height;
-  } else {
-    overlay.style.left = Math.max(20, (window.innerWidth - 680) / 2) + 'px';
-    overlay.style.top = Math.max(navbarH, (window.innerHeight - 600) / 2) + 'px';
-  }
+  // Always open centered at default size
+  overlay.style.left = Math.max(20, (window.innerWidth - 720) / 2) + 'px';
+  overlay.style.top = Math.max(48, (window.innerHeight - 500) / 2) + 'px';
 
   // ── Build variant tab bodies ──
   let variantTabBodies = '';
@@ -2389,10 +2381,16 @@ export async function openSettingsModal() {
     </div>
   `;
 
+  // ── Backdrop ──
+  const backdrop = document.createElement('div');
+  backdrop.className = 'studio-backdrop';
+  backdrop.addEventListener('click', () => close());
+  document.body.appendChild(backdrop);
+
   document.body.appendChild(overlay);
 
   // ── Open animation (matches Skills/Automation Studio) ──
-  requestAnimationFrame(() => overlay.classList.add('open'));
+  requestAnimationFrame(() => { backdrop.classList.add('open'); overlay.classList.add('open'); });
 
   // ── Focus mode ──
   let _focusMode = false;
@@ -2406,12 +2404,7 @@ export async function openSettingsModal() {
 
   // ── Close helper ──
   const close = () => {
-    storage.setItem('neural-panel-settings-panel', JSON.stringify({
-      left: overlay.style.left || null,
-      top: overlay.style.top || null,
-      width: overlay.style.width || null,
-      height: overlay.style.height || null,
-    }));
+    backdrop.remove();
     overlay.remove();
   };
 

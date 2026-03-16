@@ -28,3 +28,627 @@
 [2026-03-15T06:51:03.826Z] STOP session_id=b6728b18-85f3-4452-b3d0-a8614281db37 compactFlagPath=null
 [2026-03-15T06:56:56.821Z] SESSION-START source=startup session_id=a70f78d7-c36a-4712-93aa-56d90851ce20 isCompactRestart=false cacheExists=false convMemory=true
 [2026-03-15T06:56:57.070Z] SESSION-START source=startup session_id=94f580d8-6cff-48e5-be4f-63655693993a isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T07:02:32.562Z] SESSION-START source=resume session_id=b6728b18-85f3-4452-b3d0-a8614281db37 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T07:06:26.803Z] STOP session_id=b6728b18-85f3-4452-b3d0-a8614281db37 compactFlagPath=null
+[2026-03-15T07:07:05.704Z] STOP session_id=b6728b18-85f3-4452-b3d0-a8614281db37 compactFlagPath=null
+[2026-03-15T07:07:28.208Z] STOP session_id=b6728b18-85f3-4452-b3d0-a8614281db37 compactFlagPath=null
+[2026-03-15T07:13:23.754Z] STOP session_id=b6728b18-85f3-4452-b3d0-a8614281db37 compactFlagPath=null
+[2026-03-15T07:17:51.159Z] SESSION-START source=startup session_id=306acbe2-c26f-41d8-a348-f51f8f9f5e4e isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T07:21:12.450Z] STOP session_id=306acbe2-c26f-41d8-a348-f51f8f9f5e4e compactFlagPath=null
+[2026-03-15T07:27:01.017Z] SESSION-START source=startup session_id=70fb4ffa-b889-43ba-aa24-e187ea03f454 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T07:30:30.221Z] STOP session_id=306acbe2-c26f-41d8-a348-f51f8f9f5e4e compactFlagPath=null
+[2026-03-15T07:31:23.632Z] SESSION-START source=startup session_id=8ff5f8d9-8f4f-4311-b519-b689b9cb3e00 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T07:35:25.163Z] SESSION-START source=clear session_id=e07d9fa1-6788-447c-9c05-abfd01089c2d isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T07:36:13.770Z] STOP session_id=e07d9fa1-6788-447c-9c05-abfd01089c2d compactFlagPath=null
+[2026-03-15T07:39:27.680Z] STOP session_id=e07d9fa1-6788-447c-9c05-abfd01089c2d compactFlagPath=null
+[2026-03-15T07:39:44.011Z] STOP session_id=70fb4ffa-b889-43ba-aa24-e187ea03f454 compactFlagPath=null
+[2026-03-15T07:41:38.421Z] STOP session_id=e07d9fa1-6788-447c-9c05-abfd01089c2d compactFlagPath=null
+[2026-03-15T07:42:47.618Z] STOP session_id=70fb4ffa-b889-43ba-aa24-e187ea03f454 compactFlagPath=null
+[2026-03-15T15:42:48.535Z] SESSION-START source=startup session_id=7ea8a82b-20af-469b-a9a1-8723d771660d isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T15:58:22.729Z] SESSION-START source=clear session_id=4593cf6b-3922-4bab-9a38-3b82b6f8071c isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T15:59:15.800Z] SESSION-START source=startup session_id=d39b3f7a-c484-482e-9602-a2984827f755 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T16:01:14.852Z] STOP session_id=d39b3f7a-c484-482e-9602-a2984827f755 compactFlagPath=null
+[2026-03-15T16:02:56.239Z] STOP session_id=d39b3f7a-c484-482e-9602-a2984827f755 compactFlagPath=null
+[2026-03-15T16:05:23.907Z] STOP session_id=d39b3f7a-c484-482e-9602-a2984827f755 compactFlagPath=null
+[2026-03-15T16:05:46.439Z] SESSION-START source=clear session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T16:06:57.422Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:21:22.068Z] SESSION-START source=resume session_id=e07d9fa1-6788-447c-9c05-abfd01089c2d isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T16:21:41.823Z] STOP session_id=4593cf6b-3922-4bab-9a38-3b82b6f8071c compactFlagPath=null
+[2026-03-15T16:21:49.963Z] SESSION-START source=resume session_id=d39b3f7a-c484-482e-9602-a2984827f755 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T16:22:14.844Z] SESSION-START source=resume session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T16:23:58.693Z] STOP session_id=4593cf6b-3922-4bab-9a38-3b82b6f8071c compactFlagPath=null
+[2026-03-15T16:24:07.264Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:30:20.765Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:31:35.318Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:31:41.455Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:31:48.623Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:37:39.845Z] STOP session_id=4593cf6b-3922-4bab-9a38-3b82b6f8071c compactFlagPath=null
+[2026-03-15T16:38:09.214Z] SESSION-START source=resume session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T16:42:27.899Z] STOP session_id=4593cf6b-3922-4bab-9a38-3b82b6f8071c compactFlagPath=null
+[2026-03-15T16:47:09.100Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:55:35.370Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:56:09.924Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:59:09.128Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:59:15.563Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:59:26.574Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T16:59:35.398Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:02:51.795Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:03:40.385Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:05:08.598Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:05:16.572Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:06:00.847Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:06:07.189Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:09:50.376Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:14:10.122Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:16:46.067Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:20:11.506Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:20:30.728Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:20:36.652Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:20:43.014Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:22:52.404Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:30:16.054Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:30:40.725Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:30:46.286Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:30:52.405Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:34:50.635Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:35:06.651Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:42:25.341Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T17:44:21.199Z] STOP session_id=b5721cc7-a80b-4c73-a632-85ce57d08959 compactFlagPath=null
+[2026-03-15T18:01:24.722Z] SESSION-START source=startup session_id=c2764d8e-8e79-4083-af20-2228325cd43a isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T18:07:29.947Z] STOP session_id=c2764d8e-8e79-4083-af20-2228325cd43a compactFlagPath=null
+[2026-03-15T18:13:01.169Z] SESSION-START source=resume session_id=70fb4ffa-b889-43ba-aa24-e187ea03f454 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T18:13:32.938Z] SESSION-START source=resume session_id=c2764d8e-8e79-4083-af20-2228325cd43a isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T18:23:33.963Z] STOP session_id=c2764d8e-8e79-4083-af20-2228325cd43a compactFlagPath=null
+[2026-03-15T18:23:59.596Z] STOP session_id=c2764d8e-8e79-4083-af20-2228325cd43a compactFlagPath=null
+[2026-03-15T18:24:39.322Z] STOP session_id=c2764d8e-8e79-4083-af20-2228325cd43a compactFlagPath=null
+[2026-03-15T18:24:47.702Z] STOP session_id=c2764d8e-8e79-4083-af20-2228325cd43a compactFlagPath=null
+[2026-03-15T18:26:47.978Z] STOP session_id=c2764d8e-8e79-4083-af20-2228325cd43a compactFlagPath=null
+[2026-03-15T18:29:48.195Z] SESSION-START source=resume session_id=c2764d8e-8e79-4083-af20-2228325cd43a isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T18:34:19.122Z] STOP session_id=c2764d8e-8e79-4083-af20-2228325cd43a compactFlagPath=null
+[2026-03-15T18:35:22.867Z] SESSION-START source=startup session_id=1202a863-b1f3-48ec-ad7a-be73167c81ba isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T18:51:14.620Z] SESSION-START source=startup session_id=26173b2e-fd09-4b11-84e8-f0b6bb23ab47 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T19:00:49.215Z] SESSION-START source=clear session_id=8bdb4c1d-a46d-4231-9992-3c4598e1b985 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T19:04:30.920Z] STOP session_id=8bdb4c1d-a46d-4231-9992-3c4598e1b985 compactFlagPath=null
+[2026-03-15T19:29:44.894Z] SESSION-START source=clear session_id=a29a0241-d979-4294-8e4f-49b7f9e32567 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T19:31:10.410Z] SESSION-START source=startup session_id=1a6d76ad-2ff6-4ec4-ac58-8cfe906b0cc4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T19:31:58.395Z] SESSION-START source=startup session_id=88747063-ed11-4fae-bbf8-73215c1b8b88 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T19:33:15.232Z] SESSION-START source=startup session_id=54d623ad-dab5-4942-a1c4-8be7ba593a0f isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T19:34:40.353Z] STOP session_id=a29a0241-d979-4294-8e4f-49b7f9e32567 compactFlagPath=null
+[2026-03-15T19:35:17.006Z] SESSION-START source=clear session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T19:40:37.322Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T19:41:52.133Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T19:42:41.176Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T19:43:17.715Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T19:44:44.436Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T19:44:51.314Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T19:44:58.066Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T19:50:33.439Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T19:51:18.360Z] STOP session_id=a29a0241-d979-4294-8e4f-49b7f9e32567 compactFlagPath=null
+[2026-03-15T20:03:34.986Z] SESSION-START source=resume session_id=a29a0241-d979-4294-8e4f-49b7f9e32567 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:04:08.415Z] SESSION-START source=resume session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:25:53.995Z] SESSION-START source=startup session_id=d88d205c-4ee6-40aa-bdda-eb659ae36b1b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:26:21.490Z] SESSION-START source=startup session_id=94bae156-95bc-4739-acf3-7e9744489a05 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:26:28.743Z] STOP session_id=d88d205c-4ee6-40aa-bdda-eb659ae36b1b compactFlagPath=null
+[2026-03-15T20:29:35.620Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T20:29:56.880Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T20:30:32.638Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T20:30:39.105Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T20:30:44.325Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T20:30:50.410Z] STOP session_id=189f55a6-7f11-40c2-b9a0-3e7d4b6eaff0 compactFlagPath=null
+[2026-03-15T20:33:36.055Z] SESSION-START source=resume session_id=a29a0241-d979-4294-8e4f-49b7f9e32567 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:35:24.431Z] STOP session_id=a29a0241-d979-4294-8e4f-49b7f9e32567 compactFlagPath=null
+[2026-03-15T20:36:17.012Z] STOP session_id=94bae156-95bc-4739-acf3-7e9744489a05 compactFlagPath=null
+[2026-03-15T20:38:53.225Z] SESSION-START source=startup session_id=cd6d6b6c-a9d3-4837-86f3-952e061d3615 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:39:12.916Z] STOP session_id=cd6d6b6c-a9d3-4837-86f3-952e061d3615 compactFlagPath=null
+[2026-03-15T20:42:33.629Z] SESSION-START source=startup session_id=d0181fc2-2f0f-40e2-b621-b4710ec30b8e isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:43:01.765Z] STOP session_id=d0181fc2-2f0f-40e2-b621-b4710ec30b8e compactFlagPath=null
+[2026-03-15T20:44:43.307Z] STOP session_id=94bae156-95bc-4739-acf3-7e9744489a05 compactFlagPath=null
+[2026-03-15T20:45:20.197Z] STOP session_id=a29a0241-d979-4294-8e4f-49b7f9e32567 compactFlagPath=null
+[2026-03-15T20:45:48.187Z] STOP session_id=d0181fc2-2f0f-40e2-b621-b4710ec30b8e compactFlagPath=null
+[2026-03-15T20:46:17.111Z] STOP session_id=d0181fc2-2f0f-40e2-b621-b4710ec30b8e compactFlagPath=null
+[2026-03-15T20:46:26.394Z] STOP session_id=d0181fc2-2f0f-40e2-b621-b4710ec30b8e compactFlagPath=null
+[2026-03-15T20:47:30.494Z] SESSION-START source=startup session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:56:22.269Z] SESSION-START source=resume session_id=94bae156-95bc-4739-acf3-7e9744489a05 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:56:26.181Z] SESSION-START source=resume session_id=94bae156-95bc-4739-acf3-7e9744489a05 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:58:22.446Z] SESSION-START source=resume session_id=94bae156-95bc-4739-acf3-7e9744489a05 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T20:58:23.368Z] STOP session_id=94bae156-95bc-4739-acf3-7e9744489a05 compactFlagPath=null
+[2026-03-15T20:59:32.549Z] STOP session_id=94bae156-95bc-4739-acf3-7e9744489a05 compactFlagPath=null
+[2026-03-15T20:59:54.247Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:04:41.439Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:08:15.019Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:08:50.299Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:09:23.808Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:10:41.000Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T21:11:09.430Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T21:11:15.797Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T21:11:28.932Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T21:14:39.701Z] SESSION-START source=startup session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:15:22.094Z] SESSION-START source=resume session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:17:26.765Z] SESSION-START source=startup session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:18:08.420Z] STOP session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 compactFlagPath=null
+[2026-03-15T21:18:37.851Z] SESSION-START source=resume session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:18:51.688Z] STOP session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 compactFlagPath=null
+[2026-03-15T21:18:55.120Z] SESSION-START source=resume session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:19:05.740Z] STOP session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 compactFlagPath=null
+[2026-03-15T21:19:30.567Z] SESSION-START source=resume session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:20:42.560Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:21:05.179Z] SESSION-START source=resume session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:21:10.776Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T21:21:48.913Z] SESSION-START source=startup session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:22:18.011Z] STOP session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 compactFlagPath=null
+[2026-03-15T21:22:52.433Z] STOP session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 compactFlagPath=null
+[2026-03-15T21:23:21.883Z] STOP session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 compactFlagPath=null
+[2026-03-15T21:23:46.375Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T21:24:04.669Z] STOP session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 compactFlagPath=null
+[2026-03-15T21:25:39.982Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:26:46.663Z] SESSION-START source=resume session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:27:02.585Z] STOP session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 compactFlagPath=null
+[2026-03-15T21:27:06.008Z] SESSION-START source=resume session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:27:17.015Z] STOP session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 compactFlagPath=null
+[2026-03-15T21:27:40.085Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T21:29:05.276Z] SESSION-START source=resume session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:30:07.005Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:30:40.486Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:32:17.087Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T21:32:33.673Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T21:33:35.884Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T21:33:47.016Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T21:41:19.907Z] SESSION-START source=resume session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:42:30.681Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:42:41.151Z] SESSION-START source=resume session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:43:10.812Z] SESSION-START source=resume session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:43:14.398Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:43:35.609Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T21:43:41.719Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T21:43:42.019Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:43:51.639Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T21:44:01.205Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T21:44:03.898Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:44:26.852Z] SESSION-START source=resume session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:44:54.892Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:44:57.949Z] SESSION-START source=resume session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:45:04.631Z] SESSION-START source=startup session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:45:24.867Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:45:50.614Z] STOP session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 compactFlagPath=null
+[2026-03-15T21:45:57.732Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T21:46:13.055Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T21:46:13.425Z] STOP session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 compactFlagPath=null
+[2026-03-15T21:46:25.430Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T21:46:38.168Z] STOP session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 compactFlagPath=null
+[2026-03-15T21:46:40.588Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T21:46:45.180Z] STOP session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 compactFlagPath=null
+[2026-03-15T21:47:04.753Z] STOP session_id=940b69b3-3926-4a6d-a920-0be6c9cce686 compactFlagPath=null
+[2026-03-15T21:47:13.338Z] SESSION-START source=resume session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:47:46.225Z] SESSION-START source=resume session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:48:15.887Z] STOP session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 compactFlagPath=null
+[2026-03-15T21:48:18.882Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T21:48:26.091Z] STOP session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 compactFlagPath=null
+[2026-03-15T21:48:32.902Z] STOP session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 compactFlagPath=null
+[2026-03-15T21:48:57.152Z] STOP session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 compactFlagPath=null
+[2026-03-15T21:49:02.636Z] STOP session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 compactFlagPath=null
+[2026-03-15T21:49:23.000Z] STOP session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 compactFlagPath=null
+[2026-03-15T21:49:30.566Z] STOP session_id=b18843a7-688a-4f54-ad9a-27e76944a4c0 compactFlagPath=null
+[2026-03-15T22:06:45.425Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:11:12.787Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:12:54.363Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:13:47.257Z] SESSION-START source=resume session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:14:04.171Z] STOP session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 compactFlagPath=null
+[2026-03-15T22:14:47.906Z] SESSION-START source=resume session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:15:14.067Z] SESSION-START source=resume session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:15:38.483Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:15:40.171Z] STOP session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 compactFlagPath=null
+[2026-03-15T22:16:13.636Z] STOP session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 compactFlagPath=null
+[2026-03-15T22:16:14.311Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:16:20.858Z] STOP session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 compactFlagPath=null
+[2026-03-15T22:16:55.536Z] STOP session_id=9cd3b6a0-0e50-40c1-b069-fd8a1c7aeab4 compactFlagPath=null
+[2026-03-15T22:17:27.967Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T22:17:52.373Z] STOP session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b compactFlagPath=null
+[2026-03-15T22:24:13.965Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:24:47.575Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:25:20.561Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T22:25:30.767Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T22:25:44.494Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T22:25:52.898Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T22:27:17.235Z] SESSION-START source=startup session_id=d1f00d04-5b29-47d4-87ab-8ba80e594997 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:32:28.390Z] SESSION-START source=resume session_id=59270c4f-7a4c-475c-bc42-dfaebcd0ad0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:34:52.115Z] SESSION-START source=startup session_id=724ce1f6-b391-472c-ab2b-2ad10ea0e347 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:43:36.313Z] SESSION-START source=clear session_id=746ce6e7-c1fd-4a13-97e0-fb0c42d5a6f1 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:44:34.657Z] STOP session_id=724ce1f6-b391-472c-ab2b-2ad10ea0e347 compactFlagPath=null
+[2026-03-15T22:45:02.601Z] STOP session_id=746ce6e7-c1fd-4a13-97e0-fb0c42d5a6f1 compactFlagPath=null
+[2026-03-15T22:51:11.367Z] SESSION-START source=startup session_id=563411a1-1b04-40ab-b4a2-88964883e09e isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T22:51:35.722Z] STOP session_id=563411a1-1b04-40ab-b4a2-88964883e09e compactFlagPath=null
+[2026-03-15T22:59:01.070Z] STOP session_id=746ce6e7-c1fd-4a13-97e0-fb0c42d5a6f1 compactFlagPath=null
+[2026-03-15T23:00:24.804Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:01:39.259Z] SESSION-START source=resume session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:02:02.602Z] STOP session_id=afddf8fc-33a7-4998-87f1-361aa46d19fd compactFlagPath=null
+[2026-03-15T23:07:52.003Z] SESSION-START source=resume session_id=d1f00d04-5b29-47d4-87ab-8ba80e594997 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:12:10.688Z] SESSION-START source=startup session_id=bcdb02e8-e217-4501-b401-a34d6839b811 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:15:52.003Z] SESSION-START source=startup session_id=07781d02-9c82-44be-97a8-ad6ed41146b4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:16:03.409Z] SESSION-START source=resume session_id=bcdb02e8-e217-4501-b401-a34d6839b811 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:16:46.938Z] STOP session_id=bcdb02e8-e217-4501-b401-a34d6839b811 compactFlagPath=null
+[2026-03-15T23:18:24.294Z] SESSION-START source=startup session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:19:06.116Z] SESSION-START source=startup session_id=3780977f-7be5-4f63-a036-dccb10c21172 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:19:27.625Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:20:47.685Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:20:58.098Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:21:17.446Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:21:26.423Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:21:29.755Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:21:38.972Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:21:41.676Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:22:03.936Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:23:30.637Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:23:44.720Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:23:52.004Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:26:21.412Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:26:32.042Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:32:02.852Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:43:39.326Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:44:04.559Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:44:45.867Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:44:52.041Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:45:57.284Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-15T23:56:36.462Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:57:02.500Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:57:11.849Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:57:17.850Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-15T23:58:07.555Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T00:03:20.740Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-16T00:04:41.080Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T00:16:42.413Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T00:18:10.469Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-16T00:21:19.395Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-16T01:05:25.322Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-16T01:06:44.533Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T01:11:14.406Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-16T01:11:29.781Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-16T01:13:30.813Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T01:14:07.233Z] SESSION-START source=startup session_id=feca2256-f37a-4b04-a4d8-0e9066f3d5f3 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T01:14:40.133Z] STOP session_id=feca2256-f37a-4b04-a4d8-0e9066f3d5f3 compactFlagPath=null
+[2026-03-16T01:37:42.920Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-16T01:37:56.272Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-16T01:38:02.086Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-16T01:38:11.617Z] STOP session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 compactFlagPath=null
+[2026-03-16T01:45:13.233Z] SESSION-START source=resume session_id=c6f3bdea-9ee0-4934-849f-c96682d9ae80 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T01:54:01.633Z] SESSION-START source=startup session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T01:56:18.288Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T01:58:25.441Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T01:58:53.960Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:01:18.755Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:02:21.624Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:03:55.723Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:04:52.029Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:04:59.138Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:05:06.713Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:09:53.663Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:10:37.904Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:12:02.511Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:12:11.927Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:12:39.818Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:12:48.102Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:19:29.967Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:20:55.621Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:21:00.060Z] PRE-COMPACT session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 trigger=auto cwd=/Users/danilokhury/Apps/Synabun
+[2026-03-16T02:22:24.585Z] SESSION-START source=compact session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=true cacheExists=true convMemory=true
+[2026-03-16T02:22:27.853Z] SESSION-START source=startup session_id=81bd617b-1e26-4146-8bec-dab67856ae6f isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:24:24.256Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:24:55.513Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=/Users/danilokhury/Apps/Synabun/data/pending-compact/40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510.json
+[2026-03-16T02:24:55.514Z] STOP BLOCKING session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 reason=SynaBun: Session compacted but not indexed yet — log it in 'conversations' first. (1/3)
+[2026-03-16T02:25:14.307Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:26:16.099Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:28:16.643Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:28:40.923Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:29:04.461Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:29:51.329Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:29:57.486Z] STOP session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 compactFlagPath=null
+[2026-03-16T02:39:34.329Z] STOP session_id=81bd617b-1e26-4146-8bec-dab67856ae6f compactFlagPath=null
+[2026-03-16T02:41:11.819Z] SESSION-START source=resume session_id=40c78cbc-ba7c-4cab-87b1-bfa4d4fd6510 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:43:09.809Z] SESSION-START source=startup session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:44:24.041Z] SESSION-START source=resume session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:49:02.868Z] STOP session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 compactFlagPath=null
+[2026-03-16T02:49:04.658Z] SESSION-START source=startup session_id=5a37911a-0c89-4545-8198-77ad3ed97593 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:49:17.698Z] SESSION-START source=resume session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:49:32.157Z] STOP session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 compactFlagPath=null
+[2026-03-16T02:49:36.023Z] SESSION-START source=resume session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:49:45.238Z] STOP session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 compactFlagPath=null
+[2026-03-16T02:50:03.994Z] SESSION-START source=resume session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:50:22.376Z] SESSION-START source=resume session_id=5a37911a-0c89-4545-8198-77ad3ed97593 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T02:50:54.032Z] STOP session_id=5a37911a-0c89-4545-8198-77ad3ed97593 compactFlagPath=null
+[2026-03-16T02:52:11.986Z] STOP session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 compactFlagPath=null
+[2026-03-16T02:52:20.178Z] STOP session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 compactFlagPath=null
+[2026-03-16T02:53:12.398Z] STOP session_id=3f5fe4bb-7bcb-4a7e-bd47-c11631d353a9 compactFlagPath=null
+[2026-03-16T03:06:06.349Z] SESSION-START source=startup session_id=6d9c9dd8-eecb-408b-af38-b3b215aa931d isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:07:08.264Z] SESSION-START source=resume session_id=6d9c9dd8-eecb-408b-af38-b3b215aa931d isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:08:44.513Z] SESSION-START source=startup session_id=6695dad9-bce4-45f8-9fad-d2866212b714 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:09:48.869Z] SESSION-START source=resume session_id=6695dad9-bce4-45f8-9fad-d2866212b714 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:10:17.435Z] SESSION-START source=resume session_id=6d9c9dd8-eecb-408b-af38-b3b215aa931d isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:12:43.843Z] STOP session_id=6695dad9-bce4-45f8-9fad-d2866212b714 compactFlagPath=null
+[2026-03-16T03:12:56.566Z] STOP session_id=6d9c9dd8-eecb-408b-af38-b3b215aa931d compactFlagPath=null
+[2026-03-16T03:14:17.692Z] STOP session_id=6d9c9dd8-eecb-408b-af38-b3b215aa931d compactFlagPath=null
+[2026-03-16T03:14:25.503Z] STOP session_id=6d9c9dd8-eecb-408b-af38-b3b215aa931d compactFlagPath=null
+[2026-03-16T03:14:43.476Z] STOP session_id=6d9c9dd8-eecb-408b-af38-b3b215aa931d compactFlagPath=null
+[2026-03-16T03:14:46.698Z] SESSION-START source=startup session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:14:56.757Z] SESSION-START source=resume session_id=6695dad9-bce4-45f8-9fad-d2866212b714 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:15:09.970Z] STOP session_id=6695dad9-bce4-45f8-9fad-d2866212b714 compactFlagPath=null
+[2026-03-16T03:15:13.320Z] SESSION-START source=resume session_id=6695dad9-bce4-45f8-9fad-d2866212b714 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:15:20.460Z] SESSION-START source=resume session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:15:24.795Z] STOP session_id=6695dad9-bce4-45f8-9fad-d2866212b714 compactFlagPath=null
+[2026-03-16T03:15:52.378Z] SESSION-START source=resume session_id=6695dad9-bce4-45f8-9fad-d2866212b714 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:17:22.891Z] SESSION-START source=startup session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:18:07.673Z] SESSION-START source=resume session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:18:24.225Z] STOP session_id=6695dad9-bce4-45f8-9fad-d2866212b714 compactFlagPath=null
+[2026-03-16T03:18:37.156Z] SESSION-START source=resume session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:19:08.175Z] STOP session_id=6695dad9-bce4-45f8-9fad-d2866212b714 compactFlagPath=null
+[2026-03-16T03:19:22.382Z] SESSION-START source=startup session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:19:23.403Z] STOP session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 compactFlagPath=null
+[2026-03-16T03:19:42.039Z] STOP session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 compactFlagPath=null
+[2026-03-16T03:20:22.437Z] STOP session_id=6695dad9-bce4-45f8-9fad-d2866212b714 compactFlagPath=null
+[2026-03-16T03:20:54.901Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:23:47.235Z] SESSION-START source=startup session_id=8d982c2c-4b8f-48ae-8ec0-8fe05c84758a isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:24:02.142Z] SESSION-START source=resume session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:25:28.607Z] SESSION-START source=resume session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:25:54.613Z] SESSION-START source=resume session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:26:25.484Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:26:59.436Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:27:30.790Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:27:36.905Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:28:57.325Z] SESSION-START source=resume session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:29:09.111Z] SESSION-START source=resume session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:29:36.175Z] SESSION-START source=resume session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:30:17.843Z] STOP session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 compactFlagPath=null
+[2026-03-16T03:30:26.956Z] STOP session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 compactFlagPath=null
+[2026-03-16T03:30:39.961Z] STOP session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 compactFlagPath=null
+[2026-03-16T03:30:48.835Z] SESSION-START source=resume session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:31:06.788Z] STOP session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 compactFlagPath=null
+[2026-03-16T03:31:14.123Z] STOP session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 compactFlagPath=null
+[2026-03-16T03:31:22.157Z] SESSION-START source=resume session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:31:36.552Z] STOP session_id=2418b1bf-9422-4bf6-944d-19ae3ff165f9 compactFlagPath=null
+[2026-03-16T03:34:12.936Z] SESSION-START source=resume session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:34:55.572Z] SESSION-START source=resume session_id=6695dad9-bce4-45f8-9fad-d2866212b714 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:34:57.127Z] SESSION-START source=resume session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:35:26.685Z] SESSION-START source=resume session_id=6695dad9-bce4-45f8-9fad-d2866212b714 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:35:40.298Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:35:51.046Z] SESSION-START source=startup session_id=f360ab87-951f-4e0e-9f85-74ef6ebdfcd4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:36:18.183Z] SESSION-START source=resume session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:36:23.488Z] STOP session_id=6695dad9-bce4-45f8-9fad-d2866212b714 compactFlagPath=null
+[2026-03-16T03:36:32.044Z] STOP session_id=6695dad9-bce4-45f8-9fad-d2866212b714 compactFlagPath=null
+[2026-03-16T03:37:05.064Z] SESSION-START source=resume session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:37:20.890Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:37:45.508Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:37:56.338Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:38:21.337Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:49:41.005Z] SESSION-START source=resume session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:49:51.592Z] SESSION-START source=resume session_id=f360ab87-951f-4e0e-9f85-74ef6ebdfcd4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:50:12.444Z] SESSION-START source=resume session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:50:16.232Z] SESSION-START source=resume session_id=f360ab87-951f-4e0e-9f85-74ef6ebdfcd4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:50:25.282Z] SESSION-START source=resume session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:50:49.162Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:51:10.907Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:51:20.000Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:51:26.164Z] STOP session_id=2f2e325a-f775-4b57-857e-7725a0e96d04 compactFlagPath=null
+[2026-03-16T03:51:29.049Z] SESSION-START source=resume session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T03:54:03.291Z] STOP session_id=f360ab87-951f-4e0e-9f85-74ef6ebdfcd4 compactFlagPath=null
+[2026-03-16T03:54:37.361Z] STOP session_id=f360ab87-951f-4e0e-9f85-74ef6ebdfcd4 compactFlagPath=null
+[2026-03-16T03:54:43.392Z] STOP session_id=f360ab87-951f-4e0e-9f85-74ef6ebdfcd4 compactFlagPath=null
+[2026-03-16T03:54:49.080Z] STOP session_id=f360ab87-951f-4e0e-9f85-74ef6ebdfcd4 compactFlagPath=null
+[2026-03-16T03:54:51.625Z] STOP session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 compactFlagPath=null
+[2026-03-16T03:55:25.627Z] STOP session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 compactFlagPath=null
+[2026-03-16T03:55:31.428Z] STOP session_id=c05d1c77-4924-422e-a191-8de7f443f7c9 compactFlagPath=null
+[2026-03-16T04:02:22.472Z] SESSION-START source=startup session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:06:20.773Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:07:26.810Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:07:57.987Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:09:08.929Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:09:38.256Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:10:05.380Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:10:16.264Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:11:38.904Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:11:44.210Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:15:23.764Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:18:13.092Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:20:34.188Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:21:05.242Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:22:00.083Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:22:08.916Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:23:24.323Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:23:29.066Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:34:21.509Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:34:54.279Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:35:11.952Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:35:19.716Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:35:32.530Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:35:41.762Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:36:57.348Z] SESSION-START source=startup session_id=5fa81551-4c6c-47fd-b7bb-82bab562311a isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:42:08.484Z] SESSION-START source=startup session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:42:44.690Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:45:45.432Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T04:46:02.362Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:46:19.335Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:46:48.547Z] SESSION-START source=startup session_id=b1b8de33-bf92-437b-bcb8-aa91711be0c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:51:11.129Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:51:15.964Z] STOP session_id=5fa81551-4c6c-47fd-b7bb-82bab562311a compactFlagPath=null
+[2026-03-16T04:51:39.323Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:52:32.784Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T04:52:46.163Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T04:52:47.715Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:53:42.879Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:54:23.465Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T04:54:28.194Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T04:54:28.337Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T04:55:33.428Z] STOP session_id=5fa81551-4c6c-47fd-b7bb-82bab562311a compactFlagPath=null
+[2026-03-16T04:58:16.809Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:58:50.838Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:59:17.873Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:59:33.800Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T04:59:52.449Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T05:01:36.442Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:01:43.065Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:02:02.756Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:02:11.027Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:02:57.847Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:04:06.613Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:04:10.323Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T05:04:13.132Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:04:33.237Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:04:39.479Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T05:07:27.961Z] STOP session_id=5fa81551-4c6c-47fd-b7bb-82bab562311a compactFlagPath=null
+[2026-03-16T05:08:36.958Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:08:48.892Z] STOP session_id=5fa81551-4c6c-47fd-b7bb-82bab562311a compactFlagPath=null
+[2026-03-16T05:09:13.608Z] STOP session_id=5fa81551-4c6c-47fd-b7bb-82bab562311a compactFlagPath=null
+[2026-03-16T05:09:30.184Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:09:32.881Z] STOP session_id=5fa81551-4c6c-47fd-b7bb-82bab562311a compactFlagPath=null
+[2026-03-16T05:10:05.980Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:10:12.480Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:10:52.361Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:11:46.584Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:11:48.662Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:11:51.143Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:12:33.449Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T05:13:44.013Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:13:58.013Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:14:34.848Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:15:11.989Z] SESSION-START source=startup session_id=697371b8-83f9-46e1-b0be-2ae35c397059 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:15:45.105Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:15:58.302Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:15:58.778Z] SESSION-START source=resume session_id=697371b8-83f9-46e1-b0be-2ae35c397059 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:16:24.076Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:16:36.532Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:16:37.929Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:16:43.048Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:17:00.056Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:17:24.089Z] SESSION-START source=resume session_id=f905787f-1f72-4388-a908-bc07abb51312 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:18:01.674Z] STOP session_id=f905787f-1f72-4388-a908-bc07abb51312 compactFlagPath=null
+[2026-03-16T05:18:32.604Z] STOP session_id=697371b8-83f9-46e1-b0be-2ae35c397059 compactFlagPath=null
+[2026-03-16T05:18:38.387Z] SESSION-START source=startup session_id=bbfd0248-b5f4-4125-ac5f-e9d3ddc8e0e0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:19:49.726Z] SESSION-START source=startup session_id=ad0f7b31-268c-490a-86c3-c0a73dcb2e58 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:19:52.993Z] SESSION-START source=resume session_id=bbfd0248-b5f4-4125-ac5f-e9d3ddc8e0e0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:20:20.217Z] SESSION-START source=resume session_id=697371b8-83f9-46e1-b0be-2ae35c397059 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:20:21.910Z] STOP session_id=bbfd0248-b5f4-4125-ac5f-e9d3ddc8e0e0 compactFlagPath=null
+[2026-03-16T05:20:57.017Z] STOP session_id=5fa81551-4c6c-47fd-b7bb-82bab562311a compactFlagPath=null
+[2026-03-16T05:21:08.218Z] SESSION-START source=resume session_id=697371b8-83f9-46e1-b0be-2ae35c397059 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:24:07.393Z] SESSION-START source=resume session_id=ad0f7b31-268c-490a-86c3-c0a73dcb2e58 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:24:37.188Z] STOP session_id=ad0f7b31-268c-490a-86c3-c0a73dcb2e58 compactFlagPath=null
+[2026-03-16T05:25:10.725Z] STOP session_id=697371b8-83f9-46e1-b0be-2ae35c397059 compactFlagPath=null
+[2026-03-16T05:25:29.579Z] STOP session_id=697371b8-83f9-46e1-b0be-2ae35c397059 compactFlagPath=null
+[2026-03-16T05:26:17.253Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:26:29.321Z] STOP session_id=697371b8-83f9-46e1-b0be-2ae35c397059 compactFlagPath=null
+[2026-03-16T05:26:36.896Z] STOP session_id=697371b8-83f9-46e1-b0be-2ae35c397059 compactFlagPath=null
+[2026-03-16T05:26:47.127Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:27:48.572Z] STOP session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 compactFlagPath=null
+[2026-03-16T05:28:10.069Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:28:36.198Z] SESSION-START source=resume session_id=bbfd0248-b5f4-4125-ac5f-e9d3ddc8e0e0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:28:50.619Z] SESSION-START source=resume session_id=bbfd0248-b5f4-4125-ac5f-e9d3ddc8e0e0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:29:00.724Z] SESSION-START source=resume session_id=ad0f7b31-268c-490a-86c3-c0a73dcb2e58 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:29:07.333Z] STOP session_id=bbfd0248-b5f4-4125-ac5f-e9d3ddc8e0e0 compactFlagPath=null
+[2026-03-16T05:29:22.415Z] STOP session_id=ad0f7b31-268c-490a-86c3-c0a73dcb2e58 compactFlagPath=null
+[2026-03-16T05:29:22.611Z] STOP session_id=bbfd0248-b5f4-4125-ac5f-e9d3ddc8e0e0 compactFlagPath=null
+[2026-03-16T05:29:25.832Z] SESSION-START source=resume session_id=ad0f7b31-268c-490a-86c3-c0a73dcb2e58 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:29:29.662Z] STOP session_id=bbfd0248-b5f4-4125-ac5f-e9d3ddc8e0e0 compactFlagPath=null
+[2026-03-16T05:29:37.878Z] STOP session_id=ad0f7b31-268c-490a-86c3-c0a73dcb2e58 compactFlagPath=null
+[2026-03-16T05:29:53.354Z] STOP session_id=bbfd0248-b5f4-4125-ac5f-e9d3ddc8e0e0 compactFlagPath=null
+[2026-03-16T05:29:56.845Z] SESSION-START source=resume session_id=ad0f7b31-268c-490a-86c3-c0a73dcb2e58 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:30:49.489Z] SESSION-START source=resume session_id=ceff10ec-f225-403d-970d-3eaee413e5c7 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:34:36.482Z] SESSION-START source=startup session_id=5292c3a0-0e60-4c2d-b03b-0efe2f446d0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:35:25.958Z] SESSION-START source=startup session_id=7a744f00-8d04-499f-a717-737207fb2ed8 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:35:45.572Z] SESSION-START source=resume session_id=5292c3a0-0e60-4c2d-b03b-0efe2f446d0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:35:58.202Z] SESSION-START source=startup session_id=5ecc33c5-84d5-4101-ba9a-328012b47aad isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:36:18.914Z] STOP session_id=5292c3a0-0e60-4c2d-b03b-0efe2f446d0b compactFlagPath=null
+[2026-03-16T05:36:53.062Z] SESSION-START source=resume session_id=7a744f00-8d04-499f-a717-737207fb2ed8 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:37:18.150Z] STOP session_id=7a744f00-8d04-499f-a717-737207fb2ed8 compactFlagPath=null
+[2026-03-16T05:38:16.485Z] SESSION-START source=resume session_id=5292c3a0-0e60-4c2d-b03b-0efe2f446d0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:39:01.847Z] SESSION-START source=resume session_id=5292c3a0-0e60-4c2d-b03b-0efe2f446d0b isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T05:39:35.498Z] STOP session_id=5292c3a0-0e60-4c2d-b03b-0efe2f446d0b compactFlagPath=null
+[2026-03-16T05:39:52.844Z] STOP session_id=5292c3a0-0e60-4c2d-b03b-0efe2f446d0b compactFlagPath=null
+[2026-03-16T06:10:07.835Z] PRE-COMPACT session_id=5ecc33c5-84d5-4101-ba9a-328012b47aad trigger=auto cwd=/Users/danilokhury/Apps/Synabun
+[2026-03-16T06:11:24.638Z] SESSION-START source=compact session_id=5ecc33c5-84d5-4101-ba9a-328012b47aad isCompactRestart=true cacheExists=true convMemory=true
+[2026-03-16T06:44:42.541Z] STOP session_id=5ecc33c5-84d5-4101-ba9a-328012b47aad compactFlagPath=null
+[2026-03-16T15:03:00.014Z] SESSION-START source=startup session_id=e6ff6f59-1a3a-4288-828b-625d4f8e82d6 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:03:43.698Z] SESSION-START source=startup session_id=19094cd2-acad-4537-9eff-d3756b6615a1 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:06:19.685Z] SESSION-START source=startup session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:07:59.539Z] SESSION-START source=resume session_id=e6ff6f59-1a3a-4288-828b-625d4f8e82d6 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:08:09.699Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:08:42.235Z] STOP session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 compactFlagPath=null
+[2026-03-16T15:09:17.601Z] SESSION-START source=startup session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:09:34.516Z] SESSION-START source=resume session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:10:14.485Z] SESSION-START source=resume session_id=e6ff6f59-1a3a-4288-828b-625d4f8e82d6 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:10:39.535Z] SESSION-START source=resume session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:10:45.942Z] SESSION-START source=resume session_id=e6ff6f59-1a3a-4288-828b-625d4f8e82d6 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:11:17.245Z] SESSION-START source=startup session_id=b5c470b4-47a9-4a18-ba4a-acab058ff96a isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:11:52.631Z] STOP session_id=e6ff6f59-1a3a-4288-828b-625d4f8e82d6 compactFlagPath=null
+[2026-03-16T15:12:09.931Z] STOP session_id=e6ff6f59-1a3a-4288-828b-625d4f8e82d6 compactFlagPath=null
+[2026-03-16T15:12:23.763Z] SESSION-START source=resume session_id=b5c470b4-47a9-4a18-ba4a-acab058ff96a isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:13:12.696Z] STOP session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 compactFlagPath=null
+[2026-03-16T15:14:01.100Z] STOP session_id=b5c470b4-47a9-4a18-ba4a-acab058ff96a compactFlagPath=null
+[2026-03-16T15:16:43.156Z] STOP session_id=19094cd2-acad-4537-9eff-d3756b6615a1 compactFlagPath=null
+[2026-03-16T15:16:47.099Z] SESSION-START source=resume session_id=e6ff6f59-1a3a-4288-828b-625d4f8e82d6 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:17:55.149Z] SESSION-START source=resume session_id=e6ff6f59-1a3a-4288-828b-625d4f8e82d6 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:18:15.984Z] STOP session_id=e6ff6f59-1a3a-4288-828b-625d4f8e82d6 compactFlagPath=null
+[2026-03-16T15:21:35.234Z] SESSION-START source=resume session_id=b5c470b4-47a9-4a18-ba4a-acab058ff96a isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:22:28.673Z] SESSION-START source=resume session_id=b5c470b4-47a9-4a18-ba4a-acab058ff96a isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:23:02.758Z] STOP session_id=b5c470b4-47a9-4a18-ba4a-acab058ff96a compactFlagPath=null
+[2026-03-16T15:23:26.769Z] STOP session_id=b5c470b4-47a9-4a18-ba4a-acab058ff96a compactFlagPath=null
+[2026-03-16T15:23:34.973Z] STOP session_id=b5c470b4-47a9-4a18-ba4a-acab058ff96a compactFlagPath=null
+[2026-03-16T15:24:04.963Z] STOP session_id=b5c470b4-47a9-4a18-ba4a-acab058ff96a compactFlagPath=null
+[2026-03-16T15:28:15.665Z] STOP session_id=19094cd2-acad-4537-9eff-d3756b6615a1 compactFlagPath=null
+[2026-03-16T15:32:32.006Z] SESSION-START source=resume session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:32:58.658Z] SESSION-START source=resume session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:33:30.151Z] SESSION-START source=startup session_id=bed03bda-2c6e-495f-823e-22e701c2dfea isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:33:44.814Z] STOP session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 compactFlagPath=null
+[2026-03-16T15:34:06.407Z] STOP session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 compactFlagPath=null
+[2026-03-16T15:34:17.953Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:34:28.528Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:35:28.892Z] STOP session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 compactFlagPath=null
+[2026-03-16T15:37:20.413Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:37:40.044Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:38:20.015Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:38:37.217Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:38:56.048Z] STOP session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 compactFlagPath=null
+[2026-03-16T15:39:30.947Z] STOP session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 compactFlagPath=null
+[2026-03-16T15:40:35.425Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:41:47.569Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:42:12.398Z] STOP session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 compactFlagPath=null
+[2026-03-16T15:42:15.785Z] SESSION-START source=startup session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:42:47.641Z] SESSION-START source=resume session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:43:12.324Z] SESSION-START source=resume session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:43:42.651Z] STOP session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 compactFlagPath=null
+[2026-03-16T15:43:52.385Z] STOP session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 compactFlagPath=null
+[2026-03-16T15:43:59.377Z] STOP session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 compactFlagPath=null
+[2026-03-16T15:44:20.885Z] STOP session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 compactFlagPath=null
+[2026-03-16T15:44:46.116Z] STOP session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 compactFlagPath=null
+[2026-03-16T15:47:34.148Z] SESSION-START source=resume session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:49:25.817Z] STOP session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 compactFlagPath=null
+[2026-03-16T15:49:50.741Z] STOP session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 compactFlagPath=null
+[2026-03-16T15:51:16.396Z] SESSION-START source=resume session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:51:33.272Z] STOP session_id=92cb156b-ce8a-49e9-be06-4521c75a8409 compactFlagPath=null
+[2026-03-16T15:51:39.257Z] SESSION-START source=resume session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:52:10.624Z] SESSION-START source=resume session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:53:04.153Z] STOP session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 compactFlagPath=null
+[2026-03-16T15:54:04.803Z] STOP session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 compactFlagPath=null
+[2026-03-16T15:54:59.817Z] SESSION-START source=resume session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T15:55:04.762Z] STOP session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 compactFlagPath=null
+[2026-03-16T15:55:07.420Z] STOP session_id=0b5c9f4e-9c37-4869-9a13-39d5037ba047 compactFlagPath=null
+[2026-03-16T16:10:56.943Z] SESSION-START source=startup session_id=3f120523-faa0-4514-b661-faeb1fc7530e isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T16:17:44.468Z] SESSION-START source=resume session_id=3f120523-faa0-4514-b661-faeb1fc7530e isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T16:18:55.505Z] STOP session_id=3f120523-faa0-4514-b661-faeb1fc7530e compactFlagPath=null
+[2026-03-16T16:19:20.213Z] STOP session_id=3f120523-faa0-4514-b661-faeb1fc7530e compactFlagPath=null
+[2026-03-16T16:23:04.625Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T16:26:12.977Z] SESSION-START source=resume session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T16:29:25.250Z] STOP session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 compactFlagPath=null
+[2026-03-16T16:30:51.286Z] STOP session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 compactFlagPath=null
+[2026-03-16T16:31:02.773Z] STOP session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 compactFlagPath=null
+[2026-03-16T16:31:15.116Z] STOP session_id=4cf0d2a5-e538-4a9a-95c3-e324ea861220 compactFlagPath=null
+[2026-03-16T16:56:42.011Z] PRE-COMPACT session_id=19094cd2-acad-4537-9eff-d3756b6615a1 trigger=auto cwd=/Users/danilokhury/Apps/Synabun/data/loop
+[2026-03-16T16:57:44.181Z] SESSION-START source=compact session_id=19094cd2-acad-4537-9eff-d3756b6615a1 isCompactRestart=true cacheExists=true convMemory=true
+[2026-03-16T16:58:29.134Z] SESSION-START source=startup session_id=067df80c-0c65-4a36-bf82-8af4a45efdf2 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T16:58:32.582Z] STOP session_id=19094cd2-acad-4537-9eff-d3756b6615a1 compactFlagPath=null
+[2026-03-16T16:59:49.611Z] STOP session_id=19094cd2-acad-4537-9eff-d3756b6615a1 compactFlagPath=null
+[2026-03-16T17:00:19.356Z] SESSION-START source=resume session_id=067df80c-0c65-4a36-bf82-8af4a45efdf2 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T17:01:16.197Z] STOP session_id=19094cd2-acad-4537-9eff-d3756b6615a1 compactFlagPath=null
+[2026-03-16T17:01:40.891Z] STOP session_id=19094cd2-acad-4537-9eff-d3756b6615a1 compactFlagPath=null
+[2026-03-16T17:02:04.433Z] STOP session_id=19094cd2-acad-4537-9eff-d3756b6615a1 compactFlagPath=null
+[2026-03-16T17:04:00.011Z] SESSION-START source=resume session_id=067df80c-0c65-4a36-bf82-8af4a45efdf2 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-16T17:09:34.821Z] STOP session_id=067df80c-0c65-4a36-bf82-8af4a45efdf2 compactFlagPath=null
+[2026-03-16T17:10:18.817Z] STOP session_id=067df80c-0c65-4a36-bf82-8af4a45efdf2 compactFlagPath=null
+[2026-03-16T17:11:57.750Z] STOP session_id=067df80c-0c65-4a36-bf82-8af4a45efdf2 compactFlagPath=null
+[2026-03-16T17:12:04.089Z] STOP session_id=067df80c-0c65-4a36-bf82-8af4a45efdf2 compactFlagPath=null
+[2026-03-16T17:36:25.120Z] STOP session_id=19094cd2-acad-4537-9eff-d3756b6615a1 compactFlagPath=null

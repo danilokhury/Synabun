@@ -28,6 +28,7 @@ const $ = (id) => document.getElementById(id);
 
 // ── Module-local state ──
 let _panel = null;
+let _backdrop = null;
 let _templates = [];       // user-created templates from API
 let _activeLoop = null;    // current active loop status
 let _history = [];         // completed loops / memories
@@ -994,46 +995,33 @@ async function openPanel() {
   }
   if (_panel) { _panel.focus(); return; }
 
+  // Backdrop
+  _backdrop = document.createElement('div');
+  _backdrop.className = 'studio-backdrop';
+  _backdrop.addEventListener('click', () => closePanel());
+  document.body.appendChild(_backdrop);
+
   _panel = document.createElement('div');
   _panel.className = 'automation-studio-panel glass resizable';
   _panel.id = 'automation-studio-panel';
   _panel.innerHTML = buildPanelHTML();
   document.body.appendChild(_panel);
 
-  try {
-    const saved = JSON.parse(storage.getItem(PANEL_KEY));
-    if (saved) {
-      if (saved.x != null) _panel.style.left = saved.x + 'px';
-      if (saved.y != null) _panel.style.top = Math.max(48, saved.y) + 'px';
-      if (saved.w) _panel.style.width = saved.w + 'px';
-      if (saved.h) _panel.style.height = saved.h + 'px';
-    }
-  } catch {}
-
-  if (!_panel.style.left) {
-    const vw = window.innerWidth, vh = window.innerHeight;
-    _panel.style.left = Math.max(20, (vw - 980) / 2) + 'px';
-    _panel.style.top = Math.max(48, (vh - 640) / 2) + 'px';
-  }
+  // Always open centered at default size
+  _panel.style.left = Math.max(20, (window.innerWidth - 720) / 2) + 'px';
+  _panel.style.top = Math.max(48, (window.innerHeight - 500) / 2) + 'px';
 
   wirePanel();
   await loadData();
   renderView();
-  requestAnimationFrame(() => _panel.classList.add('open'));
+  requestAnimationFrame(() => { _backdrop.classList.add('open'); _panel.classList.add('open'); });
   startPolling();
 }
 
 function closePanel() {
   if (!_panel) return;
-  try {
-    const rect = _panel.getBoundingClientRect();
-    storage.setItem(PANEL_KEY, JSON.stringify({
-      x: Math.round(rect.left), y: Math.round(rect.top),
-      w: Math.round(rect.width), h: Math.round(rect.height),
-    }));
-  } catch {}
-
   stopPolling();
+  if (_backdrop) { _backdrop.remove(); _backdrop = null; }
   _panel.remove(); _panel = null;
   _templates = []; _activeLoop = null; _history = [];
   _view = 'welcome'; _selected = null;

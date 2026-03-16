@@ -11,6 +11,76 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/session-start.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/prompt-submit.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/pre-compact.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/stop.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^Edit$|^Write$|^NotebookEdit$|Syna[Bb]un__remember",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/post-remember.mjs\"",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "^ExitPlanMode$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/post-plan.mjs\"",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   },
   "env": {
