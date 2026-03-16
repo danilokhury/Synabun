@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-16T18:37:12.841Z",
+  "_updated": "2026-03-16T19:45:11.391Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -28,7 +28,7 @@
   },
   "synabun-layout-version": "v6-polished",
   "neural-interface-config": {
-    "visualizationEnabled": false,
+    "visualizationEnabled": true,
     "scale": 1,
     "glassOpacity": 0.72,
     "glassBlur": 40,
@@ -23796,17 +23796,7 @@
       "selectedNodeId": "dc33bfe5-2c6d-4b7d-be8d-826af43d09e9"
     }
   ],
-  "neural-terminal-active-sessions": [
-    {
-      "id": "edf1621660d23d3991de09231420534b",
-      "profile": "shell",
-      "label": "Shell",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": null,
-      "floatColor": null
-    }
-  ],
+  "neural-terminal-active-sessions": [],
   "neural-terminal-active-sessions-layout": {
     "detached": false,
     "floatPos": null,
