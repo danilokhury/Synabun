@@ -261,14 +261,11 @@ function injectStyles() {
       background: rgba(18, 18, 20, 0.92);
       backdrop-filter: blur(60px) saturate(1.5);
       -webkit-backdrop-filter: blur(60px) saturate(1.5);
-      border: 1px solid rgba(255,255,255,0.10);
+      border: 0.5px solid rgba(255,255,255,0.06);
       border-radius: 16px;
       box-shadow:
-        0 0 0 0.5px rgba(255,255,255,0.05),
-        0 20px 60px rgba(0,0,0,0.7),
-        0 8px 24px rgba(0,0,0,0.4),
-        0 0 80px rgba(0,0,0,0.3),
-        inset 0 1px 0 rgba(255,255,255,0.07);
+        0 16px 48px rgba(0,0,0,0.5),
+        0 4px 16px rgba(0,0,0,0.3);
       overflow: hidden;
       transform: translateX(calc(100% + 20px));
       transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1),
@@ -292,7 +289,7 @@ function injectStyles() {
     /* ── Messages container (holds per-tab message divs) ── */
     .cp-messages-container {
       flex: 1; overflow: hidden; position: relative;
-      margin: 4px 8px 6px;
+      margin: 6px 8px 6px;
       background: rgba(0,0,0,0.18);
       border-radius: 12px;
       border: 1px solid rgba(255,255,255,0.03);
@@ -909,9 +906,13 @@ function injectStyles() {
     /* ── Bottom area (input + toolbar) ── */
     .cp-bottom {
       flex-shrink: 0;
-      border-top: 1px solid rgba(255,255,255,0.04);
-      background: rgba(255,255,255,0.015);
+      border-top: none;
+      border-radius: 10px;
+      margin: 0 8px 8px 8px;
+      background: rgba(22, 22, 26, 0.95);
       padding-bottom: 4px;
+      z-index: 2;
+      box-shadow: 0 -2px 8px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.06);
     }
 
     .cp-input-area {
@@ -1303,10 +1304,14 @@ function injectStyles() {
     .cp-header {
       position: relative;
       padding: 10px 10px 10px 14px;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
+      border-bottom: none;
+      border-radius: 10px;
+      margin: 8px 8px 0 8px;
       flex-shrink: 0;
       display: flex; align-items: center;
-      background: rgba(255,255,255,0.02);
+      background: rgba(22, 22, 26, 0.95);
+      z-index: 3;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.06);
     }
     .cp-header-actions {
       display: flex; align-items: center; gap: 3px; margin-left: auto; flex-shrink: 0;
@@ -1343,13 +1348,18 @@ function injectStyles() {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .cp-header-rename-btn {
-      background: none; border: none; cursor: pointer; padding: 3px;
-      color: rgba(255,255,255,0.2); display: flex; align-items: center;
-      border-radius: 5px; transition: color 0.15s, background 0.15s;
+      display: flex; align-items: center; justify-content: center;
+      width: 24px; height: 24px; border-radius: 7px;
+      border: none; background: rgba(255,255,255,0.04);
+      color: rgba(255,255,255,0.4); cursor: pointer;
+      transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1); position: relative;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
       flex-shrink: 0;
     }
-    .cp-header-rename-btn:hover { color: rgba(100,160,255,0.7); background: rgba(100,160,255,0.1); }
-    .cp-header-rename-btn svg { width: 11px; height: 11px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+    .cp-header-rename-btn:hover { color: rgba(100,160,255,0.95); background: rgba(100,160,255,0.14); transform: scale(1.05); }
+    .cp-header-rename-btn:active { transform: scale(0.92); transition-duration: 0.06s; }
+    .cp-header-rename-btn svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
     .cp-project-bar {
       display: flex; align-items: center; gap: 4px;
       padding: 4px 10px 0;
@@ -1450,10 +1460,12 @@ function injectStyles() {
     /* ── Context gauge bar ── */
     .cp-context-bar {
       display: flex; align-items: center; gap: 6px;
-      padding: 5px 8px 6px; flex-shrink: 0;
-      margin: 0 8px;
-      background: rgba(0,0,0,0.1);
-      border-radius: 8px;
+      padding: 6px 10px; flex-shrink: 0;
+      margin: 6px 8px 0;
+      background: rgba(22, 22, 26, 0.95);
+      border-radius: 10px;
+      z-index: 2;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.06);
     }
     .cp-gauge {
       flex: 1; height: 16px; border-radius: 6px;
@@ -2249,7 +2261,10 @@ async function renderSessionMenu() {
         btn.style.display = 'none';
         input.focus(); input.select();
 
+        let committed = false;
         function commit() {
+          if (committed) return;
+          committed = true;
           const val = input.value.trim();
           input.remove();
           if (val) {
@@ -2337,6 +2352,15 @@ function renameSession(sid, currentLabel) {
   if (!sid) return;
   const btn = _panel?.querySelector('.cp-session-label');
   if (!btn) return;
+
+  // If already renaming, just refocus the existing input
+  const existing = btn.querySelector('.cp-rename-input');
+  if (existing) {
+    existing.focus();
+    existing.select();
+    return;
+  }
+
   const input = document.createElement('input');
   input.type = 'text';
   input.value = currentLabel || '';
@@ -2347,7 +2371,10 @@ function renameSession(sid, currentLabel) {
   input.focus();
   input.select();
 
+  let committed = false;
   function commit() {
+    if (committed) return;
+    committed = true;
     const val = input.value.trim();
     input.remove();
     if (val) {
@@ -4871,6 +4898,10 @@ function wireEvents() {
   });
   // Rename button (explicit pencil icon next to session label)
   const $renameBtn = _panel.querySelector('#cp-header-rename');
+  // Prevent mousedown from blurring an active rename input before click fires
+  $renameBtn?.addEventListener('mousedown', (e) => {
+    if ($sessLabel?.querySelector('.cp-rename-input')) e.preventDefault();
+  });
   $renameBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     $sessMenu.classList.remove('open');
