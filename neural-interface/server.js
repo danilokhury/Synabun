@@ -6636,10 +6636,12 @@ app.put('/api/greeting/config/:project', (req, res) => {
 app.get('/api/claude-code/ruleset', (req, res) => {
   try {
     const claudeMdPath = resolve(PROJECT_ROOT, 'CLAUDE.md');
-    if (!existsSync(claudeMdPath)) {
-      return res.status(404).json({ error: 'CLAUDE.md not found' });
+    const templatePath = resolve(__dirname, 'templates', 'CLAUDE-template.md');
+    const sourcePath = existsSync(claudeMdPath) ? claudeMdPath : templatePath;
+    if (!existsSync(sourcePath)) {
+      return res.status(404).json({ error: 'CLAUDE.md template not found' });
     }
-    const content = readFileSync(claudeMdPath, 'utf-8');
+    const content = readFileSync(sourcePath, 'utf-8');
     const format = (req.query.format || 'claude').toLowerCase();
 
     // Section markers in CLAUDE.md
