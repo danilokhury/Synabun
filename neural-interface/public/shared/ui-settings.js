@@ -32,6 +32,7 @@ const TAB_ICONS = {
   interface: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="9" y1="9" x2="21" y2="9"/></svg>',
   graphics: '<svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
   icons: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+  browser: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><ellipse cx="12" cy="12" rx="4" ry="10" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="2" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="1.5"/></svg>',
   setup: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
   skins: '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-1 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9zM6.5 13c-.83 0-1.5-.67-1.5-1.5S5.67 10 6.5 10 8 10.67 8 11.5 7.33 13 6.5 13zm3-4C8.67 9 8 8.33 8 7.5S8.67 6 9.5 6s1.5.67 1.5 1.5S10.33 9 9.5 9zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 6 14.5 6s1.5.67 1.5 1.5S15.33 9 14.5 9zm3 4c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>',
   social: '<svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>',
@@ -251,13 +252,14 @@ export function restoreInterfaceConfig() {
 
 // ── Shared tab order (variant tabs injected by order) ──
 
-const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'collections', 'memory', 'projects', 'hooks', 'skills', 'discord', 'permissions', 'social', 'skins', 'interface', 'icons'];
+const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'browser', 'collections', 'memory', 'projects', 'hooks', 'skills', 'discord', 'permissions', 'social', 'skins', 'interface', 'icons'];
 
 // ── Tab descriptor map ──
 const TAB_META = {
   server:      { label: 'General',     desc: 'API keys & status',       group: 'System' },
   setup:       { label: 'Setup',       desc: 'Claude, Gemini, Codex',   group: 'System' },
   terminal:    { label: 'Terminal',    desc: 'CLI executables',          group: 'System' },
+  browser:     { label: 'Browser',    desc: 'Playwright config',       group: 'System' },
   collections: { label: 'Database',    desc: 'SQLite storage',          group: 'Data' },
   memory:      { label: 'Recall',      desc: 'Token budget & sync',     group: 'Data' },
   projects:    { label: 'Projects',    desc: 'Workspace configs',       group: 'Data' },
@@ -572,128 +574,14 @@ function buildServerTab(settings) {
           <div class="wiz-status-dot spin" id="sys-backup-dot"></div>
           <span id="sys-backup-text"></span>
         </div>
+
       </div>`;
 }
 
-function buildSetupTab(setupStatus) {
-  const claudeConnected = setupStatus.claude?.connected || false;
-  const geminiConnected = setupStatus.gemini?.connected || false;
-  const codexConnected = setupStatus.codex?.connected || false;
-
-  const statusBadge = (on) => `<span class="setup-status-badge ${on ? 'active' : 'inactive'}">${on ? 'Connected' : 'Off'}</span>`;
-
+function buildBrowserTab() {
   return `
-      <div class="settings-tab-body" data-tab="setup">
-
-        <!-- CLAUDE (Anthropic) -->
-        <div class="iface-section collapsed" data-collapsible id="setup-claude">
-          <div class="gfx-group-title">
-            <span style="display:flex;align-items:center;gap:8px">
-              ${CHEVRON_ICON}
-              ${ANTHROPIC_ICON}
-              <span>Claude</span>
-              ${statusBadge(claudeConnected)}
-            </span>
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-integration-item${claudeConnected ? ' enabled' : ''}" id="setup-claude-mcp-row">
-              <div class="cc-integration-info">
-                <div class="cc-integration-label">SynaBun MCP</div>
-                <div class="cc-integration-path" id="setup-claude-mcp-status">${claudeConnected ? 'Registered in ~/.claude.json' : 'Not connected'}</div>
-              </div>
-              <button class="cc-toggle${claudeConnected ? ' on' : ''}" id="setup-claude-mcp-toggle"></button>
-            </div>
-            <button class="cc-copy-btn" id="setup-claude-cli-copy" style="margin-top:4px">${COPY_ICON} Copy CLI Command</button>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">CLAUDE.md Ruleset</div>
-              <div class="cc-ruleset-preview" id="setup-claude-ruleset-preview">Loading...</div>
-              <button class="cc-copy-btn" id="setup-claude-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
-              <div class="setup-hint">Paste into your project's <code>CLAUDE.md</code></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- GEMINI (Google) -->
-        <div class="iface-section collapsed" data-collapsible id="setup-gemini">
-          <div class="gfx-group-title">
-            <span style="display:flex;align-items:center;gap:8px">
-              ${CHEVRON_ICON}
-              ${GEMINI_ICON}
-              <span>Gemini</span>
-              ${statusBadge(geminiConnected)}
-            </span>
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-integration-item${geminiConnected ? ' enabled' : ''}" id="setup-gemini-mcp-row">
-              <div class="cc-integration-info">
-                <div class="cc-integration-label">SynaBun MCP</div>
-                <div class="cc-integration-path" id="setup-gemini-mcp-status">${geminiConnected ? 'Registered in ~/.gemini/settings.json' : 'Not connected'}</div>
-              </div>
-              <button class="cc-toggle${geminiConnected ? ' on' : ''}" id="setup-gemini-mcp-toggle"></button>
-            </div>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.gemini/settings.json)</span></div>
-              <div class="cc-ruleset-preview" id="setup-gemini-config-preview" style="max-height:120px">Loading...</div>
-              <button class="cc-copy-btn" id="setup-gemini-config-copy" style="margin-top:4px">${COPY_ICON} Copy JSON Config</button>
-            </div>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">GEMINI.md Ruleset</div>
-              <div class="cc-ruleset-preview" id="setup-gemini-ruleset-preview">Loading...</div>
-              <button class="cc-copy-btn" id="setup-gemini-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
-              <div class="setup-hint">Paste into your project's <code>GEMINI.md</code></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- CODEX (OpenAI) -->
-        <div class="iface-section collapsed" data-collapsible id="setup-codex">
-          <div class="gfx-group-title">
-            <span style="display:flex;align-items:center;gap:8px">
-              ${CHEVRON_ICON}
-              ${OPENAI_ICON}
-              <span>Codex</span>
-              ${statusBadge(codexConnected)}
-            </span>
-          </div>
-          <div class="cc-section-body">
-            <div class="cc-integration-item${codexConnected ? ' enabled' : ''}" id="setup-codex-mcp-row">
-              <div class="cc-integration-info">
-                <div class="cc-integration-label">SynaBun MCP</div>
-                <div class="cc-integration-path" id="setup-codex-mcp-status">${codexConnected ? 'Registered in ~/.codex/config.toml' : 'Not connected'}</div>
-              </div>
-              <button class="cc-toggle${codexConnected ? ' on' : ''}" id="setup-codex-mcp-toggle"></button>
-            </div>
-            <button class="cc-copy-btn" id="setup-codex-cli-copy" style="margin-top:4px">${COPY_ICON} Copy CLI Command</button>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.codex/config.toml)</span></div>
-              <div class="cc-ruleset-preview" id="setup-codex-config-preview" style="max-height:120px">Loading...</div>
-              <button class="cc-copy-btn" id="setup-codex-config-copy" style="margin-top:4px">${COPY_ICON} Copy TOML Config</button>
-            </div>
-
-            <div style="margin-top:12px">
-              <div class="cc-greeting-label" style="margin-bottom:4px">AGENTS.md Ruleset</div>
-              <div class="cc-ruleset-preview" id="setup-codex-ruleset-preview">Loading...</div>
-              <button class="cc-copy-btn" id="setup-codex-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
-              <div class="setup-hint">Paste into your project's <code>AGENTS.md</code></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- BROWSER (Playwright) -->
-        <div class="iface-section collapsed" data-collapsible id="setup-browser">
-          <div class="gfx-group-title">
-            <span style="display:flex;align-items:center;gap:8px">
-              ${CHEVRON_ICON}
-              ${BROWSER_ICON}
-              <span>Browser</span>
-              <span class="setup-status-badge inactive" id="setup-browser-badge">Playwright</span>
-            </span>
-          </div>
-          <div class="cc-section-body">
+      <div class="settings-tab-body" data-tab="browser">
+        <div id="setup-browser">
 
             <!-- ════ QUICK SETUP (always visible, no collapsible) ════ -->
             <div class="bc-card" id="bcg-executable">
@@ -708,37 +596,23 @@ function buildSetupTab(setupStatus) {
                 <div class="browser-cfg-hint" id="bc-detected-path"></div>
               </div>
               <div class="bc-card-row">
-                <label class="bc-lbl">Mode</label>
+                <label class="bc-lbl">Browser</label>
                 <div class="bc-inline-group">
-                  <input type="hidden" id="bc-headless" value="false">
-                  <div class="cc-dropdown bc-dropdown" data-for="bc-headless">
+                  <input type="hidden" id="bc-browser" value="auto">
+                  <div class="cc-dropdown bc-dropdown" data-for="bc-browser" id="bc-browser-dropdown">
                     <button class="cc-dropdown-trigger" type="button">
-                      <span class="cc-dropdown-value">Headed</span>
+                      <span class="cc-dropdown-value">Auto-detect</span>
                       <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
                     </button>
                     <div class="cc-dropdown-menu">
-                      <div class="cc-dropdown-item" data-value="true">Headless</div>
-                      <div class="cc-dropdown-item active" data-value="false">Headed</div>
+                      <div class="cc-dropdown-item active" data-value="auto">Auto-detect</div>
+                      <div class="cc-dropdown-item" data-value="chrome">Google Chrome</div>
+                      <div class="cc-dropdown-item" data-value="msedge">Microsoft Edge</div>
+                      <div class="cc-dropdown-item" data-value="chromium">Chromium</div>
+                      <div class="cc-dropdown-item" data-value="custom">Custom path</div>
                     </div>
                   </div>
                   <input type="hidden" id="bc-channel" value="">
-                  <div class="cc-dropdown bc-dropdown" data-for="bc-channel">
-                    <button class="cc-dropdown-trigger" type="button">
-                      <span class="cc-dropdown-value">Default channel</span>
-                      <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-                    </button>
-                    <div class="cc-dropdown-menu">
-                      <div class="cc-dropdown-item active" data-value="">Default channel</div>
-                      <div class="cc-dropdown-item" data-value="chrome">Chrome</div>
-                      <div class="cc-dropdown-item" data-value="chrome-beta">Chrome Beta</div>
-                      <div class="cc-dropdown-item" data-value="chrome-dev">Chrome Dev</div>
-                      <div class="cc-dropdown-item" data-value="chrome-canary">Chrome Canary</div>
-                      <div class="cc-dropdown-item" data-value="msedge">MS Edge</div>
-                      <div class="cc-dropdown-item" data-value="msedge-beta">MS Edge Beta</div>
-                      <div class="cc-dropdown-item" data-value="msedge-dev">MS Edge Dev</div>
-                      <div class="cc-dropdown-item" data-value="msedge-canary">MS Edge Canary</div>
-                    </div>
-                  </div>
                 </div>
               </div>
               <div class="bc-card-row">
@@ -1118,6 +992,115 @@ function buildSetupTab(setupStatus) {
             </div>
             <div class="bc-status-row"><span class="browser-cfg-hint" id="bc-save-status"></span></div>
 
+        </div>
+      </div>`;
+}
+
+function buildSetupTab(setupStatus) {
+  const claudeConnected = setupStatus.claude?.connected || false;
+  const geminiConnected = setupStatus.gemini?.connected || false;
+  const codexConnected = setupStatus.codex?.connected || false;
+
+  const statusBadge = (on) => `<span class="setup-status-badge ${on ? 'active' : 'inactive'}">${on ? 'Connected' : 'Off'}</span>`;
+
+  return `
+      <div class="settings-tab-body" data-tab="setup">
+
+        <!-- CLAUDE (Anthropic) -->
+        <div class="iface-section collapsed" data-collapsible id="setup-claude">
+          <div class="gfx-group-title">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${CHEVRON_ICON}
+              ${ANTHROPIC_ICON}
+              <span>Claude</span>
+              ${statusBadge(claudeConnected)}
+            </span>
+          </div>
+          <div class="cc-section-body">
+            <div class="cc-integration-item${claudeConnected ? ' enabled' : ''}" id="setup-claude-mcp-row">
+              <div class="cc-integration-info">
+                <div class="cc-integration-label">SynaBun MCP</div>
+                <div class="cc-integration-path" id="setup-claude-mcp-status">${claudeConnected ? 'Registered in ~/.claude.json' : 'Not connected'}</div>
+              </div>
+              <button class="cc-toggle${claudeConnected ? ' on' : ''}" id="setup-claude-mcp-toggle"></button>
+            </div>
+            <button class="cc-copy-btn" id="setup-claude-cli-copy" style="margin-top:4px">${COPY_ICON} Copy CLI Command</button>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">CLAUDE.md Ruleset</div>
+              <div class="cc-ruleset-preview" id="setup-claude-ruleset-preview">Loading...</div>
+              <button class="cc-copy-btn" id="setup-claude-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
+              <div class="setup-hint">Paste into your project's <code>CLAUDE.md</code></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- GEMINI (Google) -->
+        <div class="iface-section collapsed" data-collapsible id="setup-gemini">
+          <div class="gfx-group-title">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${CHEVRON_ICON}
+              ${GEMINI_ICON}
+              <span>Gemini</span>
+              ${statusBadge(geminiConnected)}
+            </span>
+          </div>
+          <div class="cc-section-body">
+            <div class="cc-integration-item${geminiConnected ? ' enabled' : ''}" id="setup-gemini-mcp-row">
+              <div class="cc-integration-info">
+                <div class="cc-integration-label">SynaBun MCP</div>
+                <div class="cc-integration-path" id="setup-gemini-mcp-status">${geminiConnected ? 'Registered in ~/.gemini/settings.json' : 'Not connected'}</div>
+              </div>
+              <button class="cc-toggle${geminiConnected ? ' on' : ''}" id="setup-gemini-mcp-toggle"></button>
+            </div>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.gemini/settings.json)</span></div>
+              <div class="cc-ruleset-preview" id="setup-gemini-config-preview" style="max-height:120px">Loading...</div>
+              <button class="cc-copy-btn" id="setup-gemini-config-copy" style="margin-top:4px">${COPY_ICON} Copy JSON Config</button>
+            </div>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">GEMINI.md Ruleset</div>
+              <div class="cc-ruleset-preview" id="setup-gemini-ruleset-preview">Loading...</div>
+              <button class="cc-copy-btn" id="setup-gemini-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
+              <div class="setup-hint">Paste into your project's <code>GEMINI.md</code></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CODEX (OpenAI) -->
+        <div class="iface-section collapsed" data-collapsible id="setup-codex">
+          <div class="gfx-group-title">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${CHEVRON_ICON}
+              ${OPENAI_ICON}
+              <span>Codex</span>
+              ${statusBadge(codexConnected)}
+            </span>
+          </div>
+          <div class="cc-section-body">
+            <div class="cc-integration-item${codexConnected ? ' enabled' : ''}" id="setup-codex-mcp-row">
+              <div class="cc-integration-info">
+                <div class="cc-integration-label">SynaBun MCP</div>
+                <div class="cc-integration-path" id="setup-codex-mcp-status">${codexConnected ? 'Registered in ~/.codex/config.toml' : 'Not connected'}</div>
+              </div>
+              <button class="cc-toggle${codexConnected ? ' on' : ''}" id="setup-codex-mcp-toggle"></button>
+            </div>
+            <button class="cc-copy-btn" id="setup-codex-cli-copy" style="margin-top:4px">${COPY_ICON} Copy CLI Command</button>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.codex/config.toml)</span></div>
+              <div class="cc-ruleset-preview" id="setup-codex-config-preview" style="max-height:120px">Loading...</div>
+              <button class="cc-copy-btn" id="setup-codex-config-copy" style="margin-top:4px">${COPY_ICON} Copy TOML Config</button>
+            </div>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">AGENTS.md Ruleset</div>
+              <div class="cc-ruleset-preview" id="setup-codex-ruleset-preview">Loading...</div>
+              <button class="cc-copy-btn" id="setup-codex-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
+              <div class="setup-hint">Paste into your project's <code>AGENTS.md</code></div>
+            </div>
           </div>
         </div>
 
@@ -2366,6 +2349,7 @@ export async function openSettingsModal() {
         ${buildServerTab(settings)}
         ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, toolPermissions, toolCategories)}
         ${buildTerminalTab(cliConfig)}
+        ${buildBrowserTab()}
         ${buildSetupTab(setupStatus)}
         ${buildCollectionsTab(connections, settings)}
         ${buildProjectsTab(ccIntegrations)}
@@ -3810,7 +3794,7 @@ export async function openSettingsModal() {
     wireRulesetPreview('coexistence', 'coexistence');
   }
 
-  // ── Browser config (Setup tab) ──
+  // ── Browser config (Browser tab) ──
   {
     // Sub-group collapsing
     overlay.querySelectorAll('.browser-cfg-group-title[data-collapsible-sub]').forEach(title => {
@@ -3977,6 +3961,55 @@ export async function openSettingsModal() {
           if (hint) hint.textContent = 'Detection failed: ' + err.message;
         } finally { detectBtn.style.opacity = ''; detectBtn.style.pointerEvents = ''; }
       });
+    }
+
+    // ── Browser selector → executablePath/channel sync ──
+    const browserDropdown = overlay.querySelector('#bc-browser-dropdown');
+    if (browserDropdown) {
+      const bcMenu = browserDropdown.querySelector('.cc-dropdown-menu');
+      if (bcMenu) {
+        bcMenu.querySelectorAll('.cc-dropdown-item').forEach(item => {
+          item.addEventListener('click', () => {
+            const val = item.dataset.value;
+            const execInput = overlay.querySelector('#bc-executablePath');
+            const channelInput = overlay.querySelector('#bc-channel');
+            const pathRow = overlay.querySelector('#bc-executablePath')?.closest('.bc-card-row');
+
+            if (val === 'auto') {
+              if (execInput) execInput.value = '';
+              if (channelInput) channelInput.value = '';
+              if (pathRow) pathRow.style.display = '';
+            } else if (val === 'custom') {
+              if (channelInput) channelInput.value = '';
+              if (pathRow) pathRow.style.display = '';
+              if (execInput) execInput.focus();
+            } else {
+              // chrome, msedge, chromium — set as channel, clear executablePath
+              if (channelInput) channelInput.value = val;
+              if (execInput) execInput.value = '';
+              if (pathRow) pathRow.style.display = '';
+            }
+          });
+        });
+      }
+      // Populate installed browsers on open
+      (async () => {
+        try {
+          const res = await fetch('/api/browser/detect-browsers');
+          const data = await res.json();
+          if (data.browsers?.length) {
+            const menu = browserDropdown.querySelector('.cc-dropdown-menu');
+            if (menu) {
+              data.browsers.forEach(b => {
+                const existing = menu.querySelector(`[data-value="${b.channel}"]`);
+                if (existing && b.path) {
+                  existing.setAttribute('data-tooltip', b.path);
+                }
+              });
+            }
+          }
+        } catch {}
+      })();
     }
 
     // ── Chrome profile picker ──
@@ -4254,7 +4287,7 @@ export async function openSettingsModal() {
         // Executable
         executablePath: val('bc-executablePath') || null,
         userDataDir: val('bc-userDataDir') || null,
-        headless: val('bc-headless') === 'false' ? false : true,
+        browser: val('bc-browser') || 'auto',
         channel: val('bc-channel') || null,
         slowMo: num('bc-slowMo', 0),
         timeout: num('bc-timeout', 30000),
@@ -4363,7 +4396,7 @@ export async function openSettingsModal() {
       setVal('bc-executablePath', cfg.executablePath);
       setVal('bc-userDataDir', cfg.userDataDir || '');
       matchProfileSelection(cfg.userDataDir || '', _synabunProfile);
-      setVal('bc-headless', String(cfg.headless ?? false));
+      setVal('bc-browser', cfg.browser || 'auto');
       setVal('bc-channel', cfg.channel || '');
       setVal('bc-slowMo', cfg.slowMo ?? 0);
       setVal('bc-timeout', cfg.timeout ?? 30000);
@@ -4534,7 +4567,7 @@ export async function openSettingsModal() {
     if (resetBtn) {
       resetBtn.addEventListener('click', () => {
         const defaults = {
-          executablePath: null, headless: false, channel: null, slowMo: 0,
+          executablePath: null, browser: 'auto', channel: null, slowMo: 0,
           timeout: 30000, navigationTimeout: 30000, extraArgs: null,
           viewport: { width: 1280, height: 800 }, screen: { width: 1920, height: 1080 },
           deviceScaleFactor: 1, isMobile: false, hasTouch: false,
