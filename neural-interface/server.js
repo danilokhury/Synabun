@@ -4243,9 +4243,24 @@ app.post('/api/loop/launch', async (req, res) => {
     // We only reuse here — never create server-side (no viewer = grace timer kills it).
     let browserSessionId = null;
     if (usesBrowser) {
-      const existingIds = [...browserSessions.keys()];
-      if (existingIds.length > 0) {
-        browserSessionId = existingIds[0];
+      // Wait up to 15s for the UI-opened browser session to be ready.
+      // The UI emits browser:open BEFORE calling this endpoint, but Chrome
+      // takes time to launch. Without waiting, the loop starts without a
+      // browser and the MCP agent creates a second one (mirror mode).
+      const maxWait = 15000;
+      const pollInterval = 500;
+      let waited = 0;
+      while (waited < maxWait) {
+        const existingIds = [...browserSessions.keys()];
+        if (existingIds.length > 0) {
+          browserSessionId = existingIds[0];
+          break;
+        }
+        await new Promise(r => setTimeout(r, pollInterval));
+        waited += pollInterval;
+      }
+
+      if (browserSessionId) {
         // Cancel any pending grace timer — this session is needed by the loop
         const reusedSession = browserSessions.get(browserSessionId);
         if (reusedSession?.graceTimer) {
@@ -4253,9 +4268,9 @@ app.post('/api/loop/launch', async (req, res) => {
           reusedSession.graceTimer = null;
           console.log(`[loop] Cleared grace timer on session ${browserSessionId}`);
         }
-        console.log(`[loop] Reusing existing browser session ${browserSessionId}`);
+        console.log(`[loop] Reusing existing browser session ${browserSessionId} (waited ${waited}ms)`);
       } else {
-        console.warn('[loop] usesBrowser=true but no browser session found — UI should have opened one');
+        console.warn(`[loop] usesBrowser=true but no browser session found after ${maxWait}ms — MCP agent will auto-create`);
       }
     }
 
@@ -10683,11 +10698,37 @@ async function createBrowserSession(options = {}) {
 
         const profileHash = createHash('md5').update(_sourceProfilePath || userDataDir).digest('hex').slice(0, 12);
         const mirrorRoot = resolve(PROJECT_ROOT, 'data', 'browser-profiles', profileHash);
+        // Wipe mirror dir completely on every launch. Stale GPU/shader caches from a
+        // different Chromium version (e.g., Playwright Chromium vs system Chrome) crash
+        // the browser. Auth files are re-synced below, so nothing is lost.
+        try {
+          if (existsSync(mirrorRoot)) { rmSync(mirrorRoot, { recursive: true, force: true }); }
+        } catch (e) { console.warn(`[browser] Could not clean mirror dir: ${e.message}`); }
         const mirrorDefault = resolve(mirrorRoot, 'Default');
-        if (!existsSync(mirrorDefault)) mkdirSync(mirrorDefault, { recursive: true });
-        console.log(`[browser] Mirroring ${_profileSourceName} → ${mirrorRoot}`);
+        mkdirSync(mirrorDefault, { recursive: true });
+        console.log(`[browser] Mirroring ${_profileSourceName} → ${mirrorRoot} (clean)`);
 
-        // Sync auth-critical files from the real profile on EVERY launch
+        // Sync root-level files from Chrome User Data dir to mirror root.
+        // Chrome CRASHES without Local State (GPU config, encryption keys, profile metadata).
+        // userDataDir here is still the Chrome User Data root (before reassignment to mirrorRoot).
+        const chromeRoot = userDataDir; // e.g., ~/Library/Application Support/Google/Chrome
+        const rootFilesToSync = ['Local State', 'First Run', 'Last Version'];
+        for (const file of rootFilesToSync) {
+          const src = resolve(chromeRoot, file);
+          const dst = resolve(mirrorRoot, file);
+          try {
+            if (existsSync(src)) copyFileSync(src, dst);
+          } catch (e) {
+            if (file === 'Local State') console.warn(`[browser] Could not copy ${file}: ${e.message}`);
+          }
+        }
+        // Create First Run marker if it doesn't exist (prevents first-run wizard)
+        const firstRunPath = resolve(mirrorRoot, 'First Run');
+        if (!existsSync(firstRunPath)) {
+          try { writeFileSync(firstRunPath, ''); } catch {}
+        }
+
+        // Sync auth-critical files from the real profile into mirror's Default/
         if (_sourceProfilePath && existsSync(_sourceProfilePath)) {
           const filesToSync = [
             'Cookies', 'Cookies-wal', 'Cookies-shm',
@@ -10718,7 +10759,7 @@ async function createBrowserSession(options = {}) {
               if (existsSync(src)) { cpSync(src, dst, { recursive: true, force: true }); syncedDirs++; }
             } catch (e) { console.warn(`[browser] Partial sync for ${dir}: ${e.message}`); }
           }
-          console.log(`[browser] Synced ${syncedFiles} files + ${syncedDirs} dirs from ${_profileSourceName}`);
+          console.log(`[browser] Synced ${syncedFiles} files + ${syncedDirs} dirs from ${_profileSourceName} + root files`);
         }
         userDataDir = mirrorRoot;
         _profileDirectory = null; // mirror uses "Default" subfolder directly
@@ -10729,19 +10770,17 @@ async function createBrowserSession(options = {}) {
           try { if (existsSync(lf)) { unlinkSync(lf); console.log(`[browser] Removed stale ${lockFile}`); } } catch {}
         }
 
-        // MUST use Playwright Chromium in mirror mode. System Chrome on macOS delegates
-        // to the running instance via Mach port IPC (app-level singleton) even with a
-        // different --user-data-dir. Playwright's CDP then connects to a phantom context
-        // while the actual window lives in the user's Chrome — screencast breaks.
+        // Mirror mode MUST use Playwright Chromium. System Chrome segfaults (EXC_BAD_ACCESS)
+        // on incomplete mirror profiles — it expects full profile structure with GPU caches,
+        // extension data, etc. Playwright Chromium is designed to handle minimal profile dirs.
         delete launchOpts.channel;
         try {
           const pwChromiumPath = chromium.executablePath();
           if (existsSync(pwChromiumPath)) {
             launchOpts.executablePath = pwChromiumPath;
-            console.log(`[browser] Mirror: using Playwright Chromium (system ${_browserLabel} would delegate via singleton)`);
+            console.log(`[browser] Mirror: using Playwright Chromium (system Chrome crashes on incomplete profiles)`);
           } else {
-            console.warn(`[browser] Playwright Chromium not installed — mirror mode may fail`);
-            console.warn(`[browser] Run: npx playwright install chromium`);
+            console.warn(`[browser] Playwright Chromium not installed! Run: npx playwright install chromium`);
           }
         } catch {
           console.warn(`[browser] Could not resolve Playwright Chromium path`);
