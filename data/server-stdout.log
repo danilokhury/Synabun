@@ -130,3 +130,169 @@
 [ws-whiteboard] Client connected (total: 1)
 [ws-whiteboard] Viewport: 1620x966 (xOffset: 70, yOffset: 49)
 [server] Restart requested — shutting down in 500ms...
+  MCP HTTP endpoint mounted at /mcp (key required for tunnel)
+  Config reloaded — SQLite: /Users/danilokhury/Apps/Synabun/mcp-server/data/memory.db, Embedding: local (384d)
+[screenshot-watcher] Watching: /Users/danilokhury/Desktop
+
+  Neural Memory Interface
+  ──────────────────────
+  Server:    http://localhost:3344
+  MCP:       http://localhost:3344/mcp
+  Storage:   SQLite (/Users/danilokhury/Apps/Synabun/mcp-server/data/memory.db)
+  Embedding: local (384d)
+  Terminal:  WebSocket on ws://localhost:3344/ws/terminal/*
+  Browser:   WebSocket on ws://localhost:3344/ws/browser/*
+  Whiteboard: WebSocket on ws://localhost:3344/ws/whiteboard
+  Cards:      WebSocket on ws://localhost:3344/ws/cards
+
+[cost-tracker] Imported 1 CLI sessions (+$5.01)
+[last-session] Check: file=false, activeClaude=0
+[ws-cards] Client connected (total: 1)
+[ws-cards] Viewport: 1710x1033
+[sync] Client connected (owner), total: 1
+[sync] broadcast "clients" → 1/1 clients
+[last-session] Check: file=false, activeClaude=0
+[ws-whiteboard] Client connected (total: 1)
+[ws-whiteboard] Viewport: 1640x984 (xOffset: 70, yOffset: 49)
+[ws-cards] Viewport: 1710x1033
+[ws-whiteboard] Viewport: 1640x984 (xOffset: 70, yOffset: 49)
+[claude-skin] Sending prompt, length: 2
+[claude-skin] Spawning: /opt/homebrew/bin/claude --print --output-format stream-json --verbose --permission-mode default --add-dir /Users/danilokhury/Apps --model claude-opus-4-6 --effort high cwd: /Users/danilokhury/Apps/Synabun
+[claude-skin] Process spawned, pid: 826
+[claude-skin] Stall timeout: 120s (effort: high)
+[claude-skin] procSessionId updated from init: f825721a-beb2-4d11-94c9-562e16312d8d
+[claude-skin] Process closed, code: 1, events: 5, buf: 0b, stale: false, awaitingPermission: false
+[claude-skin] Sending prompt, length: 6
+[claude-skin] Spawning: /opt/homebrew/bin/claude --print --output-format stream-json --verbose --permission-mode default --add-dir /Users/danilokhury/Apps --resume f825721a-beb2-4d11-94c9-562e16312d8d --model claude-opus-4-6 --effort high cwd: /Users/danilokhury/Apps/Synabun
+[claude-skin] Process spawned, pid: 859
+[claude-skin] Stall timeout: 120s (effort: high)
+[claude-skin] procSessionId updated from init: f825721a-beb2-4d11-94c9-562e16312d8d
+[claude-skin] Process closed, code: 0, events: 4, buf: 0b, stale: false, awaitingPermission: false
+[sync] broadcast "terminal:session-created" → 1/1 clients
+[claude-skin] Sending prompt, length: 9
+[claude-skin] Spawning: /opt/homebrew/bin/claude --print --output-format stream-json --verbose --permission-mode default --add-dir /Users/danilokhury/Apps --resume 45829139-8aab-4bc1-ac83-9ae58415e28c --model claude-opus-4-6 --effort high cwd: /Users/danilokhury/Apps/Synabun
+[claude-skin] Process spawned, pid: 1312
+[claude-skin] Stall timeout: 120s (effort: high)
+[sync] broadcast "terminal:session-deleted" → 1/1 clients
+[claude-skin] procSessionId updated from init: 45829139-8aab-4bc1-ac83-9ae58415e28c
+[sync] broadcast "terminal:session-created" → 1/1 clients
+[claude-skin] ⚠ STALL: no events for 35s | fileSize=83115 tailOffset=83115 unread=0b | events=12 | last=assistant | pid=1312 killed=false exitCode=null
+[claude-skin] ⚠ STALL: no events for 50s | fileSize=83115 tailOffset=83115 unread=0b | events=12 | last=assistant | pid=1312 killed=false exitCode=null
+[claude-skin] ⚠ STALL: no events for 65s | fileSize=83115 tailOffset=83115 unread=0b | events=12 | last=assistant | pid=1312 killed=false exitCode=null
+[claude-skin] ⚠ STALL: no events for 80s | fileSize=83115 tailOffset=83115 unread=0b | events=12 | last=assistant | pid=1312 killed=false exitCode=null
+[claude-skin] ▶ PROACTIVE permission card for Edit: /Users/danilokhury/Apps/Synabun/neural-interface/public/shared/ui-settings.js
+[claude-skin] ▶ Permission response for Edit: allow
+[claude-skin] ▶ Respawning with approved tools: Edit
+[claude-skin] Spawning: /opt/homebrew/bin/claude --print --output-format stream-json --verbose --permission-mode default --allowedTools Edit --add-dir /Users/danilokhury/Apps --resume 45829139-8aab-4bc1-ac83-9ae58415e28c --model claude-opus-4-6 --effort high cwd: /Users/danilokhury/Apps/Synabun
+[claude-skin] Process spawned, pid: 1384
+[claude-skin] Stall timeout: 120s (effort: high)
+[claude-skin] Process closed, code: 143, events: 13, buf: 0b, stale: true, awaitingPermission: false
+[claude-skin] procSessionId updated from init: 45829139-8aab-4bc1-ac83-9ae58415e28c
+[claude-skin] ⚠ STALL: no events for 39s | fileSize=8364 tailOffset=8364 unread=0b | events=3 | last=system/init | pid=1384 killed=false exitCode=null
+[claude-skin] ⚠ STALL: no events for 54s | fileSize=8364 tailOffset=8364 unread=0b | events=3 | last=system/init | pid=1384 killed=false exitCode=null
+[claude-skin] ⚠ STALL: no events for 69s | fileSize=8364 tailOffset=8364 unread=0b | events=3 | last=system/init | pid=1384 killed=false exitCode=null
+[claude-skin] ⚠ STALL: no events for 84s | fileSize=8364 tailOffset=8364 unread=0b | events=3 | last=system/init | pid=1384 killed=false exitCode=null
+[claude-skin] ▶ PROACTIVE permission card for Bash: node -e "
+const fs = require('fs');
+const file = 'neural-interface/public/shared/ui-settings.js';
+let code = fs.readFileSync(file, 'utf8');
+
+// 1. Extract the browser section from buildSetupTab (lines 686-1108 area)
+const browserStart = '        <!-- BROWSER (Playwright) -->';
+const browserEnd = '        <!-- COEXISTENCE RULES -->';
+
+const startIdx = code.indexOf(browserStart);
+const endIdx = code.indexOf(browserEnd);
+
+if (startIdx === -1) { console.error('Browser start not found'); process.exit(1); }
+if (endIdx === -1) { console.error('Browser end not found'); process.exit(1); }
+
+// Extract the browser block (everything between the blank line before browser and coexistence)
+const browserBlock = code.substring(startIdx, endIdx).trimEnd();
+
+// 2. Remove browser block from setup tab
+code = code.substring(0, startIdx) + code.substring(endIdx);
+
+// 3. Insert browser block into server tab (before the closing </div>\`;)
+// The server tab ends with:  </div>\`;  followed by }
+const serverClosing = '      </div>\`;\\n}\\n\\nfunction buildSetupTab';
+const serverClosingActual = code.indexOf('      </div>\`;\n}\n\nfunction buildSetupTab');
+if (serverClosingActual === -1) { console.error('Server tab closing not found'); process.exit(1); }
+
+// Insert before the closing </div> of the server tab
+// We need to find the specific closing </div> right before the template literal end
+const insertPoint = code.lastIndexOf('      </div>\`;', serverClosingActual + 10);
+
+// Actually, let's find the exact insertion point - right before the closing </div> of the server tab
+// The server tab template ends with:
+//   </div>
+//        </div>\`;
+// We want to insert after the backup status div but before the final </div>
+
+const backupStatusEnd = '</div>\\n        <div id=\"sys-backup-status\"';
+// Let's use a simpler approach - find 'sys-backup-text' and then find the closing tags after it
+
+const sysBackupText = code.indexOf('id=\"sys-backup-text\"');
+if (sysBackupText === -1) { console.error('sys-backup-text not found'); process.exit(1); }
+
+// Find the </div>\\n      </div>\` after sys-backup-text
+const afterBackup = code.indexOf('      </div>\`', sysBackupText);
+if (afterBackup === -1) { console.error('Server tab end not found'); process.exit(1); }
+
+// Insert the browser section with a divider before the closing </div>
+const browserInsertion = '\\n        <div class=\"stg-section-divider\"></div>\\n' + browserBlock + '\\n';
+
+code = code.substring(0, afterBackup) + browserInsertion + code.substring(afterBackup);
+
+fs.writeFileSync(file, code);
+console.log('Done - browser settings moved to server tab');
+"
+
+[claude-skin] ▶ Permission response for Bash: allow
+[claude-skin] ▶ Respawning with approved tools: Edit, Bash
+[claude-skin] Spawning: /opt/homebrew/bin/claude --print --output-format stream-json --verbose --permission-mode default --allowedTools Edit Bash --add-dir /Users/danilokhury/Apps --resume 45829139-8aab-4bc1-ac83-9ae58415e28c --model claude-opus-4-6 --effort high cwd: /Users/danilokhury/Apps/Synabun
+[claude-skin] Process spawned, pid: 1434
+[claude-skin] Stall timeout: 120s (effort: high)
+[claude-skin] Process closed, code: 143, events: 12, buf: 0b, stale: true, awaitingPermission: false
+[claude-skin] procSessionId updated from init: 45829139-8aab-4bc1-ac83-9ae58415e28c
+[claude-skin] ⚠ STALL: no events for 558s | fileSize=307768 tailOffset=307768 unread=0b | events=22 | last=user | pid=1434 killed=false exitCode=null
+[claude-skin] ⚡ STALL RETRY 1/2 — respawning with --resume
+[claude-skin] Spawning: /opt/homebrew/bin/claude --print --output-format stream-json --verbose --permission-mode default --allowedTools Edit Bash --add-dir /Users/danilokhury/Apps --resume 45829139-8aab-4bc1-ac83-9ae58415e28c --model claude-opus-4-6 --effort high cwd: /Users/danilokhury/Apps/Synabun
+[claude-skin] Process spawned, pid: 1497
+[claude-skin] Stall timeout: 120s (effort: high)
+[claude-skin] Process closed, code: 143, events: 22, buf: 0b, stale: true, awaitingPermission: false
+[claude-skin] procSessionId updated from init: 45829139-8aab-4bc1-ac83-9ae58415e28c
+[browser] Detected chrome profile: --profile-directory=Profile 1
+[browser] Using chrome User Data dir: /Users/danilokhury/Library/Application Support/Google/Chrome
+[browser] Chrome profile detected — using mirror mode
+[browser] Mirroring Profile 1 → /Users/danilokhury/Apps/Synabun/data/browser-profiles/3b2234ac7f80 (clean)
+[browser] Full profile copy: Profile 1 → mirror Default/
+[browser] Mirror: using system Chrome binary (full profile copy)
+[sync] broadcast "notification" → 1/1 clients
+[browser] Launching persistent context at: /Users/danilokhury/Apps/Synabun/data/browser-profiles/3b2234ac7f80
+[browser] Creating CDP session... persistent: true page url: https://www.youtube.com/
+[browser] CDP session created successfully via context
+[sync] broadcast "browser:session-created" → 1/1 clients
+[ws-browser] Client connected for session e02c471e7c88dbd995254d855d8e3501 persistent: true clients: 1
+[screencast] Starting screencast, CDP session exists: true persistent: true
+[ws-browser] Client connected for session e02c471e7c88dbd995254d855d8e3501 persistent: true clients: 2
+[screencast] Page.startScreencast sent successfully
+[screencast] Frame #1 received (25124 chars)
+[screencast] Frame #2 received (25132 chars)
+[screencast] Frame #3 received (26368 chars)
+[claude-skin] Process closed, code: 0, events: 38, buf: 0b, stale: false, awaitingPermission: false
+Browser page closed for session e02c471e7c88dbd995254d855d8e3501
+Browser context closed for session e02c471e7c88dbd995254d855d8e3501
+[sync] broadcast "browser:session-deleted" → 1/1 clients
+[sync] broadcast "browser:session-deleted" → 1/1 clients
+[ws-cards] Client disconnected (remaining: 0)
+[sync] Client disconnected (owner), total: 0
+[ws-whiteboard] Client disconnected (remaining: 0)
+[ws-cards] Client connected (total: 1)
+[ws-cards] Viewport: 1710x1033
+[sync] Client connected (owner), total: 1
+[sync] broadcast "clients" → 1/1 clients
+[ws-whiteboard] Client connected (total: 1)
+[ws-whiteboard] Viewport: 1640x984 (xOffset: 70, yOffset: 49)
+[last-session] Check: file=true, activeClaude=1
+[server] Restart requested — shutting down in 500ms...

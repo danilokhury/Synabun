@@ -8,3 +8,8 @@
 (Use `node --trace-warnings ...` to show where the warning was created)
 (node:541) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
+(node:541) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-17 15:59:44.451 defaults[665:7341] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument
