@@ -1418,3 +1418,23 @@
 [2026-03-17T15:15:27.931Z] STOP: GIVE UP: max retries reached for user learning
 [2026-03-17T15:17:37.146Z] CHECK: session=42dc7103... msgCount=10 threshold=3 nudgeCount=3 maxNudges=3 observed=false
 [2026-03-17T15:17:37.146Z] SKIP: max nudges reached (3 >= 3)
+[2026-03-17T15:31:11.260Z] STOP: CHECK 2.5: pending=undefined retries=0 editCount=1
+[2026-03-17T15:35:21.395Z] CHECK: session=42dc7103... msgCount=2 threshold=3 nudgeCount=0 maxNudges=3 observed=false
+[2026-03-17T15:35:21.396Z] SKIP: msgCount 2 < threshold 3
+[2026-03-17T15:38:20.537Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0
+[2026-03-17T15:39:36.911Z] CHECK: session=42dc7103... msgCount=3 threshold=3 nudgeCount=0 maxNudges=3 observed=false
+[2026-03-17T15:39:36.911Z] FIRE: nudge #1 (expectedNudges=1)
+[2026-03-17T15:39:36.911Z] PERSIST: nudgeCount saved as 1
+[2026-03-17T15:40:13.069Z] STOP: CHECK 2.5: pending=true retries=0 editCount=0
+[2026-03-17T15:40:13.069Z] STOP: FIRE: user learning obligation (retry 1/3)
+[2026-03-17T15:40:19.983Z] STOP: CHECK 2.5: pending=true retries=1 editCount=0
+[2026-03-17T15:40:19.983Z] STOP: FIRE: user learning obligation (retry 2/3)
+[2026-03-17T15:40:52.770Z] STOP: CHECK 2.5: pending=true retries=2 editCount=0
+[2026-03-17T15:40:52.771Z] STOP: FIRE: user learning obligation (retry 3/3)
+[2026-03-17T15:41:00.489Z] STOP: CHECK 2.5: pending=true retries=3 editCount=0
+[2026-03-17T15:41:00.489Z] STOP: GIVE UP: max retries reached for user learning
+[2026-03-17T15:46:09.737Z] CHECK: session=42dc7103... msgCount=4 threshold=3 nudgeCount=1 maxNudges=3 observed=false
+[2026-03-17T15:46:09.737Z] SKIP: expectedNudges 1 <= nudgeCount 1
+[2026-03-17T15:50:00.477Z] CHECK: session=42dc7103... msgCount=5 threshold=3 nudgeCount=1 maxNudges=3 observed=false
+[2026-03-17T15:50:00.477Z] SKIP: expectedNudges 1 <= nudgeCount 1
+[2026-03-17T15:52:09.593Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0

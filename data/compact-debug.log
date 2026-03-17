@@ -946,3 +946,17 @@
 [2026-03-17T15:23:43.402Z] SESSION-START source=resume session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 isCompactRestart=false cacheExists=false convMemory=true
 [2026-03-17T15:24:41.856Z] SESSION-START source=startup session_id=9c14f84b-ef9b-46b1-a8ed-344473c37ecc isCompactRestart=false cacheExists=false convMemory=true
 [2026-03-17T15:26:03.934Z] SESSION-START source=resume session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-17T15:31:11.258Z] STOP session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 compactFlagPath=null
+[2026-03-17T15:32:40.739Z] SESSION-START source=resume session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-17T15:33:52.960Z] SESSION-START source=startup session_id=b5422957-a12b-4d25-8843-a68e9223f1d0 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-17T15:38:20.536Z] STOP session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 compactFlagPath=null
+[2026-03-17T15:40:13.068Z] STOP session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 compactFlagPath=null
+[2026-03-17T15:40:19.981Z] STOP session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 compactFlagPath=null
+[2026-03-17T15:40:52.769Z] STOP session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 compactFlagPath=null
+[2026-03-17T15:41:00.488Z] STOP session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 compactFlagPath=null
+[2026-03-17T15:44:31.995Z] SESSION-START source=startup session_id=c8e4242e-7087-4e3b-b4ae-6c82f9368722 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-17T15:45:21.149Z] SESSION-START source=resume session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-17T15:49:40.440Z] SESSION-START source=resume session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-17T15:52:09.591Z] STOP session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 compactFlagPath=null
+[2026-03-17T15:55:22.154Z] SESSION-START source=resume session_id=42dc7103-22dd-460e-81e7-5c945a20cdd4 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-17T15:55:38.998Z] SESSION-START source=startup session_id=9b3aa76f-4912-4356-ba20-78dfe12b0a79 isCompactRestart=false cacheExists=false convMemory=true
