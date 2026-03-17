@@ -14,13 +14,8 @@ import {
   deleteLoopTemplate,
   importLoopTemplates,
   fetchActiveLoop,
-  fetchLoopHistory,
-  searchMemoriesByCategory,
-  storeLoopCompletion,
   launchLoop,
   stopLoop,
-  deleteLoopHistory,
-  deleteMemory,
   fetchBrowserSessions,
 } from './api.js';
 
@@ -31,8 +26,7 @@ let _panel = null;
 let _backdrop = null;
 let _templates = [];       // user-created templates from API
 let _activeLoop = null;    // current active loop status
-let _history = [];         // completed loops / memories
-let _view = 'welcome';    // 'welcome' | 'picker' | 'detail' | 'wizard' | 'running' | 'history'
+let _view = 'welcome';    // 'welcome' | 'picker' | 'detail' | 'wizard' | 'running'
 let _selected = null;      // currently open template in detail view
 let _filterCategory = 'all';
 let _searchQuery = '';
@@ -1023,7 +1017,7 @@ function closePanel() {
   stopPolling();
   if (_backdrop) { _backdrop.remove(); _backdrop = null; }
   _panel.remove(); _panel = null;
-  _templates = []; _activeLoop = null; _history = [];
+  _templates = []; _activeLoop = null;
   _view = 'welcome'; _selected = null;
   resetDirty(); _editorContent = ''; _originalContent = '';
   _previewMode = false; _focusMode = false;
@@ -1052,7 +1046,6 @@ function buildPanelHTML() {
         </span>
       </div>
       <div class="as-header-actions">
-        <button class="as-header-btn" id="as-history-btn">History</button>
         <button class="as-header-btn" id="as-new-btn">+ New</button>
         <button class="as-header-btn" id="as-import-btn">Import</button>
       </div>
@@ -1097,7 +1090,6 @@ function wirePanel() {
   $('as-close')?.addEventListener('click', closePanel);
   $('as-new-btn')?.addEventListener('click', () => { _view = 'picker'; _selected = null; renderView(); });
   $('as-import-btn')?.addEventListener('click', () => triggerImport());
-  $('as-history-btn')?.addEventListener('click', () => { _view = 'history'; renderView(); });
 
   $('as-focus')?.addEventListener('click', () => {
     _focusMode = !_focusMode;
@@ -1124,7 +1116,7 @@ function wirePanel() {
   const onEsc = (e) => {
     if (e.key === 'Escape' && _panel) {
       if (_view === 'wizard') { _view = _selected ? 'detail' : 'welcome'; renderView(); return; }
-      if (_view === 'detail' || _view === 'history' || _view === 'running' || _view === 'picker') {
+      if (_view === 'detail' || _view === 'running' || _view === 'picker') {
         if (_detailDirty && !confirm('Discard unsaved changes?')) return;
         _view = 'welcome'; _selected = null; resetDirty(); renderView(); return;
       }
@@ -1185,20 +1177,6 @@ function startPolling() {
 
       if (prev && !_activeLoop?.active) {
         _prevLoopActive = false;
-        try {
-          const history = await fetchLoopHistory(5);
-          const latest = Array.isArray(history) ? history[0] : null;
-          if (latest?.task) {
-            const elapsed = latest.startedAt && latest.finishedAt
-              ? Math.round((new Date(latest.finishedAt) - new Date(latest.startedAt)) / 60000) : null;
-            await storeLoopCompletion({
-              task: latest.task, context: latest.context || null, template: latest.template || null,
-              iterations: `${latest.completedIterations ?? 0}/${latest.totalIterations ?? '?'}`,
-              duration: elapsed != null ? `${elapsed}min` : '?',
-              tags: ['automation', 'loop', latest.stopped ? 'stopped' : 'completed'],
-            });
-          }
-        } catch { /* best-effort */ }
       }
       if (_view === 'running') renderRunningMain();
     } catch {}
@@ -1246,7 +1224,6 @@ function renderView() {
     case 'detail': renderDetailMain(); break;
     case 'wizard': renderWizardMain(); break;
     case 'running': renderRunningMain(); break;
-    case 'history': renderHistoryMain(); break;
   }
 }
 
@@ -2167,110 +2144,6 @@ function renderRunningMain() {
 }
 
 // ═══════════════════════════════════════════
-// HISTORY VIEW
-// ═══════════════════════════════════════════
-
-async function renderHistoryMain() {
-  const main = $('as-main');
-  if (!main) return;
-
-  main.innerHTML = `
-    <div class="as-detail-header">
-      <button class="as-back-btn" data-action="go-welcome">\u2190 Back</button>
-      <h3 style="font-size:14px;font-weight:600;color:var(--t-bright)">History</h3>
-    </div>
-    <div style="padding:12px 16px">
-      <div class="as-history-toolbar">
-        <input type="text" class="as-history-search" id="as-history-search" placeholder="Search past automations..." />
-      </div>
-      <div class="as-history-list" id="as-history-list">
-        <div class="as-empty" style="padding:20px">Loading history...</div>
-      </div>
-    </div>`;
-
-  const searchInput = $('as-history-search');
-  if (searchInput) {
-    searchInput.addEventListener('input', debounce(async () => {
-      await loadHistory(searchInput.value.trim());
-    }, 300));
-  }
-  await loadHistory('');
-}
-
-async function loadHistory(query) {
-  const list = $('as-history-list');
-  if (!list) return;
-
-  try {
-    const [fileHistory, memoryResults] = await Promise.allSettled([
-      fetchLoopHistory(),
-      query ? searchMemoriesByCategory(query, 'automations', 15) : searchMemoriesByCategory('loop automation completed', 'automations', 15),
-    ]);
-
-    const items = [];
-    if (fileHistory.status === 'fulfilled' && Array.isArray(fileHistory.value)) {
-      for (const h of fileHistory.value) {
-        items.push({
-          type: 'file', id: h.sessionId,
-          name: h.task?.slice(0, 60) || 'Unnamed Loop', icon: 'refresh',
-          date: h.finishedAt || h.startedAt,
-          iterations: `${h.completedIterations ?? h.currentIteration ?? 0}/${h.totalIterations}`,
-          duration: h.maxMinutes ? `${h.maxMinutes}m` : '?',
-          content: h.task, context: h.context,
-          totalIterations: h.totalIterations || 10,
-          maxMinutes: h.maxMinutes || 30,
-          usesBrowser: !!h.usesBrowser,
-          stopped: !!h.stopped, stale: !!h.stale,
-        });
-      }
-    }
-    if (memoryResults.status === 'fulfilled' && Array.isArray(memoryResults.value)) {
-      for (const m of memoryResults.value) {
-        if (items.some(i => i.id === m.id)) continue;
-        items.push({
-          type: 'memory', id: m.id,
-          name: m.tags?.[0] || 'Automation Result', icon: 'brain',
-          date: m.created_at, iterations: '', duration: '',
-          content: m.content, importance: m.importance,
-        });
-      }
-    }
-    items.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-
-    if (!items.length) {
-      list.innerHTML = '<div class="as-empty">No automation history yet.</div>';
-      return;
-    }
-
-    list.innerHTML = items.map(item => `
-      <div class="as-history-item" data-history-id="${esc(item.id)}">
-        <div class="as-history-header" data-action="toggle-history" data-history-id="${esc(item.id)}">
-          <span class="as-history-icon">${icon(item.icon)}</span>
-          <span class="as-history-name">${esc(item.name)}</span>
-          <span class="as-history-date">${item.date ? relativeTime(item.date) : ''}</span>
-        </div>
-        <div class="as-history-meta">
-          ${item.iterations ? `<span>${item.iterations} iterations</span>` : ''}
-          ${item.duration ? `<span>${item.duration}</span>` : ''}
-          ${item.stale ? '<span class="as-history-tag--stopped">Stale</span>' : item.stopped ? '<span class="as-history-tag--stopped">Stopped</span>' : ''}
-          ${item.usesBrowser ? '<span class="as-history-tag--browser">Browser</span>' : ''}
-        </div>
-        <div class="as-history-detail" style="display:none">
-          <pre class="as-history-task-text">${esc(item.content || '')}</pre>
-          <div class="as-history-actions">
-            <button class="as-history-btn" data-action="rerun-history" data-history-id="${esc(item.id)}">Rerun</button>
-            <button class="as-history-btn" data-action="save-as-template" data-history-id="${esc(item.id)}">Save as Template</button>
-            <button class="as-history-btn as-history-btn--danger" data-action="delete-history" data-history-id="${esc(item.id)}">Delete</button>
-          </div>
-        </div>
-      </div>
-    `).join('');
-    _history = items;
-  } catch (err) {
-    list.innerHTML = `<div class="as-empty">Failed to load history: ${esc(err.message)}</div>`;
-  }
-}
-
 // ═══════════════════════════════════════════
 // EVENT HANDLERS (delegated)
 // ═══════════════════════════════════════════
@@ -2396,73 +2269,6 @@ async function handlePanelClick(e) {
     case 'export-one': {
       const tpl = _templates.find(t => t.id === id);
       if (tpl) downloadJson({ version: 1, type: 'synabun-loop-template', template: tpl }, `loop-${tpl.name.toLowerCase().replace(/\s+/g, '-')}.json`);
-      break;
-    }
-
-    case 'toggle-history': {
-      const item = btn.closest('.as-history-item');
-      const detail = item?.querySelector('.as-history-detail');
-      if (detail) {
-        const show = detail.style.display === 'none';
-        detail.style.display = show ? 'block' : 'none';
-        item.classList.toggle('expanded', show);
-      }
-      break;
-    }
-
-    case 'rerun-history': {
-      const histItem = _history.find(h => h.id === btn.dataset.historyId);
-      if (!histItem) { showToast('History entry not found'); break; }
-      serverLaunchLoop({
-        task: histItem.content,
-        context: null,
-        iterations: histItem.totalIterations || 10,
-        maxMinutes: histItem.maxMinutes || 30,
-        usesBrowser: histItem.usesBrowser || false,
-      });
-      break;
-    }
-
-    case 'save-as-template': {
-      const histItem = _history.find(h => h.id === btn.dataset.historyId);
-      if (!histItem) { showToast('History entry not found'); break; }
-      try {
-        const template = {
-          name: (histItem.content || 'Unnamed').slice(0, 50),
-          task: histItem.content || '', context: histItem.context || '',
-          iterations: histItem.totalIterations || 10, maxMinutes: histItem.maxMinutes || 30,
-          usesBrowser: histItem.usesBrowser || false,
-          category: 'custom', icon: histItem.usesBrowser ? 'globe' : 'refresh',
-        };
-        const result = await createLoopTemplate(template);
-        if (result?.id) {
-          _templates = await fetchLoopTemplates() || [];
-          showToast('Saved as custom template');
-          _view = 'welcome'; _filterCategory = 'custom';
-          renderView();
-        } else { showToast(result?.error || 'Save failed'); }
-      } catch (err) { showToast('Save failed: ' + err.message); }
-      break;
-    }
-
-    case 'delete-history': {
-      const hid = btn.dataset.historyId;
-      const histEntry = _history.find(h => h.id === hid);
-      if (!histEntry) break;
-      try {
-        if (histEntry.type === 'file') {
-          const result = await deleteLoopHistory(hid);
-          if (!result?.ok) { showToast(result?.error || 'Delete failed'); break; }
-        } else if (histEntry.type === 'memory') { await deleteMemory(hid); }
-        _history = _history.filter(h => h.id !== hid);
-        const item = btn.closest('.as-history-item');
-        if (item) item.remove();
-        if (!_history.length) {
-          const list = $('as-history-list');
-          if (list) list.innerHTML = '<div class="as-empty">No automation history yet.</div>';
-        }
-        showToast('Deleted');
-      } catch (err) { showToast('Delete failed: ' + err.message); }
       break;
     }
 

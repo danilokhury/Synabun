@@ -307,16 +307,14 @@ export function buildCategoryReference(categories, project) {
 // --- Loop staleness cleanup ---
 
 const LOOP_STALE_INACTIVITY_MS = 10 * 60 * 1000; // 10 min with no iteration activity → stale
-const LOOP_INACTIVE_CLEANUP_MS = 24 * 60 * 60 * 1000; // 24h → delete inactive loop files
 
 /**
- * Scan loop directory and deactivate stale loops / delete old inactive files.
+ * Scan loop directory and delete stale/inactive loop files.
+ * No history keeping — ended loops are removed immediately.
  *
  * A loop is stale if:
  * 1. active + exceeded its maxMinutes + 5min grace
  * 2. active + no iteration activity for 10 minutes (session died)
- *
- * Inactive loop files older than 24h are deleted.
  *
  * @param {string} loopDir - path to data/loop/
  * @returns {{ deactivated: string[], deleted: string[] }}
@@ -343,20 +341,31 @@ export function cleanupStaleLoops(loopDir) {
           const noRecentActivity = (now - lastActivity) >= LOOP_STALE_INACTIVITY_MS;
 
           if (exceededTimeCap || noRecentActivity) {
-            loop.active = false;
-            loop.stopReason = exceededTimeCap ? 'time-cap-cleanup' : 'stale-inactivity';
-            loop.finishedAt = new Date().toISOString();
-            writeFileSync(fp, JSON.stringify(loop, null, 2));
-            deactivated.push(f);
-          }
-        } else {
-          // Inactive loop — delete if older than 24h
-          const finishedAt = new Date(loop.finishedAt || loop.lastIterationAt || loop.startedAt || 0).getTime();
-          if ((now - finishedAt) >= LOOP_INACTIVE_CLEANUP_MS) {
+            // Stale loop — delete immediately (no history keeping)
             try { unlinkSync(fp); deleted.push(f); } catch { /* ok */ }
           }
+        } else {
+          // Inactive loop — delete immediately (no history keeping)
+          try { unlinkSync(fp); deleted.push(f); } catch { /* ok */ }
         }
       } catch { /* skip corrupt files */ }
+    }
+  } catch { /* ok */ }
+
+  // Delete stale pending-*.json files (client never claimed them)
+  try {
+    const pendingFiles = readdirSync(loopDir)
+      .filter(f => f.startsWith('pending-') && f.endsWith('.json'));
+    for (const f of pendingFiles) {
+      const fp = join(loopDir, f);
+      try {
+        const loop = JSON.parse(readFileSync(fp, 'utf-8'));
+        const startedAt = new Date(loop.startedAt || 0).getTime();
+        const maxMs = ((loop.maxMinutes || 60) + 5) * 60 * 1000;
+        if ((now - startedAt) >= maxMs) {
+          try { unlinkSync(fp); deleted.push(f); } catch { /* ok */ }
+        }
+      } catch { /* skip corrupt */ }
     }
   } catch { /* ok */ }
 

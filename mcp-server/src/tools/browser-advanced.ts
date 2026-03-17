@@ -105,7 +105,7 @@ export async function handleBrowserSession(args: {
   }
 
   if (args.action === 'create') {
-    const result = await ni.createSession(args.url, { headless: false });
+    const result = await ni.createSession(args.url);
     if (result.error) return text(`Create failed: ${result.error}`);
     return text(`Created session ${result.sessionId} at ${args.url || 'about:blank'}`);
   }
