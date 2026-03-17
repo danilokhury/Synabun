@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-16T23:40:16.585Z",
+  "_updated": "2026-03-17T00:34:02.752Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -10,7 +10,7 @@
     "height": "682px",
     "maxHeight": null
   },
-  "neural-terminal-open": 1,
+  "neural-terminal-open": 0,
   "neural-terminal-detached": 0,
   "neural-panel-skills-studio": {
     "x": 269,
@@ -23796,7 +23796,26 @@
       "selectedNodeId": "dc33bfe5-2c6d-4b7d-be8d-826af43d09e9"
     }
   ],
-  "neural-terminal-active-sessions": [],
+  "neural-terminal-active-sessions": [
+    {
+      "id": "f8efb635f265dd334109b97d8e0b74c2",
+      "profile": "claude-code",
+      "label": "✳ Claude Code",
+      "pinned": false,
+      "userRenamed": false,
+      "claudeSessionId": null,
+      "floatColor": "amber"
+    },
+    {
+      "id": "d8b93c6c96e770f2f7fc64b12ac3fc83",
+      "profile": "browser",
+      "label": "X",
+      "pinned": false,
+      "userRenamed": false,
+      "claudeSessionId": null,
+      "floatColor": "orange"
+    }
+  ],
   "neural-terminal-active-sessions-layout": {
     "detached": false,
     "floatPos": null,
@@ -23804,22 +23823,40 @@
     "visible": true,
     "sessions": [
       {
-        "id": "b5b997b8a5d441440d052780e2bf84d5",
-        "profile": "shell",
-        "label": "Shell",
-        "pinned": false,
-        "isDetached": true,
-        "userRenamed": false,
-        "claudeSessionId": null
-      },
-      {
-        "id": "f6cb4cc4e754dc7b3ef541f3cd411042",
+        "id": "0b6a413e836489a1ad13a62e729bf818",
         "profile": "shell",
         "label": "Shell",
         "pinned": false,
         "isDetached": false,
         "userRenamed": false,
         "claudeSessionId": null
+      },
+      {
+        "id": "f8efb635f265dd334109b97d8e0b74c2",
+        "profile": "claude-code",
+        "label": "✳ Claude Code",
+        "pinned": false,
+        "isDetached": true,
+        "userRenamed": false,
+        "claudeSessionId": null
+      },
+      {
+        "id": "d8b93c6c96e770f2f7fc64b12ac3fc83",
+        "profile": "browser",
+        "label": "X",
+        "pinned": false,
+        "isDetached": true,
+        "userRenamed": false,
+        "claudeSessionId": null
+      },
+      {
+        "id": "c848b6ecc66cefbf58a1491a9bca7b07",
+        "profile": "claude-code",
+        "label": "Claude Code · Synabun",
+        "pinned": false,
+        "isDetached": true,
+        "userRenamed": false,
+        "claudeSessionId": "931968f3-42c4-486e-bab8-bab93f726031"
       }
     ],
     "splitMode": false,
@@ -23832,18 +23869,46 @@
     ],
     "detachedTabs": [
       {
-        "sessionId": "b5b997b8a5d441440d052780e2bf84d5",
-        "sessionIdx": 0,
-        "left": 505,
-        "top": 310.5,
+        "sessionId": "f8efb635f265dd334109b97d8e0b74c2",
+        "sessionIdx": 1,
+        "left": 314,
+        "top": 161.5,
         "width": 700,
         "height": 420,
         "pinned": false,
-        "label": "Shell",
+        "label": "✳ Claude Code",
+        "userRenamed": false,
+        "claudeSessionId": null,
+        "minimized": true,
+        "floatColor": "amber"
+      },
+      {
+        "sessionId": "d8b93c6c96e770f2f7fc64b12ac3fc83",
+        "sessionIdx": 2,
+        "left": 50,
+        "top": 48,
+        "width": 1185,
+        "height": 893,
+        "pinned": false,
+        "label": "X",
         "userRenamed": false,
         "claudeSessionId": null,
         "minimized": true,
         "floatColor": "orange"
+      },
+      {
+        "sessionId": "c848b6ecc66cefbf58a1491a9bca7b07",
+        "sessionIdx": 3,
+        "left": 565,
+        "top": 370.5,
+        "width": 700,
+        "height": 420,
+        "pinned": false,
+        "label": "Claude Code · Synabun",
+        "userRenamed": false,
+        "claudeSessionId": "931968f3-42c4-486e-bab8-bab93f726031",
+        "minimized": false,
+        "floatColor": "green"
       }
     ]
   },
@@ -51076,7 +51141,8 @@
     "2f53e950-0983-4ab7-b892-6a1a8c2fae38": 1773699384571,
     "bf573195-f5da-4899-92d3-f85c3de47112": 1773700346625,
     "cae6aea5-013f-48eb-967e-989aa972e446": 1773702068037,
-    "055cddf0-c874-4d39-83a6-1c2b8b13f02b": 1773704416045
+    "055cddf0-c874-4d39-83a6-1c2b8b13f02b": 1773704416045,
+    "d7094c5b-71d8-4ebe-ace1-03c5c3d19aba": 1773706299489
   },
   "synabun-session-label:d39b3f7a-c484-482e-9602-a2984827f755": "ssh",
   "synabun-session-label:b5721cc7-a80b-4c73-a632-85ce57d08959": "Claude Code · CriticalPixel",
@@ -51223,7 +51289,7 @@
     "activeIdx": 2
   },
   "synabun-session-label:f360ab87-951f-4e0e-9f85-74ef6ebdfcd4": "Notification",
-  "synabun-claude-panel-boot-id": "b24794ea-9430-425e-b942-1d7147e15d06",
+  "synabun-claude-panel-boot-id": "c192a168-1b2d-4208-9344-7f0f67012dcf",
   "synabun-claude-panel-tabs-6b3bfd92-66a7-4027-9bf0-a14e10583bc1": {
     "tabs": [
       {
@@ -51440,6 +51506,25 @@
         "sessionId": "276e62bc-36a8-4e94-90ea-9dcc5f59cbcc",
         "label": "i need you to look i...",
         "sessionCost": 1.2222065,
+        "running": false
+      }
+    ],
+    "activeIdx": 1
+  },
+  "synabun-claude-panel-tabs-d7094c5b-71d8-4ebe-ace1-03c5c3d19aba": {
+    "tabs": [
+      {
+        "id": "272b0f27-817a-4e89-817b-155d18159419",
+        "sessionId": "e063e6d4-b1a7-408b-8520-c338ad8deed2",
+        "label": "CLaude Code sidepane...",
+        "sessionCost": 1.3050445000000004,
+        "running": false
+      },
+      {
+        "id": "b0529892-bd77-46e9-8f7c-163ce4f91793",
+        "sessionId": null,
+        "label": "New chat",
+        "sessionCost": 0,
         "running": false
       }
     ],
