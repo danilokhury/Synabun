@@ -290,11 +290,8 @@ async function main() {
 
     // Check caps — iteration limit or time limit reached
     if (iterationsDone >= totalIterations || elapsed >= maxMs) {
-      // Loop finished — deactivate and allow stop
-      loop.active = false;
-      loop.stopReason = iterationsDone >= totalIterations ? 'iteration-cap' : 'time-cap';
-      loop.finishedAt = new Date().toISOString();
-      try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
+      // Loop finished — delete the file (no history keeping)
+      try { unlinkSync(loopFlagPath); } catch { /* ok */ }
       // Fall through to remember/conversation checks
     } else if (loop.memoryPending && (loop.memoryRetries || 0) < MAX_RETRIES) {
       // Memory enforcement: block until Claude stores progress in memory

@@ -4178,10 +4178,24 @@ app.get('/api/loop/active', (req, res) => {
     const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
     for (const f of files) {
       try {
-        const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
+        const filePath = resolve(LOOP_DIR, f);
+        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
         if (data?.active) {
           const elapsed = Date.now() - new Date(data.startedAt).getTime();
-          const maxMs = (data.maxMinutes || 30) * 60 * 1000;
+          const maxMs = ((data.maxMinutes || 30) + 5) * 60 * 1000;
+          // Stale loop — past time cap + grace, delete it
+          if (elapsed >= maxMs) {
+            try { unlinkSync(filePath); } catch { /* ok */ }
+            continue;
+          }
+          // Dead PTY session (abrupt close) — delete after 2min grace
+          if (data.terminalSessionId && !terminalSessions.has(data.terminalSessionId)) {
+            const lastActivity = new Date(data.lastIterationAt || data.startedAt || 0).getTime();
+            if (Date.now() - lastActivity > 2 * 60 * 1000) {
+              try { unlinkSync(filePath); } catch { /* ok */ }
+              continue;
+            }
+          }
           return res.json({
             active: true,
             sessionId: f.replace('.json', ''),
@@ -4191,10 +4205,13 @@ app.get('/api/loop/active', (req, res) => {
             totalIterations: data.totalIterations || 10,
             maxMinutes: data.maxMinutes || 30,
             elapsedMinutes: Math.round(elapsed / 60000),
-            remainingMinutes: Math.max(0, Math.round((maxMs - elapsed) / 60000)),
+            remainingMinutes: Math.max(0, Math.round(((data.maxMinutes || 30) * 60 * 1000 - elapsed) / 60000)),
             startedAt: data.startedAt,
             lastIterationAt: data.lastIterationAt,
           });
+        } else {
+          // Inactive loop file — delete it (no history keeping)
+          try { unlinkSync(filePath); } catch { /* ok */ }
         }
       } catch { /* skip corrupt */ }
     }
@@ -4230,9 +4247,8 @@ app.post('/api/loop/launch', async (req, res) => {
             try { terminalSessions.get(data.terminalSessionId).pty.kill(); } catch {}
             terminalSessions.delete(data.terminalSessionId);
           }
-          data.active = false; delete data.pending; data.stopped = true;
-          data.finishedAt = new Date().toISOString();
-          writeFileSync(resolve(LOOP_DIR, f), JSON.stringify(data, null, 2));
+          // Kill and delete — no history keeping
+          try { unlinkSync(resolve(LOOP_DIR, f)); } catch { /* ok */ }
         }
       } catch { /* skip corrupt */ }
     }
@@ -4331,12 +4347,8 @@ app.post('/api/loop/stop', (req, res) => {
             try { session.pty.kill(); } catch {}
             terminalSessions.delete(data.terminalSessionId);
           }
-          // Mark as stopped
-          data.active = false;
-          delete data.pending;
-          data.stopped = true;
-          data.finishedAt = new Date().toISOString();
-          writeFileSync(filePath, JSON.stringify(data, null, 2));
+          // Delete the loop file — no history keeping
+          try { unlinkSync(filePath); } catch { /* ok */ }
           stopped++;
         }
       } catch { /* skip corrupt */ }
@@ -4347,76 +4359,11 @@ app.post('/api/loop/stop', (req, res) => {
   }
 });
 
-// GET /api/loop/history — list completed, stopped, and stale loop runs
-app.get('/api/loop/history', (req, res) => {
-  try {
-    if (!existsSync(LOOP_DIR)) return res.json([]);
-    const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 200);
-    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
-    const completed = [];
-    const now = Date.now();
-    for (const f of files) {
-      try {
-        const filePath = resolve(LOOP_DIR, f);
-        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
-        if (!data) continue;
+// GET /api/loop/history — no history keeping, always empty
+app.get('/api/loop/history', (_req, res) => { res.json([]); });
 
-        // Skip pending files that haven't been claimed yet (still waiting for Claude Code)
-        if (data.pending) continue;
-
-        // Include: inactive loops, OR stale active loops (past time cap + 5min grace)
-        let isStale = false;
-        if (data.active && data.startedAt) {
-          const elapsed = now - new Date(data.startedAt).getTime();
-          const maxMs = ((data.maxMinutes || 30) + 5) * 60 * 1000;
-          if (elapsed > maxMs) {
-            isStale = true;
-            // Auto-mark stale loops as stopped
-            data.active = false;
-            data.stopped = true;
-            data.stale = true;
-            data.finishedAt = data.lastIterationAt || new Date(new Date(data.startedAt).getTime() + (data.maxMinutes || 30) * 60000).toISOString();
-            try { writeFileSync(filePath, JSON.stringify(data, null, 2)); } catch { /* ok */ }
-          }
-        }
-
-        if (!data.active || isStale) {
-          completed.push({
-            sessionId: f.replace('.json', ''),
-            task: data.task,
-            context: data.context,
-            totalIterations: data.totalIterations || 10,
-            completedIterations: data.currentIteration || 0,
-            maxMinutes: data.maxMinutes || 30,
-            startedAt: data.startedAt,
-            finishedAt: data.finishedAt || data.lastIterationAt,
-            stopped: !!data.stopped,
-            stale: !!data.stale,
-            usesBrowser: !!data.usesBrowser,
-            template: data.template || null,
-          });
-        }
-      } catch { /* skip corrupt */ }
-    }
-    // Sort by finishedAt descending (newest first)
-    completed.sort((a, b) => new Date(b.finishedAt || 0) - new Date(a.finishedAt || 0));
-    res.json(completed.slice(0, limit));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// DELETE /api/loop/history/:id — delete a single history entry
-app.delete('/api/loop/history/:id', (req, res) => {
-  try {
-    const filePath = resolve(LOOP_DIR, `${req.params.id}.json`);
-    if (!existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
-    unlinkSync(filePath);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// DELETE /api/loop/history/:id — no-op, files are deleted on stop
+app.delete('/api/loop/history/:id', (_req, res) => { res.json({ ok: true }); });
 
 // POST /api/loop/complete — store a completed loop as a SQLite memory
 app.post('/api/loop/complete', async (req, res) => {
@@ -8526,7 +8473,7 @@ function attachLoopDriver(terminalSessionId) {
   let driving = false; // prevent re-entrance
 
   let consecutiveFailures = 0;
-  const MAX_DRIVE_FAILURES = 3;
+  const MAX_DRIVE_FAILURES = 10;
 
   const interval = setInterval(async () => {
     if (driving) return;
@@ -8563,22 +8510,37 @@ function attachLoopDriver(terminalSessionId) {
           consecutiveFailures++;
           console.warn(`[loop-driver] Iteration drive failed (${consecutiveFailures}/${MAX_DRIVE_FAILURES})`);
           if (consecutiveFailures >= MAX_DRIVE_FAILURES) {
-            console.error(`[loop-driver] ${MAX_DRIVE_FAILURES} consecutive failures — deactivating loop`);
-            try {
-              const failPath = resolve(LOOP_DIR, f);
-              const failState = JSON.parse(readFileSync(failPath, 'utf-8'));
-              failState.active = false;
-              failState.stopped = true;
-              failState.stopReason = 'prompt-detection-failed';
-              failState.finishedAt = new Date().toISOString();
-              writeFileSync(failPath, JSON.stringify(failState, null, 2));
-            } catch { /* ok */ }
+            console.error(`[loop-driver] ${MAX_DRIVE_FAILURES} consecutive failures — deleting loop`);
+            try { unlinkSync(resolve(LOOP_DIR, f)); } catch { /* ok */ }
             consecutiveFailures = 0;
+          } else {
+            // Back off before next retry to let any in-progress Claude response finish
+            await new Promise(r => setTimeout(r, Math.min(consecutiveFailures * 5000, 30000)));
           }
         }
 
         driving = false;
         break;
+      }
+
+      // Claim any pending-*.json for THIS terminal session by writing the initial
+      // message directly to the PTY once Claude's > prompt is detected.
+      // This makes the server authoritative for the first iteration claim, bypassing
+      // the client-side _sendOnceReady which can silently fail if the WS is closed.
+      if (!driving) {
+        const pendingFiles = readdirSync(LOOP_DIR)
+          .filter(f => f.startsWith('pending-') && f.endsWith('.json'));
+        for (const pf of pendingFiles) {
+          let pendingState;
+          try { pendingState = JSON.parse(readFileSync(resolve(LOOP_DIR, pf), 'utf-8')); } catch { continue; }
+          if (pendingState.terminalSessionId !== terminalSessionId) continue;
+          if (!pendingState.active && !pendingState.pending) continue;
+          if (loopPromptReady(session._loopDriverBuffer || '')) {
+            console.log(`[loop-driver] Claiming pending loop ${pf} via PTY write`);
+            session.pty.write('[SynaBun Loop] Begin task.\r');
+          }
+          break;
+        }
       }
     } catch { /* ok */ }
   }, 2000);
@@ -10442,25 +10404,18 @@ function detectChromeProfiles() {
 async function createBrowserSession(options = {}) {
   const sessionId = randomBytes(16).toString('hex');
   const savedCfg = loadBrowserConfig();
+  // Resolve browser selector → channel (when no explicit channel is set)
+  if (!savedCfg.channel && savedCfg.browser && savedCfg.browser !== 'auto' && savedCfg.browser !== 'custom') {
+    savedCfg.channel = savedCfg.browser; // chrome, msedge, chromium
+  }
   const execPath = findBrowserExecutable(savedCfg.channel);
 
   // Merge: saved config is base, per-session options override
   const vpW = options.width || savedCfg.viewport?.width || 1280;
   const vpH = options.height || savedCfg.viewport?.height || 800;
 
-  // Per-session headless override (from launch dialog) takes priority over saved config
-  // Note: Playwright only accepts boolean for headless (the old "new" string mode is no longer valid)
-  // Default: headed (false) — headless only when explicitly set to true
-  let headlessVal = options.headless !== undefined
-    ? (options.headless === true || options.headless === 'true')
-    : savedCfg.headless === true ? true : false;
-
-  // Linux without a display server: force headless to prevent crash
-  if (!headlessVal && process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-    headlessVal = true;
-    console.warn('[browser] No display server detected (DISPLAY/WAYLAND_DISPLAY unset) — forcing headless mode');
-  }
-  console.log(`[browser] headless=${headlessVal} (override: ${JSON.stringify(options.headless)}, config: ${JSON.stringify(savedCfg.headless)})`);
+  // Always headed — headless mode is forbidden
+  const headlessVal = false;
 
   // ── Stealth args: strip all headless indicators ──
   const stealthArgs = [
@@ -10587,10 +10542,13 @@ async function createBrowserSession(options = {}) {
     };
   }
 
-  // ── Clone real browser fingerprint ──
+  // ── Browser fingerprint ──
+  // Don't clone the UI browser's user-agent or sec-ch-ua into the automated browser.
+  // When the Neural Interface is opened in Safari or a different Chrome version, cloning
+  // creates a fingerprint mismatch (e.g., Chrome sending Safari's UA) that triggers bot
+  // detection on sites like Twitter. Let the automated Chrome use its own default UA.
   const realHeaders = options._realHeaders || {};
-  const realUA = realHeaders['user-agent'] || '';
-  const userAgent = savedCfg.userAgent || options.userAgent || realUA || undefined;
+  const userAgent = savedCfg.userAgent || undefined; // only override if explicitly configured
   const cfgAcceptLang = savedCfg.acceptLanguage || null;
   const acceptLanguage = cfgAcceptLang || realHeaders['accept-language'] || 'en-US,en;q=0.9';
   const locale = savedCfg.locale || acceptLanguage.split(',')[0].split(';')[0] || 'en-US';
@@ -10598,7 +10556,7 @@ async function createBrowserSession(options = {}) {
   // Build context options from saved config
   const contextOpts = {
     viewport: { width: vpW, height: vpH },
-    userAgent,
+    ...(userAgent ? { userAgent } : {}), // omit entirely to let Chrome use its own default
     locale,
     timezoneId: savedCfg.timezoneId || options.timezone || undefined,
     screen: savedCfg.screen || { width: options.screenWidth || 1920, height: options.screenHeight || 1080 },
@@ -10612,12 +10570,10 @@ async function createBrowserSession(options = {}) {
     strictSelectors: savedCfg.strictSelectors !== false,
     serviceWorkers: savedCfg.serviceWorkers || 'allow',
     offline: savedCfg.offline || false,
-    // Extra HTTP headers: merge config + cloned headers
+    // Extra HTTP headers: Accept-Language from config/UI + any user-configured extras
+    // sec-ch-ua headers are NOT cloned — let Chrome generate its own consistent set
     extraHTTPHeaders: {
       'Accept-Language': acceptLanguage,
-      ...(realHeaders['sec-ch-ua'] ? { 'Sec-CH-UA': realHeaders['sec-ch-ua'] } : {}),
-      ...(realHeaders['sec-ch-ua-mobile'] ? { 'Sec-CH-UA-Mobile': realHeaders['sec-ch-ua-mobile'] } : {}),
-      ...(realHeaders['sec-ch-ua-platform'] ? { 'Sec-CH-UA-Platform': realHeaders['sec-ch-ua-platform'] } : {}),
       ...(savedCfg.extraHTTPHeaders || {}),
     },
   };
@@ -10672,136 +10628,99 @@ async function createBrowserSession(options = {}) {
     //   - If the source browser IS running: mirror auth-critical files to an isolated dir
     //     and launch with Playwright Chromium (avoids singleton/lock conflicts).
     //     Cookies are encrypted on macOS and won't transfer, but Local Storage/IndexedDB will.
-    let _chromeConflict = false;
+    const _browserLabel = _sourceBrowser === 'msedge' ? 'Edge' : _sourceBrowser === 'chromium' ? 'Chromium' : 'Chrome';
     if (_isInsideChromeDir) {
-      // Detect if the source browser is currently running
-      let sourceRunning = false;
-      const _browserLabel = _sourceBrowser === 'msedge' ? 'Edge' : _sourceBrowser === 'chromium' ? 'Chromium' : 'Chrome';
+      // ── Always mirror: Chrome refuses remote debugging on its own User Data dir ──
+      // Direct mode causes "DevTools remote debugging requires a non-default data directory"
+      // and a 30s timeout. Mirror mode works reliably regardless of whether Chrome is running.
+      _profileMode = 'mirror';
+      console.log(`[browser] ${_browserLabel} profile detected — using mirror mode`);
+
+      const profileHash = createHash('md5').update(_sourceProfilePath || userDataDir).digest('hex').slice(0, 12);
+      const mirrorRoot = resolve(PROJECT_ROOT, 'data', 'browser-profiles', profileHash);
+      // Wipe mirror dir completely on every launch. Stale GPU/shader caches from a
+      // different Chromium version (e.g., Playwright Chromium vs system Chrome) crash
+      // the browser. Auth files are re-synced below, so nothing is lost.
       try {
-        if (IS_WIN) {
-          const procName = _sourceBrowser === 'msedge' ? 'msedge.exe' : 'chrome.exe';
-          sourceRunning = execSync(`tasklist /FI "IMAGENAME eq ${procName}" /NH`, { encoding: 'utf8', timeout: 3000 }).includes(procName);
-        } else if (process.platform === 'darwin') {
-          const procName = _sourceBrowser === 'msedge' ? 'Microsoft Edge' : _sourceBrowser === 'chromium' ? 'Chromium' : 'Google Chrome';
-          sourceRunning = execSync(`pgrep -x "${procName}"`, { encoding: 'utf8', timeout: 3000 }).trim().length > 0;
-        } else {
-          const procName = _sourceBrowser === 'msedge' ? 'msedge' : _sourceBrowser === 'chromium' ? 'chromium' : 'chrome';
-          sourceRunning = execSync(`pgrep -x ${procName} || pgrep -x ${procName}-browser`, { encoding: 'utf8', timeout: 3000 }).trim().length > 0;
-        }
-      } catch {} // pgrep exits non-zero when no match — not running
+        if (existsSync(mirrorRoot)) { rmSync(mirrorRoot, { recursive: true, force: true }); }
+      } catch (e) { console.warn(`[browser] Could not clean mirror dir: ${e.message}`); }
+      const mirrorDefault = resolve(mirrorRoot, 'Default');
+      mkdirSync(mirrorDefault, { recursive: true });
+      console.log(`[browser] Mirroring ${_profileSourceName} → ${mirrorRoot} (clean)`);
 
-      if (sourceRunning) {
-        // ── Mirror mode: browser is running, can't use real profile directly ──
-        _profileMode = 'mirror';
-        _chromeConflict = true;
-        console.log(`[browser] ${_browserLabel} is running — using mirror mode`);
-
-        const profileHash = createHash('md5').update(_sourceProfilePath || userDataDir).digest('hex').slice(0, 12);
-        const mirrorRoot = resolve(PROJECT_ROOT, 'data', 'browser-profiles', profileHash);
-        // Wipe mirror dir completely on every launch. Stale GPU/shader caches from a
-        // different Chromium version (e.g., Playwright Chromium vs system Chrome) crash
-        // the browser. Auth files are re-synced below, so nothing is lost.
+      // Sync root-level files from Chrome User Data dir to mirror root.
+      // Chrome CRASHES without Local State (GPU config, encryption keys, profile metadata).
+      // userDataDir here is still the Chrome User Data root (before reassignment to mirrorRoot).
+      const chromeRoot = userDataDir; // e.g., ~/Library/Application Support/Google/Chrome
+      const rootFilesToSync = ['Local State', 'First Run', 'Last Version'];
+      for (const file of rootFilesToSync) {
+        const src = resolve(chromeRoot, file);
+        const dst = resolve(mirrorRoot, file);
         try {
-          if (existsSync(mirrorRoot)) { rmSync(mirrorRoot, { recursive: true, force: true }); }
-        } catch (e) { console.warn(`[browser] Could not clean mirror dir: ${e.message}`); }
-        const mirrorDefault = resolve(mirrorRoot, 'Default');
-        mkdirSync(mirrorDefault, { recursive: true });
-        console.log(`[browser] Mirroring ${_profileSourceName} → ${mirrorRoot} (clean)`);
-
-        // Sync root-level files from Chrome User Data dir to mirror root.
-        // Chrome CRASHES without Local State (GPU config, encryption keys, profile metadata).
-        // userDataDir here is still the Chrome User Data root (before reassignment to mirrorRoot).
-        const chromeRoot = userDataDir; // e.g., ~/Library/Application Support/Google/Chrome
-        const rootFilesToSync = ['Local State', 'First Run', 'Last Version'];
-        for (const file of rootFilesToSync) {
-          const src = resolve(chromeRoot, file);
-          const dst = resolve(mirrorRoot, file);
-          try {
-            if (existsSync(src)) copyFileSync(src, dst);
-          } catch (e) {
-            if (file === 'Local State') console.warn(`[browser] Could not copy ${file}: ${e.message}`);
-          }
+          if (existsSync(src)) copyFileSync(src, dst);
+        } catch (e) {
+          if (file === 'Local State') console.warn(`[browser] Could not copy ${file}: ${e.message}`);
         }
-        // Create First Run marker if it doesn't exist (prevents first-run wizard)
-        const firstRunPath = resolve(mirrorRoot, 'First Run');
-        if (!existsSync(firstRunPath)) {
-          try { writeFileSync(firstRunPath, ''); } catch {}
-        }
-
-        // Sync auth-critical files from the real profile into mirror's Default/
-        if (_sourceProfilePath && existsSync(_sourceProfilePath)) {
-          const filesToSync = [
-            'Cookies', 'Cookies-wal', 'Cookies-shm',
-            'Login Data', 'Login Data-journal',
-            'Web Data', 'Web Data-journal',
-            'Bookmarks', 'Bookmarks.bak',
-            'Preferences',
-            'Favicons', 'Favicons-journal',
-            'Top Sites', 'Top Sites-journal',
-            'Shortcuts', 'Shortcuts-journal',
-          ];
-          const dirsToSync = ['Local Storage', 'IndexedDB', 'Session Storage'];
-          let syncedFiles = 0;
-          let syncedDirs = 0;
-          for (const file of filesToSync) {
-            const src = resolve(_sourceProfilePath, file);
-            const dst = resolve(mirrorDefault, file);
-            try {
-              if (existsSync(src)) { copyFileSync(src, dst); syncedFiles++; }
-            } catch (e) {
-              if (syncedFiles === 0 && file === 'Cookies') console.warn(`[browser] Could not copy ${file}: ${e.message}`);
-            }
-          }
-          for (const dir of dirsToSync) {
-            const src = resolve(_sourceProfilePath, dir);
-            const dst = resolve(mirrorDefault, dir);
-            try {
-              if (existsSync(src)) { cpSync(src, dst, { recursive: true, force: true }); syncedDirs++; }
-            } catch (e) { console.warn(`[browser] Partial sync for ${dir}: ${e.message}`); }
-          }
-          console.log(`[browser] Synced ${syncedFiles} files + ${syncedDirs} dirs from ${_profileSourceName} + root files`);
-        }
-        userDataDir = mirrorRoot;
-        _profileDirectory = null; // mirror uses "Default" subfolder directly
-
-        // Clean singleton lock files from the mirror dir
-        for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
-          const lf = resolve(userDataDir, lockFile);
-          try { if (existsSync(lf)) { unlinkSync(lf); console.log(`[browser] Removed stale ${lockFile}`); } } catch {}
-        }
-
-        // Mirror mode MUST use Playwright Chromium. System Chrome segfaults (EXC_BAD_ACCESS)
-        // on incomplete mirror profiles — it expects full profile structure with GPU caches,
-        // extension data, etc. Playwright Chromium is designed to handle minimal profile dirs.
-        delete launchOpts.channel;
-        try {
-          const pwChromiumPath = chromium.executablePath();
-          if (existsSync(pwChromiumPath)) {
-            launchOpts.executablePath = pwChromiumPath;
-            console.log(`[browser] Mirror: using Playwright Chromium (system Chrome crashes on incomplete profiles)`);
-          } else {
-            console.warn(`[browser] Playwright Chromium not installed! Run: npx playwright install chromium`);
-          }
-        } catch {
-          console.warn(`[browser] Could not resolve Playwright Chromium path`);
-        }
-
-        broadcastSync({ type: 'notification', level: 'info', message: `Using synced copy of ${_profileSourceName} (${_browserLabel} is running). Close ${_browserLabel} to use the real profile directly.` });
-
-      } else {
-        // ── Direct mode: browser not running, use real profile with system binary ──
-        _profileMode = 'direct';
-        console.log(`[browser] ${_browserLabel} is not running — using real profile directly`);
-
-        // Override launchOpts to use the correct system browser binary
-        const systemExec = findBrowserExecutable(_sourceBrowser);
-        if (systemExec) {
-          launchOpts.executablePath = systemExec;
-          delete launchOpts.channel; // executablePath is explicit, don't also set channel
-          console.log(`[browser] Using system ${_browserLabel}: ${systemExec}`);
-        }
-        // userDataDir and _profileDirectory stay as-is (real Chrome User Data root + profile subfolder)
       }
+      // Create First Run marker if it doesn't exist (prevents first-run wizard)
+      const firstRunPath = resolve(mirrorRoot, 'First Run');
+      if (!existsSync(firstRunPath)) {
+        try { writeFileSync(firstRunPath, ''); } catch {}
+      }
+
+      // Full recursive copy of the source profile into mirror's Default/
+      // Using the same Chrome binary means GPU/shader caches are compatible.
+      if (_sourceProfilePath && existsSync(_sourceProfilePath)) {
+        try {
+          cpSync(_sourceProfilePath, mirrorDefault, { recursive: true, force: true });
+          console.log(`[browser] Full profile copy: ${_profileSourceName} → mirror Default/`);
+        } catch (e) {
+          console.warn(`[browser] Full profile copy failed, falling back to partial: ${e.message}`);
+        }
+        // Remove lock files and active WAL/SHM files that Chrome holds locks on
+        const lockFiles = [
+          'Cookies-wal', 'Cookies-shm',
+          'Login Data-wal', 'Login Data-shm',
+          'Web Data-wal', 'Web Data-shm',
+          'Favicons-wal', 'Favicons-shm',
+          'Top Sites-wal', 'Top Sites-shm',
+          'Shortcuts-wal', 'Shortcuts-shm',
+          'LOCK', 'lockfile',
+        ];
+        for (const lf of lockFiles) {
+          const p = resolve(mirrorDefault, lf);
+          try { if (existsSync(p)) unlinkSync(p); } catch {}
+        }
+      }
+      userDataDir = mirrorRoot;
+      _profileDirectory = null; // mirror uses "Default" subfolder directly
+
+      // Clean singleton lock files from the mirror dir
+      for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+        const lf = resolve(userDataDir, lockFile);
+        try { if (existsSync(lf)) { unlinkSync(lf); console.log(`[browser] Removed stale ${lockFile}`); } } catch {}
+      }
+
+      // Mirror mode: use the system browser binary for full compatibility.
+      // The full profile was copied recursively, so GPU/shader caches are compatible
+      // with the same Chrome version. Add GPU-safety flags to prevent crashes from
+      // stale caches that may have been mid-write when copied.
+      stealthArgs.push('--disable-gpu-shader-disk-cache', '--disable-gpu-program-cache');
+      // Keep the system executable already set in launchOpts — do NOT override with Playwright Chromium.
+      // If no system executable was found, fall back to Playwright Chromium as last resort.
+      if (!launchOpts.executablePath && !launchOpts.channel) {
+        try {
+          const pwPath = chromium.executablePath();
+          if (existsSync(pwPath)) {
+            launchOpts.executablePath = pwPath;
+            console.log(`[browser] Mirror: no system browser found, falling back to Playwright Chromium`);
+          }
+        } catch {}
+      } else {
+        console.log(`[browser] Mirror: using system ${_browserLabel} binary (full profile copy)`);
+      }
+
+      broadcastSync({ type: 'notification', level: 'info', message: `Using profile copy of ${_profileSourceName} for browser automation.` });
     }
 
     // Clean singleton lock files for ALL persistent profiles (not just mirrors)
@@ -10812,7 +10731,7 @@ async function createBrowserSession(options = {}) {
     }
 
     // Add --profile-directory if targeting a specific profile subfolder (e.g., "Profile 1")
-    // Mirror mode clears _profileDirectory (uses "Default" directly), so this only applies to direct mode
+    // Mirror mode clears _profileDirectory (uses "Default" directly), so this only applies to non-Chrome profiles
     if (_profileDirectory) {
       stealthArgs.push(`--profile-directory=${_profileDirectory}`);
       console.log(`[browser] Using --profile-directory=${_profileDirectory}`);
@@ -11140,18 +11059,16 @@ app.get('/api/browser/sessions', (req, res) => {
 });
 
 app.post('/api/browser/sessions', async (req, res) => {
-  const { url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, headless } = req.body;
+  const { url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone } = req.body;
   try {
-    // Clone the real browser's headers from this HTTP request
+    // Pass accept-language from the UI browser for locale matching.
+    // user-agent and sec-ch-ua are NOT cloned — the automated Chrome generates its own
+    // to avoid fingerprint mismatches when the UI runs in Safari/Firefox/different Chrome.
     const _realHeaders = {
-      'user-agent': req.headers['user-agent'],
       'accept-language': req.headers['accept-language'],
-      'sec-ch-ua': req.headers['sec-ch-ua'],
-      'sec-ch-ua-mobile': req.headers['sec-ch-ua-mobile'],
-      'sec-ch-ua-platform': req.headers['sec-ch-ua-platform'],
     };
     const result = await createBrowserSession({
-      url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, headless, _realHeaders,
+      url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, _realHeaders,
     });
     broadcastSync({ type: 'browser:session-created', sessionId: result.sessionId, url: url || 'about:blank', profileMode: result.profileMode, profileSource: result.profileSource });
     res.json({ sessionId: result.sessionId, url: url || 'about:blank', wsEndpoint: result.wsEndpoint, profileMode: result.profileMode, profileSource: result.profileSource });
@@ -11671,6 +11588,52 @@ app.post('/api/browser/browse-folder', async (req, res) => {
     // User cancelled or dialog failed
     res.json({ path: null, cancelled: true });
   }
+});
+
+// Detect installed browser binaries on the system
+app.get('/api/browser/detect-browsers', (req, res) => {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const localAppData = process.env.LOCALAPPDATA || '';
+
+  const browserDefs = IS_WIN ? [
+    { name: 'Google Chrome', channel: 'chrome', paths: [
+      join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      join(process.env['ProgramFiles'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    ]},
+    { name: 'Microsoft Edge', channel: 'msedge', paths: [
+      join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      join(process.env['ProgramFiles'] || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    ]},
+    { name: 'Chromium', channel: 'chromium', paths: [
+      join(localAppData, 'Chromium', 'Application', 'chrome.exe'),
+    ]},
+  ] : process.platform === 'darwin' ? [
+    { name: 'Google Chrome', channel: 'chrome', paths: [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      join(home, 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'),
+    ]},
+    { name: 'Microsoft Edge', channel: 'msedge', paths: [
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    ]},
+    { name: 'Chromium', channel: 'chromium', paths: [
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    ]},
+  ] : [
+    { name: 'Google Chrome', channel: 'chrome', paths: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'] },
+    { name: 'Microsoft Edge', channel: 'msedge', paths: ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable'] },
+    { name: 'Chromium', channel: 'chromium', paths: ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium'] },
+  ];
+
+  const browsers = [];
+  for (const def of browserDefs) {
+    for (const p of def.paths) {
+      if (p && existsSync(p)) {
+        browsers.push({ name: def.name, channel: def.channel, path: p });
+        break; // first found path per browser
+      }
+    }
+  }
+  res.json({ browsers });
 });
 
 // --- Start ---
