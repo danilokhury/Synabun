@@ -2171,7 +2171,10 @@ function handleClaudeSkinWebSocket(ws) {
     if (model) args.push('--model', model);
     if (effort && ['low', 'medium', 'high', 'max'].includes(effort)) args.push('--effort', effort);
     const claudeBin = getClaudeBin();
-    const useShell = !claudeBin.includes(sep);
+    // On Windows, .cmd/.bat batch files REQUIRE shell:true (cmd.exe /c) to execute.
+    // Without it, spawn() fires ENOENT because CreateProcessW can't run batch scripts directly.
+    const useShell = !claudeBin.includes(sep)
+      || (process.platform === 'win32' && /\.(cmd|bat)$/i.test(claudeBin));
     console.log('[claude-skin] Spawning:', claudeBin, args.join(' '), 'cwd:', workDir);
 
     // ── Zero-pipe spawn: temp files for stdin AND stdout ──
@@ -2198,7 +2201,7 @@ function handleClaudeSkinWebSocket(ws) {
 
     const proc = spawn(claudeBin, args, {
       cwd: workDir,
-      env: cleanEnv,
+      env: { ...cleanEnv, ENABLE_TOOL_SEARCH: 'false' },
       stdio: [stdinFd !== null ? stdinFd : 'inherit', stdoutFd, 'inherit'],
       shell: useShell,
     });
@@ -2435,7 +2438,8 @@ function handleClaudeSkinWebSocket(ws) {
       const userMsg = err.code === 'ENOENT'
         ? 'Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code'
         : err.message;
-      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'error', message: userMsg }));
+      sendToClient({ type: 'error', message: userMsg });
+      sendToClient({ type: 'done', code: -1 });
       activeProc = null;
     });
 
