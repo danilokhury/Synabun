@@ -67,7 +67,7 @@ async function request(
  */
 export async function resolveSession(
   sessionId?: string,
-  autoCreate?: { url?: string; headless?: boolean }
+  autoCreate?: { url?: string }
 ): Promise<{ sessionId: string } | { error: string }> {
   if (sessionId) {
     // Trust the server — it will 404 if the session doesn't exist.
@@ -88,7 +88,6 @@ export async function resolveSession(
     if (autoCreate) {
       const created = await request('POST', '/api/browser/sessions', {
         url: autoCreate.url || 'about:blank',
-        ...(autoCreate.headless !== undefined && { headless: autoCreate.headless }),
       });
       if (created.error) return { error: `Failed to auto-create session: ${created.error}` };
       return { sessionId: created.sessionId as string };
@@ -117,10 +116,9 @@ export async function listSessions(): Promise<NiResponse> {
   return request('GET', '/api/browser/sessions');
 }
 
-export async function createSession(url?: string, opts?: { headless?: boolean }): Promise<NiResponse> {
+export async function createSession(url?: string): Promise<NiResponse> {
   return request('POST', '/api/browser/sessions', {
     url: url || 'about:blank',
-    ...(opts?.headless !== undefined && { headless: opts.headless }),
   });
 }
 

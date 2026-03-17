@@ -24,7 +24,6 @@ interface NiResponse {
  */
 export declare function resolveSession(sessionId?: string, autoCreate?: {
     url?: string;
-    headless?: boolean;
 }): Promise<{
     sessionId: string;
 } | {
@@ -32,9 +31,7 @@ export declare function resolveSession(sessionId?: string, autoCreate?: {
 }>;
 export declare function invalidateCache(reason: string): Promise<void>;
 export declare function listSessions(): Promise<NiResponse>;
-export declare function createSession(url?: string, opts?: {
-    headless?: boolean;
-}): Promise<NiResponse>;
+export declare function createSession(url?: string): Promise<NiResponse>;
 export declare function closeSession(sessionId: string): Promise<NiResponse>;
 export declare function navigate(sessionId: string, url: string): Promise<NiResponse>;
 export declare function goBack(sessionId: string): Promise<NiResponse>;
