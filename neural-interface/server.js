@@ -14,7 +14,7 @@ import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, dirname, extname, join, resolve, sep } from 'path';
 import { config as dotenvConfig } from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, appendFileSync, openSync, readSync, closeSync, chmodSync, watch as fsWatch } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, copyFileSync, appendFileSync, openSync, readSync, closeSync, chmodSync, watch as fsWatch } from 'fs';
 import { randomBytes, randomUUID, createHash } from 'crypto';
 import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
@@ -2093,6 +2093,7 @@ const _orphanedProcs = new Map(); // windowId → { proc, state, buffer, killTim
 const ORPHAN_GRACE_MS = 30_000;
 
 function handleClaudeSkinWebSocket(ws) {
+  const SKIN_DEBUG = process.env.CLAUDE_SKIN_DEBUG === '1';
   let activeProc = null;
   let procSessionId = null;
   let procModel = null;
@@ -2201,7 +2202,7 @@ function handleClaudeSkinWebSocket(ws) {
 
     const proc = spawn(claudeBin, args, {
       cwd: workDir,
-      env: { ...cleanEnv, ENABLE_TOOL_SEARCH: 'false' },
+      env: { ...cleanEnv, ENABLE_TOOL_SEARCH: 'true' },
       stdio: [stdinFd !== null ? stdinFd : 'inherit', stdoutFd, 'inherit'],
       shell: useShell,
     });
@@ -2282,12 +2283,15 @@ function handleClaudeSkinWebSocket(ws) {
           procSessionId = event.session_id;
           console.log('[claude-skin] procSessionId updated from init:', procSessionId);
         }
-        // Log non-stream events
+        // Log non-stream events (gated behind CLAUDE_SKIN_DEBUG to avoid blocking event loop)
         if (event.type !== 'stream_event') {
-          const contentArr = Array.isArray(event.message?.content) ? event.message.content : [];
-          const toolNames = contentArr.filter(b => b.type === 'tool_use').map(b => b.name).join(',');
-          lastLoggedType = `${event.type}${event.subtype ? '/' + event.subtype : ''}${toolNames ? ':' + toolNames : ''}`;
-          console.log(`[claude-skin] Event #${eventCount}: ${lastLoggedType}`);
+          lastLoggedType = event.type + (event.subtype ? '/' + event.subtype : '');
+          if (SKIN_DEBUG) {
+            const contentArr = Array.isArray(event.message?.content) ? event.message.content : [];
+            const toolNames = contentArr.filter(b => b.type === 'tool_use').map(b => b.name).join(',');
+            if (toolNames) lastLoggedType += ':' + toolNames;
+            console.log(`[claude-skin] Event #${eventCount}: ${lastLoggedType}`);
+          }
         }
         // Track session_id + cost from result events
         if (event.type === 'result') {
@@ -2365,19 +2369,21 @@ function handleClaudeSkinWebSocket(ws) {
     }
 
     // ── Poll stdout temp file instead of using pipe ──
-    // No pipes = no deadlock. CLI writes to file (never blocks), we poll every 50ms.
+    // No pipes = no deadlock. CLI writes to file (never blocks), we poll at ~60fps.
     // Uses persistent readFd + fstatSync for real-time file size (bypasses NTFS directory cache).
     let tailOffset = 0;
+    let _readBuf = Buffer.alloc(65536); // 64KB reusable buffer — avoids per-poll allocation + GC pressure
     const tailPoll = setInterval(() => {
       if (activeProc !== proc) { clearInterval(tailPoll); return; }
       try {
         const size = fstatSync(readFd).size;
         if (size <= tailOffset) return;
-        const chunk = Buffer.alloc(size - tailOffset);
-        readSync(readFd, chunk, 0, chunk.length, tailOffset);
-        tailOffset += chunk.length;
+        const needed = size - tailOffset;
+        if (needed > _readBuf.length) _readBuf = Buffer.alloc(Math.max(needed, _readBuf.length * 2));
+        const bytesRead = readSync(readFd, _readBuf, 0, needed, tailOffset);
+        tailOffset += bytesRead;
         lastEventTime = Date.now();
-        buf += chunk.toString();
+        buf += _readBuf.toString('utf-8', 0, bytesRead);
         const lines = buf.split('\n');
         buf = lines.pop();
         for (const line of lines) {
@@ -2386,7 +2392,7 @@ function handleClaudeSkinWebSocket(ws) {
           processEvent(trimmed);
         }
       } catch {}
-    }, 50);
+    }, 16);
 
     proc.on('close', (code) => {
       clearInterval(stallCheck);
@@ -2397,9 +2403,10 @@ function handleClaudeSkinWebSocket(ws) {
         try {
           const size = fstatSync(readFd).size;
           if (size > tailOffset) {
-            const chunk = Buffer.alloc(size - tailOffset);
-            readSync(readFd, chunk, 0, chunk.length, tailOffset);
-            buf += chunk.toString();
+            const needed = size - tailOffset;
+            if (needed > _readBuf.length) _readBuf = Buffer.alloc(needed);
+            const bytesRead = readSync(readFd, _readBuf, 0, needed, tailOffset);
+            buf += _readBuf.toString('utf-8', 0, bytesRead);
             const lines = buf.split('\n');
             buf = lines.pop();
             for (const line of lines) {
@@ -10429,29 +10436,64 @@ async function createBrowserSession(options = {}) {
   }
 
   // ── Resolve userDataDir ──
-  // Chrome refuses --remote-debugging-pipe with its own default User Data directory.
-  // If the user specified Chrome's default dir, redirect to a safe SynaBun-managed directory.
-  // NEVER junction/symlink to the real profile — Playwright modifies profile data on launch.
+  // If the user selected a Chrome profile subfolder (e.g., Chrome/Profile 1), extract the
+  // profile name and use the parent Chrome User Data root as userDataDir. Playwright's
+  // launchPersistentContext needs --user-data-dir (the root), plus --profile-directory for
+  // the specific profile. Without this split, Chrome creates a NEW Default profile inside
+  // the subfolder instead of using the actual selected profile.
   let userDataDir = savedCfg.userDataDir || null;
+  let _profileDirectory = null; // Chrome --profile-directory flag
+  let _sourceProfilePath = null; // Original Chrome profile dir (for cookie bootstrap)
+  let _isInsideChromeDir = false;
+
   if (userDataDir) {
     const normalized = userDataDir.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
-    const chromeDefaults = [
-      (process.env.LOCALAPPDATA || '').replace(/\\/g, '/').toLowerCase() + '/google/chrome/user data',
-      (process.env['ProgramFiles'] || '').replace(/\\/g, '/').toLowerCase() + '/google/chrome/user data',
-    ].filter(Boolean);
-    const isDefaultDir = chromeDefaults.some(d => normalized === d || normalized === d + '/default');
-    if (isDefaultDir) {
-      const safeDir = resolve(PROJECT_ROOT, 'data', 'chrome-profile');
-      console.warn(`[browser] Chrome's default User Data dir cannot be used with remote debugging.`);
-      console.warn(`[browser] Using SynaBun-managed profile: ${safeDir}`);
-      if (!existsSync(safeDir)) mkdirSync(safeDir, { recursive: true });
-      userDataDir = safeDir;
+
+    // Known Chrome/Edge/Chromium User Data root directories per platform
+    const _home = process.env.HOME || process.env.USERPROFILE || '';
+    const chromeRoots = IS_WIN ? [
+      ((process.env.LOCALAPPDATA || '') + '/Google/Chrome/User Data').replace(/\\/g, '/').toLowerCase(),
+      ((process.env['ProgramFiles'] || '') + '/Google/Chrome/User Data').replace(/\\/g, '/').toLowerCase(),
+    ] : process.platform === 'darwin' ? [
+      (_home + '/Library/Application Support/Google/Chrome').toLowerCase(),
+      (_home + '/Library/Application Support/Microsoft Edge').toLowerCase(),
+      (_home + '/Library/Application Support/Chromium').toLowerCase(),
+    ] : [
+      (_home + '/.config/google-chrome').toLowerCase(),
+      (_home + '/.config/chromium').toLowerCase(),
+      (_home + '/.config/microsoft-edge').toLowerCase(),
+    ];
+
+    // Extract profile directory if path points to a profile subfolder
+    for (const root of chromeRoots.filter(Boolean)) {
+      if (normalized.startsWith(root + '/')) {
+        const remainder = normalized.slice(root.length + 1).replace(/\/+$/, '');
+        if (/^(default|profile \d+)$/.test(remainder)) {
+          _sourceProfilePath = userDataDir;
+          const parts = userDataDir.replace(/\\/g, '/').replace(/\/+$/, '').split('/');
+          _profileDirectory = parts.pop(); // "Profile 1", "Default", etc.
+          userDataDir = parts.join('/');    // Chrome User Data root
+          _isInsideChromeDir = true;
+          console.log(`[browser] Detected Chrome profile: --profile-directory=${_profileDirectory}`);
+          console.log(`[browser] Using Chrome User Data dir: ${userDataDir}`);
+          break;
+        }
+      }
+      if (normalized === root) {
+        _isInsideChromeDir = true;
+        break;
+      }
     }
   }
 
   // Only disable extensions when NOT using a user profile (they'd want their extensions)
   if (!userDataDir) {
     stealthArgs.push('--disable-extensions');
+  }
+
+  // If a Chrome profile subfolder was extracted, tell Chrome which profile to use
+  if (_profileDirectory) {
+    stealthArgs.push(`--profile-directory=${_profileDirectory}`);
   }
 
   // Append user's extra launch args from config
@@ -10556,30 +10598,56 @@ async function createBrowserSession(options = {}) {
     // process will be killed by Chrome's singleton lock within seconds.
     // Detect this and redirect to SynaBun's managed profile instead.
     let _chromeConflict = false;
-    if (IS_WIN) {
+    if (_isInsideChromeDir) {
+      let chromeRunning = false;
       try {
-        const tasklist = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', { encoding: 'utf8', timeout: 3000 });
-        if (tasklist.includes('chrome.exe')) {
-          // Check if the selected profile is inside Chrome's User Data directory
-          const norm = userDataDir.replace(/\\/g, '/').toLowerCase();
-          const chromeUD = ((process.env.LOCALAPPDATA || '') + '/Google/Chrome/User Data').replace(/\\/g, '/').toLowerCase();
-          const edgeUD = ((process.env.LOCALAPPDATA || '') + '/Microsoft/Edge/User Data').replace(/\\/g, '/').toLowerCase();
-          if (norm.startsWith(chromeUD) || norm.startsWith(edgeUD)) {
-            _chromeConflict = true;
-            const safeDir = resolve(PROJECT_ROOT, 'data', 'chrome-profile');
-            if (!existsSync(safeDir)) mkdirSync(safeDir, { recursive: true });
-            console.warn(`[browser] Chrome is running — can't use ${userDataDir} (singleton lock conflict)`);
-            console.warn(`[browser] Redirecting to SynaBun managed profile: ${safeDir}`);
-            console.warn(`[browser] Tip: Log into sites once in SynaBun's browser — logins persist across sessions.`);
-            userDataDir = safeDir;
-            broadcastSync({ type: 'notification', level: 'warn', message: 'Chrome is running — using SynaBun\'s own profile instead. Log into sites once here and logins will persist.' });
+        if (IS_WIN) {
+          const tasklist = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', { encoding: 'utf8', timeout: 3000 });
+          chromeRunning = tasklist.includes('chrome.exe');
+        } else if (process.platform === 'darwin') {
+          const pgrep = execSync('pgrep -x "Google Chrome"', { encoding: 'utf8', timeout: 3000 });
+          chromeRunning = pgrep.trim().length > 0;
+        } else {
+          const pgrep = execSync('pgrep -x chrome || pgrep -x chromium', { encoding: 'utf8', timeout: 3000 });
+          chromeRunning = pgrep.trim().length > 0;
+        }
+      } catch { /* pgrep returns exit code 1 when no match = Chrome not running */ }
+
+      if (chromeRunning) {
+        _chromeConflict = true;
+        const safeDir = resolve(PROJECT_ROOT, 'data', 'chrome-profile');
+        if (!existsSync(safeDir)) mkdirSync(safeDir, { recursive: true });
+        console.warn(`[browser] Chrome is running — can't use ${userDataDir} (singleton lock conflict)`);
+        console.warn(`[browser] Redirecting to SynaBun managed profile: ${safeDir}`);
+        console.warn(`[browser] Tip: Close Chrome to use your real profile, or log into sites once here.`);
+        // Bootstrap cookies from the real Chrome profile if available
+        if (_sourceProfilePath) {
+          const srcCookies = resolve(_sourceProfilePath, 'Cookies');
+          const dstDefault = resolve(safeDir, 'Default');
+          const dstCookies = resolve(dstDefault, 'Cookies');
+          if (existsSync(srcCookies) && !existsSync(dstCookies)) {
+            try {
+              if (!existsSync(dstDefault)) mkdirSync(dstDefault, { recursive: true });
+              copyFileSync(srcCookies, dstCookies);
+              // Also copy WAL/SHM if present for complete state
+              const srcWal = srcCookies + '-wal';
+              const srcShm = srcCookies + '-shm';
+              if (existsSync(srcWal)) copyFileSync(srcWal, dstCookies + '-wal');
+              if (existsSync(srcShm)) copyFileSync(srcShm, dstCookies + '-shm');
+              console.log(`[browser] Bootstrapped cookies from ${_sourceProfilePath}`);
+            } catch (e) {
+              console.warn(`[browser] Cookie bootstrap failed: ${e.message}`);
+            }
           }
         }
-      } catch {}
+        userDataDir = safeDir;
+        _profileDirectory = null; // Not needed for SynaBun profile
+        broadcastSync({ type: 'notification', level: 'warn', message: 'Chrome is running — using SynaBun\'s own profile. Close Chrome to use your real profile.' });
+      }
     }
 
     // Pre-launch: clean crash markers to prevent "didn't shut down correctly" dialog
-    const _prefsFile = resolve(userDataDir, 'Default', 'Preferences');
+    const _prefsFile = resolve(userDataDir, _profileDirectory || 'Default', 'Preferences');
     if (existsSync(_prefsFile)) {
       try {
         const _prefs = JSON.parse(readFileSync(_prefsFile, 'utf-8'));
@@ -10591,7 +10659,7 @@ async function createBrowserSession(options = {}) {
       } catch {}
     }
 
-    console.log(`[browser] Launching persistent context at: ${userDataDir}`);
+    console.log(`[browser] Launching persistent context at: ${userDataDir}${_profileDirectory ? ` (profile: ${_profileDirectory})` : ''}`);
     try {
       // Selectively remove Playwright defaults that block profile features.
       // Can't use ignoreDefaultArgs:true — Playwright needs its internal flags for CDP.

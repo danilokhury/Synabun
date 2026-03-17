@@ -34,6 +34,7 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync, appendFileSync, readdirSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cleanupStaleLoops } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
@@ -235,6 +236,8 @@ async function main() {
   }
 
   // ─── CHECK 1.5: Active loop ───
+  // Deactivate stale loops first (session died, terminal closed, time expired)
+  cleanupStaleLoops(LOOP_DIR);
   // After /clear, session ID may change. Try exact match first, then scan for any active loop.
   let loopFlagPath = join(LOOP_DIR, `${sessionId}.json`);
   let loop = null;
