@@ -2698,8 +2698,9 @@ function handleTabMsg(tab, msg) {
     return;
   }
   if (msg.type === 'control_request') console.log('[claude-panel] Got control_request msg:', msg.type, msg.request_id, msg.request?.subtype, msg.request?.tool_name);
-  // Buffer non-permission messages while a permission prompt is active
-  if (tab._activePerm && msg.type !== 'control_request') {
+  // Buffer only terminal messages while a permission prompt is active
+  // Allow event messages through so streaming content remains visible
+  if (tab._activePerm && msg.type !== 'control_request' && msg.type !== 'event') {
     tab._msgBuffer.push(msg);
     return;
   }
@@ -2855,8 +2856,8 @@ function handleTabEvent(tab, ev) {
     }
     renderAssistant(tab, ev.message);
     // Reposition thinking indicator to bottom (stays visible while running)
-    if (tab.thinkingEl && tab.running) {
-      tab.thinkingEl.remove();
+    // appendChild on an existing child moves it atomically — no separate remove() needed
+    if (tab.thinkingEl && tab.running && tab.thinkingEl !== tab.messagesEl.lastElementChild) {
       tab.messagesEl.appendChild(tab.thinkingEl);
       if (tab === activeTab()) scrollEnd();
     }
@@ -2985,7 +2986,7 @@ function handleStreamDelta(tab, apiEvent) {
       if (contentEl) contentEl.textContent = tab._stream.thinkBuf;
     } else if (delta.type === 'text_delta' && delta.text != null) {
       tab._stream.textBuf += delta.text;
-      // Throttle markdown re-rendering to every 100ms to avoid jank
+      // Throttle markdown re-rendering to ~30fps for smooth streaming
       if (!tab._stream.mdTimer) {
         tab._stream.mdTimer = setTimeout(() => {
           tab._stream.mdTimer = null;
@@ -2994,10 +2995,10 @@ function handleStreamDelta(tab, apiEvent) {
             linkifyFilePaths(tab._stream.bodyEl);
             if (tab === activeTab()) scrollEnd();
           }
-        }, 100);
+        }, 32);
       }
     }
-    if (tab === activeTab()) scrollEnd();
+    // scrollEnd is handled inside the throttle callback above
     return;
   }
 

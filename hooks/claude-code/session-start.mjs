@@ -28,7 +28,7 @@ import { readFileSync, existsSync, unlinkSync, readdirSync, statSync, appendFile
 import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getHookFeatures, detectProject, ensureProjectCategories } from './shared.mjs';
+import { getHookFeatures, detectProject, ensureProjectCategories, cleanupStaleLoops } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRECOMPACT_DIR = join(__dirname, '..', '..', 'data', 'precompact');
@@ -159,6 +159,8 @@ async function main() {
 
   // Detect active loop — skip greeting + recall for autonomous loop sessions
   // Check both pending files (first iteration) AND active state files (subsequent iterations after /clear).
+  // First, deactivate stale loops (session died, terminal closed, time expired)
+  cleanupStaleLoops(LOOP_DIR);
   const LOOP_STALE_MS = 10 * 60 * 1000;
   let isLoopSession = false;
   try {
