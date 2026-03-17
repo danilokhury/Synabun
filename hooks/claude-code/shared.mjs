@@ -5,7 +5,7 @@
  * post-remember, pre-compact, and stop hooks.
  */
 
-import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -302,4 +302,63 @@ export function buildCategoryReference(categories, project) {
     `- Universal (language features, library APIs) → "global"`,
     `- Cross-project (shared infra) → "shared"`,
   ].join('\n');
+}
+
+// --- Loop staleness cleanup ---
+
+const LOOP_STALE_INACTIVITY_MS = 10 * 60 * 1000; // 10 min with no iteration activity → stale
+const LOOP_INACTIVE_CLEANUP_MS = 24 * 60 * 60 * 1000; // 24h → delete inactive loop files
+
+/**
+ * Scan loop directory and deactivate stale loops / delete old inactive files.
+ *
+ * A loop is stale if:
+ * 1. active + exceeded its maxMinutes + 5min grace
+ * 2. active + no iteration activity for 10 minutes (session died)
+ *
+ * Inactive loop files older than 24h are deleted.
+ *
+ * @param {string} loopDir - path to data/loop/
+ * @returns {{ deactivated: string[], deleted: string[] }}
+ */
+export function cleanupStaleLoops(loopDir) {
+  const deactivated = [];
+  const deleted = [];
+  if (!existsSync(loopDir)) return { deactivated, deleted };
+
+  const now = Date.now();
+  try {
+    const files = readdirSync(loopDir).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
+    for (const f of files) {
+      const fp = join(loopDir, f);
+      try {
+        const loop = JSON.parse(readFileSync(fp, 'utf-8'));
+
+        if (loop.active) {
+          const startedAt = new Date(loop.startedAt || 0).getTime();
+          const lastActivity = new Date(loop.lastIterationAt || loop.startedAt || 0).getTime();
+          const maxMs = ((loop.maxMinutes || 60) + 5) * 60 * 1000;
+
+          const exceededTimeCap = (now - startedAt) >= maxMs;
+          const noRecentActivity = (now - lastActivity) >= LOOP_STALE_INACTIVITY_MS;
+
+          if (exceededTimeCap || noRecentActivity) {
+            loop.active = false;
+            loop.stopReason = exceededTimeCap ? 'time-cap-cleanup' : 'stale-inactivity';
+            loop.finishedAt = new Date().toISOString();
+            writeFileSync(fp, JSON.stringify(loop, null, 2));
+            deactivated.push(f);
+          }
+        } else {
+          // Inactive loop — delete if older than 24h
+          const finishedAt = new Date(loop.finishedAt || loop.lastIterationAt || loop.startedAt || 0).getTime();
+          if ((now - finishedAt) >= LOOP_INACTIVE_CLEANUP_MS) {
+            try { unlinkSync(fp); deleted.push(f); } catch { /* ok */ }
+          }
+        }
+      } catch { /* skip corrupt files */ }
+    }
+  } catch { /* ok */ }
+
+  return { deactivated, deleted };
 }

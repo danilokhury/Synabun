@@ -603,9 +603,8 @@ function hideThinking() {
 }
 
 function repositionThinking() {
-  if (thinkingEl && running) {
-    thinkingEl.remove();
-    $msgs.appendChild(thinkingEl);
+  if (thinkingEl && running && thinkingEl !== $msgs.lastElementChild) {
+    $msgs.appendChild(thinkingEl); // appendChild moves existing child — no remove() needed
     scrollEnd();
   }
 }

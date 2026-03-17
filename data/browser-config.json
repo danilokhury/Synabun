@@ -1,6 +1,6 @@
 {
   "executablePath": null,
-  "userDataDir": "/Users/danilokhury/Library/Application Support/Google/Chrome/Profile 1",
+  "userDataDir": "/Users/danilokhury/Apps/Synabun/data/chrome-profile",
   "headless": false,
   "channel": null,
   "slowMo": 0,
@@ -38,7 +38,7 @@
   "acceptDownloads": true,
   "strictSelectors": true,
   "serviceWorkers": "allow",
-  "persistStorage": false,
+  "persistStorage": true,
   "storageStatePath": "data/browser-storage.json",
   "clearStorageOnStart": false,
   "recordVideo": null,
