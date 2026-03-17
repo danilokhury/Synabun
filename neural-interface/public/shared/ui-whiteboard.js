@@ -555,7 +555,7 @@ function renderArrows() {
       path.setAttribute('d', pathD);
       path.setAttribute('fill', 'none');
       path.setAttribute('stroke', isSel ? 'var(--accent-blue, #60a5fa)' : (el.color || 'rgba(255,255,255,0.8)'));
-      path.setAttribute('stroke-width', isSel ? '5' : (el.strokeWidth || 4));
+      path.setAttribute('stroke-width', isSel ? '5' : (el.strokeWidth || 3));
       path.setAttribute('stroke-linecap', 'round');
       path.setAttribute('stroke-linejoin', 'round');
       path.dataset.wbId = el.id;
@@ -1256,7 +1256,7 @@ function penStart(x, y) {
   _penLiveEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
   _penLiveEl.setAttribute('fill', 'none');
   _penLiveEl.setAttribute('stroke', _activeColor);
-  _penLiveEl.setAttribute('stroke-width', '4');
+  _penLiveEl.setAttribute('stroke-width', '3');
   _penLiveEl.setAttribute('stroke-linecap', 'round');
   _penLiveEl.setAttribute('stroke-linejoin', 'round');
   _penLiveEl.setAttribute('d', `M ${x} ${y}`);
@@ -1313,7 +1313,7 @@ function penEnd() {
     x: minX, y: minY,
     width: maxX - minX, height: maxY - minY,
     color: _activeColor,
-    strokeWidth: 4,
+    strokeWidth: 3,
   });
   selectElement(penEl.id);
   autoRevert();
@@ -3012,7 +3012,7 @@ async function _captureScreenshot(requestId) {
         _drawArrowhead(ctx, el.points);
       } else if (el.type === 'pen' && el.points && el.points.length >= 2) {
         ctx.strokeStyle = el.color || 'rgba(255,255,255,0.7)';
-        ctx.lineWidth = el.strokeWidth || 4;
+        ctx.lineWidth = el.strokeWidth || 3;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.beginPath();
