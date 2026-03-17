@@ -77,7 +77,36 @@ function installDeps(name, dir) {
   }
 }
 
-// ── Phase 3: MCP server build ──
+// ── Phase 3: Playwright Chromium (for browser automation) ──
+
+function installPlaywrightChromium() {
+  const niDir = resolve(__dirname, 'neural-interface');
+  // Check if already installed by resolving the executable path
+  try {
+    const result = execSync('node -e "const pw=require(\'playwright\');const p=pw.chromium.executablePath();process.stdout.write(p)"', {
+      cwd: niDir, encoding: 'utf8', timeout: 10_000,
+    });
+    if (existsSync(result)) {
+      ok('Playwright Chromium already installed');
+      return;
+    }
+  } catch { /* not installed */ }
+
+  info('Installing Playwright Chromium (for browser automation)...');
+  try {
+    execSync('npx playwright install chromium', {
+      cwd: niDir,
+      stdio: 'inherit',
+      timeout: 120_000,
+    });
+    ok('Playwright Chromium installed');
+  } catch (err) {
+    // Non-fatal — system Chrome will be used as fallback
+    console.log('  (optional) Playwright Chromium install failed — system Chrome will be used');
+  }
+}
+
+// ── Phase 4: MCP server build ──
 
 function needsBuild() {
   const distIndex = resolve(__dirname, 'mcp-server', 'dist', 'index.js');
@@ -225,6 +254,10 @@ function main() {
   // Dependencies
   installDeps('Neural Interface', resolve(__dirname, 'neural-interface'));
   installDeps('MCP Server', resolve(__dirname, 'mcp-server'));
+  console.log('');
+
+  // Playwright browser
+  installPlaywrightChromium();
   console.log('');
 
   // Build
