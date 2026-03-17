@@ -1,6 +1,6 @@
 {
-  "executablePath": null,
-  "userDataDir": "/Users/danilokhury/Apps/Synabun/data/chrome-profile",
+  "executablePath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "userDataDir": "/Users/danilokhury/Library/Application Support/Google/Chrome/Profile 1",
   "headless": false,
   "channel": null,
   "slowMo": 0,

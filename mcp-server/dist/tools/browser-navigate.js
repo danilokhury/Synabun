@@ -8,7 +8,7 @@ export const browserNavigateSchema = {
 };
 export const browserNavigateDescription = 'Navigate the browser to a URL. If no browser session exists, one is created automatically.';
 export async function handleBrowserNavigate(args) {
-    const resolved = await ni.resolveSession(args.sessionId, { url: args.url });
+    const resolved = await ni.resolveSession(args.sessionId, { url: args.url, headless: false });
     if ('error' in resolved)
         return text(resolved.error);
     const result = await ni.navigate(resolved.sessionId, args.url);

@@ -1,0 +1,17 @@
+{
+  "active": false,
+  "task": "IMPORTANT\n- Do NOT use — dashes on text\n- DO NOT USE EM-DASHES ON TEXT\n- DO NOT USE EM-DASHES ON TEXT\n- Do noot fucking comment on Synabuns own post\n- DO NOT DOUBLE POST. Ensure there is no other Synabun post on that same thread\n- Talk about Synabun features without making it look like spam. \n\nTask:\n\nYour task is to navigate thru twitter trending tags related to vibe coding and try to have casual conversations with users about how Synabun can help out on their vibecoding journey and it has what user needs. To code via CLI in a more effective way.\n\n=====================================\n\nRules:\n\n- try to speak about more broad contents in twitter, mix of vibe coding, memory and MCP. The responses are too robotic an mono topical.\n- Interact with portuguese speaking vibe coders\n- Dont use -- dashes on text\n- Try to find opportunities to talk about synabum features, you have access to all Synabun features from synabun memory\n- Double check how you access the \"publish\" button, you are not publishing the replies or content, usually drafting or skipping\n- You are here to chat about AI, only plug https://synabun.ai/ if it actually calls for\n- look mostly for english and portuguese speaking threads and hashtags\n- Don't over use emojis",
+  "context": "BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.",
+  "totalIterations": 50,
+  "currentIteration": 0,
+  "maxMinutes": 60,
+  "startedAt": "2026-03-17T14:52:05.148Z",
+  "lastIterationAt": null,
+  "retries": 0,
+  "usesBrowser": true,
+  "browserSessionId": "d16dac136aa39575800184878dba01c6",
+  "profile": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "stopped": true,
+  "finishedAt": "2026-03-17T14:53:57.062Z"
+}

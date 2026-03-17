@@ -62,6 +62,7 @@ export async function resolveSession(sessionId, autoCreate) {
         if (autoCreate) {
             const created = await request('POST', '/api/browser/sessions', {
                 url: autoCreate.url || 'about:blank',
+                ...(autoCreate.headless !== undefined && { headless: autoCreate.headless }),
             });
             if (created.error)
                 return { error: `Failed to auto-create session: ${created.error}` };
@@ -86,8 +87,11 @@ export async function invalidateCache(reason) {
 export async function listSessions() {
     return request('GET', '/api/browser/sessions');
 }
-export async function createSession(url) {
-    return request('POST', '/api/browser/sessions', { url: url || 'about:blank' });
+export async function createSession(url, opts) {
+    return request('POST', '/api/browser/sessions', {
+        url: url || 'about:blank',
+        ...(opts?.headless !== undefined && { headless: opts.headless }),
+    });
 }
 export async function closeSession(sessionId) {
     return request('DELETE', `/api/browser/sessions/${sessionId}`);
