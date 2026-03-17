@@ -717,8 +717,8 @@ function buildSetupTab(setupStatus) {
                       <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
                     </button>
                     <div class="cc-dropdown-menu">
-                      <div class="cc-dropdown-item active" data-value="true">Headless</div>
-                      <div class="cc-dropdown-item" data-value="false">Headed</div>
+                      <div class="cc-dropdown-item" data-value="true">Headless</div>
+                      <div class="cc-dropdown-item active" data-value="false">Headed</div>
                     </div>
                   </div>
                   <input type="hidden" id="bc-channel" value="">
@@ -796,6 +796,7 @@ function buildSetupTab(setupStatus) {
                   <span class="bc-profile-hint">Managed</span>
                 </div>
               </div>
+              <div id="bc-chrome-running-warn" style="display:none;margin:4px 0 2px;padding:4px 8px;border-radius:4px;background:rgba(255,180,0,0.12);color:#e0a800;font-size:11px;line-height:1.4"></div>
               <div class="bc-card-row" style="margin-top:6px">
                 <label class="bc-lbl">Path</label>
                 <div class="browser-cfg-input-row" style="flex:1">
@@ -4006,6 +4007,20 @@ export async function openSettingsModal() {
       if (match) match.classList.add('selected');
     }
 
+    /** Show/hide Chrome-running warning based on selected profile type */
+    function updateChromeRunningWarning(chromeRunning, userDataDir) {
+      const warn = overlay.querySelector('#bc-chrome-running-warn');
+      if (!warn) return;
+      // Only warn if Chrome is running AND a real Chrome profile is selected (not sandbox, not SynaBun)
+      const isChrome = userDataDir && userDataDir !== '' && !userDataDir.includes('data/chrome-profile') && !userDataDir.includes('data/browser-profiles');
+      if (chromeRunning && isChrome) {
+        warn.textContent = 'Chrome is running — your profile will be mirrored (synced copy). Cookies and auth stay fresh. Close Chrome to use the real profile directly.';
+        warn.style.display = '';
+      } else {
+        warn.style.display = 'none';
+      }
+    }
+
     /** Set the path directly (from typing or browse). Highlights matching profile or deselects all. */
     function setProfilePath(path) {
       const hidden = overlay.querySelector('#bc-userDataDir');
@@ -4348,7 +4363,7 @@ export async function openSettingsModal() {
       setVal('bc-executablePath', cfg.executablePath);
       setVal('bc-userDataDir', cfg.userDataDir || '');
       matchProfileSelection(cfg.userDataDir || '', _synabunProfile);
-      setVal('bc-headless', String(cfg.headless ?? 'true'));
+      setVal('bc-headless', String(cfg.headless ?? false));
       setVal('bc-channel', cfg.channel || '');
       setVal('bc-slowMo', cfg.slowMo ?? 0);
       setVal('bc-timeout', cfg.timeout ?? 30000);
@@ -4481,6 +4496,8 @@ export async function openSettingsModal() {
       // Auto-detect Chrome profiles and select current
       await detectAndBuildProfiles();
       if (data.config) matchProfileSelection(data.config.userDataDir || '', _synabunProfile);
+      // Show Chrome running warning if a Chrome profile is selected
+      updateChromeRunningWarning(data.chromeRunning, data.config?.userDataDir);
     }).catch(() => {});
 
     // Save button
