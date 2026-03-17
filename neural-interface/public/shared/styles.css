@@ -8307,6 +8307,8 @@
     transform: scale(calc(var(--ui-scale, 1) * 0.97));
     transform-origin: top left;
     transition: opacity 0.15s ease, transform 0.15s ease;
+    container-type: inline-size;
+    container-name: stg;
   }
   .settings-panel.open {
     opacity: 1;
@@ -8949,7 +8951,7 @@
 
   /* Theme presets */
   #iface-preset-cards {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
     gap: 8px;
   }
   #iface-preset-cards .gfx-preset-card {
@@ -9377,6 +9379,49 @@
     stroke: currentColor;
     stroke-width: 2;
     fill: none;
+  }
+
+  /* ── Settings panel container queries — responsive at any panel width ── */
+
+  @container stg (max-width: 660px) {
+    .settings-nav         { width: 170px; }
+    .settings-content     { padding: 14px 15px; }
+    .iface-section        { padding: 12px 13px 8px; }
+    .stg-section-divider  { margin: 16px 0 12px; }
+    .settings-field       { margin-bottom: 11px; }
+  }
+
+  @container stg (max-width: 560px) {
+    .settings-nav                    { width: 148px; }
+    .stg-nav-desc                    { display: none; }
+    .stg-nav-group-label             { font-size: 8px; padding: 6px 8px 3px; }
+    .settings-nav-item               { padding: 6px 8px; gap: 7px; font-size: 11.5px; }
+    .stg-nav-icon                    { width: 24px; height: 24px; }
+    .settings-nav-item.active::before { top: 5px; bottom: 5px; }
+    .settings-content                { padding: 11px 12px; }
+    .settings-field                  { margin-bottom: 9px; }
+    .settings-panel-header           { padding: 8px 12px; }
+    .iface-section                   { padding: 10px 11px 7px; }
+    .gfx-label                       { min-width: 95px; }
+    .iface-section .gfx-label        { min-width: 110px; }
+    .iface-grid                      { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+    #iface-preset-cards              { grid-template-columns: repeat(2, 1fr); }
+    .gfx-presets                     { gap: 6px; }
+    .stg-section-divider             { margin: 12px 0 10px; }
+    .settings-actions                { gap: 6px; }
+    .settings-actions button         { padding: 5px 12px; }
+    .settings-key-row                { flex-wrap: wrap; }
+  }
+
+  @container stg (max-width: 480px) {
+    .settings-nav                    { width: 46px; padding: 8px 4px; align-items: center; }
+    .stg-nav-text                    { display: none; }
+    .stg-nav-group-label             { display: none; }
+    .settings-nav-sep                { display: none; }
+    .settings-nav-item               { justify-content: center; padding: 8px 0; width: 100%; gap: 0; }
+    .stg-nav-icon                    { width: 30px; height: 30px; }
+    .settings-nav-item.active::before { top: 4px; bottom: 4px; }
+    .settings-content                { padding: 10px; }
   }
 
   .tag-add-input {
