@@ -20,6 +20,7 @@ const $ = (id) => document.getElementById(id);
 
 // ── Module-local state ──
 let _panel = null;
+let _backdrop = null;
 let _library = [];
 let _projects = [];
 let _selected = null;      // currently selected artifact
@@ -258,6 +259,12 @@ async function openPanel() {
   }
   if (_panel) { _panel.focus(); return; }
 
+  // Backdrop
+  _backdrop = document.createElement('div');
+  _backdrop.className = 'studio-backdrop';
+  _backdrop.addEventListener('click', () => closePanel());
+  document.body.appendChild(_backdrop);
+
   // Panel
   _panel = document.createElement('div');
   _panel.className = 'skills-studio-panel glass resizable';
@@ -265,42 +272,20 @@ async function openPanel() {
   _panel.innerHTML = buildPanelHTML();
   document.body.appendChild(_panel);
 
-  // Restore position
-  try {
-    const saved = JSON.parse(storage.getItem(PANEL_KEY));
-    if (saved) {
-      if (saved.x != null) _panel.style.left = saved.x + 'px';
-      if (saved.y != null) _panel.style.top = Math.max(48, saved.y) + 'px';
-      if (saved.w) _panel.style.width = saved.w + 'px';
-      if (saved.h) _panel.style.height = saved.h + 'px';
-    }
-  } catch {}
-
-  // Center if no saved position
-  if (!_panel.style.left) {
-    const vw = window.innerWidth, vh = window.innerHeight;
-    _panel.style.left = Math.max(20, (vw - 980) / 2) + 'px';
-    _panel.style.top = Math.max(48, (vh - 640) / 2) + 'px';
-  }
+  // Always open centered at default size
+  _panel.style.left = Math.max(20, (window.innerWidth - 720) / 2) + 'px';
+  _panel.style.top = Math.max(48, (window.innerHeight - 500) / 2) + 'px';
 
   wirePanel();
   await loadLibrary();
   renderView();
 
-  requestAnimationFrame(() => _panel.classList.add('open'));
+  requestAnimationFrame(() => { _backdrop.classList.add('open'); _panel.classList.add('open'); });
 }
 
 function closePanel() {
   if (!_panel) return;
-  // Save position
-  try {
-    const rect = _panel.getBoundingClientRect();
-    storage.setItem(PANEL_KEY, JSON.stringify({
-      x: Math.round(rect.left), y: Math.round(rect.top),
-      w: Math.round(rect.width), h: Math.round(rect.height),
-    }));
-  } catch {}
-
+  if (_backdrop) { _backdrop.remove(); _backdrop = null; }
   _panel.remove();
   _panel = null;
   _selected = null;

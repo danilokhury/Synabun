@@ -29,6 +29,7 @@ import {
 import {
   getTerminalSnapshot,
   restoreTerminalSnapshot,
+  tileFloatingTerminals,
 } from './ui-terminal.js';
 import {
   getWhiteboardSnapshot,
@@ -681,6 +682,15 @@ export function initWorkspaces() {
       gridBtn.classList.toggle('active', state.gridSnap);
       document.body.classList.toggle('grid-active', state.gridSnap);
       storage.setItem(KEYS.GRID_SNAP, state.gridSnap);
+    });
+  }
+
+  // Tile floating terminals
+  const tileBtn = $('ws-tile-btn');
+  if (tileBtn) {
+    tileBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      tileFloatingTerminals();
     });
   }
 

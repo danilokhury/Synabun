@@ -1,6 +1,6 @@
 # SynaBun - Claude Code Hooks
 
-SynaBun ships with 5 [Claude Code hooks](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/hooks) that automate memory usage across the entire coding session lifecycle. Hooks are shell commands that Claude Code runs at specific lifecycle events, injecting context into the AI conversation or enforcing memory discipline.
+SynaBun ships with 7 [Claude Code hooks](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/hooks) that automate memory usage across the entire coding session lifecycle. Hooks are shell commands that Claude Code runs at specific lifecycle events, injecting context into the AI conversation or enforcing memory discipline.
 
 ## Table of Contents
 
@@ -12,6 +12,7 @@ SynaBun ships with 5 [Claude Code hooks](https://docs.anthropic.com/en/docs/agen
   - [Stop Hook](#stop-hook)
   - [PreToolUse Hook](#pretooluse-hook)
   - [PostToolUse Hook](#posttooluse-hook)
+  - [PostToolUse Hook — Plan Storage](#posttooluse-hook--plan-storage)
 - [Hook Feature Flags](#hook-feature-flags)
 - [Installation](#installation)
 - [How Hooks Work](#how-hooks-work)
@@ -23,7 +24,7 @@ SynaBun ships with 5 [Claude Code hooks](https://docs.anthropic.com/en/docs/agen
 
 ## Overview
 
-SynaBun provides 6 hooks that work together to create a complete memory automation pipeline:
+SynaBun provides 7 hooks that work together to create a complete memory automation pipeline:
 
 | Hook | Event | Timeout | Purpose |
 |------|-------|---------|---------|
@@ -33,6 +34,7 @@ SynaBun provides 6 hooks that work together to create a complete memory automati
 | `stop.mjs` | `Stop` | 3s | Enforces memory storage — blocks if session isn't indexed or edits aren't remembered |
 | `pre-websearch.mjs` | `PreToolUse` | 3s | Blocks WebSearch/WebFetch during active browser automations (loops with usesBrowser) |
 | `post-remember.mjs` | `PostToolUse` | 3s | Tracks edit count and clears enforcement flags when memories are stored |
+| `post-plan.mjs` | `PostToolUse` | 5s | Auto-stores approved plans in memory with local embeddings when exiting plan mode |
 
 Together, these hooks ensure the AI:
 1. Knows what categories exist and how to route memories to them
@@ -283,6 +285,31 @@ Fires after specific tool calls. Matches on `Edit`, `Write`, `NotebookEdit`, and
   "hookSpecificOutput": {
     "hookEventName": "PostToolUse",
     "additionalContext": "You've made 3 edits without storing a memory..."
+  }
+}
+```
+
+### PostToolUse Hook — Plan Storage
+
+**File:** `hooks/claude-code/post-plan.mjs`
+
+Fires after `ExitPlanMode` tool calls. When Claude exits plan mode (plan approved), this hook auto-stores the plan content as a memory.
+
+**What it does:**
+
+1. Finds the most recently modified `.md` file in `~/.claude/plans/`
+2. Auto-creates a child category under `plans` for the project if needed
+3. Generates a local embedding (Transformers.js) for the plan content
+4. Stores the plan in the SQLite memory database with project metadata
+5. Tracks stored plans in `data/stored-plans.json` to avoid duplication
+6. Invalidates Neural Interface cache for graph refresh
+
+**Output on success (stdout):**
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": "Plan stored in memory: [short title]"
   }
 }
 ```
