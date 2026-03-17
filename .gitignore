@@ -37,6 +37,9 @@ neural-interface/data/
 neural-interface/_test.*
 neural-interface/_wizard*
 neural-interface/_gen_wizard*
+neural-interface/_*.cjs
+neural-interface/_*.py
+neural-interface/test-ws*
 
 # Editor
 .vscode/

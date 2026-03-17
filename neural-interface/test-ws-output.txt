@@ -1,4 +1,0 @@
-Connecting to ws://localhost:3344/ws/claude-skin ...
-[open] Connected
-[sent] query
-[timeout] 25s elapsed
