@@ -1,16 +1,45 @@
+# Dependencies
+node_modules/
 
-/.env
-/CLAUDE.md
-/connections.json
-/.claude/
+# Build output
+mcp-server/dist/
+
+# Runtime data
 /data/
+mcp-server/data/
+!mcp-server/data/custom-categories-default.json
+
+# Test suite
+.tests/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.db.backup-*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Project-specific (user-local)
+CLAUDE.md
+connections.json
+.claude/
+
+# Neural Interface runtime
 neural-interface/data/
 neural-interface/_test.*
 neural-interface/_wizard*
-mcp-server/data/memory.db
-mcp-server/data/memory.db-shm
-mcp-server/data/memory.db-wal
-mcp-server/data/custom-categories*.json
-!mcp-server/data/custom-categories-default.json
-mcp-server/data/display-settings.json
-node_modules/
+neural-interface/_gen_wizard*
+
+# Editor
+.vscode/
+
+# Logs
+*.log

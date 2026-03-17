@@ -28,6 +28,7 @@ const $ = (id) => document.getElementById(id);
 
 // ── Module-local state ──
 let _panel = null;
+let _backdrop = null;
 let _templates = [];       // user-created templates from API
 let _activeLoop = null;    // current active loop status
 let _history = [];         // completed loops / memories
@@ -729,7 +730,7 @@ function formatLoopCommand(taskText, state) {
   const lines = ['Start a loop with these settings:', `Task: ${taskText}`];
   if (state.usesBrowser) {
     lines.push('', 'BROWSER: This automation REQUIRES the SynaBun internal browser.',
-      'Use ONLY SynaBun browser tools (browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_extract_tweets, browser_extract_fb_posts, browser_go_back, browser_go_forward, browser_evaluate).',
+      'Use ONLY SynaBun browser tools (browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network).',
       'Start by calling browser_navigate with your target URL — it auto-creates a session.',
       'NEVER use Playwright plugin tools or WebFetch — they bypass the visible browser.');
   }
@@ -738,7 +739,7 @@ function formatLoopCommand(taskText, state) {
   return lines.join('\n');
 }
 
-const BROWSER_CONTEXT = 'BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.';
+const BROWSER_CONTEXT = 'BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.';
 
 // ── Launch dialog ──
 // Instead of launching immediately, show a confirmation dialog where the user picks CLI + model
@@ -994,46 +995,33 @@ async function openPanel() {
   }
   if (_panel) { _panel.focus(); return; }
 
+  // Backdrop
+  _backdrop = document.createElement('div');
+  _backdrop.className = 'studio-backdrop';
+  _backdrop.addEventListener('click', () => closePanel());
+  document.body.appendChild(_backdrop);
+
   _panel = document.createElement('div');
   _panel.className = 'automation-studio-panel glass resizable';
   _panel.id = 'automation-studio-panel';
   _panel.innerHTML = buildPanelHTML();
   document.body.appendChild(_panel);
 
-  try {
-    const saved = JSON.parse(storage.getItem(PANEL_KEY));
-    if (saved) {
-      if (saved.x != null) _panel.style.left = saved.x + 'px';
-      if (saved.y != null) _panel.style.top = Math.max(48, saved.y) + 'px';
-      if (saved.w) _panel.style.width = saved.w + 'px';
-      if (saved.h) _panel.style.height = saved.h + 'px';
-    }
-  } catch {}
-
-  if (!_panel.style.left) {
-    const vw = window.innerWidth, vh = window.innerHeight;
-    _panel.style.left = Math.max(20, (vw - 980) / 2) + 'px';
-    _panel.style.top = Math.max(48, (vh - 640) / 2) + 'px';
-  }
+  // Always open centered at default size
+  _panel.style.left = Math.max(20, (window.innerWidth - 720) / 2) + 'px';
+  _panel.style.top = Math.max(48, (window.innerHeight - 500) / 2) + 'px';
 
   wirePanel();
   await loadData();
   renderView();
-  requestAnimationFrame(() => _panel.classList.add('open'));
+  requestAnimationFrame(() => { _backdrop.classList.add('open'); _panel.classList.add('open'); });
   startPolling();
 }
 
 function closePanel() {
   if (!_panel) return;
-  try {
-    const rect = _panel.getBoundingClientRect();
-    storage.setItem(PANEL_KEY, JSON.stringify({
-      x: Math.round(rect.left), y: Math.round(rect.top),
-      w: Math.round(rect.width), h: Math.round(rect.height),
-    }));
-  } catch {}
-
   stopPolling();
+  if (_backdrop) { _backdrop.remove(); _backdrop = null; }
   _panel.remove(); _panel = null;
   _templates = []; _activeLoop = null; _history = [];
   _view = 'welcome'; _selected = null;

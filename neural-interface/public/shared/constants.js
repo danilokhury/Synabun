@@ -70,6 +70,12 @@ export const KEYS = {
   FILE_EXPLORER_COLLAPSED:'neural-file-explorer-collapsed',
   FILE_EXPLORER_SORT:     'neural-file-explorer-sort',
   FILE_EXPLORER_PROJECT:  'neural-file-explorer-project',
+  FILE_EXPLORER_FOLDER_COLORS: 'neural-file-explorer-folder-colors',
+  ACTIVE_SKIN:            'neural-active-skin',
+  COST_WIDGET_POS:        'neural-cost-widget-pos',
+  COST_WIDGET_COLLAPSED:  'neural-cost-widget-collapsed',
+  NODE_LIMIT:             'neural-node-limit',
+  MINIMAP_POS:            'synabun-2d-minimap-pos',
 };
 
 /** Default keybind mappings — action ID → combo string.

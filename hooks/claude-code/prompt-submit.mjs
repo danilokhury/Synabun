@@ -44,6 +44,111 @@ function readStdin() {
   });
 }
 
+// ── Loop helper functions ──────────────────────────────────────
+
+/**
+ * Extract formatting/style rules from the task text into a separate block.
+ * Matches lines containing prohibitions about dashes, emojis, spam, double posting, etc.
+ */
+function extractFormattingRules(task) {
+  if (!task) return '';
+  const rules = [];
+  let hasDashRule = false;
+  for (const line of task.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    if (/\b(do not|don'?t|never|must not|avoid)\b/i.test(t) &&
+        /\b(dash|--|—|emoji|emote|emojis|spam|double post|over use)\b/i.test(t)) {
+      rules.push(t.replace(/^[-*•]\s*/, '').replace(/^\d+\.\s*/, ''));
+      if (/dash|--/i.test(t)) hasDashRule = true;
+    }
+  }
+  // Strengthen dash rule with explicit variants
+  if (hasDashRule) {
+    rules.push('NEVER use double dashes (--), em dashes (\u2014), or en dashes (\u2013) in ANY text you write. Use commas, periods, or semicolons instead.');
+  }
+  if (rules.length === 0) return '';
+  return rules.map(r => `- ${r}`).join('\n');
+}
+
+function buildBrowserNote(state) {
+  if (!state.usesBrowser) return '';
+  return [
+    '',
+    '=== BROWSER ENFORCEMENT (MANDATORY) ===',
+    'This automation REQUIRES the SynaBun internal browser. You MUST:',
+    '1. Call `browser_navigate` with your target URL to create or reuse a browser session',
+    '2. Use ONLY SynaBun MCP browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network',
+    '3. NEVER use Playwright plugin tools (mcp__plugin_playwright_*) — they launch a separate browser that the user cannot see',
+    '4. NEVER use WebFetch or WebSearch tools for tasks that require visual browsing — use the SynaBun browser instead',
+    '5. If the browser shows a login page, CAPTCHA, or any wall requiring human action: STOP immediately. Report the blocker to the user and WAIT. Do NOT abandon the browser and fall back to web search. The user can interact with the browser panel to resolve it.',
+    'A persistent Chrome profile is active with saved logins and cookies. The user can see and interact with the SynaBun browser panel.',
+    '=== END BROWSER ENFORCEMENT ===',
+  ].join('\n');
+}
+
+function buildAutonomyBlock(blockerRule, sessionId) {
+  const updateCall = sessionId
+    ? `- After completing this iteration, call \`loop\` with action \`update\`, session_id \`${sessionId}\`, and a brief summary.`
+    : '- After completing this iteration, call `loop` with action `update` and a brief summary.';
+  return [
+    '',
+    '--- LOOP AUTONOMY MODE ---',
+    'IMPORTANT: IGNORE any GREETING DIRECTIVE or recall instructions from SessionStart. Do NOT output a greeting. Do NOT call recall. You are in an autonomous loop \u2014 execute the task below immediately.',
+    '',
+    'Rules for this session:',
+    '- Execute the task directly. Do NOT ask for confirmation or clarification.',
+    '- Make reasonable assumptions and proceed. Do not hesitate.',
+    '- Use all available tools (browser, memory, file system) as needed without asking.',
+    '- Each iteration should produce concrete output or progress.',
+    '- If something fails due to a technical issue, try an alternative approach.',
+    updateCall,
+    '- The server will automatically advance to the next iteration when you finish.',
+    blockerRule || '',
+    '--- END LOOP AUTONOMY ---',
+  ].filter(Boolean).join('\n');
+}
+
+function buildJournalBlock(state) {
+  const parts = [];
+  if (state.progressSummary) {
+    parts.push(`PROGRESS SO FAR: ${state.progressSummary}`);
+  }
+  const journal = Array.isArray(state.journal) ? state.journal : [];
+  const recent = journal.slice(-3);
+  if (recent.length > 0) {
+    parts.push('RECENT ITERATIONS:');
+    for (const entry of recent) {
+      parts.push(`  Iteration ${entry.iteration}: ${entry.summary}`);
+    }
+  }
+  return parts.length > 0 ? parts.join('\n') : '';
+}
+
+function computeTimeLeft(state) {
+  const elapsed = Date.now() - new Date(state.startedAt).getTime();
+  const maxMs = (state.maxMinutes || 30) * 60 * 1000;
+  return Math.max(0, Math.round((maxMs - elapsed) / 60000));
+}
+
+/**
+ * Find an active loop owned by this session (exact file name match only).
+ * Does NOT scan other sessions' loop files — cross-session injection is
+ * the source of loop leaks between concurrent Claude panels/TUI sessions.
+ * Returns the loop state, or null if this session has no active loop.
+ */
+function findActiveLoop(sessionId) {
+  try {
+    const exactPath = join(LOOP_DIR, `${sessionId}.json`);
+    if (!existsSync(exactPath)) return null;
+    const candidate = JSON.parse(readFileSync(exactPath, 'utf-8'));
+    if (!candidate.active) return null;
+    const loopMaxMs = ((candidate.maxMinutes || 60) + 5) * 60 * 1000;
+    if (Date.now() - new Date(candidate.startedAt).getTime() > loopMaxMs) return null;
+    return candidate;
+  } catch { return null; }
+}
+
 // ============================================================
 // TIER 1 — MUST recall (high confidence: past work, decisions, explicit memory)
 // These indicate the user is referencing prior context that memory likely holds.
@@ -391,49 +496,143 @@ async function main() {
           delete state.terminalSessionId;
           writeFileSync(targetPath, JSON.stringify(state, null, 2));
 
-          const browserNote = state.usesBrowser
-            ? [
-              '',
-              '=== BROWSER ENFORCEMENT (MANDATORY) ===',
-              'This automation REQUIRES the SynaBun internal browser. You MUST:',
-              '1. Call `browser_navigate` with your target URL to create or reuse a browser session',
-              '2. Use ONLY SynaBun MCP browser tools: browser_navigate, browser_click, browser_fill, browser_type, browser_content, browser_snapshot, browser_screenshot, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_wait, browser_reload, browser_session, browser_go_back, browser_go_forward, browser_evaluate, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages',
-              '3. NEVER use Playwright plugin tools (mcp__plugin_playwright_*) — they launch a separate browser that the user cannot see',
-              '4. NEVER use WebFetch or WebSearch tools for tasks that require visual browsing — use the SynaBun browser instead',
-              '5. If the browser shows a login page, CAPTCHA, or any wall requiring human action: STOP immediately. Report the blocker to the user and WAIT. Do NOT abandon the browser and fall back to web search. The user can interact with the browser panel to resolve it.',
-              'A persistent Chrome profile is active with saved logins and cookies. The user can see and interact with the SynaBun browser panel.',
-              '=== END BROWSER ENFORCEMENT ===',
-            ].join('\n')
-            : '';
+          const browserNote = buildBrowserNote(state);
           const blockerRule = state.usesBrowser
             ? '- CRITICAL: If the browser shows a login page, CAPTCHA, 2FA, or ANY wall requiring human action — STOP IMMEDIATELY. Output what the user needs to do (e.g. "Please log into Twitter in the browser panel"). Do NOT use WebSearch, WebFetch, or any workaround. Do NOT try to bypass it. Just STOP and WAIT.'
             : '';
-          const autonomy = [
-            '',
-            '--- LOOP AUTONOMY MODE ---',
-            'IMPORTANT: IGNORE any GREETING DIRECTIVE or recall instructions from SessionStart. Do NOT output a greeting. Do NOT call recall. You are in an autonomous loop — execute the task below immediately.',
-            '',
-            'Rules for this session:',
-            '- Execute the task directly. Do NOT ask for confirmation or clarification.',
-            '- Make reasonable assumptions and proceed. Do not hesitate.',
-            '- Use all available tools (browser, memory, file system) as needed without asking.',
-            '- Each iteration should produce concrete output or progress.',
-            '- If something fails due to a technical issue, try an alternative approach.',
-            '- Do NOT call the loop MCP tool — the loop state is already managed by hooks.',
-            '- The Stop hook will automatically continue to the next iteration when you finish.',
-            blockerRule,
-            '--- END LOOP AUTONOMY ---',
-          ].filter(Boolean).join('\n');
+          const autonomy = buildAutonomyBlock(blockerRule, sessionId);
+
+          // Extract formatting rules and place them prominently
+          const formattingRules = extractFormattingRules(state.task);
+          const fmtBlock = formattingRules
+            ? `\n=== FORMATTING RULES (MANDATORY \u2014 EVERY ITERATION) ===\n${formattingRules}\n=== END FORMATTING RULES ===\n`
+            : '';
+
           process.stdout.write(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: 'UserPromptSubmit',
-              additionalContext: `SynaBun Loop ACTIVE: ${state.totalIterations} iterations, ${state.maxMinutes}min cap.\nTask: ${state.task}${state.context ? `\nContext: ${state.context}` : ''}${browserNote}\n\nBegin iteration 1 immediately.${autonomy}`,
+              additionalContext: `${fmtBlock}SynaBun Loop ACTIVE: ${state.totalIterations} iterations, ${state.maxMinutes}min cap.\nTask: ${state.task}${state.context ? `\nContext: ${state.context}` : ''}${browserNote}\n\nBegin iteration 1 immediately.${autonomy}`,
             },
           }));
           return;
         }
-      }
+
+        // Case 2: Subsequent iteration — find any active loop state file (after /clear)
+        // Note: /clear may change the session ID, so we can't match by sessionId alone.
+        // Scan for any active loop with currentIteration > 0.
+        let existingPath = join(LOOP_DIR, `${sessionId}.json`);
+        let state = null;
+        if (existsSync(existingPath)) {
+          try { state = JSON.parse(readFileSync(existingPath, 'utf-8')); } catch { /* skip */ }
+        }
+        // Fallback: scan all loop files for an active loop (session ID may have changed after /clear)
+        // Use the loop's own maxMinutes as the age window (+ 5min grace) instead of a fixed 5min.
+        if (!state?.active || !(state?.currentIteration > 0)) {
+          const now = Date.now();
+          const allLoopFiles = readdirSync(LOOP_DIR)
+            .filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
+          for (const f of allLoopFiles) {
+            try {
+              const fullPath = join(LOOP_DIR, f);
+              const candidate = JSON.parse(readFileSync(fullPath, 'utf-8'));
+              if (candidate.active && candidate.currentIteration > 0) {
+                // Validate the loop hasn't exceeded its own time cap + grace
+                const loopMaxMs = ((candidate.maxMinutes || 60) + 5) * 60 * 1000;
+                const loopElapsed = now - new Date(candidate.startedAt).getTime();
+                if (loopElapsed > loopMaxMs) continue;
+                state = candidate;
+                existingPath = fullPath;
+                // Rename state file to match new session ID for future lookups
+                const newPath = join(LOOP_DIR, `${sessionId}.json`);
+                if (existingPath !== newPath) {
+                  try { renameSync(existingPath, newPath); existingPath = newPath; } catch { /* ok */ }
+                }
+                break;
+              }
+            } catch { /* skip corrupt */ }
+          }
+        }
+        if (state?.active && state?.currentIteration > 0) {
+            const formattingRules = extractFormattingRules(state.task);
+            const browserNote = buildBrowserNote(state);
+            const blockerRule2 = state.usesBrowser
+              ? '- CRITICAL: If the browser shows a login page, CAPTCHA, 2FA, or ANY wall requiring human action — STOP IMMEDIATELY. Output what the user needs to do. Do NOT use WebSearch, WebFetch, or any workaround. Just STOP and WAIT.'
+              : '';
+            const autonomy2 = buildAutonomyBlock(blockerRule2, sessionId);
+            const journal = buildJournalBlock(state);
+            const timeLeft = computeTimeLeft(state);
+
+            const parts = [
+              // Memory rules (session-start won't re-inject after /clear)
+              'SynaBun memory is active. CLAUDE.md contains the memory rules. Follow them.',
+              '',
+            ];
+
+            // Formatting rules — FIRST, most prominent position
+            if (formattingRules) {
+              parts.push(
+                '=== FORMATTING RULES (MANDATORY \u2014 EVERY ITERATION) ===',
+                formattingRules,
+                '=== END FORMATTING RULES ===',
+                '',
+              );
+            }
+
+            parts.push(
+              `SynaBun Loop ACTIVE: Iteration ${state.currentIteration}/${state.totalIterations} (${timeLeft}min remaining).`,
+              `Task: ${state.task}`,
+            );
+            if (state.context) parts.push(`Context: ${state.context}`);
+
+            // Journal + progress
+            if (journal) parts.push('', journal);
+
+            // Browser enforcement
+            if (browserNote) parts.push(browserNote);
+
+            parts.push(
+              '',
+              `Begin iteration ${state.currentIteration} immediately.`,
+              autonomy2,
+            );
+
+            process.stdout.write(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'UserPromptSubmit',
+                additionalContext: parts.filter(Boolean).join('\n'),
+              },
+            }));
+            return;
+          }
+        }
     } catch { /* fall through to normal processing */ }
+  }
+
+  // --- Active loop detection for non-loop-marker messages ---
+  // When user sends a regular message during an active browser loop, inject
+  // loop context so Claude knows where it was, and sync the session ID file.
+  let activeLoopNotice = '';
+  if (sessionId && !/^\[SynaBun Loop\]/i.test(trimmed)) {
+    const activeLoop = findActiveLoop(sessionId);
+    if (activeLoop) {
+      const journal = buildJournalBlock(activeLoop);
+      const timeLeft = computeTimeLeft(activeLoop);
+      const browserNote = activeLoop.usesBrowser ? buildBrowserNote(activeLoop) : '';
+      const parts = [
+        `=== ACTIVE LOOP NOTICE ===`,
+        `You are mid-loop: Iteration ${activeLoop.currentIteration}/${activeLoop.totalIterations} (${timeLeft}min remaining).`,
+        `Task: ${activeLoop.task}`,
+      ];
+      if (activeLoop.context) parts.push(`Context: ${activeLoop.context}`);
+      if (journal) parts.push('', journal);
+      parts.push(
+        '',
+        `The user sent a message. Respond to it, then call \`loop\` action \`update\` with your current progress, then continue the loop task from where you left off.`,
+      );
+      if (browserNote) parts.push(browserNote);
+      parts.push(`=== END LOOP NOTICE ===`);
+      activeLoopNotice = parts.filter(p => p !== undefined).join('\n');
+    }
   }
 
   // --- Track message count (BEFORE skip check — all messages count) ---
@@ -544,7 +743,7 @@ async function main() {
     : '';
 
   // --- Emit combined output ---
-  const combined = [bootCancel, primaryContext, userLearningContext].filter(Boolean).join('\n\n');
+  const combined = [bootCancel, activeLoopNotice, primaryContext, userLearningContext].filter(Boolean).join('\n\n');
 
   if (combined) {
     process.stdout.write(JSON.stringify({

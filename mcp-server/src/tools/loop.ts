@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { text } from './response.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
@@ -13,8 +14,8 @@ const LOOP_TEMPLATES_PATH = join(NI_DATA_DIR, 'loop-templates.json');
 
 const MAX_ITERATIONS = 50;
 const DEFAULT_ITERATIONS = 10;
-const MAX_MINUTES = 60;
-const DEFAULT_MINUTES = 30;
+const MAX_MINUTES = 480;
+const DEFAULT_MINUTES = 60;
 
 function ensureLoopDir() {
   if (!existsSync(LOOP_DIR)) {
@@ -51,8 +52,8 @@ function getLoopPath(sessionId: string): string {
 
 export const loopSchema = {
   action: z
-    .enum(['start', 'stop', 'status'] as const)
-    .describe('start: begin autonomous loop. stop: end loop. status: check current loop state.'),
+    .enum(['start', 'stop', 'status', 'update'] as const)
+    .describe('start: begin autonomous loop. stop: end loop. status: check current loop state. update: write iteration journal/progress.'),
   task: z
     .string()
     .optional()
@@ -77,10 +78,18 @@ export const loopSchema = {
     .string()
     .optional()
     .describe('Load a saved template by name or id. Template values are used as defaults; explicit params override.'),
+  summary: z
+    .string()
+    .optional()
+    .describe('Brief summary of what this iteration accomplished (1-2 sentences, for journal). Used with action "update".'),
+  progress: z
+    .string()
+    .optional()
+    .describe('Rolling progress summary replacing the previous one. Used with action "update".'),
 };
 
 export const loopDescription =
-  'Autonomous loop control. Start a repeating task loop, check status, or stop it. The Stop hook drives iteration — each time Claude finishes, the hook blocks and injects the next iteration.';
+  'Autonomous loop control. Start a repeating task loop, check status, update progress journal, or stop it. The Stop hook drives iteration. Call "update" after each iteration with a brief summary to maintain context across compactions.';
 
 // ── Start ──────────────────────────────────────────────────────
 
@@ -109,7 +118,7 @@ function handleStart(args: {
   if (args.template) {
     const tpl = loadTemplate(args.template);
     if (!tpl) {
-      return { content: [{ type: 'text' as const, text: `Error: Template "${args.template}" not found. Check Settings → Automations for available templates.` }] };
+      return text(`Error: Template "${args.template}" not found. Check Settings → Automations for available templates.`);
     }
     // Template values as defaults; explicit params override
     if (!args.task) args.task = tpl.task as string;
@@ -119,12 +128,12 @@ function handleStart(args: {
   }
 
   if (!args.task?.trim()) {
-    return { content: [{ type: 'text' as const, text: 'Error: "task" is required for start action. Describe what to do each iteration.' }] };
+    return text('Error: "task" is required for start action. Describe what to do each iteration.');
   }
 
   const sessionId = resolveSessionId(args.session_id);
   if (!sessionId) {
-    return { content: [{ type: 'text' as const, text: 'Error: Could not determine session ID. Pass session_id explicitly or ensure CLAUDE_SESSION_ID is set.' }] };
+    return text('Error: Could not determine session ID. Pass session_id explicitly or ensure CLAUDE_SESSION_ID is set.');
   }
 
   const iterations = Math.min(Math.max(args.iterations || DEFAULT_ITERATIONS, 1), MAX_ITERATIONS);
@@ -138,7 +147,7 @@ function handleStart(args: {
     try {
       const existing = JSON.parse(readFileSync(loopPath, 'utf-8'));
       if (existing?.active) {
-        return { content: [{ type: 'text' as const, text: `Error: Loop already active (iteration ${existing.currentIteration}/${existing.totalIterations}). Stop it first with action "stop".` }] };
+        return text(`Error: Loop already active (iteration ${existing.currentIteration}/${existing.totalIterations}). Stop it first with action "stop".`);
       }
     } catch { /* corrupt file, overwrite */ }
   }
@@ -153,23 +162,23 @@ function handleStart(args: {
     lastIterationAt: null as string | null,
     context: args.context?.trim() || null,
     retries: 0,
+    journal: [] as { iteration: number; summary: string; timestamp: string }[],
+    lastMemoryAt: 0,
+    memoryInterval: 5,
+    progressSummary: null as string | null,
+    awaitingNext: false,
   };
 
   writeFileSync(loopPath, JSON.stringify(state, null, 2));
 
-  return {
-    content: [{
-      type: 'text' as const,
-      text: [
-        `Loop started for session ${sessionId}.`,
-        `Task: ${state.task}`,
-        `Iterations: ${iterations} | Time cap: ${maxMinutes} min`,
-        state.context ? `Context: ${state.context}` : '',
-        '',
-        'The Stop hook will now drive autonomous iteration. Begin your first iteration.',
-      ].filter(Boolean).join('\n'),
-    }],
-  };
+  return text([
+    `Loop started for session ${sessionId}.`,
+    `Task: ${state.task}`,
+    `Iterations: ${iterations} | Time cap: ${maxMinutes} min`,
+    state.context ? `Context: ${state.context}` : '',
+    '',
+    'The Stop hook will now drive autonomous iteration. Begin your first iteration.',
+  ].filter(Boolean).join('\n'));
 }
 
 // ── Stop ───────────────────────────────────────────────────────
@@ -177,12 +186,12 @@ function handleStart(args: {
 function handleStop(args: { session_id?: string }) {
   const sessionId = resolveSessionId(args.session_id);
   if (!sessionId) {
-    return { content: [{ type: 'text' as const, text: 'No active loop found to stop.' }] };
+    return text('No active loop found to stop.');
   }
 
   const loopPath = getLoopPath(sessionId);
   if (!existsSync(loopPath)) {
-    return { content: [{ type: 'text' as const, text: 'No active loop found for this session.' }] };
+    return text('No active loop found for this session.');
   }
 
   let summary = '';
@@ -194,7 +203,7 @@ function handleStop(args: { session_id?: string }) {
 
   try { unlinkSync(loopPath); } catch { /* ok */ }
 
-  return { content: [{ type: 'text' as const, text: `Loop stopped.${summary}` }] };
+  return text(`Loop stopped.${summary}`);
 }
 
 // ── Status ─────────────────────────────────────────────────────
@@ -202,41 +211,92 @@ function handleStop(args: { session_id?: string }) {
 function handleStatus(args: { session_id?: string }) {
   const sessionId = resolveSessionId(args.session_id);
   if (!sessionId) {
-    return { content: [{ type: 'text' as const, text: 'No active loop.' }] };
+    return text('No active loop.');
   }
 
   const loopPath = getLoopPath(sessionId);
   if (!existsSync(loopPath)) {
-    return { content: [{ type: 'text' as const, text: 'No active loop for this session.' }] };
+    return text('No active loop for this session.');
   }
 
   let state;
   try {
     state = JSON.parse(readFileSync(loopPath, 'utf-8'));
   } catch {
-    return { content: [{ type: 'text' as const, text: 'Loop state file is corrupt.' }] };
+    return text('Loop state file is corrupt.');
   }
 
   if (!state.active) {
     const finishedAt = state.finishedAt ? ` Finished at ${state.finishedAt}.` : '';
-    return { content: [{ type: 'text' as const, text: `Loop inactive (completed).${finishedAt} ${state.currentIteration}/${state.totalIterations} iterations done.` }] };
+    return text(`Loop inactive (completed).${finishedAt} ${state.currentIteration}/${state.totalIterations} iterations done.`);
   }
 
   const elapsed = Math.round((Date.now() - new Date(state.startedAt).getTime()) / 60000);
   const timeLeft = Math.max(0, state.maxMinutes - elapsed);
 
-  return {
-    content: [{
-      type: 'text' as const,
-      text: [
-        `Loop active: iteration ${state.currentIteration}/${state.totalIterations}`,
-        `Task: ${state.task}`,
-        `Elapsed: ${elapsed} min | Remaining: ${timeLeft} min`,
-        state.context ? `Context: ${state.context}` : '',
-        state.lastIterationAt ? `Last iteration: ${state.lastIterationAt}` : '',
-      ].filter(Boolean).join('\n'),
-    }],
-  };
+  return text([
+    `Loop active: iteration ${state.currentIteration}/${state.totalIterations}`,
+    `Task: ${state.task}`,
+    `Elapsed: ${elapsed} min | Remaining: ${timeLeft} min`,
+    state.context ? `Context: ${state.context}` : '',
+    state.lastIterationAt ? `Last iteration: ${state.lastIterationAt}` : '',
+  ].filter(Boolean).join('\n'));
+}
+
+// ── Update (journal + progress) ───────────────────────────────
+
+function handleUpdate(args: {
+  session_id?: string;
+  summary?: string;
+  progress?: string;
+}) {
+  if (!args.summary && !args.progress) {
+    return text('Error: Provide "summary" (iteration journal) and/or "progress" (rolling summary) for update.');
+  }
+
+  const sessionId = resolveSessionId(args.session_id);
+  if (!sessionId) {
+    return text('No active loop to update.');
+  }
+
+  const loopPath = getLoopPath(sessionId);
+  if (!existsSync(loopPath)) {
+    return text('No loop state file found.');
+  }
+
+  let state: Record<string, unknown>;
+  try {
+    state = JSON.parse(readFileSync(loopPath, 'utf-8'));
+  } catch {
+    return text('Loop state file is corrupt.');
+  }
+
+  if (!state.active) {
+    return text('Loop is not active.');
+  }
+
+  // Append journal entry
+  if (args.summary) {
+    if (!Array.isArray(state.journal)) state.journal = [];
+    (state.journal as { iteration: number; summary: string; timestamp: string }[]).push({
+      iteration: (state.currentIteration as number) || 0,
+      summary: args.summary.slice(0, 200),
+      timestamp: new Date().toISOString(),
+    });
+    // Keep only last 10 entries
+    if ((state.journal as unknown[]).length > 10) {
+      state.journal = (state.journal as unknown[]).slice(-10);
+    }
+  }
+
+  // Update rolling progress summary
+  if (args.progress) {
+    state.progressSummary = args.progress.slice(0, 500);
+  }
+
+  writeFileSync(loopPath, JSON.stringify(state, null, 2));
+
+  return text(`Loop journal updated (iteration ${state.currentIteration}).`);
 }
 
 // ── Main dispatcher ────────────────────────────────────────────
@@ -249,6 +309,8 @@ export async function handleLoop(args: {
   context?: string;
   session_id?: string;
   template?: string;
+  summary?: string;
+  progress?: string;
 }) {
   switch (args.action) {
     case 'start':
@@ -257,7 +319,9 @@ export async function handleLoop(args: {
       return handleStop(args);
     case 'status':
       return handleStatus(args);
+    case 'update':
+      return handleUpdate(args);
     default:
-      return { content: [{ type: 'text' as const, text: `Unknown action "${args.action}". Use: start, stop, status.` }] };
+      return text(`Unknown action "${args.action}". Use: start, stop, status, update.`);
   }
 }

@@ -5,6 +5,8 @@
 // ═══════════════════════════════════════════
 
 import { state, emit, on } from './state.js';
+import { storage } from './storage.js';
+import { KEYS } from './constants.js';
 import { getMenuItems } from './registry.js';
 import { openHelp } from './ui-help.js';
 import { registerAction } from './ui-keybinds.js';
@@ -236,7 +238,7 @@ function wireGraphMenu() {
   const limitRadios = document.querySelectorAll('.menu-radio[data-group="node-limit"]');
   if (limitRadios.length > 0) {
     // Restore saved selection on load
-    const saved = localStorage.getItem('neural-node-limit') || '0';
+    const saved = storage.getItem(KEYS.NODE_LIMIT) || '0';
     limitRadios.forEach(r => r.classList.toggle('active', r.dataset.value === saved));
 
     limitRadios.forEach(item => {
@@ -331,6 +333,20 @@ function wireTerminalMenu() {
     'menu-command-runner':   () => emit('command-runner:open'),
     'menu-terminal-link':    () => emit('link:toggle'),
     'menu-terminal-toggle':  () => emit('terminal:toggle'),
+    'menu-restart-server':   async () => {
+      try {
+        // Cache project path before server goes down
+        try {
+          const h = await fetch('/api/health');
+          const hd = await h.json();
+          if (hd.projectDir) localStorage.setItem('synabun-project-dir', hd.projectDir);
+        } catch {}
+        await fetch('/api/server/restart', { method: 'POST' });
+        // Show brief message then attempt reconnect after delay
+        document.title = 'Restarting...';
+        setTimeout(() => location.reload(), 2000);
+      } catch {}
+    },
   };
   Object.entries(items).forEach(([id, handler]) => {
     const el = $(id);

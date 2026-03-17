@@ -982,14 +982,36 @@
       </div>
     </div>
 
-    <!-- Step 3: Build MCP Server -->
+    <!-- Step 3: Install & Build -->
     <div class="step right" data-step="3">
       <div class="step-eyes"></div>
-      <h2>Build MCP Server</h2>
-      <p class="subtitle">Compile the TypeScript MCP server to JavaScript.</p>
-      <div id="buildStatus"></div>
-      <div class="terminal" id="buildOutput">Waiting to build...</div>
-      <button class="action-btn" id="buildBtn">Build</button>
+      <h2>Install & Build</h2>
+      <p class="subtitle">Install npm dependencies and compile the MCP server.</p>
+      <div id="installBuildSteps" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+        <div class="dep-item" id="ibStepNI" style="opacity:1;transform:none">
+          <div class="dep-icon" id="ibIconNI" style="background:var(--s-medium);color:var(--t-muted);font-size:12px">1</div>
+          <div class="dep-info">
+            <div class="dep-name">Neural Interface</div>
+            <div class="dep-detail" id="ibDetailNI">npm install</div>
+          </div>
+        </div>
+        <div class="dep-item" id="ibStepMCP" style="opacity:1;transform:none">
+          <div class="dep-icon" id="ibIconMCP" style="background:var(--s-medium);color:var(--t-muted);font-size:12px">2</div>
+          <div class="dep-info">
+            <div class="dep-name">MCP Server</div>
+            <div class="dep-detail" id="ibDetailMCP">npm install</div>
+          </div>
+        </div>
+        <div class="dep-item" id="ibStepBuild" style="opacity:1;transform:none">
+          <div class="dep-icon" id="ibIconBuild" style="background:var(--s-medium);color:var(--t-muted);font-size:12px">3</div>
+          <div class="dep-info">
+            <div class="dep-name">Build MCP Server</div>
+            <div class="dep-detail" id="ibDetailBuild">TypeScript &rarr; JavaScript</div>
+          </div>
+        </div>
+      </div>
+      <div class="terminal" id="buildOutput" style="display:none"></div>
+      <button class="action-btn" id="buildBtn">Install & Build</button>
     </div>
 
     <!-- Step 4: Add Projects -->
@@ -1842,8 +1864,45 @@ async function onDepsStep() {
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ═══════════════════════════════════════════
-// STEP 3: Build
+// STEP 3: Install & Build
 // ═══════════════════════════════════════════
+
+const IB_STEPS = {
+  ni:    { el: 'ibStepNI',    icon: 'ibIconNI',    detail: 'ibDetailNI',    dirName: 'Neural Interface' },
+  mcp:   { el: 'ibStepMCP',   icon: 'ibIconMCP',   detail: 'ibDetailMCP',   dirName: 'MCP Server' },
+  build: { el: 'ibStepBuild', icon: 'ibIconBuild', detail: 'ibDetailBuild', dirName: 'Build MCP Server' },
+};
+
+function ibSetStatus(key, status, detail) {
+  const s = IB_STEPS[key];
+  const $el = document.getElementById(s.el);
+  const $icon = document.getElementById(s.icon);
+  const $detail = document.getElementById(s.detail);
+
+  $el.classList.remove('checking', 'ok', 'warn', 'fail');
+
+  if (status === 'checking') {
+    $el.classList.add('checking');
+    $icon.textContent = '';
+    $detail.textContent = detail || 'Installing...';
+  } else if (status === 'ok') {
+    $el.classList.add('ok');
+    $icon.textContent = '\u2713';
+    $detail.textContent = detail || 'Done';
+  } else if (status === 'skipped') {
+    $el.classList.add('ok');
+    $icon.textContent = '\u2713';
+    $detail.textContent = detail || 'Already installed';
+  } else if (status === 'fail') {
+    $el.classList.add('fail');
+    $icon.textContent = '\u2717';
+    $detail.textContent = detail || 'Failed';
+  } else {
+    // pending / default
+    $icon.style.background = 'var(--s-medium)';
+    $icon.style.color = 'var(--t-muted)';
+  }
+}
 
 async function onBuildStep() {
   // Save collection name config
@@ -1859,51 +1918,110 @@ async function onBuildStep() {
     });
   } catch {}
 
-  const $status = document.getElementById('buildStatus');
   const $btn = document.getElementById('buildBtn');
 
+  // Check if already built — if so, mark all steps done
   try {
     const res = await fetch('/api/setup/onboarding');
     const data = await res.json();
     if (data.mcpBuilt) {
       wizardState.buildReady = true;
-      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>MCP server already built</div>';
-      $btn.textContent = 'Already Built';
+      ibSetStatus('ni', 'skipped', 'Dependencies ready');
+      ibSetStatus('mcp', 'skipped', 'Dependencies ready');
+      ibSetStatus('build', 'skipped', 'dist/index.js found — already compiled');
+      $btn.textContent = 'Already Done';
       $btn.classList.add('success');
       $btn.disabled = true;
-      document.getElementById('buildOutput').textContent = 'dist/index.js found — already compiled.';
       return;
     }
   } catch {}
-
-  $status.innerHTML = '<div class="status-row"><div class="status-dot gray"></div>MCP server needs building</div>';
 }
 
 document.getElementById('buildBtn').addEventListener('click', async () => {
   const $btn = document.getElementById('buildBtn');
   const $out = document.getElementById('buildOutput');
-  const $status = document.getElementById('buildStatus');
 
   $btn.disabled = true;
-  $btn.innerHTML = '<div class="spinner"></div> Building...';
-  $out.textContent = '$ npm install && npm run build\n';
+  $btn.innerHTML = '<div class="spinner"></div> Installing...';
+  $out.style.display = 'none';
+  $out.textContent = '';
+
+  // Map server dir names to our step keys
+  const dirKeyMap = { 'Neural Interface': 'ni', 'MCP Server': 'mcp' };
 
   try {
     const res = await fetch('/api/setup/build', { method: 'POST' });
-    const data = await res.json();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
 
-    if (data.ok) {
-      $out.textContent += data.output;
-      wizardState.buildReady = true;
-      $status.innerHTML = '<div class="status-row"><div class="status-dot green"></div>Build successful</div>';
-      $btn.textContent = 'Built';
-      $btn.classList.add('success');
-    } else {
-      throw new Error(data.error);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE events from the buffer
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+
+        let event = '', data = '';
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event: ')) event = line.slice(7);
+          else if (line.startsWith('data: ')) data = line.slice(6);
+        }
+        if (!event || !data) continue;
+
+        let payload;
+        try { payload = JSON.parse(data); } catch { continue; }
+
+        if (event === 'install') {
+          const key = dirKeyMap[payload.dir];
+          if (!key) continue;
+          if (payload.status === 'start') {
+            ibSetStatus(key, 'checking', 'Installing dependencies...');
+          } else if (payload.status === 'done') {
+            ibSetStatus(key, 'ok', 'Installed');
+          } else if (payload.status === 'skipped') {
+            ibSetStatus(key, 'skipped', 'Already installed');
+          } else if (payload.status === 'error') {
+            ibSetStatus(key, 'fail', 'Install failed');
+            $out.style.display = '';
+            $out.textContent += payload.output || '';
+          }
+        } else if (event === 'build') {
+          if (payload.status === 'start') {
+            $btn.innerHTML = '<div class="spinner"></div> Building...';
+            ibSetStatus('build', 'checking', 'Compiling TypeScript...');
+          } else if (payload.status === 'done') {
+            ibSetStatus('build', 'ok', 'Build successful');
+          } else if (payload.status === 'skipped') {
+            ibSetStatus('build', 'skipped', 'Already up to date');
+          } else if (payload.status === 'error') {
+            ibSetStatus('build', 'fail', 'Build failed');
+            $out.style.display = '';
+            $out.textContent += payload.output || '';
+          }
+        } else if (event === 'complete') {
+          if (payload.ok) {
+            wizardState.buildReady = true;
+            $btn.textContent = 'Done';
+            $btn.classList.add('success');
+          } else {
+            $btn.textContent = 'Retry';
+            $btn.disabled = false;
+            $btn.classList.remove('success');
+          }
+        }
+
+        resizeViewport(currentStep);
+      }
     }
   } catch (err) {
+    $out.style.display = '';
     $out.textContent += '\nError: ' + err.message;
-    $status.innerHTML = '<div class="status-row"><div class="status-dot red"></div>Build failed</div>';
     $btn.textContent = 'Retry';
     $btn.disabled = false;
   }
@@ -2153,7 +2271,7 @@ async function onCompleteStep() {
 
   const items = [
     { label: 'Memory name set', done: !!wizardState.collectionName },
-    { label: 'MCP server built', done: wizardState.buildReady },
+    { label: 'Dependencies installed & MCP built', done: wizardState.buildReady },
     { label: 'Projects registered', done: (wizardState.projects || []).length > 0 },
     { label: 'MCP config copied', done: wizardState.mcpWritten },
     { label: 'Ruleset copied', done: !!wizardState.rulesetCopied },

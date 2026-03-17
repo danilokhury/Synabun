@@ -3,10 +3,8 @@
 // Central keyboard shortcut dispatcher + settings modal
 // ═══════════════════════════════════════════
 
-import { DEFAULT_KEYBINDS, KEYBIND_META, KEYS } from './constants.js';
+import { DEFAULT_KEYBINDS, KEYBIND_META } from './constants.js';
 import { fetchKeybinds, saveKeybindsToServer } from './api.js';
-import { storage } from './storage.js';
-import { savePanelLayout } from './ui-panels.js';
 
 // ── CLI icons for Launch group ──
 
@@ -285,39 +283,26 @@ function showConflictToast(conflictLabel, combo) {
 }
 
 export function openKeybindsModal() {
-  // If already open, just bring to front
+  // If already open, ignore
   const existing = document.getElementById('keybinds-panel');
-  if (existing) { existing.style.zIndex = '511'; return; }
+  if (existing) return;
   if (_modalOpen) return;
 
   _modalOpen = true;
   _pendingBindings = { ..._bindings };
 
+  // Backdrop overlay
+  const backdrop = document.createElement('div');
+  backdrop.className = 'kb-backdrop';
+  backdrop.id = 'kb-backdrop';
+  backdrop.addEventListener('click', closeKeybindsModal);
+
   const panel = document.createElement('div');
-  panel.className = 'keybinds-panel glass resizable';
+  panel.className = 'keybinds-panel glass';
   panel.id = 'keybinds-panel';
 
-  // Restore saved position or center on screen
-  const savedPanel = JSON.parse(storage.getItem(KEYS.PANEL_PREFIX + 'keybinds-panel') || 'null');
-  if (savedPanel) {
-    if (savedPanel.left && savedPanel.left !== 'auto') panel.style.left = savedPanel.left;
-    if (savedPanel.top) panel.style.top = Math.max(48, parseInt(savedPanel.top, 10) || 0) + 'px';
-    if (savedPanel.width) panel.style.width = savedPanel.width;
-  } else {
-    panel.style.left = Math.max(20, (window.innerWidth - 660) / 2) + 'px';
-    panel.style.top = Math.max(48, (window.innerHeight - 480) / 2) + 'px';
-  }
-
   panel.innerHTML = `
-    <div class="resize-handle resize-handle-t" data-resize="t"></div>
-    <div class="resize-handle resize-handle-b" data-resize="b"></div>
-    <div class="resize-handle resize-handle-l" data-resize="l"></div>
-    <div class="resize-handle resize-handle-r" data-resize="r"></div>
-    <div class="resize-handle resize-handle-tl" data-resize="tl"></div>
-    <div class="resize-handle resize-handle-tr" data-resize="tr"></div>
-    <div class="resize-handle resize-handle-bl" data-resize="bl"></div>
-    <div class="resize-handle resize-handle-br" data-resize="br"></div>
-    <div class="settings-panel-header drag-handle" data-drag="keybinds-panel">
+    <div class="settings-panel-header">
       <h3>Keyboard Shortcuts</h3>
       <button class="settings-panel-close kb-close">&times;</button>
     </div>
@@ -332,8 +317,12 @@ export function openKeybindsModal() {
     </div>
   `;
 
+  document.body.appendChild(backdrop);
   document.body.appendChild(panel);
-  requestAnimationFrame(() => panel.classList.add('open'));
+  requestAnimationFrame(() => {
+    backdrop.classList.add('open');
+    panel.classList.add('open');
+  });
 
   // Wire events
   panel.querySelector('.kb-close').addEventListener('click', closeKeybindsModal);
@@ -396,11 +385,15 @@ export function closeKeybindsModal() {
   _modalOpen = false;
   _pendingBindings = null;
 
+  const backdrop = document.getElementById('kb-backdrop');
   const panel = document.getElementById('keybinds-panel');
+  if (backdrop) {
+    backdrop.classList.remove('open');
+    setTimeout(() => backdrop.remove(), 200);
+  }
   if (panel) {
-    savePanelLayout(panel);
     panel.classList.remove('open');
-    setTimeout(() => panel.remove(), 150);
+    setTimeout(() => panel.remove(), 200);
   }
 }
 
