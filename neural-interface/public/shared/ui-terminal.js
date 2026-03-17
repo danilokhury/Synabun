@@ -1986,7 +1986,7 @@ async function openBrowserSession(url, fresh, headless, force) {
   };
   const browserOpts = {};
   if (headless !== undefined) browserOpts.headless = headless;
-  const { sessionId } = await createBrowserSession(startUrl, null, null, fingerprint, browserOpts);
+  const { sessionId, profileMode, profileSource } = await createBrowserSession(startUrl, null, null, fingerprint, browserOpts);
 
   // Build browser viewport: address bar + canvas
   const viewport = document.createElement('div');
@@ -2184,12 +2184,21 @@ async function openBrowserSession(url, fresh, headless, force) {
   };
   document.addEventListener('visibilitychange', _visibilityHandler);
 
+  // Build tab label with profile info
+  let tabLabel = 'Browser';
+  if (profileMode === 'mirror' && profileSource) {
+    tabLabel = `Browser (${profileSource})`;
+    showTermToast(`Synced copy of ${profileSource} — Chrome is running`);
+  } else if (profileMode === 'direct' && profileSource) {
+    tabLabel = `Browser (${profileSource})`;
+  }
+
   // Register session
   const session = {
     id: sessionId,
     profile: 'browser',
     cwd: null,
-    label: 'Browser',
+    label: tabLabel,
     term: null,         // no xterm for browser tabs
     fitAddon: null,
     searchAddon: null,
