@@ -1938,7 +1938,7 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
  * connects via WebSocket for CDP screencast frames, and renders them
  * onto a canvas with an address bar overlay.
  */
-async function openBrowserSession(url, fresh, headless, force) {
+async function openBrowserSession(url, fresh, _unused, force) {
   if (isGuest() && !hasPermission('browser')) return;
   // Auto-unstick _opening if it's been true for over 15 seconds (previous attempt crashed/hung)
   if (_opening && _openingAt && (Date.now() - _openingAt > 15000)) {
@@ -1977,7 +1977,7 @@ async function openBrowserSession(url, fresh, headless, force) {
   }
 
   const startUrl = url || 'https://www.google.com';
-  // Collect the real browser's fingerprint to clone into the headless instance
+  // Collect the real browser's fingerprint to clone into the automated instance
   const fingerprint = {
     screenWidth: window.screen.width,
     screenHeight: window.screen.height,
@@ -1985,7 +1985,6 @@ async function openBrowserSession(url, fresh, headless, force) {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
   const browserOpts = {};
-  if (headless !== undefined) browserOpts.headless = headless;
   const { sessionId, profileMode, profileSource } = await createBrowserSession(startUrl, null, null, fingerprint, browserOpts);
 
   // Build browser viewport: address bar + canvas
@@ -4501,7 +4500,7 @@ export async function initTerminal() {
     runCommandInNewTab(data).catch(err => console.error('[SynaBun] terminal:run-command error:', err));
   });
 
-  on('browser:open', (data) => openBrowserSession(data?.url, data?.fresh, data?.headless, data?.force));
+  on('browser:open', (data) => openBrowserSession(data?.url, data?.fresh, undefined, data?.force));
 
   // Reconnect to existing browser session (e.g. detached from Claude panel embed)
   on('browser:reconnect', async (data) => {
