@@ -1,0 +1,8 @@
+{
+  "id": "default",
+  "name": "SynaBun Default",
+  "version": "1.0.0",
+  "author": "SynaBun",
+  "description": "The original Neural Interface look — dark glass with cool blue accents",
+  "css": "skin.css"
+}

@@ -1,0 +1,90 @@
+/* ═══════════════════════════════════════════
+   SynaBun Default Skin — Reference Template
+   ═══════════════════════════════════════════
+
+   Copy this file to create your own skin.
+   Override any :root variable to change the Neural Interface appearance.
+
+   Glass/blur/scale variables are controlled by the Interface tab sliders
+   and will override skin values (inline styles > stylesheet).
+
+   Skin structure:
+     your-skin/
+       skin.json    — manifest (id, name, version, author, description, css)
+       skin.css     — this file (CSS variable overrides)
+       preview.png  — optional screenshot (400x240)
+       assets/      — optional (fonts, images, patterns)
+
+   Package as ZIP and upload via Settings > Skins.
+   ═══════════════════════════════════════════ */
+
+:root {
+  /* ── Text tones ──
+     Control text opacity/brightness across the interface.
+     Faint → Bright = least visible → most visible. */
+  --t-faint: rgba(255,255,255,0.2);
+  --t-muted: rgba(255,255,255,0.3);
+  --t-secondary: rgba(255,255,255,0.5);
+  --t-primary: rgba(255,255,255,0.7);
+  --t-bright: rgba(255,255,255,0.9);
+
+  /* ── Surfaces ──
+     Panel backgrounds, hover states, active states.
+     Subtle → Active = barely visible → clearly highlighted. */
+  --s-transparent: transparent;
+  --s-subtle: rgba(255,255,255,0.04);
+  --s-light: rgba(255,255,255,0.06);
+  --s-medium: rgba(255,255,255,0.10);
+  --s-hover: rgba(255,255,255,0.08);
+  --s-active: rgba(255,255,255,0.14);
+  --s-panel: rgba(28,28,30,0.85);
+
+  /* ── Borders ──
+     Dividers, card edges, input outlines.
+     Subtle → Visible = ghost line → clearly drawn. */
+  --b-subtle: rgba(255,255,255,0.06);
+  --b-light: rgba(255,255,255,0.10);
+  --b-hover: rgba(255,255,255,0.16);
+  --b-visible: rgba(255,255,255,0.22);
+
+  /* ── Accent colors ──
+     Primary accent is derived from hue/saturation/lightness.
+     Gold, red, orange are fixed semantic colors. */
+  --accent-hue: 199;
+  --accent-saturation: 92%;
+  --accent-lightness: 64%;
+
+  --accent-blue: hsl(var(--accent-hue), var(--accent-saturation), var(--accent-lightness));
+  --accent-blue-bg: hsla(var(--accent-hue), var(--accent-saturation), var(--accent-lightness), 0.10);
+  --accent-blue-border: hsla(var(--accent-hue), var(--accent-saturation), var(--accent-lightness), 0.25);
+
+  --accent-gold: rgba(255,215,0,0.85);
+  --accent-gold-bg: rgba(255,215,0,0.10);
+  --accent-gold-border: rgba(255,215,0,0.22);
+
+  --accent-red: #FF5252;
+  --accent-red-bg: rgba(255,82,82,0.15);
+  --accent-red-hover: rgba(255,82,82,0.30);
+
+  --accent-orange: #FFB74D;
+  --accent-orange-bg: rgba(255,183,77,0.10);
+
+  /* ── Border radii ──
+     Shape language for the interface. */
+  --r-pill: 20px;
+  --r-button: 10px;
+  --r-card: 8px;
+  --r-circle: 50%;
+  --r-small: 6px;
+}
+
+/* ── Body ──
+   Background color and default text. */
+body {
+  background: #050505;
+  color: #e0e0e0;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); }

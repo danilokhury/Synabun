@@ -564,6 +564,18 @@ export async function stopTunnel() {
   return jsonFetch('/api/tunnel/stop', { method: 'POST' });
 }
 
+// ─── Last Session (resume after restart) ──
+
+export async function fetchLastSession() {
+  const r = await fetch('/api/last-session');
+  if (!r.ok) return null;
+  return r.json();
+}
+
+export async function dismissLastSession() {
+  return fetch('/api/last-session', { method: 'DELETE' });
+}
+
 // ─── Terminal ────────────────────────────
 
 export async function fetchTerminalSessions() {
@@ -579,12 +591,13 @@ export async function createTerminalSession(profile, cols, rows, cwd, opts = {})
 
 // ─── Claude Code Sessions (Resume) ─────
 
-export async function fetchClaudeSessions({ project, limit, offset, search } = {}) {
+export async function fetchClaudeSessions({ project, limit, offset, search, refresh } = {}) {
   const params = new URLSearchParams();
   if (project) params.set('project', project);
   if (limit) params.set('limit', String(limit));
   if (offset) params.set('offset', String(offset));
   if (search) params.set('search', search);
+  if (refresh) params.set('refresh', 'true');
   return jsonFetch(`/api/claude-code/sessions?${params}`);
 }
 
