@@ -1,11 +1,21 @@
 {
   "cookies": [
     {
+      "name": "SNID",
+      "value": "ALbZf36DK_CpieQU03FokyCgLdMOU4gNbaoumGl3A8IWASt5Ezwsw-FKy9uXV8Ty8jq_AMBDSr-jPW5X8wBaR2py2pBwqX0DzA",
+      "domain": ".google.com",
+      "path": "/verify",
+      "expires": 1789607830.440649,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
       "name": "guest_id_marketing",
       "value": "v1%3A177379662053735044",
       "domain": ".x.com",
       "path": "/",
-      "expires": 1808360300.724623,
+      "expires": 1808365428.577333,
       "httpOnly": false,
       "secure": true,
       "sameSite": "None"
@@ -15,7 +25,7 @@
       "value": "v1%3A177379662053735044",
       "domain": ".x.com",
       "path": "/",
-      "expires": 1808360300.72444,
+      "expires": 1808365428.577272,
       "httpOnly": false,
       "secure": true,
       "sameSite": "None"
@@ -41,21 +51,11 @@
       "sameSite": "None"
     },
     {
-      "name": "gt",
-      "value": "2034076571275821296",
-      "domain": ".x.com",
-      "path": "/",
-      "expires": 1773805620.826491,
-      "httpOnly": false,
-      "secure": true,
-      "sameSite": "Lax"
-    },
-    {
       "name": "__cuid",
       "value": "d09215d1b4f44c4e8cd4140b1b60b201",
       "domain": ".x.com",
       "path": "/",
-      "expires": 1808360301,
+      "expires": 1808365429,
       "httpOnly": false,
       "secure": false,
       "sameSite": "Lax"
@@ -111,16 +111,6 @@
       "sameSite": "Lax"
     },
     {
-      "name": "NID",
-      "value": "529=cyC6BRwspf_kYh4gvFG3tEBZvIfmJM5_5Ef60k9X8WaY4lXjYVPpR8NpFR1LQMe3xhIz_j45gULKxoD9Qqp5pF-e7FTkcTJIkl1-3ZBwyMrNafwYQ4HdqQcbv2Wb_IAVbbKErn3QagEaNgxHp6mGn09QlL1P_kw9SIo3OoHSFNQvDk_E8gqLA7Uu_nvNkg6mb-SYfirvvS0u50A",
-      "domain": ".google.com",
-      "path": "/",
-      "expires": 1789607830.464899,
-      "httpOnly": true,
-      "secure": true,
-      "sameSite": "None"
-    },
-    {
       "name": "kdt",
       "value": "Uft5s6vQ45rNQg8ThTfusoS2o6acdrV940mLWX8s",
       "domain": ".x.com",
@@ -161,21 +151,11 @@
       "sameSite": "None"
     },
     {
-      "name": "lang",
-      "value": "en",
-      "domain": "x.com",
-      "path": "/",
-      "expires": -1,
-      "httpOnly": false,
-      "secure": false,
-      "sameSite": "Lax"
-    },
-    {
       "name": "twid",
       "value": "u%3D2026004778678177792",
       "domain": ".x.com",
       "path": "/",
-      "expires": 1805336305.346634,
+      "expires": 1805341430.172357,
       "httpOnly": false,
       "secure": true,
       "sameSite": "None"
@@ -192,16 +172,185 @@
     },
     {
       "name": "__cf_bm",
-      "value": "FqRFd8NYqMd.PaDEO3ufPYhusVKq_ylBJXVjgB0s0_w-1773799593.0697446-1.0.1.1-y6cpul6ZEuCOvGghc5mdCrb_UjttZopdeX9.6J6cbko5keV2ujA6FAqI4u9MZ08HBfDTKaRIW.QZPuoajTDW_ONk63go5J5DHDAT3NhNXElnM9spUAr4Ng8V_0GQAfY.",
+      "value": "gszxh93SpKuaCoUA1k5CmmjO6M4St.d61UU5sYNLcAo-1773804784.3972-1.0.1.1-6bBhpArXBX_.Rb4q9MZNqxuwqPygCYaOfPYRyZw7pzcLDJJgljSN9hcFFCH0dAD.B3aDdqOIASlS.JIi5UdHe9Q6Dp2rk91mbZmrRVkYQidh_AM3htIunCyxAW6w9G4t",
       "domain": ".x.com",
       "path": "/",
-      "expires": 1773801393.305976,
+      "expires": 1773806585.047942,
       "httpOnly": true,
       "secure": true,
       "sameSite": "Lax"
+    },
+    {
+      "name": "datr",
+      "value": "_hy6aU9sunPlWBxdSl759jUd",
+      "domain": ".facebook.com",
+      "path": "/",
+      "expires": 1808364798.985481,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "wd",
+      "value": "1280x800",
+      "domain": ".facebook.com",
+      "path": "/",
+      "expires": 1774409729,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "dpr",
+      "value": "1",
+      "domain": ".facebook.com",
+      "path": "/",
+      "expires": 1774409729,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "AEC",
+      "value": "AaJma5vKeI4AZDPgDv5Q-U37__xSYuQDsO73rdp9ocf6YWAszbFmmxfiWw",
+      "domain": ".google.com",
+      "path": "/",
+      "expires": 1789356846.193508,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "__Secure-BUCKET",
+      "value": "CMAH",
+      "domain": ".google.com",
+      "path": "/",
+      "expires": 1789356846.193543,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "locale",
+      "value": "pt_BR",
+      "domain": ".facebook.com",
+      "path": "/",
+      "expires": 1774409683.750939,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "sb",
+      "value": "Qx26aaD-rsHeDxtEztlReHnd",
+      "domain": ".facebook.com",
+      "path": "/",
+      "expires": 1808364915.50683,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "c_user",
+      "value": "100000282863342",
+      "domain": ".facebook.com",
+      "path": "/",
+      "expires": 1805340915.708153,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "xs",
+      "value": "13%3AhKaopB45sfmeIg%3A2%3A1773804911%3A-1%3A-1%3A%3AAcytM9FqoLFfmqBWVmz_e60tO1im5RU-rptUGc6AcA",
+      "domain": ".facebook.com",
+      "path": "/",
+      "expires": 1805340915.708346,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "fr",
+      "value": "1zq0A0JlnJuGOmvJB.AWdCamx9y4K5fjC5Y2JsuPgQWz4tsOj0fklx_SiHatY_WA1RQEU.Bpuh1z..AAA.0.0.Bpuh9w.AWd5rkZ2QMjWuV7A0JEqNzmwoCw",
+      "domain": ".facebook.com",
+      "path": "/",
+      "expires": 1781581425.053416,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "__Secure-STRP",
+      "value": "AEEP7gKboY_lHbWx3qJBgp5GpWM4bT_BYhJhKhxZZggvlu3JiC-XzKFL4_MPbZKCfHsHm21FhBkY639Xt_rk_gwE_7nahPNfSg",
+      "domain": ".google.com",
+      "path": "/",
+      "expires": 1773805730.215991,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Strict"
+    },
+    {
+      "name": "NID",
+      "value": "529=O6njfi9ZMVhRxgZo8nCEKVV4fkAZT-jRH_aA96EoAWPm79dhHcWBV4wwcMdev3hnxeHpx4-0QNpqZ_03xig064mP8uZL1kHVXdtQWS_gUAFm8U2JRw7lTJdxujwEnxOGoXozbYFsJnZgMlH5SQ0TSLScNJ7Zha51cuQINhQO1uvudxjEMRQ8_8wYtPL1fKhlyCKVkx8aL5iveuDQne1m6C7YxiITgls6yZrQfDwITpEM2am-",
+      "domain": ".google.com",
+      "path": "/",
+      "expires": 1789607830.216024,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
     }
   ],
   "origins": [
+    {
+      "origin": "https://www.facebook.com",
+      "localStorage": [
+        {
+          "name": "screen_time_period_logging_facebook",
+          "value": "{\"actorId\":\"100000282863342\",\"currentIntervalLastTick\":1773804960,\"currentIntervalStart\":1773804916,\"initRemoteAgg\":{\"timestamp\":1773804913,\"today_s\":13},\"intervals\":[],\"lastCallbackAttempt\":1773804916,\"localStorageId\":\"49204747\",\"syncedL24HS\":null,\"syncedTodayS\":null}"
+        },
+        {
+          "name": "last_headload_time",
+          "value": "1773804925999"
+        },
+        {
+          "name": "RSTData",
+          "value": "{}"
+        },
+        {
+          "name": "bdz_playback_state",
+          "value": "{\"session_key\":\"mmh78uko\",\"buffer_length\":60}"
+        },
+        {
+          "name": "hb_timestamp",
+          "value": "1773804799409"
+        },
+        {
+          "name": "CacheStorageVersion",
+          "value": "3b"
+        },
+        {
+          "name": "mw_encrypted_backups_restore_upsell_first_impression_time_key",
+          "value": "1773804916335"
+        },
+        {
+          "name": "ares_last_signal_flush",
+          "value": "1772940916680"
+        },
+        {
+          "name": "signal_flush_timestamp",
+          "value": "1773804799419"
+        },
+        {
+          "name": "Session",
+          "value": "qlwhqm:1773804977390"
+        },
+        {
+          "name": "banzai:last_storage_flush",
+          "value": "1773804800358.5"
+        }
+      ]
+    },
     {
       "origin": "https://x.com",
       "localStorage": [
@@ -212,6 +361,15 @@
         {
           "name": "volume",
           "value": "1"
+        }
+      ]
+    },
+    {
+      "origin": "https://www.google.com",
+      "localStorage": [
+        {
+          "name": "sb_wiz.zpc.gws-wiz.",
+          "value": "{\"0\":[[\"lua hoje\",0,[3,143,362],{\"zf\":33,\"zl\":8,\"zp\":{\"gs_ss\":\"1\"}}],[\"onça em esmeraldas mg\",0,[3,143,362],{\"zl\":8,\"zp\":{\"gs_ss\":\"1\"},\"zf\":33}],[\"caio roque botafogo\",0,[3,143,362],{\"zf\":33,\"zp\":{\"gs_ss\":\"1\"},\"zl\":8}],[\"copom selic\",0,[3,143,362],{\"zf\":33,\"zl\":8,\"zp\":{\"gs_ss\":\"1\"}}],[\"evangelho padre alex nogueira\",0,[3,143,362],{\"zl\":8,\"zp\":{\"gs_ss\":\"1\"},\"zf\":33}],[\"colômbia equador\",0,[3,143,362],{\"zf\":33,\"zl\":8,\"zp\":{\"gs_ss\":\"1\"}}],[\"smartphone xiaomi poco x7 pro 5g ram\",0,[3,143,362],{\"zf\":33,\"zp\":{\"gs_ss\":\"1\"},\"zl\":8}],[\"kamylinha santos está grávida\",0,[3,143,362],{\"zl\":8,\"zp\":{\"gs_ss\":\"1\"},\"zf\":33}],[\"motogp\",46,[3,143,362],{\"zl\":8,\"zp\":{\"gs_ssp\":\"eJzj4tDP1TdIM03OMWD0YsvNL8lPLwAAMMMFjw\"},\"zf\":33,\"zi\":\"Grand Prix Motorcycle Racing — Liga desportiva\",\"zs\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAFAAAAAsCAMAAADFL88lAAAAnFBMVEX///8AAABgYGDWACzT09PXADLQ0NDWACjLy8vWACpmZmbXADD42uDZAEDYADr88PPf399ra2v54OX++fvYADZKSkr29vb65erVAB71ztbwtcDWACP209rrmanFxcU5OTkVFRUfHx+zs7OPj49XV1d3d3fldYugoKDaGEvuqbbeQ2XjaIHcKlXoh5rgU3HdN12EhIQoKCjzw8zUAAVhJqQwAAAC1klEQVRIia1X23aqMBTcGtOYJiEqVG6ip1YRELCl//9vJ1BblEvA1c4DcSWzxtlkZ4wANfYvk3usoRfb3T+FST8BYDFp4m2QvH9IT/f1X7W86gy29U795PkXY6vRe3vI4EdF2GkY64cM7r8YM43g+7DB2fwHz4fp9DDV6XUYbGzg9mZpqVG64tjSa2zg6XZN055XdLTMtp/wPmxw2dJrbODzrw3O+wma8/ONaUvv5Z5wuF0b1pu1Dc76CZr2/EYzYyaTg4YwrPfUNrjoJ4wwuGvpLfsJH8N625Zeoy9uCbvhloHjtInjYnaLmrDU5akGH7r6KxQMP6C3b9cvK1SrK1s9MCvU0+bVzHVYcTBdbsq24L2eOheBQRFC1MnUR4z8EAJLWNxNCY2U2YiQFCAjSA2F62YtvdO9IECImCEEEyKCHCEhUmAC5Z6DDOHLwFeDA+dygSjBwB0weALuI/dsRNKwshgJM2FxhpNiQ+gmsxLbpzK0cpdgebbOnW/wrWkwxyFYqHAZkgaLORUSkQ2c8RkswnOcmY5jpzhQs7xLrxHde3AJNTOcQoSDAEeQUC/EOax8IjOWc4ptbpsFM/iFdRu8j24V2xflgdKNxyzJlE+SSkJWlW1E7IQFOfm0IyEQuphdeo1k3EKBGIRWAgLHmZVCStyy2A1BELKzi4zy1XrYolHQ6e8+mcvYVpWWlmImJMWuRy82QRISq5yVKY45I1KwuNNd2+ATeMhS7z8HA3mq+S6M2KFh5AUVqfCDDRKp5Xsxi3rkmsmoYps5Bf80ZPCZQOBgcllB5pNQOhgZMXA1CA8ctek9aCTjAiSX1cniK7XqelVfFJ4JtlcePVh5qo0l76sX4PVO79jLG4v1/OkGs+nzFQfdnWM86lzVXbIeQF3/3xisU/EwTB6D283+C9SpOOLuNga1wRG/cyNQp+Lvu7HE+q8N1qk44uYxAj+hs9P9EenBf+ehNrFeQNWnAAAAAElFTkSuQmCC\",\"lm\":[],\"zh\":\"MotoGP\"}],[\"cotação dolar hoje\",0,[3,143,362],{\"zp\":{\"gs_ss\":\"1\"},\"zl\":8,\"zf\":33}]],\"1\":{\"av\":\"8649625269293055162\",\"ag\":{\"a\":{\"8\":[\"Pesquisas em alta\"]}}}}"
         }
       ]
     }

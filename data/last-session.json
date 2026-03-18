@@ -1,0 +1,20 @@
+{
+  "timestamp": 1773813226139,
+  "sessions": [
+    {
+      "profile": "claude-code",
+      "cwd": "/Users/danilokhury/Apps/Synabun",
+      "claudeSessionId": "02e406cd-107d-4a1e-b909-d79fa22c9868"
+    },
+    {
+      "profile": "claude-code",
+      "cwd": "/Users/danilokhury/Apps/SynaBunWebsite",
+      "claudeSessionId": "a75d5be5-3b02-46b6-82b3-cfbcaba390bb"
+    },
+    {
+      "profile": "claude-code",
+      "cwd": "/Users/danilokhury/Apps/Synabun",
+      "claudeSessionId": "31c0338d-8e16-4981-908d-38ee1981bcf1"
+    }
+  ]
+}

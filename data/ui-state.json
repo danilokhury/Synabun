@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-18T02:25:34.706Z",
+  "_updated": "2026-03-18T05:53:01.545Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -58,7 +58,7 @@
     "height": null,
     "maxHeight": null
   },
-  "neural-explorer-visible": true,
+  "neural-explorer-visible": false,
   "neural-explorer-width": 323,
   "neural-open-cards": [],
   "neural-explorer-collapsed": [
@@ -23796,7 +23796,71 @@
       "selectedNodeId": "dc33bfe5-2c6d-4b7d-be8d-826af43d09e9"
     }
   ],
-  "neural-terminal-active-sessions": [],
+  "neural-terminal-active-sessions": [
+    {
+      "id": "bb537c348de36e98e259612febaa6275",
+      "profile": "shell",
+      "label": "Shell",
+      "pinned": false,
+      "userRenamed": false,
+      "claudeSessionId": null,
+      "floatColor": null
+    },
+    {
+      "id": "74286cf3cb58551e80bcf6e4bf5d5d96",
+      "profile": "shell",
+      "label": "Shell",
+      "pinned": false,
+      "userRenamed": false,
+      "claudeSessionId": null,
+      "floatColor": null
+    },
+    {
+      "id": "35a12fa064ccb92eb09743a052ec61be",
+      "profile": "browser",
+      "label": "(1) Vibe Coding - Philippines …",
+      "pinned": false,
+      "userRenamed": false,
+      "claudeSessionId": null,
+      "floatColor": "pink"
+    },
+    {
+      "id": "34f5f405d4b6c89896c3627ff1ad55e5",
+      "profile": "claude-code",
+      "label": "✳ Claude Code",
+      "pinned": false,
+      "userRenamed": false,
+      "claudeSessionId": null,
+      "floatColor": "red"
+    },
+    {
+      "id": "8510d109795a09efe79f77d3eeb79bcc",
+      "profile": "claude-code",
+      "label": "Claude Code · SynaBunWebsite",
+      "pinned": false,
+      "userRenamed": false,
+      "claudeSessionId": "a75d5be5-3b02-46b6-82b3-cfbcaba390bb",
+      "floatColor": null
+    },
+    {
+      "id": "7a9c820771441d549f5a18dd2cbca93d",
+      "profile": "shell",
+      "label": "Shell",
+      "pinned": false,
+      "userRenamed": false,
+      "claudeSessionId": null,
+      "floatColor": null
+    },
+    {
+      "id": "d7e3f4151e30b36502e770e4be54c846",
+      "profile": "claude-code",
+      "label": "Website responsiveness",
+      "pinned": false,
+      "userRenamed": true,
+      "claudeSessionId": "31c0338d-8e16-4981-908d-38ee1981bcf1",
+      "floatColor": null
+    }
+  ],
   "neural-terminal-active-sessions-layout": {
     "detached": false,
     "floatPos": null,
@@ -23804,26 +23868,71 @@
     "visible": false,
     "sessions": [
       {
-        "id": "93187e9c22cea961ae3282aa2a35b501",
+        "id": "bb537c348de36e98e259612febaa6275",
+        "profile": "shell",
+        "label": "Shell",
+        "pinned": false,
+        "isDetached": false,
+        "userRenamed": false,
+        "claudeSessionId": null
+      },
+      {
+        "id": "74286cf3cb58551e80bcf6e4bf5d5d96",
+        "profile": "shell",
+        "label": "Shell",
+        "pinned": false,
+        "isDetached": false,
+        "userRenamed": false,
+        "claudeSessionId": null
+      },
+      {
+        "id": "35a12fa064ccb92eb09743a052ec61be",
         "profile": "browser",
-        "label": "X",
+        "label": "(1) Vibe Coding - Philippines …",
         "pinned": false,
         "isDetached": true,
         "userRenamed": false,
         "claudeSessionId": null
       },
       {
-        "id": "9b122b4b01bee16f337ffa95392d01af",
+        "id": "34f5f405d4b6c89896c3627ff1ad55e5",
         "profile": "claude-code",
         "label": "⠂ Claude Code",
         "pinned": false,
         "isDetached": true,
         "userRenamed": false,
         "claudeSessionId": null
+      },
+      {
+        "id": "8510d109795a09efe79f77d3eeb79bcc",
+        "profile": "claude-code",
+        "label": "Claude Code · SynaBunWebsite",
+        "pinned": false,
+        "isDetached": false,
+        "userRenamed": false,
+        "claudeSessionId": "a75d5be5-3b02-46b6-82b3-cfbcaba390bb"
+      },
+      {
+        "id": "7a9c820771441d549f5a18dd2cbca93d",
+        "profile": "shell",
+        "label": "Shell",
+        "pinned": false,
+        "isDetached": false,
+        "userRenamed": false,
+        "claudeSessionId": null
+      },
+      {
+        "id": "d7e3f4151e30b36502e770e4be54c846",
+        "profile": "claude-code",
+        "label": "Website responsiveness",
+        "pinned": false,
+        "isDetached": false,
+        "userRenamed": true,
+        "claudeSessionId": "31c0338d-8e16-4981-908d-38ee1981bcf1"
       }
     ],
     "splitMode": false,
-    "splitRatio": 0.5,
+    "splitRatio": 0.7,
     "focusedPane": 0,
     "paneAssignments": {},
     "activePaneIdx": [
@@ -23832,32 +23941,32 @@
     ],
     "detachedTabs": [
       {
-        "sessionId": "93187e9c22cea961ae3282aa2a35b501",
-        "sessionIdx": 0,
-        "left": 1252.21875,
-        "top": 107.5,
-        "width": 700,
-        "height": 420,
+        "sessionId": "35a12fa064ccb92eb09743a052ec61be",
+        "sessionIdx": 2,
+        "left": 10,
+        "top": 64.5,
+        "width": 1195,
+        "height": 938,
         "pinned": false,
-        "label": "X",
+        "label": "(1) Vibe Coding - Philippines …",
         "userRenamed": false,
         "claudeSessionId": null,
-        "minimized": false,
-        "floatColor": "yellow"
+        "minimized": true,
+        "floatColor": "pink"
       },
       {
-        "sessionId": "9b122b4b01bee16f337ffa95392d01af",
-        "sessionIdx": 1,
-        "left": 535,
-        "top": 336.5,
-        "width": 700,
-        "height": 593,
+        "sessionId": "34f5f405d4b6c89896c3627ff1ad55e5",
+        "sessionIdx": 3,
+        "left": 191,
+        "top": 172.5,
+        "width": 978,
+        "height": 699,
         "pinned": false,
         "label": "⠂ Claude Code",
         "userRenamed": false,
         "claudeSessionId": null,
-        "minimized": false,
-        "floatColor": "slate"
+        "minimized": true,
+        "floatColor": "red"
       }
     ]
   },
@@ -23903,8 +24012,8 @@
     "maxHeight": null
   },
   "neural-panel-trash-window": {
-    "left": "818px",
-    "top": "206px",
+    "left": "157px",
+    "top": "115px",
     "right": "auto",
     "width": "1363px",
     "height": "873.5px",
@@ -42589,7 +42698,7 @@
   },
   "neural-whiteboard": {
     "elements": [],
-    "nextZIndex": 3
+    "nextZIndex": 52
   },
   "neural-panel-detail-card-ed517012": {
     "left": "1674px",
@@ -42733,12 +42842,12 @@
   },
   "neural-pinned-detail-card-91dd5d9b": false,
   "neural-panel-automation-studio-panel": {
-    "left": "544px",
-    "top": "172px",
+    "left": "291px",
+    "top": "159.5px",
     "right": "auto",
-    "width": "1299px",
-    "height": "973px",
-    "maxHeight": null
+    "width": "1201px",
+    "height": "756px",
+    "maxHeight": "903.5px"
   },
   "neural-panel-automation-studio": {
     "x": 544,
@@ -42818,7 +42927,7 @@
     "height": null,
     "maxHeight": null
   },
-  "neural-terminal-split-ratio": 0.4966783899960922,
+  "neural-terminal-split-ratio": 0.7,
   "neural-panel-detail-card-fafa5f98": {
     "left": "230px",
     "top": "110px",
@@ -43091,9 +43200,13 @@
     "maxHeight": null
   },
   "neural-file-explorer-visible": false,
-  "neural-file-explorer-width": 321,
+  "neural-file-explorer-width": 348,
   "neural-file-explorer-project": "/Users/danilokhury/Apps/Synabun",
-  "neural-file-explorer-collapsed": [],
+  "neural-file-explorer-collapsed": [
+    "/Users/danilokhury/Apps/Synabun/hooks",
+    "/Users/danilokhury/Apps/Synabun/docs/screenshots",
+    "/Users/danilokhury/Apps/Synabun/docs"
+  ],
   "neural-panel-detail-card-1503ba27": {
     "left": "1162px",
     "top": "239px",
@@ -51066,9 +51179,10 @@
   "synabun-session-label:ec01884c-2c0b-44be-b5b9-0b7adc184f96": "Fix Changelog Skill",
   "synabun-claude-panel-windows": {
     "874c042a-d3fc-4ffd-9a9e-adc95ba977aa": 1773796338903,
-    "c6b3b1fd-2e19-4b80-897c-8249bea868c7": 1773798644720
+    "c6b3b1fd-2e19-4b80-897c-8249bea868c7": 1773798644720,
+    "a4fc5ec3-db4b-438a-a7a1-fcbfccc2d6e1": 1773813181013
   },
-  "synabun-claude-panel-boot-id": "45af0495-8013-4b01-a70b-0685d59ffca4",
+  "synabun-claude-panel-boot-id": "95777de1-918c-4491-8c11-e431d3618cb3",
   "synabun-claude-panel-tabs-874c042a-d3fc-4ffd-9a9e-adc95ba977aa": {
     "tabs": [
       {
@@ -51101,5 +51215,20 @@
     ],
     "activeIdx": 0
   },
-  "neural-cost-widget-docked": true
+  "neural-cost-widget-docked": true,
+  "synabun-claude-panel-tabs-a4fc5ec3-db4b-438a-a7a1-fcbfccc2d6e1": {
+    "tabs": [
+      {
+        "id": "48af33e9-fda9-4447-9ccd-8cc0f3cc1ca1",
+        "sessionId": "7ef929a2-1cb5-47b5-acd5-0359e50f6881",
+        "label": "[PLAN MODE — think step by step, create a detailed plan, do ...",
+        "sessionCost": 0.562285,
+        "running": false
+      }
+    ],
+    "activeIdx": 0
+  },
+  "synabun-session-label:a0b08147-83ae-4f97-b38c-833e71c7b253": "Documentation Update",
+  "synabun-session-label:bf80987f-8812-4b1f-a9e3-d0d7befbafa5": "Synabun Browser Stream",
+  "synabun-session-label:31c0338d-8e16-4981-908d-38ee1981bcf1": "Website responsiveness"
 }

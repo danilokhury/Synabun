@@ -59,7 +59,7 @@
     "id": "09a20cd3a474ff829fb7af31",
     "name": "Facebook SynaBun",
     "description": "Loop para postar no facebook",
-    "task": "IMPORTANT:\n\n-POST IN THE GROUP LANGUAGE\n- MAKE SURE THE IMAGE APPEARS AND NOT THE WEBSITE GENERATED OG APPEARS IN THE COMMENT\n  ========================================\n\nTask:\n\n  Navigate to facebook groups related to AI, vibe coding and overall AI software development and plug the following points in a well crafted message. Post in any country/language available. Just post in the language the group speaks.\n\n  ========================================\n\nI need you to plug \nhttps://i.imgur.com/LHevmvx.png\n\nThis upcomming update, Claude Code panel coming to Synabun soon. Then explain that it will enable users who want a cleaner total CLI experience but in a side panel styled experience.\nThen plug the website URL\n  https://synabun.ai/\n\n  ========================================\n\n  Rules:\n\n  - Don't double post\n  - Double check the group language. If posts are in english, post in english. if posts are in portuguese, post in portuguese\n  - don't double post on the same group, check 1 or 2 posts down before posting\n  - You are free to join groups related to the theme and look for more languages also, just make sure to always post in the language the group is in.",
+    "task": "IMPORTANT:\n\n-POST IN THE GROUP LANGUAGE\n- MAKE SURE THE IMAGE APPEARS AND NOT THE WEBSITE GENERATED OG APPEARS IN THE COMMENT\n  ========================================\n\nTask:\n\n  Navigate to facebook groups related to AI, vibe coding and overall AI software development and plug the following points in a well crafted message. Post in any country/language available. Just post in the language the group speaks.\n\n  ========================================\n I need you to try and sell the idea for vibecoders to use synabun in vibecode related groups.\nIn more AI related groups, i want you to share the possibility to have multi model memory systems between claude, gemini and ChatGPT codex\nLink it to https://synabun.ai\n\n  ========================================\n\n  Rules:\n\n  - Don't double post\n  - Double check the group language. If posts are in english, post in english. if posts are in portuguese, post in portuguese\n  - don't double post on the same group, check 1 or 2 posts down before posting\n  - You are free to join groups related to the theme and look for more languages also, just make sure to always post in the language the group is in.",
     "context": null,
     "iterations": 50,
     "maxMinutes": 120,
@@ -67,7 +67,7 @@
     "icon": "chat",
     "category": "social",
     "createdAt": "2026-03-01T18:16:34.094Z",
-    "updatedAt": "2026-03-09T04:08:19.710Z"
+    "updatedAt": "2026-03-18T03:32:54.969Z"
   },
   {
     "id": "7f4b634711c8e26d90c3540d",
