@@ -6,6 +6,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
+import fs from 'fs';
 import { config } from '../config.js';
 import { getAllCategories } from './categories.js';
 import type { MemoryPayload, MemoryStats, SessionChunkPayload } from '../types.js';
@@ -18,7 +19,13 @@ export const CATEGORIES_POINT_ID = '00000000-0000-0000-0000-000000000000';
 let db: DatabaseSync | null = null;
 
 function getDbPath(): string {
-  return process.env.SQLITE_DB_PATH || path.join(config.dataDir, 'memory.db');
+  const envPath = process.env.SQLITE_DB_PATH;
+  const defaultPath = path.join(config.dataDir, 'memory.db');
+  if (!envPath) return defaultPath;
+  // If the env path's parent directory doesn't exist (e.g. Windows path on Mac),
+  // fall back to the local default so cross-OS restores work instantly
+  if (!fs.existsSync(path.dirname(envPath))) return defaultPath;
+  return envPath;
 }
 
 function getDb(): DatabaseSync {
