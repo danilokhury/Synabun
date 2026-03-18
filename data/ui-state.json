@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-18T05:53:01.545Z",
+  "_updated": "2026-03-18T05:55:43.768Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -23816,24 +23816,6 @@
       "floatColor": null
     },
     {
-      "id": "35a12fa064ccb92eb09743a052ec61be",
-      "profile": "browser",
-      "label": "(1) Vibe Coding - Philippines …",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": null,
-      "floatColor": "pink"
-    },
-    {
-      "id": "34f5f405d4b6c89896c3627ff1ad55e5",
-      "profile": "claude-code",
-      "label": "✳ Claude Code",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": null,
-      "floatColor": "red"
-    },
-    {
       "id": "8510d109795a09efe79f77d3eeb79bcc",
       "profile": "claude-code",
       "label": "Claude Code · SynaBunWebsite",
@@ -23888,16 +23870,7 @@
       {
         "id": "35a12fa064ccb92eb09743a052ec61be",
         "profile": "browser",
-        "label": "(1) Vibe Coding - Philippines …",
-        "pinned": false,
-        "isDetached": true,
-        "userRenamed": false,
-        "claudeSessionId": null
-      },
-      {
-        "id": "34f5f405d4b6c89896c3627ff1ad55e5",
-        "profile": "claude-code",
-        "label": "⠂ Claude Code",
+        "label": "(1) n8n | AI Agents | AI Autom…",
         "pinned": false,
         "isDetached": true,
         "userRenamed": false,
@@ -23943,30 +23916,16 @@
       {
         "sessionId": "35a12fa064ccb92eb09743a052ec61be",
         "sessionIdx": 2,
-        "left": 10,
-        "top": 64.5,
-        "width": 1195,
-        "height": 938,
+        "left": 920.671875,
+        "top": 94.55000305175781,
+        "width": 59.75,
+        "height": 420,
         "pinned": false,
-        "label": "(1) Vibe Coding - Philippines …",
+        "label": "(1) n8n | AI Agents | AI Autom…",
         "userRenamed": false,
         "claudeSessionId": null,
-        "minimized": true,
+        "minimized": false,
         "floatColor": "pink"
-      },
-      {
-        "sessionId": "34f5f405d4b6c89896c3627ff1ad55e5",
-        "sessionIdx": 3,
-        "left": 191,
-        "top": 172.5,
-        "width": 978,
-        "height": 699,
-        "pinned": false,
-        "label": "⠂ Claude Code",
-        "userRenamed": false,
-        "claudeSessionId": null,
-        "minimized": true,
-        "floatColor": "red"
       }
     ]
   },
