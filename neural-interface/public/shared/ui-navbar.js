@@ -92,6 +92,23 @@ export function initNavbar() {
     registerAction('toggle-focus-mode', () => vizBtn.click());
   }
 
+  // ── Cost tracker dock button ──
+  const costBtn = $('titlebar-cost-btn');
+  if (costBtn) {
+    costBtn.addEventListener('click', () => emit('cost:dock-toggle'));
+    // Update label when cost changes
+    on('cost:updated', (data) => {
+      if (!data) return;
+      const label = costBtn.querySelector('.bar-cost-label');
+      if (label && typeof data.sessionCost === 'number') {
+        label.textContent = '$' + data.sessionCost.toFixed(2);
+      }
+    });
+    on('cost:dock-state', (docked) => {
+      costBtn.classList.toggle('active', docked);
+    });
+  }
+
   // ── Tutorial toggle (?) ──
   const tutBtn = $('titlebar-tutorial-btn');
   if (tutBtn) {

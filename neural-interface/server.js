@@ -8596,18 +8596,20 @@ async function driveNextIteration(session, loopState, filename) {
   console.log(`[loop-driver] Driving iteration ${iter}/${loopState.totalIterations}`);
 
   // Step 1: Wait for > prompt (Claude finished stopping)
-  // Reset buffer first so we only match NEW output after awaitingNext was set,
-  // preventing false positives from > characters in Claude's previous output content.
-  session._loopDriverBuffer = '';
-  // Try 30s first, then retry once with 45s if it fails
-  let promptReady = await waitForLoopPrompt(session, 30000);
-  if (!promptReady) {
-    console.warn(`[loop-driver] Prompt not detected after 30s for iteration ${iter}, retrying with 45s...`);
-    promptReady = await waitForLoopPrompt(session, 45000);
-  }
-  if (!promptReady) {
-    console.error(`[loop-driver] ABORT iteration ${iter}: prompt never appeared after 75s total. Buffer: ${JSON.stringify((session._loopDriverBuffer || '').slice(-200))}`);
-    return false;
+  // Check BEFORE resetting — if Claude already returned to prompt, skip the wait
+  const alreadyAtPrompt = loopPromptReady(session._loopDriverBuffer || '');
+  session._loopDriverBuffer = ''; // reset to avoid false positives from previous content
+  if (!alreadyAtPrompt) {
+    // Claude hasn't returned to prompt yet — wait for it
+    let promptReady = await waitForLoopPrompt(session, 30000);
+    if (!promptReady) {
+      console.warn(`[loop-driver] Prompt not detected after 30s for iteration ${iter}, retrying with 45s...`);
+      promptReady = await waitForLoopPrompt(session, 45000);
+    }
+    if (!promptReady) {
+      console.error(`[loop-driver] ABORT iteration ${iter}: prompt never appeared after 75s total. Buffer: ${JSON.stringify((session._loopDriverBuffer || '').slice(-200))}`);
+      return false;
+    }
   }
 
   // Step 2: Send /clear to reset conversation context
@@ -10618,9 +10620,9 @@ async function createBrowserSession(options = {}) {
   // Recording: HAR
   if (savedCfg.recordHar?.path) contextOpts.recordHar = savedCfg.recordHar;
 
-  // Storage state: restore if persist is enabled and file exists (not needed for persistent context)
+  // Storage state: restore for clean contexts via contextOpts (persistent contexts restored post-launch)
   const STORAGE_STATE_PATH = resolve(PROJECT_ROOT, savedCfg.storageStatePath || 'data/browser-storage.json');
-  if (!userDataDir && savedCfg.persistStorage && !savedCfg.clearStorageOnStart && existsSync(STORAGE_STATE_PATH)) {
+  if (!userDataDir && savedCfg.persistStorage !== false && !savedCfg.clearStorageOnStart && existsSync(STORAGE_STATE_PATH)) {
     try {
       contextOpts.storageState = STORAGE_STATE_PATH;
     } catch (e) {
@@ -10819,6 +10821,43 @@ async function createBrowserSession(options = {}) {
     page = await context.newPage();
   }
 
+  // ── Restore saved cookies/localStorage from storageState ──
+  // For persistent/mirror contexts, Playwright doesn't support storageState as a launch option,
+  // so we inject cookies after launch. For clean contexts, storageState was already set via contextOpts.
+  if (_isPersistent && savedCfg.persistStorage !== false && !savedCfg.clearStorageOnStart) {
+    const _storageStatePath = resolve(PROJECT_ROOT, savedCfg.storageStatePath || 'data/browser-storage.json');
+    if (existsSync(_storageStatePath)) {
+      try {
+        const savedState = JSON.parse(readFileSync(_storageStatePath, 'utf-8'));
+        if (savedState.cookies && savedState.cookies.length > 0) {
+          await context.addCookies(savedState.cookies);
+          console.log(`[browser] Restored ${savedState.cookies.length} cookies from ${_storageStatePath}`);
+        }
+        // Restore localStorage/sessionStorage via page evaluation
+        if (savedState.origins && savedState.origins.length > 0) {
+          for (const origin of savedState.origins) {
+            if (origin.localStorage && origin.localStorage.length > 0) {
+              try {
+                const originPage = await context.newPage();
+                await originPage.goto(origin.origin, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+                await originPage.evaluate((items) => {
+                  for (const { name, value } of items) {
+                    try { localStorage.setItem(name, value); } catch {}
+                  }
+                }, origin.localStorage);
+                await originPage.close();
+              } catch (e) {
+                console.warn(`[browser] Could not restore localStorage for ${origin.origin}: ${e.message}`);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`[browser] Failed to restore storage state: ${e.message}`);
+      }
+    }
+  }
+
   // ── CDP stealth injections (if enabled) ──
   const doStealth = savedCfg.stealthFingerprint !== false;
   if (doStealth) {
@@ -11002,10 +11041,11 @@ async function destroyBrowserSession(sessionId) {
   const session = browserSessions.get(sessionId);
   if (!session) return;
 
-  // Save storage state (cookies, localStorage) if persistence is enabled
-  // Skip for persistent contexts — Chrome handles persistence natively via the profile
+  // Save storage state (cookies, localStorage) for ALL context types.
+  // Mirror dirs get wiped on next launch, so storageState is the only way
+  // to preserve sessions (Twitter logins, etc.) across browser restarts.
   const savedCfg = loadBrowserConfig();
-  if (!session._isPersistent && savedCfg.persistStorage && session.context) {
+  if (savedCfg.persistStorage !== false && session.context) {
     const storagePath = resolve(PROJECT_ROOT, savedCfg.storageStatePath || 'data/browser-storage.json');
     try {
       const dir = dirname(storagePath);

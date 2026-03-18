@@ -17940,6 +17940,33 @@
   letter-spacing: 0.3px;
 }
 
+/* Navbar cost button */
+.bar-cost-btn {
+  position: relative;
+  gap: 0 !important;
+  padding: 2px 8px !important;
+  min-width: 0 !important;
+}
+.bar-cost-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--t-faint);
+  letter-spacing: -0.3px;
+  transition: color 0.2s;
+}
+.bar-cost-btn:hover .bar-cost-label { color: var(--t-primary); }
+.bar-cost-btn.active .bar-cost-label { color: var(--accent-gold); }
+
+/* Docked cost widget — anchored below navbar button */
+.cost-widget.cw-docked {
+  position: fixed;
+  animation: cw-dock-in 0.15s ease-out;
+}
+@keyframes cw-dock-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 /* ═══════════════════════════════════════════
    RESUME SESSION PROMPT
    ═══════════════════════════════════════════ */

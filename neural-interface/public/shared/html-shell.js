@@ -313,6 +313,7 @@ export function getSharedHTML() {
   </div>
 
   <div class="bar-right">
+    <button id="titlebar-cost-btn" class="bar-icon bar-cost-btn" data-tooltip="Cost Tracker"><span class="bar-cost-label">$0</span></button>
     <button id="titlebar-tutorial-btn" class="bar-icon" data-tooltip="Toggle Tutorial"><svg viewBox="0 0 24 24"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor"/></svg></button>
     <button id="titlebar-viz-toggle" class="bar-icon active" data-tooltip="${t('tooltip.toggleViz')}"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg></button>
     <button id="titlebar-fullscreen-btn" class="bar-icon" data-tooltip="${t('tooltip.fullscreen')}"><svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>

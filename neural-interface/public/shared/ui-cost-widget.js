@@ -1,9 +1,10 @@
 // ═══════════════════════════════════════════
-// UI-COST-WIDGET — Focus Mode cost tracker
+// UI-COST-WIDGET — Cost tracker (dockable + floating)
 // ═══════════════════════════════════════════
 //
-// Floating glass panel in Focus Mode showing cost breakdown
-// with daily bar chart, filter tabs, and drag/collapse persistence.
+// Glass panel showing cost breakdown with daily bar chart,
+// filter tabs, and drag/collapse persistence.
+// Can dock to navbar (next to ?) or float freely.
 
 import { on, emit } from './state.js';
 import { KEYS } from './constants.js';
@@ -17,6 +18,7 @@ let _activeTab = 'today';  // 'today' | 'month' | 'last30' | 'all'
 let _collapsed = false;
 let _drag = null;
 let _pinnedOpen = false;   // Toggled open from Claude Panel (independent of focus mode)
+let _docked = false;       // Docked to navbar
 
 // ── Init ──
 
@@ -26,26 +28,29 @@ export function initCostWidget() {
   if (!container) return;
 
   _collapsed = storage.getItem(KEYS.COST_WIDGET_COLLAPSED) === 'true';
+  _docked = storage.getItem(KEYS.COST_WIDGET_DOCKED) === 'true';
 
   _widget = document.createElement('div');
   _widget.id = 'cost-widget';
-  _widget.className = 'glass cost-widget' + (_collapsed ? ' collapsed' : '');
+  _widget.className = 'glass cost-widget' + (_collapsed ? ' collapsed' : '') + (_docked ? ' cw-docked' : '');
 
   // Restore position or default to bottom-right (clamped to viewport)
-  const savedPos = _loadPos();
-  if (savedPos) {
-    const maxLeft = window.innerWidth - 270;
-    const maxTop = window.innerHeight - 60;
-    _widget.style.left = Math.max(0, Math.min(savedPos.left, maxLeft)) + 'px';
-    _widget.style.top = Math.max(0, Math.min(savedPos.top, maxTop)) + 'px';
-  } else {
-    _widget.style.right = '24px';
-    _widget.style.bottom = '24px';
+  if (!_docked) {
+    const savedPos = _loadPos();
+    if (savedPos) {
+      const maxLeft = window.innerWidth - 270;
+      const maxTop = window.innerHeight - 60;
+      _widget.style.left = Math.max(0, Math.min(savedPos.left, maxLeft)) + 'px';
+      _widget.style.top = Math.max(0, Math.min(savedPos.top, maxTop)) + 'px';
+    } else {
+      _widget.style.right = '24px';
+      _widget.style.bottom = '24px';
+    }
   }
 
   _widget.innerHTML = `
     <div class="cw-header">
-      <span class="cw-drag" title="Drag to move">⠿</span>
+      <span class="cw-drag" title="Drag to undock and move">⠿</span>
       <span class="cw-total">$0.00</span>
       <span class="cw-month-label"></span>
       <button class="cw-scan" title="Scan CLI sessions">⟳</button>
@@ -66,9 +71,13 @@ export function initCostWidget() {
 
   document.body.appendChild(_widget);
 
-  // Show/hide based on current focus mode state
+  // Show/hide based on current state
   const focusOn = container.classList.contains('visible');
-  _widget.style.display = focusOn ? '' : 'none';
+  if (_docked) {
+    _widget.style.display = 'none'; // starts hidden, toggled by navbar click
+  } else {
+    _widget.style.display = focusOn ? '' : 'none';
+  }
 
   // Events
   _widget.querySelector('.cw-collapse').addEventListener('click', _toggleCollapse);
@@ -76,8 +85,18 @@ export function initCostWidget() {
   _widget.querySelector('.cw-tabs').addEventListener('click', _onTabClick);
   _makeDraggable(_widget.querySelector('.cw-header'));
 
+  // Close docked widget when clicking outside
+  document.addEventListener('mousedown', (e) => {
+    if (!_docked || !_widget || _widget.style.display === 'none') return;
+    const costBtn = document.getElementById('titlebar-cost-btn');
+    if (_widget.contains(e.target) || costBtn?.contains(e.target)) return;
+    _widget.style.display = 'none';
+    _pinnedOpen = false;
+  });
+
   // Listen for focus mode changes
   on('viz:toggle', (vizEnabled) => {
+    if (_docked) return; // dock mode ignores focus mode
     // vizEnabled=false means focus mode is ON
     if (_widget) {
       if (!vizEnabled) { _widget.style.display = ''; _pinnedOpen = false; }
@@ -86,13 +105,32 @@ export function initCostWidget() {
     if (!vizEnabled) _fetchAndRender();
   });
 
-  // Toggle from Claude Panel cost label
+  // Toggle from Claude Panel cost label (floating mode)
   on('cost:toggle', () => {
-    console.log('[cost-widget] cost:toggle fired, _widget:', !!_widget, '_pinnedOpen:', _pinnedOpen);
-    if (!_widget) return;
+    if (!_widget || _docked) return;
     _pinnedOpen = !_pinnedOpen;
     _widget.style.display = _pinnedOpen ? '' : 'none';
     if (_pinnedOpen) _fetchAndRender();
+  });
+
+  // Toggle from navbar button (dock mode)
+  on('cost:dock-toggle', () => {
+    if (!_widget) return;
+    if (!_docked) {
+      // First click docks it
+      _dock();
+      _pinnedOpen = true;
+      _widget.style.display = '';
+      _fetchAndRender();
+    } else {
+      // Already docked — toggle visibility
+      _pinnedOpen = !_pinnedOpen;
+      _widget.style.display = _pinnedOpen ? '' : 'none';
+      if (_pinnedOpen) {
+        _positionDocked();
+        _fetchAndRender();
+      }
+    }
   });
 
   // Real-time cost updates from Claude Panel
@@ -101,8 +139,43 @@ export function initCostWidget() {
     _optimisticUpdate(data.amount);
   });
 
-  // Initial fetch if already in focus mode
-  if (focusOn) _fetchAndRender();
+  // Emit initial dock state for navbar button
+  emit('cost:dock-state', _docked);
+
+  // Initial fetch if already in focus mode or docked
+  if (focusOn && !_docked) _fetchAndRender();
+}
+
+// ── Dock / Undock ──
+
+function _dock() {
+  _docked = true;
+  storage.setItem(KEYS.COST_WIDGET_DOCKED, 'true');
+  _widget.classList.add('cw-docked');
+  // Clear inline position styles — CSS handles docked positioning
+  _widget.style.left = '';
+  _widget.style.top = '';
+  _widget.style.right = '';
+  _widget.style.bottom = '';
+  _positionDocked();
+  emit('cost:dock-state', true);
+}
+
+function _undock() {
+  _docked = false;
+  storage.setItem(KEYS.COST_WIDGET_DOCKED, 'false');
+  _widget.classList.remove('cw-docked');
+  emit('cost:dock-state', false);
+}
+
+function _positionDocked() {
+  const anchor = document.getElementById('titlebar-cost-btn');
+  if (!anchor || !_widget) return;
+  const rect = anchor.getBoundingClientRect();
+  _widget.style.top = (rect.bottom + 6) + 'px';
+  _widget.style.right = (window.innerWidth - rect.right) + 'px';
+  _widget.style.left = '';
+  _widget.style.bottom = '';
 }
 
 // ── Data ──
@@ -172,6 +245,10 @@ function _render() {
     const sessions = month?.sessions?.length || 0;
     totalEl.title = `${sessions} sessions · ${month?.queries || 0} queries`;
   }
+
+  // Update navbar cost label
+  const navLabel = document.querySelector('#titlebar-cost-btn .bar-cost-label');
+  if (navLabel) navLabel.textContent = '$' + totalUsd.toFixed(2);
 }
 
 function _prepareData() {
@@ -460,14 +537,16 @@ function _makeDraggable(header) {
   header.addEventListener('mousedown', (e) => {
     if (e.target.closest('.cw-collapse') || e.target.closest('.cw-scan')) return;
     e.preventDefault();
+
+    // If docked, undock on drag
+    if (_docked) _undock();
+
     const rect = _widget.getBoundingClientRect();
-    const containerRect = _widget.parentElement.getBoundingClientRect();
     _drag = {
       startX: e.clientX,
       startY: e.clientY,
-      origLeft: rect.left - containerRect.left,
-      origTop: rect.top - containerRect.top,
-      containerRect,
+      origLeft: rect.left,
+      origTop: rect.top,
     };
     header.style.cursor = 'grabbing';
 
@@ -483,13 +562,11 @@ function _makeDraggable(header) {
       const dy = ev.clientY - _drag.startY;
       let newLeft = _drag.origLeft + dx;
       let newTop = _drag.origTop + dy;
-      // Constrain
-      const cw = _drag.containerRect.width;
-      const ch = _drag.containerRect.height;
+      // Constrain to viewport
       const ww = _widget.offsetWidth;
       const wh = _widget.offsetHeight;
-      newLeft = Math.max(0, Math.min(cw - ww, newLeft));
-      newTop = Math.max(0, Math.min(ch - wh, newTop));
+      newLeft = Math.max(0, Math.min(window.innerWidth - ww, newLeft));
+      newTop = Math.max(0, Math.min(window.innerHeight - wh, newTop));
       _widget.style.left = newLeft + 'px';
       _widget.style.top = newTop + 'px';
     };
