@@ -265,3 +265,50 @@ export function exportMemoryAsMarkdown(node) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+// ─── Browser Frame Renderer ─────────────
+
+/**
+ * Creates a serialized frame renderer that prevents decode backlog.
+ * Only one Image decode runs at a time; if new frames arrive during
+ * decode, only the latest is kept (older frames are discarded).
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @param {CanvasRenderingContext2D} ctx
+ * @returns {{ render(base64: string): void, destroy(): void }}
+ */
+export function createFrameRenderer(canvas, ctx) {
+  let pending = null;
+  let rendering = false;
+  let destroyed = false;
+
+  function flush() {
+    if (destroyed || rendering || !pending) return;
+    rendering = true;
+    const data = pending;
+    pending = null;
+
+    const img = new Image();
+    img.onload = () => {
+      if (destroyed) return;
+      if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+      }
+      ctx.drawImage(img, 0, 0);
+      rendering = false;
+      if (pending) flush();
+    };
+    img.onerror = () => {
+      if (destroyed) return;
+      rendering = false;
+      if (pending) flush();
+    };
+    img.src = 'data:image/jpeg;base64,' + data;
+  }
+
+  return {
+    render(base64) { pending = base64; flush(); },
+    destroy() { destroyed = true; pending = null; },
+  };
+}
