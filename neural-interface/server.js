@@ -10999,7 +10999,10 @@ async function startScreencast(session) {
       metadata: params.metadata,        // { offsetTop, pageScaleFactor, ... }
       sessionId: params.sessionId,      // CDP ack ID
     });
-    session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+    session.clients.forEach(ws => {
+      // Skip clients with congested write buffers to prevent frame backlog
+      if (ws.readyState === 1 && ws.bufferedAmount < 512 * 1024) ws.send(msg);
+    });
 
     // Acknowledge frame to keep the stream going
     try {
@@ -11016,7 +11019,7 @@ async function startScreencast(session) {
       quality: scCfg.quality ?? 60,
       maxWidth: scCfg.maxWidth || 1280,
       maxHeight: scCfg.maxHeight || 800,
-      everyNthFrame: scCfg.everyNthFrame || 1,
+      everyNthFrame: scCfg.everyNthFrame || 2,
     });
     console.log('[screencast] Page.startScreencast sent successfully');
   } catch (err) {
@@ -12153,7 +12156,7 @@ async function handleBrowserWebSocket(ws, url) {
           format: scCfg2.format || 'jpeg',
           quality: scCfg2.quality ?? 60,
           maxWidth: w, maxHeight: h,
-          everyNthFrame: scCfg2.everyNthFrame || 1,
+          everyNthFrame: scCfg2.everyNthFrame || 2,
         }).catch(() => {});
         session.screencastActive = true;
       }
