@@ -306,7 +306,7 @@ export function buildCategoryReference(categories, project) {
 
 // --- Loop staleness cleanup ---
 
-const LOOP_STALE_INACTIVITY_MS = 10 * 60 * 1000; // 10 min with no iteration activity → stale
+const LOOP_STALE_INACTIVITY_MS = 45 * 60 * 1000; // 45 min — browser iterations can be long
 
 /**
  * Scan loop directory and delete stale/inactive loop files.
