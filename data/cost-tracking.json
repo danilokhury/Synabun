@@ -1,8 +1,8 @@
 {
   "months": {
     "2026-03": {
-      "totalUsd": 485.915947,
-      "queries": 4578,
+      "totalUsd": 499.18148,
+      "queries": 5020,
       "sessions": [
         "9354abd9-04c6-442f-bbf5-a73baca7cc15",
         "fe886593-bd32-4f84-899d-8518dd3b21fa",
@@ -147,7 +147,9 @@
         "69b559ae-aeca-4784-a4ec-e7c58407e722",
         "599c6f7c-25d9-4514-8457-cfa6bdd84737",
         "291adcbe-846d-4412-819f-4fe61e426f06",
-        "28169f58-98ad-4eab-bfa6-8fc9bfd1c95f"
+        "28169f58-98ad-4eab-bfa6-8fc9bfd1c95f",
+        "4d6e316a-e734-413f-ae98-8353f8c758d4",
+        "c6851d61-6d1e-41e8-a2be-b23b19385b45"
       ],
       "days": {
         "15": {
@@ -163,11 +165,11 @@
           "queries": 1792
         },
         "18": {
-          "totalUsd": 8.493166,
-          "queries": 93
+          "totalUsd": 21.758699,
+          "queries": 535
         }
       },
-      "lastUpdated": "2026-03-18T01:49:35.550Z"
+      "lastUpdated": "2026-03-18T02:25:16.087Z"
     }
   },
   "scannedSessions": {
@@ -267,7 +269,9 @@
     "a802cc04-5a78-492a-9ca1-0a7af8ce9d09": "2026-03-17",
     "aed90be0-2902-4a99-9c5c-5f5d056974be": "2026-03-18",
     "599c6f7c-25d9-4514-8457-cfa6bdd84737": "2026-03-18",
-    "28169f58-98ad-4eab-bfa6-8fc9bfd1c95f": "2026-03-18"
+    "28169f58-98ad-4eab-bfa6-8fc9bfd1c95f": "2026-03-18",
+    "4d6e316a-e734-413f-ae98-8353f8c758d4": "2026-03-18",
+    "c6851d61-6d1e-41e8-a2be-b23b19385b45": "2026-03-18"
   },
   "sessionCosts": {
     "91e49bee-77f5-469a-9c9a-fb4daece0843": 0.312947,
