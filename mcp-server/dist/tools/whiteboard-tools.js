@@ -35,7 +35,7 @@ function describeElement(el) {
         }
         case 'pen': {
             const ptCount = el.points?.length || 0;
-            return `[${el.id}] PEN ${pos} (${ptCount} points, stroke:${el.strokeWidth || 4})${el.color ? ` color:${el.color}` : ''}`;
+            return `[${el.id}] PEN ${pos} (${ptCount} points, stroke:${el.strokeWidth || 3})${el.color ? ` color:${el.color}` : ''}`;
         }
         case 'list': {
             const items = el.items || [];
@@ -107,7 +107,7 @@ export const whiteboardAddSchema = {
         points: z.array(z.array(z.number()).length(2)).optional().describe('Array of [x,y] waypoints (for arrow and pen elements). Arrows need 2+ points.'),
         startAnchor: z.string().optional().describe('Element ID to anchor arrow start to'),
         endAnchor: z.string().optional().describe('Element ID to anchor arrow end to'),
-        strokeWidth: z.number().optional().describe('Stroke width for pen elements (default 4)'),
+        strokeWidth: z.number().optional().describe('Stroke width for pen elements (default 3)'),
         rotation: z.number().optional().describe('Rotation in degrees'),
         url: z.string().optional().describe('URL path for image elements (e.g., "/games/TicTacToe/Cross.svg"). Server resolves to base64 dataUrl.'),
         sectionType: z.enum(['navbar', 'hero', 'sidebar', 'content', 'footer', 'card', 'form', 'image-placeholder', 'button', 'text-block', 'grid', 'modal']).optional().describe('Section type for wireframe elements (type=section). Determines default size, color, and semantic meaning.'),

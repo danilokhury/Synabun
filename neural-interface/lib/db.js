@@ -73,7 +73,12 @@ export function getEmbeddingDims() {
 // --- Database ---
 
 export function getDbPath() {
-  return process.env.SQLITE_DB_PATH || DEFAULT_DB_PATH;
+  const envPath = process.env.SQLITE_DB_PATH;
+  if (!envPath) return DEFAULT_DB_PATH;
+  // If the env path's parent directory doesn't exist (e.g. Windows path on Mac),
+  // fall back to the local default so cross-OS restores work instantly
+  if (!existsSync(dirname(envPath))) return DEFAULT_DB_PATH;
+  return envPath;
 }
 
 export function getDb() {
