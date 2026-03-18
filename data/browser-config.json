@@ -38,7 +38,7 @@
   "acceptDownloads": true,
   "strictSelectors": true,
   "serviceWorkers": "allow",
-  "persistStorage": false,
+  "persistStorage": true,
   "storageStatePath": "data/browser-storage.json",
   "clearStorageOnStart": false,
   "recordVideo": null,
