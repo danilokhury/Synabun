@@ -51,8 +51,15 @@
         }
       ]
     },
-    "elajoias": {
-      "label": "ElaJoias",
+    "users-danilokhury-apps-ellacred": {
+      "label": "/Users/danilokhury/Apps/EllaCred/",
+      "greetingTemplate": "{time_greeting}! Working on **{project_label}** today (`{branch}` branch). {date}.",
+      "showReminders": false,
+      "showLastSession": true,
+      "reminders": []
+    },
+    "elacred": {
+      "label": "ElaCred",
       "greetingTemplate": "{time_greeting}! Working on **{project_label}** today (`{branch}` branch). {date}.",
       "showReminders": false,
       "showLastSession": true,

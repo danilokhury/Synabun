@@ -73,7 +73,7 @@
     "id": "7f4b634711c8e26d90c3540d",
     "name": "Facebook Deals",
     "description": "Campanha para postar em grupos do facebook do Critical Pixel",
-    "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile and basically you need to promo a marketing campaign for this deal. There are 5 currencies to post in, look for groups within each of those currencies region and post. Post in the group native language always, if you cant determine a language, post in english.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/final-fantasy-xvi-2023-3880?currency=BRL\nhttps://criticalpixel.gg/games/final-fantasy-xvi-2023-3880?currency=USD\nhttps://criticalpixel.gg/games/final-fantasy-xvi-2023-3880?currency=TRY\nhttps://criticalpixel.gg/games/final-fantasy-xvi-2023-3880?currency=GBP\nhttps://criticalpixel.gg/games/final-fantasy-xvi-2023-3880?currency=EUR\n\n=====================================\n\nRules:\n\n- Post in ALL available groups and join new groups if needed\n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Dont use -- dashes on text\n- Don't over use emojis",
+    "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile and basically you need to promo a marketing campaign for Lego Batman Legacy of the Dark Knight Preorder deal and that it has some discounts on select vendors. There are 5 currencies to post in, look for groups within each of those currencies region and post. Post in the group native language always, if you cant determine a language, post in english.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=GBP\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=USD\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=BRL\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=TRY\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=EUR\n\n=====================================\n\nRules:\n\n- Post in ALL available groups and join new groups if needed\n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Dont use -- dashes on text\n- Don't over use emojis",
     "context": null,
     "iterations": 50,
     "maxMinutes": 120,
@@ -81,7 +81,7 @@
     "icon": "refresh",
     "category": "social",
     "createdAt": "2026-03-01T20:54:51.098Z",
-    "updatedAt": "2026-03-15T22:51:05.107Z"
+    "updatedAt": "2026-03-13T02:00:49.247Z"
   },
   {
     "id": "5961b95004f88595970a5a99",
