@@ -213,7 +213,7 @@ function startServer() {
       const port = data.toString().match(/Server:\s+http:\/\/localhost:(\d+)/)?.[1] || '3344';
       const url = `http://localhost:${port}${setupComplete ? '/' : '/onboarding.html'}`;
 
-      setTimeout(() => openBrowser(url), 1500);
+      if (!setupComplete) setTimeout(() => openBrowser(url), 1500);
     }
   });
 
