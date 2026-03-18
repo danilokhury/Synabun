@@ -24,6 +24,35 @@
 
 Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and retain knowledge across sessions through semantic vector search. Memories are stored in a local SQLite database with built-in vector search — no external services, no API keys, no Docker.
 
+## Screenshots
+
+<table>
+<tr>
+<td align="center" width="50%">
+<strong>Neural Interface</strong><br><br>
+<img src="docs/screenshots/neural-interface.png" alt="3D memory graph visualization" width="100%" />
+<br><em>Interactive 3D force-directed graph — memories as nodes, relationships as edges</em>
+</td>
+<td align="center" width="50%">
+<strong>Claude Code Skin</strong><br><br>
+<img src="docs/screenshots/claude-code-skin.png" alt="Claude Code side panel skin" width="100%" />
+<br><em>Side panel UI for browsing and managing memories alongside your editor</em>
+</td>
+</tr>
+<tr>
+<td align="center" width="50%">
+<strong>Terminal & Editor</strong><br><br>
+<img src="docs/screenshots/terminal-editor.png" alt="Claude Code terminal with memory tools" width="100%" />
+<br><em>Memory tools running directly in your terminal alongside code</em>
+</td>
+<td align="center" width="50%">
+<strong>Automation Studio</strong><br><br>
+<img src="docs/screenshots/automation-studio.png" alt="Automation studio for background tasks" width="100%" />
+<br><em>Autonomous background loops — set a task and let it run</em>
+</td>
+</tr>
+</table>
+
 ## Features
 
 - **Semantic Search** — find memories by meaning, not keywords, using cosine similarity
@@ -44,6 +73,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 
 ## Table of Contents
 
+- [Screenshots](#screenshots)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
 - [MCP Tools](#mcp-tools)
