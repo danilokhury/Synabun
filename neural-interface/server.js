@@ -4692,8 +4692,19 @@ app.post('/api/system/restore',
       }
     }
 
-    // Reload server config after config files are restored
+    // Normalize SQLITE_DB_PATH from restored .env to local default
+    // (backup may contain paths from a different OS, e.g. J:\Sites\... from Windows)
     if (mode === 'full' || mode === 'config-only') {
+      const localDefaultDbPath = resolve(CATEGORIES_DATA_DIR, 'memory.db');
+      const vars = parseEnvFile(ENV_PATH);
+      const restoredPath = vars['SQLITE_DB_PATH'] || '';
+      // If the restored path doesn't exist on this OS, reset to local default
+      if (restoredPath && !existsSync(dirname(restoredPath))) {
+        vars['SQLITE_DB_PATH'] = localDefaultDbPath;
+        writeEnvFile(ENV_PATH, vars);
+        process.env['SQLITE_DB_PATH'] = localDefaultDbPath;
+        results.files.push('(normalized SQLITE_DB_PATH to local default)');
+      }
       reloadConfig();
     }
 
@@ -4704,7 +4715,13 @@ app.post('/api/system/restore',
         try {
           // Close existing database connection before replacing
           closeDb();
-          const dbPath = getDbPath();
+          // Always restore to local default path, ignoring any cross-OS path from .env
+          const dbPath = resolve(CATEGORIES_DATA_DIR, 'memory.db');
+          // Update .env and runtime to point here
+          const vars = parseEnvFile(ENV_PATH);
+          vars['SQLITE_DB_PATH'] = dbPath;
+          writeEnvFile(ENV_PATH, vars);
+          process.env['SQLITE_DB_PATH'] = dbPath;
           const dbDir = dirname(dbPath);
           mkdirSync(dbDir, { recursive: true });
           writeFileSync(dbPath, dbEntry.getData());

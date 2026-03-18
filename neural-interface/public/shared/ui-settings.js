@@ -2812,7 +2812,7 @@ export async function openSettingsModal() {
 
         const confirmOverlay = document.createElement('div');
         confirmOverlay.className = 'tag-delete-overlay';
-        confirmOverlay.style.zIndex = '50200';
+        confirmOverlay.style.zIndex = '300100';
         confirmOverlay.innerHTML = `
           <div class="tag-delete-modal settings-modal" style="max-width:500px;text-align:left">
             <h3 style="margin-bottom:4px">Restore Backup</h3>
@@ -4749,7 +4749,7 @@ export async function openSettingsModal() {
 
     const exploreOverlay = document.createElement('div');
     exploreOverlay.className = 'tag-delete-overlay';
-    exploreOverlay.style.zIndex = '50200';
+    exploreOverlay.style.zIndex = '300100';
 
     function tierColor(tier) {
       return tier === 'top' ? 'rgba(255, 180, 80, 0.7)'
@@ -4893,7 +4893,7 @@ export async function openSettingsModal() {
   // Add project
   overlay.querySelector('#cc-add-project').addEventListener('click', () => {
     const addOverlay = document.createElement('div');
-    addOverlay.className = 'tag-delete-overlay'; addOverlay.style.zIndex = '50200';
+    addOverlay.className = 'tag-delete-overlay'; addOverlay.style.zIndex = '300100';
     addOverlay.innerHTML = `
       <div class="tag-delete-modal settings-modal" style="max-width:480px">
         <h3><svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:var(--accent-blue);stroke-width:2;fill:none"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Project</h3>
