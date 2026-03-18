@@ -13,6 +13,7 @@ import { createTerminalSession, deleteTerminalSession, fetchTerminalSessions, fe
 import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { getWhiteboardElementById } from './ui-whiteboard.js';
+import { createFrameRenderer } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
 const CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini']);
@@ -2024,6 +2025,7 @@ async function openBrowserSession(url, fresh, _unused, force) {
   $('term-container').appendChild(viewport);
 
   const ctx = canvas.getContext('2d');
+  const frameRenderer = createFrameRenderer(canvas, ctx);
 
   // Connect WebSocket for screencast
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2036,17 +2038,7 @@ async function openBrowserSession(url, fresh, _unused, force) {
     try {
       const msg = JSON.parse(e.data);
       if (msg.type === 'frame' && msg.data) {
-        // Render base64 JPEG frame onto canvas
-        const img = new Image();
-        img.onload = () => {
-          // Only resize canvas buffer when frame dimensions change (avoids clearing)
-          if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
-            canvas.width = img.naturalWidth;
-            canvas.height = img.naturalHeight;
-          }
-          ctx.drawImage(img, 0, 0);
-        };
-        img.src = 'data:image/jpeg;base64,' + msg.data;
+        frameRenderer.render(msg.data);
       } else if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
         if (msg.url) {
           urlInput.value = msg.url;
@@ -2155,6 +2147,7 @@ async function openBrowserSession(url, fresh, _unused, force) {
   // ── Resize observer → resize browser viewport to match container ──
   // Track last good dimensions to avoid sending tiny sizes on minimize
   let _lastGoodWidth = 1280, _lastGoodHeight = 800;
+  let _resizeTimer = null;
 
   function sendBrowserResize() {
     const rect = canvasWrap.getBoundingClientRect();
@@ -2171,7 +2164,7 @@ async function openBrowserSession(url, fresh, _unused, force) {
     }
   }
 
-  const ro = new ResizeObserver(() => sendBrowserResize());
+  const ro = new ResizeObserver(() => { clearTimeout(_resizeTimer); _resizeTimer = setTimeout(sendBrowserResize, 200); });
   ro.observe(canvasWrap);
 
   // Re-send proper dimensions when window is restored from minimize
@@ -2212,6 +2205,7 @@ async function openBrowserSession(url, fresh, _unused, force) {
     _browserTitle: '',
     _browserCanvas: canvas,
     _browserCtx: ctx,
+    _frameRenderer: frameRenderer,
     _visibilityHandler,
   };
   _pushSession(session);
@@ -2272,6 +2266,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
   $('term-container').appendChild(viewport);
 
   const ctx = canvas.getContext('2d');
+  const frameRenderer = createFrameRenderer(canvas, ctx);
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/browser/${sessionId}`);
 
@@ -2282,14 +2277,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
     try {
       const msg = JSON.parse(e.data);
       if (msg.type === 'frame' && msg.data) {
-        const img = new Image();
-        img.onload = () => {
-          if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
-            canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-          }
-          ctx.drawImage(img, 0, 0);
-        };
-        img.src = 'data:image/jpeg;base64,' + msg.data;
+        frameRenderer.render(msg.data);
       } else if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
         if (msg.url) { urlInput.value = msg.url; const sess = _sessions.find(s => s.id === sessionId); if (sess) sess._browserUrl = msg.url; }
         if (msg.title) {
@@ -2332,6 +2320,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
   canvas.addEventListener('keyup', (e) => { e.preventDefault(); if (e.key.length > 1 && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'keyup', key: e.key })); });
 
   let _lastGoodW2 = 1280, _lastGoodH2 = 800;
+  let _resizeTimer2 = null;
   function sendReconnResize() {
     const rect = canvasWrap.getBoundingClientRect();
     const w = Math.round(rect.width);
@@ -2343,7 +2332,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
       ws.send(JSON.stringify({ type: 'resize', width: w, height: h }));
     }
   }
-  const ro = new ResizeObserver(() => sendReconnResize());
+  const ro = new ResizeObserver(() => { clearTimeout(_resizeTimer2); _resizeTimer2 = setTimeout(sendReconnResize, 200); });
   ro.observe(canvasWrap);
   const _visibilityHandler = () => { if (!document.hidden) setTimeout(() => sendReconnResize(), 150); };
   document.addEventListener('visibilitychange', _visibilityHandler);
@@ -2356,7 +2345,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
     dead: false, pinned: saved?.pinned || false,
     _userRenamed: saved?.userRenamed || false,
     _isBrowser: true, _browserUrl: currentUrl, _browserTitle: liveData?.title || '',
-    _browserCanvas: canvas, _browserCtx: ctx, _visibilityHandler,
+    _browserCanvas: canvas, _browserCtx: ctx, _frameRenderer: frameRenderer, _visibilityHandler,
   };
   _pushSession(session);
   _activeIdx = _sessions.indexOf(session);
@@ -2691,6 +2680,7 @@ async function closeSession(idx) {
   session.dead = true;
   _untrackCliSession(session.id);
   if (session.ro) session.ro.disconnect();
+  if (session._frameRenderer) session._frameRenderer.destroy();
   if (session.ws) session.ws.close();
   if (session._isHtmlTerm && session._htmlTerm) session._htmlTerm.dispose();
   if (session.term) session.term.dispose();
