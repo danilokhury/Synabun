@@ -47,6 +47,7 @@ import { initInvite } from '../../shared/ui-invite.js';
 import { initSync } from '../../shared/ui-sync.js';
 import { initKeybinds } from '../../shared/ui-keybinds.js';
 import { initTutorial } from '../../shared/ui-tutorial.js';
+import { initImageGallery } from '../../shared/ui-image-gallery.js';
 
 // ── 3D variant modules ──
 import { gfx } from './gfx.js';
@@ -406,6 +407,7 @@ initExplorer();
 initFileExplorer();
 initSkillsStudio();
 initAutomationStudio();
+initImageGallery();
 initCommandRunner();
 initTerminal();
 initLink();

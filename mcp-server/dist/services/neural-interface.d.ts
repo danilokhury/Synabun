@@ -51,6 +51,8 @@ export declare function scroll(sessionId: string, opts: {
 export declare function upload(sessionId: string, selector: string, filePaths: string[]): Promise<NiResponse>;
 export declare function snapshot(sessionId: string, selector?: string): Promise<NiResponse>;
 export declare function getContent(sessionId: string): Promise<NiResponse>;
+export declare function getMarkdown(sessionId: string): Promise<NiResponse>;
+export declare function fetchMarkdown(url: string, timeout?: number): Promise<NiResponse>;
 export declare function screenshot(sessionId: string): Promise<NiResponse>;
 export declare function evaluate(sessionId: string, script: string): Promise<NiResponse>;
 export declare function waitFor(sessionId: string, opts: {

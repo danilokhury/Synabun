@@ -14,10 +14,12 @@ export declare function handleBrowserSnapshot(args: {
     }[];
 }>;
 export declare const browserContentSchema: {
+    format: z.ZodDefault<z.ZodOptional<z.ZodEnum<["text", "markdown"]>>>;
     sessionId: z.ZodOptional<z.ZodString>;
 };
-export declare const browserContentDescription = "Get the text content of the current page along with its URL and title. Returns the visible text from the page body (up to 50K characters). Use this when you need raw text rather than the structured accessibility tree.";
+export declare const browserContentDescription = "Get the content of the current page. Set format=\"markdown\" for clean markdown with structure preserved (headings, links, lists) \u2014 nav/header/footer/ads stripped automatically. Default format=\"text\" returns raw visible text. Markdown is preferred for LLM consumption \u2014 up to 80% more token-efficient than raw HTML.";
 export declare function handleBrowserContent(args: {
+    format?: string;
     sessionId?: string;
 }): Promise<{
     content: {

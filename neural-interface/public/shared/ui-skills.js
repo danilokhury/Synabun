@@ -272,9 +272,9 @@ async function openPanel() {
   _panel.innerHTML = buildPanelHTML();
   document.body.appendChild(_panel);
 
-  // Always open centered at default size
-  _panel.style.left = Math.max(20, (window.innerWidth - 720) / 2) + 'px';
-  _panel.style.top = Math.max(48, (window.innerHeight - 500) / 2) + 'px';
+  // Always open centered at default size (matches Automation Studio)
+  _panel.style.left = Math.max(20, (window.innerWidth - 900) / 2) + 'px';
+  _panel.style.top = Math.max(48, (window.innerHeight - 520) / 2) + 'px';
 
   wirePanel();
   await loadLibrary();
@@ -630,17 +630,17 @@ function renderLibraryMain() {
       </div>
       <p class="ss-welcome-sub">Browse, edit, and create Claude Code skills, commands, and agents.</p>
       <div class="ss-stats-row">
-        <div class="ss-stat ss-stat--skill">
+        <div class="ss-stat">
           <span class="ss-stat-num">${skillCount}</span>
-          <span class="ss-stat-label"><span class="ss-filter-dot skill"></span> Skills</span>
+          <span class="ss-stat-label">Skills</span>
         </div>
-        <div class="ss-stat ss-stat--command">
+        <div class="ss-stat">
           <span class="ss-stat-num">${cmdCount}</span>
-          <span class="ss-stat-label"><span class="ss-filter-dot command"></span> Commands</span>
+          <span class="ss-stat-label">Commands</span>
         </div>
-        <div class="ss-stat ss-stat--agent">
+        <div class="ss-stat">
           <span class="ss-stat-num">${agentCount}</span>
-          <span class="ss-stat-label"><span class="ss-filter-dot agent"></span> Agents</span>
+          <span class="ss-stat-label">Agents</span>
         </div>
       </div>
       <p class="ss-welcome-hint">Select an item from the sidebar, or create a new one.</p>

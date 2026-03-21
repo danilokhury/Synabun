@@ -399,6 +399,13 @@
       "description": "Configuration, deployment, environment, and infrastructure for SynabunWeb",
       "parent": "synabunweb",
       "created_at": "2026-03-18T00:59:23.863Z"
+    },
+    {
+      "name": "web-extraction",
+      "description": "ONLY for research on web content extraction techniques — HTTP content negotiation, Accept headers, HTML-to-markdown conversion, scraping APIs, and agent-friendly web standards",
+      "created_at": "2026-03-19T04:35:50.477Z",
+      "parent": "research",
+      "color": "#3b82f6"
     }
   ]
 }

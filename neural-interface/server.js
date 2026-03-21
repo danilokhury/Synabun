@@ -14,7 +14,7 @@ import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, dirname, extname, join, resolve, sep } from 'path';
 import { config as dotenvConfig } from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, copyFileSync, appendFileSync, openSync, readSync, closeSync, chmodSync, watch as fsWatch } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, copyFileSync, appendFileSync, openSync, readSync, closeSync, chmodSync, watch as fsWatch, createWriteStream } from 'fs';
 import { randomBytes, randomUUID, createHash } from 'crypto';
 import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
@@ -28,6 +28,7 @@ catch (err) { console.warn('[pty] node-pty not available — terminal features d
 import archiver from 'archiver';
 import AdmZip from 'adm-zip';
 import { chromium } from 'playwright';
+import { NodeHtmlMarkdown } from 'node-html-markdown';
 import { VTermBuffer } from './public/shared/vterm-buffer.js';
 import { startIndexing, getIndexingStatus, mirrorExistingChunks } from './lib/session-indexer.js';
 import { ensureProjectCategories } from '../hooks/claude-code/shared.mjs';
@@ -173,6 +174,32 @@ const PORT = process.env.NEURAL_PORT || 3344;
 // SQLite database is used directly via lib/db.js
 const EMBEDDING_DIMS = getEmbeddingDims();
 const PROJECT_ROOT = resolve(__dirname, '..');
+const IMAGES_DIR = resolve(PROJECT_ROOT, 'data', 'images');
+if (!existsSync(IMAGES_DIR)) mkdirSync(IMAGES_DIR, { recursive: true });
+
+// ── Image favorites persistence ──
+const IMAGE_FAVORITES_PATH = resolve(PROJECT_ROOT, 'data', 'image-favorites.json');
+function loadImageFavorites() {
+  try { return JSON.parse(readFileSync(IMAGE_FAVORITES_PATH, 'utf-8')); }
+  catch { return []; }
+}
+function saveImageFavorites(favs) {
+  writeFileSync(IMAGE_FAVORITES_PATH, JSON.stringify(favs, null, 2));
+}
+
+// Sweep stale images on startup (older than 24h, skip favorites)
+try {
+  const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  const favSet = new Set(loadImageFavorites());
+  for (const f of readdirSync(IMAGES_DIR)) {
+    if (favSet.has(f)) continue;
+    const fp = join(IMAGES_DIR, f);
+    try {
+      const st = statSync(fp);
+      if (Date.now() - st.mtimeMs > MAX_AGE_MS) unlinkSync(fp);
+    } catch {}
+  }
+} catch {}
 
 // Reload config — close cached DB so getDb() reopens at the current SQLITE_DB_PATH
 function reloadConfig() {
@@ -2109,6 +2136,7 @@ function handleClaudeSkinWebSocket(ws) {
   const lastCostBySession = new Map(); // sessionId → last cumulative cost (total_cost_usd is cumulative)
   let wsWindowId = null; // set by first query message — used for lock cleanup on close
   let _orphanBuffer = null; // when non-null, sendToClient buffers here instead of sending over WS
+  let prevTurnTokens = 0; // total input tokens from last turn — used to detect auto-compact (>50% drop)
 
   // Strip env vars that interfere with nested claude execution
   const cleanEnv = Object.fromEntries(
@@ -2120,10 +2148,33 @@ function handleClaudeSkinWebSocket(ws) {
     )
   );
 
+  // ── Auto-compact early detection via pending-compact file watcher ──
+  // Pre-compact hook writes data/pending-compact/{sessionId}.json BEFORE compaction.
+  // Watch for new files and send compact_started event to UI immediately.
+  const _pendingCompactDir = resolve(PROJECT_ROOT, 'data', 'pending-compact');
+  let _compactWatcher = null;
+  const _seenCompactFiles = new Set();
+  try {
+    mkdirSync(_pendingCompactDir, { recursive: true });
+    // Seed with existing files so we only react to NEW ones
+    try { readdirSync(_pendingCompactDir).forEach(f => _seenCompactFiles.add(f)); } catch {}
+    _compactWatcher = fsWatch(_pendingCompactDir, (eventType, filename) => {
+      if (!filename || !filename.endsWith('.json') || _seenCompactFiles.has(filename)) return;
+      _seenCompactFiles.add(filename);
+      if (!activeProc || !inTurn) return;
+      console.log(`[claude-skin] Pre-compact hook detected: ${filename}`);
+      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'event', event: { type: 'system', subtype: 'compact_started', message: 'Auto-compacting context\u2026' } }));
+    });
+  } catch (e) {
+    console.log('[claude-skin] Could not watch pending-compact dir:', e.message);
+  }
+
   function killProc() {
     if (!activeProc) return;
     try { activeProc.kill(); } catch {}
     activeProc = null;
+    awaitingPermission = false;
+    lastPermissionDenials = null;
   }
 
   function validateWorkDir(cwd) {
@@ -2319,6 +2370,18 @@ function handleClaudeSkinWebSocket(ws) {
             lastCostBySession.set(sid, event.total_cost_usd);
             if (delta > 0) { try { addCost(delta, sid); } catch {} }
           }
+          // ── Auto-compact detection via token count drop ──
+          // When context is compacted, total input tokens drop significantly.
+          // Detect >50% drop between turns and inject a synthetic compact_boundary event.
+          if (event.usage) {
+            const u = event.usage;
+            const currTotal = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+            if (prevTurnTokens > 0 && currTotal > 0 && currTotal < prevTurnTokens * 0.5) {
+              console.log(`[claude-skin] Auto-compact detected: ${prevTurnTokens} → ${currTotal} tokens (${Math.round((1 - currTotal / prevTurnTokens) * 100)}% drop)`);
+              sendToClient({ type: 'event', event: { type: 'system', subtype: 'compact_detected', message: `Context auto-compacted (${Math.round(prevTurnTokens / 1000)}K → ${Math.round(currTotal / 1000)}K)` } });
+            }
+            prevTurnTokens = currTotal;
+          }
           // Force-kill if process doesn't exit within 5s after result
           // (known Claude CLI issue #25629: process hangs with open stdout after completion)
           setTimeout(() => {
@@ -2509,6 +2572,34 @@ function handleClaudeSkinWebSocket(ws) {
           if (stored > 0) lastCostBySession.set(sessionId, stored);
         }
 
+        // ── Image attachments → temp files + prompt injection ──
+        // Claude Code CLI (--print, text stdin) can't receive multimodal content directly.
+        // Save images to temp files and prepend paths so Claude uses the Read tool to view them.
+        if (images?.length) {
+          const imgPaths = [];
+          for (let i = 0; i < images.length; i++) {
+            const img = images[i];
+            if (!img.base64) continue;
+            const ext = (img.mediaType === 'image/png') ? 'png'
+              : (img.mediaType === 'image/webp') ? 'webp'
+              : (img.mediaType === 'image/gif') ? 'gif' : 'jpg';
+            const tmpPath = join(IMAGES_DIR, `synabun-img-${Date.now()}-${i}.${ext}`);
+            try {
+              writeFileSync(tmpPath, Buffer.from(img.base64, 'base64'));
+              imgPaths.push(tmpPath);
+            } catch (err) {
+              console.warn(`[claude-skin] Failed to save image ${i}:`, err.message);
+            }
+          }
+          if (imgPaths.length) {
+            const imgBlock = imgPaths.length === 1
+              ? `The user attached an image. Use the Read tool to view it:\n${imgPaths[0]}\n\n`
+              : `The user attached ${imgPaths.length} images. Use the Read tool to view them:\n${imgPaths.join('\n')}\n\n`;
+            prompt = imgBlock + (prompt || '');
+            console.log(`[claude-skin] Saved ${imgPaths.length} image(s) to temp files`);
+          }
+        }
+
         // Each message = fresh process. Without --input-format stream-json,
         // the CLI reads text from stdin (temp file), processes one turn, emits result, and exits.
         // Session continuity via --resume sessionId.
@@ -2532,6 +2623,22 @@ function handleClaudeSkinWebSocket(ws) {
           console.log(`[claude-skin] ▶ Permission response for ${toolName}: ${behavior}`);
 
           if (behavior === 'allow') {
+            // ── AskUserQuestion: extract user's answer and respawn with it ──
+            if (toolName === 'AskUserQuestion') {
+              const answers = innerResponse?.updatedInput?.answers || msg.response?.updatedInput?.answers;
+              const answerText = answers ? Object.values(answers).join(', ') : '';
+              console.log(`[claude-skin] ▶ AskUserQuestion answered: "${answerText}"`);
+              const sid = procSessionId;
+              const answerPrompt = answerText
+                ? `The user answered your question: "${answerText}"\nContinue based on their selection.`
+                : 'The user did not provide an answer. Continue with your best judgement.';
+              spawnProc(sid, procModel, procCwd, procEffort, answerPrompt);
+              inTurn = true;
+              lastEventTime = Date.now();
+              lastPermissionDenials = null;
+              awaitingPermission = false;
+              return;
+            }
             // Add tool to approved set
             approvedTools.add(toolName);
             // Check "always" flag
@@ -2672,6 +2779,8 @@ function handleClaudeSkinWebSocket(ws) {
     killProc();
     // Release all session locks held by this window
     if (wsWindowId) _releaseAllLocks(wsWindowId);
+    // Clean up compact file watcher
+    if (_compactWatcher) { try { _compactWatcher.close(); } catch {} _compactWatcher = null; }
   });
 }
 
@@ -2687,10 +2796,11 @@ app.get('/api/claude/config', (req, res) => {
       catch { return []; }
     })();
     const models = [
-      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', tier: 'fast', contextWindow: 200000 },
-      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (1M)', tier: 'fast', contextWindow: 1000000 },
-      { id: 'claude-opus-4-6', label: 'Opus 4.6', tier: 'capable', contextWindow: 200000 },
-      { id: 'claude-opus-4-6', label: 'Opus 4.6 (1M)', tier: 'capable', contextWindow: 1000000 },
+      // 1M variants first — CLI uses 1M context by default for opus/sonnet 4.6
+      { id: 'claude-opus-4-6', label: 'Opus 4.6', tier: 'capable', contextWindow: 1000000 },
+      { id: 'claude-opus-4-6', label: 'Opus 4.6 (200K)', tier: 'capable', contextWindow: 200000 },
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', tier: 'fast', contextWindow: 1000000 },
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (200K)', tier: 'fast', contextWindow: 200000 },
       { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', tier: 'instant', contextWindow: 200000 },
     ];
     res.json({ ok: true, config: cliCfg, projects, models, bootId: SERVER_BOOT_ID });
@@ -3065,6 +3175,84 @@ app.post('/api/ui-state', (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('POST /api/ui-state error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ═══════════════════════════════════════════
+// IMAGE GALLERY API
+// ═══════════════════════════════════════════
+
+// GET /api/images — list all images with metadata
+app.get('/api/images', (req, res) => {
+  try {
+    const favs = new Set(loadImageFavorites());
+    const files = readdirSync(IMAGES_DIR)
+      .filter(f => /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(f))
+      .map(f => {
+        const fp = join(IMAGES_DIR, f);
+        const st = statSync(fp);
+        let type = 'other';
+        if (f.startsWith('screenshot-')) type = 'screenshot';
+        else if (f.startsWith('synabun-img-')) type = 'attachment';
+        else if (f.startsWith('synabun-wbimg-')) type = 'whiteboard';
+        else if (f.startsWith('synabun-paste-')) type = 'paste';
+        return {
+          filename: f,
+          type,
+          size: st.size,
+          createdAt: st.birthtimeMs || st.ctimeMs,
+          modifiedAt: st.mtimeMs,
+          favorite: favs.has(f),
+        };
+      })
+      .sort((a, b) => b.modifiedAt - a.modifiedAt);
+    res.json({ images: files, total: files.length });
+  } catch (err) {
+    console.error('GET /api/images error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/images/file/:filename — serve an image file
+app.get('/api/images/file/:filename', (req, res) => {
+  const filename = basename(req.params.filename);
+  const fp = join(IMAGES_DIR, filename);
+  if (!existsSync(fp)) return res.status(404).json({ error: 'Not found' });
+  res.sendFile(fp);
+});
+
+// POST /api/images/favorite — toggle favorite status
+app.post('/api/images/favorite', (req, res) => {
+  try {
+    const { filename, favorite } = req.body;
+    if (!filename) return res.status(400).json({ error: 'filename required' });
+    const favs = loadImageFavorites();
+    const idx = favs.indexOf(filename);
+    if (favorite && idx === -1) favs.push(filename);
+    else if (!favorite && idx !== -1) favs.splice(idx, 1);
+    saveImageFavorites(favs);
+    res.json({ ok: true, favorite: favs.includes(filename) });
+  } catch (err) {
+    console.error('POST /api/images/favorite error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/images/:filename — delete an image
+app.delete('/api/images/:filename', (req, res) => {
+  try {
+    const filename = basename(req.params.filename);
+    const fp = join(IMAGES_DIR, filename);
+    if (!existsSync(fp)) return res.status(404).json({ error: 'Not found' });
+    unlinkSync(fp);
+    // Remove from favorites too
+    const favs = loadImageFavorites().filter(f => f !== filename);
+    saveImageFavorites(favs);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('DELETE /api/images error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -4041,6 +4229,7 @@ app.get('/api/connections', (req, res) => {
 // ═══════════════════════════════════════════
 
 const LOOP_TEMPLATES_PATH = resolve(PROJECT_ROOT, 'data', 'loop-templates.json');
+const LOOP_SCHEDULES_PATH = resolve(PROJECT_ROOT, 'data', 'loop-schedules.json');
 const LOOP_DIR = resolve(PROJECT_ROOT, 'data', 'loop');
 
 function readLoopTemplates() {
@@ -4400,6 +4589,1176 @@ app.post('/api/loop/complete', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// LOOP SCHEDULES — Cron-driven social engagement scheduler
+// Server-side setInterval evaluator that auto-launches loops
+// at scheduled times, respecting timezones and day themes.
+// ═══════════════════════════════════════════════════════════════
+
+function loadSchedules() {
+  try {
+    if (existsSync(LOOP_SCHEDULES_PATH)) {
+      const data = JSON.parse(readFileSync(LOOP_SCHEDULES_PATH, 'utf-8'));
+      return data.schedules || [];
+    }
+  } catch { /* corrupt */ }
+  return [];
+}
+
+function saveSchedules(schedules) {
+  writeFileSync(LOOP_SCHEDULES_PATH, JSON.stringify({ schedules }, null, 2));
+}
+
+// ── Cron Parser ──
+
+function parseCronField(field, min, max) {
+  const values = new Set();
+  for (const part of field.split(',')) {
+    const trimmed = part.trim();
+    if (trimmed === '*') {
+      for (let i = min; i <= max; i++) values.add(i);
+    } else if (trimmed.includes('/')) {
+      const [range, step] = trimmed.split('/');
+      const stepNum = parseInt(step, 10);
+      let start = min, end = max;
+      if (range !== '*') {
+        if (range.includes('-')) {
+          const parts = range.split('-').map(Number);
+          start = parts[0]; end = parts[1];
+        } else {
+          start = parseInt(range, 10);
+        }
+      }
+      for (let i = start; i <= end; i += stepNum) values.add(i);
+    } else if (trimmed.includes('-')) {
+      const parts = trimmed.split('-').map(Number);
+      for (let i = parts[0]; i <= parts[1]; i++) values.add(i);
+    } else {
+      const n = parseInt(trimmed, 10);
+      if (!isNaN(n)) values.add(n);
+    }
+  }
+  return values;
+}
+
+function cronMatchesDate(cronStr, date) {
+  const fields = cronStr.trim().split(/\s+/);
+  if (fields.length !== 5) return false;
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = fields;
+  return parseCronField(minute, 0, 59).has(date.getMinutes()) &&
+    parseCronField(hour, 0, 23).has(date.getHours()) &&
+    parseCronField(dayOfMonth, 1, 31).has(date.getDate()) &&
+    parseCronField(month, 1, 12).has(date.getMonth() + 1) &&
+    parseCronField(dayOfWeek, 0, 6).has(date.getDay());
+}
+
+// Get the current time in a given timezone as a Date object
+function getNowInTimezone(tz) {
+  try {
+    const str = new Date().toLocaleString('en-US', { timeZone: tz });
+    return new Date(str);
+  } catch {
+    return new Date();
+  }
+}
+
+// Compute next cron fire time (for display), up to 7 days ahead
+function getNextCronRun(cronStr, tz) {
+  const now = getNowInTimezone(tz);
+  const candidate = new Date(now);
+  candidate.setSeconds(0, 0);
+  candidate.setMinutes(candidate.getMinutes() + 1);
+  const maxIterations = 7 * 24 * 60;
+  for (let i = 0; i < maxIterations; i++) {
+    if (cronMatchesDate(cronStr, candidate)) {
+      return candidate.toISOString();
+    }
+    candidate.setMinutes(candidate.getMinutes() + 1);
+  }
+  return null;
+}
+
+// Describe a cron expression in human-readable form
+function describeCron(cronStr) {
+  const fields = cronStr.trim().split(/\s+/);
+  if (fields.length !== 5) return cronStr;
+  const [minute, hour, , , dayOfWeek] = fields;
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  let dayPart = '';
+  if (dayOfWeek === '*') dayPart = 'Every day';
+  else if (dayOfWeek === '1-5') dayPart = 'Weekdays';
+  else if (dayOfWeek === '0,6') dayPart = 'Weekends';
+  else {
+    const days = [...parseCronField(dayOfWeek, 0, 6)].sort().map(d => dayNames[d]);
+    dayPart = days.join(', ');
+  }
+  const timePart = hour === '*' ? `every hour at :${minute.padStart(2, '0')}` :
+    [...parseCronField(hour, 0, 23)].sort((a, b) => a - b)
+      .map(h => `${String(h).padStart(2, '0')}:${minute.padStart(2, '0')}`).join(', ');
+  return `${dayPart} at ${timePart}`;
+}
+
+// ── Schedule Evaluator ──
+
+let _scheduleEvaluatorTimer = null;
+const SCHEDULE_EVAL_INTERVAL = 60_000;
+const _scheduleFiringLock = new Set();
+const _scheduleTimers = new Map(); // scheduleId → { timeoutId, firesAt, minutes }
+let _scheduleEvalCount = 0;
+
+async function launchScheduledLoop(schedule) {
+  const templates = readLoopTemplates();
+  const template = templates.find(t => t.id === schedule.templateId);
+  if (!template) {
+    console.warn(`[schedule] Template ${schedule.templateId} not found for schedule ${schedule.id}`);
+    const schedules = loadSchedules();
+    const idx = schedules.findIndex(s => s.id === schedule.id);
+    if (idx !== -1) {
+      schedules[idx].lastRun = new Date().toISOString();
+      schedules[idx].lastRunResult = 'template_missing';
+      schedules[idx].nextRun = getNextCronRun(schedule.cron, schedule.timezone);
+      saveSchedules(schedules);
+    }
+    broadcastSync({ type: 'schedule:failed', scheduleId: schedule.id, reason: 'template_missing' });
+    return;
+  }
+
+  // Merge dayTheme context if available
+  const now = getNowInTimezone(schedule.timezone);
+  const dayOfWeek = now.getDay();
+  const dayTheme = schedule.dayThemes?.[String(dayOfWeek)];
+  let context = template.context || '';
+  if (dayTheme?.contextOverride) {
+    context = context ? `${context}\n\n--- Day Theme ---\n${dayTheme.contextOverride}` : dayTheme.contextOverride;
+  }
+
+  console.log(`[schedule] Firing schedule "${schedule.name}" (template: ${template.name}, day: ${dayOfWeek})`);
+  broadcastSync({ type: 'schedule:fired', scheduleId: schedule.id, scheduleName: schedule.name, templateName: template.name, dayOfWeek });
+
+  try {
+    if (!existsSync(LOOP_DIR)) mkdirSync(LOOP_DIR, { recursive: true });
+
+    // Stop any active loops first (same logic as /api/loop/launch)
+    const existing = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
+    for (const f of existing) {
+      try {
+        const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
+        if (data.active || data.pending) {
+          if (data.terminalSessionId && terminalSessions.has(data.terminalSessionId)) {
+            try { terminalSessions.get(data.terminalSessionId).pty.kill(); } catch {}
+            terminalSessions.delete(data.terminalSessionId);
+          }
+          try { unlinkSync(resolve(LOOP_DIR, f)); } catch {}
+        }
+      } catch {}
+    }
+
+    const cliProfile = schedule.profile || 'claude-code';
+    const cliModel = schedule.model || null;
+    const terminalSessionId = createTerminalSession(cliProfile, 120, 30, PROJECT_ROOT, {});
+
+    const pendingId = 'pending-' + randomBytes(8).toString('hex');
+    const loopState = {
+      active: true,
+      task: template.task,
+      context: context || null,
+      totalIterations: Math.min(Math.max(template.iterations || 10, 1), 50),
+      currentIteration: 0,
+      maxMinutes: Math.min(Math.max(template.maxMinutes || 30, 1), 60),
+      startedAt: new Date().toISOString(),
+      lastIterationAt: null,
+      retries: 0,
+      pending: true,
+      terminalSessionId,
+      usesBrowser: schedule.usesBrowser !== undefined ? !!schedule.usesBrowser : !!template.usesBrowser,
+      browserSessionId: null,
+      profile: cliProfile,
+      model: cliModel,
+      scheduledBy: schedule.id,
+    };
+    writeFileSync(resolve(LOOP_DIR, `${pendingId}.json`), JSON.stringify(loopState, null, 2));
+
+    attachLoopDriver(terminalSessionId);
+    broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile: cliProfile });
+
+    // Update schedule metadata
+    const schedules = loadSchedules();
+    const idx = schedules.findIndex(s => s.id === schedule.id);
+    if (idx !== -1) {
+      schedules[idx].lastRun = new Date().toISOString();
+      schedules[idx].lastRunResult = 'launched';
+      schedules[idx].runCount = (schedules[idx].runCount || 0) + 1;
+      schedules[idx].nextRun = getNextCronRun(schedule.cron, schedule.timezone);
+      schedules[idx].updatedAt = new Date().toISOString();
+      saveSchedules(schedules);
+    }
+
+    broadcastSync({ type: 'schedule:completed', scheduleId: schedule.id, pendingId, terminalSessionId });
+    console.log(`[schedule] Launched loop for "${schedule.name}" → terminal ${terminalSessionId}`);
+  } catch (err) {
+    console.error(`[schedule] Failed to launch loop for "${schedule.name}":`, err.message);
+    const schedules = loadSchedules();
+    const idx = schedules.findIndex(s => s.id === schedule.id);
+    if (idx !== -1) {
+      schedules[idx].lastRun = new Date().toISOString();
+      schedules[idx].lastRunResult = `error: ${err.message}`;
+      schedules[idx].nextRun = getNextCronRun(schedule.cron, schedule.timezone);
+      saveSchedules(schedules);
+    }
+    broadcastSync({ type: 'schedule:failed', scheduleId: schedule.id, reason: err.message });
+  }
+}
+
+// Stagger queue for concurrent schedules firing at the same minute
+const _scheduleQueue = [];
+let _scheduleQueueRunning = false;
+
+async function processScheduleQueue() {
+  if (_scheduleQueueRunning) return;
+  _scheduleQueueRunning = true;
+  while (_scheduleQueue.length > 0) {
+    const schedule = _scheduleQueue.shift();
+    await launchScheduledLoop(schedule);
+    if (_scheduleQueue.length > 0) {
+      await new Promise(r => setTimeout(r, 30_000)); // 30s stagger
+    }
+  }
+  _scheduleQueueRunning = false;
+}
+
+function evaluateSchedules() {
+  _scheduleEvalCount++;
+  const schedules = loadSchedules();
+  const enabled = schedules.filter(s => s.enabled);
+
+  // Log every 5th eval (~5 min) or when schedules exist
+  if (enabled.length > 0 || _scheduleEvalCount % 5 === 0) {
+    console.log(`[schedule] Eval #${_scheduleEvalCount}: ${enabled.length} enabled / ${schedules.length} total`);
+  }
+
+  for (const schedule of schedules) {
+    if (!schedule.enabled) continue;
+    const tz = schedule.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const now = getNowInTimezone(tz);
+
+    // Minute-level dedup key to prevent double-fires
+    const fireKey = `${schedule.id}:${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`;
+    if (_scheduleFiringLock.has(fireKey)) continue;
+
+    const matches = cronMatchesDate(schedule.cron, now);
+    if (enabled.length > 0 && _scheduleEvalCount % 5 === 0) {
+      console.log(`[schedule]   "${schedule.name}" cron=${schedule.cron} now=${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')} match=${matches}`);
+    }
+
+    if (matches) {
+      // If dayThemes are defined and current day has no entry, skip
+      if (schedule.dayThemes && Object.keys(schedule.dayThemes).length > 0) {
+        if (!schedule.dayThemes[String(now.getDay())]) {
+          console.log(`[schedule]   Skipped "${schedule.name}" — no dayTheme for day ${now.getDay()}`);
+          continue;
+        }
+      }
+
+      console.log(`[schedule] ✓ Cron match for "${schedule.name}" at ${now.toLocaleString()}`);
+      _scheduleFiringLock.add(fireKey);
+      setTimeout(() => _scheduleFiringLock.delete(fireKey), 120_000);
+
+      _scheduleQueue.push(schedule);
+      processScheduleQueue();
+    }
+  }
+}
+
+function startScheduleEvaluator() {
+  stopScheduleEvaluator();
+  _scheduleEvaluatorTimer = setInterval(evaluateSchedules, SCHEDULE_EVAL_INTERVAL);
+  console.log('[schedule] Evaluator started (60s interval)');
+
+  // Deferred missed-fire check (wait for terminalSessions and other globals to init)
+  setTimeout(() => {
+    const schedules = loadSchedules();
+    for (const schedule of schedules) {
+      if (!schedule.enabled || !schedule.nextRun) continue;
+      const nextRun = new Date(schedule.nextRun);
+      const now = new Date();
+      const gracePeriodMs = 5 * 60 * 1000;
+      if (nextRun < now && (now - nextRun) < gracePeriodMs) {
+        console.log(`[schedule] Missed fire detected for "${schedule.name}" (was due ${schedule.nextRun})`);
+        _scheduleQueue.push(schedule);
+        processScheduleQueue();
+      }
+    }
+  }, 10_000);
+}
+
+function stopScheduleEvaluator() {
+  if (_scheduleEvaluatorTimer) {
+    clearInterval(_scheduleEvaluatorTimer);
+    _scheduleEvaluatorTimer = null;
+  }
+}
+
+// Boot: start schedule evaluator
+startScheduleEvaluator();
+
+// ── Quick Timer (standalone, no schedule needed) ──
+
+const _quickTimers = new Map(); // timerId → { timeoutId, templateId, templateName, firesAt, minutes, profile, model, usesBrowser, createdAt }
+
+function launchQuickTimer(timerId, templateId, context) {
+  const templates = readLoopTemplates();
+  const template = templates.find(t => t.id === templateId);
+  if (!template) {
+    console.warn(`[quick-timer] Template ${templateId} not found`);
+    broadcastSync({ type: 'quick-timer:failed', timerId, reason: 'template_missing' });
+    return;
+  }
+  const timerData = _quickTimers.get(timerId) || {};
+  const fakeSchedule = {
+    id: `qt-${timerId}`,
+    name: `Quick: ${template.name}`,
+    templateId,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    dayThemes: {},
+    profile: timerData.profile || undefined,
+    model: timerData.model || undefined,
+    usesBrowser: timerData.usesBrowser,
+  };
+  console.log(`[quick-timer] Firing "${template.name}" (timer ${timerId}) profile=${fakeSchedule.profile || 'default'} model=${fakeSchedule.model || 'default'}`);
+  _scheduleQueue.push(fakeSchedule);
+  processScheduleQueue();
+  broadcastSync({ type: 'quick-timer:fired', timerId, templateName: template.name });
+}
+
+// POST /api/quick-timer — fire a template after N minutes (standalone, no schedule)
+app.post('/api/quick-timer', (req, res) => {
+  try {
+    const { templateId, minutes, context, profile, model, usesBrowser } = req.body;
+    const mins = Number(minutes);
+    if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
+    if (!mins || mins < 1 || mins > 1440) return res.status(400).json({ error: 'minutes must be 1–1440' });
+
+    const templates = readLoopTemplates();
+    const template = templates.find(t => t.id === templateId);
+    if (!template) return res.status(400).json({ error: 'Template not found' });
+
+    const timerId = randomBytes(8).toString('hex');
+    const firesAt = new Date(Date.now() + mins * 60_000).toISOString();
+    const timerProfile = profile || 'claude-code';
+    const timerModel = model || null;
+    const timerUsesBrowser = usesBrowser !== undefined ? !!usesBrowser : !!template.usesBrowser;
+
+    const timeoutId = setTimeout(() => {
+      launchQuickTimer(timerId, templateId, context);
+      _quickTimers.delete(timerId);
+    }, mins * 60_000);
+
+    _quickTimers.set(timerId, { timeoutId, templateId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, usesBrowser: timerUsesBrowser, createdAt: new Date().toISOString() });
+    console.log(`[quick-timer] Set: "${template.name}" fires in ${mins}m at ${firesAt} (${timerProfile}/${timerModel || 'default'})`);
+    broadcastSync({ type: 'quick-timer:set', timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, usesBrowser: timerUsesBrowser });
+    res.json({ ok: true, timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, usesBrowser: timerUsesBrowser });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/quick-timers — list active quick timers
+app.get('/api/quick-timers', (_req, res) => {
+  const timers = [];
+  for (const [id, t] of _quickTimers) {
+    timers.push({ id, templateId: t.templateId, templateName: t.templateName, firesAt: t.firesAt, minutes: t.minutes, profile: t.profile, model: t.model, usesBrowser: t.usesBrowser, createdAt: t.createdAt });
+  }
+  res.json(timers);
+});
+
+// DELETE /api/quick-timers/:id — cancel a quick timer
+app.delete('/api/quick-timers/:id', (req, res) => {
+  const timer = _quickTimers.get(req.params.id);
+  if (!timer) return res.status(404).json({ error: 'Timer not found' });
+  clearTimeout(timer.timeoutId);
+  _quickTimers.delete(req.params.id);
+  console.log(`[quick-timer] Cancelled timer ${req.params.id}`);
+  broadcastSync({ type: 'quick-timer:cancelled', timerId: req.params.id });
+  res.json({ ok: true });
+});
+
+// ── Schedule REST API ──
+
+// GET /api/schedules — list all schedules
+app.get('/api/schedules', (_req, res) => {
+  res.json(loadSchedules());
+});
+
+// GET /api/schedules/timers — list all active timers (must be before :id routes)
+app.get('/api/schedules/timers', (_req, res) => {
+  const timers = {};
+  for (const [id, t] of _scheduleTimers) {
+    timers[id] = { firesAt: t.firesAt, minutes: t.minutes };
+  }
+  res.json(timers);
+});
+
+// POST /api/schedules — create a new schedule
+app.post('/api/schedules', (req, res) => {
+  try {
+    const { name, templateId, cron, timezone, enabled, dayThemes, overrides } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+    if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
+    if (!cron?.trim()) return res.status(400).json({ error: 'cron is required' });
+    if (cron.trim().split(/\s+/).length !== 5) return res.status(400).json({ error: 'cron must be a 5-field expression' });
+
+    const templates = readLoopTemplates();
+    if (!templates.find(t => t.id === templateId)) return res.status(400).json({ error: 'Template not found' });
+
+    const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const schedule = {
+      id: randomBytes(12).toString('hex'),
+      name: name.trim(),
+      templateId,
+      cron: cron.trim(),
+      timezone: tz,
+      enabled: enabled !== false,
+      dayThemes: dayThemes || {},
+      overrides: overrides || {},
+      lastRun: null,
+      lastRunResult: null,
+      nextRun: getNextCronRun(cron.trim(), tz),
+      runCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const schedules = loadSchedules();
+    schedules.push(schedule);
+    saveSchedules(schedules);
+
+    broadcastSync({ type: 'schedule:created', schedule });
+    res.json(schedule);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/schedules/:id — get a single schedule
+app.get('/api/schedules/:id', (req, res) => {
+  const schedules = loadSchedules();
+  const schedule = schedules.find(s => s.id === req.params.id);
+  if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
+  res.json(schedule);
+});
+
+// PUT /api/schedules/:id — update a schedule
+app.put('/api/schedules/:id', (req, res) => {
+  try {
+    const schedules = loadSchedules();
+    const idx = schedules.findIndex(s => s.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'Schedule not found' });
+
+    const { name, templateId, cron, timezone, enabled, dayThemes, overrides } = req.body;
+    if (name !== undefined) schedules[idx].name = name.trim();
+    if (templateId !== undefined) {
+      const templates = readLoopTemplates();
+      if (!templates.find(t => t.id === templateId)) return res.status(400).json({ error: 'Template not found' });
+      schedules[idx].templateId = templateId;
+    }
+    if (cron !== undefined) {
+      if (cron.trim().split(/\s+/).length !== 5) return res.status(400).json({ error: 'cron must be a 5-field expression' });
+      schedules[idx].cron = cron.trim();
+    }
+    if (timezone !== undefined) schedules[idx].timezone = timezone;
+    if (typeof enabled === 'boolean') schedules[idx].enabled = enabled;
+    if (dayThemes !== undefined) schedules[idx].dayThemes = dayThemes;
+    if (overrides !== undefined) schedules[idx].overrides = overrides;
+
+    schedules[idx].updatedAt = new Date().toISOString();
+    schedules[idx].nextRun = getNextCronRun(schedules[idx].cron, schedules[idx].timezone);
+    saveSchedules(schedules);
+
+    broadcastSync({ type: 'schedule:updated', schedule: schedules[idx] });
+    res.json(schedules[idx]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/schedules/:id — delete a schedule
+app.delete('/api/schedules/:id', (req, res) => {
+  try {
+    const schedules = loadSchedules();
+    const idx = schedules.findIndex(s => s.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'Schedule not found' });
+    const removed = schedules.splice(idx, 1)[0];
+    saveSchedules(schedules);
+    // Cancel any pending timer
+    if (_scheduleTimers.has(removed.id)) {
+      clearTimeout(_scheduleTimers.get(removed.id).timeoutId);
+      _scheduleTimers.delete(removed.id);
+    }
+    broadcastSync({ type: 'schedule:deleted', scheduleId: removed.id });
+    res.json({ ok: true, id: removed.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/schedules/:id/test — fire a schedule immediately for testing
+app.post('/api/schedules/:id/test', async (req, res) => {
+  try {
+    const schedules = loadSchedules();
+    const schedule = schedules.find(s => s.id === req.params.id);
+    if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
+    _scheduleQueue.push(schedule);
+    processScheduleQueue();
+    res.json({ ok: true, message: 'Schedule queued for immediate fire' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/schedules/:id/timer — fire a schedule after N minutes
+app.post('/api/schedules/:id/timer', (req, res) => {
+  try {
+    const { minutes } = req.body;
+    const mins = Number(minutes);
+    if (!mins || mins < 1 || mins > 1440) return res.status(400).json({ error: 'minutes must be 1–1440' });
+
+    const schedules = loadSchedules();
+    const schedule = schedules.find(s => s.id === req.params.id);
+    if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
+
+    // Cancel existing timer for this schedule if any
+    if (_scheduleTimers.has(schedule.id)) {
+      clearTimeout(_scheduleTimers.get(schedule.id).timeoutId);
+      _scheduleTimers.delete(schedule.id);
+    }
+
+    const firesAt = new Date(Date.now() + mins * 60_000).toISOString();
+    const timeoutId = setTimeout(() => {
+      console.log(`[schedule] Timer fired for "${schedule.name}" after ${mins}m`);
+      _scheduleTimers.delete(schedule.id);
+      // Re-read schedule in case it was updated/deleted since timer was set
+      const current = loadSchedules().find(s => s.id === schedule.id);
+      if (current) {
+        _scheduleQueue.push(current);
+        processScheduleQueue();
+      }
+      broadcastSync({ type: 'schedule:timer-fired', scheduleId: schedule.id, scheduleName: schedule.name });
+    }, mins * 60_000);
+
+    _scheduleTimers.set(schedule.id, { timeoutId, firesAt, minutes: mins });
+    console.log(`[schedule] Timer set: "${schedule.name}" fires in ${mins}m at ${firesAt}`);
+    broadcastSync({ type: 'schedule:timer-set', scheduleId: schedule.id, scheduleName: schedule.name, firesAt, minutes: mins });
+    res.json({ ok: true, firesAt, minutes: mins });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/schedules/:id/timer — cancel a pending timer
+app.delete('/api/schedules/:id/timer', (req, res) => {
+  const timer = _scheduleTimers.get(req.params.id);
+  if (!timer) return res.status(404).json({ error: 'No active timer for this schedule' });
+  clearTimeout(timer.timeoutId);
+  _scheduleTimers.delete(req.params.id);
+  console.log(`[schedule] Timer cancelled for schedule ${req.params.id}`);
+  broadcastSync({ type: 'schedule:timer-cancelled', scheduleId: req.params.id });
+  res.json({ ok: true });
+});
+
+
+// ═══════════════════════════════════════════════════════════════
+// ISOLATED AGENTS — spawn Claude Code as fully isolated child processes
+// Uses --print --output-format stream-json for clean JSON streaming.
+// Supports both fully isolated mode and SynaBun-integrated mode.
+// Loop mode: fresh process per iteration (anti-brain-rot).
+// ═══════════════════════════════════════════════════════════════
+
+const agentRegistry = new Map(); // agentId → agent object
+const AGENT_IS_WIN = process.platform === 'win32';
+
+/**
+ * Build the MCP config JSON for an agent.
+ * - withSynabun=false → empty config (fully isolated)
+ * - withSynabun=true  → includes SynaBun MCP with optional browser session pinning
+ */
+function buildAgentMcpConfig(withSynabun, browserSessionId) {
+  if (!withSynabun) return '{"mcpServers":{}}';
+  const mcpPreload = resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'preload.js');
+  const dotenvPath = resolve(PROJECT_ROOT, '.env');
+  const env = { DOTENV_PATH: dotenvPath };
+  if (browserSessionId) env.SYNABUN_BROWSER_SESSION = browserSessionId;
+  return JSON.stringify({
+    mcpServers: {
+      SynaBun: { type: 'stdio', command: 'node', args: [mcpPreload], env },
+    },
+  });
+}
+
+/**
+ * Spawn a single Claude Code agent process.
+ * Returns a Promise that resolves when the process exits.
+ * The agent object is updated in-place with output, status, etc.
+ */
+function spawnAgentProcess(agent, prompt, extraEnv = {}) {
+  return new Promise((resolve) => {
+    const claudeBin = getClaudeBin();
+    // Reuse the agent's persistent session-id for conversation continuity.
+    // The controller rotates agent._activeSessionId every N iterations to avoid context overflow.
+    const sessionId = agent._activeSessionId || agent.sessionId;
+
+    const args = [
+      '--print',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--session-id', sessionId,
+      '--strict-mcp-config',
+      '--mcp-config', agent._mcpConfig,
+      '--permission-mode', 'bypassPermissions',
+    ];
+    // Resume the session when continuing an existing conversation (not the first use of this session-id)
+    if (agent._resumableSessionId === sessionId) {
+      args.push('--resume');
+    }
+    agent._resumableSessionId = sessionId; // Mark this session-id as resumable for next iteration
+
+    if (agent.model && agent.model !== 'default') args.push('--model', agent.model);
+    if (agent._maxTurns) args.push('--max-turns', String(agent._maxTurns));
+    if (agent._systemPrompt) args.push('--system-prompt', agent._systemPrompt);
+    if (agent._allowedTools?.length) args.push('--allowedTools', ...agent._allowedTools);
+    if (agent._addDirs?.length) {
+      for (const dir of agent._addDirs) args.push('--add-dir', dir);
+    }
+    args.push('-p', prompt);
+
+    const cleanEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([k]) =>
+        !k.startsWith('VSCODE_') && k !== 'TERM_PROGRAM' && k !== 'TERM_PROGRAM_VERSION'
+      )
+    );
+
+    console.log(`[agent] ${agent.id} spawn: ${claudeBin} ${args.map(a => a.length > 80 ? a.slice(0, 80) + '…' : a).join(' ')}`);
+
+    const child = spawn(claudeBin, args, {
+      cwd: agent.cwd,
+      env: { ...cleanEnv, FORCE_COLOR: '0', NO_COLOR: '1', TERM: 'dumb', ...extraEnv },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: AGENT_IS_WIN,
+      windowsHide: true,
+    });
+
+    agent.process = child;
+    agent._lineBuffer = '';
+    let stderrBuf = '';
+
+    child.stdout.on('data', (chunk) => {
+      agent._lineBuffer += chunk.toString();
+      const lines = agent._lineBuffer.split('\n');
+      agent._lineBuffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+          agent.output.push(event);
+          if (event.type === 'assistant' && event.message?.content) {
+            for (const block of event.message.content) {
+              if (block.type === 'text') agent.textOutput += block.text;
+              else if (block.type === 'tool_use') {
+                agent.toolUses.push({
+                  tool: block.name,
+                  input: typeof block.input === 'string' ? block.input.slice(0, 200) : JSON.stringify(block.input).slice(0, 200),
+                });
+                console.log(`[agent] ${agent.id} tool_use: ${block.name}`);
+              }
+            }
+          }
+          if (event.type === 'result') {
+            if (event.cost_usd != null) agent.costUsd = (agent.costUsd || 0) + event.cost_usd;
+            if (event.total_cost_usd != null) agent.costUsd = event.total_cost_usd;
+          }
+          broadcastSync({ type: 'agent:output', agentId: agent.id, event });
+        } catch { /* partial JSON */ }
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      stderrBuf += text;
+      if (stderrBuf.length > 8192) stderrBuf = stderrBuf.slice(-4096);
+      // Log MCP and error lines in real-time for diagnostics
+      for (const line of text.split('\n')) {
+        const t = line.trim();
+        if (t && (t.includes('error') || t.includes('Error') || t.includes('MCP') || t.includes('mcp') || t.includes('ENOENT') || t.includes('refused'))) {
+          console.warn(`[agent] ${agent.id} stderr: ${t.slice(0, 200)}`);
+        }
+      }
+    });
+
+    child.on('error', (err) => {
+      console.error(`[agent] ${agent.id} spawn error:`, err.message);
+      resolve({ code: -1, error: err.message });
+    });
+
+    child.on('close', (code) => {
+      if (agent._lineBuffer.trim()) {
+        try {
+          const event = JSON.parse(agent._lineBuffer);
+          agent.output.push(event);
+          if (event.type === 'result') {
+            if (event.cost_usd != null) agent.costUsd = (agent.costUsd || 0) + event.cost_usd;
+            if (event.total_cost_usd != null) agent.costUsd = event.total_cost_usd;
+          }
+        } catch {}
+      }
+      agent._lineBuffer = '';
+      if (stderrBuf.trim()) {
+        console.log(`[agent] ${agent.id} stderr dump (exit ${code}):\n${stderrBuf.trim().slice(-1000)}`);
+      }
+      console.log(`[agent] ${agent.id} close: code=${code}, tools=${agent.toolUses.length}, textLen=${agent.textOutput.length}`);
+      resolve({ code, error: code !== 0 ? (stderrBuf.trim().slice(-500) || `Exit code ${code}`) : null });
+    });
+  });
+}
+
+/**
+ * Launch an agent. Supports two modes:
+ * - single: one-shot task (spawn once)
+ * - loop: iterating task (spawn per iteration, inject progress)
+ */
+async function launchAgentController(opts) {
+  const {
+    task, model, cwd, allowedTools, addDirs, systemPrompt, maxTurns,
+    withSynabun = false, browserSessionId = null,
+    mode = 'single', iterations = 1, maxMinutes = 30, context = null,
+  } = opts;
+
+  const agentId = randomUUID();
+  const mcpConfig = buildAgentMcpConfig(withSynabun, browserSessionId);
+  const agentCwd = cwd || PROJECT_ROOT;
+
+  // Build default system prompt for agents — overrides CLAUDE.md boot sequence
+  // so the agent goes straight to the task instead of greeting/recalling
+  const defaultAgentPrompt = withSynabun
+    ? [
+        'You are an autonomous agent executing a task. CRITICAL RULES:',
+        '',
+        '## Boot',
+        '1. SKIP all CLAUDE.md boot sequences — no greeting, no recall, no communication style lookup. Go straight to the task.',
+        '2. DO NOT output pleasantries, status summaries, or explanatory text. Execute using tools immediately.',
+        '',
+        '## Tools',
+        '3. Your SynaBun MCP tools are deferred. On your FIRST response, batch-fetch ALL schemas in ONE ToolSearch call:',
+        '   ToolSearch("select:browser_navigate,browser_click,browser_type,browser_fill,browser_snapshot,browser_scroll,browser_screenshot,browser_press,browser_select,browser_hover,browser_evaluate,browser_wait,browser_content,browser_extract_tweets,browser_extract_ig_feed,browser_extract_ig_profile,browser_extract_ig_post,browser_extract_ig_reels,browser_extract_ig_search,browser_extract_li_feed,browser_extract_li_profile,browser_extract_li_post,browser_extract_tiktok_videos,browser_extract_tiktok_search,browser_extract_tiktok_profile,browser_extract_fb_posts,browser_go_back,browser_go_forward,browser_reload,browser_session,browser_upload,remember,recall,reflect,forget,restore,memories,category,sync")',
+        '   Then IMMEDIATELY call your first actual tool in the SAME response. A text-only response terminates the session.',
+        '4. EVERY response MUST contain at least one tool_use call. Text-only responses terminate --print mode and waste the iteration.',
+        '5. Chain multiple tool calls in a single response when they are independent (e.g., ToolSearch + browser_navigate).',
+        '',
+        '## Focus',
+        '6. Stay laser-focused on the task. Do not drift into unrelated actions.',
+        '7. Be autonomous. Do not ask for confirmation. Do not wait. Execute the full task using all available turns.',
+        '8. If a tool call fails, try an alternative approach immediately. Do not output explanatory text without a tool call.',
+        '9. If the browser shows a login wall, CAPTCHA, or 2FA — STOP and output the blocker in your handoff. Do not try to bypass it.',
+        '',
+        '## Iteration Handoff',
+        '10. At the END of each iteration (when you have exhausted your task or turns), output a structured handoff:',
+        '   ## Handoff',
+        '   - Done: [concrete accomplishments this iteration]',
+        '   - Next: [specific next steps for the following iteration]',
+        '   - State: [current browser URL, login status, any critical state]',
+        '   This handoff is injected into the next iteration for continuity. Be specific and actionable.',
+        '',
+        '## Memory',
+        '11. SynaBun memory tools are available. Use them ONLY when the task prompt explicitly asks, or every 10 iterations when instructed.',
+        '12. Do NOT call recall/remember/reflect unless directly relevant to the task. Memory operations waste turns.',
+      ].join('\n')
+    : null;
+
+  const agent = {
+    id: agentId,
+    sessionId: randomUUID(),
+    task,
+    model: model || 'default',
+    cwd: agentCwd,
+    status: 'running',
+    mode,
+    process: null,
+    output: [],
+    textOutput: '',
+    toolUses: [],
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+    exitCode: null,
+    error: null,
+    costUsd: null,
+    // Loop state
+    currentIteration: 0,
+    totalIterations: iterations,
+    maxMinutes,
+    journal: [],
+    browserSessionId: browserSessionId || null,
+    withSynabun,
+    // Internal
+    _mcpConfig: mcpConfig,
+    _maxTurns: maxTurns || 200,
+    _systemPrompt: systemPrompt || defaultAgentPrompt,
+    _allowedTools: allowedTools || null,
+    _addDirs: addDirs || null,
+    _lineBuffer: '',
+    _stopped: false,
+    _activeSessionId: null, // set per-iteration, rotated every SESSION_CONTINUITY_WINDOW iterations
+    _iterOutputStart: 0, // tracks where each iteration's output starts in textOutput
+    _iterToolStart: 0, // tracks where each iteration's tools start in toolUses
+  };
+
+  agentRegistry.set(agentId, agent);
+
+  console.log(`[agent] Launching ${mode} agent ${agentId} (synabun=${withSynabun}, browser=${browserSessionId || 'none'})`);
+  console.log(`[agent] Task: ${task.slice(0, 100)}${task.length > 100 ? '...' : ''}`);
+
+  broadcastSync({
+    type: 'agent:launched',
+    agentId, task: agent.task, model: agent.model,
+    cwd: agent.cwd, mode, iterations, browserSessionId,
+    startedAt: agent.startedAt,
+  });
+
+  // Run in background — don't block the API response
+  (async () => {
+    const startTime = Date.now();
+    const timeCap = maxMinutes * 60 * 1000;
+
+    for (let i = 1; i <= iterations; i++) {
+      if (agent._stopped) break;
+      if (Date.now() - startTime > timeCap) {
+        console.log(`[agent] ${agentId} time cap reached (${maxMinutes}min)`);
+        break;
+      }
+
+      agent.currentIteration = i;
+      agent._iterOutputStart = agent.textOutput.length;
+      agent._iterToolStart = agent.toolUses.length;
+
+      // Fresh session EVERY iteration — prevents context bloat and compaction.
+      // Each iteration gets a clean slate with full journal re-injection for continuity.
+      // This is critical: --resume accumulates context which triggers compaction,
+      // causing hangs and lost focus. Fresh sessions are predictable and fast.
+      agent._activeSessionId = randomUUID();
+      agent._resumableSessionId = null; // ensure --resume is never used
+      if (i > 1) console.log(`[agent] ${agentId} fresh session for iteration ${i}`);
+
+      broadcastSync({ type: 'agent:iteration', agentId, iteration: i, total: iterations });
+
+      // Build iteration prompt — always inject full task + journal (fresh session each time)
+      let prompt;
+      if (mode === 'loop') {
+        const parts = [];
+        const elapsed = Math.floor((Date.now() - startTime) / 60000);
+        const remaining = maxMinutes - elapsed;
+
+        if (i === 1) {
+          parts.push(task);
+          if (context) parts.push(`\nContext: ${context}`);
+        } else {
+          // Every iteration after the first: re-inject full task + journal
+          parts.push(`[Iteration ${i}/${iterations}] Continue the task:`);
+          parts.push(task);
+          if (context) parts.push(`Context: ${context}`);
+          const recentJournal = agent.journal.slice(-10);
+          if (recentJournal.length > 0) {
+            parts.push('\n--- PREVIOUS ITERATIONS ---');
+            for (const entry of recentJournal) {
+              const fields = [];
+              if (entry.done) fields.push(`Done: ${entry.done}`);
+              if (entry.next) fields.push(`Next: ${entry.next}`);
+              if (entry.state) fields.push(`State: ${entry.state}`);
+              const detail = fields.length > 0 ? fields.join(' | ') : entry.summary;
+              parts.push(`  Iteration ${entry.iteration}: ${detail}`);
+            }
+            parts.push('--- END PREVIOUS ---');
+          }
+        }
+
+        parts.push(`\nIteration ${i}/${iterations}. ${remaining}min remaining. Execute this iteration now.`);
+        // Memory enforcement every 10 iterations (if SynaBun enabled)
+        if (withSynabun && i > 1 && i % 10 === 0) {
+          parts.push('\nMANDATORY: Call `remember` to store your progress from the last 10 iterations before proceeding.');
+        }
+        prompt = parts.join('\n');
+      } else {
+        prompt = task;
+      }
+
+      console.log(`[agent] ${agentId} iteration ${i}/${iterations}`);
+
+      // Retry logic: if the agent produces zero tool calls (wasted iteration in --print mode),
+      // retry once with a more forceful prompt before advancing
+      let result = await spawnAgentProcess(agent, prompt);
+      const iterToolCount = agent.toolUses.length - agent._iterToolStart;
+
+      if (mode === 'loop' && iterToolCount === 0 && result.code === 0 && !agent._stopped) {
+        console.warn(`[agent] ${agentId} iteration ${i} produced 0 tool calls — retrying with forceful prompt`);
+        agent._activeSessionId = randomUUID();
+        agent._resumableSessionId = null;
+        const retryPrompt = [
+          `CRITICAL: Your previous attempt produced NO tool calls and was wasted.`,
+          `You MUST call tools immediately. Do NOT output text without tool calls.`,
+          `\n${prompt}`,
+        ].join('\n');
+        result = await spawnAgentProcess(agent, retryPrompt);
+      }
+
+      // Extract iteration summary for the journal.
+      // Prefer structured ## Handoff block if the agent produced one; fall back to tail text.
+      if (mode === 'loop') {
+        const iterText = agent.textOutput.slice(agent._iterOutputStart);
+        let summary = '';
+        let done = '';
+        let next = '';
+        let state = '';
+
+        // Try to parse structured handoff
+        const handoffMatch = iterText.match(/## Handoff\s*\n([\s\S]*?)(?:\n##|\n---|\s*$)/i);
+        if (handoffMatch) {
+          const block = handoffMatch[1];
+          done = (block.match(/[-*]\s*Done:\s*(.+)/i) || [])[1]?.trim() || '';
+          next = (block.match(/[-*]\s*Next:\s*(.+)/i) || [])[1]?.trim() || '';
+          state = (block.match(/[-*]\s*State:\s*(.+)/i) || [])[1]?.trim() || '';
+          summary = [done && `Done: ${done}`, next && `Next: ${next}`].filter(Boolean).join(' | ');
+        }
+
+        // Fallback: last 300 chars of this iteration's output
+        if (!summary) {
+          summary = iterText.slice(-300).slice(0, 200).replace(/\n/g, ' ').trim() || 'Completed';
+        }
+
+        const journalEntry = { iteration: i, summary, timestamp: new Date().toISOString() };
+        if (done) journalEntry.done = done;
+        if (next) journalEntry.next = next;
+        if (state) journalEntry.state = state;
+        journalEntry.toolCount = agent.toolUses.length - (agent._iterToolStart || 0);
+
+        agent.journal.push(journalEntry);
+        // Keep journal bounded
+        if (agent.journal.length > 30) agent.journal = agent.journal.slice(-20);
+
+        broadcastSync({
+          type: 'agent:iteration-complete', agentId, iteration: i,
+          summary, done, next, state, toolCount: journalEntry.toolCount,
+        });
+
+        console.log(`[agent] ${agentId} iteration ${i} complete: ${journalEntry.toolCount} tools, exit=${result.code}`);
+      }
+
+      if (result.code !== 0 && !agent._stopped) {
+        agent.error = result.error;
+        if (mode !== 'loop') break;
+        // For loops: log and continue — transient failures shouldn't kill the loop
+        console.warn(`[agent] ${agentId} iteration ${i} exited with code ${result.code}, continuing...`);
+        // Small delay before retry to let any transient issues settle
+        await new Promise(r => setTimeout(r, 2000));
+      }
+
+      // Browser session health-check between loop iterations.
+      // If the browser session died (closed by grace timer, crash, etc.), re-create it.
+      if (mode === 'loop' && agent.browserSessionId && !agent._stopped && i < iterations) {
+        if (!browserSessions.has(agent.browserSessionId)) {
+          console.log(`[agent] ${agentId} browser session ${agent.browserSessionId} died, re-creating...`);
+          try {
+            const newBrowser = await createBrowserSession({ url: 'about:blank' });
+            agent.browserSessionId = newBrowser.sessionId;
+            agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, agent.browserSessionId);
+            broadcastSync({
+              type: 'browser:session-created',
+              sessionId: agent.browserSessionId, url: 'about:blank',
+              profileMode: newBrowser.profileMode, profileSource: newBrowser.profileSource,
+            });
+            console.log(`[agent] ${agentId} re-created browser session ${agent.browserSessionId}`);
+          } catch (err) {
+            console.warn(`[agent] ${agentId} browser re-create failed: ${err.message}`);
+          }
+        } else {
+          // Cancel any grace timer on the session to keep it alive
+          const bSession = browserSessions.get(agent.browserSessionId);
+          if (bSession?.graceTimer) {
+            clearTimeout(bSession.graceTimer);
+            bSession.graceTimer = null;
+          }
+        }
+      }
+
+      // Small stabilization delay between iterations (let MCP server settle)
+      if (mode === 'loop' && !agent._stopped && i < iterations) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+
+    agent.endedAt = new Date().toISOString();
+    agent.exitCode = agent._stopped ? null : 0;
+    agent.status = agent._stopped ? 'stopped' : (agent.error && mode !== 'loop') ? 'failed' : 'completed';
+    agent.process = null;
+
+    console.log(`[agent] ${agentId} finished: status=${agent.status}, iterations=${agent.currentIteration}/${iterations}`);
+    broadcastSync({ type: 'agent:status', agentId, status: agent.status, exitCode: agent.exitCode });
+  })();
+
+  return agent;
+}
+
+// POST /api/agents/launch — spawn a new agent (single or loop, isolated or with SynaBun)
+app.post('/api/agents/launch', async (req, res) => {
+  try {
+    const {
+      task, model, cwd, allowedTools, addDirs, systemPrompt, maxTurns,
+      withSynabun, browserProfile,
+      mode, iterations, maxMinutes, context,
+    } = req.body;
+    if (!task?.trim()) return res.status(400).json({ error: 'task is required' });
+
+    // Pre-create a dedicated browser session when SynaBun is enabled
+    // (agent needs browser tools via MCP — create one proactively so browser_navigate reuses it)
+    let browserSessionId = null;
+    if (withSynabun) {
+      try {
+        const result = await createBrowserSession({ url: 'about:blank' });
+        browserSessionId = result.sessionId;
+        broadcastSync({
+          type: 'browser:session-created',
+          sessionId: browserSessionId, url: 'about:blank',
+          profileMode: result.profileMode, profileSource: result.profileSource,
+        });
+        console.log(`[agent] Pre-created browser session ${browserSessionId} for agent`);
+      } catch (err) {
+        console.warn(`[agent] Browser pre-create failed: ${err.message} — agent will auto-create on first browser_navigate`);
+      }
+    }
+
+    // maxTurns: browser automation needs high headroom (navigate+snapshot+click+type per page).
+    // Non-browser tasks need less. User-supplied value takes priority.
+    const effectiveMaxTurns = maxTurns || (browserSessionId ? 200 : 100);
+
+    const agent = await launchAgentController({
+      task: task.trim(), model, cwd, allowedTools, addDirs, systemPrompt,
+      maxTurns: effectiveMaxTurns,
+      withSynabun: !!withSynabun,
+      browserSessionId,
+      mode: mode || 'single',
+      iterations: Math.min(Math.max(iterations || 1, 1), 200),
+      maxMinutes: Math.min(Math.max(maxMinutes || 30, 1), 480),
+      context: context || null,
+    });
+
+    res.json({
+      ok: true,
+      agentId: agent.id,
+      sessionId: agent.sessionId,
+      status: agent.status,
+      browserSessionId,
+      mode: agent.mode,
+    });
+  } catch (err) {
+    console.error('POST /api/agents/launch error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/agents — list all agents (active + recent)
+app.get('/api/agents', (req, res) => {
+  const agents = [];
+  for (const [id, agent] of agentRegistry) {
+    agents.push({
+      id,
+      task: agent.task,
+      model: agent.model,
+      cwd: agent.cwd,
+      status: agent.status,
+      mode: agent.mode,
+      currentIteration: agent.currentIteration,
+      totalIterations: agent.totalIterations,
+      startedAt: agent.startedAt,
+      endedAt: agent.endedAt,
+      exitCode: agent.exitCode,
+      error: agent.error,
+      costUsd: agent.costUsd,
+      textLength: agent.textOutput.length,
+      toolUseCount: agent.toolUses.length,
+      eventCount: agent.output.length,
+      browserSessionId: agent.browserSessionId,
+      withSynabun: agent.withSynabun,
+      journal: agent.journal,
+      // Last 5 tool uses for live feed
+      recentTools: agent.toolUses.slice(-5).map(t => t.tool),
+    });
+  }
+  res.json({ agents });
+});
+
+// GET /api/agents/:id — get full agent details including output
+app.get('/api/agents/:id', (req, res) => {
+  const agent = agentRegistry.get(req.params.id);
+  if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+  res.json({
+    id: agent.id,
+    sessionId: agent.sessionId,
+    task: agent.task,
+    model: agent.model,
+    cwd: agent.cwd,
+    status: agent.status,
+    mode: agent.mode,
+    currentIteration: agent.currentIteration,
+    totalIterations: agent.totalIterations,
+    startedAt: agent.startedAt,
+    endedAt: agent.endedAt,
+    exitCode: agent.exitCode,
+    error: agent.error,
+    costUsd: agent.costUsd,
+    textOutput: agent.textOutput,
+    toolUses: agent.toolUses,
+    journal: agent.journal,
+    eventCount: agent.output.length,
+    browserSessionId: agent.browserSessionId,
+    withSynabun: agent.withSynabun,
+  });
+});
+
+// POST /api/agents/:id/stop — kill a running agent
+app.post('/api/agents/:id/stop', (req, res) => {
+  const agent = agentRegistry.get(req.params.id);
+  if (!agent) return res.status(404).json({ error: 'Agent not found' });
+  if (agent.status !== 'running') return res.json({ ok: true, status: agent.status, message: 'Already finished' });
+
+  agent._stopped = true;
+  agent.status = 'stopped';
+  try {
+    if (agent.process) {
+      if (AGENT_IS_WIN) {
+        spawn('taskkill', ['/pid', String(agent.process.pid), '/T', '/F'], { shell: true, windowsHide: true });
+      } else {
+        try { process.kill(-agent.process.pid, 'SIGTERM'); } catch { agent.process.kill('SIGTERM'); }
+      }
+    }
+  } catch (err) {
+    console.warn(`[agent] ${agent.id} kill error:`, err.message);
+  }
+  res.json({ ok: true, status: 'stopped' });
+});
+
+// DELETE /api/agents/:id — remove agent from registry
+app.delete('/api/agents/:id', (req, res) => {
+  const agent = agentRegistry.get(req.params.id);
+  if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+  if (agent.status === 'running') {
+    agent._stopped = true;
+    agent.status = 'stopped';
+    try { if (agent.process) agent.process.kill('SIGTERM'); } catch {}
+  }
+
+  agentRegistry.delete(req.params.id);
+  broadcastSync({ type: 'agent:removed', agentId: req.params.id });
+  res.json({ ok: true });
+});
+
 // POST /api/search/memories — category-filtered semantic search
 app.post('/api/search/memories', async (req, res) => {
   try {
@@ -4504,7 +5863,7 @@ app.get('/api/system/backup', async (req, res) => {
     for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
                       'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json',
                       'invite-key.json', 'invite-proxy.json', 'invite-permissions.json',
-                      'loop-templates.json']) {
+                      'loop-templates.json', 'loop-schedules.json', 'auto-backup-config.json']) {
       addFile(`data/${f}`, resolve(dataDir, f));
     }
     addJsonDir('data/pending-remember', resolve(dataDir, 'pending-remember'));
@@ -4742,6 +6101,230 @@ app.post('/api/system/restore',
   } catch (err) {
     console.error('POST /api/system/restore error:', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════
+// AUTO-BACKUP SYSTEM
+// ═══════════════════════════════════════════
+
+const AUTO_BACKUP_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'auto-backup-config.json');
+
+function loadAutoBackupConfig() {
+  try {
+    if (existsSync(AUTO_BACKUP_CONFIG_PATH)) return JSON.parse(readFileSync(AUTO_BACKUP_CONFIG_PATH, 'utf-8'));
+  } catch {}
+  return { enabled: false, intervalMinutes: 360, folderPath: '', lastBackup: null, lastBackupSize: 0, lastBackupError: null };
+}
+
+function saveAutoBackupConfig(cfg) {
+  writeFileSync(AUTO_BACKUP_CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf-8');
+}
+
+let _autoBackupTimer = null;
+
+function buildBackupZipToFile(destPath) {
+  return new Promise((resolveP, rejectP) => {
+    const output = createWriteStream(destPath);
+    const archive = archiver('zip', { zlib: { level: 6 } });
+
+    output.on('close', () => resolveP(archive.pointer()));
+    archive.on('error', (err) => rejectP(err));
+    output.on('error', (err) => rejectP(err));
+    archive.pipe(output);
+
+    const prefix = 'synabun-auto-backup';
+
+    const manifest = {
+      version: 2,
+      created: new Date().toISOString(),
+      hostname: os.hostname(),
+      storage: 'sqlite',
+      database: null,
+      files: [],
+      checksums: {},
+      autoBackup: true,
+    };
+
+    const addFile = (archivePath, diskPath) => {
+      if (existsSync(diskPath)) {
+        const content = readFileSync(diskPath);
+        archive.append(content, { name: `${prefix}/${archivePath}` });
+        manifest.files.push(archivePath);
+        manifest.checksums[archivePath] = 'sha256:' + createHash('sha256').update(content).digest('hex');
+      }
+    };
+
+    const addJsonDir = (archiveDir, diskDir) => {
+      if (existsSync(diskDir)) {
+        for (const f of readdirSync(diskDir)) {
+          if (f.endsWith('.json')) addFile(`${archiveDir}/${f}`, resolve(diskDir, f));
+        }
+      }
+    };
+
+    const addDirRecursive = (archiveDir, diskDir) => {
+      if (!existsSync(diskDir)) return;
+      for (const entry of readdirSync(diskDir, { withFileTypes: true })) {
+        const diskPath = join(diskDir, entry.name);
+        const archivePath = `${archiveDir}/${entry.name}`;
+        if (entry.isDirectory() || entry.isSymbolicLink()) {
+          try { if (statSync(diskPath).isDirectory()) { addDirRecursive(archivePath, diskPath); continue; } } catch { continue; }
+        }
+        if (entry.isFile()) addFile(archivePath, diskPath);
+      }
+    };
+
+    // Same content as manual backup
+    addFile('env.bak', ENV_PATH);
+
+    const dataDir = resolve(PROJECT_ROOT, 'data');
+    for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
+                      'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json',
+                      'invite-key.json', 'invite-proxy.json', 'invite-permissions.json',
+                      'loop-templates.json', 'loop-schedules.json']) {
+      addFile(`data/${f}`, resolve(dataDir, f));
+    }
+    addJsonDir('data/pending-remember', resolve(dataDir, 'pending-remember'));
+    addJsonDir('data/pending-compact', resolve(dataDir, 'pending-compact'));
+    addJsonDir('data/loop', resolve(dataDir, 'loop'));
+    addFile('data/custom-icons.json', resolve(dataDir, 'custom-icons.json'));
+    addDirRecursive('data/custom-icons', resolve(dataDir, 'custom-icons'));
+
+    if (existsSync(CATEGORIES_DATA_DIR)) {
+      for (const f of readdirSync(CATEGORIES_DATA_DIR)) {
+        if (f.endsWith('.json')) addFile(`mcp-data/${f}`, resolve(CATEGORIES_DATA_DIR, f));
+      }
+    }
+
+    const globalSkillsDir = getGlobalSkillsDir();
+    if (existsSync(globalSkillsDir)) {
+      for (const entry of readdirSync(globalSkillsDir, { withFileTypes: true })) {
+        if (!isDirEntry(entry)) continue;
+        addDirRecursive(`global-skills/${entry.name}`, join(globalSkillsDir, entry.name));
+      }
+    }
+
+    const globalAgentsDir = getGlobalAgentsDir();
+    if (existsSync(globalAgentsDir)) {
+      for (const entry of readdirSync(globalAgentsDir, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        addFile(`global-agents/${entry.name}`, join(globalAgentsDir, entry.name));
+      }
+    }
+
+    if (existsSync(SKILLS_SOURCE_DIR)) {
+      for (const entry of readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true })) {
+        if (!isDirEntry(entry)) continue;
+        addDirRecursive(`bundled-skills/${entry.name}`, join(SKILLS_SOURCE_DIR, entry.name));
+      }
+    }
+
+    const dbPath = getDbPath();
+    if (existsSync(dbPath)) {
+      try {
+        const dbContent = readFileSync(dbPath);
+        archive.append(dbContent, { name: `${prefix}/database/memory.db` });
+        manifest.database = { file: 'database/memory.db', sizeBytes: dbContent.length, memoryCount: countMemories() };
+      } catch (err) {
+        console.warn(`  Auto-backup: failed to include database: ${err.message}`);
+      }
+    }
+
+    archive.append(JSON.stringify(manifest, null, 2), { name: `${prefix}/manifest.json` });
+    archive.finalize();
+  });
+}
+
+async function runAutoBackup() {
+  const cfg = loadAutoBackupConfig();
+  if (!cfg.enabled || !cfg.folderPath) return;
+
+  try {
+    if (!existsSync(cfg.folderPath)) mkdirSync(cfg.folderPath, { recursive: true });
+
+    const destPath = resolve(cfg.folderPath, 'synabun-auto-backup.zip');
+    const tmpPath = destPath + '.tmp';
+
+    const sizeBytes = await buildBackupZipToFile(tmpPath);
+
+    // Atomic replace: rename tmp over final
+    renameSync(tmpPath, destPath);
+
+    cfg.lastBackup = new Date().toISOString();
+    cfg.lastBackupSize = sizeBytes;
+    cfg.lastBackupError = null;
+    saveAutoBackupConfig(cfg);
+    console.log(`[auto-backup] Saved ${(sizeBytes / 1024 / 1024).toFixed(1)} MB → ${destPath}`);
+  } catch (err) {
+    cfg.lastBackupError = err.message;
+    cfg.lastBackup = new Date().toISOString();
+    saveAutoBackupConfig(cfg);
+    console.error(`[auto-backup] Failed: ${err.message}`);
+    // Clean up tmp if it exists
+    try { const tmpPath = resolve(cfg.folderPath, 'synabun-auto-backup.zip.tmp'); if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch {}
+  }
+}
+
+function startAutoBackupScheduler() {
+  stopAutoBackupScheduler();
+  const cfg = loadAutoBackupConfig();
+  if (!cfg.enabled || !cfg.folderPath || !cfg.intervalMinutes) return;
+
+  const ms = cfg.intervalMinutes * 60 * 1000;
+  _autoBackupTimer = setInterval(() => runAutoBackup(), ms);
+  console.log(`[auto-backup] Scheduler started: every ${cfg.intervalMinutes}min → ${cfg.folderPath}`);
+}
+
+function stopAutoBackupScheduler() {
+  if (_autoBackupTimer) {
+    clearInterval(_autoBackupTimer);
+    _autoBackupTimer = null;
+  }
+}
+
+// Boot: start scheduler if enabled
+startAutoBackupScheduler();
+
+// GET /api/system/auto-backup — Get auto-backup config
+app.get('/api/system/auto-backup', (req, res) => {
+  res.json(loadAutoBackupConfig());
+});
+
+// PUT /api/system/auto-backup — Update auto-backup config
+app.put('/api/system/auto-backup', (req, res) => {
+  try {
+    const current = loadAutoBackupConfig();
+    const { enabled, intervalMinutes, folderPath } = req.body;
+
+    if (typeof enabled === 'boolean') current.enabled = enabled;
+    if (typeof intervalMinutes === 'number' && intervalMinutes >= 1) current.intervalMinutes = intervalMinutes;
+    if (typeof folderPath === 'string') current.folderPath = folderPath.trim();
+
+    saveAutoBackupConfig(current);
+
+    // Restart scheduler with new config
+    if (current.enabled && current.folderPath) {
+      startAutoBackupScheduler();
+    } else {
+      stopAutoBackupScheduler();
+    }
+
+    res.json({ ok: true, config: current });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/system/auto-backup/trigger — Run auto-backup now
+app.post('/api/system/auto-backup/trigger', async (req, res) => {
+  try {
+    const cfg = loadAutoBackupConfig();
+    if (!cfg.folderPath) return res.status(400).json({ error: 'No backup folder configured' });
+    await runAutoBackup();
+    res.json(loadAutoBackupConfig());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -6095,6 +7678,7 @@ app.get('/api/claude-code/sessions/:sessionId/messages', (req, res) => {
     const lines = raw.split('\n');
     const messages = [];
     let lastUsage = null;
+    let lastModel = null;
     let turns = 0;
 
     for (const line of lines) {
@@ -6127,8 +7711,12 @@ app.get('/api/claude-code/sessions/:sessionId/messages', (req, res) => {
               tools: toolUseBlocks.length ? toolUseBlocks : undefined,
             });
           }
-          // Track latest usage from assistant messages (last entry has final counts)
+          // Track latest usage and model from assistant messages
           if (obj.message?.usage) lastUsage = obj.message.usage;
+          if (obj.message?.model) lastModel = obj.message.model;
+        } else if (obj.type === 'result') {
+          // Result events often have the most accurate final usage for a turn
+          if (obj.usage) lastUsage = obj.usage;
         } else if (obj.type === 'tool_result' || obj.type === 'tool') {
           // Extract tool results for pairing with tool_use cards in history
           const content = obj.message?.content || obj.content;
@@ -6158,6 +7746,16 @@ app.get('/api/claude-code/sessions/:sessionId/messages', (req, res) => {
         cache_read_input_tokens: lastUsage.cache_read_input_tokens || 0,
         cache_creation_input_tokens: lastUsage.cache_creation_input_tokens || 0,
       };
+    }
+    // Infer actual context window from model — CLI uses 1M by default for opus/sonnet 4.6
+    if (lastModel) {
+      const CLI_CONTEXT_WINDOWS = {
+        'claude-opus-4-6': 1000000,
+        'claude-sonnet-4-6': 1000000,
+        'claude-haiku-4-5-20251001': 200000,
+      };
+      const cw = CLI_CONTEXT_WINDOWS[lastModel];
+      if (cw) result.contextWindow = cw;
     }
     res.json(result);
   } catch (err) {
@@ -8490,7 +10088,7 @@ function attachLoopDriver(terminalSessionId) {
   let driving = false; // prevent re-entrance
 
   let consecutiveFailures = 0;
-  const MAX_DRIVE_FAILURES = 10;
+  const MAX_DRIVE_FAILURES = 20; // more tolerance — prompt detection is fragile
 
   const interval = setInterval(async () => {
     if (driving) return;
@@ -8511,6 +10109,8 @@ function attachLoopDriver(terminalSessionId) {
         } catch { continue; }
 
         if (!loopState.awaitingNext || !loopState.active) continue;
+        // Only drive loops owned by THIS terminal (prevents cross-session leaking)
+        if (loopState.terminalSessionId && loopState.terminalSessionId !== terminalSessionId) continue;
 
         // Found a loop awaiting next iteration — drive it
         driving = true;
@@ -8588,44 +10188,79 @@ function waitForLoopPrompt(session, timeoutMs = 15000) {
 /**
  * Drive the next loop iteration: /clear → wait → iteration prompt → auto-confirm.
  * Returns true if successful, false if prompt detection failed (loop should retry).
+ * On repeated failures, force-sends /clear + iteration message as a last resort.
  */
 async function driveNextIteration(session, loopState, filename) {
   const loopPath = resolve(LOOP_DIR, filename);
   const iter = loopState.currentIteration;
+  const forceMode = (loopState._driveRetries || 0) >= 3; // after 3 retries, force-send
 
-  console.log(`[loop-driver] Driving iteration ${iter}/${loopState.totalIterations}`);
+  console.log(`[loop-driver] Driving iteration ${iter}/${loopState.totalIterations}${forceMode ? ' (FORCE MODE)' : ''}`);
+
+  if (forceMode) {
+    // Force mode: skip prompt detection entirely — just blast /clear and iteration message.
+    // This handles cases where the prompt is present but detection fails (ANSI quirks, etc.)
+    console.log(`[loop-driver] Force-sending /clear + iteration message (retries exhausted)`);
+    session._loopDriverBuffer = '';
+    session.pty.write('/clear\r');
+    // Wait a fixed 8s for /clear to process
+    await new Promise(r => setTimeout(r, 8000));
+    session._loopDriverBuffer = '';
+    const iterMsg = `[SynaBun Loop] Iteration ${iter}. Begin task.`;
+    const chunkTime = writeToLoopPty(session, iterMsg, true);
+    setTimeout(() => {
+      try { session.pty.write('\r'); } catch { /* ok */ }
+      console.log('[loop-driver] Sent auto-confirm Enter (force mode)');
+    }, chunkTime + 4000);
+    // Clear retry counter and awaitingNext
+    try {
+      const freshState = JSON.parse(readFileSync(loopPath, 'utf-8'));
+      freshState.awaitingNext = false;
+      freshState._driveRetries = 0;
+      writeFileSync(loopPath, JSON.stringify(freshState, null, 2));
+    } catch (err) {
+      console.warn('[loop-driver] Failed to clear awaitingNext (force):', err.message);
+    }
+    return true;
+  }
 
   // Step 1: Wait for > prompt (Claude finished stopping)
-  // Check BEFORE resetting — if Claude already returned to prompt, skip the wait
   const alreadyAtPrompt = loopPromptReady(session._loopDriverBuffer || '');
-  session._loopDriverBuffer = ''; // reset to avoid false positives from previous content
+  session._loopDriverBuffer = '';
   if (!alreadyAtPrompt) {
-    // Claude hasn't returned to prompt yet — wait for it
     let promptReady = await waitForLoopPrompt(session, 30000);
     if (!promptReady) {
       console.warn(`[loop-driver] Prompt not detected after 30s for iteration ${iter}, retrying with 45s...`);
       promptReady = await waitForLoopPrompt(session, 45000);
     }
     if (!promptReady) {
-      console.error(`[loop-driver] ABORT iteration ${iter}: prompt never appeared after 75s total. Buffer: ${JSON.stringify((session._loopDriverBuffer || '').slice(-200))}`);
+      // Track retries in the loop state for force mode escalation
+      try {
+        const freshState = JSON.parse(readFileSync(loopPath, 'utf-8'));
+        freshState._driveRetries = (freshState._driveRetries || 0) + 1;
+        writeFileSync(loopPath, JSON.stringify(freshState, null, 2));
+      } catch { /* ok */ }
+      console.error(`[loop-driver] Prompt not detected after 75s for iteration ${iter} (retry ${(loopState._driveRetries || 0) + 1}/3 before force mode)`);
       return false;
     }
   }
 
   // Step 2: Send /clear to reset conversation context
-  session._loopDriverBuffer = ''; // reset again to capture only post-/clear output
+  session._loopDriverBuffer = '';
   session.pty.write('/clear\r');
   console.log('[loop-driver] Sent /clear');
 
   // Step 3: Wait for > prompt after /clear completes
-  promptReady = await waitForLoopPrompt(session, 30000);
+  let promptReady = await waitForLoopPrompt(session, 30000);
   if (!promptReady) {
     console.warn(`[loop-driver] Prompt not detected after /clear (30s) for iteration ${iter}, retrying with 45s...`);
     promptReady = await waitForLoopPrompt(session, 45000);
   }
   if (!promptReady) {
-    console.error(`[loop-driver] ABORT iteration ${iter}: prompt never appeared after /clear. Buffer: ${JSON.stringify((session._loopDriverBuffer || '').slice(-200))}`);
-    return false;
+    // /clear was sent but prompt not detected — still try to send the message
+    // since /clear likely completed and the prompt format just isn't matching
+    console.warn(`[loop-driver] Prompt not detected after /clear but proceeding anyway (iteration ${iter})`);
+    await new Promise(r => setTimeout(r, 3000)); // small grace delay
   }
 
   // Step 4: Send the iteration message (prompt-submit hook will inject full context)
@@ -8639,10 +10274,11 @@ async function driveNextIteration(session, loopState, filename) {
     console.log('[loop-driver] Sent auto-confirm Enter');
   }, chunkTime + 4000);
 
-  // Step 6: Clear awaitingNext flag
+  // Step 6: Clear awaitingNext flag + reset retry counter
   try {
     const freshState = JSON.parse(readFileSync(loopPath, 'utf-8'));
     freshState.awaitingNext = false;
+    freshState._driveRetries = 0;
     writeFileSync(loopPath, JSON.stringify(freshState, null, 2));
   } catch (err) {
     console.warn('[loop-driver] Failed to clear awaitingNext:', err.message);
@@ -8696,6 +10332,250 @@ app.delete('/api/last-session', (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ═══════════════════════════════════════════
+// SESSION MONITOR — Registry + Leak Detection
+// ═══════════════════════════════════════════
+
+const sessionRegistry = new Map(); // claudeSessionId → { cwd, profile, pid, connectedAt, lastActivity, terminalType, terminalSessionId, source }
+const sessionMonitorClients = new Set(); // WebSocket clients for /ws/sessions
+const LEAK_SCAN_INTERVAL_MS = 10_000;
+const PENDING_REMEMBER_DIR = resolve(PROJECT_ROOT, 'data', 'pending-remember');
+const LOOP_DIR_MONITOR = resolve(PROJECT_ROOT, 'data', 'loop');
+
+function broadcastSessionEvent(event) {
+  const data = JSON.stringify(event);
+  for (const client of sessionMonitorClients) {
+    if (client.readyState === 1) client.send(data);
+  }
+  broadcastSync(event);
+}
+
+function registerSession(claudeSessionId, meta) {
+  const existing = sessionRegistry.get(claudeSessionId);
+  const entry = {
+    claudeSessionId,
+    cwd: meta.cwd || '',
+    profile: meta.profile || 'claude-code',
+    pid: meta.pid || null,
+    connectedAt: existing?.connectedAt || Date.now(),
+    lastActivity: Date.now(),
+    terminalType: meta.terminalType || 'external',
+    terminalSessionId: meta.terminalSessionId || null,
+    source: meta.source || 'hook',
+    project: meta.project || '',
+  };
+  sessionRegistry.set(claudeSessionId, entry);
+  broadcastSessionEvent({ type: 'session:registered', session: entry });
+  return entry;
+}
+
+function unregisterSession(claudeSessionId) {
+  if (!sessionRegistry.has(claudeSessionId)) return;
+  sessionRegistry.delete(claudeSessionId);
+  broadcastSessionEvent({ type: 'session:unregistered', claudeSessionId });
+}
+
+function classifyTerminalType(terminalSessionId) {
+  const uiState = loadUiState();
+  if (uiState['neural-terminal-detached']) return 'floating';
+  return 'terminal';
+}
+
+function syncRegistryFromTerminals() {
+  for (const [tsId, session] of terminalSessions) {
+    if (session.profile !== 'claude-code') continue;
+    if (!session.claudeSessionId) continue;
+    const existing = sessionRegistry.get(session.claudeSessionId);
+    if (!existing || existing.terminalSessionId !== tsId) {
+      registerSession(session.claudeSessionId, {
+        cwd: session.cwd,
+        profile: session.profile,
+        terminalType: classifyTerminalType(tsId),
+        terminalSessionId: tsId,
+        source: 'terminal',
+      });
+    }
+  }
+  for (const [csId, entry] of sessionRegistry) {
+    if (entry.terminalSessionId && !terminalSessions.has(entry.terminalSessionId)) {
+      unregisterSession(csId);
+    }
+  }
+}
+
+// ── Leak Detection ──
+
+function scanForLeaks() {
+  const leaks = [];
+  const now = Date.now();
+  const activeSessionIds = new Set(sessionRegistry.keys());
+  for (const [, s] of terminalSessions) {
+    if (s.claudeSessionId) activeSessionIds.add(s.claudeSessionId);
+  }
+
+  // 1. Orphaned pending-remember files
+  try {
+    if (existsSync(PENDING_REMEMBER_DIR)) {
+      const files = readdirSync(PENDING_REMEMBER_DIR).filter(f => f.endsWith('.json') && !f.startsWith('test-'));
+      for (const f of files) {
+        const filePath = join(PENDING_REMEMBER_DIR, f);
+        try {
+          const fstat = statSync(filePath);
+          const ageMs = now - fstat.mtimeMs;
+          if (ageMs < 5 * 60 * 1000) continue;
+          const sid = f.replace('.json', '');
+          if (!activeSessionIds.has(sid)) {
+            leaks.push({ type: 'orphaned-state', severity: ageMs > 30 * 60 * 1000 ? 'warning' : 'info', description: `Orphaned pending-remember flag (${Math.round(ageMs / 60000)}m old)`, file: filePath, sessionId: sid, ageMs });
+          }
+        } catch { /* skip */ }
+      }
+    }
+  } catch { /* ok */ }
+
+  // 2. Orphaned loop files
+  try {
+    if (existsSync(LOOP_DIR_MONITOR)) {
+      const files = readdirSync(LOOP_DIR_MONITOR).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
+      for (const f of files) {
+        const filePath = join(LOOP_DIR_MONITOR, f);
+        try {
+          const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+          if (data.stopped || data.finishedAt) continue;
+          const fstat = statSync(filePath);
+          const ageMs = now - fstat.mtimeMs;
+          if (ageMs < 2 * 60 * 1000) continue;
+          const sid = f.replace('.json', '');
+          if (!activeSessionIds.has(sid) && data.active) {
+            leaks.push({ type: 'orphaned-loop', severity: 'warning', description: `Active loop with no session (${data.template || 'custom'}, ${Math.round(ageMs / 60000)}m stale)`, file: filePath, sessionId: sid, ageMs, loopData: { template: data.template, currentIteration: data.currentIteration, maxIterations: data.maxIterations } });
+          }
+        } catch { /* skip */ }
+      }
+    }
+  } catch { /* ok */ }
+
+  // 3. Multiple sessions targeting same cwd
+  const cwdMap = new Map();
+  for (const [csId, entry] of sessionRegistry) {
+    if (!entry.cwd) continue;
+    if (!cwdMap.has(entry.cwd)) cwdMap.set(entry.cwd, []);
+    cwdMap.get(entry.cwd).push(csId);
+  }
+  for (const [cwd, sessions] of cwdMap) {
+    if (sessions.length > 1) {
+      leaks.push({ type: 'multi-session-cwd', severity: 'critical', description: `${sessions.length} sessions targeting same directory`, cwd, sessions });
+    }
+  }
+
+  // 4. Stale precompact flags
+  const precompactDir = resolve(PROJECT_ROOT, 'data', 'precompact');
+  try {
+    if (existsSync(precompactDir)) {
+      const files = readdirSync(precompactDir).filter(f => f.endsWith('.json'));
+      for (const f of files) {
+        const filePath = join(precompactDir, f);
+        try {
+          const fstat = statSync(filePath);
+          const ageMs = now - fstat.mtimeMs;
+          if (ageMs > 10 * 60 * 1000) {
+            leaks.push({ type: 'stale-precompact', severity: 'info', description: `Stale precompact cache (${Math.round(ageMs / 60000)}m old)`, file: filePath, sessionId: f.replace('.json', ''), ageMs });
+          }
+        } catch { /* skip */ }
+      }
+    }
+  } catch { /* ok */ }
+
+  return leaks;
+}
+
+let _lastLeakHash = '';
+setInterval(() => {
+  syncRegistryFromTerminals();
+  const leaks = scanForLeaks();
+  const hash = JSON.stringify(leaks);
+  if (hash !== _lastLeakHash) {
+    _lastLeakHash = hash;
+    if (leaks.length > 0) broadcastSessionEvent({ type: 'session:leaks', leaks });
+  }
+}, LEAK_SCAN_INTERVAL_MS);
+
+// ── Session Monitor API ──
+
+app.post('/api/sessions/register', express.json(), (req, res) => {
+  const { claudeSessionId, cwd, profile, pid, terminalType, source, project } = req.body || {};
+  if (!claudeSessionId) return res.status(400).json({ error: 'claudeSessionId required' });
+  const entry = registerSession(claudeSessionId, { cwd, profile, pid, terminalType, source, project });
+  res.json({ ok: true, session: entry });
+});
+
+app.post('/api/sessions/heartbeat', express.json(), (req, res) => {
+  const { claudeSessionId } = req.body || {};
+  if (!claudeSessionId) return res.status(400).json({ error: 'claudeSessionId required' });
+  const entry = sessionRegistry.get(claudeSessionId);
+  if (entry) { entry.lastActivity = Date.now(); res.json({ ok: true }); }
+  else res.status(404).json({ error: 'Session not registered' });
+});
+
+app.delete('/api/sessions/:id', (req, res) => {
+  unregisterSession(req.params.id);
+  res.json({ ok: true });
+});
+
+app.get('/api/sessions/active', (req, res) => {
+  syncRegistryFromTerminals();
+  const sessions = [...sessionRegistry.values()].map(s => ({
+    ...s,
+    isAlive: s.terminalSessionId ? terminalSessions.has(s.terminalSessionId) : (Date.now() - s.lastActivity < 5 * 60 * 1000),
+  }));
+  res.json({ sessions });
+});
+
+app.get('/api/sessions/:id/state', (req, res) => {
+  const csId = req.params.id;
+  const entry = sessionRegistry.get(csId);
+  if (!entry) return res.status(404).json({ error: 'Session not found' });
+  const ownedFiles = [];
+  try {
+    const prPath = join(PENDING_REMEMBER_DIR, `${csId}.json`);
+    if (existsSync(prPath)) ownedFiles.push({ type: 'pending-remember', path: prPath, data: JSON.parse(readFileSync(prPath, 'utf-8')) });
+  } catch { /* ok */ }
+  try {
+    const loopPath = join(LOOP_DIR_MONITOR, `${csId}.json`);
+    if (existsSync(loopPath)) ownedFiles.push({ type: 'loop', path: loopPath, data: JSON.parse(readFileSync(loopPath, 'utf-8')) });
+  } catch { /* ok */ }
+  res.json({ session: entry, ownedFiles });
+});
+
+app.get('/api/sessions/leaks', (req, res) => {
+  syncRegistryFromTerminals();
+  res.json({ leaks: scanForLeaks(), scannedAt: Date.now() });
+});
+
+app.post('/api/sessions/cleanup', express.json(), (req, res) => {
+  const { types } = req.body || {};
+  const allowedTypes = new Set(types || ['orphaned-state', 'stale-precompact']);
+  const leaks = scanForLeaks();
+  let cleaned = 0;
+  for (const leak of leaks) {
+    if (!allowedTypes.has(leak.type) || !leak.file) continue;
+    try { unlinkSync(leak.file); cleaned++; } catch { /* skip */ }
+  }
+  res.json({ ok: true, cleaned, total: leaks.length });
+});
+
+// ── Session Monitor WebSocket ──
+
+function handleSessionMonitorWebSocket(ws) {
+  sessionMonitorClients.add(ws);
+  syncRegistryFromTerminals();
+  const sessions = [...sessionRegistry.values()].map(s => ({
+    ...s,
+    isAlive: s.terminalSessionId ? terminalSessions.has(s.terminalSessionId) : (Date.now() - s.lastActivity < 5 * 60 * 1000),
+  }));
+  ws.send(JSON.stringify({ type: 'session:init', sessions, leaks: scanForLeaks() }));
+  ws.on('close', () => sessionMonitorClients.delete(ws));
+  ws.on('error', () => sessionMonitorClients.delete(ws));
+}
 
 // ── Terminal REST endpoints ──
 
@@ -10173,8 +12053,13 @@ app.post('/api/terminal/links/:id/nudge', (req, res) => {
 const browserSessions = new Map(); // sessionId → { browser, context, page, clients, cdpSession, screencastActive, ... }
 const BROWSER_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 min before orphaned browser is killed
 
-/** Check if a browser session is actively used by a running automation loop. */
+/** Check if a browser session is actively used by a running automation loop or agent. */
 function isSessionUsedByActiveLoop(sessionId) {
+  // Check agent registry first (agents use browser sessions directly)
+  for (const agent of agentRegistry.values()) {
+    if (agent.status === 'running' && agent.browserSessionId === sessionId) return true;
+  }
+  // Check loop state files
   if (!existsSync(LOOP_DIR)) return false;
   try {
     const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
@@ -10833,23 +12718,29 @@ async function createBrowserSession(options = {}) {
           await context.addCookies(savedState.cookies);
           console.log(`[browser] Restored ${savedState.cookies.length} cookies from ${_storageStatePath}`);
         }
-        // Restore localStorage/sessionStorage via page evaluation
+        // Restore localStorage lazily via addInitScript — injects stored items
+        // on first visit to each origin, before page scripts run. Avoids creating
+        // extra pages/tabs and navigating to every saved origin on launch.
         if (savedState.origins && savedState.origins.length > 0) {
+          const storageMap = {};
           for (const origin of savedState.origins) {
             if (origin.localStorage && origin.localStorage.length > 0) {
-              try {
-                const originPage = await context.newPage();
-                await originPage.goto(origin.origin, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
-                await originPage.evaluate((items) => {
-                  for (const { name, value } of items) {
-                    try { localStorage.setItem(name, value); } catch {}
-                  }
-                }, origin.localStorage);
-                await originPage.close();
-              } catch (e) {
-                console.warn(`[browser] Could not restore localStorage for ${origin.origin}: ${e.message}`);
-              }
+              storageMap[origin.origin] = origin.localStorage;
             }
+          }
+          if (Object.keys(storageMap).length > 0) {
+            await context.addInitScript(`(function() {
+              var m = ${JSON.stringify(storageMap)};
+              var k = '__synabun_ls_restored_' + location.origin;
+              var items = m[location.origin];
+              if (items && !sessionStorage.getItem(k)) {
+                for (var i = 0; i < items.length; i++) {
+                  try { localStorage.setItem(items[i].name, items[i].value); } catch(e) {}
+                }
+                try { sessionStorage.setItem(k, '1'); } catch(e) {}
+              }
+            })()`);
+            console.log(`[browser] Registered lazy localStorage restore for ${Object.keys(storageMap).length} origins`);
           }
         }
       } catch (e) {
@@ -11530,6 +13421,117 @@ app.get('/api/browser/sessions/:id/content', async (req, res) => {
   }
 });
 
+// Shared NHM instance (reuse = 1.57x faster than turndown)
+const nhm = new NodeHtmlMarkdown({
+  preferNativeParser: false,
+  codeFence: '```',
+  bulletMarker: '-',
+  codeBlockStyle: 'fenced',
+  emDelimiter: '*',
+  strongDelimiter: '**',
+  maxConsecutiveNewlines: 2,
+});
+
+app.get('/api/browser/sessions/:id/markdown', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    session.currentUrl = session.page.url();
+    session.title = await session.page.title().catch(() => '');
+
+    // Extract main content HTML — strip nav, header, footer, sidebar, ads
+    let html = '';
+    try {
+      html = await session.page.evaluate(() => {
+        // Remove noise elements before extraction
+        const removeSelectors = [
+          'nav', 'header', 'footer', 'aside',
+          '[role="navigation"]', '[role="banner"]', '[role="contentinfo"]', '[role="complementary"]',
+          '.sidebar', '.nav', '.footer', '.header', '.advertisement', '.ad', '.ads',
+          '[class*="cookie"]', '[class*="popup"]', '[class*="modal"]', '[class*="overlay"]',
+          'script', 'style', 'noscript', 'iframe',
+        ];
+        // Clone body so we don't mutate the live page
+        const clone = document.body.cloneNode(true);
+        for (const sel of removeSelectors) {
+          clone.querySelectorAll(sel).forEach(el => el.remove());
+        }
+        // Prefer <main> or <article> if they exist
+        const main = clone.querySelector('main') || clone.querySelector('article') || clone.querySelector('[role="main"]');
+        return (main || clone).innerHTML;
+      });
+    } catch { html = ''; }
+
+    if (!html) {
+      return res.json({ ok: true, url: session.currentUrl, title: session.title, markdown: '', tokens: 0 });
+    }
+
+    let markdown = nhm.translate(html);
+    const estimatedTokens = Math.ceil(markdown.length / 4); // ~4 chars per token estimate
+
+    if (markdown.length > 80000) {
+      markdown = markdown.slice(0, 80000) + '\n\n... (truncated at 80K chars)';
+    }
+
+    res.json({ ok: true, url: session.currentUrl, title: session.title, markdown, tokens: estimatedTokens });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/fetch-markdown', async (req, res) => {
+  const { url, timeout } = req.body;
+  if (!url) return res.status(400).json({ error: 'url is required' });
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout || 15000);
+
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'text/markdown, text/html, */*',
+        'User-Agent': 'SynaBun/1.0 (AI Agent; +https://synabun.ai)',
+      },
+      signal: controller.signal,
+      redirect: 'follow',
+    });
+    clearTimeout(timer);
+
+    const contentType = response.headers.get('content-type') || '';
+    const markdownTokens = response.headers.get('x-markdown-tokens');
+    const contentSignal = response.headers.get('content-signal');
+    const body = await response.text();
+
+    // If server returned markdown natively (content negotiation worked!)
+    const isMarkdown = contentType.includes('text/markdown');
+
+    let markdown;
+    if (isMarkdown) {
+      markdown = body;
+    } else {
+      // Convert HTML to markdown client-side
+      markdown = nhm.translate(body);
+    }
+
+    const estimatedTokens = markdownTokens ? parseInt(markdownTokens, 10) : Math.ceil(markdown.length / 4);
+
+    if (markdown.length > 80000) {
+      markdown = markdown.slice(0, 80000) + '\n\n... (truncated at 80K chars)';
+    }
+
+    res.json({
+      ok: true,
+      url: response.url, // final URL after redirects
+      markdown,
+      tokens: estimatedTokens,
+      negotiated: isMarkdown, // true = server returned markdown natively
+      contentSignal: contentSignal || null,
+      status: response.status,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/browser/sessions/:id/screenshot-base64', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
@@ -11709,7 +13711,8 @@ const httpServer = app.listen(PORT, async () => {
   console.log(`  Terminal:  WebSocket on ws://localhost:${PORT}/ws/terminal/*`);
   console.log(`  Browser:   WebSocket on ws://localhost:${PORT}/ws/browser/*`);
   console.log(`  Whiteboard: WebSocket on ws://localhost:${PORT}/ws/whiteboard`);
-  console.log(`  Cards:      WebSocket on ws://localhost:${PORT}/ws/cards\n`);
+  console.log(`  Cards:      WebSocket on ws://localhost:${PORT}/ws/cards`);
+  console.log(`  Sessions:   WebSocket on ws://localhost:${PORT}/ws/sessions\n`);
 
   // Write embedding model metadata so mismatch can be detected later
   try {
@@ -11754,7 +13757,7 @@ httpServer.on('upgrade', (req, socket, head) => {
     // Whiteboard + sync always allowed (read-only viewing; sync needed for permission delivery)
   }
 
-  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin') {
+  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin' || url.pathname === '/ws/sessions') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });
@@ -11787,6 +13790,12 @@ wss.on('connection', (ws, req) => {
   // ── Route: Browser session ──
   if (url.pathname.startsWith('/ws/browser/')) {
     handleBrowserWebSocket(ws, url);
+    return;
+  }
+
+  // ── Route: Session monitor ──
+  if (url.pathname === '/ws/sessions') {
+    handleSessionMonitorWebSocket(ws);
     return;
   }
 
@@ -11827,7 +13836,7 @@ wss.on('connection', (ws, req) => {
       } else if (msg.type === 'image_paste' && msg.data) {
         // Save pasted image to temp file
         const ext = (msg.mimeType === 'image/jpeg') ? 'jpg' : 'png';
-        const tmpPath = join(os.tmpdir(), `synabun-paste-${sessionId}-${Date.now()}.${ext}`);
+        const tmpPath = join(IMAGES_DIR, `synabun-paste-${sessionId}-${Date.now()}.${ext}`);
         try {
           writeFileSync(tmpPath, Buffer.from(msg.data, 'base64'));
           if (!session.tempFiles) session.tempFiles = [];
@@ -11840,7 +13849,7 @@ wss.on('connection', (ws, req) => {
       } else if (msg.type === 'image_drop' && msg.data) {
         // Save whiteboard image drag-drop to temp file, write path into PTY
         const ext = (msg.mimeType === 'image/jpeg') ? 'jpg' : 'png';
-        const tmpPath = join(os.tmpdir(), `synabun-wbimg-${sessionId}-${Date.now()}.${ext}`);
+        const tmpPath = join(IMAGES_DIR, `synabun-wbimg-${sessionId}-${Date.now()}.${ext}`);
         try {
           writeFileSync(tmpPath, Buffer.from(msg.data, 'base64'));
           if (!session.tempFiles) session.tempFiles = [];
@@ -11852,7 +13861,7 @@ wss.on('connection', (ws, req) => {
       } else if (msg.type === 'memory_drop' && msg.content) {
         // Save memory as .md temp file so CLI can pick it up as a file reference
         const slug = (msg.title || 'memory').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
-        const tmpPath = join(os.tmpdir(), `synabun-${slug}-${Date.now()}.md`);
+        const tmpPath = join(IMAGES_DIR, `synabun-${slug}-${Date.now()}.md`);
         try {
           writeFileSync(tmpPath, msg.content, 'utf-8');
           if (!session.tempFiles) session.tempFiles = [];
@@ -11926,7 +13935,7 @@ function handleWhiteboardWebSocket(ws) {
       // Save whiteboard image to temp file and return path for clipboard copy
       if (msg.type === 'image_save' && msg.data) {
         const ext = (msg.mimeType === 'image/jpeg') ? 'jpg' : 'png';
-        const tmpPath = join(os.tmpdir(), `synabun-wbimg-${Date.now()}.${ext}`);
+        const tmpPath = join(IMAGES_DIR, `synabun-wbimg-${Date.now()}.${ext}`);
         try {
           writeFileSync(tmpPath, Buffer.from(msg.data, 'base64'));
           ws.send(JSON.stringify({ type: 'image_saved', path: tmpPath }));
@@ -11949,53 +13958,88 @@ function handleWhiteboardWebSocket(ws) {
   });
 }
 
-// ── macOS Screenshot Watcher → auto-paste to whiteboard ──
-// Only active on macOS. Watches the screenshot directory for new files and broadcasts to whiteboard clients.
-if (process.platform === 'darwin') {
+// ── Screenshot Watcher → auto-paste to whiteboard (cross-platform) ──
+{
+  // Resolve screenshot directory and filename pattern per platform
   let _screenshotDir = null;
-  try {
-    _screenshotDir = execSync('defaults read com.apple.screencapture location', { encoding: 'utf8' }).trim();
-  } catch { /* not set — use default */ }
-  if (!_screenshotDir || !existsSync(_screenshotDir)) _screenshotDir = join(os.homedir(), 'Desktop');
+  let _screenshotPattern = null;
 
-  // Track files we've already seen so we only process genuinely new ones
-  const _seenScreenshots = new Set();
-  // Seed with existing files so we don't process old screenshots on startup
-  try {
-    for (const f of readdirSync(_screenshotDir)) {
-      if (/^Screenshot\b.*\.png$/i.test(f) || /^Captura de/i.test(f)) _seenScreenshots.add(f);
+  if (process.platform === 'darwin') {
+    try {
+      _screenshotDir = execSync('defaults read com.apple.screencapture location', { encoding: 'utf8' }).trim();
+    } catch { /* not set — use default */ }
+    if (!_screenshotDir || !existsSync(_screenshotDir)) _screenshotDir = join(os.homedir(), 'Desktop');
+    // macOS screenshot filenames: "Screenshot ..." (EN), "Captura de..." (ES/PT)
+    _screenshotPattern = /^(Screenshot\b|Captura de).*\.png$/i;
+  } else if (process.platform === 'win32') {
+    // Windows Snipping Tool / Print Screen saves to Pictures\Screenshots
+    const candidates = [
+      join(os.homedir(), 'Pictures', 'Screenshots'),
+      join(os.homedir(), 'OneDrive', 'Pictures', 'Screenshots'),
+      join(os.homedir(), 'Pictures'),
+    ];
+    _screenshotDir = candidates.find(d => existsSync(d)) || null;
+    // Windows screenshot filenames: "Screenshot 2026-03-19 ..." or "Screenshot (123).png"
+    _screenshotPattern = /^Screenshot.*\.(png|jpg|jpeg)$/i;
+  } else {
+    // Linux: GNOME Screenshot, Spectacle, Flameshot, etc.
+    const candidates = [
+      join(os.homedir(), 'Pictures', 'Screenshots'),
+      join(os.homedir(), 'Pictures'),
+      join(os.homedir(), 'Imagens', 'Screenshots'), // pt-BR
+      join(os.homedir(), 'Imagens'),
+    ];
+    _screenshotDir = candidates.find(d => existsSync(d)) || null;
+    // Linux screenshot filenames vary: "Screenshot from ...", "screenshot-...", etc.
+    _screenshotPattern = /^(Screenshot|screenshot).*\.(png|jpg|jpeg)$/i;
+  }
+
+  if (_screenshotDir) {
+    const _seenScreenshots = new Set();
+    // Seed with existing files so we don't process old screenshots on startup
+    try {
+      for (const f of readdirSync(_screenshotDir)) {
+        if (_screenshotPattern.test(f)) _seenScreenshots.add(f);
+      }
+    } catch { /* ignore */ }
+
+    let _debounceTimer = null;
+    try {
+      fsWatch(_screenshotDir, (eventType, filename) => {
+        if (!filename) return;
+        if (!_screenshotPattern.test(filename)) return;
+        if (_seenScreenshots.has(filename)) return;
+        _seenScreenshots.add(filename);
+
+        // Debounce — OS may fire multiple events per file
+        clearTimeout(_debounceTimer);
+        _debounceTimer = setTimeout(() => {
+          const filePath = join(_screenshotDir, filename);
+          try {
+            if (!existsSync(filePath)) return;
+            const stat = statSync(filePath);
+            if (stat.size < 100) return; // still being written
+            const buf = readFileSync(filePath);
+            const ext = extname(filename).toLowerCase();
+            const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+            // Save a copy to data/images/ for reliable access (avoids macOS temp/permission issues)
+            const localName = `screenshot-${Date.now()}${ext}`;
+            const localPath = join(IMAGES_DIR, localName);
+            try { writeFileSync(localPath, buf); } catch {}
+            const dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
+            console.log(`[screenshot-watcher] New screenshot detected: ${filename} (${(stat.size / 1024).toFixed(0)}KB) → ${localName}`);
+            broadcastToWhiteboard({ type: 'screenshot:auto', dataUrl, filename, localPath });
+          } catch (err) {
+            console.warn(`[screenshot-watcher] Failed to process ${filename}:`, err.message);
+          }
+        }, 500);
+      });
+      console.log(`[screenshot-watcher] Watching: ${_screenshotDir}`);
+    } catch (err) {
+      console.warn('[screenshot-watcher] Could not watch screenshot directory:', err.message);
     }
-  } catch { /* ignore */ }
-
-  let _debounceTimer = null;
-  try {
-    fsWatch(_screenshotDir, (eventType, filename) => {
-      if (!filename) return;
-      // Match macOS screenshot filenames (English, Spanish, Portuguese, etc.)
-      if (!/^Screenshot\b.*\.png$/i.test(filename) && !/^Captura de/i.test(filename)) return;
-      if (_seenScreenshots.has(filename)) return;
-      _seenScreenshots.add(filename);
-
-      // Debounce — macOS fires multiple events per file
-      clearTimeout(_debounceTimer);
-      _debounceTimer = setTimeout(() => {
-        const filePath = join(_screenshotDir, filename);
-        try {
-          if (!existsSync(filePath)) return;
-          const stat = statSync(filePath);
-          if (stat.size < 100) return; // still being written
-          const buf = readFileSync(filePath);
-          const dataUrl = 'data:image/png;base64,' + buf.toString('base64');
-          console.log(`[screenshot-watcher] New screenshot detected: ${filename} (${(stat.size / 1024).toFixed(0)}KB)`);
-          broadcastToWhiteboard({ type: 'screenshot:auto', dataUrl, filename });
-        } catch (err) {
-          console.warn(`[screenshot-watcher] Failed to process ${filename}:`, err.message);
-        }
-      }, 500);
-    });
-    console.log(`[screenshot-watcher] Watching: ${_screenshotDir}`);
-  } catch (err) {
-    console.warn('[screenshot-watcher] Could not watch screenshot directory:', err.message);
+  } else {
+    console.log('[screenshot-watcher] No screenshot directory found for this platform');
   }
 }
 
