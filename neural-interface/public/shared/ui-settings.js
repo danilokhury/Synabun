@@ -52,7 +52,7 @@ const BROWSER_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><circle 
 
 // ── Toast helper ──
 
-function showCCToast(msg, duration = 3000) {
+function showCCToast(msg, duration = 3500) {
   let toast = document.querySelector('.cc-toast');
   if (!toast) {
     toast = document.createElement('div');
@@ -514,65 +514,122 @@ function buildServerTab(settings) {
   const dbSizeMB = settings.dbSizeBytes ? (settings.dbSizeBytes / 1024 / 1024).toFixed(1) : '0';
   return `
       <div class="settings-tab-body active" data-tab="server">
-        <div class="settings-status">
-          <span class="settings-status-dot ${settings.storage === 'sqlite' ? 'connected' : 'disconnected'}"></span>
-          Storage: ${settings.storage === 'sqlite' ? 'SQLite' : settings.storage || 'Unknown'}
-        </div>
-        <div class="settings-field">
-          <label>Database Path</label>
-          <div class="settings-key-row" style="display:flex;gap:6px">
-            <input type="text" id="stg-db-path" value="${escapeHtml(settings.dbPath || '')}" autocomplete="off" spellcheck="false" style="flex:1">
-            <button class="conn-add-btn" id="stg-db-browse-btn" style="margin:0;width:auto;flex:0 0 auto;white-space:nowrap;padding:4px 10px">Browse</button>
-            <button class="conn-add-btn" id="stg-db-move-btn" style="margin:0;width:auto;flex:0 0 auto;white-space:nowrap;padding:4px 10px">Move</button>
+
+        <!-- ═══ Storage ═══ -->
+        <div class="stg-section">
+          <div class="gfx-group-title">Storage</div>
+          <div class="settings-status">
+            <span class="settings-status-dot ${settings.storage === 'sqlite' ? 'connected' : 'disconnected'}"></span>
+            Storage: ${settings.storage === 'sqlite' ? 'SQLite' : settings.storage || 'Unknown'}
           </div>
-          <div id="stg-db-browser" style="display:none;margin:4px 0 8px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
-          <div class="settings-hint" id="stg-db-hint">${settings.dbExists ? `File exists (${dbSizeMB} MB)` : 'Database not found'}</div>
-          <div id="stg-db-move-status" style="display:none;margin-top:8px;font-size:12px;align-items:center;gap:8px"></div>
-          <div id="stg-db-move-cleanup" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(109,213,140,0.08);border:1px solid rgba(109,213,140,0.2);border-radius:8px;font-size:12px;">
-            <div style="color:var(--green);margin-bottom:6px;font-weight:600">Move successful!</div>
-            <div style="color:var(--t-secondary);margin-bottom:6px">Old database files remain at the previous location.</div>
-            <div id="stg-db-mcp-notice" style="color:var(--t-muted);margin-bottom:8px;font-size:11px">Note: Restart the MCP server for the change to take effect.</div>
-            <div style="display:flex;gap:8px">
-              <button class="conn-add-btn" id="stg-db-delete-old" style="margin:0">Delete Old Files</button>
-              <button class="settings-btn-cancel" id="stg-db-keep-old" style="margin:0">Keep Them</button>
+          <div class="settings-field">
+            <label>Database Path</label>
+            <div class="settings-key-row">
+              <input type="text" id="stg-db-path" value="${escapeHtml(settings.dbPath || '')}" autocomplete="off" spellcheck="false">
+              <button class="stg-action-btn compact" id="stg-db-browse-btn">Browse</button>
+              <button class="stg-action-btn compact" id="stg-db-move-btn">Move</button>
+            </div>
+            <div id="stg-db-browser" style="display:none;margin:4px 0 8px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
+            <div class="settings-hint" id="stg-db-hint">${settings.dbExists ? `File exists (${dbSizeMB} MB)` : 'Database not found'}</div>
+            <div id="stg-db-move-status" style="display:none;margin-top:8px;font-size:12px;align-items:center;gap:8px"></div>
+            <div id="stg-db-move-cleanup" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(109,213,140,0.08);border:1px solid rgba(109,213,140,0.2);border-radius:8px;font-size:12px;">
+              <div style="color:var(--green);margin-bottom:6px;font-weight:600">Move successful!</div>
+              <div style="color:var(--t-secondary);margin-bottom:6px">Old database files remain at the previous location.</div>
+              <div id="stg-db-mcp-notice" style="color:var(--t-muted);margin-bottom:8px;font-size:11px">Note: Restart the MCP server for the change to take effect.</div>
+              <div class="stg-action-row">
+                <button class="stg-action-btn" id="stg-db-delete-old">Delete Old Files</button>
+                <button class="stg-action-btn" id="stg-db-keep-old">Keep Them</button>
+              </div>
             </div>
           </div>
-        </div>
-        <div class="settings-field">
-          <label>Embedding</label>
-          <div class="settings-key-row">
-            <input type="text" value="${settings.embedding === 'local' ? 'Local' : settings.embedding || 'unknown'} — ${settings.embeddingModel || 'n/a'} (${settings.embeddingDims || '?'}d)" readonly style="opacity:0.7;cursor:default" autocomplete="off" spellcheck="false">
+          <div class="settings-field">
+            <label>Embedding</label>
+            <div class="settings-key-row">
+              <input type="text" value="${settings.embedding === 'local' ? 'Local' : settings.embedding || 'unknown'} — ${settings.embeddingModel || 'n/a'} (${settings.embeddingDims || '?'}d)" readonly autocomplete="off" spellcheck="false">
+            </div>
+            <div class="settings-hint">Embeddings are computed locally, no API key required</div>
           </div>
-          <div class="settings-hint">Embeddings are computed locally, no API key required</div>
         </div>
-        <div class="stg-section-divider"></div>
-        <div class="gfx-group-title">System Backup & Restore</div>
-        <div class="settings-hint" style="margin-bottom:12px">
-          Create a full backup of all SynaBun data including .env config, data files,
-          category definitions, and memory database.
+
+        <!-- ═══ System Backup & Restore ═══ -->
+        <div class="stg-section">
+          <div class="gfx-group-title">System Backup & Restore</div>
+          <div class="settings-hint">
+            Create a full backup of all SynaBun data including .env config, data files,
+            category definitions, and memory database.
+          </div>
+          <div class="stg-action-row">
+            <button class="stg-action-btn" id="sys-backup-btn">
+              <svg viewBox="0 0 24 24">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download Full Backup
+            </button>
+            <button class="stg-action-btn" id="sys-restore-btn">
+              <svg viewBox="0 0 24 24">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              Restore from Backup
+            </button>
+            <input type="file" id="sys-restore-file" accept=".zip" style="display:none">
+          </div>
+          <div id="sys-backup-status" style="display:none;margin-top:10px;font-size:12px;align-items:center;gap:8px">
+            <div class="wiz-status-dot spin" id="sys-backup-dot"></div>
+            <span id="sys-backup-text"></span>
+          </div>
         </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button class="conn-add-btn" id="sys-backup-btn" style="margin:0;flex:0 0 auto">
-            <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            Download Full Backup
-          </button>
-          <button class="conn-add-btn" id="sys-restore-btn" style="margin:0;flex:0 0 auto">
-            <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            Restore from Backup
-          </button>
-          <input type="file" id="sys-restore-file" accept=".zip" style="display:none">
-        </div>
-        <div id="sys-backup-status" style="display:none;margin-top:10px;font-size:12px;align-items:center;gap:8px">
-          <div class="wiz-status-dot spin" id="sys-backup-dot"></div>
-          <span id="sys-backup-text"></span>
+
+        <!-- ═══ Auto Backup ═══ -->
+        <div class="stg-section">
+          <div class="gfx-group-title">Auto Backup</div>
+          <div class="settings-hint">
+            Automatically create backups on a schedule. Replaces the previous backup each time.
+          </div>
+
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="auto-backup-toggle">
+              <span>Enable auto backup</span>
+            </label>
+          </div>
+
+          <div id="auto-backup-options" style="display:none">
+            <div class="stg-inline-field">
+              <label>Frequency</label>
+              <select id="auto-backup-interval">
+                <option value="30">Every 30 minutes</option>
+                <option value="60">Every hour</option>
+                <option value="180">Every 3 hours</option>
+                <option value="360" selected>Every 6 hours</option>
+                <option value="720">Every 12 hours</option>
+                <option value="1440">Every 24 hours</option>
+              </select>
+            </div>
+
+            <div class="stg-inline-field">
+              <label>Backup Folder</label>
+              <div class="stg-input-row">
+                <input type="text" id="auto-backup-folder" placeholder="Select a folder..." readonly autocomplete="off" spellcheck="false">
+                <button class="stg-action-btn compact" id="auto-backup-browse">Browse</button>
+              </div>
+            </div>
+
+            <div class="stg-action-row">
+              <button class="stg-action-btn" id="auto-backup-now">
+                <svg viewBox="0 0 24 24">
+                  <polyline points="23 4 23 10 17 10"/>
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                </svg>
+                Backup Now
+              </button>
+            </div>
+
+            <div id="auto-backup-info" class="stg-info"></div>
+          </div>
         </div>
 
       </div>`;
@@ -589,8 +646,9 @@ function buildBrowserTab() {
                 <label class="bc-lbl">Chrome Path</label>
                 <div class="browser-cfg-input-row">
                   <input type="text" class="browser-cfg-input" id="bc-executablePath" placeholder="Auto-detect" spellcheck="false" autocomplete="off">
-                  <button class="cli-detect-btn" id="bc-detect-executable" data-tooltip="Detect">
-                    <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <button class="cli-detect-btn" id="bc-detect-executable" data-tooltip="Detect Chrome path">
+                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Detect
                   </button>
                 </div>
                 <div class="browser-cfg-hint" id="bc-detected-path"></div>
@@ -653,8 +711,9 @@ function buildBrowserTab() {
               <div class="bc-card-row">
                 <label class="bc-lbl">Chrome Profile</label>
                 <div class="browser-cfg-input-row" style="flex:1">
-                  <button class="cli-detect-btn" id="bc-detect-profiles" data-tooltip="Scan for profiles" style="order:2">
-                    <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <button class="cli-detect-btn" id="bc-detect-profiles" data-tooltip="Scan for Chrome profiles" style="order:2">
+                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Scan
                   </button>
                 </div>
               </div>
@@ -676,7 +735,8 @@ function buildBrowserTab() {
                 <div class="browser-cfg-input-row" style="flex:1">
                   <input type="text" class="browser-cfg-input" id="bc-custom-profile-path" placeholder="Profile folder path (or pick from list above)" spellcheck="false" autocomplete="off" style="flex:1">
                   <button class="cli-detect-btn" id="bc-browse-folder" data-tooltip="Browse for folder" style="order:2">
-                    <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                    <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                    Browse
                   </button>
                 </div>
               <div id="bc-browse-browser" style="display:none;margin:4px 0 4px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
@@ -1136,11 +1196,11 @@ function buildTerminalTab(cliConfig) {
       <div class="settings-tab-body" data-tab="terminal">
 
         <!-- CLI EXECUTABLE PATHS -->
-        <div class="iface-section" id="cc-cli-paths">
+        <div class="stg-section" id="cc-cli-paths">
           <div class="gfx-group-title">CLI Executable Paths</div>
-          <div class="cc-hint" style="margin-bottom:12px">
-            Configure the command used to launch each CLI from the terminal.<br>
-            Use a bare name for PATH lookup, a full path for custom installs, or prefix with <code style="font-size:10px;background:rgba(255,255,255,0.06);padding:1px 4px;border-radius:3px">wsl</code> for WSL.
+          <div class="settings-hint">
+            Configure the command used to launch each CLI from the terminal.
+            Use a bare name for PATH lookup, a full path for custom installs, or prefix with <code class="stg-code">wsl</code> for WSL.
           </div>
           ${cliProfiles.map(p => {
             const current = (cliConfig && cliConfig[p.id]?.command) || p.default;
@@ -1157,62 +1217,56 @@ function buildTerminalTab(cliConfig) {
                          placeholder="${p.default}"
                          spellcheck="false" autocomplete="off">
                   <button class="cli-detect-btn" data-cli-detect="${p.id}" data-tooltip="Auto-detect path">
-                    <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2">
-                      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                    </svg>
+                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Detect
                   </button>
-                  <span class="cli-path-status${isDefault ? '' : ' custom'}" id="cli-status-${p.id}">
-                    ${isDefault ? 'default' : 'custom'}
-                  </span>
                 </div>
               </div>
             </div>`;
           }).join('')}
-          <button class="conn-add-btn" id="cli-paths-save"
-                  style="width:100%;margin-top:12px;font-size:12px;padding:7px 10px;border-style:solid;background:rgba(79,195,247,0.08);border-color:rgba(79,195,247,0.25);color:rgba(79,195,247,0.9)">
+          <button class="stg-action-btn stg-save-btn" id="cli-paths-save">
             Save CLI Paths
           </button>
         </div>
 
         <!-- EXAMPLES -->
-        <div class="iface-section">
+        <div class="stg-section">
           <div class="gfx-group-title">Examples</div>
-          <div style="font-size:11px;color:var(--t-secondary);line-height:1.7">
-            <div style="display:flex;gap:8px;align-items:baseline">
-              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">claude</code>
-              <span style="color:var(--t-dim)">Default — uses system PATH</span>
+          <div class="stg-examples">
+            <div class="stg-example-row">
+              <code class="stg-code">claude</code>
+              <span>Default — uses system PATH</span>
             </div>
-            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
-              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">C:\\Users\\me\\.npm\\claude</code>
-              <span style="color:var(--t-dim)">Custom Windows path</span>
+            <div class="stg-example-row">
+              <code class="stg-code">C:\\Users\\me\\.npm\\claude</code>
+              <span>Custom Windows path</span>
             </div>
-            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
-              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">/opt/homebrew/bin/claude</code>
-              <span style="color:var(--t-dim)">Custom Unix path</span>
+            <div class="stg-example-row">
+              <code class="stg-code">/opt/homebrew/bin/claude</code>
+              <span>Custom Unix path</span>
             </div>
-            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
-              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">wsl claude</code>
-              <span style="color:var(--t-dim)">Run via WSL on Windows</span>
+            <div class="stg-example-row">
+              <code class="stg-code">wsl claude</code>
+              <span>Run via WSL on Windows</span>
             </div>
-            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
-              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">wsl -d Ubuntu gemini</code>
-              <span style="color:var(--t-dim)">Specific WSL distro</span>
+            <div class="stg-example-row">
+              <code class="stg-code">wsl -d Ubuntu gemini</code>
+              <span>Specific WSL distro</span>
             </div>
           </div>
         </div>
 
         <!-- NOTIFICATIONS -->
-        <div class="iface-section">
+        <div class="stg-section">
           <div class="gfx-group-title">Notifications</div>
-          <div class="cc-hint" style="margin-bottom:10px">
+          <div class="settings-hint">
             Play a sound and show a browser notification when a CLI task finishes or needs attention.
           </div>
-          <div class="iface-toggle-row">
-            <label class="iface-toggle">
+          <div class="stg-toggle-row">
+            <label>
               <input type="checkbox" id="term-notif-toggle">
-              <span class="iface-slider"></span>
+              <span>Enable task notifications</span>
             </label>
-            <span class="iface-toggle-label">Enable task notifications</span>
           </div>
         </div>
 
@@ -1231,42 +1285,53 @@ function buildCollectionsTab(connections, settings) {
   return `
       <div class="settings-tab-body" data-tab="collections">
         ${mismatchBanner}
-        <div class="gfx-group-title">Memory Database</div>
-        <div class="conn-list" id="conn-list">
-          <div class="conn-item active">
-            <div class="conn-item-dot"></div>
-            <div class="conn-item-info">
-              <div class="conn-item-name">Local SQLite</div>
-              <div class="conn-item-meta">${settings.dbPath || 'memories.db'}</div>
+
+        <div class="stg-section">
+          <div class="gfx-group-title">Memory Database</div>
+          <div class="conn-list" id="conn-list">
+            <div class="conn-item active">
+              <div class="conn-item-dot"></div>
+              <div class="conn-item-info">
+                <div class="conn-item-name">Local SQLite</div>
+                <div class="conn-item-meta">${settings.dbPath || 'memories.db'}</div>
+              </div>
+              <span class="conn-item-count">${conn.points || 0} memories</span>
             </div>
-            <span class="conn-item-count">${conn.points || 0} memories</span>
           </div>
-        </div>
-        <div style="padding:8px 2px;font-size:12px;color:var(--t-muted);line-height:1.6">
-          <div><strong style="color:var(--t-secondary)">Storage:</strong> SQLite</div>
-          <div><strong style="color:var(--t-secondary)">DB Size:</strong> ${dbSizeMB} MB</div>
-          <div><strong style="color:var(--t-secondary)">Embedding:</strong> ${settings.embeddingModel || 'local'} (${settings.embeddingDims || '?'}d)</div>
+          <div class="db-stats-row">
+            <div class="db-stat">
+              <span class="db-stat-label">Storage</span>
+              <span class="db-stat-value">SQLite</span>
+            </div>
+            <div class="db-stat">
+              <span class="db-stat-label">DB Size</span>
+              <span class="db-stat-value">${dbSizeMB} MB</span>
+            </div>
+          </div>
         </div>
 
-        <div class="stg-section-divider"></div>
-        <div class="gfx-group-title">Embedding Management</div>
-        <div class="settings-hint" style="margin-bottom:12px">
-          Regenerate all memory and session chunk embeddings using the current model. Use this if you change the embedding model or provider.
-        </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button class="conn-add-btn" id="reindex-btn" style="margin:0">Reindex All Memories</button>
-          <button class="settings-btn-cancel" id="reindex-cancel-btn" style="margin:0;display:none">Cancel</button>
-        </div>
-        <div id="reindex-status" style="display:none;margin-top:10px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-            <div class="wiz-status-dot spin" id="reindex-dot"></div>
-            <span id="reindex-text" style="font-size:12px;color:var(--t-secondary)"></span>
+        <div class="stg-section">
+          <div class="gfx-group-title">Embedding Management</div>
+          <div class="settings-hint">
+            Regenerate all memory and session chunk embeddings using the current model. Use this if you change the embedding model or provider.
           </div>
-          <div style="background:rgba(255,255,255,0.06);border-radius:4px;height:4px;overflow:hidden">
-            <div id="reindex-bar" style="background:var(--green);height:100%;width:0%;transition:width 0.3s ease"></div>
+          <div class="db-reindex-row">
+            <button class="stg-action-btn db-reindex-btn" id="reindex-btn">Reindex All Memories</button>
+            <button class="stg-action-btn db-reindex-btn" id="reindex-cancel-btn" style="display:none">Cancel</button>
           </div>
-          <div id="reindex-summary" style="font-size:11px;color:var(--t-muted);margin-top:4px"></div>
+          <div id="reindex-status" class="db-reindex-status" style="display:none">
+            <div class="db-reindex-header">
+              <div class="wiz-status-dot spin" id="reindex-dot"></div>
+              <span id="reindex-text" class="db-reindex-text"></span>
+            </div>
+            <div class="db-reindex-bar-track">
+              <div id="reindex-bar" class="db-reindex-bar"></div>
+            </div>
+            <div id="reindex-summary" class="db-reindex-summary"></div>
+          </div>
+          <div class="db-model-footer">Model: ${settings.embeddingModel || 'local'} · ${settings.embeddingDims || '?'}d</div>
         </div>
+
       </div>`;
 }
 
@@ -2006,7 +2071,7 @@ function buildInterfaceTab() {
             <span class="gfx-label">Scale</span>
             <input type="range" data-iface-key="scale" min="0.5" max="1.5" step="0.01" value="${cfg.scale}">
             <input type="number" id="ui-scale-val" class="gfx-val gfx-val-input" min="50" max="150" step="1" value="${Math.round(cfg.scale * 100)}" title="Type exact % or use arrow keys">
-            <span class="gfx-val" style="pointer-events:none;margin-left:-2px">%</span>
+            <span class="gfx-val" style="pointer-events:none;margin-left:-2px;min-width:auto">%</span>
           </div>`
         )}
 
@@ -2892,6 +2957,103 @@ export async function openSettingsModal() {
   }
 
   // ══════════════════════════════════════
+  // Auto Backup handlers
+  // ══════════════════════════════════════
+
+  const abToggle = overlay.querySelector('#auto-backup-toggle');
+  const abOptions = overlay.querySelector('#auto-backup-options');
+  const abInterval = overlay.querySelector('#auto-backup-interval');
+  const abFolder = overlay.querySelector('#auto-backup-folder');
+  const abBrowse = overlay.querySelector('#auto-backup-browse');
+  const abNow = overlay.querySelector('#auto-backup-now');
+  const abInfo = overlay.querySelector('#auto-backup-info');
+
+  function renderAutoBackupInfo(cfg) {
+    if (!abInfo) return;
+    const parts = [];
+    if (cfg.lastBackup) {
+      const d = new Date(cfg.lastBackup);
+      parts.push(`Last backup: ${d.toLocaleString()}`);
+      if (cfg.lastBackupSize) parts[0] += ` (${(cfg.lastBackupSize / 1024 / 1024).toFixed(1)} MB)`;
+    }
+    if (cfg.lastBackupError) parts.push(`<span style="color:var(--red)">Error: ${cfg.lastBackupError}</span>`);
+    if (cfg.folderPath) parts.push(`Saving to: <span style="opacity:0.7">${cfg.folderPath}/synabun-auto-backup.zip</span>`);
+    abInfo.innerHTML = parts.join('<br>');
+  }
+
+  // Load initial state
+  if (abToggle) {
+    fetch('/api/system/auto-backup').then(r => r.json()).then(cfg => {
+      abToggle.checked = cfg.enabled;
+      abOptions.style.display = cfg.enabled ? '' : 'none';
+      if (cfg.intervalMinutes) abInterval.value = String(cfg.intervalMinutes);
+      if (cfg.folderPath) abFolder.value = cfg.folderPath;
+      renderAutoBackupInfo(cfg);
+    }).catch(() => {});
+
+    async function saveAutoBackupConfig() {
+      const body = {
+        enabled: abToggle.checked,
+        intervalMinutes: parseInt(abInterval.value, 10),
+        folderPath: abFolder.value,
+      };
+      try {
+        const res = await fetch('/api/system/auto-backup', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.config) renderAutoBackupInfo(data.config);
+      } catch {}
+    }
+
+    abToggle.addEventListener('change', () => {
+      abOptions.style.display = abToggle.checked ? '' : 'none';
+      saveAutoBackupConfig();
+    });
+
+    abInterval.addEventListener('change', () => saveAutoBackupConfig());
+
+    abBrowse.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/browse-folder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ description: 'Select auto-backup folder' }),
+        });
+        const data = await res.json();
+        if (data.path) {
+          abFolder.value = data.path.replace(/\/+$/, '');
+          saveAutoBackupConfig();
+        }
+      } catch {}
+    });
+
+    abNow.addEventListener('click', async () => {
+      if (!abFolder.value) {
+        abInfo.innerHTML = '<span style="color:var(--accent-dim)">Select a backup folder first.</span>';
+        return;
+      }
+      abNow.disabled = true;
+      const origHTML = abNow.innerHTML;
+      abNow.textContent = 'Backing up...';
+      abInfo.innerHTML = '<span style="opacity:0.6">Creating backup...</span>';
+      try {
+        const res = await fetch('/api/system/auto-backup/trigger', { method: 'POST' });
+        const cfg = await res.json();
+        if (cfg.error) throw new Error(cfg.error);
+        renderAutoBackupInfo(cfg);
+      } catch (err) {
+        abInfo.innerHTML = `<span style="color:var(--red)">Failed: ${err.message}</span>`;
+      } finally {
+        abNow.disabled = false;
+        abNow.innerHTML = origHTML;
+      }
+    });
+  }
+
+  // ══════════════════════════════════════
   // Memory tab: Recall response size
   // ══════════════════════════════════════
   const recallSlider = overlay.querySelector('#recall-slider');
@@ -3195,7 +3357,6 @@ export async function openSettingsModal() {
       btn.addEventListener('click', async () => {
         const profileId = btn.dataset.cliDetect;
         const input = overlay.querySelector(`#cli-path-${profileId}`);
-        const status = overlay.querySelector(`#cli-status-${profileId}`);
         btn.style.opacity = '0.5'; btn.style.pointerEvents = 'none';
         try {
           const res = await fetch(`/api/cli/detect/${encodeURIComponent(profileId)}`, {
@@ -3206,12 +3367,8 @@ export async function openSettingsModal() {
           const data = await res.json();
           if (data.ok && data.found && data.path) {
             input.value = data.path;
-            status.textContent = 'detected';
-            status.className = 'cli-path-status detected';
             showCCToast(`Found: ${data.path}`);
           } else {
-            status.textContent = 'not found';
-            status.className = 'cli-path-status not-found';
             showCCToast('CLI not found in PATH');
           }
         } catch (err) {

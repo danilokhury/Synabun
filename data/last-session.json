@@ -1,15 +1,10 @@
 {
-  "timestamp": 1773813374985,
+  "timestamp": 1774058479108,
   "sessions": [
     {
       "profile": "claude-code",
-      "cwd": "/Users/danilokhury/Apps/SynaBunWebsite",
-      "claudeSessionId": "a75d5be5-3b02-46b6-82b3-cfbcaba390bb"
-    },
-    {
-      "profile": "claude-code",
       "cwd": "/Users/danilokhury/Apps/Synabun",
-      "claudeSessionId": "31c0338d-8e16-4981-908d-38ee1981bcf1"
+      "claudeSessionId": "cbf6f11c-a221-40a6-b025-e7f57dd276e2"
     }
   ]
 }

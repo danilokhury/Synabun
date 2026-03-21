@@ -13,3 +13,116 @@
 2026-03-17 15:59:44.451 defaults[665:7341] 
 The domain/default pair of (com.apple.screencapture, location) does not exist
 libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument
+(node:524) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-18 12:17:37.611 defaults[659:7295] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+(node:536) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-18 19:57:58.777 defaults[669:7633] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 1, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 1: prompt never appeared after 75s total. Buffer: "[6A\u001b[38;5;174mS\u001b[2C\u001b[38;5;216mo\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[3C\u001b[6A\u001b[38;5;174mm\u001b[2C\u001b[38;5;216ms\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[6A\u001b[38;5;174m✢\u001b[3Co\u001b[2C\u001b[38;5;216mh\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l"
+[loop-driver] Iteration drive failed (1/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 1, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 1: prompt never appeared after 75s total. Buffer: "?2026l\u001b[?2026h\r\u001b[6A\u001b[38;5;174m✶\u001b[37C\u001b[38;5;247mthinking with high effort\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[6A\u001b[38;5;174m✳\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[6A\u001b[38;5;174m✢\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l"
+[loop-driver] Iteration drive failed (2/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 1, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 1: prompt never appeared after 75s total. Buffer: "h high effort\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[6A\u001b[38;5;131m✻\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b]0;⠐ Claude Code\u0007\u001b[?2026h\r\u001b[6A\u001b[38;5;131m✽\u001b[38C\u001b[38;5;247mthinking with high effort\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l"
+[loop-driver] Iteration drive failed (3/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 1, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 1: prompt never appeared after 75s total. Buffer: "\u001b[?2026h\r\u001b[6A\u001b[38;5;131m✻\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[6A\u001b[38;5;131m✽\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b]0;⠐ Claude Code\u0007\u001b[?2026h\r\u001b[39C\u001b[6A\u001b[38;5;246mthinking with high effort\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l"
+[loop-driver] Iteration drive failed (4/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 1, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 1: prompt never appeared after 75s total. Buffer: "39C\u001b[6A\u001b[38;5;247mthinking with high effort\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[6A\u001b[38;5;174m✢\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[39C\u001b[6A\u001b[38;5;246mthinking with high effort\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l"
+[loop-driver] Iteration drive failed (5/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 2, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 2: prompt never appeared after 75s total. Buffer: "[?2026h\r\u001b[6A\u001b[38;5;173m✢\u001b[1CSmooshing… \u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[6A\u001b[38;5;173m·\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b]0;⠐ Claude Code\u0007\u001b[?2026h\r\u001b[6A\u001b[38;5;167m·\u001b[1CSmooshing… \u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l"
+[loop-driver] Iteration drive failed (6/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 3, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 3: prompt never appeared after 75s total. Buffer: "\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[6A\u001b[38;5;174m✻\u001b[5Cs\u001b[2C\u001b[38;5;216mn\u001b[30C\u001b[38;5;246mthinking with high effort\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[7C\u001b[6A\u001b[38;5;174mh\u001b[2C\u001b[38;5;216mg\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l"
+[loop-driver] Iteration drive failed (7/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 4, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 4: prompt never appeared after 75s total. Buffer: "\u001b[?2026h\r\u001b[7A\u001b[38;5;131m✢\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[7A\u001b[38;5;131m✳\u001b[39C\u001b[38;5;246mthinking with high effort\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l\u001b[?2026h\r\u001b[7A\u001b[38;5;131m✶\u001b[39m\r\r\n\r\n\r\n\r\n\r\n\r\n\r\n\u001b[?2026l"
+[loop-driver] Iteration drive failed (8/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 4, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 4: prompt never appeared after 75s total. Buffer: ""
+[loop-driver] Iteration drive failed (9/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 4, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 4: prompt never appeared after 75s total. Buffer: ""
+[loop-driver] Iteration drive failed (10/10)
+[loop-driver] 10 consecutive failures — deleting loop
+Browser session create error: browserContext.newCDPSession: page: no object with guid page@ed8e5e0a657ad804979835127327c000
+[browser] Could not clean mirror dir: ENOTEMPTY, Directory not empty: /Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4 '/Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4'
+(node:530) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-19 12:04:08.838 defaults[630:7298] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+(node:571) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-19 13:47:28.409 defaults[670:8007] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+Failed to save storage state: browserContext.storageState: Target page, context or browser has been closed
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 2, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 2: prompt never appeared after 75s total. Buffer: "───────────────────────────────────\u001b[39m\r\r\n\u001b[2C\u001b[38;5;246m?\u001b[1Cfor\u001b[1Cshortcuts\u001b[27C\u001b[38;5;220mUpdate\u001b[1Cavailable!\u001b[1CRun:\u001b[1C\u001b[1mbrew\u001b[1Cupgrade\u001b[1Cclaude-code\u001b[22m\u001b[39m\r\r\n\u001b[?2026l\u001b]0;✳ Claude Code\u0007"
+[loop-driver] Iteration drive failed (1/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 2, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 2: prompt never appeared after 75s total. Buffer: ""
+[loop-driver] Iteration drive failed (2/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 2, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 2: prompt never appeared after 75s total. Buffer: ""
+[loop-driver] Iteration drive failed (3/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 2, retrying with 45s...
+[loop-driver] Prompt detection timed out after 45000 ms
+[loop-driver] ABORT iteration 2: prompt never appeared after 75s total. Buffer: ""
+[loop-driver] Iteration drive failed (4/10)
+[loop-driver] Error driving iteration: promptReady is not defined
+[loop-driver] Iteration drive failed (5/10)
+[loop-driver] Error driving iteration: promptReady is not defined
+[loop-driver] Iteration drive failed (6/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Error driving iteration: promptReady is not defined
+[loop-driver] Iteration drive failed (7/10)
+[loop-driver] Prompt detection timed out after 30000 ms
+[loop-driver] Prompt not detected after 30s for iteration 2, retrying with 45s...
+[loop-driver] Error driving iteration: promptReady is not defined
+[loop-driver] Iteration drive failed (8/10)
+[agent] 66e7855f-ef58-4e3f-bc30-0afc53a707df stderr: Error: --session-id can only be used with --continue or --resume if --fork-session is also specified.
+[agent] 66e7855f-ef58-4e3f-bc30-0afc53a707df iteration 2 exited with code 1, continuing...
+[agent] 66e7855f-ef58-4e3f-bc30-0afc53a707df stderr: Error: --session-id can only be used with --continue or --resume if --fork-session is also specified.
+[agent] 66e7855f-ef58-4e3f-bc30-0afc53a707df iteration 3 exited with code 1, continuing...
+[agent] 66e7855f-ef58-4e3f-bc30-0afc53a707df stderr: Error: --session-id can only be used with --continue or --resume if --fork-session is also specified.
+[agent] 66e7855f-ef58-4e3f-bc30-0afc53a707df iteration 4 exited with code 1, continuing...
+[agent] 66e7855f-ef58-4e3f-bc30-0afc53a707df stderr: Error: --session-id can only be used with --continue or --resume if --fork-session is also specified.
+[agent] 66e7855f-ef58-4e3f-bc30-0afc53a707df iteration 5 exited with code 1, continuing...
+(node:725) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-20 12:16:00.552 defaults[879:12862] 
+The domain/default pair of (com.apple.screencapture, location) does not exist

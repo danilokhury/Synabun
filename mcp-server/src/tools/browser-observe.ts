@@ -84,16 +84,29 @@ export async function handleBrowserSnapshot(args: { selector?: string; sessionId
 // ── browser_content ──
 
 export const browserContentSchema = {
+  format: z.enum(['text', 'markdown']).optional().default('text').describe(
+    'Output format. "text" returns raw innerText (fast, no structure). "markdown" returns clean markdown with headings, links, and lists preserved — strips nav/header/footer/ads automatically. Markdown is better for LLM consumption.'
+  ),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
 };
 
 export const browserContentDescription =
-  'Get the text content of the current page along with its URL and title. Returns the visible text from the page body (up to 50K characters). Use this when you need raw text rather than the structured accessibility tree.';
+  'Get the content of the current page. Set format="markdown" for clean markdown with structure preserved (headings, links, lists) — nav/header/footer/ads stripped automatically. Default format="text" returns raw visible text. Markdown is preferred for LLM consumption — up to 80% more token-efficient than raw HTML.';
 
-export async function handleBrowserContent(args: { sessionId?: string }) {
+export async function handleBrowserContent(args: { format?: string; sessionId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId);
   if ('error' in resolved) return text(resolved.error);
 
+  if (args.format === 'markdown') {
+    const result = await ni.getMarkdown(resolved.sessionId);
+    if (result.error) return text(`Markdown extraction failed: ${result.error}`);
+
+    let msg = `URL: ${result.url}\nTitle: "${result.title}"\nTokens: ~${result.tokens}\n\n`;
+    msg += (result.markdown as string) || '(empty page)';
+    return text(msg);
+  }
+
+  // Default: plain text
   const result = await ni.getContent(resolved.sessionId);
   if (result.error) return text(`Content failed: ${result.error}`);
 

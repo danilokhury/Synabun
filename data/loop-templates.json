@@ -73,7 +73,7 @@
     "id": "7f4b634711c8e26d90c3540d",
     "name": "Facebook Deals",
     "description": "Campanha para postar em grupos do facebook do Critical Pixel",
-    "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile and basically you need to promo a marketing campaign for Lego Batman Legacy of the Dark Knight Preorder deal and that it has some discounts on select vendors. There are 5 currencies to post in, look for groups within each of those currencies region and post. Post in the group native language always, if you cant determine a language, post in english.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=GBP\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=USD\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=BRL\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=TRY\nhttps://criticalpixel.gg/games/lego-batman-legacy-of-the-dark-knight-2026-7673?currency=EUR\n\n=====================================\n\nRules:\n\n- Post in ALL available groups and join new groups if needed\n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Dont use -- dashes on text\n- Don't over use emojis",
+    "task": "Task:\n\nNavigate to facebook groups using the CriticalPixel profile and basically you need to promo a marketing campaign for THE LAST FEW HOURS BEFORE Crimson Desert Releases and that it has some discounts on select vendors. There are 5 currencies to post in, look for groups within each of those currencies region and post. Post in the group native language always, if you cant determine a language, post in english.\nhttps://www.facebook.com/groups/joins/?nav_source=tab\n\n=====================================\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=BRL\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=USD\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=TRY\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=EUR\nhttps://criticalpixel.gg/games/crimson-desert-2026-7004?currency=GBP\n\n=====================================\n\nRules:\n\n- Post in ALL available groups and join new groups if needed\n- You can join as many groups as you want\n- Post the promo on the gorups language\n- Dont use -- dashes on text\n- Don't over use emojis",
     "context": null,
     "iterations": 50,
     "maxMinutes": 120,
@@ -81,13 +81,13 @@
     "icon": "refresh",
     "category": "social",
     "createdAt": "2026-03-01T20:54:51.098Z",
-    "updatedAt": "2026-03-13T02:00:49.247Z"
+    "updatedAt": "2026-03-19T18:17:09.455Z"
   },
   {
     "id": "5961b95004f88595970a5a99",
     "name": "Twitter SynaBun",
     "description": "Custom loop para interações no twitter",
-    "task": "IMPORTANT\n- Do NOT use — dashes on text\n- DO NOT USE EM-DASHES ON TEXT\n- DO NOT USE EM-DASHES ON TEXT\n- Do noot fucking comment on Synabuns own post\n- DO NOT DOUBLE POST. Ensure there is no other Synabun post on that same thread\n- Talk about Synabun features without making it look like spam. \n\nTask:\n\nYour task is to navigate thru twitter trending tags related to vibe coding and try to have casual conversations with users about how Synabun can help out on their vibecoding journey and it has what user needs. To code via CLI in a more effective way.\n\n=====================================\n\nRules:\n\n- try to speak about more broad contents in twitter, mix of vibe coding, memory and MCP. The responses are too robotic an mono topical.\n- Interact with portuguese speaking vibe coders\n- Dont use -- dashes on text\n- Try to find opportunities to talk about synabum features, you have access to all Synabun features from synabun memory\n- Double check how you access the \"publish\" button, you are not publishing the replies or content, usually drafting or skipping\n- You are here to chat about AI, only plug https://synabun.ai/ if it actually calls for\n- look mostly for english and portuguese speaking threads and hashtags\n- Don't over use emojis",
+    "task": "IMPORTANT\n- Do NOT use — em-dashes on text\n- DO NOT USE EM-DASHES ON TEXT\n- DO NOT USE EM-DASHES ON TEXT\n- Do noot fucking comment on Synabuns own post\n- DO NOT DOUBLE POST. Ensure there is no other Synabun post on that same thread\n- Talk about Synabun features without making it look like spam. \n\nTask:\n\nYour task is to navigate thru twitter trending tags related to vibe coding, AI and automation and try to have casual conversations, be brief, be slightly edgy, and try to be funny. Just small replies, 100-140 characters.\n\n=====================================\n\nRules:\n\n- try to speak about more broad contents in twitter, mix of vibe coding, memory and MCP. The responses are too robotic an mono topical.\n- Interact with portuguese speaking vibe coders\n- Dont use -- dashes on text\n- Try to find opportunities to talk about synabum features, you have access to all Synabun features from synabun memory\n- Double check how you access the \"publish\" button, you are not publishing the replies or content, usually drafting or skipping\n- You are here to chat about AI, only plug https://synabun.ai/ if it actually calls for\n- look mostly for english and portuguese speaking threads and hashtags\n- Don't over use emojis",
     "context": null,
     "iterations": 50,
     "maxMinutes": 120,
@@ -95,7 +95,7 @@
     "icon": "chat",
     "category": "social",
     "createdAt": "2026-03-01T21:53:12.510Z",
-    "updatedAt": "2026-03-14T03:38:49.351Z"
+    "updatedAt": "2026-03-21T00:06:31.431Z"
   },
   {
     "id": "0a11e66fa69f0d2593debaa2",

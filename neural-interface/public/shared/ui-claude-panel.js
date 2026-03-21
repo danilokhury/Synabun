@@ -145,6 +145,7 @@ const STOR = {
   autoAccept: 'synabun-claude-panel-autoaccept',
   windowRegistry: 'synabun-claude-panel-windows',   // JSON map of windowId → lastSeen timestamp
   bootId: 'synabun-claude-panel-boot-id',           // server boot ID — detect restarts
+  defaultModel: 'synabun-claude-panel-default-model', // user's preferred default model
 };
 
 const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
@@ -212,6 +213,9 @@ function buildPanel() {
       <div class="cp-project-bar">
         <div class="cp-dropdown" id="cp-project" data-placeholder="project..."><span class="cp-dd-label">project...</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
         <div class="cp-dropdown cp-dropdown-sm" id="cp-branch" data-placeholder="branch"><span class="cp-dd-label">branch</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
+        <div class="cp-bar-actions">
+          <button class="cp-bar-action" id="cp-action-changelog" data-tooltip="Generate changelog"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h8.5v13H4a1.5 1.5 0 01-1.5-1.5V3A1.5 1.5 0 014 1.5z"/><path d="M5.5 5h5M5.5 7.5h3M5.5 10h4"/></svg></button>
+        </div>
       </div>
       <div class="cp-input-area">
         <div class="cp-input-wrap">
@@ -1183,6 +1187,19 @@ function injectStyles() {
     .cp-dd-item:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.8); }
     .cp-dd-item.selected { color: rgba(255,255,255,0.85); background: rgba(255,255,255,0.08); }
 
+    /* Model dropdown: anchor menu to right edge to prevent off-screen overflow */
+    #cp-model .cp-dd-menu { left: auto; right: 0; }
+    .cp-dd-model-item { display: flex; align-items: center; gap: 6px; }
+    .cp-dd-model-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .cp-dd-model-star {
+      flex-shrink: 0; font-size: 9px; color: rgba(255,255,255,0.12);
+      cursor: pointer; transition: color 0.15s, transform 0.15s;
+      line-height: 1;
+    }
+    .cp-dd-model-star:hover { color: rgba(255,200,60,0.6); transform: scale(1.3); }
+    .cp-dd-model-star.is-default { color: rgba(255,200,60,0.85); }
+    .cp-dd-model-star.is-default:hover { color: rgba(255,200,60,1); }
+
     .cp-cost {
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
       color: rgba(255,255,255,0.18); padding: 2px 6px;
@@ -1366,6 +1383,20 @@ function injectStyles() {
       padding: 4px 10px 0;
       flex-shrink: 0;
     }
+    .cp-bar-actions {
+      display: flex; align-items: center; gap: 2px;
+      margin-left: auto;
+    }
+    .cp-bar-action {
+      display: flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px;
+      background: none; border: none; border-radius: 5px;
+      color: rgba(255,255,255,0.3);
+      cursor: pointer; transition: all 0.15s ease;
+      padding: 0;
+    }
+    .cp-bar-action:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.06); }
+    .cp-bar-action:active { transform: scale(0.9); transition-duration: 0.06s; }
     .cp-session-menu {
       display: none; position: absolute;
       top: calc(100% + 2px); left: 8px; right: 8px;
@@ -1471,7 +1502,7 @@ function injectStyles() {
     .cp-gauge {
       flex: 1; height: 16px; border-radius: 6px;
       background: rgba(255,255,255,0.03);
-      display: flex; overflow: hidden;
+      display: flex; overflow: visible;
       position: relative; cursor: default;
       transition: background 0.5s, box-shadow 0.5s;
     }
@@ -1483,6 +1514,8 @@ function injectStyles() {
       transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
       position: relative; border-radius: 2px;
     }
+    .cp-gauge-section:first-of-type { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
+    .cp-gauge-section:last-of-type { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
     .cp-gauge-section[data-cat="cache-read"] { background: rgba(100,140,200,0.45); }
     .cp-gauge-section[data-cat="cache-write"] { background: rgba(150,100,200,0.45); }
     .cp-gauge-section[data-cat="input"] { background: rgba(100,200,150,0.45); }
@@ -1502,13 +1535,14 @@ function injectStyles() {
     .cp-gauge-label {
       position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.35); white-space: nowrap;
+      color: rgba(255,255,255,0.6); white-space: nowrap;
       z-index: 2; pointer-events: none; letter-spacing: 0.3px;
       transition: color 0.5s;
+      text-shadow: 0 0 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.5);
     }
-    .cp-context-bar:has(.cp-gauge[data-urgency="warn"]) .cp-gauge-label { color: rgba(220,200,80,0.5); }
-    .cp-context-bar:has(.cp-gauge[data-urgency="high"]) .cp-gauge-label { color: rgba(220,150,60,0.6); }
-    .cp-context-bar:has(.cp-gauge[data-urgency="critical"]) .cp-gauge-label { color: rgba(220,80,60,0.7); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="warn"]) .cp-gauge-label { color: rgba(220,200,80,0.75); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="high"]) .cp-gauge-label { color: rgba(220,150,60,0.8); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="critical"]) .cp-gauge-label { color: rgba(220,80,60,0.85); }
     .cp-compact-btn {
       background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
       color: rgba(255,255,255,0.35); cursor: pointer;
@@ -1738,6 +1772,52 @@ function ddPopulate(dd, items, selectedValue) {
 }
 function ddGetValue(dd) { return dd?._value || ''; }
 
+// ── Model dropdown with default-model support ──
+function ddPopulateModels(dd, items, selectedValue) {
+  const menu = dd.querySelector('.cp-dd-menu');
+  menu.innerHTML = '';
+  const defModel = _getDefaultModel();
+  for (const item of items) {
+    const el = document.createElement('div');
+    el.className = 'cp-dd-item cp-dd-model-item' + (item.value === selectedValue ? ' selected' : '');
+    const label = document.createElement('span');
+    label.className = 'cp-dd-model-label';
+    label.textContent = item.label;
+    el.appendChild(label);
+    const star = document.createElement('span');
+    star.className = 'cp-dd-model-star' + (item.value === defModel ? ' is-default' : '');
+    star.innerHTML = '&#9733;';
+    star.title = item.value === defModel ? 'Default model' : 'Set as default';
+    star.addEventListener('click', (e) => {
+      e.stopPropagation();
+      storage.setItem(STOR.defaultModel, item.value);
+      // Update all stars in this menu
+      menu.querySelectorAll('.cp-dd-model-star').forEach(s => {
+        s.classList.remove('is-default');
+        s.title = 'Set as default';
+      });
+      star.classList.add('is-default');
+      star.title = 'Default model';
+    });
+    el.appendChild(star);
+    el.dataset.value = item.value;
+    el.addEventListener('click', () => {
+      dd._value = item.value;
+      dd.querySelector('.cp-dd-label').textContent = item.label;
+      dd.classList.add('has-value');
+      dd.classList.remove('open');
+      menu.querySelectorAll('.cp-dd-item').forEach(i => i.classList.remove('selected'));
+      el.classList.add('selected');
+      dd.dispatchEvent(new Event('change'));
+    });
+    menu.appendChild(el);
+  }
+  if (selectedValue) {
+    const match = items.find(i => i.value === selectedValue);
+    if (match) { dd.querySelector('.cp-dd-label').textContent = match.label; dd.classList.add('has-value'); dd._value = selectedValue; }
+  }
+}
+
 // ── Model helpers (composite value = "modelId:contextWindow") ──
 function _getModelId() {
   const $model = _panel?.querySelector('#cp-model');
@@ -1749,6 +1829,11 @@ function _getContextWindow() {
   const raw = ddGetValue($model);
   const parts = raw.split(':');
   return parts[1] ? parseInt(parts[1], 10) : 200000;
+}
+
+// ── Default model helper ──
+function _getDefaultModel() {
+  return storage.getItem(STOR.defaultModel) || '';
 }
 
 // ── Think intensity helpers ──
@@ -1779,10 +1864,17 @@ document.addEventListener('click', (e) => {
 // ── Tab lifecycle ──
 function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } = {}) {
   if (_tabs.length >= MAX_TABS) return null;
+  // Capture current dropdown state for the new tab's project/model/effort
+  const _$proj = _panel?.querySelector('#cp-project');
+  const _$mod = _panel?.querySelector('#cp-model');
+  const _$think = _panel?.querySelector('#cp-think-toggle');
   const tab = {
     id: crypto.randomUUID(),
     sessionId,
     label,
+    project: ddGetValue(_$proj) || '',       // per-tab project isolation
+    model: _getDefaultModel(),                  // per-tab model — defaults to user's preferred model
+    effort: _$think?.dataset.effort || 'off', // per-tab effort isolation
     ws: null,
     reconnectTimer: null,
     running: false,
@@ -1799,6 +1891,7 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } =
     pillEl: null,
     draft: '',
     usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 0, // 0 = use dropdown fallback; set from result.modelUsage or session history
     compacting: false,
     turns: 0,
     thinkStartedAt: null,
@@ -1903,6 +1996,25 @@ function switchTab(idx) {
       else addFilePreview(f.name, i);
     });
   }
+  // Restore per-tab project/model/effort dropdowns (session isolation)
+  const $project = _panel?.querySelector('#cp-project');
+  const $model = _panel?.querySelector('#cp-model');
+  const $think = _panel?.querySelector('#cp-think-toggle');
+  if ($project && tab.project) {
+    const items = _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() }));
+    ddPopulate($project, items, tab.project);
+    loadBranches(tab.project);
+  } else if ($project && !tab.project) {
+    const items = _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() }));
+    ddPopulate($project, items, '');
+  }
+  if ($model) {
+    const items = _models.map(m => ({ value: `${m.id}:${m.contextWindow || 200000}`, label: m.label }));
+    const modelVal = tab.model || _getDefaultModel();
+    ddPopulateModels($model, items, modelVal);
+    if (modelVal && !tab.model) { tab.model = modelVal; saveTabs(); }
+  }
+  if ($think && tab.effort) _setEffort($think, tab.effort);
   // Sync plan toggle
   const $plan = _panel?.querySelector('#cp-plan-toggle');
   if ($plan) $plan.classList.toggle('active', tab.planMode);
@@ -2005,7 +2117,7 @@ function updatePillRunning(tab) {
 function saveTabs() {
   try {
     storage.setItem(STOR.tabs, JSON.stringify({
-      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false })),
+      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false })),
       activeIdx: _activeTabIdx,
     }));
     _updateWindowRegistry();
@@ -2053,6 +2165,10 @@ function restoreTabs() {
           const t = createTab(saved.sessionId, saved.label, { autoSwitch: false });
           if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
           if (t && saved.running) t._wasRunning = true; // trigger reattach on WS open
+          if (t && saved.project) t.project = saved.project;
+          if (t) t.model = saved.model || _getDefaultModel();
+          if (t && saved.effort) t.effort = saved.effort;
+          if (t && saved.planMode) t.planMode = true;
         }
         switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
         return;
@@ -2069,6 +2185,9 @@ function restoreTabs() {
           const t = createTab(saved.sessionId, saved.label, { autoSwitch: false });
           if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
           if (t && saved.running) t._wasRunning = true;
+          if (t && saved.project) t.project = saved.project;
+          if (t) t.model = saved.model || _getDefaultModel();
+          if (t && saved.effort) t.effort = saved.effort;
         }
         switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
         // Don't remove legacy key — other windows may still need it during rollout
@@ -2235,11 +2354,13 @@ async function renderSessionMenu() {
         const sid = el.dataset.sid;
         const label = el.querySelector('.cp-sess-prompt')?.textContent || 'Resumed';
         selectSession(sid, label);
-        // Update cwd to match the session's project
+        // Update cwd to match the session's project (per-tab)
         const $project = _panel?.querySelector('#cp-project');
         if ($project && el.dataset.cwd) {
           ddPopulate($project, _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() })), el.dataset.cwd);
           storage.setItem(STOR.project, el.dataset.cwd);
+          const tab = activeTab();
+          if (tab) { tab.project = el.dataset.cwd; saveTabs(); }
         }
         menu.classList.remove('open');
       });
@@ -2257,6 +2378,10 @@ async function renderSessionMenu() {
         input.type = 'text'; input.value = currentName;
         input.className = 'cp-rename-input';
         input.placeholder = 'Session name...';
+        // Prevent clicks on input from bubbling to session item (which selects session)
+        input.addEventListener('click', (e) => e.stopPropagation());
+        input.addEventListener('mousedown', (e) => e.stopPropagation());
+        input.addEventListener('dblclick', (e) => e.stopPropagation());
         promptEl.textContent = '';
         promptEl.appendChild(input);
         btn.style.display = 'none';
@@ -2326,6 +2451,7 @@ async function selectSession(sid, label) {
   tab.currentMsgId = null;
   tab.label = label || 'New chat';
   tab.usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 };
+  tab.contextWindow = 0;
   tab.compacting = false;
   _setCompactingUI(false);
   tab.turns = 0;
@@ -2367,6 +2493,10 @@ function renameSession(sid, currentLabel) {
   input.value = currentLabel || '';
   input.className = 'cp-rename-input';
   input.placeholder = 'Session name...';
+  // Prevent clicks on input from bubbling to session button (which toggles menu)
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('mousedown', (e) => e.stopPropagation());
+  input.addEventListener('dblclick', (e) => e.stopPropagation());
   btn.textContent = '';
   btn.appendChild(input);
   input.focus();
@@ -2477,6 +2607,7 @@ async function loadSessionHistory(sid, $msgs) {
       tab.usage.outputTokens = data.usage.output_tokens || 0;
       tab.usage.cacheRead = data.usage.cache_read_input_tokens || 0;
       tab.usage.cacheWrite = data.usage.cache_creation_input_tokens || 0;
+      if (data.contextWindow) tab.contextWindow = data.contextWindow;
       tab.turns = data.turns || 0;
       renderGauge(tab);
     }
@@ -2556,6 +2687,9 @@ function _updateCostLabel() {
   $cost.textContent = `$${sc.toFixed(2)}`;
   const monthLabel = new Date().toLocaleString('en', { month: 'short' });
   $cost.title = `Session cost · ${monthLabel} total: $${_totalCost.toFixed(2)}`;
+  // Sync navbar cost label directly
+  const navLabel = document.querySelector('#titlebar-cost-btn .bar-cost-label');
+  if (navLabel) navLabel.textContent = '$' + sc.toFixed(2);
 }
 
 // ── Context gauge ──
@@ -2585,7 +2719,7 @@ function renderGauge(tab) {
   const cacheWrite = u.cacheWrite || 0;
   const uncachedInput = u.inputTokens || 0;
   const total = uncachedInput + cacheRead + cacheWrite;
-  const ctxWindow = _getContextWindow();
+  const ctxWindow = tab.contextWindow || _getContextWindow();
   const fmt = (v) => v >= 1000000 ? (v / 1000000).toFixed(v % 1000000 === 0 ? 0 : 1) + 'M' : v >= 1000 ? (v / 1000).toFixed(1) + 'K' : String(v);
 
   if (total === 0) {
@@ -2593,14 +2727,14 @@ function renderGauge(tab) {
     const existing = $gauge.querySelectorAll('.cp-gauge-section');
     if (existing.length) {
       existing.forEach(el => { el.style.width = '0%'; el.querySelector('.cp-gauge-tip')?.remove(); });
-      setTimeout(() => { $gauge.innerHTML = ''; }, 450);
+      setTimeout(() => { existing.forEach(el => el.remove()); }, 450);
     }
     $gauge.dataset.urgency = '';
     if ($label) { $label.textContent = ''; $label.title = ''; }
     return;
   }
 
-  const pct = (v) => Math.max(0, (v / ctxWindow) * 100).toFixed(2) + '%';
+  const pct = (v) => { const p = (v / ctxWindow) * 100; return (p > 0 ? Math.max(0.5, p) : 0).toFixed(2) + '%'; };
   const CATS = ['cache-read', 'cache-write', 'input'];
   const data = {
     'cache-read': { val: cacheRead, label: `Cached: ${fmt(cacheRead)} tokens` },
@@ -2754,7 +2888,7 @@ function _processTabMsg(tab, msg) {
         const $model = _panel?.querySelector('#cp-model');
         tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
         let prompt = btw.text;
-        if (tab.planMode && prompt) prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes]\n\n${prompt}`;
+        if (tab.planMode && prompt) prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes. If you need clarification or have questions about the approach, use the AskUserQuestion tool to present options to the user.]\n\n${prompt}`;
         const btwMsg = {
           type: 'query', prompt,
           cwd: ddGetValue($project) || undefined,
@@ -2809,6 +2943,23 @@ function handleTabEvent(tab, ev) {
     if (el) el.textContent = 'Context compacted';
     return;
   }
+  if (ev.type === 'system' && ev.subtype === 'compact_detected') {
+    // Auto-compact detected via token count drop — show status + clear compacting UI
+    tab.compacting = false;
+    if (tab === activeTab()) _setCompactingUI(false);
+    const $msgs = tab.messagesEl;
+    if ($msgs) {
+      let el = $msgs.querySelector('.msg-compact-status');
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'msg-status msg-compact-status';
+        $msgs.appendChild(el);
+      }
+      el.textContent = ev.message || 'Context auto-compacted';
+    }
+    if (tab === activeTab()) scrollEnd();
+    return;
+  }
   if (ev.type === 'system' && ev.subtype === 'session_reset') {
     // Server auto-retried without --resume because the session was deleted
     tab.sessionId = null;
@@ -2845,10 +2996,10 @@ function handleTabEvent(tab, ev) {
   if (ev.type === 'assistant' && ev.message) {
     if (ev.message.usage) {
       const u = ev.message.usage;
-      tab.usage.inputTokens = u.input_tokens ?? 0;
-      tab.usage.outputTokens = u.output_tokens ?? 0;
-      tab.usage.cacheRead = u.cache_read_input_tokens ?? 0;
-      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? 0;
+      tab.usage.inputTokens = u.input_tokens ?? tab.usage.inputTokens;
+      tab.usage.outputTokens = u.output_tokens ?? tab.usage.outputTokens;
+      tab.usage.cacheRead = u.cache_read_input_tokens ?? tab.usage.cacheRead;
+      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? tab.usage.cacheWrite;
       if (tab.compacting) {
         tab.compacting = false;
         if (tab === activeTab()) _setCompactingUI(false);
@@ -2889,6 +3040,14 @@ function handleTabEvent(tab, ev) {
       }
       if (tab === activeTab()) renderGauge(tab);
     }
+    // Extract actual context window from modelUsage (CLI reports the real value)
+    if (ev.modelUsage) {
+      const modelKey = Object.keys(ev.modelUsage)[0];
+      if (modelKey) {
+        const cw = ev.modelUsage[modelKey].contextWindow;
+        if (cw && cw > 0) tab.contextWindow = cw;
+      }
+    }
     if (ev.total_cost_usd != null) {
       const prevCost = tab.sessionCost;
       tab.sessionCost = ev.total_cost_usd;
@@ -2899,7 +3058,7 @@ function handleTabEvent(tab, ev) {
         const $cost = _panel?.querySelector('#cp-cost');
         if ($cost) { $cost.classList.add('flash'); setTimeout(() => $cost.classList.remove('flash'), 800); }
       }
-      emit('cost:updated', { amount: delta > 0 ? delta : 0, total: _totalCost });
+      emit('cost:updated', { amount: delta > 0 ? delta : 0, total: _totalCost, sessionCost: tab.sessionCost });
       saveTabs();
     }
     if (ev.session_id) { tab.sessionId = ev.session_id; saveTabs(); }
@@ -2918,6 +3077,24 @@ function handleStreamDelta(tab, apiEvent) {
     const msgId = apiEvent.message?.id || null;
     tab._stream = { el: null, textBuf: '', thinkBuf: '', bodyEl: null, thinkEl: null, blockIdx: -1, blockType: null, mdTimer: null, msgId };
     hideThinking(tab);
+    // Extract usage from message_start for real-time gauge updates during streaming
+    if (apiEvent.message?.usage) {
+      const u = apiEvent.message.usage;
+      tab.usage.inputTokens = u.input_tokens ?? tab.usage.inputTokens;
+      tab.usage.outputTokens = u.output_tokens ?? tab.usage.outputTokens;
+      tab.usage.cacheRead = u.cache_read_input_tokens ?? tab.usage.cacheRead;
+      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? tab.usage.cacheWrite;
+      if (tab === activeTab()) renderGauge(tab);
+    }
+    return;
+  }
+
+  if (evType === 'message_delta') {
+    // Extract cumulative output tokens from message_delta for real-time gauge
+    if (apiEvent.usage?.output_tokens) {
+      tab.usage.outputTokens = apiEvent.usage.output_tokens;
+      if (tab === activeTab()) renderGauge(tab);
+    }
     return;
   }
 
@@ -3060,20 +3237,37 @@ function renderPostPlanActions(tab) {
       card.style.opacity = '0.45';
       card.style.pointerEvents = 'none';
       if (a.action === 'compact') {
+        // Guard: cannot compact while running
+        if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); card.style.opacity = '1'; card.style.pointerEvents = 'auto'; return; }
         if (tab.ws?.readyState === WebSocket.OPEN) {
+          tab.compacting = true;
+          if (tab === activeTab()) _setCompactingUI(true);
           tab.ws.send(JSON.stringify({ type: 'compact' }));
           appendStatus(tab, 'Compacting context...');
+        } else {
+          appendStatus(tab, 'Connection lost — cannot compact. Try refreshing.');
+          card.style.opacity = '1'; card.style.pointerEvents = 'auto';
         }
       } else if (a.action === 'plan') {
+        // Remove the card entirely, re-enter plan mode
+        const cardMsg = card.closest('.msg');
+        if (cardMsg) cardMsg.remove(); else card.remove();
         tab.planMode = true;
         const $plan = _panel?.querySelector('#cp-plan-toggle');
         if ($plan) $plan.classList.add('active');
-        appendStatus(tab, 'Plan mode ON — Claude will plan without making changes');
+        appendStatus(tab, 'Plan mode ON — edit your plan, then send.');
+        const $input = _panel?.querySelector('#cp-input');
+        if ($input) $input.focus();
       } else if (a.prompt) {
         // Exit plan mode before sending implementation prompt
         tab.planMode = false;
         const $plan = _panel?.querySelector('#cp-plan-toggle');
         if ($plan) $plan.classList.remove('active');
+        if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) {
+          appendStatus(tab, 'Connection lost — cannot send. Try refreshing.');
+          card.style.opacity = '1'; card.style.pointerEvents = 'auto';
+          return;
+        }
         const $input = _panel?.querySelector('#cp-input');
         if ($input) { $input.value = a.prompt; send(); }
       }
@@ -3101,16 +3295,20 @@ function renderAssistant(tab, msg) {
   const askTools = tools.filter(t => t.name === 'AskUserQuestion');
   const regularTools = tools.filter(t => t.name !== 'AskUserQuestion');
 
-  // Detect ExitPlanMode — auto-toggle plan mode off and show post-plan actions immediately
+  // Detect ExitPlanMode — auto-toggle plan mode off and show post-plan actions once per message
+  const msgId = msg.id || null;
   if (tools.some(t => t.name === 'ExitPlanMode')) {
     tab.planMode = false;
     const $plan = _panel?.querySelector('#cp-plan-toggle');
     if ($plan) $plan.classList.remove('active');
-    renderPostPlanActions(tab);
+    // Only render once per message to prevent flicker during partial updates
+    if (!tab._exitPlanMsgId || tab._exitPlanMsgId !== msgId) {
+      tab._exitPlanMsgId = msgId;
+      renderPostPlanActions(tab);
+    }
   }
 
   // Partial message dedup
-  const msgId = msg.id || null;
   if (msgId && msgId === tab.currentMsgId && tab.currentMsgEl) {
     const wrap = tab.currentMsgEl.querySelector('.msg-content');
     if (wrap) {
@@ -3305,17 +3503,28 @@ function sendAskAnswer(tab, questions, answers) {
       response: { behavior: 'allow', updatedInput: { questions, answers } },
     }));
   } else {
-    // Pipe mode — CLI auto-executed AskUserQuestion, send selection as follow-up query
-    const $project = _panel?.querySelector('#cp-project');
-    console.log('[claude-panel] Sending ask answer as follow-up query:', answerText);
-    tab.ws.send(JSON.stringify({
-      type: 'query',
-      prompt: answerText,
-      sessionId: tab.sessionId || undefined,
-      model: _getModelId() || undefined,
-      cwd: ddGetValue($project) || undefined,
-      effort: _getEffort() || undefined,
-    }));
+    // No request_id yet — buffer the answer for when control_request arrives.
+    // In --print mode, AskUserQuestion appears as a permission_denial in the result event.
+    // The server sends a control_request shortly after. Buffer and flush on arrival.
+    console.log('[claude-panel] Buffering ask answer (control_request pending):', answerText);
+    tab.pendingAskBufferedAnswer = { questions, answers };
+    // Fallback: if control_request doesn't arrive within 3s, send as follow-up query
+    setTimeout(() => {
+      if (!tab.pendingAskBufferedAnswer) return; // already flushed
+      console.log('[claude-panel] Fallback: control_request not received, sending as query');
+      const buffered = tab.pendingAskBufferedAnswer;
+      tab.pendingAskBufferedAnswer = null;
+      const fallbackText = Object.values(buffered.answers).join(', ');
+      const $project = _panel?.querySelector('#cp-project');
+      tab.ws.send(JSON.stringify({
+        type: 'query',
+        prompt: `The user answered your question: "${fallbackText}"\nContinue based on their selection.`,
+        sessionId: tab.sessionId || undefined,
+        model: _getModelId() || undefined,
+        cwd: ddGetValue($project) || undefined,
+        effort: _getEffort() || undefined,
+      }));
+    }, 3000);
   }
 
   tab.pendingAskRequestId = null;
@@ -4083,7 +4292,7 @@ function _updateSendIcon($send, $input) {
   }
 }
 
-function finishTab(tab) { hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.sendStartedAt = null; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs(); }
+function finishTab(tab) { hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.sendStartedAt = null; tab._exitPlanMsgId = null; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs(); }
 
 function send() {
   const tab = activeTab();
@@ -4148,7 +4357,7 @@ function send() {
   appendUser(tab, text, pendingImages); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
   let prompt = buildPromptWithAttachments(tab, text);
   if (tab.planMode && prompt) {
-    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes]\n\n${prompt}`;
+    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes. If you need clarification or have questions about the approach, use the AskUserQuestion tool to present options to the user.]\n\n${prompt}`;
   }
 
   // Update pill label on first message
@@ -4408,8 +4617,11 @@ async function loadConfig() {
     if ($model) {
       // Composite value: "modelId:contextWindow" to differentiate models with same id but different context
       const items = _models.map(m => ({ value: `${m.id}:${m.contextWindow || 200000}`, label: m.label }));
-      const saved = storage.getItem(STOR.model);
-      ddPopulate($model, items, saved || '');
+      // Apply user's default model preference (per-tab model restored later by switchTab())
+      const defModel = _getDefaultModel();
+      ddPopulateModels($model, items, defModel);
+      // Clean up stale global key (model now lives per-tab only)
+      storage.removeItem(STOR.model);
     }
   } catch {}
 }
@@ -4837,6 +5049,8 @@ function wireEvents() {
       const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
       _setEffort($think, next);
       storage.setItem(STOR.effort, next);
+      const tab = activeTab();
+      if (tab) { tab.effort = next; saveTabs(); }
     });
   }
 
@@ -4877,21 +5091,45 @@ function wireEvents() {
     });
   }
 
+  // Bar action buttons (quick skills)
+  _panel.querySelector('#cp-action-changelog')?.addEventListener('click', () => {
+    const tab = activeTab();
+    if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+    if (tab.running) return;
+    const $input = _panel?.querySelector('#cp-input');
+    if (!$input) return;
+    $input.value = '/synabun changelog';
+    autoResize();
+    send();
+  });
+
   // Session selector
   const $sessBtn = _panel.querySelector('#cp-session-btn');
   const $sessMenu = _panel.querySelector('#cp-session-menu');
-  $sessBtn.addEventListener('click', () => {
-    const isOpen = $sessMenu.classList.toggle('open');
-    if (isOpen) renderSessionMenu();
-  });
-  // Double-click session label to rename
   const $sessLabel = _panel.querySelector('.cp-session-label');
+  let _sessClickTimer = null;
+
+  $sessBtn.addEventListener('click', (e) => {
+    // Block menu toggle while rename input is active
+    if ($sessLabel?.querySelector('.cp-rename-input')) return;
+    // Delay single-click to allow dblclick to cancel it
+    if (_sessClickTimer) { clearTimeout(_sessClickTimer); _sessClickTimer = null; }
+    _sessClickTimer = setTimeout(() => {
+      _sessClickTimer = null;
+      const isOpen = $sessMenu.classList.toggle('open');
+      if (isOpen) renderSessionMenu();
+    }, 220);
+  });
+
+  // Double-click session label to rename — cancels the pending single-click
   $sessLabel?.addEventListener('dblclick', (e) => {
     e.stopPropagation();
+    if (_sessClickTimer) { clearTimeout(_sessClickTimer); _sessClickTimer = null; }
     $sessMenu.classList.remove('open');
     const tab = activeTab();
     if (tab?.sessionId) renameSession(tab.sessionId, $sessLabel.textContent);
   });
+
   // Rename button (explicit pencil icon next to session label)
   const $renameBtn = _panel.querySelector('#cp-header-rename');
   // Prevent mousedown from blurring an active rename input before click fires
@@ -4900,6 +5138,7 @@ function wireEvents() {
   });
   $renameBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (_sessClickTimer) { clearTimeout(_sessClickTimer); _sessClickTimer = null; }
     $sessMenu.classList.remove('open');
     const tab = activeTab();
     if (tab?.sessionId) renameSession(tab.sessionId, $sessLabel.textContent);
@@ -4917,15 +5156,18 @@ function wireEvents() {
 
   ddSetup($project); ddSetup($model); ddSetup($branch);
   $project.addEventListener('change', () => {
-    storage.setItem(STOR.project, ddGetValue($project));
-    loadBranches(ddGetValue($project));
+    const val = ddGetValue($project);
+    storage.setItem(STOR.project, val);
+    const tab = activeTab();
+    if (tab) { tab.project = val; saveTabs(); }
+    loadBranches(val);
     // Reset session when switching projects
     selectSession(null, 'New chat');
   });
   $model.addEventListener('change', () => {
-    storage.setItem(STOR.model, ddGetValue($model));
+    const val = ddGetValue($model);
     const tab = activeTab();
-    if (tab) renderGauge(tab);
+    if (tab) { tab.model = val; renderGauge(tab); saveTabs(); }
   });
   $branch.addEventListener('change', async () => {
     if (!ddGetValue($branch) || !ddGetValue($project)) return;

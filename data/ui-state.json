@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-18T05:55:43.768Z",
+  "_updated": "2026-03-21T02:01:43.031Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -23798,48 +23798,12 @@
   ],
   "neural-terminal-active-sessions": [
     {
-      "id": "bb537c348de36e98e259612febaa6275",
-      "profile": "shell",
-      "label": "Shell",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": null,
-      "floatColor": null
-    },
-    {
-      "id": "74286cf3cb58551e80bcf6e4bf5d5d96",
-      "profile": "shell",
-      "label": "Shell",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": null,
-      "floatColor": null
-    },
-    {
-      "id": "8510d109795a09efe79f77d3eeb79bcc",
+      "id": "e3eec7f45d4d51297ee79a87b8928f08",
       "profile": "claude-code",
-      "label": "Claude Code · SynaBunWebsite",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": "a75d5be5-3b02-46b6-82b3-cfbcaba390bb",
-      "floatColor": null
-    },
-    {
-      "id": "7a9c820771441d549f5a18dd2cbca93d",
-      "profile": "shell",
-      "label": "Shell",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": null,
-      "floatColor": null
-    },
-    {
-      "id": "d7e3f4151e30b36502e770e4be54c846",
-      "profile": "claude-code",
-      "label": "Website responsiveness",
+      "label": "SocialMediaScheduler",
       "pinned": false,
       "userRenamed": true,
-      "claudeSessionId": "31c0338d-8e16-4981-908d-38ee1981bcf1",
+      "claudeSessionId": "cbf6f11c-a221-40a6-b025-e7f57dd276e2",
       "floatColor": null
     }
   ],
@@ -23850,62 +23814,26 @@
     "visible": false,
     "sessions": [
       {
-        "id": "bb537c348de36e98e259612febaa6275",
-        "profile": "shell",
-        "label": "Shell",
+        "id": "47aa119be6d3dd35c25cb24772433bcd",
+        "profile": "claude-code",
+        "label": "SocialMediaScheduler",
         "pinned": false,
         "isDetached": false,
-        "userRenamed": false,
-        "claudeSessionId": null
+        "userRenamed": true,
+        "claudeSessionId": "cbf6f11c-a221-40a6-b025-e7f57dd276e2"
       },
       {
-        "id": "74286cf3cb58551e80bcf6e4bf5d5d96",
-        "profile": "shell",
-        "label": "Shell",
-        "pinned": false,
-        "isDetached": false,
-        "userRenamed": false,
-        "claudeSessionId": null
-      },
-      {
-        "id": "35a12fa064ccb92eb09743a052ec61be",
+        "id": "883fcb2e11bba024b25546ecf8eee78f",
         "profile": "browser",
-        "label": "(1) n8n | AI Agents | AI Autom…",
+        "label": "Patrick Roland on X: \"AGENT MO…",
         "pinned": false,
         "isDetached": true,
         "userRenamed": false,
         "claudeSessionId": null
-      },
-      {
-        "id": "8510d109795a09efe79f77d3eeb79bcc",
-        "profile": "claude-code",
-        "label": "Claude Code · SynaBunWebsite",
-        "pinned": false,
-        "isDetached": false,
-        "userRenamed": false,
-        "claudeSessionId": "a75d5be5-3b02-46b6-82b3-cfbcaba390bb"
-      },
-      {
-        "id": "7a9c820771441d549f5a18dd2cbca93d",
-        "profile": "shell",
-        "label": "Shell",
-        "pinned": false,
-        "isDetached": false,
-        "userRenamed": false,
-        "claudeSessionId": null
-      },
-      {
-        "id": "d7e3f4151e30b36502e770e4be54c846",
-        "profile": "claude-code",
-        "label": "Website responsiveness",
-        "pinned": false,
-        "isDetached": false,
-        "userRenamed": true,
-        "claudeSessionId": "31c0338d-8e16-4981-908d-38ee1981bcf1"
       }
     ],
     "splitMode": false,
-    "splitRatio": 0.7,
+    "splitRatio": 0.5,
     "focusedPane": 0,
     "paneAssignments": {},
     "activePaneIdx": [
@@ -23914,18 +23842,18 @@
     ],
     "detachedTabs": [
       {
-        "sessionId": "35a12fa064ccb92eb09743a052ec61be",
-        "sessionIdx": 2,
-        "left": 920.671875,
-        "top": 94.55000305175781,
-        "width": 59.75,
+        "sessionId": "883fcb2e11bba024b25546ecf8eee78f",
+        "sessionIdx": 1,
+        "left": 1155.2984619140625,
+        "top": 93.80000305175781,
+        "width": 56.449951171875,
         "height": 420,
         "pinned": false,
-        "label": "(1) n8n | AI Agents | AI Autom…",
+        "label": "Patrick Roland on X: \"AGENT MO…",
         "userRenamed": false,
         "claudeSessionId": null,
         "minimized": false,
-        "floatColor": "pink"
+        "floatColor": "green"
       }
     ]
   },
@@ -42657,7 +42585,7 @@
   },
   "neural-whiteboard": {
     "elements": [],
-    "nextZIndex": 52
+    "nextZIndex": 287
   },
   "neural-panel-detail-card-ed517012": {
     "left": "1674px",
@@ -42801,12 +42729,12 @@
   },
   "neural-pinned-detail-card-91dd5d9b": false,
   "neural-panel-automation-studio-panel": {
-    "left": "291px",
-    "top": "159.5px",
+    "left": "405px",
+    "top": "256.5px",
     "right": "auto",
-    "width": "1201px",
-    "height": "756px",
-    "maxHeight": "903.5px"
+    "width": null,
+    "height": null,
+    "maxHeight": null
   },
   "neural-panel-automation-studio": {
     "x": 544,
@@ -42951,14 +42879,14 @@
         "categoryId": "cat-1772259591539-jcc1",
         "name": "Dev",
         "command": "npm run dev",
-        "cwd": "J:\\Sites\\CriticalPixel",
+        "cwd": "/Users/danilokhury/Apps/CriticalPixel",
         "order": 2
       },
       {
         "id": "cmd-1772381377854-59nk",
         "categoryId": "cat-1772259591539-jcc1",
         "name": "Admin Server",
-        "command": "node J:\\Sites\\CriticalPixel\\.000Settings\\server.js",
+        "command": "node /Users/danilokhury/Apps/CriticalPixel/.000Settings/server.js",
         "cwd": null,
         "order": 3
       }
@@ -43158,14 +43086,10 @@
     "height": null,
     "maxHeight": null
   },
-  "neural-file-explorer-visible": false,
+  "neural-file-explorer-visible": true,
   "neural-file-explorer-width": 348,
   "neural-file-explorer-project": "/Users/danilokhury/Apps/Synabun",
-  "neural-file-explorer-collapsed": [
-    "/Users/danilokhury/Apps/Synabun/hooks",
-    "/Users/danilokhury/Apps/Synabun/docs/screenshots",
-    "/Users/danilokhury/Apps/Synabun/docs"
-  ],
+  "neural-file-explorer-collapsed": [],
   "neural-panel-detail-card-1503ba27": {
     "left": "1162px",
     "top": "239px",
@@ -43299,7 +43223,6 @@
   "synabun-chat-cwd": "J:\\Sites\\CriticalPixel",
   "synabun-chat-project": "J:\\Sites\\Apps\\Synabun",
   "synabun-session-label:3b93d4a5-2026-4cea-8f89-e6ea6a249528": "ChatAI Text",
-  "synabun-claude-panel-model": "claude-opus-4-6:200000",
   "synabun-claude-panel-project": "/Users/danilokhury/Apps/Synabun",
   "synabun-session-label:daf726aa-4c01-4491-91b2-53ab0a2e4de9": "Fix Chat/Overlay panel",
   "synabun-session-label:50c98175-a6e8-46bd-9805-72a09779d9a0": "FileExplorer",
@@ -43326,10 +43249,10 @@
     "maxHeight": null
   },
   "neural-cost-widget-pos": {
-    "left": 1283,
-    "top": 179
+    "left": 918,
+    "top": 343
   },
-  "neural-cost-widget-collapsed": true,
+  "neural-cost-widget-collapsed": false,
   "neural-file-explorer-folder-colors": {
     "J:/Sites/Apps/Synabun/memory-seed": "#a1887f",
     "J:/Sites/Apps/Synabun/docs": "#e57373",
@@ -43339,7 +43262,10 @@
     "J:/Sites/Apps/Synabun/public": "#e57373",
     "J:/Sites/Apps/Synabun/node_modules": "#fff176",
     "J:/Sites/Apps/Synabun/neural-interface": "#4dd0e1",
-    "J:/Sites/Apps/Synabun/mcp-server/dist": "#81c784"
+    "J:/Sites/Apps/Synabun/mcp-server/dist": "#81c784",
+    "/Users/danilokhury/Apps/CriticalPixel/src": "#e57373",
+    "/Users/danilokhury/Apps/CriticalPixel/src/components": "#e57373",
+    "/Users/danilokhury/Apps/CriticalPixel/.000Settings": "#64b5f6"
   },
   "synabun-session-label:c51c3d2f-13e1-4eff-bd79-7de0c9783212": "Price thing",
   "synabun-session-label:e9df2ad3-9b5e-4198-a59c-b4b5dbfec43a": "File Explorer Backup/Restore e Settings ICONS",
@@ -51137,57 +51063,192 @@
   "synabun-session-label:181744d6-52c4-4ac7-a94d-06d1d125b021": "Restyle Bottom of Prompt",
   "synabun-session-label:ec01884c-2c0b-44be-b5b9-0b7adc184f96": "Fix Changelog Skill",
   "synabun-claude-panel-windows": {
-    "874c042a-d3fc-4ffd-9a9e-adc95ba977aa": 1773796338903,
-    "c6b3b1fd-2e19-4b80-897c-8249bea868c7": 1773798644720,
-    "a4fc5ec3-db4b-438a-a7a1-fcbfccc2d6e1": 1773813181013
+    "6ece9576-8c7d-4786-b024-19f5e906f326": 1773987696405,
+    "720467bb-3035-4f06-87d3-c8aec8f0f026": 1774023279999,
+    "c7a0f32b-53a2-4b9a-979c-1c8d3e42e634": 1774026876767,
+    "b37432fc-dd6f-43c5-bd8f-8453b97d6521": 1774030913760,
+    "db3a83e5-262f-4e0d-b74a-4610b5933ff1": 1774058444835
   },
-  "synabun-claude-panel-boot-id": "95777de1-918c-4491-8c11-e431d3618cb3",
-  "synabun-claude-panel-tabs-874c042a-d3fc-4ffd-9a9e-adc95ba977aa": {
+  "synabun-claude-panel-boot-id": "7b7dc088-3027-4624-b247-85dffda67c97",
+  "synabun-session-label:69b559ae-aeca-4784-a4ec-e7c58407e722": "PriceFleatFIx",
+  "neural-cost-widget-docked": true,
+  "synabun-session-label:a0b08147-83ae-4f97-b38c-833e71c7b253": "Documentation Update",
+  "synabun-session-label:bf80987f-8812-4b1f-a9e3-d0d7befbafa5": "Synabun Browser Stream",
+  "synabun-session-label:31c0338d-8e16-4981-908d-38ee1981bcf1": "Website responsiveness",
+  "synabun-session-label:e8c975d2-5cd1-4b57-bfc8-aa5262eb8cd2": "x",
+  "synabun-session-label:7a126567-2c74-47c2-8c15-1f2bd149b754": "Redis CritPix",
+  "synabun-session-label:d41b260f-1727-4a52-8999-063d19e7b32c": "Fix Loop",
+  "synabun-session-label:fe87f6fd-c6da-49b1-b919-269b7a1f5421": "Blog Loop",
+  "synabun-session-label:071cc449-7542-43c9-921d-f007c5f0fda4": "FixSearchCrit",
+  "synabun-session-label:da3f6a0b-7747-442b-9af2-310fa967711a": "X",
+  "synabun-session-label:b98801fa-49bb-4dd5-a6b3-f6c6ea421bdb": "LoopAgents",
+  "synabun-session-label:82d0862a-3ebc-48a7-94fd-1c704f77ca36": "Settings Redesing",
+  "synabun-session-label:d5473eb4-fc0d-4d46-84f3-3a1005929b9f": "Default Model",
+  "synabun-session-label:07c45759-42b6-44cf-bb24-a8ffefca973e": "AgentsFix",
+  "synabun-session-label:aaa4041d-787c-4345-ad72-624eee3de84c": "ModelPersistance",
+  "synabun-session-label:e5319b33-96f7-4529-8878-510c95704116": "ImageSharing",
+  "synabun-session-label:f5903aed-4566-45e1-af5e-1a82567cbe05": "MarkdownBrowser",
+  "synabun-session-label:70df3c54-7c97-458d-abea-ea3e9aa13490": "Loop Fjx",
+  "synabun-session-label:9cdaf2df-9212-4d6e-9960-7739c2904f76": "DebugCompact",
+  "synabun-session-label:08e5ae97-2f9b-4a0b-8865-d8670c097c05": "FixingStyleSynabun",
+  "synabun-session-label:fc5fd897-ee09-4e9f-91d6-f1a361337dc3": "BlogHellLoop",
+  "synabun-claude-panel-tabs-6ece9576-8c7d-4786-b024-19f5e906f326": {
     "tabs": [
       {
-        "id": "1ea5653b-3b0a-4bb4-a2fe-8a62b4a9b2cb",
-        "sessionId": "69b559ae-aeca-4784-a4ec-e7c58407e722",
-        "label": "PriceFleatFIx",
-        "sessionCost": 1.1902134999999998,
-        "running": false
+        "id": "d59e70dd-ea4d-459b-a277-a1c450678380",
+        "sessionId": "ed491673-5495-4c5d-b7f0-146b5369d0d0",
+        "label": "ImagesExplorer",
+        "sessionCost": 4.150975,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:200000",
+        "effort": "high",
+        "planMode": false
       },
       {
-        "id": "41ddf2d9-5b36-4f08-a3a8-c68059befd20",
-        "sessionId": "f2640e35-b84e-4723-bf0d-f299abf1aaf0",
-        "label": "Within Synabun we ha...",
-        "sessionCost": 1.1280119999999998,
-        "running": false
+        "id": "28c6eb81-e779-42cd-b37e-50a65613b26d",
+        "sessionId": "ed491673-5495-4c5d-b7f0-146b5369d0d0",
+        "label": "ImagesExplorer",
+        "sessionCost": 2.04632425,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:200000",
+        "effort": "high",
+        "planMode": false
       }
     ],
     "activeIdx": 1
   },
-  "synabun-session-label:69b559ae-aeca-4784-a4ec-e7c58407e722": "PriceFleatFIx",
-  "synabun-claude-panel-tabs-c6b3b1fd-2e19-4b80-897c-8249bea868c7": {
+  "synabun-session-label:b26e1cfe-74f9-45c5-98f2-5092af2f3813": "ModelSelectorFix",
+  "synabun-session-label:661e29ae-e656-4d10-8bbf-dc157b71659a": "AgentFix100",
+  "synabun-session-label:2dfb380e-cc6a-4ad5-887f-7cf4da1ecd6b": "BlogFix",
+  "synabun-claude-panel-default-model": "claude-opus-4-6:200000",
+  "synabun-session-label:0442a444-907d-4e68-b5df-210f2588be57": "CenterLightLogo",
+  "synabun-session-label:f1ae5e86-71c4-45b1-9ec5-f63c8dbeea2e": "FixSessionRenameResponse",
+  "synabun-session-label:41b8cdd0-3848-4460-88b5-c91d560ae964": "LogoStickFocus",
+  "synabun-session-label:f9a95bfb-69d5-4900-b515-fed4f048c238": "IMG Permissions",
+  "synabun-session-label:8b0e9e31-aefa-4a7c-9be5-3c87faec96f5": "PriceTrackFix",
+  "synabun-session-label:23171a17-97ec-4ee6-92f3-be30edd6dd26": "TagsMenuWebsiteFix",
+  "synabun-session-label:21cd638d-720d-4d76-a380-9c3385a6c27e": "PlanFIX",
+  "synabun-session-label:aef7e28d-964c-4465-8588-7637e8978de8": "ContextFix",
+  "synabun-session-label:b07a102b-a5d5-4457-a785-fbb3706763c7": "StallInvestigation",
+  "neural-panel-session-monitor-panel": {
+    "left": "535px",
+    "top": "276.5px",
+    "right": "auto",
+    "width": null,
+    "height": null,
+    "maxHeight": null
+  },
+  "synabun-session-label:124445cc-bdde-45c7-9618-391eb0a5f291": "SocialTools",
+  "synabun-session-label:3b017793-68cb-4bd2-9c1d-870b2b444190": "AutomationModalsStyle",
+  "synabun-session-label:e230848a-699a-4e02-944d-d88a22ac4b87": "PrintTooltip",
+  "synabun-session-label:8ce69c3b-3c2f-4d75-b1be-b1ac2a39af63": "ContextFix",
+  "synabun-session-label:95f53c35-efc5-43d0-b35a-32b361d6af3c": "XBOT",
+  "synabun-session-label:36393f36-3805-46a7-a7b3-aa26a24251a8": "Toolbar IconFix",
+  "synabun-session-label:58f0416c-8ee3-46f6-9e3b-c7741cde97ca": "FixBlog",
+  "synabun-session-label:c347eff6-3e55-440f-867d-68a59381ba76": "CronBrainstorm",
+  "synabun-session-label:cbf6f11c-a221-40a6-b025-e7f57dd276e2": "SocialMediaScheduler",
+  "synabun-session-label:ed491673-5495-4c5d-b7f0-146b5369d0d0": "ImagesExplorer",
+  "synabun-session-label:1e5c9a0d-7ba8-4f64-a560-2adf7b56a99f": "PanelHeaderFunctionChangelog",
+  "synabun-session-label:5714a6d3-09fe-4113-ae63-f6881a902205": "TikTOkBot",
+  "synabun-claude-panel-tabs-720467bb-3035-4f06-87d3-c8aec8f0f026": {
     "tabs": [
       {
-        "id": "c820d5a0-4d63-453a-9da6-4fa997c7fd2d",
+        "id": "e6f7fd97-c4b4-4814-aa5c-c1f1c760a83b",
+        "sessionId": "cbf6f11c-a221-40a6-b025-e7f57dd276e2",
+        "label": "SocialMediaScheduler",
+        "sessionCost": 1.57796575,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:200000",
+        "effort": "high",
+        "planMode": false
+      },
+      {
+        "id": "7dce7984-fdaa-4b64-81cc-09bffb8dbeba",
+        "sessionId": "2ca88675-4acc-468a-9bf3-f533302c4af9",
+        "label": "WhiteBoardIcons",
+        "sessionCost": 0.42827275,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:200000",
+        "effort": "high",
+        "planMode": false
+      },
+      {
+        "id": "e6af21be-70d3-4a77-bcec-40f97c6654c5",
         "sessionId": null,
         "label": "New chat",
         "sessionCost": 0,
-        "running": false
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:200000",
+        "effort": "high",
+        "planMode": false
       }
     ],
     "activeIdx": 0
   },
-  "neural-cost-widget-docked": true,
-  "synabun-claude-panel-tabs-a4fc5ec3-db4b-438a-a7a1-fcbfccc2d6e1": {
+  "synabun-session-label:2ca88675-4acc-468a-9bf3-f533302c4af9": "WhiteBoardIcons",
+  "synabun-claude-panel-tabs-c7a0f32b-53a2-4b9a-979c-1c8d3e42e634": {
     "tabs": [
       {
-        "id": "48af33e9-fda9-4447-9ccd-8cc0f3cc1ca1",
-        "sessionId": "7ef929a2-1cb5-47b5-acd5-0359e50f6881",
-        "label": "[PLAN MODE — think step by step, create a detailed plan, do ...",
-        "sessionCost": 0.562285,
-        "running": false
+        "id": "06f84205-e30f-48e7-9f43-f67d03522583",
+        "sessionId": "cbf6f11c-a221-40a6-b025-e7f57dd276e2",
+        "label": "SocialMediaScheduler",
+        "sessionCost": 0.7325135,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:200000",
+        "effort": "high",
+        "planMode": false
       }
     ],
     "activeIdx": 0
   },
-  "synabun-session-label:a0b08147-83ae-4f97-b38c-833e71c7b253": "Documentation Update",
-  "synabun-session-label:bf80987f-8812-4b1f-a9e3-d0d7befbafa5": "Synabun Browser Stream",
-  "synabun-session-label:31c0338d-8e16-4981-908d-38ee1981bcf1": "Website responsiveness"
+  "synabun-claude-panel-tabs-b37432fc-dd6f-43c5-bd8f-8453b97d6521": {
+    "tabs": [
+      {
+        "id": "d9458373-a8f6-489c-a7b0-6e9f81cadd00",
+        "sessionId": "cbf6f11c-a221-40a6-b025-e7f57dd276e2",
+        "label": "SocialMediaScheduler",
+        "sessionCost": 6.020238,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:200000",
+        "effort": "high",
+        "planMode": false
+      }
+    ],
+    "activeIdx": 0
+  },
+  "synabun-claude-panel-tabs-db3a83e5-262f-4e0d-b74a-4610b5933ff1": {
+    "tabs": [
+      {
+        "id": "186ef58a-01d4-4e65-b1b9-838638c6c273",
+        "sessionId": "e8d6b461-f3f6-46ab-a194-89424264f0a4",
+        "label": "ScheduleDoubleFix",
+        "sessionCost": 3.5006347499999997,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:200000",
+        "effort": "high",
+        "planMode": false
+      },
+      {
+        "id": "e0e355af-b3dc-4785-83f1-0b529b12d777",
+        "sessionId": "5af33ec1-2d2f-40a3-b4aa-aa5cde38735e",
+        "label": "Within synabun we ha...",
+        "sessionCost": 0.5559005,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:200000",
+        "effort": "high",
+        "planMode": true
+      }
+    ],
+    "activeIdx": 1
+  },
+  "synabun-session-label:e8d6b461-f3f6-46ab-a194-89424264f0a4": "ScheduleDoubleFix"
 }

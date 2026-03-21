@@ -313,12 +313,21 @@ export function getSharedHTML() {
   </div>
 
   <div class="bar-right">
-    <button id="titlebar-cost-btn" class="bar-icon bar-cost-btn" data-tooltip="Cost Tracker"><span class="bar-cost-label">$0</span></button>
-    <button id="titlebar-tutorial-btn" class="bar-icon" data-tooltip="Toggle Tutorial"><svg viewBox="0 0 24 24"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor"/></svg></button>
-    <button id="titlebar-viz-toggle" class="bar-icon active" data-tooltip="${t('tooltip.toggleViz')}"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg></button>
-    <button id="titlebar-fullscreen-btn" class="bar-icon" data-tooltip="${t('tooltip.fullscreen')}"><svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
-    <div class="bar-sep"></div>
-    <span id="titlebar-clock" class="titlebar-clock"></span>
+    <div class="bar-group">
+      <button id="titlebar-sessions-btn" class="bar-icon" data-tooltip="Session Monitor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="3" fill="currentColor" opacity="0.1"/><rect x="2" y="3" width="20" height="14" rx="3"/><path d="M8 21h8M12 17v4"/><path d="M7.5 13V10"/><path d="M10.5 13V11"/><path d="M13.5 13V8"/><path d="M16.5 13V9.5"/></svg></button>
+      <button id="titlebar-gallery-btn" class="bar-icon" data-tooltip="Image Gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="17" height="14" rx="2.5" fill="currentColor" opacity="0.08" stroke="none"/><rect x="2" y="6" width="17" height="14" rx="2.5"/><circle cx="7.5" cy="11.5" r="2" fill="currentColor" opacity="0.25" stroke="none"/><path d="M2 17l4.5-3.5 3 2.5 2.5-2L19 20"/></svg></button>
+    </div>
+    <div class="bar-group">
+      <button id="titlebar-cost-btn" class="bar-icon bar-cost-btn" data-tooltip="Cost Tracker"><span class="bar-cost-label">$0</span></button>
+      <button id="titlebar-tutorial-btn" class="bar-icon" data-tooltip="Toggle Tutorial"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.07" stroke="none"/><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor" stroke="none"/></svg></button>
+    </div>
+    <div class="bar-group">
+      <button id="titlebar-viz-toggle" class="bar-icon active" data-tooltip="${t('tooltip.toggleViz')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" fill="currentColor" opacity="0.12" stroke="none"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg></button>
+      <button id="titlebar-fullscreen-btn" class="bar-icon" data-tooltip="${t('tooltip.fullscreen')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h4v4" opacity="0.1" fill="currentColor" stroke="none"/><path d="M20 4h-4v4" opacity="0.1" fill="currentColor" stroke="none"/><path d="M4 20h4v-4" opacity="0.1" fill="currentColor" stroke="none"/><path d="M20 20h-4v-4" opacity="0.1" fill="currentColor" stroke="none"/><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+    </div>
+    <div class="bar-group bar-group--clock">
+      <span id="titlebar-clock" class="titlebar-clock"></span>
+    </div>
   </div>
 </div>
 
@@ -343,7 +352,7 @@ export function getSharedHTML() {
   </button>
 
   <button id="topright-memory-explorer-btn" class="topright-icon-btn" data-tooltip="Memory Explorer">
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4"/><path d="M12 19v4"/><path d="M4.22 4.22l2.83 2.83"/><path d="M16.95 16.95l2.83 2.83"/><path d="M1 12h4"/><path d="M19 12h4"/><path d="M4.22 19.78l2.83-2.83"/><path d="M16.95 7.05l2.83-2.83"/></svg>
+    <svg viewBox="0 0 24 24"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>
   </button>
 
   <button id="topright-file-explorer-btn" class="topright-icon-btn" data-tooltip="File Explorer">
@@ -664,16 +673,17 @@ export function getSharedHTML() {
         <svg viewBox="0 0 24 24"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor"/><circle cx="4" cy="12" r="1.5" fill="currentColor"/><circle cx="4" cy="18" r="1.5" fill="currentColor"/></svg>
       </button>
       <button class="wb-tool" data-tool="arrow" data-tooltip="Arrow · hold Ctrl = multi">
-        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        <svg viewBox="0 0 24 24" fill="none"><path d="M5 17L17 5" stroke-width="2" stroke-linecap="round"/><path d="M17 5L10 5M17 5L17 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button class="wb-tool" data-tool="shape" data-tooltip="Shape · hold Ctrl = multi">
-        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="none"/><circle cx="12" cy="12" r="4" fill="none"/></svg>
+        <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3"/></svg>
       </button>
+      <div id="wb-shape-picker" class="glass" style="display:none;"></div>
       <button class="wb-tool" data-tool="pen" data-tooltip="Pencil · hold Ctrl = multi">
         <svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
       </button>
       <button class="wb-tool" data-tool="section" data-tooltip="Wireframe section · hold Ctrl = multi">
-        <svg viewBox="0 0 24 24" fill="none"><rect x="2" y="2" width="20" height="6" rx="1"/><rect x="2" y="10" width="9" height="12" rx="1"/><rect x="13" y="10" width="9" height="12" rx="1"/></svg>
+        <svg viewBox="0 0 24 24" fill="none"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="9" width="6" height="12" rx="1"/><rect x="10" y="9" width="12" height="7" rx="1"/><rect x="10" y="18" width="12" height="3" rx="1"/></svg>
       </button>
       <div id="wb-section-picker" class="glass" style="display:none;"></div>
       <div class="wb-tool-sep"></div>

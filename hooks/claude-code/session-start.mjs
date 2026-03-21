@@ -76,6 +76,19 @@ function getGitBranch(cwd) {
   }
 }
 
+function getGitHead(cwd) {
+  try {
+    return execSync('git rev-parse HEAD', {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 2000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
 function resolveTemplate(template, vars) {
   return template.replace(/\{(\w+)\}/g, (match, key) => {
     return vars[key] !== undefined ? vars[key] : match;
@@ -135,6 +148,19 @@ async function main() {
   const project = detectProject(cwd);
   const features = getHookFeatures();
   const isCompactRestart = source === 'compact';
+
+  // Register session with Neural Interface session monitor (fire-and-forget)
+  if (sessionId) {
+    const niUrl = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
+    try {
+      fetch(`${niUrl}/api/sessions/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ claudeSessionId: sessionId, cwd, profile: 'claude-code', source: 'hook', project, terminalType: 'external' }),
+        signal: AbortSignal.timeout(3000),
+      }).catch(() => { /* NI may not be running */ });
+    } catch { /* ok */ }
+  }
 
   // Ensure all registered projects have their default category trees
   try { ensureProjectCategories(); } catch { /* non-critical */ }
@@ -279,12 +305,21 @@ async function main() {
   // BLOCK 1: SYNABUN HEADER + SESSION RECALL (condensed)
   // ============================================================
 
+  const startCommit = getGitHead(cwd);
+
   context.push(
     `## SynaBun Persistent Memory`,
     ``,
     `SynaBun memory is active. CLAUDE.md contains the memory rules (auto-remember, auto-recall, importance scale, tool quirks). Follow those rules throughout this session.`,
     ``,
   );
+
+  if (startCommit) {
+    context.push(
+      `Session start commit: \`${startCommit}\``,
+      ``,
+    );
+  }
 
   // --- COMPACTION BLOCK (only when source=compact) ---
   if (precompactData) {
