@@ -279,7 +279,7 @@ function showConflictToast(conflictLabel, combo) {
   setTimeout(() => {
     toast.classList.remove('kb-toast-visible');
     setTimeout(() => toast.remove(), 300);
-  }, 2500);
+  }, 3500);
 }
 
 export function openKeybindsModal() {

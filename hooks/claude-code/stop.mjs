@@ -31,10 +31,10 @@
  *   {} to allow Claude to stop normally
  */
 
-import { readFileSync, writeFileSync, existsSync, unlinkSync, appendFileSync, readdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync, appendFileSync, readdirSync, renameSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cleanupStaleLoops } from './shared.mjs';
+import { cleanupStaleLoops, detectProject } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
@@ -42,6 +42,9 @@ const PENDING_COMPACT_DIR = join(DATA_DIR, 'pending-compact');
 const LOOP_DIR = join(DATA_DIR, 'loop');
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
+const STORED_PLANS_PATH = join(DATA_DIR, 'stored-plans.json');
+const PLANS_DIR = join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans');
+const PLAN_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_RETRIES = 3;
 const EDIT_THRESHOLD = 3;
 const MESSAGE_THRESHOLD = 5;
@@ -96,6 +99,54 @@ function getHookFeatures() {
     if (!existsSync(HOOK_FEATURES_PATH)) return {};
     return JSON.parse(readFileSync(HOOK_FEATURES_PATH, 'utf-8'));
   } catch { return {}; }
+}
+
+/**
+ * Find unstored plan files modified within PLAN_MAX_AGE_MS.
+ * Returns the most recent unstored plan or null.
+ */
+function findUnstoredRecentPlan() {
+  try {
+    if (!existsSync(PLANS_DIR)) return null;
+
+    let stored = {};
+    try {
+      if (existsSync(STORED_PLANS_PATH)) {
+        stored = JSON.parse(readFileSync(STORED_PLANS_PATH, 'utf-8'));
+      }
+    } catch { /* ok */ }
+
+    const now = Date.now();
+    const files = readdirSync(PLANS_DIR)
+      .filter(f => f.endsWith('.md'))
+      .map(f => {
+        const fullPath = join(PLANS_DIR, f);
+        const stat = statSync(fullPath);
+        return { name: f, path: fullPath, mtimeMs: stat.mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    for (const file of files) {
+      if (stored[file.name]) continue;
+      if (now - file.mtimeMs > PLAN_MAX_AGE_MS) break; // sorted by mtime desc, no need to check older
+      return file;
+    }
+  } catch { /* ok */ }
+  return null;
+}
+
+/**
+ * Mark a plan file as stored in the dedup tracker so it's not re-triggered.
+ */
+function markPlanStored(fileName) {
+  try {
+    let stored = {};
+    if (existsSync(STORED_PLANS_PATH)) {
+      stored = JSON.parse(readFileSync(STORED_PLANS_PATH, 'utf-8'));
+    }
+    stored[fileName] = { memoryId: 'pending-remember', storedAt: new Date().toISOString() };
+    writeFileSync(STORED_PLANS_PATH, JSON.stringify(stored, null, 2), 'utf-8');
+  } catch { /* best-effort */ }
 }
 
 /**
@@ -174,11 +225,13 @@ function checkFlag(flagPath, buildReason) {
 async function main() {
   let sessionId = '';
   let lastMessage = '';
+  let cwd = '';
   try {
     const raw = await readStdin();
     const input = JSON.parse(raw);
     sessionId = input.session_id || '';
     lastMessage = (input.last_assistant_message || '').toLowerCase();
+    cwd = input.cwd || '';
   } catch { /* proceed */ }
 
   if (!sessionId) {
@@ -186,53 +239,90 @@ async function main() {
     return;
   }
 
-  // ─── CHECK 1: Pending compact (higher priority) ───
-  // Session IDs can differ between PreCompact and post-compaction Stop,
-  // so scan ALL pending-compact files and pick the most recent one.
-  const DEBUG_LOG = join(DATA_DIR, 'compact-debug.log');
-  let compactFlagPath = null;
+  // ─── PRE-CHECK: Quick loop scan ───
+  // Determine if a loop is active BEFORE checking compaction. Loops must NEVER
+  // be blocked by compaction — it stalls iteration transitions and kills the loop.
+  // We do a fast scan here; the full loop logic is below in CHECK 1.5.
+  let hasActiveLoop = false;
   try {
-    if (existsSync(PENDING_COMPACT_DIR)) {
-      const files = readdirSync(PENDING_COMPACT_DIR)
-        .filter(f => f.endsWith('.json') && !f.startsWith('test-'));
-      if (files.length > 0) {
-        // Pick the most recently created flag
-        let newest = null;
-        let newestTime = 0;
-        for (const f of files) {
-          const fp = join(PENDING_COMPACT_DIR, f);
-          try {
-            const flag = JSON.parse(readFileSync(fp, 'utf-8'));
-            const t = new Date(flag.created_at || 0).getTime();
-            if (t > newestTime) { newestTime = t; newest = fp; }
-          } catch { /* skip corrupt */ }
-        }
-        compactFlagPath = newest;
+    if (existsSync(LOOP_DIR)) {
+      const loopFiles = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
+      for (const f of loopFiles) {
+        try {
+          const candidate = JSON.parse(readFileSync(join(LOOP_DIR, f), 'utf-8'));
+          if (candidate.active && (candidate.currentIteration || 0) > 0) {
+            hasActiveLoop = true;
+            break;
+          }
+        } catch { continue; }
       }
     }
   } catch { /* ok */ }
 
-  try {
-    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] STOP session_id=${sessionId} compactFlagPath=${compactFlagPath}\n`);
-  } catch { /* ok */ }
+  // ─── CHECK 1: Pending compact ───
+  // SKIP compaction when a loop is active — compaction blocks iteration transitions
+  // and causes the loop to stall. The compact flag will be handled after the loop ends.
+  const DEBUG_LOG = join(DATA_DIR, 'compact-debug.log');
+  let compactFlagPath = null;
 
-  if (compactFlagPath) {
-    const compactResult = checkFlag(
-      compactFlagPath,
-      (_flag, attempt) =>
-        `SynaBun: Session compacted but not indexed yet — log it in 'conversations' first. (${attempt}/${MAX_RETRIES})`
-    );
+  if (!hasActiveLoop) {
+    try {
+      if (existsSync(PENDING_COMPACT_DIR)) {
+        const files = readdirSync(PENDING_COMPACT_DIR)
+          .filter(f => f.endsWith('.json') && !f.startsWith('test-'));
+        if (files.length > 0) {
+          let newest = null;
+          let newestTime = 0;
+          for (const f of files) {
+            const fp = join(PENDING_COMPACT_DIR, f);
+            try {
+              const flag = JSON.parse(readFileSync(fp, 'utf-8'));
+              const t = new Date(flag.created_at || 0).getTime();
+              if (t > newestTime) { newestTime = t; newest = fp; }
+            } catch { /* skip corrupt */ }
+          }
+          compactFlagPath = newest;
+        }
+      }
+    } catch { /* ok */ }
 
-    if (compactResult?.shouldBlock) {
-      try {
-        appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] STOP BLOCKING session_id=${sessionId} reason=${compactResult.reason}\n`);
-      } catch { /* ok */ }
-      process.stdout.write(JSON.stringify({
-        decision: 'block',
-        reason: compactResult.reason,
-      }));
-      return;
+    try {
+      appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] STOP session_id=${sessionId} compactFlagPath=${compactFlagPath}\n`);
+    } catch { /* ok */ }
+
+    if (compactFlagPath) {
+      const compactResult = checkFlag(
+        compactFlagPath,
+        (_flag, attempt) =>
+          `SynaBun: Session compacted but not indexed yet — log it in 'conversations' first. (${attempt}/${MAX_RETRIES})`
+      );
+
+      if (compactResult?.shouldBlock) {
+        try {
+          appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] STOP BLOCKING session_id=${sessionId} reason=${compactResult.reason}\n`);
+        } catch { /* ok */ }
+        process.stdout.write(JSON.stringify({
+          decision: 'block',
+          reason: compactResult.reason,
+        }));
+        return;
+      }
     }
+  } else {
+    try {
+      appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] STOP session_id=${sessionId} SKIPPING compaction (active loop)\n`);
+    } catch { /* ok */ }
+    // Also clean up any pending-compact flags — they'll never be handled during a loop
+    // and would just accumulate. Delete them so they don't stall post-loop stops.
+    try {
+      if (existsSync(PENDING_COMPACT_DIR)) {
+        const compactFiles = readdirSync(PENDING_COMPACT_DIR)
+          .filter(f => f.endsWith('.json') && !f.startsWith('test-'));
+        for (const cf of compactFiles) {
+          try { unlinkSync(join(PENDING_COMPACT_DIR, cf)); } catch { /* ok */ }
+        }
+      }
+    } catch { /* ok */ }
   }
 
   // ─── CHECK 1.5: Active loop ───
@@ -266,6 +356,11 @@ async function main() {
         try {
           const candidate = JSON.parse(readFileSync(fp, 'utf-8'));
           if (candidate.active && candidate.currentIteration === 0) {
+            // Skip server-launched loops — they have a terminalSessionId and
+            // will be claimed via the [SynaBun Loop] marker in prompt-submit.
+            // Claiming them here causes cross-session leaks when multiple
+            // Claude panels are open simultaneously.
+            if (candidate.terminalSessionId) continue;
             const loopMaxMs = ((candidate.maxMinutes || 60) + 5) * 60 * 1000;
             if (now - new Date(candidate.startedAt).getTime() > loopMaxMs) continue;
             loop = candidate;
@@ -501,6 +596,31 @@ async function main() {
       }
     }
 
+    // CHECK 5: Unstored plan file (fallback for when PostToolUse hook doesn't fire)
+    // ExitPlanMode often returns a tool_use_error because the plan is auto-approved
+    // before Claude's ExitPlanMode call executes. PostToolUse hooks may not fire on
+    // errors, so the post-plan.mjs hook never runs. This catches those missed plans.
+    const unstoredPlan = findUnstoredRecentPlan();
+    if (unstoredPlan) {
+      const planRetryKey = 'planRetries';
+      const planRetries = flag[planRetryKey] || 0;
+      if (planRetries < MAX_RETRIES) {
+        flag[planRetryKey] = planRetries + 1;
+        try {
+          const planContent = readFileSync(unstoredPlan.path, 'utf-8').trim();
+          const planTitle = (planContent.match(/^#\s+(.+)$/m) || [])[1] || unstoredPlan.name;
+          const project = detectProject(cwd);
+          // Mark as stored to prevent re-triggering
+          markPlanStored(unstoredPlan.name);
+          obligations.push({
+            type: 'plan',
+            short: `**Plan memory**: "${planTitle}" — call \`remember\` category \`plans-${project}\`, importance 7, tags ["plan", "implementation", "${project}"], source "auto-saved". Include the full plan content.`,
+            verbose: `SynaBun: Plan "${planTitle}" was approved but not stored in memory (PostToolUse hook missed it). Call \`remember\` with the plan content below. Category: \`plans-${project}\`, importance: 7, tags: ["plan", "implementation", "${project}"], source: "auto-saved".\n\nPlan file: ${unstoredPlan.name}\n\n${planContent.slice(0, 4000)}`,
+          });
+        } catch { /* skip unreadable */ }
+      }
+    }
+
     // Write flag once after all checks (single write instead of per-check writes)
     try { writeFileSync(rememberFlagPath, JSON.stringify(flag)); } catch { /* ok */ }
 
@@ -523,7 +643,26 @@ async function main() {
     softCleanupFlag(rememberFlagPath);
   }
 
-  // No flags → allow stop
+  // ─── STANDALONE PLAN CHECK (no pending-remember flag needed) ───
+  // Catches plans even when there's no flag file (e.g., very short sessions)
+  const standalonePlan = findUnstoredRecentPlan();
+  if (standalonePlan) {
+    try {
+      const planContent = readFileSync(standalonePlan.path, 'utf-8').trim();
+      const planTitle = (planContent.match(/^#\s+(.+)$/m) || [])[1] || standalonePlan.name;
+      const project = detectProject(cwd);
+      // Mark as stored NOW to prevent re-triggering on next stop cycle.
+      // Claude will remember it via MCP; if that fails, the plan file still exists on disk.
+      markPlanStored(standalonePlan.name);
+      process.stdout.write(JSON.stringify({
+        decision: 'block',
+        reason: `SynaBun: Plan "${planTitle}" was approved but not stored in memory. Call \`remember\` with the plan content. Category: \`plans-${project}\`, importance: 7, tags: ["plan", "implementation", "${project}"], source: "auto-saved".\n\nPlan file: ${standalonePlan.name}\n\n${planContent.slice(0, 4000)}`,
+      }));
+      return;
+    } catch { /* fall through to allow stop */ }
+  }
+
+  // No flags, no unstored plans → allow stop
   process.stdout.write(JSON.stringify({}));
 }
 

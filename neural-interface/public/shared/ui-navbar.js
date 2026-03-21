@@ -11,6 +11,8 @@ import { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig } from './ui-setting
 import { registerAction } from './ui-keybinds.js';
 import { startTutorial } from './ui-tutorial.js';
 import { toggleClaudePanel } from './ui-claude-panel.js';
+import { toggleSessionMonitor } from './ui-sessions.js';
+import { toggleImageGallery } from './ui-image-gallery.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -90,6 +92,29 @@ export function initNavbar() {
     });
 
     registerAction('toggle-focus-mode', () => vizBtn.click());
+  }
+
+  // ── Session monitor toggle ──
+  const sessionsBtn = $('titlebar-sessions-btn');
+  if (sessionsBtn) {
+    sessionsBtn.addEventListener('click', () => {
+      toggleSessionMonitor();
+      sessionsBtn.classList.toggle('active');
+    });
+    // Sync button state when window is closed via its own close button or backdrop
+    on('session-monitor:closed', () => sessionsBtn.classList.remove('active'));
+    registerAction('toggle-session-monitor', () => sessionsBtn.click());
+  }
+
+  // ── Image gallery toggle ──
+  const galleryBtn = $('titlebar-gallery-btn');
+  if (galleryBtn) {
+    galleryBtn.addEventListener('click', () => {
+      toggleImageGallery();
+      galleryBtn.classList.toggle('active');
+    });
+    on('image-gallery:closed', () => galleryBtn.classList.remove('active'));
+    registerAction('toggle-image-gallery', () => galleryBtn.click());
   }
 
   // ── Cost tracker dock button ──

@@ -18,6 +18,24 @@ import { createFrameRenderer } from './utils.js';
 const $ = (id) => document.getElementById(id);
 const CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini']);
 
+/** Cross-browser clipboard write with fallback for non-secure contexts. */
+function _clipCopy(text) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => _clipFallback(text));
+  } else {
+    _clipFallback(text);
+  }
+}
+function _clipFallback(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch {}
+  ta.remove();
+}
+
 // ── Profiles ──
 
 const SVG_CLAUDE = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
@@ -449,18 +467,6 @@ function _sendResize(session) {
   } catch {}
 }
 
-// ── Auto-scroll: track whether user is at the bottom of scrollback ──
-// Scroll events from fitAddon.fit() are ignored via _fitInProgress flag.
-// TUI apps (alternate buffer) are excluded in ws.onmessage.
-function _initAutoScroll(session) {
-  const xv = session.viewport.querySelector('.xterm-viewport');
-  if (!xv) return;
-  xv.addEventListener('scroll', () => {
-    if (session._fitInProgress) return;
-    const { scrollTop, scrollHeight, clientHeight } = xv;
-    session._autoScroll = scrollHeight - scrollTop - clientHeight < 2;
-  }, { passive: true });
-}
 
 // ── Session registry (persists across page refresh) ──
 
@@ -1431,7 +1437,7 @@ async function openSession(profile, cwd, existingSessionId) {
     if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       const sel = term.getSelection();
       if (sel) {
-        if (e.type === 'keydown') navigator.clipboard.writeText(sel).catch(() => {});
+        if (e.type === 'keydown') _clipCopy(sel);
         return false; // block — copied text
       }
       return true; // no selection — let xterm send \x03 (SIGINT)
@@ -1440,7 +1446,7 @@ async function openSession(profile, cwd, existingSessionId) {
     if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
       if (e.type === 'keydown') {
         const sel = term.getSelection();
-        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        if (sel) _clipCopy(sel);
       }
       return false;
     }
@@ -1502,7 +1508,7 @@ async function openSession(profile, cwd, existingSessionId) {
     _selTimer = setTimeout(() => {
       _selTimer = null;
       const sel = term.getSelection();
-      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      if (sel) _clipCopy(sel);
     }, 150);
   });
 
@@ -1527,12 +1533,6 @@ async function openSession(profile, cwd, existingSessionId) {
       const msg = JSON.parse(e.data);
       if (msg.type === 'output' || msg.type === 'replay') {
         term.write(msg.data);
-        // Auto-scroll to bottom if user hasn't scrolled up, skip in TUI alternate buffer
-        // Also skip if user has an active selection — scrollToBottom clears xterm selections
-        const s = _sessions.find(s => s.id === sessionId);
-        if (s?._autoScroll && term.buffer.active.type === 'normal' && !term.hasSelection()) {
-          term.scrollToBottom();
-        }
       }
       if (msg.type === 'exit') {
         const _s = _sessions.find(s => s.id === sessionId);
@@ -1544,12 +1544,11 @@ async function openSession(profile, cwd, existingSessionId) {
         term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
-        // Copy path to clipboard — don't insert into PTY (corrupts TUI apps)
-        navigator.clipboard.writeText(msg.path).catch(() => {});
-        showTermToast(`Image saved — path copied to clipboard`);
+        _clipCopy(msg.path);
+        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
-        // Whiteboard image drag-drop — write path into PTY so CLI agent sees the image
         ws.send(JSON.stringify({ type: 'input', data: msg.path }));
         showTermToast(`Image dropped — ${msg.path.split(/[\\/]/).pop()}`);
       }
@@ -1599,10 +1598,8 @@ async function openSession(profile, cwd, existingSessionId) {
     renderer,
     dead: false,
     pinned: false,
-    _autoScroll: true,
     _fitInProgress: false,
   };
-  _initAutoScroll(session);
   _pushSession(session);
   _pendingSessionIds.delete(sessionId);
   _activeIdx = _sessions.indexOf(session);
@@ -1725,8 +1722,9 @@ async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}
           htmlTerm.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
         }
         if (msg.type === 'image_saved' && msg.path) {
-          navigator.clipboard.writeText(msg.path).catch(() => {});
-          showTermToast(`Image saved — path copied to clipboard`);
+          _clipCopy(msg.path);
+          ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+          showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
         }
         if (msg.type === 'image_dropped' && msg.path) {
           ws.send(JSON.stringify({ type: 'input', data: msg.path }));
@@ -1763,7 +1761,6 @@ async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}
       _claudeSessionId: options.claudeSessionId || null,
       _isHtmlTerm: true,
       _htmlTerm: htmlTerm,
-      _autoScroll: true,
       _fitInProgress: false,
     };
     _pushSession(session);
@@ -1873,8 +1870,9 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
         htmlTerm.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
-        navigator.clipboard.writeText(msg.path).catch(() => {});
-        showTermToast(`Image saved — path copied to clipboard`);
+        _clipCopy(msg.path);
+        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
         ws.send(JSON.stringify({ type: 'input', data: msg.path }));
@@ -1912,7 +1910,6 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
     _floatColor: options.floatColor || null,
     _isHtmlTerm: true,
     _htmlTerm: htmlTerm,
-    _autoScroll: true,
     _fitInProgress: false,
   };
   _pushSession(session);
@@ -2442,7 +2439,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
     if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       const sel = term.getSelection();
       if (sel) {
-        if (e.type === 'keydown') navigator.clipboard.writeText(sel).catch(() => {});
+        if (e.type === 'keydown') _clipCopy(sel);
         return false;
       }
       return true;
@@ -2450,7 +2447,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
     if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
       if (e.type === 'keydown') {
         const sel = term.getSelection();
-        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        if (sel) _clipCopy(sel);
       }
       return false;
     }
@@ -2509,7 +2506,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
     _selTimer = setTimeout(() => {
       _selTimer = null;
       const sel = term.getSelection();
-      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      if (sel) _clipCopy(sel);
     }, 150);
   });
 
@@ -2529,12 +2526,6 @@ async function reconnectSession(sessionId, profile, options = {}) {
       const msg = JSON.parse(e.data);
       if (msg.type === 'output' || msg.type === 'replay') {
         term.write(msg.data);
-        // Auto-scroll to bottom if user hasn't scrolled up, skip in TUI alternate buffer
-        // Also skip if user has an active selection — scrollToBottom clears xterm selections
-        const s = _sessions.find(s => s.id === sessionId);
-        if (s?._autoScroll && term.buffer.active.type === 'normal' && !term.hasSelection()) {
-          term.scrollToBottom();
-        }
       }
       if (msg.type === 'exit') {
         const _s = _sessions.find(s => s.id === sessionId);
@@ -2549,8 +2540,9 @@ async function reconnectSession(sessionId, profile, options = {}) {
         term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
-        navigator.clipboard.writeText(msg.path).catch(() => {});
-        showTermToast(`Image saved — path copied to clipboard`);
+        _clipCopy(msg.path);
+        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
         ws.send(JSON.stringify({ type: 'input', data: msg.path }));
@@ -2598,10 +2590,8 @@ async function reconnectSession(sessionId, profile, options = {}) {
     _userRenamed: options.userRenamed || false,
     _claudeSessionId: options.claudeSessionId || null,
     _floatColor: options.floatColor || null,
-    _autoScroll: true,
     _fitInProgress: false,
   };
-  _initAutoScroll(session);
   _pushSession(session);
   _activeIdx = _sessions.indexOf(session);
 
@@ -2868,9 +2858,6 @@ function _reconnectTerminalWs(session, attempt = 0) {
           if (CLI_PROFILES.has(session.profile)) _scheduleCliStatusCheck(session.id);
         } else if (session.term) {
           session.term.write(msg.data);
-          if (session._autoScroll && session.term.buffer?.active?.type === 'normal' && !session.term.hasSelection?.()) {
-            session.term.scrollToBottom();
-          }
         }
       }
       if (msg.type === 'exit') {
@@ -2883,8 +2870,9 @@ function _reconnectTerminalWs(session, attempt = 0) {
         else if (session.term) session.term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
-        navigator.clipboard.writeText(msg.path).catch(() => {});
-        showTermToast(`Image saved — path copied to clipboard`);
+        _clipCopy(msg.path);
+        session.ws?.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
         session.ws?.send(JSON.stringify({ type: 'input', data: msg.path }));
@@ -3061,7 +3049,7 @@ function initContextMenu(viewport, term, ws) {
           const sel = session?._isHtmlTerm
             ? session._htmlTerm?.getSelection()
             : term?.getSelection();
-          if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+          if (sel) _clipCopy(sel);
           break;
         }
         case 'paste':
@@ -3696,7 +3684,7 @@ function detachTab(idx) {
         ? session._htmlTerm?.getSelection()
         : session.term?.getSelection();
       if (sel) {
-        navigator.clipboard.writeText(sel).catch(() => {});
+        _clipCopy(sel);
         e.preventDefault();
         e.stopPropagation();
       }
@@ -4669,10 +4657,15 @@ export async function initTerminal() {
     if (!dataUrl) return;
     const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
     if (!match) return;
-    // Find active session with open WS
+    // Find active session with open WS — try pane indices first, then fall back to any open session
+    let session = null;
     const activeIdx = _activePaneIdx[0] >= 0 ? _activePaneIdx[0] : _activePaneIdx[1];
-    const session = _sessions[activeIdx];
+    if (activeIdx >= 0) session = _sessions[activeIdx];
     if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) {
+      // Fallback: find any session with an open WebSocket
+      session = _sessions.find(s => s.ws && s.ws.readyState === WebSocket.OPEN) || null;
+    }
+    if (!session) {
       showTermToast('No active terminal session');
       return;
     }

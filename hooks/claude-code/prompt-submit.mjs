@@ -480,6 +480,19 @@ async function main() {
 
   const trimmed = prompt.trim();
 
+  // Session heartbeat to Neural Interface session monitor (fire-and-forget)
+  if (sessionId) {
+    const niUrl = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
+    try {
+      fetch(`${niUrl}/api/sessions/heartbeat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ claudeSessionId: sessionId }),
+        signal: AbortSignal.timeout(2000),
+      }).catch(() => {});
+    } catch { /* ok */ }
+  }
+
   // --- Loop marker detection (BEFORE greeting — loops must bypass greeting) ---
   if (sessionId && /^\[SynaBun Loop\]/i.test(trimmed)) {
     try {
@@ -487,13 +500,20 @@ async function main() {
         const pending = readdirSync(LOOP_DIR)
           .filter(f => f.startsWith('pending-') && f.endsWith('.json'));
         if (pending.length > 0) {
+          // Safe to take first: the loop driver (server.js) already scopes pending
+          // claims by terminalSessionId before writing the [SynaBun Loop] marker to PTY.
+          // This hook only fires because the correct terminal received the marker.
           const pendingPath = join(LOOP_DIR, pending[0]);
           const targetPath = join(LOOP_DIR, `${sessionId}.json`);
           renameSync(pendingPath, targetPath);
 
           const state = JSON.parse(readFileSync(targetPath, 'utf-8'));
           delete state.pending;
-          delete state.terminalSessionId;
+          // Set currentIteration to 1 immediately — closes the race window where
+          // another session's stop hook fallback scan (which only matches
+          // currentIteration === 0) could steal this loop file.
+          state.currentIteration = 1;
+          // Preserve terminalSessionId — loop driver needs it for session isolation
           writeFileSync(targetPath, JSON.stringify(state, null, 2));
 
           const browserNote = buildBrowserNote(state);
@@ -542,11 +562,9 @@ async function main() {
                 if (loopElapsed > loopMaxMs) continue;
                 state = candidate;
                 existingPath = fullPath;
-                // Rename state file to match new session ID for future lookups
-                const newPath = join(LOOP_DIR, `${sessionId}.json`);
-                if (existingPath !== newPath) {
-                  try { renameSync(existingPath, newPath); existingPath = newPath; } catch { /* ok */ }
-                }
+                // Do NOT rename — renaming steals ownership from the original session,
+                // causing cross-session loop leaking when multiple sessions are active.
+                // The file stays with its original name; the fallback scan finds it each time.
                 break;
               }
             } catch { /* skip corrupt */ }

@@ -47,6 +47,7 @@ import { initInvite } from '../../shared/ui-invite.js';
 import { initSync } from '../../shared/ui-sync.js';
 import { initKeybinds, registerAction, getDisplayKey } from '../../shared/ui-keybinds.js';
 import { initTutorial } from '../../shared/ui-tutorial.js';
+import { initImageGallery } from '../../shared/ui-image-gallery.js';
 
 // ── 2D variant modules ──
 import { gfx, saveGfxConfig } from './gfx.js';
@@ -420,6 +421,7 @@ initExplorer();
 initFileExplorer();
 initSkillsStudio();
 initAutomationStudio();
+initImageGallery();
 initCommandRunner();
 initTerminal();
 initLink();
