@@ -12,12 +12,15 @@ import {
   createHandDrawnUnderline,
   createAnimatedArrow,
   createWobblyCircle,
+  createHighlightCircle,
 } from './ui-tutorial-draw.js';
 import { emit } from './state.js';
 import { storage, flushStorage } from './storage.js';
 import { KEYS } from './constants.js';
 import { createTerminalSession } from './api.js';
-import { openSettingsModal } from './ui-settings.js';
+import { toggleExplorer } from './ui-explorer.js';
+import { toggleFileExplorer } from './ui-file-explorer.js';
+import { toggleClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
 
 
 // ── Settings hint (shown when user declines explore) ──────────
@@ -848,115 +851,187 @@ export const TUTORIAL_STEPS = [
     },
   },
 
-  // ── Step 7: Focus Mode ──────────────────────────────────
+  // ── Step 7: Session Monitor ────────────────────────────
   {
-    id: 'explain-focus',
+    id: 'explain-sessions',
     whiteboardMode: true,
 
     render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      const btn = document.getElementById('titlebar-viz-toggle');
+      const btn = document.getElementById('titlebar-sessions-btn');
       const rect = btn?.getBoundingClientRect();
       if (!rect) return;
 
       const btnCx = rect.left + rect.width / 2;
-      // Everything near the button — arrow tip below navbar, text below arrow
-      const arrowTipY = rect.bottom + 50;
-      const textX = Math.max(180, Math.min(btnCx, vw - 180));
-      const textY = arrowTipY + 100;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      seq.add(() => createWobblyCircle(svg, rect, {
+      seq.add(() => createHighlightCircle(svg, rect, {
         color: 'rgba(255, 255, 255, 0.25)',
-        padding: 6, wobbleSeed: 'focus-circle', duration: 300,
+        padding: 10, duration: 500, strokeWidth: 1.2,
       }), 100);
 
-      // Short ~80px arrow from above text to below button
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: btnCx, y: arrowTipY },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'focus-arrow', duration: 300,
-      }), 150);
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'sessions-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
 
-      seq.add(() => handwrittenLabel(svg, 'Switch between the graph and this whiteboard', {
+      seq.add(() => handwrittenLabel(svg, 'Session Monitor', {
         x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 26, duration: 300,
-      }), 200);
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Track active CLI sessions across your terminals', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
 
       seq.add(() => {
-        const navY = textY + 110;
+        const navY = textY + 105;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => prevStep(),
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
         });
         const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => skipTutorial(),
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => nextStep(),
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
         return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
-      }, 150);
+      }, 200);
     },
   },
 
-  // ── Step 8: Fullscreen ─────────────────────────────────
+  // ── Step 8: Image Gallery ────────────────────────────
   {
-    id: 'explain-fullscreen',
+    id: 'explain-gallery',
     whiteboardMode: true,
 
     render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      const btn = document.getElementById('titlebar-fullscreen-btn');
+      const btn = document.getElementById('titlebar-gallery-btn');
       const rect = btn?.getBoundingClientRect();
       if (!rect) return;
 
       const btnCx = rect.left + rect.width / 2;
-      const arrowTipY = rect.bottom + 50;
-      const textX = Math.max(180, Math.min(btnCx, vw - 180));
-      const textY = arrowTipY + 100;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      seq.add(() => createWobblyCircle(svg, rect, {
+      seq.add(() => createHighlightCircle(svg, rect, {
         color: 'rgba(255, 255, 255, 0.25)',
-        padding: 6, wobbleSeed: 'fs-circle', duration: 300,
+        padding: 10, duration: 500, strokeWidth: 1.2,
       }), 100);
 
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: btnCx, y: arrowTipY },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'fs-arrow', duration: 300,
-      }), 150);
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'gallery-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
 
-      seq.add(() => handwrittenLabel(svg, 'Go fullscreen for a clean, distraction-free experience', {
+      seq.add(() => handwrittenLabel(svg, 'Image Gallery', {
         x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 26, duration: 300,
-      }), 200);
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Browse and manage images from your sessions', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
 
       seq.add(() => {
-        const navY = textY + 110;
+        const navY = textY + 105;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => prevStep(),
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
         });
         const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => skipTutorial(),
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => nextStep(),
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
         return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
-      }, 150);
+      }, 200);
     },
   },
 
-  // ── Step 9: Help / Tutorial Button ─────────────────────
+  // ── Step 9: Cost Tracker ─────────────────────────────
+  {
+    id: 'explain-cost',
+    whiteboardMode: true,
+
+    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
+      const btn = document.getElementById('titlebar-cost-btn');
+      const rect = btn?.getBoundingClientRect();
+      if (!rect) return;
+
+      const btnCx = rect.left + rect.width / 2;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
+
+      seq.add(() => createHighlightCircle(svg, rect, {
+        color: 'rgba(255, 255, 255, 0.25)',
+        padding: 10, duration: 500, strokeWidth: 1.2,
+      }), 100);
+
+      seq.add(() => createAnimatedArrow(svg, {
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'cost-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
+
+      seq.add(() => handwrittenLabel(svg, 'Cost Tracker', {
+        x: textX, y: textY,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Watch your token spend in real-time', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
+
+      seq.add(() => {
+        const navY = textY + 105;
+        const backEl = createButton(dom, 'Back', {
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
+        });
+        const nextEl = createButton(dom, 'Next', {
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
+        });
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
+    },
+  },
+
+  // ── Step 10: Help & Tutorial ─────────────────────────
   {
     id: 'explain-help',
     whiteboardMode: true,
@@ -967,51 +1042,182 @@ export const TUTORIAL_STEPS = [
       if (!rect) return;
 
       const btnCx = rect.left + rect.width / 2;
-      const arrowTipY = rect.bottom + 50;
-      const textX = Math.max(180, Math.min(btnCx, vw - 180));
-      const textY = arrowTipY + 100;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      seq.add(() => createWobblyCircle(svg, rect, {
+      seq.add(() => createHighlightCircle(svg, rect, {
         color: 'rgba(255, 255, 255, 0.25)',
-        padding: 6, wobbleSeed: 'help-circle', duration: 300,
+        padding: 10, duration: 500, strokeWidth: 1.2,
       }), 100);
 
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: btnCx, y: arrowTipY },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'help-arrow', duration: 300,
-      }), 150);
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'help-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
 
-      seq.add(() => handwrittenLabel(svg, 'Click here anytime to restart this tour', {
+      seq.add(() => handwrittenLabel(svg, 'Help & Tutorial', {
         x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 26, duration: 300,
-      }), 200);
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Restart this tour anytime from here', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
 
       seq.add(() => {
-        const navY = textY + 110;
+        const navY = textY + 105;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => prevStep(),
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => nextStep(),
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
-        return { destroy() { backEl.remove(); nextEl.remove(); } };
-      }, 150);
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
     },
   },
 
-  // ── Step 10: Clock ────────────────────────────────────
+  // ── Step 11: Graph View ──────────────────────────────
+  {
+    id: 'explain-focus',
+    whiteboardMode: true,
+
+    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
+      const btn = document.getElementById('titlebar-viz-toggle');
+      const rect = btn?.getBoundingClientRect();
+      if (!rect) return;
+
+      const btnCx = rect.left + rect.width / 2;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
+
+      seq.add(() => createHighlightCircle(svg, rect, {
+        color: 'rgba(255, 255, 255, 0.25)',
+        padding: 10, duration: 500, strokeWidth: 1.2,
+      }), 100);
+
+      seq.add(() => createAnimatedArrow(svg, {
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'focus-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
+
+      seq.add(() => handwrittenLabel(svg, 'Graph View', {
+        x: textX, y: textY,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Switch between the memory graph and this whiteboard', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
+
+      seq.add(() => {
+        const navY = textY + 105;
+        const backEl = createButton(dom, 'Back', {
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
+        });
+        const nextEl = createButton(dom, 'Next', {
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
+        });
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
+    },
+  },
+
+  // ── Step 12: Fullscreen ──────────────────────────────
+  {
+    id: 'explain-fullscreen',
+    whiteboardMode: true,
+
+    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
+      const btn = document.getElementById('titlebar-fullscreen-btn');
+      const rect = btn?.getBoundingClientRect();
+      if (!rect) return;
+
+      const btnCx = rect.left + rect.width / 2;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
+
+      seq.add(() => createHighlightCircle(svg, rect, {
+        color: 'rgba(255, 255, 255, 0.25)',
+        padding: 10, duration: 500, strokeWidth: 1.2,
+      }), 100);
+
+      seq.add(() => createAnimatedArrow(svg, {
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'fs-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
+
+      seq.add(() => handwrittenLabel(svg, 'Fullscreen', {
+        x: textX, y: textY,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'A clean, distraction-free workspace', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
+
+      seq.add(() => {
+        const navY = textY + 105;
+        const backEl = createButton(dom, 'Back', {
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
+        });
+        const nextEl = createButton(dom, 'Next', {
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
+        });
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
+    },
+  },
+
+  // ── Step 13: Clock ───────────────────────────────────
   {
     id: 'explain-clock',
     whiteboardMode: true,
 
     render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      // Hide toolbar if coming back from step 5
+      // Hide workspace toolbar for the next section reveal
       const topControls = document.getElementById('topright-controls');
       if (topControls) topControls.classList.add('tutorial-hidden');
 
@@ -1020,51 +1226,56 @@ export const TUTORIAL_STEPS = [
       if (!rect) return;
 
       const clockCx = rect.left + rect.width / 2;
-      const arrowTipY = rect.bottom + 50;
-      const textX = Math.max(180, Math.min(clockCx, vw - 180));
-      const textY = arrowTipY + 80;
+      const textX = Math.max(220, Math.min(clockCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      seq.add(() => createWobblyCircle(svg, rect, {
+      seq.add(() => createHighlightCircle(svg, rect, {
         color: 'rgba(255, 255, 255, 0.25)',
-        padding: 8, wobbleSeed: 'clock-circle', duration: 300,
+        padding: 10, duration: 500, strokeWidth: 1.2,
       }), 100);
 
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: clockCx, y: arrowTipY },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'clock-arrow', duration: 300,
-      }), 150);
+        from: { x: textX, y: textY - 18 },
+        to: { x: clockCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'clock-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
 
       seq.add(() => handwrittenLabel(svg, 'Whoa... a clock', {
         x: textX, y: textY,
         textAnchor: 'middle',
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 26, duration: 300,
-      }), 200);
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
 
       seq.add(() => {
-        const navY = textY + 90;
+        const navY = textY + 70;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => prevStep(),
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => nextStep(),
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
-        return { destroy() { backEl.remove(); nextEl.remove(); } };
-      }, 150);
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
     },
   },
 
-  // ── Step 11: Reveal toolbar + explain workspace ────────
+
+  // ── Step 14: Trash (+ reveal workspace toolbar) ──────
   {
-    id: 'explain-toolbar',
+    id: 'explain-trash',
     whiteboardMode: true,
 
     render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      // Slide in the top controls toolbar
+      // Slide in the top-right workspace toolbar
       const topControls = document.getElementById('topright-controls');
       if (topControls) {
         topControls.classList.remove('tutorial-hidden');
@@ -1077,55 +1288,61 @@ export const TUTORIAL_STEPS = [
         });
       }
 
-      // Point to the workspace indicator
-      const wsEl = document.getElementById('ws-indicator');
-      const rect = wsEl?.getBoundingClientRect();
+      const btn = document.getElementById('topright-trash-btn');
+      const rect = btn?.getBoundingClientRect();
       if (!rect) return;
 
-      const wsCx = rect.left + rect.width / 2;
-      const arrowTipY = rect.bottom + 50;
-      const textX = Math.max(180, Math.min(wsCx, vw - 180));
-      const textY = arrowTipY + 80;
+      const btnCx = rect.left + rect.width / 2;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      seq.add(() => createWobblyCircle(svg, rect, {
+      seq.add(() => createHighlightCircle(svg, rect, {
         color: 'rgba(255, 255, 255, 0.25)',
-        padding: 8, wobbleSeed: 'ws-circle', duration: 300,
-      }), 300);
+        padding: 10, duration: 500, strokeWidth: 1.2,
+      }), 400);
 
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: wsCx, y: arrowTipY },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'ws-arrow', duration: 300,
-      }), 200);
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'trash-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
 
-      seq.add(() => handwrittenLabel(svg, 'Save and load your whiteboard layouts', {
+      seq.add(() => handwrittenLabel(svg, 'Trash', {
         x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 26, duration: 300,
-      }), 200);
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Recover deleted cards and terminals', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
 
       seq.add(() => {
-        const navY = textY + 110;
+        const navY = textY + 105;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => prevStep(),
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
         });
         const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => skipTutorial(),
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => nextStep(),
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
         return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
       }, 200);
     },
   },
 
-  // ── Step 12: Grid snap ────────────────────────────────
+  // ── Step 15: Grid Snap ────────────────────────────────
   {
     id: 'explain-grid',
     whiteboardMode: true,
@@ -1136,98 +1353,116 @@ export const TUTORIAL_STEPS = [
       if (!rect) return;
 
       const btnCx = rect.left + rect.width / 2;
-      const arrowTipY = rect.bottom + 50;
-      const textX = Math.max(180, Math.min(btnCx, vw - 180));
-      const textY = arrowTipY + 80;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      seq.add(() => createWobblyCircle(svg, rect, {
+      seq.add(() => createHighlightCircle(svg, rect, {
         color: 'rgba(255, 255, 255, 0.25)',
-        padding: 6, wobbleSeed: 'grid-circle', duration: 300,
+        padding: 10, duration: 500, strokeWidth: 1.2,
       }), 100);
 
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: btnCx, y: arrowTipY },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'grid-arrow', duration: 300,
-      }), 150);
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'grid-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
 
-      seq.add(() => handwrittenLabel(svg, 'Snap cards to a grid for that tidy look', {
+      seq.add(() => handwrittenLabel(svg, 'Grid Snap', {
         x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 26, duration: 300,
-      }), 200);
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Align cards to a grid for tidy layouts', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
 
       seq.add(() => {
-        const navY = textY + 90;
+        const navY = textY + 105;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => prevStep(),
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
         });
         const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => skipTutorial(),
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => nextStep(),
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
         return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
-      }, 150);
+      }, 200);
     },
   },
 
-  // ── Step 13: Trash ────────────────────────────────────
+  // ── Step 16: Tile Terminals ───────────────────────────
   {
-    id: 'explain-trash',
+    id: 'explain-tile',
     whiteboardMode: true,
 
     render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      const btn = document.getElementById('topright-trash-btn');
+      const btn = document.getElementById('ws-tile-btn');
       const rect = btn?.getBoundingClientRect();
       if (!rect) return;
 
       const btnCx = rect.left + rect.width / 2;
-      const arrowTipY = rect.bottom + 50;
-      const textX = Math.max(180, Math.min(btnCx, vw - 180));
-      const textY = arrowTipY + 80;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      seq.add(() => createWobblyCircle(svg, rect, {
+      seq.add(() => createHighlightCircle(svg, rect, {
         color: 'rgba(255, 255, 255, 0.25)',
-        padding: 6, wobbleSeed: 'trash-circle', duration: 300,
+        padding: 10, duration: 500, strokeWidth: 1.2,
       }), 100);
 
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: btnCx, y: arrowTipY },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'trash-arrow', duration: 300,
-      }), 150);
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'tile-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
 
-      seq.add(() => handwrittenLabel(svg, 'Deleted cards end up here', {
+      seq.add(() => handwrittenLabel(svg, 'Tile Terminals', {
         x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 26, duration: 300,
-      }), 200);
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Auto-arrange all terminals into a neat grid', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
 
       seq.add(() => {
-        const navY = textY + 90;
+        const navY = textY + 105;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => prevStep(),
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => nextStep(),
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
-        return { destroy() { backEl.remove(); nextEl.remove(); } };
-      }, 150);
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
     },
   },
 
-  // ── Step 14: Keybinds ──────────────────────────────────
+  // ── Step 17: Keybinds ─────────────────────────────────
   {
     id: 'explain-keybinds',
     whiteboardMode: true,
@@ -1238,45 +1473,268 @@ export const TUTORIAL_STEPS = [
       if (!rect) return;
 
       const btnCx = rect.left + rect.width / 2;
-      const arrowTipY = rect.bottom + 50;
-      const textX = Math.max(180, Math.min(btnCx, vw - 180));
-      const textY = arrowTipY + 80;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      seq.add(() => createWobblyCircle(svg, rect, {
+      seq.add(() => createHighlightCircle(svg, rect, {
         color: 'rgba(255, 255, 255, 0.25)',
-        padding: 6, wobbleSeed: 'kb-circle', duration: 300,
+        padding: 10, duration: 500, strokeWidth: 1.2,
       }), 100);
 
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: btnCx, y: arrowTipY },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'kb-arrow', duration: 300,
-      }), 150);
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'keys-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
 
-      seq.add(() => handwrittenLabel(svg, 'Rebind every shortcut to your liking', {
+      seq.add(() => handwrittenLabel(svg, 'Keybinds', {
         x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 26, duration: 300,
-      }), 200);
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'View and customize keyboard shortcuts', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
 
       seq.add(() => {
-        const navY = textY + 90;
+        const navY = textY + 105;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => prevStep(),
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => nextStep(),
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
-        return { destroy() { backEl.remove(); nextEl.remove(); } };
-      }, 150);
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
     },
   },
 
-  // ── Step 15: Share / Invite ───────────────────────────
+  // ── Step 18: Memory Explorer ──────────────────────────
+  {
+    id: 'explain-memory-explorer',
+    whiteboardMode: true,
+    _openedExplorer: false,
+
+    onEnter() {
+      // Slide the memory explorer open so the user sees it
+      if (!document.body.classList.contains('explorer-open')) {
+        this._openedExplorer = true;
+        toggleExplorer();
+      }
+    },
+
+    onExit() {
+      // Close it back if we opened it
+      if (this._openedExplorer && document.body.classList.contains('explorer-open')) {
+        toggleExplorer();
+      }
+      this._openedExplorer = false;
+    },
+
+    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
+      const btn = document.getElementById('topright-memory-explorer-btn');
+      const rect = btn?.getBoundingClientRect();
+      if (!rect) return;
+
+      const btnCx = rect.left + rect.width / 2;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
+
+      seq.add(() => createHighlightCircle(svg, rect, {
+        color: 'rgba(255, 255, 255, 0.25)',
+        padding: 10, duration: 500, strokeWidth: 1.2,
+      }), 100);
+
+      seq.add(() => createAnimatedArrow(svg, {
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'mem-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
+
+      seq.add(() => handwrittenLabel(svg, 'Memory Explorer', {
+        x: textX, y: textY,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Browse, search, and manage stored memories', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
+
+      seq.add(() => {
+        const navY = textY + 105;
+        const backEl = createButton(dom, 'Back', {
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
+        });
+        const nextEl = createButton(dom, 'Next', {
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
+        });
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
+    },
+  },
+
+  // ── Step 19: File Explorer ────────────────────────────
+  {
+    id: 'explain-file-explorer',
+    whiteboardMode: true,
+    _openedFileExplorer: false,
+
+    onEnter() {
+      if (!document.body.classList.contains('file-explorer-open')) {
+        this._openedFileExplorer = true;
+        toggleFileExplorer();
+      }
+    },
+
+    onExit() {
+      if (this._openedFileExplorer && document.body.classList.contains('file-explorer-open')) {
+        toggleFileExplorer();
+      }
+      this._openedFileExplorer = false;
+    },
+
+    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
+      const btn = document.getElementById('topright-file-explorer-btn');
+      const rect = btn?.getBoundingClientRect();
+      if (!rect) return;
+
+      const btnCx = rect.left + rect.width / 2;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
+
+      seq.add(() => createHighlightCircle(svg, rect, {
+        color: 'rgba(255, 255, 255, 0.25)',
+        padding: 10, duration: 500, strokeWidth: 1.2,
+      }), 100);
+
+      seq.add(() => createAnimatedArrow(svg, {
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'files-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
+
+      seq.add(() => handwrittenLabel(svg, 'File Explorer', {
+        x: textX, y: textY,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Browse project files right from the whiteboard', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
+
+      seq.add(() => {
+        const navY = textY + 105;
+        const backEl = createButton(dom, 'Back', {
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
+        });
+        const nextEl = createButton(dom, 'Next', {
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
+        });
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
+    },
+  },
+
+  // ── Step 20: Bookmarks ────────────────────────────────
+  {
+    id: 'explain-bookmarks',
+    whiteboardMode: true,
+
+    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
+      const btn = document.getElementById('topright-bookmarks-btn');
+      const rect = btn?.getBoundingClientRect();
+      if (!rect) return;
+
+      const btnCx = rect.left + rect.width / 2;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
+
+      seq.add(() => createHighlightCircle(svg, rect, {
+        color: 'rgba(255, 255, 255, 0.25)',
+        padding: 10, duration: 500, strokeWidth: 1.2,
+      }), 100);
+
+      seq.add(() => createAnimatedArrow(svg, {
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'bm-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
+
+      seq.add(() => handwrittenLabel(svg, 'Bookmarks', {
+        x: textX, y: textY,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Pin important memories for quick access', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
+      }), 100);
+
+      seq.add(() => {
+        const navY = textY + 105;
+        const backEl = createButton(dom, 'Back', {
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
+        });
+        const nextEl = createButton(dom, 'Next', {
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
+        });
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
+    },
+  },
+
+  // ── Step 21: Share / Invite ───────────────────────────
   {
     id: 'explain-share',
     whiteboardMode: true,
@@ -1287,761 +1745,425 @@ export const TUTORIAL_STEPS = [
       if (!rect) return;
 
       const btnCx = rect.left + rect.width / 2;
-      const arrowTipY = rect.bottom + 50;
-      const textX = Math.max(180, Math.min(btnCx, vw - 180));
-      const textY = arrowTipY + 80;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      seq.add(() => createWobblyCircle(svg, rect, {
+      seq.add(() => createHighlightCircle(svg, rect, {
         color: 'rgba(255, 255, 255, 0.25)',
-        padding: 6, wobbleSeed: 'share-circle', duration: 300,
+        padding: 10, duration: 500, strokeWidth: 1.2,
       }), 100);
 
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: btnCx, y: arrowTipY },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'share-arrow', duration: 300,
-      }), 150);
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'share-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
 
-      seq.add(() => handwrittenLabel(svg, 'Invite friends to your whiteboard in real-time', {
+      seq.add(() => handwrittenLabel(svg, 'Share / Invite', {
         x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 26, duration: 300,
-      }), 200);
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
 
-      seq.add(() => {
-        const navY = textY + 90;
-        const backEl = createButton(dom, 'Back', {
-          x: textX - 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => prevStep(),
-        });
-        const nextEl = createButton(dom, 'Next', {
-          x: textX + 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => nextStep(),
-        });
-        return { destroy() { backEl.remove(); nextEl.remove(); } };
-      }, 150);
-    },
-  },
-
-  // ── Step 16: Apps menu ────────────────────────────────
-  {
-    id: 'explain-apps',
-    whiteboardMode: true,
-
-    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      // Programmatically open the Apps dropdown
-      const menuItem = document.querySelector('.menubar-item[data-menu="apps"]');
-      if (menuItem) menuItem.classList.add('open');
-
-      // Force layout so getBoundingClientRect is accurate
-      const dropdown = menuItem?.querySelector('.menubar-dropdown');
-      if (dropdown) dropdown.offsetHeight; // force reflow
-      const ddRect = dropdown?.getBoundingClientRect();
-      if (!ddRect || ddRect.width === 0) return;
-
-      // Text below the dropdown, centered on it — clear of navbar and dropdown
-      const ddCx = ddRect.left + ddRect.width / 2;
-      const textX = Math.max(180, Math.min(ddCx, vw - 180));
-      const textY = ddRect.bottom + 60;
-
-      seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: ddCx, y: ddRect.bottom + 12 },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'apps-arrow', duration: 300,
+      seq.add(() => handwrittenLabel(svg, 'Invite others to view your whiteboard live', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
       }), 100);
 
-      seq.add(() => handwrittenLabel(svg, 'Tools streamed through a virtual terminal from your machine', {
-        x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 25, duration: 300,
-      }), 200);
-
       seq.add(() => {
-        const navY = textY + 100;
+        const navY = textY + 105;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            prevStep();
-          },
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
         });
         const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            skipTutorial();
-          },
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            nextStep();
-          },
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
-        return { destroy() {
-          backEl.remove(); endEl.remove(); nextEl.remove();
-          if (menuItem) menuItem.classList.remove('open');
-        } };
-      }, 150);
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
     },
   },
 
-  // ── Step 17: Resume menu ─────────────────────────────
+  // ── Step 22: Workspaces ───────────────────────────────
   {
-    id: 'explain-resume',
+    id: 'explain-workspaces',
     whiteboardMode: true,
 
     render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      // Close apps dropdown if still open
-      const appsMenu = document.querySelector('.menubar-item[data-menu="apps"]');
-      if (appsMenu) appsMenu.classList.remove('open');
+      const wsEl = document.getElementById('ws-indicator');
+      const rect = wsEl?.getBoundingClientRect();
+      if (!rect) return;
 
-      const menuItem = document.querySelector('.menubar-item[data-menu="resume"]');
-      if (menuItem) menuItem.classList.add('open');
+      const wsCx = rect.left + rect.width / 2;
+      const textX = Math.max(220, Math.min(wsCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      const dropdown = menuItem?.querySelector('.menubar-dropdown');
-      if (dropdown) dropdown.offsetHeight;
-      const ddRect = dropdown?.getBoundingClientRect();
-      if (!ddRect || ddRect.width === 0) return;
-
-      const ddCx = ddRect.left + ddRect.width / 2;
-      const textX = Math.max(180, Math.min(ddCx, vw - 180));
-      const textY = ddRect.bottom + 60;
-
-      seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: ddCx, y: ddRect.bottom + 12 },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'resume-arrow', duration: 300,
+      seq.add(() => createHighlightCircle(svg, rect, {
+        color: 'rgba(255, 255, 255, 0.25)',
+        padding: 10, duration: 500, strokeWidth: 1.2,
       }), 100);
 
-      seq.add(() => handwrittenLabel(svg, 'Pick up where you left off — your recent sessions live here', {
-        x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 25, duration: 300,
-      }), 200);
-
-      seq.add(() => {
-        const navY = textY + 100;
-        const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            prevStep();
-          },
-        });
-        const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            skipTutorial();
-          },
-        });
-        const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            nextStep();
-          },
-        });
-        return { destroy() {
-          backEl.remove(); endEl.remove(); nextEl.remove();
-          if (menuItem) menuItem.classList.remove('open');
-        } };
-      }, 150);
-    },
-  },
-
-  // ── Step 18: View menu ────────────────────────────────
-  {
-    id: 'explain-view',
-    whiteboardMode: true,
-
-    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      // Close resume dropdown if still open
-      const resumeMenu = document.querySelector('.menubar-item[data-menu="resume"]');
-      if (resumeMenu) resumeMenu.classList.remove('open');
-
-      const menuItem = document.querySelector('.menubar-item[data-menu="view"]');
-      if (menuItem) menuItem.classList.add('open');
-
-      const dropdown = menuItem?.querySelector('.menubar-dropdown');
-      if (dropdown) dropdown.offsetHeight;
-      const ddRect = dropdown?.getBoundingClientRect();
-      if (!ddRect || ddRect.width === 0) return;
-
-      const ddCx = ddRect.left + ddRect.width / 2;
-      const textX = Math.max(180, Math.min(ddCx, vw - 180));
-      const textY = ddRect.bottom + 60;
-
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: ddCx, y: ddRect.bottom + 12 },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'view-arrow', duration: 300,
+        from: { x: textX, y: textY - 18 },
+        to: { x: wsCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'ws-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
+
+      seq.add(() => handwrittenLabel(svg, 'Workspaces', {
+        x: textX, y: textY,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Save and load your whiteboard layouts', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
       }), 100);
 
-      seq.add(() => handwrittenLabel(svg, 'Toggle sidebars and panels to customize your layout', {
-        x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 25, duration: 300,
-      }), 200);
-
       seq.add(() => {
-        const navY = textY + 100;
+        const navY = textY + 105;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            prevStep();
-          },
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
         });
         const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            skipTutorial();
-          },
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            nextStep();
-          },
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
-        return { destroy() {
-          backEl.remove(); endEl.remove(); nextEl.remove();
-          if (menuItem) menuItem.classList.remove('open');
-        } };
-      }, 150);
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
     },
   },
 
-  // ── Step 18: Graph menu ──────────────────────────────
+  // ── Step 23: Side Panel ───────────────────────────────
   {
-    id: 'explain-graph',
+    id: 'explain-side-panel',
     whiteboardMode: true,
+    _openedClaudePanel: false,
+
+    onEnter() {
+      if (!isClaudePanelOpen()) {
+        this._openedClaudePanel = true;
+        toggleClaudePanel();
+      }
+    },
+
+    onExit() {
+      if (this._openedClaudePanel && isClaudePanelOpen()) {
+        toggleClaudePanel();
+      }
+      this._openedClaudePanel = false;
+    },
 
     render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      const prevMenu = document.querySelector('.menubar-item[data-menu="view"]');
-      if (prevMenu) prevMenu.classList.remove('open');
+      const btn = document.getElementById('topright-claude-panel-btn');
+      const rect = btn?.getBoundingClientRect();
+      if (!rect) return;
 
-      const menuItem = document.querySelector('.menubar-item[data-menu="graph"]');
-      if (menuItem) menuItem.classList.add('open');
+      const btnCx = rect.left + rect.width / 2;
+      const textX = Math.max(220, Math.min(btnCx, vw - 220));
+      const textY = rect.bottom + 90;
 
-      const dropdown = menuItem?.querySelector('.menubar-dropdown');
-      if (dropdown) dropdown.offsetHeight;
-      const ddRect = dropdown?.getBoundingClientRect();
-      if (!ddRect || ddRect.width === 0) return;
-
-      const ddCx = ddRect.left + ddRect.width / 2;
-      const textX = Math.max(180, Math.min(ddCx, vw - 180));
-      const textY = ddRect.bottom + 60;
-
-      seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: ddCx, y: ddRect.bottom + 12 },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'graph-arrow', duration: 300,
+      seq.add(() => createHighlightCircle(svg, rect, {
+        color: 'rgba(255, 255, 255, 0.25)',
+        padding: 10, duration: 500, strokeWidth: 1.2,
       }), 100);
 
-      seq.add(() => handwrittenLabel(svg, 'Control how memory connections are displayed on the graph', {
-        x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 25, duration: 300,
-      }), 200);
-
-      seq.add(() => {
-        const navY = textY + 100;
-        const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            prevStep();
-          },
-        });
-        const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            skipTutorial();
-          },
-        });
-        const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            nextStep();
-          },
-        });
-        return { destroy() {
-          backEl.remove(); endEl.remove(); nextEl.remove();
-          if (menuItem) menuItem.classList.remove('open');
-        } };
-      }, 150);
-    },
-  },
-
-  // ── Step 19: Skills menu ─────────────────────────────
-  {
-    id: 'explain-skills',
-    whiteboardMode: true,
-
-    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      const prevMenu = document.querySelector('.menubar-item[data-menu="graph"]');
-      if (prevMenu) prevMenu.classList.remove('open');
-
-      const menuItem = document.querySelector('.menubar-item[data-menu="skills"]');
-      if (menuItem) menuItem.classList.add('open');
-
-      const dropdown = menuItem?.querySelector('.menubar-dropdown');
-      if (dropdown) dropdown.offsetHeight;
-      const ddRect = dropdown?.getBoundingClientRect();
-      if (!ddRect || ddRect.width === 0) return;
-
-      const ddCx = ddRect.left + ddRect.width / 2;
-      const textX = Math.max(180, Math.min(ddCx, vw - 180));
-      const textY = ddRect.bottom + 60;
-
       seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: ddCx, y: ddRect.bottom + 12 },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'skills-arrow', duration: 300,
+        from: { x: textX, y: textY - 18 },
+        to: { x: btnCx, y: rect.bottom + 24 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'panel-arrow', duration: 400,
+        arrowheadSize: 14, strokeWidth: 1.5,
+      }), 250);
+
+      seq.add(() => handwrittenLabel(svg, 'Side Panel', {
+        x: textX, y: textY,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.6)',
+        fontSize: 28, duration: 350,
+      }), 400);
+
+      seq.add(() => handwrittenLabel(svg, 'Chat with Claude Code without leaving the board', {
+        x: textX, y: textY + 36,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.32)',
+        fontSize: 19, duration: 300,
       }), 100);
 
-      seq.add(() => handwrittenLabel(svg, 'Create reusable AI skills your assistant can execute on demand', {
-        x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 25, duration: 300,
-      }), 200);
-
       seq.add(() => {
-        const navY = textY + 100;
+        const navY = textY + 105;
         const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            prevStep();
-          },
+          x: textX - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
         });
         const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            skipTutorial();
-          },
+          x: textX, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
         const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            nextStep();
-          },
+          x: textX + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
         });
-        return { destroy() {
-          backEl.remove(); endEl.remove(); nextEl.remove();
-          if (menuItem) menuItem.classList.remove('open');
-        } };
-      }, 150);
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
     },
   },
 
-  // ── Step 20: Automations menu ────────────────────────
+  // ── Step 24: Menubar Tour (animated sweep) ───────────
   {
-    id: 'explain-automations',
-    whiteboardMode: true,
-
-    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      const prevMenu = document.querySelector('.menubar-item[data-menu="skills"]');
-      if (prevMenu) prevMenu.classList.remove('open');
-
-      const menuItem = document.querySelector('.menubar-item[data-menu="automations"]');
-      if (menuItem) menuItem.classList.add('open');
-
-      const dropdown = menuItem?.querySelector('.menubar-dropdown');
-      if (dropdown) dropdown.offsetHeight;
-      const ddRect = dropdown?.getBoundingClientRect();
-      if (!ddRect || ddRect.width === 0) return;
-
-      const ddCx = ddRect.left + ddRect.width / 2;
-      const textX = Math.max(180, Math.min(ddCx, vw - 180));
-      const textY = ddRect.bottom + 60;
-
-      seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: ddCx, y: ddRect.bottom + 12 },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'auto-arrow', duration: 300,
-      }), 100);
-
-      seq.add(() => handwrittenLabel(svg, 'Set up automated workflows triggered by events or schedules', {
-        x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 25, duration: 300,
-      }), 200);
-
-      seq.add(() => {
-        const navY = textY + 100;
-        const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            prevStep();
-          },
-        });
-        const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            skipTutorial();
-          },
-        });
-        const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            nextStep();
-          },
-        });
-        return { destroy() {
-          backEl.remove(); endEl.remove(); nextEl.remove();
-          if (menuItem) menuItem.classList.remove('open');
-        } };
-      }, 150);
-    },
-  },
-
-  // ── Step 21: Games menu ──────────────────────────────
-  {
-    id: 'explain-games',
-    whiteboardMode: true,
-
-    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      const prevMenu = document.querySelector('.menubar-item[data-menu="automations"]');
-      if (prevMenu) prevMenu.classList.remove('open');
-
-      const menuItem = document.querySelector('.menubar-item[data-menu="games"]');
-      if (menuItem) menuItem.classList.add('open');
-
-      const dropdown = menuItem?.querySelector('.menubar-dropdown');
-      if (dropdown) dropdown.offsetHeight;
-      const ddRect = dropdown?.getBoundingClientRect();
-      if (!ddRect || ddRect.width === 0) return;
-
-      const ddCx = ddRect.left + ddRect.width / 2;
-      const textX = Math.max(180, Math.min(ddCx, vw - 180));
-      const textY = ddRect.bottom + 60;
-
-      seq.add(() => createAnimatedArrow(svg, {
-        from: { x: textX, y: textY - 15 },
-        to: { x: ddCx, y: ddRect.bottom + 12 },
-        color: 'rgba(255, 255, 255, 0.3)',
-        wobbleSeed: 'games-arrow', duration: 300,
-      }), 100);
-
-      seq.add(() => handwrittenLabel(svg, 'Take a break... you earned it', {
-        x: textX, y: textY,
-        textAnchor: 'middle', maxWidth: 500,
-        color: 'rgba(255, 255, 255, 0.5)',
-        fontSize: 25, duration: 300,
-      }), 200);
-
-      seq.add(() => {
-        const navY = textY + 100;
-        const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            prevStep();
-          },
-        });
-        const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            skipTutorial();
-          },
-        });
-        const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            nextStep();
-          },
-        });
-        return { destroy() {
-          backEl.remove(); endEl.remove(); nextEl.remove();
-          if (menuItem) menuItem.classList.remove('open');
-        } };
-      }, 150);
-    },
-  },
-
-  // ── Step 22: Bookmarks menu ──────────────────────────
-  {
-    id: 'explain-bookmarks',
-    whiteboardMode: true,
-
-    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
-      const prevMenu = document.querySelector('.menubar-item[data-menu="games"]');
-      if (prevMenu) prevMenu.classList.remove('open');
-
-      const menuItem = document.querySelector('.menubar-item[data-menu="bookmarks"]');
-      if (menuItem) menuItem.classList.add('open');
-      emit('bookmarks:render');
-
-      const dropdown = menuItem?.querySelector('.menubar-dropdown');
-
-      seq.add(() => {
-        if (dropdown) dropdown.offsetHeight;
-        const ddRect = dropdown?.getBoundingClientRect();
-        if (!ddRect || ddRect.height === 0) return;
-
-        const ddCx = ddRect.left + ddRect.width / 2;
-        const textX = Math.max(180, Math.min(ddCx, vw - 180));
-        const textY = ddRect.bottom + 60;
-
-        createAnimatedArrow(svg, {
-          from: { x: textX, y: textY - 15 },
-          to: { x: ddCx, y: ddRect.bottom + 12 },
-          color: 'rgba(255, 255, 255, 0.3)',
-          wobbleSeed: 'bm-arrow', duration: 300,
-        });
-
-        handwrittenLabel(svg, 'Pin important memories for quick access from anywhere', {
-          x: textX, y: textY,
-          textAnchor: 'middle', maxWidth: 500,
-          color: 'rgba(255, 255, 255, 0.5)',
-          fontSize: 25, duration: 300,
-        });
-
-        const navY = textY + 100;
-        const backEl = createButton(dom, 'Back', {
-          x: textX - 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            prevStep();
-          },
-        });
-        const endEl = createButton(dom, 'End', {
-          x: textX, y: navY, fontSize: 18,
-          color: 'rgba(255, 255, 255, 0.3)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            skipTutorial();
-          },
-        });
-        const nextEl = createButton(dom, 'Next', {
-          x: textX + 90, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => {
-            if (menuItem) menuItem.classList.remove('open');
-            nextStep();
-          },
-        });
-        return { destroy() {
-          backEl.remove(); endEl.remove(); nextEl.remove();
-          if (menuItem) menuItem.classList.remove('open');
-        } };
-      }, 300);
-    },
-  },
-
-  // ── Step 23: Settings — open modal, highlight Automations & Permissions ──
-  {
-    id: 'explain-settings',
+    id: 'explain-menubar',
     whiteboardMode: true,
 
     onExit() {
-      const p = document.getElementById('settings-panel');
-      if (p) { p.remove(); document.querySelector('.settings-panel-backdrop')?.remove(); }
+      document.querySelectorAll('.menubar-item.open').forEach(m => m.classList.remove('open'));
     },
 
-    render({ svg, dom, seq, vw, vh, prevStep, skipTutorial, createButton }) {
-      // Close bookmarks dropdown
-      const prevMenu = document.querySelector('.menubar-item[data-menu="bookmarks"]');
-      if (prevMenu) prevMenu.classList.remove('open');
+    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
+      document.querySelectorAll('.menubar-item.open').forEach(m => m.classList.remove('open'));
 
-      // Open Settings modal, switch to Connections tab, expand key sections
-      seq.add(async () => {
-        await openSettingsModal();
-        const panel = document.getElementById('settings-panel');
-        if (!panel) return;
+      const menubar = document.querySelector('.menubar');
+      if (!menubar) return;
+      const mbRect = menubar.getBoundingClientRect();
+      const cx = vw / 2;
 
-        // Override panel sizing for the tutorial — wider, not full height, centered
-        panel.style.width = '820px';
-        panel.style.maxHeight = '70vh';
-        panel.style.left = '50%';
-        panel.style.top = '50%';
-        panel.style.transform = 'translate(-50%, -50%) scale(var(--ui-scale, 1))';
-        panel.style.transformOrigin = 'center center';
+      // Menus to sweep — resume stays closed (no dropdown content to show)
+      const menus = [
+        { menu: 'apps',        desc: 'Your AI tools live here',           open: true },
+        { menu: 'resume',      desc: 'Continue where you left off',       open: false },
+        { menu: 'view',        desc: 'Show or hide panels',               open: true },
+        { menu: 'graph',       desc: 'Tune the memory graph',             open: true },
+        { menu: 'skills',      desc: 'Reusable AI skills',                open: true },
+        { menu: 'automations', desc: 'Workflows on autopilot',            open: true },
+        { menu: 'games',       desc: 'You earned a break',                open: true },
+      ];
 
-        // Hide the backdrop so only the panel floats over the whiteboard
-        const backdrop = document.querySelector('.settings-panel-backdrop');
-        if (backdrop) backdrop.style.background = 'transparent';
+      // Sweep state
+      let sweepG = null;
+      let currentOpenItem = null;
 
-        // Switch to Connections tab (data-tab="hooks")
-        panel.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
-        panel.querySelectorAll('.settings-tab-body').forEach(b => b.classList.remove('active'));
-        const nav = panel.querySelector('.settings-nav-item[data-tab="hooks"]');
-        const tab = panel.querySelector('.settings-tab-body[data-tab="hooks"]');
-        if (nav) nav.classList.add('active');
-        if (tab) tab.classList.add('active');
+      const cleanupSweep = () => {
+        if (sweepG) { sweepG.remove(); sweepG = null; }
+        if (currentOpenItem) { currentOpenItem.classList.remove('open'); currentOpenItem = null; }
+      };
 
-        // Expand Automations and Permissions sections
-        const autoSection = panel.querySelector('.iface-section[data-cc-target="global"]');
-        const permSection = panel.querySelector('#cc-tool-permissions');
-        if (autoSection) autoSection.classList.remove('collapsed');
-        if (permSection) permSection.classList.remove('collapsed');
-      }, 100);
+      // Sweep through each menu
+      menus.forEach((m, i) => {
+        seq.add(() => {
+          cleanupSweep();
 
-      // Wait for modal to render, then draw arrows
-      seq.add(() => {
-        const panel = document.getElementById('settings-panel');
-        if (!panel) return;
+          const menuItem = document.querySelector(`.menubar-item[data-menu="${m.menu}"]`);
+          if (!menuItem) return;
 
-        const autoSection = panel.querySelector('.iface-section[data-cc-target="global"]');
-        const permSection = panel.querySelector('#cc-tool-permissions');
-        const autoRect = autoSection?.getBoundingClientRect();
-        const permRect = permSection?.getBoundingClientRect();
+          const label = menuItem.querySelector('.menubar-label');
+          const labelRect = label?.getBoundingClientRect();
+          if (!labelRect) return;
 
-        // Position arrows to the right of the settings panel
-        const panelRect = panel.getBoundingClientRect();
-        const arrowX = panelRect.right + 30;
+          // SVG group for this menu's annotations
+          sweepG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+          svg.appendChild(sweepG);
 
-        // Arrow pointing at Automations section
-        if (autoRect) {
-          const autoY = autoRect.top + autoRect.height / 2;
-          createAnimatedArrow(svg, {
-            from: { x: arrowX + 60, y: autoY },
-            to: { x: arrowX - 20, y: autoY },
-            color: 'rgba(255, 255, 255, 0.35)',
-            wobbleSeed: 'auto-arrow', duration: 300,
+          // Highlight circle around the label
+          createHighlightCircle(sweepG, labelRect, {
+            color: 'rgba(255, 255, 255, 0.2)',
+            padding: 6, duration: 350, strokeWidth: 1,
           });
-        }
 
-        // Arrow pointing at Permissions section
-        if (permRect) {
-          const permY = permRect.top + permRect.height / 2;
-          createAnimatedArrow(svg, {
-            from: { x: arrowX + 60, y: permY },
-            to: { x: arrowX - 20, y: permY },
-            color: 'rgba(255, 255, 255, 0.35)',
-            wobbleSeed: 'perm-arrow', duration: 300,
-          });
-        }
-      }, 400);
+          const labelCx = labelRect.left + labelRect.width / 2;
 
-      // Label for Automations
+          if (m.open) {
+            // Open the dropdown
+            menuItem.classList.add('open');
+            currentOpenItem = menuItem;
+
+            const dropdown = menuItem.querySelector('.menubar-dropdown');
+            if (dropdown) dropdown.offsetHeight;
+            const ddRect = dropdown?.getBoundingClientRect();
+
+            if (ddRect && ddRect.width > 0) {
+              const ddCx = ddRect.left + ddRect.width / 2;
+              const textX = Math.max(200, Math.min(ddCx, vw - 200));
+              const textY = ddRect.bottom + 40;
+
+              createAnimatedArrow(sweepG, {
+                from: { x: textX, y: textY - 10 },
+                to: { x: ddCx, y: ddRect.bottom + 8 },
+                color: 'rgba(255, 255, 255, 0.22)',
+                wobbleSeed: `${m.menu}-sweep`, duration: 200,
+                strokeWidth: 1.2, arrowheadSize: 10,
+              });
+
+              handwrittenLabel(sweepG, m.desc, {
+                x: textX, y: textY,
+                textAnchor: 'middle', maxWidth: 400,
+                color: 'rgba(255, 255, 255, 0.45)',
+                fontSize: 22, duration: 200,
+              });
+            }
+          } else {
+            // Closed menu — show description below the label
+            const textX = Math.max(200, Math.min(labelCx, vw - 200));
+            const textY = labelRect.bottom + 55;
+
+            createAnimatedArrow(sweepG, {
+              from: { x: textX, y: textY - 10 },
+              to: { x: labelCx, y: labelRect.bottom + 10 },
+              color: 'rgba(255, 255, 255, 0.22)',
+              wobbleSeed: `${m.menu}-sweep`, duration: 200,
+              strokeWidth: 1.2, arrowheadSize: 10,
+            });
+
+            handwrittenLabel(sweepG, m.desc, {
+              x: textX, y: textY,
+              textAnchor: 'middle', maxWidth: 400,
+              color: 'rgba(255, 255, 255, 0.45)',
+              fontSize: 22, duration: 200,
+            });
+          }
+
+          return { destroy: cleanupSweep };
+        }, i === 0 ? 600 : 3000);
+      });
+
+      // After sweep — close last menu, show summary + nav
       seq.add(() => {
-        const panel = document.getElementById('settings-panel');
-        const autoSection = panel?.querySelector('.iface-section[data-cc-target="global"]');
-        const autoRect = autoSection?.getBoundingClientRect();
-        if (!autoRect || !panel) return;
-        const panelRect = panel.getBoundingClientRect();
-        const textX = panelRect.right + 100;
-        const autoY = autoRect.top + autoRect.height / 2;
+        cleanupSweep();
 
-        handwrittenLabel(svg, 'Automations', {
-          x: textX, y: autoY - 25,
-          color: 'rgba(255, 255, 255, 0.55)',
-          fontSize: 23, textAnchor: 'start', duration: 300,
+        handwrittenLabel(svg, 'Explore each menu at your own pace', {
+          x: cx, y: mbRect.bottom + 80,
+          textAnchor: 'middle',
+          color: 'rgba(255, 255, 255, 0.38)',
+          fontSize: 22, duration: 300,
         });
-        handwrittenLabel(svg, 'Hooks that run before and after each prompt.', {
-          x: textX, y: autoY + 2,
-          color: 'rgba(255, 255, 255, 0.35)',
-          fontSize: 17, textAnchor: 'start', duration: 250,
-        });
-        handwrittenLabel(svg, 'They handle memory loading, context saving,', {
-          x: textX, y: autoY + 24,
-          color: 'rgba(255, 255, 255, 0.35)',
-          fontSize: 17, textAnchor: 'start', duration: 250,
-        });
-        handwrittenLabel(svg, 'and rule enforcement automatically.', {
-          x: textX, y: autoY + 46,
-          color: 'rgba(255, 255, 255, 0.35)',
-          fontSize: 17, textAnchor: 'start', duration: 250,
-        });
-      }, 200);
 
-      // Label for Permissions
-      seq.add(() => {
-        const panel = document.getElementById('settings-panel');
-        const permSection = panel?.querySelector('#cc-tool-permissions');
-        const permRect = permSection?.getBoundingClientRect();
-        if (!permRect || !panel) return;
-        const panelRect = panel.getBoundingClientRect();
-        const textX = panelRect.right + 100;
-        const permY = permRect.top + permRect.height / 2;
-
-        handwrittenLabel(svg, 'Permissions', {
-          x: textX, y: permY - 25,
-          color: 'rgba(255, 255, 255, 0.55)',
-          fontSize: 23, textAnchor: 'start', duration: 300,
+        createDoodle(svg, 'sparkle', {
+          x: cx - 200, y: mbRect.bottom + 60,
+          scale: 0.7, color: 'rgba(255, 255, 255, 0.18)', duration: 300,
         });
-        handwrittenLabel(svg, 'Controls which tools can run without asking.', {
-          x: textX, y: permY + 2,
-          color: 'rgba(255, 255, 255, 0.35)',
-          fontSize: 17, textAnchor: 'start', duration: 250,
+        createDoodle(svg, 'sparkle', {
+          x: cx + 190, y: mbRect.bottom + 70,
+          scale: 0.6, color: 'rgba(255, 255, 255, 0.18)', duration: 300,
         });
-        handwrittenLabel(svg, 'All OFF by default. Enable them for a seamless', {
-          x: textX, y: permY + 24,
-          color: 'rgba(255, 255, 255, 0.35)',
-          fontSize: 17, textAnchor: 'start', duration: 250,
-        });
-        handwrittenLabel(svg, 'memory and automation experience.', {
-          x: textX, y: permY + 46,
-          color: 'rgba(255, 255, 255, 0.35)',
-          fontSize: 17, textAnchor: 'start', duration: 250,
-        });
-      }, 200);
 
-      // Hint text
-      seq.add(() => {
-        const panel = document.getElementById('settings-panel');
-        if (!panel) return;
-        const panelRect = panel.getBoundingClientRect();
-        const textX = panelRect.right + 100;
-        const hintY = panelRect.bottom - 10;
-
-        handwrittenLabel(svg, 'No restart needed — changes take effect immediately', {
-          x: textX, y: hintY,
-          color: 'rgba(255, 255, 255, 0.25)',
-          fontSize: 16, textAnchor: 'start', duration: 300,
-        });
-      }, 300);
-
-      // Navigation buttons
-      seq.add(() => {
-        const panel = document.getElementById('settings-panel');
-        const panelRect = panel?.getBoundingClientRect();
-        const navX = panelRect ? panelRect.right + 180 : vw / 2;
-        const navY = (panelRect ? panelRect.bottom : vh) + 30;
-
+        const navY = mbRect.bottom + 145;
         const backEl = createButton(dom, 'Back', {
-          x: navX - 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.4)', onClick: () => prevStep(),
+          x: cx - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
         });
-        const doneEl = createButton(dom, 'Done', {
-          x: navX + 70, y: navY, fontSize: 22,
-          color: 'rgba(255, 255, 255, 0.5)', onClick: () => skipTutorial(),
+        const endEl = createButton(dom, 'End', {
+          x: cx, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
         });
-        return { destroy() { backEl.remove(); doneEl.remove(); } };
-      }, 150);
+        const nextEl = createButton(dom, 'Next', {
+          x: cx + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
+        });
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 1500);
     },
   },
 
-  // ── Step 24: Feedback / Social links ──────────────────
+  // ── Step 25: Whiteboard Toolbar ─────────────────────
+  {
+    id: 'explain-whiteboard-toolbar',
+    whiteboardMode: true,
+
+    onEnter() {
+      const tb = document.getElementById('wb-toolbar');
+      if (tb) tb.classList.remove('tutorial-hidden');
+    },
+
+    onExit() {
+      const tb = document.getElementById('wb-toolbar');
+      if (tb) tb.classList.add('tutorial-hidden');
+    },
+
+    render({ svg, dom, seq, vw, vh, nextStep, prevStep, skipTutorial, createButton }) {
+      const toolbar = document.getElementById('wb-toolbar');
+      if (!toolbar) return;
+      toolbar.offsetHeight; // force reflow after unhide
+      const tbRect = toolbar.getBoundingClientRect();
+      const cx = vw / 2;
+
+      // 1. Highlight the toolbar
+      seq.add(() => createHighlightCircle(svg, tbRect, {
+        color: 'rgba(255, 255, 255, 0.18)',
+        padding: 12, duration: 500, strokeWidth: 1,
+      }), 100);
+
+      // 2. Arrow from description up to toolbar
+      const textY = tbRect.bottom + 70;
+      seq.add(() => createAnimatedArrow(svg, {
+        from: { x: cx, y: textY - 12 },
+        to: { x: tbRect.left + tbRect.width / 2, y: tbRect.bottom + 12 },
+        color: 'rgba(255, 255, 255, 0.22)',
+        wobbleSeed: 'wb-toolbar', duration: 300,
+        strokeWidth: 1.2, arrowheadSize: 10,
+      }), 200);
+
+      // 3. Title
+      seq.add(() => handwrittenLabel(svg, 'The Whiteboard', {
+        x: cx, y: textY,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.55)',
+        fontSize: 28, duration: 300,
+      }), 200);
+
+      // 4. Description lines
+      seq.add(() => handwrittenLabel(svg, 'Draw, write, sketch — Claude can see everything here.', {
+        x: cx, y: textY + 38,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.4)',
+        fontSize: 20, duration: 250,
+      }), 200);
+
+      seq.add(() => handwrittenLabel(svg, 'Just say "look at the whiteboard" and it will.', {
+        x: cx, y: textY + 68,
+        textAnchor: 'middle',
+        color: 'rgba(255, 255, 255, 0.4)',
+        fontSize: 20, duration: 250,
+      }), 200);
+
+      // 5. Nav
+      seq.add(() => {
+        const navY = textY + 130;
+        const backEl = createButton(dom, 'Back', {
+          x: cx - 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => prevStep(),
+        });
+        const endEl = createButton(dom, 'End', {
+          x: cx, y: navY, fontSize: 17,
+          color: 'rgba(255, 255, 255, 0.25)', onClick: () => skipTutorial(),
+        });
+        const nextEl = createButton(dom, 'Next', {
+          x: cx + 80, y: navY, fontSize: 22,
+          color: 'rgba(255, 255, 255, 0.35)', onClick: () => nextStep(),
+        });
+        return { destroy() { backEl.remove(); endEl.remove(); nextEl.remove(); } };
+      }, 200);
+    },
+  },
+
+  // ── Step 26: Feedback / Social links ──────────────────
   {
     id: 'feedback',
     whiteboardMode: true,

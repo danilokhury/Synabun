@@ -283,4 +283,16 @@ export declare function handleBrowserExtractLiNetwork(args: {
         text: string;
     }[];
 }>;
+export declare const browserExtractLiJobsSchema: {
+    sessionId: z.ZodOptional<z.ZodString>;
+};
+export declare const browserExtractLiJobsDescription: string;
+export declare function handleBrowserExtractLiJobs(args: {
+    sessionId?: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
 //# sourceMappingURL=browser-observe.d.ts.map

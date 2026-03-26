@@ -98,6 +98,9 @@ function buildPanelHTML() {
       </div>
       <div class="sm-header-actions">
         <button class="sm-header-btn" id="sm-refresh" title="Refresh">${ICON_REFRESH}</button>
+        <button class="backdrop-toggle-btn" id="sm-backdrop-toggle" data-tooltip="Toggle backdrop">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
         <button class="sm-close" id="sm-close">&times;</button>
       </div>
     </div>
@@ -424,7 +427,7 @@ function openPanel() {
 
   _backdrop = document.createElement('div');
   _backdrop.className = 'sm-backdrop';
-  _backdrop.addEventListener('click', closePanel);
+  // Backdrop click disabled — close only via ESC or close button
   document.body.appendChild(_backdrop);
 
   _panel = document.createElement('div');
@@ -441,6 +444,12 @@ function openPanel() {
   isVisible = true;
   connectWs();
   refreshSessions();
+
+  // ESC key to close
+  const onEsc = (e) => {
+    if (e.key === 'Escape' && _panel) { closePanel(); document.removeEventListener('keydown', onEsc); }
+  };
+  document.addEventListener('keydown', onEsc);
 
   requestAnimationFrame(() => {
     _backdrop.classList.add('open');
@@ -464,6 +473,16 @@ function wirePanel() {
 
   const refreshBtn = _panel.querySelector('#sm-refresh');
   if (refreshBtn) refreshBtn.addEventListener('click', refreshSessions);
+
+  const bdToggle = _panel.querySelector('#sm-backdrop-toggle');
+  if (bdToggle) {
+    bdToggle.addEventListener('click', () => {
+      if (_backdrop) {
+        _backdrop.classList.toggle('backdrop-hidden');
+        bdToggle.classList.toggle('active', _backdrop.classList.contains('backdrop-hidden'));
+      }
+    });
+  }
 
   // Tab switching
   const tabBar = _panel.querySelector('#sm-tabs');

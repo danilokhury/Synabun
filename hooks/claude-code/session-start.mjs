@@ -185,9 +185,12 @@ async function main() {
 
   // Detect active loop — skip greeting + recall for autonomous loop sessions
   // Check both pending files (first iteration) AND active state files (subsequent iterations after /clear).
+  // When SYNABUN_TERMINAL_SESSION is set (server-launched loop), only match loops
+  // owned by THIS terminal — prevents unrelated sessions from entering loop mode.
   // First, deactivate stale loops (session died, terminal closed, time expired)
   cleanupStaleLoops(LOOP_DIR);
   const LOOP_STALE_MS = 10 * 60 * 1000;
+  const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION || '';
   let isLoopSession = false;
   try {
     if (existsSync(LOOP_DIR)) {
@@ -202,6 +205,8 @@ async function main() {
           if (data.stopped === true || data.finishedAt) continue;
           // Active loop detected (pending or already running)
           if (data.active || data.pending) {
+            // Multi-loop isolation: only match OUR terminal's loop
+            if (terminalSessionEnv && data.terminalSessionId && data.terminalSessionId !== terminalSessionEnv) continue;
             isLoopSession = true;
             break;
           }
@@ -311,6 +316,8 @@ async function main() {
     `## SynaBun Persistent Memory`,
     ``,
     `SynaBun memory is active. CLAUDE.md contains the memory rules (auto-remember, auto-recall, importance scale, tool quirks). Follow those rules throughout this session.`,
+    ``,
+    `**Response ordering**: When finishing a task, call memory tools (remember/reflect) BEFORE writing your completion summary. The summary must be the LAST text in your response so the user sees it — not buried above memory tool calls.`,
     ``,
   );
 

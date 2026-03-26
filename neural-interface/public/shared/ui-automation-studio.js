@@ -7,6 +7,7 @@
 import { emit, on } from './state.js';
 import { storage } from './storage.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
+// sendToPanel removed — all launches use floating browser only
 import {
   fetchLoopTemplates,
   createLoopTemplate,
@@ -16,7 +17,6 @@ import {
   fetchActiveLoop,
   launchLoop,
   stopLoop,
-  fetchBrowserSessions,
   launchAgent,
   fetchAgents,
   fetchAgent,
@@ -33,6 +33,7 @@ import {
   createQuickTimer,
   fetchQuickTimers,
   cancelQuickTimer,
+  triggerQuickTimerNow,
 } from './api.js';
 
 const $ = (id) => document.getElementById(id);
@@ -69,6 +70,7 @@ let _agentOutputs = {};     // agentId → accumulated text chunks for live disp
 let _agentRecentTools = {}; // agentId → last N tool names for live feed
 let _agentJournals = {};    // agentId → journal entries from iteration-complete events
 let _launchMode = 'loop';   // 'loop' | 'agent' — which mode the launch dialog uses
+const _launchDestination = 'cli'; // always floating — side panel launch removed
 
 // Schedule state
 let _schedules = [];        // all schedules from API
@@ -101,8 +103,18 @@ const CATEGORY_COLORS = {
 const _s = (d) => `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 
 const AS_ICONS = {
-  // Preset template icons
+  // Social media icons
   twitter:    _s('<path d="M2 13c2.5 0 4.5-1 5.5-3 1 2 3.5 3 6.5 1"/><path d="M14 3c-1 .5-2 .8-3 .8C10 3 8.5 2.5 7 3.5c-1.5 1-1.5 3-.5 4"/>'),
+  x:          `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M9.47 6.77L14.18 1.5h-1.11L8.97 6.03 5.82 1.5H1.5l4.95 7.2L1.5 14.5h1.11l4.33-5.03 3.46 5.03h4.32L9.47 6.77zm-1.53 1.78l-.5-.72L3.11 2.36h1.72l3.23 4.62.5.72 4.2 6.01h-1.72L7.94 8.55z"/></svg>`,
+  instagram:  `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="3"/><circle cx="8" cy="8" r="3"/><circle cx="11.5" cy="4.5" r="0.5" fill="currentColor" stroke="none"/></svg>`,
+  facebook:   `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M14 8a6 6 0 10-6.94 5.93v-4.2H5.63V8h1.43V6.56c0-1.41.84-2.19 2.13-2.19.62 0 1.26.11 1.26.11v1.39h-.71c-.7 0-.92.43-.92.88V8h1.56l-.25 1.73H8.82v4.2A6 6 0 0014 8z"/></svg>`,
+  linkedin:   `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M2 3.47c0-.8.66-1.47 1.47-1.47s1.47.66 1.47 1.47S4.28 4.93 3.47 4.93 2 4.28 2 3.47zM2.2 6h2.53v8H2.2V6zm4.27 0h2.43v1.09c.34-.64 1.16-1.3 2.4-1.3 2.56 0 3.03 1.69 3.03 3.88V14h-2.53V10.1c0-.93-.02-2.13-1.3-2.13-1.3 0-1.5 1.01-1.5 2.06V14H6.47V6z"/></svg>`,
+  tiktok:     `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M11.73 3.32A3.05 3.05 0 0110.67 1h-2.2v9.48a1.82 1.82 0 01-1.82 1.67 1.82 1.82 0 01-.83-3.44V6.46a4.06 4.06 0 00-.83-.08A4.07 4.07 0 001 10.44 4.07 4.07 0 005 14.5a4.07 4.07 0 004.06-4.06V5.6a5.28 5.28 0 003.08 1v-2.2a3.05 3.05 0 01-.41-1.08z"/></svg>`,
+  youtube:    `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M14.06 4.88a1.78 1.78 0 00-1.25-1.26C11.73 3.33 8 3.33 8 3.33s-3.73 0-4.81.29A1.78 1.78 0 001.94 4.88 18.7 18.7 0 001.65 8c-.02 1.06.08 2.12.29 3.12a1.78 1.78 0 001.25 1.26c1.08.29 4.81.29 4.81.29s3.73 0 4.81-.29a1.78 1.78 0 001.25-1.26c.21-1 .31-2.06.29-3.12.02-1.06-.08-2.12-.29-3.12zM6.6 10.15V5.85L10.24 8 6.6 10.15z"/></svg>`,
+  whatsapp:   `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8.02 1.5A6.14 6.14 0 001.5 7.5a6.1 6.1 0 00.94 3.26L1.5 14.5l3.88-.94A6.14 6.14 0 0014.5 7.5 6.14 6.14 0 008.02 1.5zm3.57 8.68c-.15.43-.9.82-1.24.87-.34.05-.66.17-2.22-.46s-2.52-2.3-2.6-2.4c-.07-.1-.6-.8-.6-1.53s.38-1.08.52-1.23c.13-.15.3-.18.39-.18h.28c.09 0 .22-.03.34.26s.42 1.02.46 1.1c.04.07.06.15.01.24-.05.1-.07.15-.15.23-.07.08-.15.18-.22.24-.07.07-.15.15-.07.3.09.15.38.63.82 1.02.56.5 1.04.66 1.19.73.15.07.23.06.32-.04.09-.1.38-.43.48-.58.1-.15.2-.13.34-.07.13.05.85.4.99.47.15.07.24.11.28.17.04.07.04.4-.11.82z"/></svg>`,
+  discord:    `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M12.36 3.8A11.5 11.5 0 009.5 2.93a.04.04 0 00-.05.02c-.12.22-.26.52-.36.75a10.6 10.6 0 00-3.18 0A7.4 7.4 0 005.55 2.95a.04.04 0 00-.05-.02 11.5 11.5 0 00-2.86.87.04.04 0 00-.02.01A11.7 11.7 0 001 10.98a.05.05 0 00.02.03 11.6 11.6 0 003.5 1.77.05.05 0 00.05-.01c.27-.37.51-.76.72-1.17a.04.04 0 00-.02-.06 7.6 7.6 0 01-1.1-.52.04.04 0 01-.004-.07l.22-.17a.04.04 0 01.05-.01 8.3 8.3 0 007.12 0 .04.04 0 01.05.01l.22.17a.04.04 0 01-.003.07c-.35.2-.72.37-1.1.52a.04.04 0 00-.02.06c.21.41.45.8.72 1.17a.05.05 0 00.05.02 11.56 11.56 0 003.5-1.78.05.05 0 00.02-.03c.29-2.97-.48-5.55-2.04-7.84a.04.04 0 00-.02-.02zM5.68 9.5c-.68 0-1.24-.63-1.24-1.4s.55-1.4 1.24-1.4c.7 0 1.25.63 1.24 1.4 0 .77-.55 1.4-1.24 1.4zm4.58 0c-.68 0-1.24-.63-1.24-1.4s.55-1.4 1.24-1.4c.7 0 1.25.63 1.24 1.4 0 .77-.54 1.4-1.24 1.4z"/></svg>`,
+
+  // General purpose icons
   search:     _s('<circle cx="7" cy="7" r="4"/><path d="M14 14l-3.5-3.5"/>'),
   research:   _s('<path d="M3 2h10M3 6h10M3 10h7"/><circle cx="13" cy="12" r="2"/><path d="M11.5 10.5l-1-1"/>'),
   chart:      _s('<path d="M3 14V8M7 14V4M11 14V9M15 14V6"/><path d="M1 14h14"/>'),
@@ -119,6 +131,13 @@ const AS_ICONS = {
   blank:      _s('<rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M6 6h4M6 9h2"/>'),
 
   clock:      _s('<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 2.5"/>'),
+
+  // External SVG logos (fill-based, from public/ directory)
+  claude:     `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" fill-rule="evenodd"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>`,
+  openai:     `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" fill-rule="evenodd"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z"/></svg>`,
+  gemini:     `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" fill-rule="evenodd"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"/></svg>`,
+  leonardo:   `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9.5 2l1.5 3.5L14.5 7l-3.5 1.5L9.5 12l-1.5-3.5L4.5 7l3.5-1.5L9.5 2zM19 10l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2zM5 17l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2z"/></svg>`,
+  pin:        _s('<path d="M8 14v-3"/><path d="M4 11h8"/><path d="M10.5 2.5l3 3-2 2 .5 2-4.5.5.5-4.5 2-.5z"/>'),
 
   // UI chrome
   back:       _s('<path d="M10 3L5 8l5 5"/>'),
@@ -758,7 +777,7 @@ function formatLoopCommand(taskText, state) {
   const lines = ['Start a loop with these settings:', `Task: ${taskText}`];
   if (state.usesBrowser) {
     lines.push('', 'BROWSER: This automation REQUIRES the SynaBun internal browser.',
-      'Use ONLY SynaBun browser tools (browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network).',
+      'Use ONLY SynaBun browser tools (browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs).',
       'Start by calling browser_navigate with your target URL — it auto-creates a session.',
       'NEVER use Playwright plugin tools or WebFetch — they bypass the visible browser.');
   }
@@ -767,23 +786,33 @@ function formatLoopCommand(taskText, state) {
   return lines.join('\n');
 }
 
-const BROWSER_CONTEXT = 'BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.';
+const BROWSER_CONTEXT = 'BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.';
 
-// ── Launch dialog ──
-// Instead of launching immediately, show a confirmation dialog where the user picks CLI + model
+// ── Inline launch panel ──
+// Instead of an overlay modal, swap the detail content area with launch configuration
 
-let _pendingLaunchParams = null; // stashed params while dialog is open
+let _pendingLaunchParams = null; // stashed params while launch panel is open
+let _launchPanelActive = false;  // whether the inline launch panel is showing
 // Browser mode removed — automations use saved browser settings directly
 
-function showLaunchDialog(params) {
+function showLaunchInline(params) {
   // Enforce browser context before stashing
   if (params.usesBrowser && (!params.context || !params.context.includes('BROWSER REQUIRED'))) {
     params.context = BROWSER_CONTEXT;
   }
   _pendingLaunchParams = params;
+  _launchPanelActive = true;
 
-  // Remove any existing dialog
-  _panel?.querySelector('.as-launch-dialog')?.remove();
+  // Render into detail content area if available, otherwise take over main area
+  let contentEl = _panel?.querySelector('.as-detail-content');
+  if (!contentEl) {
+    // Non-detail context (wizard, welcome) — switch to a standalone launch view
+    _view = 'launch';
+    const main = $('as-main');
+    if (!main) return;
+    main.innerHTML = `<div class="as-detail-content as-launch-standalone"></div>`;
+    contentEl = main.querySelector('.as-detail-content');
+  }
 
   const profile = _launchProfile || 'claude-code';
   const models = CLI_MODELS[profile] || [];
@@ -793,106 +822,103 @@ function showLaunchDialog(params) {
   const iterCount = params.iterations || 10;
   const timeCount = params.maxMinutes || 30;
 
-  const html = `
-    <div class="as-launch-dialog">
-      <div class="as-launch-dialog-inner">
-        <div class="as-launch-dialog-header">
-          <span class="as-launch-dialog-title">Launch</span>
-          <button class="as-launch-dialog-close" data-action="launch-dialog-close">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M11 3L3 11M3 3l8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          </button>
+  contentEl.innerHTML = `
+    <div class="as-launch-inline">
+      <div class="as-launch-inline-header">
+        <button class="as-launch-inline-back" data-action="launch-inline-close">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span class="as-launch-inline-title">Launch Configuration</span>
+      </div>
+      <div class="as-launch-inline-body">
+        <div class="as-launch-section">
+          <label class="as-launch-label">Mode</label>
+          <div class="as-launch-mode-toggle">
+            <button class="as-launch-mode${_launchMode === 'loop' ? ' active' : ''}" data-mode="loop">
+              <span class="as-launch-mode-icon"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 8A6 6 0 1 1 8 2"/><polyline points="14 2 14 8 8 8"/></svg></span>
+              Loop
+            </button>
+            <button class="as-launch-mode${_launchMode === 'agent' ? ' active' : ''}" data-mode="agent">
+              <span class="as-launch-mode-icon"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg></span>
+              Agent
+            </button>
+          </div>
         </div>
-        <div class="as-launch-dialog-body">
-          <div class="as-launch-section">
-            <label class="as-launch-label">Mode</label>
-            <div class="as-launch-mode-toggle">
-              <button class="as-launch-mode${_launchMode === 'loop' ? ' active' : ''}" data-mode="loop">
-                <span class="as-launch-mode-icon"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 8A6 6 0 1 1 8 2"/><polyline points="14 2 14 8 8 8"/></svg></span>
-                Loop
+        <div class="as-launch-section">
+          <label class="as-launch-label">CLI</label>
+          <div class="as-launch-profiles" id="as-launch-profiles">
+            ${CLI_PROFILES.map(p => `
+              <button class="as-launch-profile${p.id === profile ? ' active' : ''}" data-profile="${p.id}">
+                <span class="as-launch-profile-name">${p.label}</span>
+                <span class="as-launch-profile-org">${p.desc}</span>
               </button>
-              <button class="as-launch-mode${_launchMode === 'agent' ? ' active' : ''}" data-mode="agent">
-                <span class="as-launch-mode-icon"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg></span>
-                Agent
-              </button>
-            </div>
+            `).join('')}
           </div>
-          <div class="as-launch-section">
-            <label class="as-launch-label">CLI</label>
-            <div class="as-launch-profiles" id="as-launch-profiles">
-              ${CLI_PROFILES.map(p => `
-                <button class="as-launch-profile${p.id === profile ? ' active' : ''}" data-profile="${p.id}">
-                  <span class="as-launch-profile-name">${p.label}</span>
-                  <span class="as-launch-profile-org">${p.desc}</span>
-                </button>
-              `).join('')}
-            </div>
+        </div>
+        <div class="as-launch-section" id="as-launch-model-section">
+          <label class="as-launch-label">Model</label>
+          <div class="as-launch-models" id="as-launch-models">
+            ${renderModelChips(profile, currentModel)}
           </div>
-          <div class="as-launch-section" id="as-launch-model-section">
-            <label class="as-launch-label">Model</label>
-            <div class="as-launch-models" id="as-launch-models">
-              ${renderModelChips(profile, currentModel)}
-            </div>
+        </div>
+        <div class="as-launch-section as-launch-summary">
+          <div class="as-launch-summary-row">
+            <span class="as-launch-summary-key">Task</span>
+            <span class="as-launch-summary-val as-launch-summary-task">${esc((params.task || '').slice(0, 100))}${(params.task || '').length > 100 ? '\u2026' : ''}</span>
           </div>
-          <div class="as-launch-section as-launch-summary">
+          <div class="as-launch-loop-fields" ${_launchMode === 'agent' ? 'style="display:none"' : ''}>
             <div class="as-launch-summary-row">
-              <span class="as-launch-summary-key">Task</span>
-              <span class="as-launch-summary-val as-launch-summary-task">${esc((params.task || '').slice(0, 100))}${(params.task || '').length > 100 ? '\u2026' : ''}</span>
+              <span class="as-launch-summary-key">Iterations</span>
+              <span class="as-launch-summary-val">${iterCount}</span>
             </div>
-            <div class="as-launch-loop-fields" ${_launchMode === 'agent' ? 'style="display:none"' : ''}>
+            <div class="as-launch-summary-row">
+              <span class="as-launch-summary-key">Time cap</span>
+              <span class="as-launch-summary-val">${timeCount} min</span>
+            </div>
+            ${params.usesBrowser ? `<div class="as-launch-summary-row"><span class="as-launch-summary-key">Browser</span><span class="as-launch-summary-val">Yes &mdash; uses your Browser settings</span></div>` : ''}
+          </div>
+          <div class="as-launch-agent-fields" ${_launchMode === 'loop' ? 'style="display:none"' : ''}>
+            <div class="as-launch-summary-row">
+              <span class="as-launch-summary-key">SynaBun</span>
+              <label class="as-launch-toggle">
+                <input type="checkbox" id="as-agent-synabun" checked>
+                <span class="as-launch-toggle-label">Memory + Browser tools</span>
+              </label>
+            </div>
+            <div class="as-launch-summary-row">
+              <span class="as-launch-summary-key">Mode</span>
+              <div class="as-launch-agent-mode-row">
+                <button class="as-launch-agent-submode active" data-submode="single">Single</button>
+                <button class="as-launch-agent-submode" data-submode="loop">Loop</button>
+              </div>
+            </div>
+            <div class="as-launch-agent-loop-cfg" style="display:none">
               <div class="as-launch-summary-row">
                 <span class="as-launch-summary-key">Iterations</span>
-                <span class="as-launch-summary-val">${iterCount}</span>
+                <input type="number" id="as-agent-iterations" value="${iterCount}" min="1" max="50" class="as-launch-inline-input">
               </div>
               <div class="as-launch-summary-row">
                 <span class="as-launch-summary-key">Time cap</span>
-                <span class="as-launch-summary-val">${timeCount} min</span>
+                <input type="number" id="as-agent-maxminutes" value="${timeCount}" min="1" max="480" class="as-launch-inline-input"> <span class="as-launch-unit">min</span>
               </div>
-              ${params.usesBrowser ? `<div class="as-launch-summary-row"><span class="as-launch-summary-key">Browser</span><span class="as-launch-summary-val">Yes &mdash; uses your Browser settings</span></div>` : ''}
             </div>
-            <div class="as-launch-agent-fields" ${_launchMode === 'loop' ? 'style="display:none"' : ''}>
-              <div class="as-launch-summary-row">
-                <span class="as-launch-summary-key">SynaBun</span>
-                <label class="as-launch-toggle">
-                  <input type="checkbox" id="as-agent-synabun" checked>
-                  <span class="as-launch-toggle-label">Memory + Browser tools</span>
-                </label>
-              </div>
-              <div class="as-launch-summary-row">
-                <span class="as-launch-summary-key">Mode</span>
-                <div class="as-launch-agent-mode-row">
-                  <button class="as-launch-agent-submode active" data-submode="single">Single</button>
-                  <button class="as-launch-agent-submode" data-submode="loop">Loop</button>
-                </div>
-              </div>
-              <div class="as-launch-agent-loop-cfg" style="display:none">
-                <div class="as-launch-summary-row">
-                  <span class="as-launch-summary-key">Iterations</span>
-                  <input type="number" id="as-agent-iterations" value="${iterCount}" min="1" max="50" class="as-launch-inline-input">
-                </div>
-                <div class="as-launch-summary-row">
-                  <span class="as-launch-summary-key">Time cap</span>
-                  <input type="number" id="as-agent-maxminutes" value="${timeCount}" min="1" max="480" class="as-launch-inline-input"> <span class="as-launch-unit">min</span>
-                </div>
-              </div>
-              <div class="as-launch-summary-row">
-                <span class="as-launch-summary-key">Isolation</span>
-                <span class="as-launch-summary-val as-launch-isolation-badge">Process isolated &mdash; unique session per run</span>
-              </div>
+            <div class="as-launch-summary-row">
+              <span class="as-launch-summary-key">Isolation</span>
+              <span class="as-launch-summary-val as-launch-isolation-badge">Process isolated &mdash; unique session per run</span>
             </div>
           </div>
         </div>
-        <div class="as-launch-dialog-footer">
-          <button class="as-launch-cancel" data-action="launch-dialog-close">Cancel</button>
-          <button class="as-launch-go" data-action="launch-dialog-confirm" id="as-launch-confirm-btn">
-            ${_launchMode === 'agent' ? 'Launch Agent' : 'Launch'}
-          </button>
-        </div>
+      </div>
+      <div class="as-launch-inline-footer">
+        <button class="as-launch-cancel" data-action="launch-inline-close">Cancel</button>
+        <button class="as-launch-go" data-action="launch-inline-confirm" id="as-launch-confirm-btn">
+          ${_launchMode === 'agent' ? 'Launch Agent' : 'Launch'}
+        </button>
       </div>
     </div>
   `;
 
-  _panel.insertAdjacentHTML('beforeend', html);
-  wireLaunchDialog();
+  wireLaunchInline(contentEl);
 }
 
 function renderModelChips(profileId, selectedModel) {
@@ -906,77 +932,68 @@ function renderModelChips(profileId, selectedModel) {
   `).join('');
 }
 
-function wireLaunchDialog() {
-  const dialog = _panel?.querySelector('.as-launch-dialog');
-  if (!dialog) return;
+function wireLaunchInline(container) {
+  const root = container.querySelector('.as-launch-inline');
+  if (!root) return;
 
   // Mode toggle (Loop vs Agent)
-  dialog.querySelectorAll('.as-launch-mode').forEach(btn => {
+  root.querySelectorAll('.as-launch-mode').forEach(btn => {
     btn.addEventListener('click', () => {
-      dialog.querySelectorAll('.as-launch-mode').forEach(b => b.classList.remove('active'));
+      root.querySelectorAll('.as-launch-mode').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       _launchMode = btn.dataset.mode;
-      // Toggle loop/agent specific fields
-      const loopFields = dialog.querySelector('.as-launch-loop-fields');
-      const agentFields = dialog.querySelector('.as-launch-agent-fields');
+      const loopFields = root.querySelector('.as-launch-loop-fields');
+      const agentFields = root.querySelector('.as-launch-agent-fields');
       if (loopFields) loopFields.style.display = _launchMode === 'loop' ? '' : 'none';
       if (agentFields) agentFields.style.display = _launchMode === 'agent' ? '' : 'none';
-      // Update confirm button text
-      const confirmBtn = dialog.querySelector('#as-launch-confirm-btn');
+      const confirmBtn = root.querySelector('#as-launch-confirm-btn');
       if (confirmBtn) confirmBtn.textContent = _launchMode === 'agent' ? 'Launch Agent' : 'Launch';
     });
   });
 
   // Profile selection
-  dialog.querySelectorAll('.as-launch-profile').forEach(btn => {
+  root.querySelectorAll('.as-launch-profile').forEach(btn => {
     btn.addEventListener('click', () => {
-      dialog.querySelectorAll('.as-launch-profile').forEach(b => b.classList.remove('active'));
+      root.querySelectorAll('.as-launch-profile').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       const profileId = btn.dataset.profile;
       _launchProfile = profileId;
       storage.setItem('as-launch-profile', profileId);
-
-      // Update models for selected profile
       const models = CLI_MODELS[profileId] || [];
       const defaultModel = models.find(m => m.tier === 'default') || models[0];
       _launchModel = defaultModel?.id || null;
       storage.setItem('as-launch-model', _launchModel);
-      const modelsContainer = dialog.querySelector('#as-launch-models');
+      const modelsContainer = root.querySelector('#as-launch-models');
       if (modelsContainer) {
         modelsContainer.innerHTML = renderModelChips(profileId, _launchModel);
-        wireModelChips(dialog);
+        wireModelChips(root);
       }
     });
   });
 
-  wireModelChips(dialog);
+  wireModelChips(root);
 
   // Agent submode toggle (Single vs Loop)
-  dialog.querySelectorAll('.as-launch-agent-submode').forEach(btn => {
+  root.querySelectorAll('.as-launch-agent-submode').forEach(btn => {
     btn.addEventListener('click', () => {
-      dialog.querySelectorAll('.as-launch-agent-submode').forEach(b => b.classList.remove('active'));
+      root.querySelectorAll('.as-launch-agent-submode').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      const loopCfg = dialog.querySelector('.as-launch-agent-loop-cfg');
+      const loopCfg = root.querySelector('.as-launch-agent-loop-cfg');
       if (loopCfg) loopCfg.style.display = btn.dataset.submode === 'loop' ? '' : 'none';
     });
   });
 
-  // Close on backdrop click
-  dialog.addEventListener('click', (e) => {
-    if (e.target === dialog) closeLaunchDialog();
-  });
-
-  // Escape key
+  // Escape key to close
   const escHandler = (e) => {
-    if (e.key === 'Escape') { closeLaunchDialog(); document.removeEventListener('keydown', escHandler); }
+    if (e.key === 'Escape') { closeLaunchInline(); document.removeEventListener('keydown', escHandler); }
   };
   document.addEventListener('keydown', escHandler);
 }
 
-function wireModelChips(dialog) {
-  dialog.querySelectorAll('.as-launch-model').forEach(btn => {
+function wireModelChips(container) {
+  container.querySelectorAll('.as-launch-model').forEach(btn => {
     btn.addEventListener('click', () => {
-      dialog.querySelectorAll('.as-launch-model').forEach(b => b.classList.remove('active'));
+      container.querySelectorAll('.as-launch-model').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       _launchModel = btn.dataset.model;
       storage.setItem('as-launch-model', _launchModel);
@@ -984,23 +1001,32 @@ function wireModelChips(dialog) {
   });
 }
 
-function closeLaunchDialog() {
-  _panel?.querySelector('.as-launch-dialog')?.remove();
+function closeLaunchInline() {
   _pendingLaunchParams = null;
+  _launchPanelActive = false;
+  // Restore previous view
+  if (_view === 'launch') {
+    _view = 'welcome';
+    renderView();
+  } else if (_view === 'detail' && _selected) {
+    renderDetailMain();
+  }
 }
 
 async function confirmLaunch() {
   if (!_pendingLaunchParams) return;
   const params = { ..._pendingLaunchParams, profile: _launchProfile, model: _launchModel };
 
-  // Read agent dialog values BEFORE closing (closeLaunchDialog removes DOM elements)
+  // Read agent values BEFORE closing (closeLaunchInline re-renders detail view)
   const withSynabun = !!document.getElementById('as-agent-synabun')?.checked;
   const submodeBtn = document.querySelector('.as-launch-agent-submode.active');
   const agentSubmode = submodeBtn?.dataset?.submode || 'single';
   const agentIterations = parseInt(document.getElementById('as-agent-iterations')?.value || '1', 10);
   const agentMaxMinutes = parseInt(document.getElementById('as-agent-maxminutes')?.value || '30', 10);
 
-  closeLaunchDialog();
+  // Clear launch state (don't re-render detail — we're about to navigate away)
+  _pendingLaunchParams = null;
+  _launchPanelActive = false;
 
   // Agent mode — isolated spawn, optional SynaBun integration
   if (_launchMode === 'agent') {
@@ -1021,50 +1047,46 @@ async function confirmLaunch() {
       if (!result?.ok) { showToast(result?.error || 'Failed to launch agent'); return; }
       _agentOutputs[result.agentId] = '';
       showToast('Agent launched');
-      if (!_focusMode) {
-        _focusMode = true;
-        $('as-focus')?.classList.add('active');
-      }
-      _view = 'running';
-      renderView();
-      await refreshAgents();
+      closePanel();
     } catch (err) { showToast('Agent launch failed: ' + (err.message || 'unknown error')); }
     return;
   }
 
-  // Loop mode — existing behavior
+  // Loop mode — route based on destination
   try {
-    // If automation needs a browser, ensure one is open before launching the loop.
-    // Check if a session already exists (user may have opened one from Apps menu).
-    // Only create a new one if none exist.
+    // Each automation gets its own DEDICATED browser session for isolation.
+    // Always create a new floating browser window — never embed in side panel.
+    let dedicatedBrowserSessionId = null;
     if (params.usesBrowser) {
-      let hasBrowser = false;
-      try {
-        const existing = await fetchBrowserSessions();
-        const sessions = existing?.sessions || [];
-        hasBrowser = sessions.length > 0;
-      } catch { /* assume none */ }
-
-      if (!hasBrowser) {
-        showToast('Opening browser...');
-        // Wait for the browser session to be created (server broadcasts sync:browser:created)
-        const browserReady = new Promise((resolve) => {
-          const unsub = on('sync:browser:created', () => { unsub(); resolve(); });
-          // Timeout fallback — don't block forever if browser fails
-          setTimeout(() => { unsub(); resolve(); }, 12000);
-        });
-        // Use force=true to bypass _opening guard (may be stuck from a previous failed attempt)
-        // Don't use fresh=true — that destroys existing sessions
-        emit('browser:open', { url: 'about:blank', force: true });
-        await browserReady;
-      } else {
-        showToast('Using existing browser session...');
+      showToast('Opening browser...');
+      const browserReady = new Promise((resolve) => {
+        const unsub = on('sync:browser:created', (data) => { unsub(); resolve(data?.sessionId || null); });
+        setTimeout(() => { unsub(); resolve(null); }, 12000);
+      });
+      emit('browser:open', { url: 'about:blank', force: true });
+      dedicatedBrowserSessionId = await browserReady;
+      if (dedicatedBrowserSessionId) {
+        console.log('[AS] confirmLaunch: created dedicated browser session', dedicatedBrowserSessionId);
       }
     }
 
+    // Pass the dedicated browser session ID to the server so it pins to this loop
+    if (dedicatedBrowserSessionId) {
+      params.browserSessionId = dedicatedBrowserSessionId;
+    }
+
+    // Launch as floating terminal + floating browser
     showToast('Launching loop...');
+    emit('terminal:expect-managed');
+    console.log('[AS] confirmLaunch: calling launchLoop, profile =', params.profile, ', usesBrowser =', params.usesBrowser);
     const result = await launchLoop(params);
-    if (!result?.ok) { showToast(result?.error || 'Failed to launch loop'); return; }
+    console.log('[AS] confirmLaunch: launchLoop result =', JSON.stringify(result));
+    if (!result?.ok) {
+      emit('terminal:attach-floating', {});
+      showToast(result?.error || 'Failed to launch loop');
+      return;
+    }
+    console.log('[AS] confirmLaunch: emitting terminal:attach-floating, terminalSessionId =', result.terminalSessionId);
     emit('terminal:attach-floating', {
       terminalSessionId: result.terminalSessionId,
       profile: params.profile || 'claude-code',
@@ -1073,12 +1095,18 @@ async function confirmLaunch() {
     });
     const profileLabel = CLI_PROFILES.find(p => p.id === params.profile)?.label || params.profile;
     showToast(`Loop started — ${profileLabel} launching...`);
-  } catch (err) { showToast('Launch failed: ' + (err.message || 'unknown error')); }
+    closePanel();
+  } catch (err) {
+    // Clear the managed-terminal flag since we won't emit terminal:attach-floating
+    emit('terminal:attach-floating', {});
+    console.error('[AS] confirmLaunch: caught error:', err);
+    showToast('Launch failed: ' + (err.message || 'unknown error'));
+  }
 }
 
-// Backward-compatible wrapper — all call sites use this, it now shows the dialog
+// Backward-compatible wrapper — all call sites use this, it now shows inline launch panel
 async function serverLaunchLoop(params) {
-  showLaunchDialog(params);
+  showLaunchInline(params);
 }
 
 function relativeTime(dateStr) {
@@ -1124,6 +1152,7 @@ function buildTemplateCommand(template) {
 export function initAutomationStudio() {
   on('automations:open', () => openPanel());
   on('automations:open-wizard', () => { openPanel(); });
+  on('automations:open-schedules', () => { openPanel().then(() => { _view = 'schedules'; _selected = null; loadScheduleData().then(() => renderView()); }); });
   on('automations:import', () => { openPanel().then(() => triggerImport()); });
   setupAgentWebSocket();
   setupScheduleWebSocket();
@@ -1139,7 +1168,7 @@ async function openPanel() {
   // Backdrop
   _backdrop = document.createElement('div');
   _backdrop.className = 'studio-backdrop';
-  _backdrop.addEventListener('click', () => closePanel());
+  // Backdrop click disabled — close only via ESC or close button
   document.body.appendChild(_backdrop);
 
   _panel = document.createElement('div');
@@ -1205,6 +1234,9 @@ function buildPanelHTML() {
           <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
         </svg>
       </button>
+      <button class="backdrop-toggle-btn" id="as-backdrop-toggle" data-tooltip="Toggle backdrop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
       <button class="as-close" id="as-close">&times;</button>
     </div>
 
@@ -1256,6 +1288,13 @@ function wirePanel() {
     $('as-focus')?.classList.toggle('active', _focusMode);
   });
 
+  $('as-backdrop-toggle')?.addEventListener('click', () => {
+    if (_backdrop) {
+      _backdrop.classList.toggle('backdrop-hidden');
+      $('as-backdrop-toggle')?.classList.toggle('active', _backdrop.classList.contains('backdrop-hidden'));
+    }
+  });
+
   $('as-search')?.addEventListener('input', (e) => {
     _searchQuery = e.target.value.toLowerCase();
     renderSidebar();
@@ -1275,6 +1314,7 @@ function wirePanel() {
   // Escape key
   const onEsc = (e) => {
     if (e.key === 'Escape' && _panel) {
+      if (_view === 'launch') { closeLaunchInline(); return; }
       if (_view === 'schedule-editor') { _view = 'schedules'; _editingSchedule = null; renderView(); return; }
       if (_view === 'schedules') { _view = 'welcome'; renderView(); return; }
       if (_view === 'wizard') { _view = _selected ? 'detail' : 'welcome'; renderView(); return; }
@@ -1405,6 +1445,7 @@ function renderView() {
     case 'running': renderRunningMain(); break;
     case 'schedules': renderSchedulesMain(); break;
     case 'schedule-editor': renderScheduleEditorMain(); break;
+    case 'launch': break; // launch panel is rendered by showLaunchInline
   }
 }
 
@@ -1455,7 +1496,9 @@ function renderSidebar() {
   }
 
   if (!filtered.length) html = '<div class="as-empty">No templates match your filter.</div>';
+  const scrollTop = list.scrollTop;
   list.innerHTML = html;
+  list.scrollTop = scrollTop;
 }
 
 // ── Welcome ──
@@ -1646,11 +1689,11 @@ function buildDetailMeta(t, isPreset) {
       </div>
       <div class="as-field">
         <label>Iterations <span class="as-range-val" id="as-f-iter-val">${t.iterations}</span></label>
-        <input type="range" class="as-range" id="as-f-iterations" min="1" max="50" value="${t.iterations}" />
+        <input type="range" class="as-range" id="as-f-iterations" min="1" max="200" value="${t.iterations}" />
       </div>
       <div class="as-field">
         <label>Time cap <span class="as-range-val" id="as-f-min-val">${t.maxMinutes}m</span></label>
-        <input type="range" class="as-range" id="as-f-maxminutes" min="1" max="120" value="${t.maxMinutes}" />
+        <input type="range" class="as-range" id="as-f-maxminutes" min="1" max="480" value="${t.maxMinutes}" />
       </div>
       <div class="as-field as-field--toggle">
         <label>Uses Browser</label>
@@ -2205,7 +2248,7 @@ function buildReviewStep() {
       </div>
       <div class="awiz-control-row">
         <label>Time cap</label>
-        <input type="range" id="awiz-minutes" min="1" max="60" value="${state.maxMinutes}" />
+        <input type="range" id="awiz-minutes" min="1" max="480" value="${state.maxMinutes}" />
         <span class="awiz-range-val" id="awiz-min-val">${state.maxMinutes}m</span>
       </div>
     </div>
@@ -2548,8 +2591,18 @@ function setupScheduleWebSocket() {
     if (data?.scheduleName) showToast(`Schedule fired: ${data.scheduleName}`);
   });
 
-  on('sync:schedule:completed', () => {
+  on('sync:schedule:completed', (data) => {
     loadScheduleData().then(() => { if (_view === 'schedules') renderSchedulesMain(); });
+    // Auto-attach the floating terminal so the user can see the scheduled loop running.
+    // The server-side loop driver handles the initial message and auto-confirm —
+    // this just provides UI visibility.
+    if (data?.terminalSessionId) {
+      emit('terminal:attach-floating', {
+        terminalSessionId: data.terminalSessionId,
+        profile: data.profile || 'claude-code',
+        snapToPanel: false,
+      });
+    }
   });
 
   on('sync:schedule:failed', (data) => {
@@ -2589,6 +2642,11 @@ function setupScheduleWebSocket() {
     if (_view === 'schedules') renderSchedulesMain();
   });
 
+  on('sync:quick-timer:fired-now', (data) => {
+    if (data?.templateName) showToast(`Running now: ${data.templateName}`);
+    if (_view === 'schedules') renderSchedulesMain();
+  });
+
   on('sync:quick-timer:cancelled', (data) => {
     if (data?.timerId) _quickTimers = _quickTimers.filter(t => t.id !== data.timerId);
     if (_view === 'schedules') renderSchedulesMain();
@@ -2621,11 +2679,11 @@ async function handlePanelClick(e) {
       _view = 'picker'; renderView();
       break;
 
-    case 'launch-dialog-close':
-      closeLaunchDialog();
+    case 'launch-inline-close':
+      closeLaunchInline();
       break;
 
-    case 'launch-dialog-confirm':
+    case 'launch-inline-confirm':
       confirmLaunch();
       break;
 
@@ -2797,16 +2855,17 @@ async function handlePanelClick(e) {
     case 'wizard-launch': {
       collectInputValues();
       const taskText = _wizardPreset.buildCommand(_wizardState);
+      const wizIterations = _wizardState.iterations;
+      const wizMaxMinutes = _wizardState.maxMinutes;
+      const wizUsesBrowser = _wizardState.usesBrowser;
+      _wizardState = null; _wizardStep = 0; _wizardPreset = null;
       serverLaunchLoop({
         task: taskText,
         context: null,
-        iterations: _wizardState.iterations,
-        maxMinutes: _wizardState.maxMinutes,
-        usesBrowser: _wizardState.usesBrowser,
+        iterations: wizIterations,
+        maxMinutes: wizMaxMinutes,
+        usesBrowser: wizUsesBrowser,
       });
-      _wizardState = null; _wizardStep = 0; _wizardPreset = null;
-      _view = 'welcome';
-      renderView();
       break;
     }
 
@@ -2958,6 +3017,19 @@ async function handlePanelClick(e) {
         const label = mins >= 60 ? `${mins / 60}h` : `${mins}m`;
         showToast(`Timer set: ${result.templateName} in ${label}`);
       } catch (err) { showToast('Timer failed: ' + err.message); }
+      break;
+    }
+
+    case 'qt-now': {
+      const templateId = $('as-qt-template')?.value;
+      if (!templateId) { showToast('Select a template first'); break; }
+      const qtProfile = _launchProfile || 'claude-code';
+      const qtModel = _launchModel || null;
+      const qtBrowser = !!$('as-qt-browser')?.checked;
+      try {
+        const result = await triggerQuickTimerNow(templateId, { profile: qtProfile, model: qtModel, usesBrowser: qtBrowser });
+        showToast(`Firing now: ${result.templateName}`);
+      } catch (err) { showToast('Run Now failed: ' + err.message); }
       break;
     }
 
@@ -3219,14 +3291,15 @@ function renderSchedulesMain() {
   // ── Active Quick Timers ──
   let timersHTML = '';
   if (_quickTimers.length > 0) {
-    timersHTML = '<div class="as-qt-section"><div class="as-qt-section-label">Active Timers</div>';
+    let timerCards = '';
     for (const qt of _quickTimers) {
       const profileLabel = CLI_PROFILES.find(p => p.id === qt.profile)?.label || qt.profile || 'Claude Code';
       const modelObj = qt.model ? (CLI_MODELS[qt.profile || 'claude-code'] || []).find(m => m.id === qt.model) : null;
       const modelLabel = modelObj?.label || '';
       const metaParts = [profileLabel, modelLabel, qt.usesBrowser ? 'Browser' : ''].filter(Boolean);
-      timersHTML += `
+      timerCards += `
         <div class="as-qt-active-card">
+          <div class="as-qt-active-pulse"></div>
           <div class="as-qt-active-info">
             <span class="as-qt-active-name">${esc(qt.templateName)}</span>
             <span class="as-qt-active-meta">${esc(metaParts.join(' \u00b7 '))}</span>
@@ -3235,7 +3308,7 @@ function renderSchedulesMain() {
           <button class="as-qt-cancel" data-action="qt-cancel" data-id="${qt.id}" data-tooltip="Cancel timer">${AS_ICONS.close}</button>
         </div>`;
     }
-    timersHTML += '</div>';
+    timersHTML = `<div class="as-qt-active-timers">${timerCards}</div>`;
   }
 
   // ── Quick Timer Creator ──
@@ -3274,44 +3347,43 @@ function renderSchedulesMain() {
   const qtBrowserDefault = _qtUsesBrowser !== null ? _qtUsesBrowser : (selectedTemplate ? !!selectedTemplate.usesBrowser : false);
 
   const qtCreatorHTML = `
-    <div class="as-qt-section">
-      <div class="as-qt-section-label">Quick Timer</div>
-      <div class="as-qt-creator">
-        <select class="as-qt-select" id="as-qt-template">
-          <option value="">Select template...</option>
-          ${templateOptions}
-        </select>
-        <div class="as-qt-settings">
-          <div class="as-qt-setting-row">
-            <span class="as-qt-setting-label">CLI</span>
-            <div class="as-launch-profiles" id="as-qt-profiles">${qtProfileChips}</div>
-          </div>
-          <div class="as-qt-setting-row">
-            <span class="as-qt-setting-label">Model</span>
-            <div class="as-launch-models" id="as-qt-models">${qtModelChips}</div>
-          </div>
-          <div class="as-qt-setting-row">
-            <span class="as-qt-setting-label">Browser</span>
-            <label class="as-qt-browser-toggle">
-              <input type="checkbox" id="as-qt-browser" ${qtBrowserDefault ? 'checked' : ''}>
-              <span class="as-qt-browser-label">Uses browser</span>
-            </label>
-          </div>
+    <div class="as-qt-creator">
+      <select class="as-qt-select" id="as-qt-template">
+        <option value="">Select template...</option>
+        ${templateOptions}
+      </select>
+      <div class="as-qt-group">
+        <span class="as-launch-label">CLI</span>
+        <div class="as-launch-profiles" id="as-qt-profiles">${qtProfileChips}</div>
+      </div>
+      <div class="as-qt-group">
+        <span class="as-launch-label">Model</span>
+        <div class="as-launch-models" id="as-qt-models">${qtModelChips}</div>
+      </div>
+      <div class="as-qt-group">
+        <span class="as-launch-label">Browser</span>
+        <label class="as-qt-browser-toggle">
+          <input type="checkbox" id="as-qt-browser" ${qtBrowserDefault ? 'checked' : ''}>
+          <span class="as-qt-switch"></span>
+          <span class="as-qt-browser-label">Uses browser</span>
+        </label>
+      </div>
+      <div class="as-qt-group">
+        <span class="as-launch-label">Timer</span>
+        <div class="as-qt-presets">${qtPresetButtons}
+          <input class="as-qt-custom-input" id="as-qt-custom-min" type="number" min="1" max="1440" placeholder="min" />
         </div>
-        <div class="as-qt-presets">
-          ${qtPresetButtons}
-          <div class="as-qt-custom">
-            <input class="as-qt-custom-input" id="as-qt-custom-min" type="number" min="1" max="1440" placeholder="min" />
-          </div>
-          <button class="as-qt-preset as-qt-preset--go" data-action="qt-go">Go</button>
-        </div>
+      </div>
+      <div class="as-qt-actions">
+        <button class="as-launch-go" data-action="qt-go">${_s('<path d="M5 3l8 5-8 5V3z"/>')} Go</button>
+        <button class="as-launch-cancel" data-action="qt-now" data-tooltip="Fire immediately">Run Now</button>
       </div>
     </div>`;
 
-  // ── Advanced Cron Schedules (collapsible) ──
-  let advancedHTML = '';
+  // ── Recurring Cron Schedules ──
+  let cronHTML = '';
+  let cronListHTML = '';
   if (_showAdvancedSchedules) {
-    let cronListHTML = '';
     if (_schedules.length === 0) {
       cronListHTML = '<div class="as-qt-empty">No recurring schedules.</div>';
     } else {
@@ -3339,22 +3411,30 @@ function renderSchedulesMain() {
           </div>`;
       }
     }
-    advancedHTML = `
-      <div class="as-qt-section">
-        <div class="as-qt-advanced-header" data-action="toggle-advanced-schedules">
-          <span>Recurring Schedules (Cron)</span>
+    cronHTML = `
+      <div class="as-qt-cron-section">
+        <div class="as-qt-cron-header" data-action="toggle-advanced-schedules">
+          <div class="as-qt-cron-header-left">
+            <div class="as-qt-cron-icon">${_s('<circle cx="7" cy="7" r="5"/><path d="M7 4v3l2 2"/>')}</div>
+            <span>Recurring Schedules</span>
+            ${_schedules.length ? `<span class="as-qt-cron-count">${_schedules.length}</span>` : ''}
+          </div>
           <span class="as-qt-chevron as-qt-chevron--open">${_s('<path d="M4 6l4 4 4-4"/>')}</span>
         </div>
-        <div class="as-qt-advanced-body">
+        <div class="as-qt-cron-body">
           <div class="as-sched-list">${cronListHTML}</div>
-          <button class="as-header-btn as-header-btn--secondary" data-action="schedule-new" style="margin-top:8px">+ New Cron Schedule</button>
+          <button class="as-qt-btn as-qt-btn--secondary" data-action="schedule-new">+ New Cron Schedule</button>
         </div>
       </div>`;
   } else {
-    advancedHTML = `
-      <div class="as-qt-section">
-        <div class="as-qt-advanced-header" data-action="toggle-advanced-schedules">
-          <span>Recurring Schedules (Cron)${_schedules.length ? ` &middot; ${_schedules.length}` : ''}</span>
+    cronHTML = `
+      <div class="as-qt-cron-section">
+        <div class="as-qt-cron-header" data-action="toggle-advanced-schedules">
+          <div class="as-qt-cron-header-left">
+            <div class="as-qt-cron-icon">${_s('<circle cx="7" cy="7" r="5"/><path d="M7 4v3l2 2"/>')}</div>
+            <span>Recurring Schedules</span>
+            ${_schedules.length ? `<span class="as-qt-cron-count">${_schedules.length}</span>` : ''}
+          </div>
           <span class="as-qt-chevron">${_s('<path d="M4 6l4 4 4-4"/>')}</span>
         </div>
       </div>`;
@@ -3368,7 +3448,7 @@ function renderSchedulesMain() {
       </div>
       ${timersHTML}
       ${qtCreatorHTML}
-      ${advancedHTML}
+      ${cronHTML}
     </div>
   `;
 

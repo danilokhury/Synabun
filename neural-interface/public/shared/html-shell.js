@@ -131,6 +131,10 @@ export function getSharedHTML() {
             <span class="menu-check"></span>
             <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></span> WhatsApp</span>
           </div>
+          <div class="menu-item" id="menu-app-leonardo">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.5 2l1.5 3.5L14.5 7l-3.5 1.5L9.5 12l-1.5-3.5L4.5 7l3.5-1.5L9.5 2zM19 10l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2zM5 17l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2z"/></svg></span> Leonardo.AI</span>
+          </div>
           <div class="menu-sep"></div>
           <div class="menu-item" id="menu-command-runner">
             <span class="menu-check"></span>
@@ -276,6 +280,11 @@ export function getSharedHTML() {
             <span class="menu-shortcut">A</span>
           </div>
           <div class="menu-sep"></div>
+          <div class="menu-item" id="menu-automations-schedules">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span> Schedules</span>
+          </div>
+          <div class="menu-sep"></div>
           <div class="menu-item" id="menu-automations-new">
             <span class="menu-check"></span>
             <span class="menu-text">${t('menu.automations.newAutomation')}</span>
@@ -314,17 +323,20 @@ export function getSharedHTML() {
 
   <div class="bar-right">
     <div class="bar-group">
-      <button id="titlebar-sessions-btn" class="bar-icon" data-tooltip="Session Monitor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="3" fill="currentColor" opacity="0.1"/><rect x="2" y="3" width="20" height="14" rx="3"/><path d="M8 21h8M12 17v4"/><path d="M7.5 13V10"/><path d="M10.5 13V11"/><path d="M13.5 13V8"/><path d="M16.5 13V9.5"/></svg></button>
-      <button id="titlebar-gallery-btn" class="bar-icon" data-tooltip="Image Gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="17" height="14" rx="2.5" fill="currentColor" opacity="0.08" stroke="none"/><rect x="2" y="6" width="17" height="14" rx="2.5"/><circle cx="7.5" cy="11.5" r="2" fill="currentColor" opacity="0.25" stroke="none"/><path d="M2 17l4.5-3.5 3 2.5 2.5-2L19 20"/></svg></button>
+      <button id="titlebar-sessions-btn" class="bar-icon" data-tooltip="Session Monitor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="3"/><path d="M8 21h8M12 17v4"/><path d="M7.5 13V10"/><path d="M10.5 13V11"/><path d="M13.5 13V8"/><path d="M16.5 13V9.5"/></svg></button>
+      <button id="titlebar-gallery-btn" class="bar-icon" data-tooltip="Image Gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="17" height="14" rx="2.5"/><circle cx="7.5" cy="11.5" r="2"/><path d="M2 17l4.5-3.5 3 2.5 2.5-2L19 20"/></svg></button>
     </div>
+    <span class="bar-divider"></span>
     <div class="bar-group">
       <button id="titlebar-cost-btn" class="bar-icon bar-cost-btn" data-tooltip="Cost Tracker"><span class="bar-cost-label">$0</span></button>
-      <button id="titlebar-tutorial-btn" class="bar-icon" data-tooltip="Toggle Tutorial"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.07" stroke="none"/><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor" stroke="none"/></svg></button>
+      <button id="titlebar-tutorial-btn" class="bar-icon" data-tooltip="Toggle Tutorial"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor" stroke="none"/></svg></button>
     </div>
+    <span class="bar-divider"></span>
     <div class="bar-group">
-      <button id="titlebar-viz-toggle" class="bar-icon active" data-tooltip="${t('tooltip.toggleViz')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" fill="currentColor" opacity="0.12" stroke="none"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg></button>
-      <button id="titlebar-fullscreen-btn" class="bar-icon" data-tooltip="${t('tooltip.fullscreen')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h4v4" opacity="0.1" fill="currentColor" stroke="none"/><path d="M20 4h-4v4" opacity="0.1" fill="currentColor" stroke="none"/><path d="M4 20h4v-4" opacity="0.1" fill="currentColor" stroke="none"/><path d="M20 20h-4v-4" opacity="0.1" fill="currentColor" stroke="none"/><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+      <button id="titlebar-viz-toggle" class="bar-icon active" data-tooltip="${t('tooltip.toggleViz')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg></button>
+      <button id="titlebar-fullscreen-btn" class="bar-icon" data-tooltip="${t('tooltip.fullscreen')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
     </div>
+    <span class="bar-divider"></span>
     <div class="bar-group bar-group--clock">
       <span id="titlebar-clock" class="titlebar-clock"></span>
     </div>
@@ -335,33 +347,37 @@ export function getSharedHTML() {
 <div id="topright-controls">
   <div id="topright-inner">
   <button id="topright-trash-btn" class="topright-icon-btn" data-tooltip="${t('nav.trash')}">
-    <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" y1="10" x2="10" y2="18"/><line x1="14" y1="10" x2="14" y2="18"/></svg>
     <span class="count-badge count-badge--red" id="titlebar-trash-count"></span>
   </button>
 
   <button id="ws-grid-toggle" class="topright-icon-btn" data-tooltip="Snap to Grid">
-    <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3z" fill="none"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="1.5"/><circle cx="12" cy="6" r="1.5"/><circle cx="18" cy="6" r="1.5"/><circle cx="6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/><circle cx="6" cy="18" r="1.5"/><circle cx="12" cy="18" r="1.5"/><circle cx="18" cy="18" r="1.5"/></svg>
   </button>
 
   <button id="ws-tile-btn" class="topright-icon-btn" data-tooltip="Tile terminals">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>
   </button>
 
+  <span class="tr-divider"></span>
+
   <button id="topright-keybinds-btn" class="topright-icon-btn" data-tooltip="Keybinds">
-    <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2" fill="none"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="3"/><circle cx="7" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="17" cy="9" r="1" fill="currentColor" stroke="none"/><path d="M7 15h10"/></svg>
   </button>
 
   <button id="topright-memory-explorer-btn" class="topright-icon-btn" data-tooltip="Memory Explorer">
-    <svg viewBox="0 0 24 24"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>
   </button>
 
   <button id="topright-file-explorer-btn" class="topright-icon-btn" data-tooltip="File Explorer">
-    <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
   </button>
+
+  <span class="tr-divider"></span>
 
   <div id="bookmarks-overlay">
     <button id="topright-bookmarks-btn" class="topright-icon-btn" data-tooltip="Bookmarks">
-      <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
       <span class="count-badge count-badge--gold" id="bookmark-count"></span>
     </button>
     <div id="bookmarks-dropdown" style="display:none;">
@@ -370,11 +386,14 @@ export function getSharedHTML() {
   </div>
   <div id="invite-overlay">
     <button id="invite-btn" class="topright-icon-btn" data-tooltip="Share / Invite">
-      <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
       <span class="count-badge count-badge--blue" id="invite-session-count" style="display:none"></span>
     </button>
     <div id="invite-dropdown" style="display:none;"></div>
   </div>
+
+  <span class="tr-divider"></span>
+
   <div id="workspace-overlay">
     <div id="ws-indicator">
       <svg class="ws-icon" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
@@ -400,7 +419,7 @@ export function getSharedHTML() {
   </div>
   </div>
   <button id="topright-claude-panel-btn" class="topright-icon-btn" data-tooltip="Claude Code side panel">
-    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
   </button>
   <button id="topright-collapse-btn" class="topright-collapse-btn" data-tooltip="Toggle toolbar">
     <svg viewBox="0 0 24 24" class="collapse-chevron"><polyline points="9 18 15 12 9 6"/></svg>
@@ -414,6 +433,9 @@ export function getSharedHTML() {
 <!-- Help Modal -->
 <div id="help-overlay">
   <div id="help-modal" class="glass" style="position:relative;">
+    <button class="backdrop-toggle-btn" id="help-backdrop-toggle" data-tooltip="Toggle backdrop" style="position:absolute;top:16px;right:48px;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
     <button id="help-close">&times;</button>
     <h2>${t('help.title')}</h2>
     <div id="help-content"></div>
