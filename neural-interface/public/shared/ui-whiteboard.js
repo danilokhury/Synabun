@@ -42,6 +42,7 @@ let _arrowCreating = null; // { points: [[x,y],...], startAnchor } — multi-poi
 let _sectionCreating = null; // { id, originX, originY, sectionType } — drag-to-create section
 let _activeSectionType = 'content'; // default section type for new placements
 let _shapeCreating = null; // { id, originX, originY } — drag-to-create shape
+let _activeShapeType = 'rect'; // default shape type for new placements
 
 // Tool lock (Ctrl-hold keeps tool active)
 let _toolLocked = false;
@@ -83,6 +84,24 @@ const PERSIST_DELAY = 600;
 const MAX_UNDO = 50;
 const SNAP_DIST = 30;    // px for arrow anchor snapping
 const MAX_IMAGE_DIM = 1920;
+
+/** Cross-browser clipboard write with fallback for non-secure contexts. */
+function _clipboardWrite(text) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => _clipboardFallback(text));
+  } else {
+    _clipboardFallback(text);
+  }
+}
+function _clipboardFallback(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch {}
+  ta.remove();
+}
 
 /** Snap a value to grid if grid snapping is enabled. */
 function _snap(v) {
@@ -386,7 +405,12 @@ function createElementDOM(el) {
     const copyBtn = div.querySelector('.wb-copy-path');
     copyBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (!_ws || _ws.readyState !== WebSocket.OPEN || !el.dataUrl) return;
+      if (!_ws || _ws.readyState !== WebSocket.OPEN) {
+        copyBtn.dataset.tooltip = 'Not connected';
+        setTimeout(() => { copyBtn.dataset.tooltip = 'Copy image path'; }, 1500);
+        return;
+      }
+      if (!el.dataUrl) return;
       const match = el.dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
       if (!match) return;
       const handler = (evt) => {
@@ -394,7 +418,7 @@ function createElementDOM(el) {
           const msg = JSON.parse(evt.data);
           if (msg.type === 'image_saved' && msg.path) {
             _ws.removeEventListener('message', handler);
-            navigator.clipboard.writeText(msg.path).catch(() => {});
+            _clipboardWrite(msg.path);
             copyBtn.dataset.tooltip = 'Copied!';
             copyBtn.classList.add('wb-copied');
             setTimeout(() => {
@@ -664,6 +688,7 @@ function duplicateMultipleElements(ids) {
 
 let _ctxMenu = null;   // Floating context menu element
 let _rotateEl = null;  // Floating rotation handle element
+let _moveEl = null;    // Floating move handle element (text/list)
 
 function selectElement(id, { additive = false } = {}) {
   if (additive) {
@@ -848,6 +873,33 @@ function showContextMenu(id) {
     _drag = dragData;
   });
 
+  // Floating move handle for text/list elements (lets you drag even in edit mode)
+  if (el.type === 'text' || el.type === 'list') {
+    _moveEl = document.createElement('div');
+    _moveEl.className = 'wb-move-float';
+    _moveEl.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>';
+
+    _moveEl.addEventListener('mousedown', (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      exitEditMode();
+      exitListEditMode();
+      const el2 = _elements.find(e2 => e2.id === id);
+      if (!el2) return;
+      _drag = {
+        type: 'move', id,
+        startX: ev.clientX, startY: ev.clientY,
+        origX: el2.x, origY: el2.y,
+        before: { ...el2 },
+      };
+    });
+
+    _moveEl.style.zIndex = _nextZIndex + 100;
+    _root.appendChild(_moveEl);
+  }
+
+  _ctxMenu.style.zIndex = _nextZIndex + 100;
+  _rotateEl.style.zIndex = _nextZIndex + 100;
   _root.appendChild(_ctxMenu);
   _root.appendChild(_rotateEl);
   positionContextMenu(el);
@@ -867,19 +919,27 @@ function positionContextMenu(el) {
   const rootRect = _root?.getBoundingClientRect();
   if (!rootRect) return;
 
-  let cx, topY, rightX, bottomY;
+  let cx, topY, rightX, bottomY, leftX;
   if ((el.type === 'arrow' || el.type === 'pen') && el.points?.length) {
     const xs = el.points.map(p => p[0]);
     const ys = el.points.map(p => p[1]);
     cx = xs.reduce((s, v) => s + v, 0) / xs.length;
     topY = Math.min(...ys);
+    leftX = Math.min(...xs);
     rightX = Math.max(...xs);
     bottomY = Math.max(...ys);
   } else {
-    cx = el.x + (el.width || 0) / 2;
+    let ew = el.width || 0, eh = el.height || 0;
+    // Text/list auto-size: read actual dimensions from DOM
+    if ((el.type === 'text' || el.type === 'list') && (!ew || !eh)) {
+      const dom = _elementsDiv?.querySelector(`[data-wb-id="${el.id}"]`);
+      if (dom) { ew = dom.offsetWidth; eh = dom.offsetHeight; }
+    }
+    cx = el.x + ew / 2;
     topY = el.y;
-    rightX = el.x + (el.width || 0);
-    bottomY = el.y + (el.height || 0);
+    leftX = el.x;
+    rightX = el.x + ew;
+    bottomY = el.y + eh;
   }
 
   // Context menu — centered above element
@@ -902,6 +962,17 @@ function positionContextMenu(el) {
     rTop = Math.max(8, rTop);
     _rotateEl.style.left = rLeft + 'px';
     _rotateEl.style.top = rTop + 'px';
+  }
+
+  // Move handle — left side of element (text/list only)
+  if (_moveEl) {
+    const elH = bottomY - topY;
+    let mLeft = leftX - 44;
+    let mTop = topY + (elH / 2) - 12;
+    mLeft = Math.max(8, mLeft);
+    mTop = Math.max(8, mTop);
+    _moveEl.style.left = mLeft + 'px';
+    _moveEl.style.top = mTop + 'px';
   }
 }
 
@@ -956,6 +1027,7 @@ function showMultiContextMenu() {
     ev.stopPropagation();
   });
 
+  _ctxMenu.style.zIndex = _nextZIndex + 100;
   _root.appendChild(_ctxMenu);
   positionContextMenuMulti();
 }
@@ -979,6 +1051,7 @@ function positionContextMenuMulti() {
 function hideContextMenu() {
   if (_ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; }
   if (_rotateEl) { _rotateEl.remove(); _rotateEl = null; }
+  if (_moveEl) { _moveEl.remove(); _moveEl = null; }
 }
 
 
@@ -1007,6 +1080,22 @@ function setTool(name) {
     if (name === 'shape') _root.classList.add('tool-shape');
     if (name === 'pen') _root.classList.add('tool-pen');
     if (name === 'section') _root.classList.add('tool-section');
+  }
+
+  // Show/hide shape picker
+  const shapePicker = document.getElementById('wb-shape-picker');
+  if (shapePicker) {
+    if (name === 'shape') {
+      shapePicker.style.display = 'flex';
+      const btn = _toolbar?.querySelector('[data-tool="shape"]');
+      if (btn && _toolbar) {
+        const btnRect = btn.getBoundingClientRect();
+        const toolbarRect = _toolbar.getBoundingClientRect();
+        shapePicker.style.top = (btnRect.top - toolbarRect.top) + 'px';
+      }
+    } else {
+      shapePicker.style.display = 'none';
+    }
   }
 
   // Show/hide section picker
@@ -1084,20 +1173,21 @@ function generateHandDrawnShape(shape, w, h, id) {
   const j = (amt = 4) => (rand() - 0.5) * amt;
   const m = 5; // margin from edges
 
+  if (shape === 'triangle') {
+    // Wobbly triangle — 3 corners with midpoint wobble
+    const pts = [
+      [w / 2 + j(3), m + j(2)],           // top center
+      [w - m + j(3), h - m + j(2)],        // bottom right
+      [m + j(3), h - m + j(2)],            // bottom left
+    ];
+    return `M ${pts[0][0]} ${pts[0][1]} L ${pts[1][0]} ${pts[1][1]} L ${pts[2][0]} ${pts[2][1]} Z`;
+  }
+
   if (shape === 'circle') {
-    // Wobbly ellipse — 12 points for smoother circle
+    // Perfect ellipse using two SVG arcs
     const cx = w / 2, cy = h / 2;
     const rx = (w / 2) - m, ry = (h / 2) - m;
-    const pts = [];
-    const n = 12;
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2;
-      pts.push([
-        cx + Math.cos(a) * (rx + j(3)),
-        cy + Math.sin(a) * (ry + j(3)),
-      ]);
-    }
-    return closedSmoothPath(pts);
+    return `M ${cx - rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx + rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx - rx} ${cy} Z`;
   }
 
   if (shape === 'pill') {
@@ -1540,6 +1630,7 @@ function onMouseDown(e) {
   if (e.target.closest('#wb-toolbar')) return;
   if (e.target.closest('.wb-ctx-menu')) return;
   if (e.target.closest('.wb-rotate-float')) return;
+  if (e.target.closest('.wb-move-float')) return;
   if (e.target.closest('.wb-drag-to-term')) return;
   if (e.button !== 0) return;
   // Block drawing for guests without whiteboard permission (select/view still allowed)
@@ -1704,7 +1795,7 @@ function onMouseDown(e) {
     const el = {
       id,
       type: 'shape',
-      shape: 'rect',
+      shape: _activeShapeType,
       x: _snap(pt.x),
       y: _snap(pt.y),
       width: 1,
@@ -2151,14 +2242,14 @@ function onDblClick(e) {
     return;
   }
 
-  // Double-click shape → cycle subtype: rect → rounded → circle
+  // Double-click shape → cycle subtype: rect → pill → circle → triangle → drawn-circle
   const shapeEl = e.target.closest('.wb-shape[data-wb-id]');
   if (shapeEl && _activeTool === 'select') {
     const id = shapeEl.dataset.wbId;
     const el = _elements.find(el2 => el2.id === id);
     if (el) {
       const before = { ...el };
-      const cycle = { rect: 'pill', pill: 'circle', circle: 'drawn-circle', 'drawn-circle': 'rect' };
+      const cycle = { rect: 'pill', pill: 'circle', circle: 'triangle', triangle: 'drawn-circle', 'drawn-circle': 'rect' };
       el.shape = cycle[el.shape || 'rect'] || 'rect';
       // Circle → enforce square aspect ratio
       if (el.shape === 'circle') {
@@ -2528,6 +2619,39 @@ function initSectionPicker() {
   });
 }
 
+const SHAPE_TYPES = [
+  { key: 'rect',     label: 'Rectangle', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/></svg>' },
+  { key: 'circle',   label: 'Circle',    icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>' },
+  { key: 'triangle', label: 'Triangle',  icon: '<svg viewBox="0 0 24 24"><path d="M12 4L22 20H2Z"/></svg>' },
+];
+
+function initShapePicker() {
+  const picker = document.getElementById('wb-shape-picker');
+  const btn = _toolbar?.querySelector('[data-tool="shape"]');
+  if (!picker || !btn) return;
+
+  picker.innerHTML = SHAPE_TYPES.map(s =>
+    `<button class="wb-shape-btn${s.key === _activeShapeType ? ' active' : ''}" data-shape="${s.key}">
+       ${s.icon}
+       <span>${s.label}</span>
+     </button>`
+  ).join('');
+
+  picker.addEventListener('click', (e2) => {
+    const sBtn = e2.target.closest('.wb-shape-btn');
+    if (!sBtn) return;
+    _activeShapeType = sBtn.dataset.shape;
+    picker.querySelectorAll('.wb-shape-btn').forEach(s => s.classList.remove('active'));
+    sBtn.classList.add('active');
+  });
+
+  document.addEventListener('mousedown', (e2) => {
+    if (!e2.target.closest('#wb-shape-picker') && !e2.target.closest('[data-tool="shape"]')) {
+      picker.style.display = 'none';
+    }
+  });
+}
+
 // ═══════════════════════════════════════════
 // TOOLBAR HANDLERS
 // ═══════════════════════════════════════════
@@ -2566,9 +2690,11 @@ function onToolbarClick(e) {
   if (btn.id === 'wb-toggle-logo') {
     const logo = document.querySelector('#static-bg .static-bg-logo');
     const breathe = document.querySelector('#static-bg .focus-breathe');
-    if (logo) logo.style.display = logo.style.display === 'none' ? '' : 'none';
-    if (breathe) breathe.style.display = breathe.style.display === 'none' ? '' : 'none';
-    btn.classList.toggle('active');
+    const hidden = logo?.style.display !== 'none';
+    if (logo) logo.style.display = hidden ? 'none' : '';
+    if (breathe) breathe.style.display = hidden ? 'none' : '';
+    btn.classList.toggle('active', hidden);
+    sessionStorage.setItem('wb-logo-hidden', hidden ? '1' : '');
     return;
   }
 }
@@ -2645,6 +2771,33 @@ export function clearWhiteboard() {
 }
 
 
+export function addImageToWhiteboard(url) {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width;
+    canvas.height = img.height;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    const dataUrl = canvas.toDataURL('image/png');
+    const rect = _root?.getBoundingClientRect();
+    const vw = rect?.width || 1200;
+    const vh = rect?.height || 800;
+    const dispW = Math.min(img.width, 400);
+    const dispH = Math.round(img.height * (dispW / img.width));
+    addElement({
+      id: _genId(),
+      type: 'image',
+      x: (vw - dispW) / 2,
+      y: (vh - dispH) / 2,
+      width: dispW,
+      height: dispH,
+      dataUrl,
+    });
+  };
+  img.src = url;
+}
+
 // ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
@@ -2703,6 +2856,9 @@ export function initWhiteboard() {
   // Color picker
   initColorPicker();
 
+  // Shape picker
+  initShapePicker();
+
   // Section picker
   initSectionPicker();
 
@@ -2716,6 +2872,15 @@ export function initWhiteboard() {
   // Auto-focus whiteboard when entering focus mode so Ctrl+V paste works immediately
   on('focus:enter', () => {
     setTimeout(() => _root.focus({ preventScroll: true }), 150);
+    // Restore logo hidden state from session
+    if (sessionStorage.getItem('wb-logo-hidden') === '1') {
+      const logo = document.querySelector('#static-bg .static-bg-logo');
+      const breathe = document.querySelector('#static-bg .focus-breathe');
+      if (logo) logo.style.display = 'none';
+      if (breathe) breathe.style.display = 'none';
+      const btn = document.getElementById('wb-toggle-logo');
+      if (btn) btn.classList.add('active');
+    }
   });
 
   // Connect to server for external commands (Claude MCP)

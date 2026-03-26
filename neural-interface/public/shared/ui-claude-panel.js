@@ -7,6 +7,7 @@ import { storage } from './storage.js';
 import { emit, on } from './state.js';
 import { fetchClaudeSessions, fetchBrowserSessions } from './api.js';
 import { createFrameRenderer } from './utils.js';
+import { notify, NOTIF_TYPE } from './ui-notifications.js';
 
 const CLAUDE_ICON = '<svg fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
 
@@ -145,6 +146,7 @@ const STOR = {
   autoAccept: 'synabun-claude-panel-autoaccept',
   windowRegistry: 'synabun-claude-panel-windows',   // JSON map of windowId → lastSeen timestamp
   bootId: 'synabun-claude-panel-boot-id',           // server boot ID — detect restarts
+  defaultModel: 'synabun-claude-panel-default-model', // user's preferred default model
 };
 
 const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
@@ -212,6 +214,9 @@ function buildPanel() {
       <div class="cp-project-bar">
         <div class="cp-dropdown" id="cp-project" data-placeholder="project..."><span class="cp-dd-label">project...</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
         <div class="cp-dropdown cp-dropdown-sm" id="cp-branch" data-placeholder="branch"><span class="cp-dd-label">branch</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
+        <div class="cp-bar-actions">
+          <button class="cp-bar-action" id="cp-action-changelog" data-tooltip="Generate changelog"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h8.5v13H4a1.5 1.5 0 01-1.5-1.5V3A1.5 1.5 0 014 1.5z"/><path d="M5.5 5h5M5.5 7.5h3M5.5 10h4"/></svg></button>
+        </div>
       </div>
       <div class="cp-input-area">
         <div class="cp-input-wrap">
@@ -253,7 +258,7 @@ function injectStyles() {
     /* ── Panel shell — floating macOS-style container ── */
     .claude-panel {
       position: fixed;
-      top: 64px; right: 16px;
+      top: 68px; right: 16px;
       width: 22%; min-width: 320px; max-width: 700px;
       bottom: 16px;
       z-index: 200;
@@ -1183,6 +1188,19 @@ function injectStyles() {
     .cp-dd-item:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.8); }
     .cp-dd-item.selected { color: rgba(255,255,255,0.85); background: rgba(255,255,255,0.08); }
 
+    /* Model dropdown: anchor menu to right edge to prevent off-screen overflow */
+    #cp-model .cp-dd-menu { left: auto; right: 0; }
+    .cp-dd-model-item { display: flex; align-items: center; gap: 6px; }
+    .cp-dd-model-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .cp-dd-model-star {
+      flex-shrink: 0; font-size: 9px; color: rgba(255,255,255,0.12);
+      cursor: pointer; transition: color 0.15s, transform 0.15s;
+      line-height: 1;
+    }
+    .cp-dd-model-star:hover { color: rgba(255,200,60,0.6); transform: scale(1.3); }
+    .cp-dd-model-star.is-default { color: rgba(255,200,60,0.85); }
+    .cp-dd-model-star.is-default:hover { color: rgba(255,200,60,1); }
+
     .cp-cost {
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
       color: rgba(255,255,255,0.18); padding: 2px 6px;
@@ -1366,6 +1384,20 @@ function injectStyles() {
       padding: 4px 10px 0;
       flex-shrink: 0;
     }
+    .cp-bar-actions {
+      display: flex; align-items: center; gap: 2px;
+      margin-left: auto;
+    }
+    .cp-bar-action {
+      display: flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px;
+      background: none; border: none; border-radius: 5px;
+      color: rgba(255,255,255,0.3);
+      cursor: pointer; transition: all 0.15s ease;
+      padding: 0;
+    }
+    .cp-bar-action:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.06); }
+    .cp-bar-action:active { transform: scale(0.9); transition-duration: 0.06s; }
     .cp-session-menu {
       display: none; position: absolute;
       top: calc(100% + 2px); left: 8px; right: 8px;
@@ -1471,7 +1503,7 @@ function injectStyles() {
     .cp-gauge {
       flex: 1; height: 16px; border-radius: 6px;
       background: rgba(255,255,255,0.03);
-      display: flex; overflow: hidden;
+      display: flex; overflow: visible;
       position: relative; cursor: default;
       transition: background 0.5s, box-shadow 0.5s;
     }
@@ -1483,32 +1515,34 @@ function injectStyles() {
       transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
       position: relative; border-radius: 2px;
     }
+    .cp-gauge-section:first-of-type { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
+    .cp-gauge-section:last-of-type { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
     .cp-gauge-section[data-cat="cache-read"] { background: rgba(100,140,200,0.45); }
     .cp-gauge-section[data-cat="cache-write"] { background: rgba(150,100,200,0.45); }
     .cp-gauge-section[data-cat="input"] { background: rgba(100,200,150,0.45); }
     .cp-gauge-section[data-cat="output"] { background: rgba(220,170,80,0.45); }
-    .cp-gauge-tip {
-      position: absolute; bottom: calc(100% + 6px); left: 50%;
-      transform: translateX(-50%);
+    #cp-gauge-tooltip {
+      position: fixed;
       background: rgba(8,8,10,0.95); border: 1px solid rgba(255,255,255,0.1);
       border-radius: 4px; padding: 2px 6px;
       font-size: 8.5px; font-family: 'JetBrains Mono', monospace;
       color: rgba(255,255,255,0.6);
       white-space: nowrap; pointer-events: none;
       opacity: 0; transition: opacity 0.15s;
-      z-index: 10;
+      z-index: 999999;
     }
-    .cp-gauge-section:hover .cp-gauge-tip { opacity: 1; }
+    #cp-gauge-tooltip.visible { opacity: 1; }
     .cp-gauge-label {
       position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.35); white-space: nowrap;
+      color: rgba(255,255,255,0.6); white-space: nowrap;
       z-index: 2; pointer-events: none; letter-spacing: 0.3px;
       transition: color 0.5s;
+      text-shadow: 0 0 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.5);
     }
-    .cp-context-bar:has(.cp-gauge[data-urgency="warn"]) .cp-gauge-label { color: rgba(220,200,80,0.5); }
-    .cp-context-bar:has(.cp-gauge[data-urgency="high"]) .cp-gauge-label { color: rgba(220,150,60,0.6); }
-    .cp-context-bar:has(.cp-gauge[data-urgency="critical"]) .cp-gauge-label { color: rgba(220,80,60,0.7); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="warn"]) .cp-gauge-label { color: rgba(220,200,80,0.75); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="high"]) .cp-gauge-label { color: rgba(220,150,60,0.8); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="critical"]) .cp-gauge-label { color: rgba(220,80,60,0.85); }
     .cp-compact-btn {
       background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
       color: rgba(255,255,255,0.35); cursor: pointer;
@@ -1738,6 +1772,52 @@ function ddPopulate(dd, items, selectedValue) {
 }
 function ddGetValue(dd) { return dd?._value || ''; }
 
+// ── Model dropdown with default-model support ──
+function ddPopulateModels(dd, items, selectedValue) {
+  const menu = dd.querySelector('.cp-dd-menu');
+  menu.innerHTML = '';
+  const defModel = _getDefaultModel();
+  for (const item of items) {
+    const el = document.createElement('div');
+    el.className = 'cp-dd-item cp-dd-model-item' + (item.value === selectedValue ? ' selected' : '');
+    const label = document.createElement('span');
+    label.className = 'cp-dd-model-label';
+    label.textContent = item.label;
+    el.appendChild(label);
+    const star = document.createElement('span');
+    star.className = 'cp-dd-model-star' + (item.value === defModel ? ' is-default' : '');
+    star.innerHTML = '&#9733;';
+    star.title = item.value === defModel ? 'Default model' : 'Set as default';
+    star.addEventListener('click', (e) => {
+      e.stopPropagation();
+      storage.setItem(STOR.defaultModel, item.value);
+      // Update all stars in this menu
+      menu.querySelectorAll('.cp-dd-model-star').forEach(s => {
+        s.classList.remove('is-default');
+        s.title = 'Set as default';
+      });
+      star.classList.add('is-default');
+      star.title = 'Default model';
+    });
+    el.appendChild(star);
+    el.dataset.value = item.value;
+    el.addEventListener('click', () => {
+      dd._value = item.value;
+      dd.querySelector('.cp-dd-label').textContent = item.label;
+      dd.classList.add('has-value');
+      dd.classList.remove('open');
+      menu.querySelectorAll('.cp-dd-item').forEach(i => i.classList.remove('selected'));
+      el.classList.add('selected');
+      dd.dispatchEvent(new Event('change'));
+    });
+    menu.appendChild(el);
+  }
+  if (selectedValue) {
+    const match = items.find(i => i.value === selectedValue);
+    if (match) { dd.querySelector('.cp-dd-label').textContent = match.label; dd.classList.add('has-value'); dd._value = selectedValue; }
+  }
+}
+
 // ── Model helpers (composite value = "modelId:contextWindow") ──
 function _getModelId() {
   const $model = _panel?.querySelector('#cp-model');
@@ -1749,6 +1829,11 @@ function _getContextWindow() {
   const raw = ddGetValue($model);
   const parts = raw.split(':');
   return parts[1] ? parseInt(parts[1], 10) : 200000;
+}
+
+// ── Default model helper ──
+function _getDefaultModel() {
+  return storage.getItem(STOR.defaultModel) || '';
 }
 
 // ── Think intensity helpers ──
@@ -1779,10 +1864,17 @@ document.addEventListener('click', (e) => {
 // ── Tab lifecycle ──
 function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } = {}) {
   if (_tabs.length >= MAX_TABS) return null;
+  // Capture current dropdown state for the new tab's project/model/effort
+  const _$proj = _panel?.querySelector('#cp-project');
+  const _$mod = _panel?.querySelector('#cp-model');
+  const _$think = _panel?.querySelector('#cp-think-toggle');
   const tab = {
     id: crypto.randomUUID(),
     sessionId,
     label,
+    project: ddGetValue(_$proj) || '',       // per-tab project isolation
+    model: _getDefaultModel(),                  // per-tab model — defaults to user's preferred model
+    effort: _$think?.dataset.effort || 'off', // per-tab effort isolation
     ws: null,
     reconnectTimer: null,
     running: false,
@@ -1799,6 +1891,7 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } =
     pillEl: null,
     draft: '',
     usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 0, // 0 = use dropdown fallback; set from result.modelUsage or session history
     compacting: false,
     turns: 0,
     thinkStartedAt: null,
@@ -1903,6 +1996,25 @@ function switchTab(idx) {
       else addFilePreview(f.name, i);
     });
   }
+  // Restore per-tab project/model/effort dropdowns (session isolation)
+  const $project = _panel?.querySelector('#cp-project');
+  const $model = _panel?.querySelector('#cp-model');
+  const $think = _panel?.querySelector('#cp-think-toggle');
+  if ($project && tab.project) {
+    const items = _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() }));
+    ddPopulate($project, items, tab.project);
+    loadBranches(tab.project);
+  } else if ($project && !tab.project) {
+    const items = _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() }));
+    ddPopulate($project, items, '');
+  }
+  if ($model) {
+    const items = _models.map(m => ({ value: `${m.id}:${m.contextWindow || 200000}`, label: m.label }));
+    const modelVal = tab.model || _getDefaultModel();
+    ddPopulateModels($model, items, modelVal);
+    if (modelVal && !tab.model) { tab.model = modelVal; saveTabs(); }
+  }
+  if ($think && tab.effort) _setEffort($think, tab.effort);
   // Sync plan toggle
   const $plan = _panel?.querySelector('#cp-plan-toggle');
   if ($plan) $plan.classList.toggle('active', tab.planMode);
@@ -1917,7 +2029,7 @@ function closeTab(idx) {
   const tab = _tabs[idx];
   tab.closed = true;
   clearTimeout(tab.reconnectTimer);
-  finishTab(tab);
+  finishTab(tab, true);
   if (tab.ws) tab.ws.close();
   // Release session lock
   if (tab.sessionId) _releaseSessionLock(tab.sessionId);
@@ -2005,7 +2117,7 @@ function updatePillRunning(tab) {
 function saveTabs() {
   try {
     storage.setItem(STOR.tabs, JSON.stringify({
-      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false })),
+      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false })),
       activeIdx: _activeTabIdx,
     }));
     _updateWindowRegistry();
@@ -2053,6 +2165,10 @@ function restoreTabs() {
           const t = createTab(saved.sessionId, saved.label, { autoSwitch: false });
           if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
           if (t && saved.running) t._wasRunning = true; // trigger reattach on WS open
+          if (t && saved.project) t.project = saved.project;
+          if (t) t.model = saved.model || _getDefaultModel();
+          if (t && saved.effort) t.effort = saved.effort;
+          if (t && saved.planMode) t.planMode = true;
         }
         switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
         return;
@@ -2069,6 +2185,9 @@ function restoreTabs() {
           const t = createTab(saved.sessionId, saved.label, { autoSwitch: false });
           if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
           if (t && saved.running) t._wasRunning = true;
+          if (t && saved.project) t.project = saved.project;
+          if (t) t.model = saved.model || _getDefaultModel();
+          if (t && saved.effort) t.effort = saved.effort;
         }
         switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
         // Don't remove legacy key — other windows may still need it during rollout
@@ -2155,8 +2274,9 @@ window.addEventListener('focus', () => {
   // If tab says it's running but WS is dead, force finish
   if (tab.running && (!tab.ws || tab.ws.readyState > WebSocket.OPEN)) {
     console.warn('[claude-panel] Focus re-sync: tab running but WS dead — forcing finish');
-    finishTab(tab);
+    finishTab(tab, true);
     appendStatus(tab, 'Connection lost — session recovered.');
+    notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code');
   }
   // Re-sync input disabled state with current tab
   const $input = _panel?.querySelector('#cp-input');
@@ -2235,11 +2355,13 @@ async function renderSessionMenu() {
         const sid = el.dataset.sid;
         const label = el.querySelector('.cp-sess-prompt')?.textContent || 'Resumed';
         selectSession(sid, label);
-        // Update cwd to match the session's project
+        // Update cwd to match the session's project (per-tab)
         const $project = _panel?.querySelector('#cp-project');
         if ($project && el.dataset.cwd) {
           ddPopulate($project, _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() })), el.dataset.cwd);
           storage.setItem(STOR.project, el.dataset.cwd);
+          const tab = activeTab();
+          if (tab) { tab.project = el.dataset.cwd; saveTabs(); }
         }
         menu.classList.remove('open');
       });
@@ -2257,6 +2379,10 @@ async function renderSessionMenu() {
         input.type = 'text'; input.value = currentName;
         input.className = 'cp-rename-input';
         input.placeholder = 'Session name...';
+        // Prevent clicks on input from bubbling to session item (which selects session)
+        input.addEventListener('click', (e) => e.stopPropagation());
+        input.addEventListener('mousedown', (e) => e.stopPropagation());
+        input.addEventListener('dblclick', (e) => e.stopPropagation());
         promptEl.textContent = '';
         promptEl.appendChild(input);
         btn.style.display = 'none';
@@ -2326,6 +2452,7 @@ async function selectSession(sid, label) {
   tab.currentMsgId = null;
   tab.label = label || 'New chat';
   tab.usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 };
+  tab.contextWindow = 0;
   tab.compacting = false;
   _setCompactingUI(false);
   tab.turns = 0;
@@ -2367,6 +2494,10 @@ function renameSession(sid, currentLabel) {
   input.value = currentLabel || '';
   input.className = 'cp-rename-input';
   input.placeholder = 'Session name...';
+  // Prevent clicks on input from bubbling to session button (which toggles menu)
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('mousedown', (e) => e.stopPropagation());
+  input.addEventListener('dblclick', (e) => e.stopPropagation());
   btn.textContent = '';
   btn.appendChild(input);
   input.focus();
@@ -2432,7 +2563,7 @@ async function loadSessionHistory(sid, $msgs) {
         if (m.tools?.length) {
           for (const t of m.tools) {
             if (typeof t === 'object' && t.name) {
-              wrap.appendChild(buildTool(t));
+              wrap.appendChild(buildTool(t, activeTab()));
             } else {
               // Legacy: tool name string only
               const tName = String(t);
@@ -2477,6 +2608,7 @@ async function loadSessionHistory(sid, $msgs) {
       tab.usage.outputTokens = data.usage.output_tokens || 0;
       tab.usage.cacheRead = data.usage.cache_read_input_tokens || 0;
       tab.usage.cacheWrite = data.usage.cache_creation_input_tokens || 0;
+      if (data.contextWindow) tab.contextWindow = data.contextWindow;
       tab.turns = data.turns || 0;
       renderGauge(tab);
     }
@@ -2556,6 +2688,9 @@ function _updateCostLabel() {
   $cost.textContent = `$${sc.toFixed(2)}`;
   const monthLabel = new Date().toLocaleString('en', { month: 'short' });
   $cost.title = `Session cost · ${monthLabel} total: $${_totalCost.toFixed(2)}`;
+  // Sync navbar cost label directly
+  const navLabel = document.querySelector('#titlebar-cost-btn .bar-cost-label');
+  if (navLabel) navLabel.textContent = '$' + sc.toFixed(2);
 }
 
 // ── Context gauge ──
@@ -2585,22 +2720,22 @@ function renderGauge(tab) {
   const cacheWrite = u.cacheWrite || 0;
   const uncachedInput = u.inputTokens || 0;
   const total = uncachedInput + cacheRead + cacheWrite;
-  const ctxWindow = _getContextWindow();
+  const ctxWindow = tab.contextWindow || _getContextWindow();
   const fmt = (v) => v >= 1000000 ? (v / 1000000).toFixed(v % 1000000 === 0 ? 0 : 1) + 'M' : v >= 1000 ? (v / 1000).toFixed(1) + 'K' : String(v);
 
   if (total === 0) {
     // Animate existing sections to 0 width before removing
     const existing = $gauge.querySelectorAll('.cp-gauge-section');
     if (existing.length) {
-      existing.forEach(el => { el.style.width = '0%'; el.querySelector('.cp-gauge-tip')?.remove(); });
-      setTimeout(() => { $gauge.innerHTML = ''; }, 450);
+      existing.forEach(el => { el.style.width = '0%'; });
+      setTimeout(() => { existing.forEach(el => el.remove()); }, 450);
     }
     $gauge.dataset.urgency = '';
     if ($label) { $label.textContent = ''; $label.title = ''; }
     return;
   }
 
-  const pct = (v) => Math.max(0, (v / ctxWindow) * 100).toFixed(2) + '%';
+  const pct = (v) => { const p = (v / ctxWindow) * 100; return (p > 0 ? Math.max(0.5, p) : 0).toFixed(2) + '%'; };
   const CATS = ['cache-read', 'cache-write', 'input'];
   const data = {
     'cache-read': { val: cacheRead, label: `Cached: ${fmt(cacheRead)} tokens` },
@@ -2617,7 +2752,7 @@ function renderGauge(tab) {
         el = document.createElement('div');
         el.className = 'cp-gauge-section';
         el.dataset.cat = cat;
-        el.innerHTML = `<div class="cp-gauge-tip"></div>`;
+        el.innerHTML = '';
         // Insert in order: find the next sibling that should come after this cat
         const catIdx = CATS.indexOf(cat);
         let inserted = false;
@@ -2631,14 +2766,41 @@ function renderGauge(tab) {
         el.offsetWidth; // force reflow
       }
       el.style.width = pct(d.val);
-      const tip = el.querySelector('.cp-gauge-tip');
-      if (tip) tip.textContent = d.label;
+      el.dataset.tipLabel = d.label;
     } else if (el) {
       // Animate to 0 then remove
       el.style.width = '0%';
       el.addEventListener('transitionend', () => el.remove(), { once: true });
     }
   }
+
+  // Shared tooltip on document.body (escapes panel overflow:hidden + backdrop-filter)
+  let $tip = document.getElementById('cp-gauge-tooltip');
+  if (!$tip) {
+    $tip = document.createElement('div');
+    $tip.id = 'cp-gauge-tooltip';
+    document.body.appendChild($tip);
+  }
+  $gauge.querySelectorAll('.cp-gauge-section').forEach(sec => {
+    if (sec._tipWired) return;
+    sec._tipWired = true;
+    sec.addEventListener('mouseenter', () => {
+      const label = sec.dataset.tipLabel;
+      if (!label) return;
+      const t = document.getElementById('cp-gauge-tooltip');
+      if (!t) return;
+      const r = sec.getBoundingClientRect();
+      t.textContent = label;
+      t.style.left = (r.left + r.width / 2) + 'px';
+      t.style.top = (r.top - 6) + 'px';
+      t.style.transform = 'translate(-50%, -100%)';
+      t.classList.add('visible');
+    });
+    sec.addEventListener('mouseleave', () => {
+      const t = document.getElementById('cp-gauge-tooltip');
+      if (t) t.classList.remove('visible');
+    });
+  });
 
   const pctUsed = Math.round((total / ctxWindow) * 100);
   $gauge.dataset.urgency = pctUsed < 50 ? '' : pctUsed < 75 ? 'warn' : pctUsed < 90 ? 'high' : 'critical';
@@ -2731,7 +2893,7 @@ function _processTabMsg(tab, msg) {
       } else {
         // No orphan found — process died during refresh, clear running state
         console.log('[claude-panel] No orphan to reattach — session idle');
-        finishTab(tab);
+        finishTab(tab, true);
         saveTabs();
       }
       break;
@@ -2739,12 +2901,12 @@ function _processTabMsg(tab, msg) {
     case 'control_request': handleControlRequest(tab, msg); break;
     case 'stderr': if (msg.text?.trim()) appendStatus(tab, msg.text.trim()); break;
     case 'done':
-      finishTab(tab);
+      finishTab(tab, !tab.running);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       if (tab.planMode) renderPostPlanActions(tab);
       break;
     case 'aborted':
-      finishTab(tab);
+      finishTab(tab, !!tab._btwPending);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       // /btw: if there's a pending message, send it immediately instead of showing "Aborted"
       if (tab._btwPending) {
@@ -2754,7 +2916,7 @@ function _processTabMsg(tab, msg) {
         const $model = _panel?.querySelector('#cp-model');
         tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
         let prompt = btw.text;
-        if (tab.planMode && prompt) prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes]\n\n${prompt}`;
+        if (tab.planMode && prompt) prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes. If you need clarification or have questions about the approach, use the AskUserQuestion tool to present options to the user.]\n\n${prompt}`;
         const btwMsg = {
           type: 'query', prompt,
           cwd: ddGetValue($project) || undefined,
@@ -2776,9 +2938,10 @@ function _processTabMsg(tab, msg) {
       }
       break;
     case 'error':
-      finishTab(tab);
+      finishTab(tab, true);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       appendError(tab, msg.message);
+      notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code');
       break;
   }
 }
@@ -2807,6 +2970,23 @@ function handleTabEvent(tab, ev) {
     // Update existing compact status instead of appending a new line
     const el = tab.messagesEl?.querySelector('.msg-compact-status');
     if (el) el.textContent = 'Context compacted';
+    return;
+  }
+  if (ev.type === 'system' && ev.subtype === 'compact_detected') {
+    // Auto-compact detected via token count drop — show status + clear compacting UI
+    tab.compacting = false;
+    if (tab === activeTab()) _setCompactingUI(false);
+    const $msgs = tab.messagesEl;
+    if ($msgs) {
+      let el = $msgs.querySelector('.msg-compact-status');
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'msg-status msg-compact-status';
+        $msgs.appendChild(el);
+      }
+      el.textContent = ev.message || 'Context auto-compacted';
+    }
+    if (tab === activeTab()) scrollEnd();
     return;
   }
   if (ev.type === 'system' && ev.subtype === 'session_reset') {
@@ -2845,10 +3025,10 @@ function handleTabEvent(tab, ev) {
   if (ev.type === 'assistant' && ev.message) {
     if (ev.message.usage) {
       const u = ev.message.usage;
-      tab.usage.inputTokens = u.input_tokens ?? 0;
-      tab.usage.outputTokens = u.output_tokens ?? 0;
-      tab.usage.cacheRead = u.cache_read_input_tokens ?? 0;
-      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? 0;
+      tab.usage.inputTokens = u.input_tokens ?? tab.usage.inputTokens;
+      tab.usage.outputTokens = u.output_tokens ?? tab.usage.outputTokens;
+      tab.usage.cacheRead = u.cache_read_input_tokens ?? tab.usage.cacheRead;
+      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? tab.usage.cacheWrite;
       if (tab.compacting) {
         tab.compacting = false;
         if (tab === activeTab()) _setCompactingUI(false);
@@ -2871,11 +3051,14 @@ function handleTabEvent(tab, ev) {
     return;
   }
   if (ev.type === 'result') {
+    const isError = (ev.subtype === 'error_during_execution' || ev.subtype === 'error') && (ev.error || ev.result);
     // Display error for error_during_execution results
-    if ((ev.subtype === 'error_during_execution' || ev.subtype === 'error') && (ev.error || ev.result)) {
+    if (isError) {
       appendError(tab, ev.error || ev.result);
     }
-    finishTab(tab);
+    finishTab(tab, true);
+    if (isError) notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code');
+    else notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code');
     tab.turns++;
     if (ev.usage) {
       const u = ev.usage;
@@ -2889,6 +3072,14 @@ function handleTabEvent(tab, ev) {
       }
       if (tab === activeTab()) renderGauge(tab);
     }
+    // Extract actual context window from modelUsage (CLI reports the real value)
+    if (ev.modelUsage) {
+      const modelKey = Object.keys(ev.modelUsage)[0];
+      if (modelKey) {
+        const cw = ev.modelUsage[modelKey].contextWindow;
+        if (cw && cw > 0) tab.contextWindow = cw;
+      }
+    }
     if (ev.total_cost_usd != null) {
       const prevCost = tab.sessionCost;
       tab.sessionCost = ev.total_cost_usd;
@@ -2899,7 +3090,7 @@ function handleTabEvent(tab, ev) {
         const $cost = _panel?.querySelector('#cp-cost');
         if ($cost) { $cost.classList.add('flash'); setTimeout(() => $cost.classList.remove('flash'), 800); }
       }
-      emit('cost:updated', { amount: delta > 0 ? delta : 0, total: _totalCost });
+      emit('cost:updated', { amount: delta > 0 ? delta : 0, total: _totalCost, sessionCost: tab.sessionCost });
       saveTabs();
     }
     if (ev.session_id) { tab.sessionId = ev.session_id; saveTabs(); }
@@ -2918,6 +3109,24 @@ function handleStreamDelta(tab, apiEvent) {
     const msgId = apiEvent.message?.id || null;
     tab._stream = { el: null, textBuf: '', thinkBuf: '', bodyEl: null, thinkEl: null, blockIdx: -1, blockType: null, mdTimer: null, msgId };
     hideThinking(tab);
+    // Extract usage from message_start for real-time gauge updates during streaming
+    if (apiEvent.message?.usage) {
+      const u = apiEvent.message.usage;
+      tab.usage.inputTokens = u.input_tokens ?? tab.usage.inputTokens;
+      tab.usage.outputTokens = u.output_tokens ?? tab.usage.outputTokens;
+      tab.usage.cacheRead = u.cache_read_input_tokens ?? tab.usage.cacheRead;
+      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? tab.usage.cacheWrite;
+      if (tab === activeTab()) renderGauge(tab);
+    }
+    return;
+  }
+
+  if (evType === 'message_delta') {
+    // Extract cumulative output tokens from message_delta for real-time gauge
+    if (apiEvent.usage?.output_tokens) {
+      tab.usage.outputTokens = apiEvent.usage.output_tokens;
+      if (tab === activeTab()) renderGauge(tab);
+    }
     return;
   }
 
@@ -3060,20 +3269,35 @@ function renderPostPlanActions(tab) {
       card.style.opacity = '0.45';
       card.style.pointerEvents = 'none';
       if (a.action === 'compact') {
+        // Guard: cannot compact while running
+        if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); card.style.opacity = '1'; card.style.pointerEvents = 'auto'; return; }
         if (tab.ws?.readyState === WebSocket.OPEN) {
+          tab.compacting = true;
+          if (tab === activeTab()) _setCompactingUI(true);
           tab.ws.send(JSON.stringify({ type: 'compact' }));
           appendStatus(tab, 'Compacting context...');
+        } else {
+          appendStatus(tab, 'Connection lost — cannot compact. Try refreshing.');
+          card.style.opacity = '1'; card.style.pointerEvents = 'auto';
         }
       } else if (a.action === 'plan') {
-        tab.planMode = true;
-        const $plan = _panel?.querySelector('#cp-plan-toggle');
-        if ($plan) $plan.classList.add('active');
-        appendStatus(tab, 'Plan mode ON — Claude will plan without making changes');
+        // Open plan file in SynaBun code editor for direct editing
+        if (!tab.planFilePath) {
+          appendStatus(tab, 'No plan file found — send your edits in chat instead.');
+          card.style.opacity = '1'; card.style.pointerEvents = 'auto';
+          return;
+        }
+        emit('open-plan-editor', { filePath: tab.planFilePath, tabId: tab.id });
       } else if (a.prompt) {
         // Exit plan mode before sending implementation prompt
         tab.planMode = false;
         const $plan = _panel?.querySelector('#cp-plan-toggle');
         if ($plan) $plan.classList.remove('active');
+        if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) {
+          appendStatus(tab, 'Connection lost — cannot send. Try refreshing.');
+          card.style.opacity = '1'; card.style.pointerEvents = 'auto';
+          return;
+        }
         const $input = _panel?.querySelector('#cp-input');
         if ($input) { $input.value = a.prompt; send(); }
       }
@@ -3101,16 +3325,20 @@ function renderAssistant(tab, msg) {
   const askTools = tools.filter(t => t.name === 'AskUserQuestion');
   const regularTools = tools.filter(t => t.name !== 'AskUserQuestion');
 
-  // Detect ExitPlanMode — auto-toggle plan mode off and show post-plan actions immediately
+  // Detect ExitPlanMode — auto-toggle plan mode off and show post-plan actions once per message
+  const msgId = msg.id || null;
   if (tools.some(t => t.name === 'ExitPlanMode')) {
     tab.planMode = false;
     const $plan = _panel?.querySelector('#cp-plan-toggle');
     if ($plan) $plan.classList.remove('active');
-    renderPostPlanActions(tab);
+    // Only render once per message to prevent flicker during partial updates
+    if (!tab._exitPlanMsgId || tab._exitPlanMsgId !== msgId) {
+      tab._exitPlanMsgId = msgId;
+      renderPostPlanActions(tab);
+    }
   }
 
   // Partial message dedup
-  const msgId = msg.id || null;
   if (msgId && msgId === tab.currentMsgId && tab.currentMsgEl) {
     const wrap = tab.currentMsgEl.querySelector('.msg-content');
     if (wrap) {
@@ -3148,7 +3376,7 @@ function renderAssistant(tab, msg) {
       }
       const existingToolIds = new Set([...wrap.querySelectorAll('.tool-card, .plan-card')].map(c => c.dataset.toolId));
       for (const t of regularTools) {
-        if (!existingToolIds.has(t.id || '')) wrap.appendChild(buildTool(t));
+        if (!existingToolIds.has(t.id || '')) wrap.appendChild(buildTool(t, tab));
       }
       const existingAskIds = new Set([...wrap.querySelectorAll('.ask-card')].map(c => c.dataset.toolId));
       for (const t of askTools) {
@@ -3187,7 +3415,7 @@ function renderAssistant(tab, msg) {
     linkifyFilePaths(body);
     wrap.appendChild(body);
   }
-  for (const t of regularTools) wrap.appendChild(buildTool(t));
+  for (const t of regularTools) wrap.appendChild(buildTool(t, tab));
   for (const t of askTools) wrap.appendChild(buildAskFromToolUse(tab, t));
   el.appendChild(wrap);
   $msgs.appendChild(el);
@@ -3278,7 +3506,7 @@ function buildAskFromToolUse(tab, block) {
     } else {
       const hint = document.createElement('div');
       hint.className = 'ask-hint';
-      hint.textContent = 'Type your answer below and press Enter';
+      hint.innerHTML = 'Type your answer below and press Enter <span class="ask-hint-img">— paste or drag images too</span>';
       container.appendChild(hint);
       tab.pendingAsk = { requestId: null, toolUseId, questions: input.questions || [q], questionText };
       setRunning(tab, false);
@@ -3305,17 +3533,28 @@ function sendAskAnswer(tab, questions, answers) {
       response: { behavior: 'allow', updatedInput: { questions, answers } },
     }));
   } else {
-    // Pipe mode — CLI auto-executed AskUserQuestion, send selection as follow-up query
-    const $project = _panel?.querySelector('#cp-project');
-    console.log('[claude-panel] Sending ask answer as follow-up query:', answerText);
-    tab.ws.send(JSON.stringify({
-      type: 'query',
-      prompt: answerText,
-      sessionId: tab.sessionId || undefined,
-      model: _getModelId() || undefined,
-      cwd: ddGetValue($project) || undefined,
-      effort: _getEffort() || undefined,
-    }));
+    // No request_id yet — buffer the answer for when control_request arrives.
+    // In --print mode, AskUserQuestion appears as a permission_denial in the result event.
+    // The server sends a control_request shortly after. Buffer and flush on arrival.
+    console.log('[claude-panel] Buffering ask answer (control_request pending):', answerText);
+    tab.pendingAskBufferedAnswer = { questions, answers };
+    // Fallback: if control_request doesn't arrive within 3s, send as follow-up query
+    setTimeout(() => {
+      if (!tab.pendingAskBufferedAnswer) return; // already flushed
+      console.log('[claude-panel] Fallback: control_request not received, sending as query');
+      const buffered = tab.pendingAskBufferedAnswer;
+      tab.pendingAskBufferedAnswer = null;
+      const fallbackText = Object.values(buffered.answers).join(', ');
+      const $project = _panel?.querySelector('#cp-project');
+      tab.ws.send(JSON.stringify({
+        type: 'query',
+        prompt: `The user answered your question: "${fallbackText}"\nContinue based on their selection.`,
+        sessionId: tab.sessionId || undefined,
+        model: _getModelId() || undefined,
+        cwd: ddGetValue($project) || undefined,
+        effort: _getEffort() || undefined,
+      }));
+    }, 3000);
   }
 
   tab.pendingAskRequestId = null;
@@ -3592,9 +3831,10 @@ function updateSynaBunResult(card, ev) {
   card.classList.add(ev.is_error ? 'tool-error' : 'tool-ok');
 }
 
-function buildTool(block) {
-  // Plan files get a special rendered card
+function buildTool(block, tab) {
+  // Plan files get a special rendered card — track path on tab for editor access
   if (block.name === 'Write' && isPlanFile(block.input?.file_path)) {
+    if (tab) tab.planFilePath = block.input.file_path;
     return buildPlanCard(block);
   }
   // SynaBun MCP tools get branded cards
@@ -3744,6 +3984,7 @@ function _showNextPerm(tab) {
   if (!next) { _flushMsgBuffer(tab); return; }
   tab._activePerm = true;
   renderPermissionPrompt(tab, next.requestId, next.req);
+  notify('panel', NOTIF_TYPE.ACTION, tab.label || 'Claude Code');
 }
 
 /** Detect SynaBun skill ask cards by question/header text or known menu option labels */
@@ -3763,6 +4004,7 @@ function renderAskUserQuestion(tab, requestId, input) {
   if (!$msgs) return;
   hideThinking(tab);
   tab.askRenderedViaControl = true;
+  notify('panel', NOTIF_TYPE.ASK, tab.label || 'Claude Code');
 
   // Normalize: accept questions array, single question object, or flat input
   const questions = Array.isArray(input?.questions) ? input.questions
@@ -3840,7 +4082,7 @@ function renderAskUserQuestion(tab, requestId, input) {
     } else {
       const hint = document.createElement('div');
       hint.className = 'ask-hint';
-      hint.textContent = 'Type your answer below and press Enter';
+      hint.innerHTML = 'Type your answer below and press Enter <span class="ask-hint-img">— paste or drag images too</span>';
       card.appendChild(hint);
       tab.pendingAsk = { requestId: null, toolUseId: tab.pendingAskToolUseId, questions: input.questions || [q], questionText };
       setRunning(tab, false);
@@ -4045,8 +4287,9 @@ function setRunning(tab, r) {
     tab._runningTimeout = setTimeout(() => {
       if (tab.running && (!tab._lastWsActivity || Date.now() - tab._lastWsActivity > RUNNING_TIMEOUT_MS - 5000)) {
         console.warn('[claude-panel] Running timeout for tab', tab.id, '— forcing finish');
-        finishTab(tab);
+        finishTab(tab, true);
         appendStatus(tab, 'Session timed out — no response received.');
+        notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code');
       }
     }, RUNNING_TIMEOUT_MS);
   }
@@ -4083,7 +4326,11 @@ function _updateSendIcon($send, $input) {
   }
 }
 
-function finishTab(tab) { hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.sendStartedAt = null; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs(); }
+function finishTab(tab, skipNotif) {
+  const wasRunning = tab.running;
+  hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.sendStartedAt = null; tab._exitPlanMsgId = null; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs();
+  if (wasRunning && !skipNotif) notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code');
+}
 
 function send() {
   const tab = activeTab();
@@ -4135,9 +4382,18 @@ function send() {
 
   if (tab.pendingAsk && text) {
     $input.value = ''; autoResize();
-    appendUser(tab, text); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
+    const askImages = tab.attachedImages.length ? [...tab.attachedImages] : null;
+    appendUser(tab, text, askImages); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
     const answers = {};
-    answers[tab.pendingAsk.questionText] = text;
+    if (askImages) {
+      answers[tab.pendingAsk.questionText] = text + `\n[${askImages.length} inspiration image(s) attached — visible in chat above]`;
+      tab.attachedImages = [];
+      updateAttachBadge();
+      const preview = _panel?.querySelector('#cp-image-preview');
+      if (preview) preview.innerHTML = '';
+    } else {
+      answers[tab.pendingAsk.questionText] = text;
+    }
     sendAskAnswer(tab, tab.pendingAsk.questions, answers);
     tab.pendingAsk = null;
     return;
@@ -4148,7 +4404,7 @@ function send() {
   appendUser(tab, text, pendingImages); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
   let prompt = buildPromptWithAttachments(tab, text);
   if (tab.planMode && prompt) {
-    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes]\n\n${prompt}`;
+    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes. If you need clarification or have questions about the approach, use the AskUserQuestion tool to present options to the user.]\n\n${prompt}`;
   }
 
   // Update pill label on first message
@@ -4214,8 +4470,26 @@ function showBrowserEmbed(sessionId, url) {
     } catch {}
   };
 
+  let _cpWsReconnAttempted = false;
   ws.onclose = () => {
-    if (_browserEmbed?.sessionId === sessionId) hideBrowserEmbed();
+    if (_browserEmbed?.sessionId === sessionId) {
+      // Try one reconnect before hiding — covers transient WS drops
+      if (!_cpWsReconnAttempted) {
+        _cpWsReconnAttempted = true;
+        console.log('[claude-panel] Browser WS closed, retrying once for', sessionId);
+        setTimeout(() => {
+          if (_browserEmbed?.sessionId !== sessionId) return;
+          const proto2 = location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const ws2 = new WebSocket(`${proto2}//${location.host}/ws/browser/${sessionId}`);
+          ws2.onmessage = ws.onmessage;
+          ws2.onclose = () => { if (_browserEmbed?.sessionId === sessionId) hideBrowserEmbed(); };
+          ws2.onerror = () => {};
+          _browserEmbed.ws = ws2;
+        }, 1500);
+        return;
+      }
+      hideBrowserEmbed();
+    }
   };
 
   // Show with animation
@@ -4342,22 +4616,9 @@ function _wireBrowserSync() {
   if (_browserSyncWired) return;
   _browserSyncWired = true;
 
-  // Auto-show browser embed ONLY when the panel's Claude process triggered it
-  on('sync:browser:created', async (msg) => {
-    if (!_panel || !_visible) return; // panel not open, let terminal handle it
-    const tab = activeTab();
-    if (!tab?.running) return; // Claude not actively processing — browser was opened externally
-    if (!msg.sessionId) return;
-    if (_browserEmbedVisible && _browserEmbed?.sessionId === msg.sessionId) return;
-    showBrowserEmbed(msg.sessionId, msg.url);
-  });
-
-  // Auto-hide when browser session is destroyed
-  on('sync:browser:deleted', (msg) => {
-    if (_browserEmbed?.sessionId === msg.sessionId) {
-      hideBrowserEmbed();
-    }
-  });
+  // Browser sessions are always rendered as floating windows — no side panel embed.
+  // sync:browser:created, claude-panel:show-browser, and claude-panel:ensure-open
+  // are intentionally NOT handled here.
 }
 
 function autoResize() {
@@ -4408,8 +4669,11 @@ async function loadConfig() {
     if ($model) {
       // Composite value: "modelId:contextWindow" to differentiate models with same id but different context
       const items = _models.map(m => ({ value: `${m.id}:${m.contextWindow || 200000}`, label: m.label }));
-      const saved = storage.getItem(STOR.model);
-      ddPopulate($model, items, saved || '');
+      // Apply user's default model preference (per-tab model restored later by switchTab())
+      const defModel = _getDefaultModel();
+      ddPopulateModels($model, items, defModel);
+      // Clean up stale global key (model now lives per-tab only)
+      storage.removeItem(STOR.model);
     }
   } catch {}
 }
@@ -4447,10 +4711,14 @@ export async function toggleClaudePanel() {
     _panel.classList.add('open');
     const pw = _panel.style.width || '22%';
     document.documentElement.style.setProperty('--claude-panel-width', pw.endsWith('px') ? (parseFloat(pw) + 16) + 'px' : 'calc(' + pw + ' + 16px)');
+    document.documentElement.style.setProperty('--claude-panel-gap', '16px');
+    document.querySelector('.fe-editor-panel')?.classList.add('panel-adjacent');
     _panel.querySelector('#cp-input')?.focus();
   } else {
     _panel.classList.remove('open');
     document.documentElement.style.setProperty('--claude-panel-width', '0px');
+    document.documentElement.style.setProperty('--claude-panel-gap', '0px');
+    document.querySelector('.fe-editor-panel')?.classList.remove('panel-adjacent');
   }
   renderPills(); // Sync pill visibility with panel open/close state
   window.dispatchEvent(new Event('resize'));
@@ -4460,13 +4728,19 @@ export function isClaudePanelOpen() { return _visible; }
 
 /** Open the panel (if closed) and pre-fill the input with text, placing cursor at the end.
  *  If opts.asFile is true or text looks like a file path, attach as a file chip instead. */
-export function sendToPanel(text, opts = {}) {
-  if (!_visible) toggleClaudePanel();
+export async function sendToPanel(text, opts = {}) {
+  if (!_visible) await toggleClaudePanel();
+
+  // Create a fresh tab if requested
+  if (opts.newTab) {
+    createTab(null, opts.tabLabel || 'New chat');
+  }
+
   const tab = activeTab();
   if (!tab) return;
 
-  // Detect file paths — attach as file chip instead of text
-  const looksLikePath = opts.asFile || /^[A-Za-z]:[/\\]/.test(text) || (text.startsWith('/') && text.includes('/') && !text.includes(' '));
+  // Detect file paths — attach as file chip instead of text (skip for autoSubmit — those are commands, not paths)
+  const looksLikePath = !opts.autoSubmit && (opts.asFile || /^[A-Za-z]:[/\\]/.test(text) || (text.startsWith('/') && text.includes('/') && !text.includes(' ')));
   if (looksLikePath) {
     _attachPathToTab(tab, text);
     _panel?.querySelector('#cp-input')?.focus();
@@ -4484,6 +4758,21 @@ export function sendToPanel(text, opts = {}) {
   autoResize();
   $input.focus();
   $input.setSelectionRange($input.value.length, $input.value.length);
+
+  // Auto-submit: wait for WebSocket to be ready, then click send
+  if (opts.autoSubmit) {
+    $input.dispatchEvent(new Event('input', { bubbles: true }));
+    const trySubmit = () => {
+      const t = activeTab();
+      if (t?.ws?.readyState === WebSocket.OPEN) {
+        const $send = _panel?.querySelector('#cp-send');
+        if ($send) { $send.disabled = false; $send.click(); }
+      } else {
+        setTimeout(trySubmit, 150);
+      }
+    };
+    setTimeout(trySubmit, 150);
+  }
 }
 
 /** Attach a file path to the active tab — fetches content and shows chip */
@@ -4794,14 +5083,31 @@ function wireEvents() {
   if ($attach) {
     const fileInput = document.createElement('input');
     fileInput.type = 'file'; fileInput.multiple = true; fileInput.style.display = 'none';
+    fileInput.accept = 'image/*,text/*,.js,.ts,.jsx,.tsx,.py,.rb,.go,.rs,.java,.c,.cpp,.h,.css,.html,.json,.yaml,.yml,.toml,.md,.sh,.sql,.xml,.csv';
     document.body.appendChild(fileInput);
     $attach.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', async () => {
       const tab = activeTab();
       if (!tab) return;
       for (const file of fileInput.files) {
+        // Images → attach as image (base64), same as paste/drop
+        if (file.type.startsWith('image/')) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result;
+            const base64 = dataUrl.split(',')[1];
+            const mediaType = file.type;
+            tab.attachedImages.push({ base64, mediaType });
+            updateAttachBadge();
+            addImagePreview(dataUrl, tab.attachedImages.length - 1);
+            $send.disabled = false;
+          };
+          reader.readAsDataURL(file);
+          continue;
+        }
+        // Text/code files
         if (!_isTextFile(file.name)) {
-          appendStatus(tab, `Skipped "${file.name}" — only text/code files supported`);
+          appendStatus(tab, `Skipped "${file.name}" — only text/code or image files supported`);
           continue;
         }
         if (file.size > 100000) {
@@ -4837,6 +5143,8 @@ function wireEvents() {
       const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
       _setEffort($think, next);
       storage.setItem(STOR.effort, next);
+      const tab = activeTab();
+      if (tab) { tab.effort = next; saveTabs(); }
     });
   }
 
@@ -4877,21 +5185,45 @@ function wireEvents() {
     });
   }
 
+  // Bar action buttons (quick skills)
+  _panel.querySelector('#cp-action-changelog')?.addEventListener('click', () => {
+    const tab = activeTab();
+    if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+    if (tab.running) return;
+    const $input = _panel?.querySelector('#cp-input');
+    if (!$input) return;
+    $input.value = '/synabun changelog';
+    autoResize();
+    send();
+  });
+
   // Session selector
   const $sessBtn = _panel.querySelector('#cp-session-btn');
   const $sessMenu = _panel.querySelector('#cp-session-menu');
-  $sessBtn.addEventListener('click', () => {
-    const isOpen = $sessMenu.classList.toggle('open');
-    if (isOpen) renderSessionMenu();
-  });
-  // Double-click session label to rename
   const $sessLabel = _panel.querySelector('.cp-session-label');
+  let _sessClickTimer = null;
+
+  $sessBtn.addEventListener('click', (e) => {
+    // Block menu toggle while rename input is active
+    if ($sessLabel?.querySelector('.cp-rename-input')) return;
+    // Delay single-click to allow dblclick to cancel it
+    if (_sessClickTimer) { clearTimeout(_sessClickTimer); _sessClickTimer = null; }
+    _sessClickTimer = setTimeout(() => {
+      _sessClickTimer = null;
+      const isOpen = $sessMenu.classList.toggle('open');
+      if (isOpen) renderSessionMenu();
+    }, 220);
+  });
+
+  // Double-click session label to rename — cancels the pending single-click
   $sessLabel?.addEventListener('dblclick', (e) => {
     e.stopPropagation();
+    if (_sessClickTimer) { clearTimeout(_sessClickTimer); _sessClickTimer = null; }
     $sessMenu.classList.remove('open');
     const tab = activeTab();
     if (tab?.sessionId) renameSession(tab.sessionId, $sessLabel.textContent);
   });
+
   // Rename button (explicit pencil icon next to session label)
   const $renameBtn = _panel.querySelector('#cp-header-rename');
   // Prevent mousedown from blurring an active rename input before click fires
@@ -4900,6 +5232,7 @@ function wireEvents() {
   });
   $renameBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (_sessClickTimer) { clearTimeout(_sessClickTimer); _sessClickTimer = null; }
     $sessMenu.classList.remove('open');
     const tab = activeTab();
     if (tab?.sessionId) renameSession(tab.sessionId, $sessLabel.textContent);
@@ -4917,15 +5250,18 @@ function wireEvents() {
 
   ddSetup($project); ddSetup($model); ddSetup($branch);
   $project.addEventListener('change', () => {
-    storage.setItem(STOR.project, ddGetValue($project));
-    loadBranches(ddGetValue($project));
+    const val = ddGetValue($project);
+    storage.setItem(STOR.project, val);
+    const tab = activeTab();
+    if (tab) { tab.project = val; saveTabs(); }
+    loadBranches(val);
     // Reset session when switching projects
     selectSession(null, 'New chat');
   });
   $model.addEventListener('change', () => {
-    storage.setItem(STOR.model, ddGetValue($model));
+    const val = ddGetValue($model);
     const tab = activeTab();
-    if (tab) renderGauge(tab);
+    if (tab) { tab.model = val; renderGauge(tab); saveTabs(); }
   });
   $branch.addEventListener('change', async () => {
     if (!ddGetValue($branch) || !ddGetValue($project)) return;
@@ -4980,8 +5316,32 @@ function wireEvents() {
     const $send = _panel?.querySelector('#cp-send');
     if ($send) $send.disabled = false;
   });
+
+  // ── Plan editor — receive edited plan from file explorer and send to Claude ──
+  on('plan-saved', ({ filePath, content }) => {
+    const tab = activeTab();
+    if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+
+    // Remove post-plan action cards
+    tab.messagesEl?.querySelectorAll('.post-plan-card').forEach(el => {
+      const msg = el.closest('.msg'); if (msg) msg.remove(); else el.remove();
+    });
+
+    // Exit plan mode
+    tab.planMode = false;
+    const $plan = _panel?.querySelector('#cp-plan-toggle');
+    if ($plan) $plan.classList.remove('active');
+
+    // Send updated plan to Claude
+    const prompt = `The user has directly edited the plan. Here is the updated plan:\n\n${content}\n\nProceed with the implementation based on this updated plan.`;
+    const $input = _panel?.querySelector('#cp-input');
+    if ($input) { $input.value = prompt; send(); }
+  });
 }
 
+// Side panel browser launch removed — all automations use floating browsers only.
+
 export function initClaudePanel() {
-  // Will be initialized on first toggle
+  // Placeholder — panel is lazy-initialized on first toggleClaudePanel().
+  // Event listeners that must work before first toggle are registered at module level above.
 }

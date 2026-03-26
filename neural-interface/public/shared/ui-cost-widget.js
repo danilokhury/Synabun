@@ -143,7 +143,8 @@ export function initCostWidget() {
   emit('cost:dock-state', _docked);
 
   // Initial fetch if already in focus mode or docked
-  if (focusOn && !_docked) _fetchAndRender();
+  if (_docked) { _positionDocked(); _fetchAndRender(); }
+  else if (focusOn) _fetchAndRender();
 }
 
 // ── Dock / Undock ──
@@ -246,9 +247,7 @@ function _render() {
     totalEl.title = `${sessions} sessions · ${month?.queries || 0} queries`;
   }
 
-  // Update navbar cost label
-  const navLabel = document.querySelector('#titlebar-cost-btn .bar-cost-label');
-  if (navLabel) navLabel.textContent = '$' + totalUsd.toFixed(2);
+  // Navbar cost label is managed by ui-claude-panel._updateCostLabel() (session cost)
 }
 
 function _prepareData() {

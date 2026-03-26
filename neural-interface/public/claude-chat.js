@@ -6,6 +6,7 @@
 import { storage } from '/shared/storage.js';
 import { restoreInterfaceConfig, restoreSkin } from '/shared/ui-settings.js';
 import { fetchClaudeSessions } from '/shared/api.js';
+import { mountSessionWidget } from '/shared/ui-sessions.js';
 
 restoreInterfaceConfig();
 restoreSkin();
@@ -48,6 +49,33 @@ const STOR = {
   model: 'synabun-chat-model',
 };
 
+// ── Tab-scoped storage for session isolation ──
+// Uses browser sessionStorage so each browser tab has its own project/model/session.
+// Falls back to server-synced storage for initial defaults on first load.
+const tabStore = {
+  getItem(key) { return sessionStorage.getItem(key); },
+  setItem(key, val) { sessionStorage.setItem(key, val); },
+  removeItem(key) { sessionStorage.removeItem(key); },
+};
+
+// ── Clipboard fallback for non-secure contexts ──
+function _clipCopy(text) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => _clipFallback(text));
+  } else {
+    _clipFallback(text);
+  }
+}
+function _clipFallback(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch {}
+  ta.remove();
+}
+
 // ── DOM ──
 const $ = (id) => document.getElementById(id);
 const $msgs = $('messages');
@@ -81,10 +109,11 @@ async function loadConfig() {
       $project.appendChild(opt);
     }
 
-    // Restore saved project
-    const saved = storage.getItem(STOR.project);
+    // Restore saved project (tab-scoped, falls back to server default on first load)
+    const saved = tabStore.getItem(STOR.project) || storage.getItem(STOR.project);
     if (saved && projects.some(p => p.path === saved)) {
       $project.value = saved;
+      tabStore.setItem(STOR.project, saved);
       loadBranches(saved);
     }
 
@@ -97,9 +126,9 @@ async function loadConfig() {
       $model.appendChild(opt);
     }
 
-    // Restore saved model
-    const savedModel = storage.getItem(STOR.model);
-    if (savedModel) $model.value = savedModel;
+    // Restore saved model (tab-scoped only — no cross-session bleed)
+    const savedModel = tabStore.getItem(STOR.model);
+    if (savedModel) { $model.value = savedModel; }
 
   } catch {}
 }
@@ -124,12 +153,12 @@ async function loadBranches(projectPath) {
 
 // ── Events ──
 $project.addEventListener('change', () => {
-  storage.setItem(STOR.project, $project.value);
+  tabStore.setItem(STOR.project, $project.value);
   loadBranches($project.value);
 });
 
 $model.addEventListener('change', () => {
-  storage.setItem(STOR.model, $model.value);
+  tabStore.setItem(STOR.model, $model.value);
 });
 
 $branch.addEventListener('change', async () => {
@@ -186,7 +215,7 @@ function handleEvent(ev) {
   if (ev.type === 'system' && ev.subtype === 'init') {
     if (ev.session_id) {
       sessionId = ev.session_id;
-      storage.setItem(STOR.session, ev.session_id);
+      tabStore.setItem(STOR.session, ev.session_id);
     }
     // Don't hide thinking on init — Claude is still working
     return;
@@ -217,7 +246,7 @@ function handleEvent(ev) {
     }
     if (ev.session_id) {
       sessionId = ev.session_id;
-      storage.setItem(STOR.session, ev.session_id);
+      tabStore.setItem(STOR.session, ev.session_id);
     }
   }
 }
@@ -402,7 +431,7 @@ function linkifyFilePaths(el) {
       const path = match[0].replace(/:\d+$/, '');
       a.addEventListener('click', (e) => {
         e.preventDefault();
-        navigator.clipboard.writeText(path);
+        _clipCopy(path);
         a.style.opacity = '0.5';
         setTimeout(() => a.style.opacity = '', 300);
       });
@@ -526,8 +555,8 @@ async function renderSessionMenu() {
 
 function selectSession(sid) {
   sessionId = sid;
-  if (sid) storage.setItem(STOR.session, sid);
-  else storage.removeItem(STOR.session);
+  if (sid) tabStore.setItem(STOR.session, sid);
+  else tabStore.removeItem(STOR.session);
   $msgs.innerHTML = '';
   if (sid) loadSessionHistory(sid);
 }
@@ -914,6 +943,10 @@ function send() {
   if (attachedImages.length) {
     msg.images = attachedImages.map(i => ({ base64: i.base64, mediaType: i.mediaType }));
     attachedImages = [];
+    const preview = document.getElementById('chat-image-preview');
+    if (preview) preview.innerHTML = '';
+    const badge = document.getElementById('chat-attach-badge');
+    if (badge) { badge.textContent = ''; badge.hidden = true; }
   }
   ws.send(JSON.stringify(msg));
 }
@@ -921,7 +954,7 @@ function send() {
 function newSession() {
   if (running) return;
   sessionId = null;
-  storage.removeItem(STOR.session);
+  tabStore.removeItem(STOR.session);
   const div = document.createElement('div');
   div.className = 'session-divider';
   div.innerHTML = '<span>new session</span>';
@@ -936,7 +969,7 @@ function autoResize() {
 
 // ── Init ──
 async function init() {
-  sessionId = storage.getItem(STOR.session) || null;
+  sessionId = tabStore.getItem(STOR.session) || null;
   await loadConfig();
   loadMonthlyCost();
   connect();
@@ -955,7 +988,41 @@ async function init() {
 
   $send.addEventListener('click', send);
 
-  // Image paste
+  // Image paste with thumbnail preview
+  const $imgPreview = document.getElementById('chat-image-preview');
+
+  function addImageThumb(dataUrl, idx) {
+    if (!$imgPreview) return;
+    const thumb = document.createElement('div');
+    thumb.className = 'chat-thumb';
+    thumb.dataset.idx = idx;
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    const x = document.createElement('button');
+    x.className = 'chat-thumb-x';
+    x.textContent = '\u00d7';
+    x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const i = parseInt(thumb.dataset.idx, 10);
+      attachedImages.splice(i, 1);
+      thumb.remove();
+      $imgPreview.querySelectorAll('.chat-thumb').forEach((t, j) => { t.dataset.idx = j; });
+      updateAttachBadge();
+      if (!attachedImages.length && !$input.value.trim()) $send.disabled = true;
+    });
+    thumb.append(img, x);
+    $imgPreview.appendChild(thumb);
+  }
+
+  function updateAttachBadge() {
+    const badge = document.getElementById('chat-attach-badge');
+    if (badge) {
+      const count = attachedImages.length + (typeof attachedFiles !== 'undefined' ? attachedFiles.length : 0);
+      badge.textContent = count || '';
+      badge.hidden = !count;
+    }
+  }
+
   $input.addEventListener('paste', (e) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -966,9 +1033,11 @@ async function init() {
       if (!blob) continue;
       const reader = new FileReader();
       reader.onload = () => {
-        const base64 = reader.result.split(',')[1];
+        const dataUrl = reader.result;
+        const base64 = dataUrl.split(',')[1];
         attachedImages.push({ base64, mediaType: item.type });
-        appendStatus(`Image pasted (${Math.round(blob.size / 1024)}KB)`);
+        addImageThumb(dataUrl, attachedImages.length - 1);
+        updateAttachBadge();
         $send.disabled = false;
       };
       reader.readAsDataURL(blob);
@@ -1012,6 +1081,23 @@ async function init() {
       }
       updateAttachBadge();
       fileInput.value = '';
+    });
+  }
+
+  // Session monitor widget
+  const $monitorBtn = $('chat-monitor-btn');
+  const $monitorContainer = $('session-monitor-container');
+  let monitorWidget = null;
+  if ($monitorBtn && $monitorContainer) {
+    $monitorBtn.addEventListener('click', () => {
+      if ($monitorContainer.hidden) {
+        $monitorContainer.hidden = false;
+        $monitorBtn.classList.add('active');
+        if (!monitorWidget) monitorWidget = mountSessionWidget($monitorContainer);
+      } else {
+        $monitorContainer.hidden = true;
+        $monitorBtn.classList.remove('active');
+      }
     });
   }
 
