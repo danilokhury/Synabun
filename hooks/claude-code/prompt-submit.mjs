@@ -73,18 +73,26 @@ function extractFormattingRules(task) {
 
 function buildBrowserNote(state) {
   if (!state.usesBrowser) return '';
-  return [
+  const lines = [
     '',
     '=== BROWSER ENFORCEMENT (MANDATORY) ===',
     'This automation REQUIRES the SynaBun internal browser. You MUST:',
+  ];
+  // Pin to dedicated browser session if available (multi-automation isolation)
+  if (state.browserSessionId) {
+    lines.push(`YOUR BROWSER SESSION ID: ${state.browserSessionId}`);
+    lines.push('Pass sessionId: "' + state.browserSessionId + '" to ALL browser tool calls (browser_navigate, browser_click, etc.).');
+  }
+  lines.push(
     '1. Call `browser_navigate` with your target URL to create or reuse a browser session',
-    '2. Use ONLY SynaBun MCP browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network',
+    '2. Use ONLY SynaBun MCP browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs',
     '3. NEVER use Playwright plugin tools (mcp__plugin_playwright_*) — they launch a separate browser that the user cannot see',
     '4. NEVER use WebFetch or WebSearch tools for tasks that require visual browsing — use the SynaBun browser instead',
     '5. If the browser shows a login page, CAPTCHA, or any wall requiring human action: STOP immediately. Report the blocker to the user and WAIT. Do NOT abandon the browser and fall back to web search. The user can interact with the browser panel to resolve it.',
     'A persistent Chrome profile is active with saved logins and cookies. The user can see and interact with the SynaBun browser panel.',
     '=== END BROWSER ENFORCEMENT ===',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 function buildAutonomyBlock(blockerRule, sessionId) {
@@ -125,12 +133,6 @@ function buildJournalBlock(state) {
   return parts.length > 0 ? parts.join('\n') : '';
 }
 
-function computeTimeLeft(state) {
-  const elapsed = Date.now() - new Date(state.startedAt).getTime();
-  const maxMs = (state.maxMinutes || 30) * 60 * 1000;
-  return Math.max(0, Math.round((maxMs - elapsed) / 60000));
-}
-
 /**
  * Find an active loop owned by this session (exact file name match only).
  * Does NOT scan other sessions' loop files — cross-session injection is
@@ -143,8 +145,9 @@ function findActiveLoop(sessionId) {
     if (!existsSync(exactPath)) return null;
     const candidate = JSON.parse(readFileSync(exactPath, 'utf-8'));
     if (!candidate.active) return null;
-    const loopMaxMs = ((candidate.maxMinutes || 60) + 5) * 60 * 1000;
-    if (Date.now() - new Date(candidate.startedAt).getTime() > loopMaxMs) return null;
+    // Skip loops inactive for >45 minutes (stuck)
+    const lastAct = new Date(candidate.lastIterationAt || candidate.startedAt || 0).getTime();
+    if (Date.now() - lastAct > 45 * 60 * 1000) return null;
     return candidate;
   } catch { return null; }
 }
@@ -494,16 +497,27 @@ async function main() {
   }
 
   // --- Loop marker detection (BEFORE greeting — loops must bypass greeting) ---
+  const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION || '';
   if (sessionId && /^\[SynaBun Loop\]/i.test(trimmed)) {
     try {
       if (existsSync(LOOP_DIR)) {
         const pending = readdirSync(LOOP_DIR)
           .filter(f => f.startsWith('pending-') && f.endsWith('.json'));
-        if (pending.length > 0) {
-          // Safe to take first: the loop driver (server.js) already scopes pending
-          // claims by terminalSessionId before writing the [SynaBun Loop] marker to PTY.
-          // This hook only fires because the correct terminal received the marker.
-          const pendingPath = join(LOOP_DIR, pending[0]);
+        // Filter by terminalSessionId when available (multi-loop isolation).
+        // Without the env var, fall back to first match (legacy behavior).
+        let matchedPending = null;
+        if (terminalSessionEnv) {
+          for (const pf of pending) {
+            try {
+              const ps = JSON.parse(readFileSync(join(LOOP_DIR, pf), 'utf-8'));
+              if (ps.terminalSessionId === terminalSessionEnv) { matchedPending = pf; break; }
+            } catch { continue; }
+          }
+        } else if (pending.length > 0) {
+          matchedPending = pending[0];
+        }
+        if (matchedPending) {
+          const pendingPath = join(LOOP_DIR, matchedPending);
           const targetPath = join(LOOP_DIR, `${sessionId}.json`);
           renameSync(pendingPath, targetPath);
 
@@ -531,7 +545,7 @@ async function main() {
           process.stdout.write(JSON.stringify({
             hookSpecificOutput: {
               hookEventName: 'UserPromptSubmit',
-              additionalContext: `${fmtBlock}SynaBun Loop ACTIVE: ${state.totalIterations} iterations, ${state.maxMinutes}min cap.\nTask: ${state.task}${state.context ? `\nContext: ${state.context}` : ''}${browserNote}\n\nBegin iteration 1 immediately.${autonomy}`,
+              additionalContext: `${fmtBlock}SynaBun Loop ACTIVE: ${state.totalIterations} iterations (${state.totalIterations - 1} remaining).\nTask: ${state.task}${state.context ? `\nContext: ${state.context}` : ''}${browserNote}\n\nBegin iteration 1 immediately.${autonomy}`,
             },
           }));
           return;
@@ -545,8 +559,9 @@ async function main() {
         if (existsSync(existingPath)) {
           try { state = JSON.parse(readFileSync(existingPath, 'utf-8')); } catch { /* skip */ }
         }
-        // Fallback: scan all loop files for an active loop (session ID may have changed after /clear)
-        // Use the loop's own maxMinutes as the age window (+ 5min grace) instead of a fixed 5min.
+        // Fallback: scan loop files for an active loop (session ID may have changed after /clear).
+        // When SYNABUN_TERMINAL_SESSION is set, only match loops owned by this terminal.
+        // Without the env var, fall back to first active loop (legacy behavior).
         if (!state?.active || !(state?.currentIteration > 0)) {
           const now = Date.now();
           const allLoopFiles = readdirSync(LOOP_DIR)
@@ -556,15 +571,14 @@ async function main() {
               const fullPath = join(LOOP_DIR, f);
               const candidate = JSON.parse(readFileSync(fullPath, 'utf-8'));
               if (candidate.active && candidate.currentIteration > 0) {
+                // Multi-loop isolation: only match OUR terminal's loop
+                if (terminalSessionEnv && candidate.terminalSessionId && candidate.terminalSessionId !== terminalSessionEnv) continue;
                 // Validate the loop hasn't exceeded its own time cap + grace
-                const loopMaxMs = ((candidate.maxMinutes || 60) + 5) * 60 * 1000;
-                const loopElapsed = now - new Date(candidate.startedAt).getTime();
-                if (loopElapsed > loopMaxMs) continue;
+                // Skip loops inactive for >45 minutes (stuck)
+                const lastAct = new Date(candidate.lastIterationAt || candidate.startedAt || 0).getTime();
+                if (now - lastAct > 45 * 60 * 1000) continue;
                 state = candidate;
                 existingPath = fullPath;
-                // Do NOT rename — renaming steals ownership from the original session,
-                // causing cross-session loop leaking when multiple sessions are active.
-                // The file stays with its original name; the fallback scan finds it each time.
                 break;
               }
             } catch { /* skip corrupt */ }
@@ -578,7 +592,7 @@ async function main() {
               : '';
             const autonomy2 = buildAutonomyBlock(blockerRule2, sessionId);
             const journal = buildJournalBlock(state);
-            const timeLeft = computeTimeLeft(state);
+            const iterationsRemaining = (state.totalIterations || 10) - (state.currentIteration || 0);
 
             const parts = [
               // Memory rules (session-start won't re-inject after /clear)
@@ -597,7 +611,7 @@ async function main() {
             }
 
             parts.push(
-              `SynaBun Loop ACTIVE: Iteration ${state.currentIteration}/${state.totalIterations} (${timeLeft}min remaining).`,
+              `SynaBun Loop ACTIVE: Iteration ${state.currentIteration}/${state.totalIterations} (${iterationsRemaining} remaining).`,
               `Task: ${state.task}`,
             );
             if (state.context) parts.push(`Context: ${state.context}`);
@@ -634,11 +648,11 @@ async function main() {
     const activeLoop = findActiveLoop(sessionId);
     if (activeLoop) {
       const journal = buildJournalBlock(activeLoop);
-      const timeLeft = computeTimeLeft(activeLoop);
+      const iterLeft = (activeLoop.totalIterations || 10) - (activeLoop.currentIteration || 0);
       const browserNote = activeLoop.usesBrowser ? buildBrowserNote(activeLoop) : '';
       const parts = [
         `=== ACTIVE LOOP NOTICE ===`,
-        `You are mid-loop: Iteration ${activeLoop.currentIteration}/${activeLoop.totalIterations} (${timeLeft}min remaining).`,
+        `You are mid-loop: Iteration ${activeLoop.currentIteration}/${activeLoop.totalIterations} (${iterLeft} iterations remaining).`,
         `Task: ${activeLoop.task}`,
       ];
       if (activeLoop.context) parts.push(`Context: ${activeLoop.context}`);

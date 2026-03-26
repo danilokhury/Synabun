@@ -126,3 +126,27 @@ Failed to save storage state: browserContext.storageState: Target page, context 
 (Use `node --trace-warnings ...` to show where the warning was created)
 2026-03-20 12:16:00.552 defaults[879:12862] 
 The domain/default pair of (com.apple.screencapture, location) does not exist
+(node:555) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-22 13:10:39.711 defaults[728:8193] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+[ws-browser] Page is dead for session 2145dfd06779ef243bfbb5098c796606 — destroying zombie
+[ws-browser] Page is dead for session 3738c3baefff5d422b95216d7a449838 — destroying zombie
+[ws-browser] Page is dead for session 9b9333b646b8f72a9677c4dc4c74721d — destroying zombie
+[ws-browser] Page is dead for session 971688dac89c0e962c62ece7d85992a7 — destroying zombie
+[ws-browser] Page is dead for session 702ad34e18b6d46f8bb408acb7ac22dc — destroying zombie
+[ws-browser] Page is dead for session ed77b33440963490a929dd8be90fce24 — destroying zombie
+(node:581) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-24 20:59:43.996 defaults[697:7845] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+[screencast] Page.startScreencast FAILED: cdpSession.send: Target page, context or browser has been closed
+[screencast] Page.startScreencast FAILED: cdpSession.send: Target page, context or browser has been closed
+(node:561) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-25 22:23:15.609 defaults[673:7481] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+(node:1368) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-25 23:16:44.313 defaults[1410:12869] 
+The domain/default pair of (com.apple.screencapture, location) does not exist

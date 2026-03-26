@@ -1031,4 +1031,124 @@ export async function handleBrowserExtractLiNetwork(args) {
     }
     return text(`${invitations.length} invitation(s), ${suggestions.length} suggestion(s):\n\n${JSON.stringify(data, null, 2)}`);
 }
+// ── browser_extract_li_jobs ──
+const LI_JOBS_EXTRACTOR_SCRIPT = `
+(() => {
+  const jobs = [];
+  const seen = new Set();
+
+  // --- Search results page (/jobs/search/) ---
+  const searchCards = document.querySelectorAll('[data-occludable-job-id]');
+  searchCards.forEach(card => {
+    const jobId = card.getAttribute('data-occludable-job-id');
+    if (seen.has(jobId)) return;
+    seen.add(jobId);
+
+    const titleLink = card.querySelector('a[href*="/jobs/view/"]');
+    const title = titleLink?.querySelector('span[aria-hidden="true"]')?.textContent?.trim()
+      || titleLink?.querySelector('strong')?.textContent?.trim() || null;
+    const jobUrl = titleLink?.href?.split('?')[0] || null;
+
+    const company = card.querySelector('.artdeco-entity-lockup__subtitle')?.textContent?.trim()?.replace(/\\s+/g, ' ') || null;
+    const companyLink = card.querySelector('a[href*="/company/"]');
+    const companyUrl = companyLink?.href?.split('?')[0] || null;
+
+    const location = card.querySelector('.artdeco-entity-lockup__caption')?.textContent?.trim()?.replace(/\\s+/g, ' ') || null;
+
+    const logo = card.querySelector('img')?.src || null;
+    const footerText = card.querySelector('.job-card-container__footer-wrapper')?.textContent?.trim()?.replace(/\\s+/g, ' ') || '';
+    const promoted = /Promovida|Promoted/i.test(footerText);
+    const easyApply = /Candidatura simplificada|Easy Apply/i.test(footerText);
+
+    // Salary: sometimes in metadata items
+    const allText = card.innerText || '';
+    const salaryMatch = allText.match(/(?:R\\$|US\\$|\\$)[\\s\\d.,\\/]+(?:por\\s+hr|por\\s+m[eê]s|per\\s+hr|per\\s+month|yr|hr|k)?(?:\\s*-\\s*(?:R\\$|US\\$|\\$)?[\\s\\d.,\\/]+(?:por\\s+hr|por\\s+m[eê]s|per\\s+hr|per\\s+month|yr|hr|k)?)?/i);
+    const salary = salaryMatch ? salaryMatch[0].trim() : null;
+
+    if (title) jobs.push({ jobId, title, company, companyUrl, location, salary, jobUrl, logo, promoted, easyApply, postedDate: null });
+  });
+
+  // --- Homepage (/jobs/) — recommended/top-applicant/easy-apply cards ---
+  if (jobs.length === 0) {
+    const homeLinks = document.querySelectorAll('main a[href*="/jobs/collections/"], main a[href*="/jobs/view/"]');
+    homeLinks.forEach(a => {
+      const href = a.getAttribute('href') || '';
+      if (!href.includes('/jobs/collections/') && !href.includes('/jobs/view/')) return;
+      const pEls = Array.from(a.querySelectorAll('p'));
+      if (pEls.length < 2) return; // skip "View all" links
+
+      // Extract jobId from URL if present
+      const idMatch = href.match(/currentJobId=(\\d+)/) || href.match(/\\/jobs\\/view\\/(\\d+)/);
+      const jobId = idMatch ? idMatch[1] : null;
+      if (jobId && seen.has(jobId)) return;
+      if (jobId) seen.add(jobId);
+
+      // Title: first p, strip "(Vaga verificada)" suffix and duplicated text
+      const rawTitle = pEls[0]?.textContent?.trim() || '';
+      const title = rawTitle
+        .replace(/\\s*\\(Vaga verificada\\).*/i, '')
+        .replace(/\\s*\\(Verified listing\\).*/i, '')
+        .trim() || null;
+      if (!title) return;
+
+      // Parse p elements: filter out dots and noise
+      const texts = pEls.map(p => p.textContent?.trim()).filter(t => t && t !== '\\u2022' && t !== '\\u00b7' && t.length > 1);
+      let company = null;
+      let locationVal = null;
+      let salary = null;
+      let postedDate = null;
+      const promoted = /Promovida|Promoted/i.test(a.innerText || '');
+      const easyApply = /Candidatura simplificada|Easy Apply/i.test(a.innerText || '');
+
+      if (texts.length >= 2) company = texts[1];
+      if (texts.length >= 3) locationVal = texts[2];
+
+      // Find salary in any p
+      for (const t of texts) {
+        const sm = t.match(/(?:R\\$|US\\$|\\$)[\\s\\d.,\\/]+(?:por\\s+hr|por\\s+m[eê]s|per\\s+hr|per\\s+month|yr|hr|k)?(?:\\s*-\\s*(?:R\\$|US\\$|\\$)?[\\s\\d.,\\/]+(?:por\\s+hr|por\\s+m[eê]s|per\\s+hr|per\\s+month|yr|hr|k)?)?/i);
+        if (sm) { salary = sm[0].trim(); break; }
+      }
+
+      // Find posted date in any p
+      for (const t of texts) {
+        const dm = t.match(/(?:Anunciada\\s+h[aá]|Posted)\\s+.+/i);
+        if (dm) { postedDate = dm[0].trim(); break; }
+      }
+
+      // Remove noise from company/location
+      if (/^(Promovida|Promoted|Candidatura|Easy Apply)$/i.test(company || '')) company = null;
+      if (/^(Promovida|Promoted|Candidatura|Easy Apply)$/i.test(locationVal || '')) locationVal = null;
+
+      const jobUrl = jobId ? 'https://www.linkedin.com/jobs/view/' + jobId + '/' : null;
+      const logo = a.querySelector('img')?.src || null;
+
+      jobs.push({ jobId, title, company, companyUrl: null, location: locationVal, salary, jobUrl, logo, promoted, easyApply, postedDate });
+    });
+  }
+
+  return jobs;
+})()
+`.trim();
+export const browserExtractLiJobsSchema = {
+    sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+};
+export const browserExtractLiJobsDescription = 'Extract LinkedIn job listings as structured JSON ' +
+    '(jobId, title, company, companyUrl, location, salary, jobUrl, logo, promoted, easyApply, postedDate). ' +
+    'Works on both linkedin.com/jobs/ (homepage recommendations) and linkedin.com/jobs/search/?keywords=QUERY (search results). ' +
+    'Navigate to the jobs page first, then scroll down to load more results before extracting. ' +
+    'For search: use linkedin.com/jobs/search/?keywords=QUERY&location=LOCATION. ' +
+    'Returns an array of job objects.';
+export async function handleBrowserExtractLiJobs(args) {
+    const resolved = await ni.resolveSession(args.sessionId);
+    if ('error' in resolved)
+        return text(resolved.error);
+    const result = await ni.evaluate(resolved.sessionId, LI_JOBS_EXTRACTOR_SCRIPT);
+    if (result.error)
+        return text(`Extract failed: ${result.error}`);
+    const jobs = result.result;
+    if (!Array.isArray(jobs) || jobs.length === 0) {
+        return text('No job listings found. Navigate to linkedin.com/jobs/ or linkedin.com/jobs/search/?keywords=QUERY first, scroll down to load results, then retry.');
+    }
+    return text(`${jobs.length} job(s):\\n\\n${JSON.stringify(jobs, null, 2)}`);
+}
 //# sourceMappingURL=browser-observe.js.map

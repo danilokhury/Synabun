@@ -16,7 +16,7 @@ function formatClickHints(result) {
 // ── browser_click ──
 export const browserClickSchema = {
     selector: z.string().describe('Playwright selector for the element to click. Use CSS selectors (e.g. "button.submit", "#login"), text selectors (e.g. \'text="Sign in"\'), or Playwright extensions like \'button:has-text("Retry")\'. NEVER use :contains() — use :has-text() instead.'),
-    nthMatch: z.number().int().min(0).optional().describe('If the selector matches multiple elements, click the Nth one (0-indexed). Facebook: composer trigger appears in sidebar + main — use nthMatch: 0 to click the first match.'),
+    nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple elements, click the Nth one (0-indexed). Facebook: composer trigger appears in sidebar + main — use nthMatch: 0 to click the first match.'),
     sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
 };
 export const browserClickDescription = 'Click an element on the page. Accepts Playwright selectors: CSS selectors, text="...", :has-text("..."), role=button[name="..."], or [data-testid="..."]. Use browser_snapshot first to identify interactive elements. ' +

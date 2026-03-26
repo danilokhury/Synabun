@@ -45,7 +45,7 @@
   "recordHar": null,
   "screencast": {
     "format": "jpeg",
-    "quality": 60,
+    "quality": 40,
     "maxWidth": 1280,
     "maxHeight": 800,
     "everyNthFrame": 1

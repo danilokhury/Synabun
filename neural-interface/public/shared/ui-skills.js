@@ -262,7 +262,7 @@ async function openPanel() {
   // Backdrop
   _backdrop = document.createElement('div');
   _backdrop.className = 'studio-backdrop';
-  _backdrop.addEventListener('click', () => closePanel());
+  // Backdrop click disabled — close only via ESC or close button
   document.body.appendChild(_backdrop);
 
   // Panel
@@ -322,6 +322,9 @@ function buildPanelHTML() {
           <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
         </svg>
       </button>
+      <button class="backdrop-toggle-btn" id="ss-backdrop-toggle" data-tooltip="Toggle backdrop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
       <button class="ss-close" id="ss-close">&times;</button>
     </div>
 
@@ -355,6 +358,13 @@ function wirePanel() {
   $('ss-focus')?.addEventListener('click', () => {
     _focusMode = !_focusMode;
     $('ss-focus')?.classList.toggle('active', _focusMode);
+  });
+
+  $('ss-backdrop-toggle')?.addEventListener('click', () => {
+    if (_backdrop) {
+      _backdrop.classList.toggle('backdrop-hidden');
+      $('ss-backdrop-toggle')?.classList.toggle('active', _backdrop.classList.contains('backdrop-hidden'));
+    }
   });
 
   // Search

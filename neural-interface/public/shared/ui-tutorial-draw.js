@@ -281,6 +281,60 @@ export function createAnimatedArrow(svg, config) {
 
 
 // ═══════════════════════════════════════════
+// HIGHLIGHT CIRCLE (clean animated ellipse)
+// ═══════════════════════════════════════════
+
+/**
+ * Draw a clean animated ellipse around a DOMRect.
+ * Elegant stroke-dashoffset draw-in — no wobble, no overshoot.
+ * Best for small UI elements (toolbar buttons, icons).
+ * @param {SVGElement} svg
+ * @param {DOMRect} rect - Bounding rect of the target
+ * @param {Object} config - { color, padding, duration, delay, strokeWidth }
+ * @returns {{ destroy: Function }}
+ */
+export function createHighlightCircle(svg, rect, config) {
+  const {
+    color = 'rgba(255, 255, 255, 0.25)',
+    padding = 12,
+    duration = 600,
+    delay = 0,
+    strokeWidth = 1.2,
+  } = config;
+
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const rx = rect.width / 2 + padding;
+  const ry = rect.height / 2 + padding;
+
+  const ellipse = document.createElementNS(SVG_NS, 'ellipse');
+  ellipse.setAttribute('cx', String(cx));
+  ellipse.setAttribute('cy', String(cy));
+  ellipse.setAttribute('rx', String(rx));
+  ellipse.setAttribute('ry', String(ry));
+  ellipse.setAttribute('fill', 'none');
+  ellipse.setAttribute('stroke', color);
+  ellipse.setAttribute('stroke-width', String(strokeWidth));
+  ellipse.setAttribute('stroke-linecap', 'round');
+  svg.appendChild(ellipse);
+
+  // Ramanujan approximation for ellipse circumference
+  const circumference = Math.PI * (3 * (rx + ry) - Math.sqrt((3 * rx + ry) * (rx + 3 * ry)));
+  ellipse.style.strokeDasharray = String(circumference);
+  ellipse.style.strokeDashoffset = String(circumference);
+  ellipse.style.transition = `stroke-dashoffset ${duration}ms cubic-bezier(0.4, 0, 0.2, 1) ${delay}ms`;
+  requestAnimationFrame(() => {
+    ellipse.style.strokeDashoffset = '0';
+  });
+
+  return {
+    elements: [ellipse],
+    destroy() { ellipse.remove(); },
+  };
+}
+
+
+// ═══════════════════════════════════════════
 // WOBBLY CIRCLE (around a target element)
 // ═══════════════════════════════════════════
 
