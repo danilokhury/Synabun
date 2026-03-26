@@ -5703,3 +5703,9 @@
 [2026-03-25T23:41:06.187Z] CHECK: session=dd74231c... msgCount=27 threshold=5 nudgeCount=3 maxNudges=3 observed=false
 [2026-03-25T23:41:06.188Z] SKIP: max nudges reached (3 >= 3)
 [2026-03-25T23:41:38.764Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0
+[2026-03-26T03:11:28.441Z] STOP: CHECK 2.5: pending=undefined retries=0 editCount=0
+[2026-03-26T03:26:33.571Z] CHECK: session=51feb359... msgCount=2 threshold=5 nudgeCount=0 maxNudges=3 observed=false
+[2026-03-26T03:26:33.571Z] SKIP: msgCount 2 < threshold 5
+[2026-03-26T03:26:51.594Z] CHECK: session=51feb359... msgCount=3 threshold=5 nudgeCount=0 maxNudges=3 observed=false
+[2026-03-26T03:26:51.594Z] SKIP: msgCount 3 < threshold 5
+[2026-03-26T03:27:45.794Z] STOP: CHECK 2.5: pending=false retries=0 editCount=0

@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-26T02:33:48.787Z",
+  "_updated": "2026-03-26T03:27:48.631Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -23820,17 +23820,7 @@
       "selectedNodeId": "dc33bfe5-2c6d-4b7d-be8d-826af43d09e9"
     }
   ],
-  "neural-terminal-active-sessions": [
-    {
-      "id": "cdcb3a33aa6b7b4282dd3dfa73b900ba",
-      "profile": "shell",
-      "label": "Shell",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": null,
-      "floatColor": null
-    }
-  ],
+  "neural-terminal-active-sessions": [],
   "neural-terminal-active-sessions-layout": {
     "detached": false,
     "floatPos": null,
@@ -43478,9 +43468,10 @@
   "synabun-claude-panel-windows": {
     "acd68367-ceba-4ac0-a7de-6046c79a0a9e": 1774467319278,
     "6465c1cd-3d2e-4f79-a4bd-ab7b2c0fffdc": 1774483292011,
-    "46ea478d-aa47-4be4-a251-574c0833e406": 1774492428246
+    "46ea478d-aa47-4be4-a251-574c0833e406": 1774492428246,
+    "fee5675c-9a4f-48bc-9882-ee2f6e9849f3": 1774495668104
   },
-  "synabun-claude-panel-boot-id": "7411f2f9-58ac-40e4-bfb7-61835aa2431a",
+  "synabun-claude-panel-boot-id": "9024ddad-00f5-46dd-808b-0e6f227bc1cc",
   "synabun-session-label:69b559ae-aeca-4784-a4ec-e7c58407e722": "PriceFleatFIx",
   "neural-cost-widget-docked": true,
   "synabun-session-label:a0b08147-83ae-4f97-b38c-833e71c7b253": "Documentation Update",
@@ -52925,6 +52916,22 @@
         "sessionId": null,
         "label": "New chat",
         "sessionCost": 0,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:1000000",
+        "effort": "high",
+        "planMode": false
+      }
+    ],
+    "activeIdx": 0
+  },
+  "synabun-claude-panel-tabs-fee5675c-9a4f-48bc-9882-ee2f6e9849f3": {
+    "tabs": [
+      {
+        "id": "0df28cc8-6d13-4b7f-8a1b-ccccb55c6aae",
+        "sessionId": "51feb359-b007-42fd-89c5-32b12d63821b",
+        "label": "Looking into synabun...",
+        "sessionCost": 0.3026115000000001,
         "running": false,
         "project": "/Users/danilokhury/Apps/Synabun",
         "model": "claude-opus-4-6:1000000",
