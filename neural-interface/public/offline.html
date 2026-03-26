@@ -19,9 +19,8 @@
   }
 
   .card {
-    background: rgba(28,28,30,0.85);
-    border: 1px solid rgba(255,255,255,0.06);
-    border-radius: 16px;
+    background: transparent;
+    border: none;
     padding: 48px 40px 40px;
     text-align: center;
     max-width: 420px;
@@ -88,12 +87,13 @@
 
   /* --- Command block --- */
   .cmd-block {
-    background: rgba(0,0,0,0.45);
-    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
     border-radius: 10px;
     padding: 14px 16px;
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 12px;
     margin-bottom: 24px;
   }
@@ -115,10 +115,10 @@
 
   .copy-btn {
     flex-shrink: 0;
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.1);
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.08);
     border-radius: 6px;
-    color: rgba(255,255,255,0.5);
+    color: rgba(255,255,255,0.35);
     font-family: inherit;
     font-size: 11px;
     font-weight: 500;
@@ -129,9 +129,9 @@
   }
 
   .copy-btn:hover {
-    background: rgba(255,255,255,0.1);
-    color: rgba(255,255,255,0.7);
-    border-color: rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.6);
+    border-color: rgba(255,255,255,0.12);
   }
 
   .copy-btn.copied {

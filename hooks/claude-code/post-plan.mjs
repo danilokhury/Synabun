@@ -18,7 +18,7 @@
  *   { additionalContext: "..." } on success, or {} on skip/error
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,6 +26,15 @@ import { randomUUID } from 'node:crypto';
 import { detectProject, getMcpCategoriesPath, MCP_DATA_DIR, DATA_DIR } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Debug log (append-only, survives across invocations)
+const DEBUG_LOG_PATH = join(DATA_DIR, 'plan-debug.log');
+function debugLog(msg) {
+  try {
+    const ts = new Date().toISOString();
+    appendFileSync(DEBUG_LOG_PATH, `[${ts}] ${msg}\n`, 'utf-8');
+  } catch { /* best-effort */ }
+}
 
 // Plans directory — Claude Code stores plan .md files here
 const PLANS_DIR = join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans');
@@ -127,12 +136,13 @@ function markPlanStored(fileName, memoryId) {
 
 // ─── Plan file discovery ───
 
-function findLatestPlan() {
-  if (!existsSync(PLANS_DIR)) return null;
-
-  const stored = loadStoredPlans();
-
-  const files = readdirSync(PLANS_DIR)
+/**
+ * List all plan .md files, sorted by mtime descending.
+ * Each entry: { name, path, mtime }
+ */
+function listPlanFiles() {
+  if (!existsSync(PLANS_DIR)) return [];
+  return readdirSync(PLANS_DIR)
     .filter((f) => f.endsWith('.md'))
     .map((f) => {
       const fullPath = join(PLANS_DIR, f);
@@ -140,12 +150,68 @@ function findLatestPlan() {
       return { name: f, path: fullPath, mtime: stat.mtimeMs };
     })
     .sort((a, b) => b.mtime - a.mtime);
+}
 
+/**
+ * Match the correct plan file using tool_response content from ExitPlanMode.
+ * Strategies (in order):
+ *   1. Filename extraction — tool_response may reference the plan filename
+ *   2. Content matching — tool_response may contain the plan text; find the file whose content matches
+ * Returns null if no match or if the matched file is already stored.
+ */
+function findPlanByContent(toolResponse) {
+  if (!toolResponse || typeof toolResponse !== 'string') return null;
+
+  const stored = loadStoredPlans();
+  const files = listPlanFiles();
   if (files.length === 0) return null;
 
-  // Return the most recently modified plan that hasn't been stored yet
+  // Strategy 1: Extract filename pattern (word-word-word.md) from response
+  const fnameMatch = toolResponse.match(/([a-z]+-[a-z]+-[a-z]+\.md)/);
+  if (fnameMatch) {
+    const matched = files.find((f) => f.name === fnameMatch[1]);
+    if (matched && !stored[matched.name]) return { ...matched, method: 'filename' };
+  }
+
+  // Strategy 2: Content matching — compare response text against each unstored plan file
+  // tool_response from ExitPlanMode likely contains the plan content itself
+  const responseTrimmed = toolResponse.trim();
+  if (responseTrimmed.length > 50) {
+    // Extract first meaningful line (H1 heading or first paragraph) for fast pre-filter
+    const responseFirstLine = responseTrimmed.split('\n').find((l) => l.trim())?.trim() || '';
+
+    for (const file of files) {
+      if (stored[file.name]) continue;
+      try {
+        const content = readFileSync(file.path, 'utf-8').trim();
+        // Exact match
+        if (content === responseTrimmed) return { ...file, method: 'exact-content' };
+        // Response contains the file content (response may have extra wrapper text)
+        if (responseTrimmed.includes(content)) return { ...file, method: 'content-in-response' };
+        // File content contains the response (file is the full plan, response is a subset)
+        if (content.includes(responseTrimmed)) return { ...file, method: 'response-in-content' };
+        // First-line match as fallback (H1 heading match)
+        if (responseFirstLine.length > 10) {
+          const fileFirstLine = content.split('\n').find((l) => l.trim())?.trim() || '';
+          if (fileFirstLine === responseFirstLine) return { ...file, method: 'heading-match' };
+        }
+      } catch { /* skip unreadable files */ }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fallback: return the most recently modified unstored plan file.
+ * Used only when content matching fails (no tool_response or no match).
+ */
+function findLatestPlan() {
+  const stored = loadStoredPlans();
+  const files = listPlanFiles();
+  if (files.length === 0) return null;
   const unstored = files.find((f) => !stored[f.name]);
-  return unstored || null;
+  return unstored ? { ...unstored, method: 'mtime-fallback' } : null;
 }
 
 // ─── Category management ───
@@ -229,14 +295,22 @@ async function main() {
 
   const toolName = input.tool_name || '';
 
+  debugLog(`Hook invoked — tool_name: "${toolName}", session: ${input.session_id || 'unknown'}, cwd: ${input.cwd || 'unknown'}`);
+
   // Only handle ExitPlanMode
   if (toolName !== 'ExitPlanMode') {
     process.stdout.write(JSON.stringify({}));
     return;
   }
 
-  // Find the most recently modified plan file that hasn't been stored yet
-  const planFile = findLatestPlan();
+  // Match plan file: content-match first (session-accurate), mtime fallback
+  const toolResponse = typeof input.tool_response === 'string'
+    ? input.tool_response
+    : (input.tool_response != null ? JSON.stringify(input.tool_response) : '');
+
+  debugLog(`ExitPlanMode fired — tool_response length: ${toolResponse.length}, first 200 chars: ${toolResponse.slice(0, 200).replace(/\n/g, '\\n')}`);
+
+  const planFile = findPlanByContent(toolResponse) || findLatestPlan();
   if (!planFile) {
     process.stdout.write(JSON.stringify({
       additionalContext: 'SynaBun: No unstored plan file found (all plans already in memory).',
@@ -283,10 +357,12 @@ async function main() {
   // Invalidate Neural Interface cache (fire-and-forget)
   invalidateNeuralInterface();
 
-  // Confirm storage
+  // Confirm storage — include match method for diagnostics
   const shortTitle = planTitle.length > 60 ? planTitle.slice(0, 60) + '...' : planTitle;
+  const matchInfo = planFile.method || 'unknown';
+  debugLog(`Stored plan: ${planFile.name} [${matchInfo}] → memory ${id} (project: ${project})`);
   process.stdout.write(JSON.stringify({
-    additionalContext: `SynaBun: Plan stored in memory [${id}] — "${shortTitle}" (category: ${categoryName}, project: ${project}). Source file: ${planFile.name}`,
+    additionalContext: `SynaBun: Plan stored in memory [${id}] — "${shortTitle}" (category: ${categoryName}, project: ${project}). Source file: ${planFile.name} [matched: ${matchInfo}]`,
   }));
 }
 

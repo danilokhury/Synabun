@@ -7,6 +7,7 @@
 import { emit, on } from './state.js';
 import { storage } from './storage.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
+// sendToPanel removed — all launches use floating browser only
 import {
   fetchLoopTemplates,
   createLoopTemplate,
@@ -16,7 +17,23 @@ import {
   fetchActiveLoop,
   launchLoop,
   stopLoop,
-  fetchBrowserSessions,
+  launchAgent,
+  fetchAgents,
+  fetchAgent,
+  stopAgent,
+  removeAgent,
+  fetchSchedules,
+  createSchedule,
+  updateSchedule,
+  deleteSchedule,
+  testSchedule,
+  startScheduleTimer,
+  cancelScheduleTimer,
+  fetchScheduleTimers,
+  createQuickTimer,
+  fetchQuickTimers,
+  cancelQuickTimer,
+  triggerQuickTimerNow,
 } from './api.js';
 
 const $ = (id) => document.getElementById(id);
@@ -47,6 +64,23 @@ let _wizardState = null;
 let _wizardStep = 0;
 let _wizardPreset = null;
 
+// Agent state
+let _agents = [];           // live agent list from server
+let _agentOutputs = {};     // agentId → accumulated text chunks for live display
+let _agentRecentTools = {}; // agentId → last N tool names for live feed
+let _agentJournals = {};    // agentId → journal entries from iteration-complete events
+let _launchMode = 'loop';   // 'loop' | 'agent' — which mode the launch dialog uses
+const _launchDestination = 'cli'; // always floating — side panel launch removed
+
+// Schedule state
+let _schedules = [];        // all schedules from API
+let _editingSchedule = null; // schedule being edited, or null for new
+let _scheduleTimerData = {}; // scheduleId → { firesAt, minutes }
+let _quickTimers = [];       // active quick timers from API
+let _showAdvancedSchedules = false;
+let _selectedQtMinutes = null; // currently selected quick timer preset
+let _qtUsesBrowser = null;     // null = use template default, true/false = user override
+
 // ── Constants ──
 const PANEL_KEY = 'neural-panel-automation-studio';
 const POLL_INTERVAL = 5000;
@@ -69,8 +103,18 @@ const CATEGORY_COLORS = {
 const _s = (d) => `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 
 const AS_ICONS = {
-  // Preset template icons
+  // Social media icons
   twitter:    _s('<path d="M2 13c2.5 0 4.5-1 5.5-3 1 2 3.5 3 6.5 1"/><path d="M14 3c-1 .5-2 .8-3 .8C10 3 8.5 2.5 7 3.5c-1.5 1-1.5 3-.5 4"/>'),
+  x:          `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M9.47 6.77L14.18 1.5h-1.11L8.97 6.03 5.82 1.5H1.5l4.95 7.2L1.5 14.5h1.11l4.33-5.03 3.46 5.03h4.32L9.47 6.77zm-1.53 1.78l-.5-.72L3.11 2.36h1.72l3.23 4.62.5.72 4.2 6.01h-1.72L7.94 8.55z"/></svg>`,
+  instagram:  `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="3"/><circle cx="8" cy="8" r="3"/><circle cx="11.5" cy="4.5" r="0.5" fill="currentColor" stroke="none"/></svg>`,
+  facebook:   `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M14 8a6 6 0 10-6.94 5.93v-4.2H5.63V8h1.43V6.56c0-1.41.84-2.19 2.13-2.19.62 0 1.26.11 1.26.11v1.39h-.71c-.7 0-.92.43-.92.88V8h1.56l-.25 1.73H8.82v4.2A6 6 0 0014 8z"/></svg>`,
+  linkedin:   `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M2 3.47c0-.8.66-1.47 1.47-1.47s1.47.66 1.47 1.47S4.28 4.93 3.47 4.93 2 4.28 2 3.47zM2.2 6h2.53v8H2.2V6zm4.27 0h2.43v1.09c.34-.64 1.16-1.3 2.4-1.3 2.56 0 3.03 1.69 3.03 3.88V14h-2.53V10.1c0-.93-.02-2.13-1.3-2.13-1.3 0-1.5 1.01-1.5 2.06V14H6.47V6z"/></svg>`,
+  tiktok:     `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M11.73 3.32A3.05 3.05 0 0110.67 1h-2.2v9.48a1.82 1.82 0 01-1.82 1.67 1.82 1.82 0 01-.83-3.44V6.46a4.06 4.06 0 00-.83-.08A4.07 4.07 0 001 10.44 4.07 4.07 0 005 14.5a4.07 4.07 0 004.06-4.06V5.6a5.28 5.28 0 003.08 1v-2.2a3.05 3.05 0 01-.41-1.08z"/></svg>`,
+  youtube:    `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M14.06 4.88a1.78 1.78 0 00-1.25-1.26C11.73 3.33 8 3.33 8 3.33s-3.73 0-4.81.29A1.78 1.78 0 001.94 4.88 18.7 18.7 0 001.65 8c-.02 1.06.08 2.12.29 3.12a1.78 1.78 0 001.25 1.26c1.08.29 4.81.29 4.81.29s3.73 0 4.81-.29a1.78 1.78 0 001.25-1.26c.21-1 .31-2.06.29-3.12.02-1.06-.08-2.12-.29-3.12zM6.6 10.15V5.85L10.24 8 6.6 10.15z"/></svg>`,
+  whatsapp:   `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8.02 1.5A6.14 6.14 0 001.5 7.5a6.1 6.1 0 00.94 3.26L1.5 14.5l3.88-.94A6.14 6.14 0 0014.5 7.5 6.14 6.14 0 008.02 1.5zm3.57 8.68c-.15.43-.9.82-1.24.87-.34.05-.66.17-2.22-.46s-2.52-2.3-2.6-2.4c-.07-.1-.6-.8-.6-1.53s.38-1.08.52-1.23c.13-.15.3-.18.39-.18h.28c.09 0 .22-.03.34.26s.42 1.02.46 1.1c.04.07.06.15.01.24-.05.1-.07.15-.15.23-.07.08-.15.18-.22.24-.07.07-.15.15-.07.3.09.15.38.63.82 1.02.56.5 1.04.66 1.19.73.15.07.23.06.32-.04.09-.1.38-.43.48-.58.1-.15.2-.13.34-.07.13.05.85.4.99.47.15.07.24.11.28.17.04.07.04.4-.11.82z"/></svg>`,
+  discord:    `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M12.36 3.8A11.5 11.5 0 009.5 2.93a.04.04 0 00-.05.02c-.12.22-.26.52-.36.75a10.6 10.6 0 00-3.18 0A7.4 7.4 0 005.55 2.95a.04.04 0 00-.05-.02 11.5 11.5 0 00-2.86.87.04.04 0 00-.02.01A11.7 11.7 0 001 10.98a.05.05 0 00.02.03 11.6 11.6 0 003.5 1.77.05.05 0 00.05-.01c.27-.37.51-.76.72-1.17a.04.04 0 00-.02-.06 7.6 7.6 0 01-1.1-.52.04.04 0 01-.004-.07l.22-.17a.04.04 0 01.05-.01 8.3 8.3 0 007.12 0 .04.04 0 01.05.01l.22.17a.04.04 0 01-.003.07c-.35.2-.72.37-1.1.52a.04.04 0 00-.02.06c.21.41.45.8.72 1.17a.05.05 0 00.05.02 11.56 11.56 0 003.5-1.78.05.05 0 00.02-.03c.29-2.97-.48-5.55-2.04-7.84a.04.04 0 00-.02-.02zM5.68 9.5c-.68 0-1.24-.63-1.24-1.4s.55-1.4 1.24-1.4c.7 0 1.25.63 1.24 1.4 0 .77-.55 1.4-1.24 1.4zm4.58 0c-.68 0-1.24-.63-1.24-1.4s.55-1.4 1.24-1.4c.7 0 1.25.63 1.24 1.4 0 .77-.54 1.4-1.24 1.4z"/></svg>`,
+
+  // General purpose icons
   search:     _s('<circle cx="7" cy="7" r="4"/><path d="M14 14l-3.5-3.5"/>'),
   research:   _s('<path d="M3 2h10M3 6h10M3 10h7"/><circle cx="13" cy="12" r="2"/><path d="M11.5 10.5l-1-1"/>'),
   chart:      _s('<path d="M3 14V8M7 14V4M11 14V9M15 14V6"/><path d="M1 14h14"/>'),
@@ -85,6 +129,15 @@ const AS_ICONS = {
   plus:       _s('<path d="M8 3v10M3 8h10"/>'),
   bolt:       _s('<path d="M9 2L4 9h4l-1 5 5-7H8l1-5z"/>'),
   blank:      _s('<rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M6 6h4M6 9h2"/>'),
+
+  clock:      _s('<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 2.5"/>'),
+
+  // External SVG logos (fill-based, from public/ directory)
+  claude:     `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" fill-rule="evenodd"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>`,
+  openai:     `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" fill-rule="evenodd"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z"/></svg>`,
+  gemini:     `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" fill-rule="evenodd"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"/></svg>`,
+  leonardo:   `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9.5 2l1.5 3.5L14.5 7l-3.5 1.5L9.5 12l-1.5-3.5L4.5 7l3.5-1.5L9.5 2zM19 10l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2zM5 17l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2z"/></svg>`,
+  pin:        _s('<path d="M8 14v-3"/><path d="M4 11h8"/><path d="M10.5 2.5l3 3-2 2 .5 2-4.5.5.5-4.5 2-.5z"/>'),
 
   // UI chrome
   back:       _s('<path d="M10 3L5 8l5 5"/>'),
@@ -278,10 +331,10 @@ const PRESET_TEMPLATES = [
           if (!Array.isArray(state.rules)) state.rules = [];
           const items = state.rules.map((rule, i) => `
             <div class="awiz-rule-item" draggable="true" data-rule-idx="${i}">
-              <span class="awiz-rule-grip" title="Drag to reorder">\u2261</span>
+              <span class="awiz-rule-grip" data-tooltip="Drag to reorder">\u2261</span>
               <span class="awiz-rule-num">${i + 1}</span>
               <span class="awiz-rule-text">${esc(rule)}</span>
-              <button class="awiz-rule-remove" data-remove-idx="${i}" title="Remove">&times;</button>
+              <button class="awiz-rule-remove" data-remove-idx="${i}" data-tooltip="Remove">&times;</button>
             </div>`).join('');
           return `
             <div class="awiz-field">
@@ -483,10 +536,10 @@ const PRESET_TEMPLATES = [
           if (!Array.isArray(state.rules)) state.rules = [];
           const items = state.rules.map((rule, i) => `
             <div class="awiz-rule-item" draggable="true" data-rule-idx="${i}">
-              <span class="awiz-rule-grip" title="Drag to reorder">\u2261</span>
+              <span class="awiz-rule-grip" data-tooltip="Drag to reorder">\u2261</span>
               <span class="awiz-rule-num">${i + 1}</span>
               <span class="awiz-rule-text">${esc(rule)}</span>
-              <button class="awiz-rule-remove" data-remove-idx="${i}" title="Remove">&times;</button>
+              <button class="awiz-rule-remove" data-remove-idx="${i}" data-tooltip="Remove">&times;</button>
             </div>`).join('');
           return `
             <div class="awiz-field">
@@ -717,14 +770,14 @@ function showToast(msg) {
   toast.textContent = msg;
   document.body.appendChild(toast);
   requestAnimationFrame(() => toast.classList.add('show'));
-  setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 2000);
+  setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 3500);
 }
 
 function formatLoopCommand(taskText, state) {
   const lines = ['Start a loop with these settings:', `Task: ${taskText}`];
   if (state.usesBrowser) {
     lines.push('', 'BROWSER: This automation REQUIRES the SynaBun internal browser.',
-      'Use ONLY SynaBun browser tools (browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network).',
+      'Use ONLY SynaBun browser tools (browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs).',
       'Start by calling browser_navigate with your target URL — it auto-creates a session.',
       'NEVER use Playwright plugin tools or WebFetch — they bypass the visible browser.');
   }
@@ -733,23 +786,33 @@ function formatLoopCommand(taskText, state) {
   return lines.join('\n');
 }
 
-const BROWSER_CONTEXT = 'BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.';
+const BROWSER_CONTEXT = 'BROWSER REQUIRED: Use ONLY SynaBun browser tools: browser_navigate, browser_go_back, browser_go_forward, browser_reload, browser_click, browser_fill, browser_type, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs. Start by calling browser_navigate with your target URL — it auto-creates a session. NEVER use Playwright plugin tools or WebFetch.';
 
-// ── Launch dialog ──
-// Instead of launching immediately, show a confirmation dialog where the user picks CLI + model
+// ── Inline launch panel ──
+// Instead of an overlay modal, swap the detail content area with launch configuration
 
-let _pendingLaunchParams = null; // stashed params while dialog is open
+let _pendingLaunchParams = null; // stashed params while launch panel is open
+let _launchPanelActive = false;  // whether the inline launch panel is showing
 // Browser mode removed — automations use saved browser settings directly
 
-function showLaunchDialog(params) {
+function showLaunchInline(params) {
   // Enforce browser context before stashing
   if (params.usesBrowser && (!params.context || !params.context.includes('BROWSER REQUIRED'))) {
     params.context = BROWSER_CONTEXT;
   }
   _pendingLaunchParams = params;
+  _launchPanelActive = true;
 
-  // Remove any existing dialog
-  _panel?.querySelector('.as-launch-dialog')?.remove();
+  // Render into detail content area if available, otherwise take over main area
+  let contentEl = _panel?.querySelector('.as-detail-content');
+  if (!contentEl) {
+    // Non-detail context (wizard, welcome) — switch to a standalone launch view
+    _view = 'launch';
+    const main = $('as-main');
+    if (!main) return;
+    main.innerHTML = `<div class="as-detail-content as-launch-standalone"></div>`;
+    contentEl = main.querySelector('.as-detail-content');
+  }
 
   const profile = _launchProfile || 'claude-code';
   const models = CLI_MODELS[profile] || [];
@@ -759,38 +822,51 @@ function showLaunchDialog(params) {
   const iterCount = params.iterations || 10;
   const timeCount = params.maxMinutes || 30;
 
-  const html = `
-    <div class="as-launch-dialog">
-      <div class="as-launch-dialog-inner">
-        <div class="as-launch-dialog-header">
-          <span class="as-launch-dialog-title">Launch</span>
-          <button class="as-launch-dialog-close" data-action="launch-dialog-close">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M11 3L3 11M3 3l8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          </button>
+  contentEl.innerHTML = `
+    <div class="as-launch-inline">
+      <div class="as-launch-inline-header">
+        <button class="as-launch-inline-back" data-action="launch-inline-close">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 2L4 7l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span class="as-launch-inline-title">Launch Configuration</span>
+      </div>
+      <div class="as-launch-inline-body">
+        <div class="as-launch-section">
+          <label class="as-launch-label">Mode</label>
+          <div class="as-launch-mode-toggle">
+            <button class="as-launch-mode${_launchMode === 'loop' ? ' active' : ''}" data-mode="loop">
+              <span class="as-launch-mode-icon"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 8A6 6 0 1 1 8 2"/><polyline points="14 2 14 8 8 8"/></svg></span>
+              Loop
+            </button>
+            <button class="as-launch-mode${_launchMode === 'agent' ? ' active' : ''}" data-mode="agent">
+              <span class="as-launch-mode-icon"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg></span>
+              Agent
+            </button>
+          </div>
         </div>
-        <div class="as-launch-dialog-body">
-          <div class="as-launch-section">
-            <label class="as-launch-label">Agent</label>
-            <div class="as-launch-profiles" id="as-launch-profiles">
-              ${CLI_PROFILES.map(p => `
-                <button class="as-launch-profile${p.id === profile ? ' active' : ''}" data-profile="${p.id}">
-                  <span class="as-launch-profile-name">${p.label}</span>
-                  <span class="as-launch-profile-org">${p.desc}</span>
-                </button>
-              `).join('')}
-            </div>
+        <div class="as-launch-section">
+          <label class="as-launch-label">CLI</label>
+          <div class="as-launch-profiles" id="as-launch-profiles">
+            ${CLI_PROFILES.map(p => `
+              <button class="as-launch-profile${p.id === profile ? ' active' : ''}" data-profile="${p.id}">
+                <span class="as-launch-profile-name">${p.label}</span>
+                <span class="as-launch-profile-org">${p.desc}</span>
+              </button>
+            `).join('')}
           </div>
-          <div class="as-launch-section" id="as-launch-model-section">
-            <label class="as-launch-label">Model</label>
-            <div class="as-launch-models" id="as-launch-models">
-              ${renderModelChips(profile, currentModel)}
-            </div>
+        </div>
+        <div class="as-launch-section" id="as-launch-model-section">
+          <label class="as-launch-label">Model</label>
+          <div class="as-launch-models" id="as-launch-models">
+            ${renderModelChips(profile, currentModel)}
           </div>
-          <div class="as-launch-section as-launch-summary">
-            <div class="as-launch-summary-row">
-              <span class="as-launch-summary-key">Task</span>
-              <span class="as-launch-summary-val as-launch-summary-task">${esc((params.task || '').slice(0, 100))}${(params.task || '').length > 100 ? '\u2026' : ''}</span>
-            </div>
+        </div>
+        <div class="as-launch-section as-launch-summary">
+          <div class="as-launch-summary-row">
+            <span class="as-launch-summary-key">Task</span>
+            <span class="as-launch-summary-val as-launch-summary-task">${esc((params.task || '').slice(0, 100))}${(params.task || '').length > 100 ? '\u2026' : ''}</span>
+          </div>
+          <div class="as-launch-loop-fields" ${_launchMode === 'agent' ? 'style="display:none"' : ''}>
             <div class="as-launch-summary-row">
               <span class="as-launch-summary-key">Iterations</span>
               <span class="as-launch-summary-val">${iterCount}</span>
@@ -801,19 +877,48 @@ function showLaunchDialog(params) {
             </div>
             ${params.usesBrowser ? `<div class="as-launch-summary-row"><span class="as-launch-summary-key">Browser</span><span class="as-launch-summary-val">Yes &mdash; uses your Browser settings</span></div>` : ''}
           </div>
+          <div class="as-launch-agent-fields" ${_launchMode === 'loop' ? 'style="display:none"' : ''}>
+            <div class="as-launch-summary-row">
+              <span class="as-launch-summary-key">SynaBun</span>
+              <label class="as-launch-toggle">
+                <input type="checkbox" id="as-agent-synabun" checked>
+                <span class="as-launch-toggle-label">Memory + Browser tools</span>
+              </label>
+            </div>
+            <div class="as-launch-summary-row">
+              <span class="as-launch-summary-key">Mode</span>
+              <div class="as-launch-agent-mode-row">
+                <button class="as-launch-agent-submode active" data-submode="single">Single</button>
+                <button class="as-launch-agent-submode" data-submode="loop">Loop</button>
+              </div>
+            </div>
+            <div class="as-launch-agent-loop-cfg" style="display:none">
+              <div class="as-launch-summary-row">
+                <span class="as-launch-summary-key">Iterations</span>
+                <input type="number" id="as-agent-iterations" value="${iterCount}" min="1" max="50" class="as-launch-inline-input">
+              </div>
+              <div class="as-launch-summary-row">
+                <span class="as-launch-summary-key">Time cap</span>
+                <input type="number" id="as-agent-maxminutes" value="${timeCount}" min="1" max="480" class="as-launch-inline-input"> <span class="as-launch-unit">min</span>
+              </div>
+            </div>
+            <div class="as-launch-summary-row">
+              <span class="as-launch-summary-key">Isolation</span>
+              <span class="as-launch-summary-val as-launch-isolation-badge">Process isolated &mdash; unique session per run</span>
+            </div>
+          </div>
         </div>
-        <div class="as-launch-dialog-footer">
-          <button class="as-launch-cancel" data-action="launch-dialog-close">Cancel</button>
-          <button class="as-launch-go" data-action="launch-dialog-confirm" id="as-launch-confirm-btn">
-            Launch
-          </button>
-        </div>
+      </div>
+      <div class="as-launch-inline-footer">
+        <button class="as-launch-cancel" data-action="launch-inline-close">Cancel</button>
+        <button class="as-launch-go" data-action="launch-inline-confirm" id="as-launch-confirm-btn">
+          ${_launchMode === 'agent' ? 'Launch Agent' : 'Launch'}
+        </button>
       </div>
     </div>
   `;
 
-  _panel.insertAdjacentHTML('beforeend', html);
-  wireLaunchDialog();
+  wireLaunchInline(contentEl);
 }
 
 function renderModelChips(profileId, selectedModel) {
@@ -827,50 +932,68 @@ function renderModelChips(profileId, selectedModel) {
   `).join('');
 }
 
-function wireLaunchDialog() {
-  const dialog = _panel?.querySelector('.as-launch-dialog');
-  if (!dialog) return;
+function wireLaunchInline(container) {
+  const root = container.querySelector('.as-launch-inline');
+  if (!root) return;
+
+  // Mode toggle (Loop vs Agent)
+  root.querySelectorAll('.as-launch-mode').forEach(btn => {
+    btn.addEventListener('click', () => {
+      root.querySelectorAll('.as-launch-mode').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _launchMode = btn.dataset.mode;
+      const loopFields = root.querySelector('.as-launch-loop-fields');
+      const agentFields = root.querySelector('.as-launch-agent-fields');
+      if (loopFields) loopFields.style.display = _launchMode === 'loop' ? '' : 'none';
+      if (agentFields) agentFields.style.display = _launchMode === 'agent' ? '' : 'none';
+      const confirmBtn = root.querySelector('#as-launch-confirm-btn');
+      if (confirmBtn) confirmBtn.textContent = _launchMode === 'agent' ? 'Launch Agent' : 'Launch';
+    });
+  });
 
   // Profile selection
-  dialog.querySelectorAll('.as-launch-profile').forEach(btn => {
+  root.querySelectorAll('.as-launch-profile').forEach(btn => {
     btn.addEventListener('click', () => {
-      dialog.querySelectorAll('.as-launch-profile').forEach(b => b.classList.remove('active'));
+      root.querySelectorAll('.as-launch-profile').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       const profileId = btn.dataset.profile;
       _launchProfile = profileId;
       storage.setItem('as-launch-profile', profileId);
-
-      // Update models for selected profile
       const models = CLI_MODELS[profileId] || [];
       const defaultModel = models.find(m => m.tier === 'default') || models[0];
       _launchModel = defaultModel?.id || null;
       storage.setItem('as-launch-model', _launchModel);
-      const modelsContainer = dialog.querySelector('#as-launch-models');
+      const modelsContainer = root.querySelector('#as-launch-models');
       if (modelsContainer) {
         modelsContainer.innerHTML = renderModelChips(profileId, _launchModel);
-        wireModelChips(dialog);
+        wireModelChips(root);
       }
     });
   });
 
-  wireModelChips(dialog);
+  wireModelChips(root);
 
-  // Close on backdrop click
-  dialog.addEventListener('click', (e) => {
-    if (e.target === dialog) closeLaunchDialog();
+  // Agent submode toggle (Single vs Loop)
+  root.querySelectorAll('.as-launch-agent-submode').forEach(btn => {
+    btn.addEventListener('click', () => {
+      root.querySelectorAll('.as-launch-agent-submode').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const loopCfg = root.querySelector('.as-launch-agent-loop-cfg');
+      if (loopCfg) loopCfg.style.display = btn.dataset.submode === 'loop' ? '' : 'none';
+    });
   });
 
-  // Escape key
+  // Escape key to close
   const escHandler = (e) => {
-    if (e.key === 'Escape') { closeLaunchDialog(); document.removeEventListener('keydown', escHandler); }
+    if (e.key === 'Escape') { closeLaunchInline(); document.removeEventListener('keydown', escHandler); }
   };
   document.addEventListener('keydown', escHandler);
 }
 
-function wireModelChips(dialog) {
-  dialog.querySelectorAll('.as-launch-model').forEach(btn => {
+function wireModelChips(container) {
+  container.querySelectorAll('.as-launch-model').forEach(btn => {
     btn.addEventListener('click', () => {
-      dialog.querySelectorAll('.as-launch-model').forEach(b => b.classList.remove('active'));
+      container.querySelectorAll('.as-launch-model').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       _launchModel = btn.dataset.model;
       storage.setItem('as-launch-model', _launchModel);
@@ -878,48 +1001,92 @@ function wireModelChips(dialog) {
   });
 }
 
-function closeLaunchDialog() {
-  _panel?.querySelector('.as-launch-dialog')?.remove();
+function closeLaunchInline() {
   _pendingLaunchParams = null;
+  _launchPanelActive = false;
+  // Restore previous view
+  if (_view === 'launch') {
+    _view = 'welcome';
+    renderView();
+  } else if (_view === 'detail' && _selected) {
+    renderDetailMain();
+  }
 }
 
 async function confirmLaunch() {
   if (!_pendingLaunchParams) return;
   const params = { ..._pendingLaunchParams, profile: _launchProfile, model: _launchModel };
-  closeLaunchDialog();
 
+  // Read agent values BEFORE closing (closeLaunchInline re-renders detail view)
+  const withSynabun = !!document.getElementById('as-agent-synabun')?.checked;
+  const submodeBtn = document.querySelector('.as-launch-agent-submode.active');
+  const agentSubmode = submodeBtn?.dataset?.submode || 'single';
+  const agentIterations = parseInt(document.getElementById('as-agent-iterations')?.value || '1', 10);
+  const agentMaxMinutes = parseInt(document.getElementById('as-agent-maxminutes')?.value || '30', 10);
+
+  // Clear launch state (don't re-render detail — we're about to navigate away)
+  _pendingLaunchParams = null;
+  _launchPanelActive = false;
+
+  // Agent mode — isolated spawn, optional SynaBun integration
+  if (_launchMode === 'agent') {
+    try {
+      showToast(`Launching ${agentSubmode === 'loop' ? 'loop ' : ''}agent${withSynabun ? ' with SynaBun' : ''}...`);
+      const result = await launchAgent({
+        task: params.task,
+        model: params.model || undefined,
+        cwd: params.cwd || undefined,
+        maxTurns: params.usesBrowser ? 100 : 75,
+        withSynabun,
+        browserProfile: (withSynabun && params.usesBrowser) ? true : undefined,
+        mode: agentSubmode,
+        iterations: agentSubmode === 'loop' ? agentIterations : 1,
+        maxMinutes: agentSubmode === 'loop' ? agentMaxMinutes : 30,
+        context: params.context || undefined,
+      });
+      if (!result?.ok) { showToast(result?.error || 'Failed to launch agent'); return; }
+      _agentOutputs[result.agentId] = '';
+      showToast('Agent launched');
+      closePanel();
+    } catch (err) { showToast('Agent launch failed: ' + (err.message || 'unknown error')); }
+    return;
+  }
+
+  // Loop mode — route based on destination
   try {
-    // If automation needs a browser, ensure one is open before launching the loop.
-    // Check if a session already exists (user may have opened one from Apps menu).
-    // Only create a new one if none exist.
+    // Each automation gets its own DEDICATED browser session for isolation.
+    // Always create a new floating browser window — never embed in side panel.
+    let dedicatedBrowserSessionId = null;
     if (params.usesBrowser) {
-      let hasBrowser = false;
-      try {
-        const existing = await fetchBrowserSessions();
-        const sessions = existing?.sessions || [];
-        hasBrowser = sessions.length > 0;
-      } catch { /* assume none */ }
-
-      if (!hasBrowser) {
-        showToast('Opening browser...');
-        // Wait for the browser session to be created (server broadcasts sync:browser:created)
-        const browserReady = new Promise((resolve) => {
-          const unsub = on('sync:browser:created', () => { unsub(); resolve(); });
-          // Timeout fallback — don't block forever if browser fails
-          setTimeout(() => { unsub(); resolve(); }, 12000);
-        });
-        // Use force=true to bypass _opening guard (may be stuck from a previous failed attempt)
-        // Don't use fresh=true — that destroys existing sessions
-        emit('browser:open', { url: 'about:blank', force: true });
-        await browserReady;
-      } else {
-        showToast('Using existing browser session...');
+      showToast('Opening browser...');
+      const browserReady = new Promise((resolve) => {
+        const unsub = on('sync:browser:created', (data) => { unsub(); resolve(data?.sessionId || null); });
+        setTimeout(() => { unsub(); resolve(null); }, 12000);
+      });
+      emit('browser:open', { url: 'about:blank', force: true });
+      dedicatedBrowserSessionId = await browserReady;
+      if (dedicatedBrowserSessionId) {
+        console.log('[AS] confirmLaunch: created dedicated browser session', dedicatedBrowserSessionId);
       }
     }
 
+    // Pass the dedicated browser session ID to the server so it pins to this loop
+    if (dedicatedBrowserSessionId) {
+      params.browserSessionId = dedicatedBrowserSessionId;
+    }
+
+    // Launch as floating terminal + floating browser
     showToast('Launching loop...');
+    emit('terminal:expect-managed');
+    console.log('[AS] confirmLaunch: calling launchLoop, profile =', params.profile, ', usesBrowser =', params.usesBrowser);
     const result = await launchLoop(params);
-    if (!result?.ok) { showToast(result?.error || 'Failed to launch loop'); return; }
+    console.log('[AS] confirmLaunch: launchLoop result =', JSON.stringify(result));
+    if (!result?.ok) {
+      emit('terminal:attach-floating', {});
+      showToast(result?.error || 'Failed to launch loop');
+      return;
+    }
+    console.log('[AS] confirmLaunch: emitting terminal:attach-floating, terminalSessionId =', result.terminalSessionId);
     emit('terminal:attach-floating', {
       terminalSessionId: result.terminalSessionId,
       profile: params.profile || 'claude-code',
@@ -928,12 +1095,18 @@ async function confirmLaunch() {
     });
     const profileLabel = CLI_PROFILES.find(p => p.id === params.profile)?.label || params.profile;
     showToast(`Loop started — ${profileLabel} launching...`);
-  } catch (err) { showToast('Launch failed: ' + (err.message || 'unknown error')); }
+    closePanel();
+  } catch (err) {
+    // Clear the managed-terminal flag since we won't emit terminal:attach-floating
+    emit('terminal:attach-floating', {});
+    console.error('[AS] confirmLaunch: caught error:', err);
+    showToast('Launch failed: ' + (err.message || 'unknown error'));
+  }
 }
 
-// Backward-compatible wrapper — all call sites use this, it now shows the dialog
+// Backward-compatible wrapper — all call sites use this, it now shows inline launch panel
 async function serverLaunchLoop(params) {
-  showLaunchDialog(params);
+  showLaunchInline(params);
 }
 
 function relativeTime(dateStr) {
@@ -979,7 +1152,10 @@ function buildTemplateCommand(template) {
 export function initAutomationStudio() {
   on('automations:open', () => openPanel());
   on('automations:open-wizard', () => { openPanel(); });
+  on('automations:open-schedules', () => { openPanel().then(() => { _view = 'schedules'; _selected = null; loadScheduleData().then(() => renderView()); }); });
   on('automations:import', () => { openPanel().then(() => triggerImport()); });
+  setupAgentWebSocket();
+  setupScheduleWebSocket();
 }
 
 async function openPanel() {
@@ -992,7 +1168,7 @@ async function openPanel() {
   // Backdrop
   _backdrop = document.createElement('div');
   _backdrop.className = 'studio-backdrop';
-  _backdrop.addEventListener('click', () => closePanel());
+  // Backdrop click disabled — close only via ESC or close button
   document.body.appendChild(_backdrop);
 
   _panel = document.createElement('div');
@@ -1002,8 +1178,8 @@ async function openPanel() {
   document.body.appendChild(_panel);
 
   // Always open centered at default size
-  _panel.style.left = Math.max(20, (window.innerWidth - 720) / 2) + 'px';
-  _panel.style.top = Math.max(48, (window.innerHeight - 500) / 2) + 'px';
+  _panel.style.left = Math.max(20, (window.innerWidth - 900) / 2) + 'px';
+  _panel.style.top = Math.max(48, (window.innerHeight - 520) / 2) + 'px';
 
   wirePanel();
   await loadData();
@@ -1038,6 +1214,9 @@ function buildPanelHTML() {
 
     <div class="as-header drag-handle" data-drag="automation-studio-panel">
       <div class="as-header-left">
+        <button class="as-sidebar-toggle" id="as-sidebar-toggle" data-tooltip="Toggle sidebar">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+        </button>
         <h3>Automation Studio</h3>
         <span class="as-count" id="as-total-count"></span>
         <span class="as-active-badge" id="as-active-badge" style="display:none">
@@ -1047,12 +1226,16 @@ function buildPanelHTML() {
       </div>
       <div class="as-header-actions">
         <button class="as-header-btn" id="as-new-btn">+ New</button>
+        <button class="as-header-btn" id="as-schedules-btn">${AS_ICONS.clock} Schedules</button>
         <button class="as-header-btn" id="as-import-btn">Import</button>
       </div>
       <button class="as-focus-btn" id="as-focus" data-tooltip="Focus mode">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
           <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
         </svg>
+      </button>
+      <button class="backdrop-toggle-btn" id="as-backdrop-toggle" data-tooltip="Toggle backdrop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
       </button>
       <button class="as-close" id="as-close">&times;</button>
     </div>
@@ -1077,7 +1260,7 @@ function buildPanelHTML() {
               <span class="as-loop-indicator-name" id="as-loop-indicator-name">Loop Active</span>
               <span class="as-loop-indicator-detail" id="as-loop-indicator-detail"></span>
             </div>
-            <button class="as-loop-stop-mini" data-action="force-stop" title="Stop">\u25A0</button>
+            <button class="as-loop-stop-mini" data-action="force-stop" data-tooltip="Stop">\u25A0</button>
           </div>
         </div>
       </aside>
@@ -1089,11 +1272,27 @@ function buildPanelHTML() {
 function wirePanel() {
   $('as-close')?.addEventListener('click', closePanel);
   $('as-new-btn')?.addEventListener('click', () => { _view = 'picker'; _selected = null; renderView(); });
+  $('as-schedules-btn')?.addEventListener('click', () => { _view = 'schedules'; _selected = null; loadScheduleData().then(() => renderView()); });
   $('as-import-btn')?.addEventListener('click', () => triggerImport());
+
+  $('as-sidebar-toggle')?.addEventListener('click', () => {
+    const sidebar = $('as-sidebar');
+    if (sidebar) {
+      sidebar.classList.toggle('as-sidebar--force-show');
+      $('as-sidebar-toggle')?.classList.toggle('active', sidebar.classList.contains('as-sidebar--force-show'));
+    }
+  });
 
   $('as-focus')?.addEventListener('click', () => {
     _focusMode = !_focusMode;
     $('as-focus')?.classList.toggle('active', _focusMode);
+  });
+
+  $('as-backdrop-toggle')?.addEventListener('click', () => {
+    if (_backdrop) {
+      _backdrop.classList.toggle('backdrop-hidden');
+      $('as-backdrop-toggle')?.classList.toggle('active', _backdrop.classList.contains('backdrop-hidden'));
+    }
   });
 
   $('as-search')?.addEventListener('input', (e) => {
@@ -1115,6 +1314,9 @@ function wirePanel() {
   // Escape key
   const onEsc = (e) => {
     if (e.key === 'Escape' && _panel) {
+      if (_view === 'launch') { closeLaunchInline(); return; }
+      if (_view === 'schedule-editor') { _view = 'schedules'; _editingSchedule = null; renderView(); return; }
+      if (_view === 'schedules') { _view = 'welcome'; renderView(); return; }
       if (_view === 'wizard') { _view = _selected ? 'detail' : 'welcome'; renderView(); return; }
       if (_view === 'detail' || _view === 'running' || _view === 'picker') {
         if (_detailDirty && !confirm('Discard unsaved changes?')) return;
@@ -1161,6 +1363,7 @@ function initDrag() {
 async function loadData() {
   try { _templates = await fetchLoopTemplates(); } catch { _templates = []; }
   try { _activeLoop = await fetchActiveLoop(); } catch { _activeLoop = null; }
+  await refreshAgents();
   updateHeaderBadge();
   updateSidebarFooter();
 }
@@ -1172,6 +1375,7 @@ function startPolling() {
     try {
       const prev = _activeLoop?.active;
       _activeLoop = await fetchActiveLoop();
+      await refreshAgents();
       updateHeaderBadge();
       updateSidebarFooter();
 
@@ -1179,6 +1383,16 @@ function startPolling() {
         _prevLoopActive = false;
       }
       if (_view === 'running') renderRunningMain();
+      // Refresh quick timer countdowns
+      if (_view === 'schedules' && _quickTimers.length > 0) {
+        document.querySelectorAll('.as-qt-active-countdown').forEach(el => {
+          const card = el.closest('.as-qt-active-card');
+          const cancelBtn = card?.querySelector('[data-action="qt-cancel"]');
+          const timerId = cancelBtn?.dataset?.id;
+          const qt = timerId && _quickTimers.find(t => t.id === timerId);
+          if (qt) el.textContent = formatTimerCountdown(qt.firesAt);
+        });
+      }
     } catch {}
   }, POLL_INTERVAL);
 }
@@ -1191,9 +1405,14 @@ function updateHeaderBadge() {
   const badge = $('as-active-badge');
   const nameEl = $('as-active-badge-name');
   const active = _activeLoop?.active;
-  if (badge) badge.style.display = active ? '' : 'none';
-  if (active && nameEl) {
-    nameEl.textContent = (_activeLoop.task || 'Loop').slice(0, 30);
+  const runningAgents = _agents.filter(a => a.status === 'running').length;
+  const anyActive = active || runningAgents > 0;
+  if (badge) badge.style.display = anyActive ? '' : 'none';
+  if (anyActive && nameEl) {
+    const parts = [];
+    if (active) parts.push((_activeLoop.task || 'Loop').slice(0, 20));
+    if (runningAgents > 0) parts.push(`${runningAgents} agent${runningAgents > 1 ? 's' : ''}`);
+    nameEl.textContent = parts.join(' + ');
   }
 }
 
@@ -1224,6 +1443,9 @@ function renderView() {
     case 'detail': renderDetailMain(); break;
     case 'wizard': renderWizardMain(); break;
     case 'running': renderRunningMain(); break;
+    case 'schedules': renderSchedulesMain(); break;
+    case 'schedule-editor': renderScheduleEditorMain(); break;
+    case 'launch': break; // launch panel is rendered by showLaunchInline
   }
 }
 
@@ -1274,7 +1496,9 @@ function renderSidebar() {
   }
 
   if (!filtered.length) html = '<div class="as-empty">No templates match your filter.</div>';
+  const scrollTop = list.scrollTop;
   list.innerHTML = html;
+  list.scrollTop = scrollTop;
 }
 
 // ── Welcome ──
@@ -1465,11 +1689,11 @@ function buildDetailMeta(t, isPreset) {
       </div>
       <div class="as-field">
         <label>Iterations <span class="as-range-val" id="as-f-iter-val">${t.iterations}</span></label>
-        <input type="range" class="as-range" id="as-f-iterations" min="1" max="50" value="${t.iterations}" />
+        <input type="range" class="as-range" id="as-f-iterations" min="1" max="200" value="${t.iterations}" />
       </div>
       <div class="as-field">
         <label>Time cap <span class="as-range-val" id="as-f-min-val">${t.maxMinutes}m</span></label>
-        <input type="range" class="as-range" id="as-f-maxminutes" min="1" max="120" value="${t.maxMinutes}" />
+        <input type="range" class="as-range" id="as-f-maxminutes" min="1" max="480" value="${t.maxMinutes}" />
       </div>
       <div class="as-field as-field--toggle">
         <label>Uses Browser</label>
@@ -1498,7 +1722,7 @@ function buildDetailMeta(t, isPreset) {
             </button>
             <div class="as-icon-picker-menu" id="as-icon-menu">
               ${ICON_KEYS.map(k =>
-                `<button type="button" class="as-icon-picker-item${k === (t.icon || 'refresh') ? ' selected' : ''}" data-icon="${k}" title="${k}">${icon(k)}</button>`
+                `<button type="button" class="as-icon-picker-item${k === (t.icon || 'refresh') ? ' selected' : ''}" data-icon="${k}" data-tooltip="${k}">${icon(k)}</button>`
               ).join('')}
             </div>
           </div>
@@ -2024,7 +2248,7 @@ function buildReviewStep() {
       </div>
       <div class="awiz-control-row">
         <label>Time cap</label>
-        <input type="range" id="awiz-minutes" min="1" max="60" value="${state.maxMinutes}" />
+        <input type="range" id="awiz-minutes" min="1" max="480" value="${state.maxMinutes}" />
         <span class="awiz-range-val" id="awiz-min-val">${state.maxMinutes}m</span>
       </div>
     </div>
@@ -2101,7 +2325,10 @@ function renderRunningMain() {
   const main = $('as-main');
   if (!main) return;
 
-  if (!_activeLoop?.active) {
+  const hasLoop = _activeLoop?.active;
+  const hasAgents = _agents.length > 0;
+
+  if (!hasLoop && !hasAgents) {
     main.innerHTML = `
       <div class="as-detail-header">
         <button class="as-back-btn" data-action="go-welcome">\u2190 Back</button>
@@ -2115,15 +2342,18 @@ function renderRunningMain() {
     return;
   }
 
-  const loop = _activeLoop;
-  const pct = loop.totalIterations > 0 ? Math.round((loop.currentIteration / loop.totalIterations) * 100) : 0;
-
-  main.innerHTML = `
+  let html = `
     <div class="as-detail-header">
       <button class="as-back-btn" data-action="go-welcome">\u2190 Back</button>
       <h3 style="font-size:14px;font-weight:600;color:var(--t-bright)">Running</h3>
     </div>
-    <div style="padding:20px">
+    <div style="padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;max-height:calc(100% - 52px)">`;
+
+  // Active loop card
+  if (hasLoop) {
+    const loop = _activeLoop;
+    const pct = loop.totalIterations > 0 ? Math.round((loop.currentIteration / loop.totalIterations) * 100) : 0;
+    html += `
       <div class="as-running-card">
         <div class="as-running-header">
           <div class="as-running-label"><span class="as-running-pulse"></span> Loop Active</div>
@@ -2139,8 +2369,292 @@ function renderRunningMain() {
         <div class="as-running-controls">
           <button class="as-btn-stop" data-action="force-stop">Stop</button>
         </div>
-      </div>
-    </div>`;
+      </div>`;
+  }
+
+  // Agent cards
+  for (const agent of _agents) {
+    const statusClass = `as-agent-status--${agent.status}`;
+    const statusLabel = agent.status === 'running' ? 'Running' : agent.status === 'completed' ? 'Completed' : agent.status === 'stopped' ? 'Stopped' : 'Failed';
+    const elapsed = agentElapsed(agent);
+    const preview = (_agentOutputs[agent.id] || agent.textOutput || '').slice(-300);
+    const isLoop = agent.mode === 'loop' && agent.totalIterations > 1;
+    const iterPct = isLoop && agent.totalIterations > 0 ? Math.round((agent.currentIteration / agent.totalIterations) * 100) : 0;
+    const journal = _agentJournals[agent.id] || agent.journal || [];
+    const recentTools = _agentRecentTools[agent.id] || agent.recentTools || [];
+    const lastJournal = journal.length > 0 ? journal[journal.length - 1] : null;
+
+    html += `
+      <div class="as-agent-card ${statusClass}" data-agent-id="${agent.id}">
+        <div class="as-agent-header">
+          <div class="as-agent-label">
+            ${agent.status === 'running' ? '<span class="as-running-pulse"></span>' : ''}
+            <span class="as-agent-status-badge ${statusClass}">${statusLabel}</span>
+            ${isLoop ? `<span class="as-agent-iter-badge">${agent.currentIteration}/${agent.totalIterations}</span>` : ''}
+            <span class="as-agent-model">${esc(agent.model)}</span>
+            ${agent.withSynabun ? '<span class="as-agent-synabun-badge">SB</span>' : ''}
+          </div>
+          <div class="as-agent-actions">
+            ${agent.status === 'running' ? `<button class="as-agent-stop-btn" data-action="agent-stop" data-id="${agent.id}" data-tooltip="Stop">&#9632;</button>` : ''}
+            <button class="as-agent-remove-btn" data-action="agent-remove" data-id="${agent.id}" data-tooltip="Remove">&times;</button>
+          </div>
+        </div>
+        <div class="as-agent-task">${esc(agent.task.slice(0, 150))}${agent.task.length > 150 ? '\u2026' : ''}</div>
+        ${isLoop ? `<div class="as-running-progress"><div class="as-running-progress-fill" style="width:${iterPct}%"></div></div>` : ''}`;
+
+    // Live tool feed
+    if (recentTools.length > 0) {
+      html += `<div class="as-agent-tool-feed" id="as-agent-tools-${agent.id}">${recentTools.map(t => t.replace('mcp__SynaBun__', '')).join(' > ')}</div>`;
+    }
+
+    // Structured progress from last handoff
+    if (lastJournal?.done || lastJournal?.next) {
+      html += `<div class="as-agent-handoff">`;
+      if (lastJournal.done) html += `<div class="as-handoff-done"><span class="as-handoff-label">Done:</span> ${esc(lastJournal.done.slice(0, 200))}</div>`;
+      if (lastJournal.next) html += `<div class="as-handoff-next"><span class="as-handoff-label">Next:</span> ${esc(lastJournal.next.slice(0, 200))}</div>`;
+      if (lastJournal.state) html += `<div class="as-handoff-state"><span class="as-handoff-label">State:</span> ${esc(lastJournal.state.slice(0, 150))}</div>`;
+      html += `</div>`;
+    }
+
+    // Iteration journal timeline (collapsed by default, last 5 entries)
+    if (isLoop && journal.length > 0) {
+      const shownJournal = journal.slice(-5);
+      html += `<div class="as-agent-journal">`;
+      for (const entry of shownJournal) {
+        const toolBadge = entry.toolCount ? ` <span class="as-journal-tools">${entry.toolCount}t</span>` : '';
+        html += `<div class="as-journal-entry"><span class="as-journal-iter">#${entry.iteration}</span>${toolBadge} ${esc((entry.done || entry.summary || '').slice(0, 120))}</div>`;
+      }
+      html += `</div>`;
+    }
+
+    html += `
+        <div class="as-agent-output" id="as-agent-output-${agent.id}">${preview ? esc(preview) : '<span class="as-agent-waiting">Waiting for output...</span>'}</div>
+        <div class="as-agent-footer">
+          <span class="as-agent-elapsed">${elapsed}</span>
+          ${isLoop ? `<span class="as-agent-iter">iter ${agent.currentIteration}/${agent.totalIterations}</span>` : ''}
+          ${agent.toolUseCount ? `<span class="as-agent-tools">${agent.toolUseCount} tools</span>` : ''}
+          ${agent.costUsd != null ? `<span class="as-agent-cost">$${agent.costUsd.toFixed(4)}</span>` : ''}
+          ${agent.browserSessionId ? '<span class="as-agent-browser-tag">browser</span>' : ''}
+        </div>
+      </div>`;
+  }
+
+  html += '</div>';
+  main.innerHTML = html;
+
+  // Auto-scroll agent output areas to bottom
+  for (const agent of _agents) {
+    const outputEl = $(`as-agent-output-${agent.id}`);
+    if (outputEl) outputEl.scrollTop = outputEl.scrollHeight;
+  }
+}
+
+// ── Agent helpers ──
+
+function agentElapsed(agent) {
+  const start = new Date(agent.startedAt).getTime();
+  const end = agent.endedAt ? new Date(agent.endedAt).getTime() : Date.now();
+  const secs = Math.floor((end - start) / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  const remainSecs = secs % 60;
+  return `${mins}m ${remainSecs}s`;
+}
+
+async function refreshAgents() {
+  try {
+    const data = await fetchAgents();
+    _agents = data?.agents || [];
+    // Update local output buffers with any text we haven't captured via WebSocket
+    for (const a of _agents) {
+      if (!_agentOutputs[a.id] && a.textLength > 0) {
+        // Fetch full details to get textOutput
+        try {
+          const full = await fetchAgent(a.id);
+          if (full?.textOutput) _agentOutputs[a.id] = full.textOutput;
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
+function setupAgentWebSocket() {
+  // Listen for agent events on the sync WebSocket
+  on('sync:agent:output', (data) => {
+    if (!data?.agentId || !data?.event) return;
+    const event = data.event;
+    // Extract text and tool uses from assistant messages
+    if (event.type === 'assistant' && event.message?.content) {
+      for (const block of event.message.content) {
+        if (block.type === 'text') {
+          _agentOutputs[data.agentId] = (_agentOutputs[data.agentId] || '') + block.text;
+          // Live-update the output element if visible
+          const outputEl = $(`as-agent-output-${data.agentId}`);
+          if (outputEl) {
+            const preview = (_agentOutputs[data.agentId] || '').slice(-300);
+            outputEl.textContent = preview;
+            outputEl.scrollTop = outputEl.scrollHeight;
+          }
+        } else if (block.type === 'tool_use') {
+          // Track recent tools for live feed
+          if (!_agentRecentTools[data.agentId]) _agentRecentTools[data.agentId] = [];
+          _agentRecentTools[data.agentId].push(block.name);
+          if (_agentRecentTools[data.agentId].length > 8) _agentRecentTools[data.agentId].shift();
+          // Increment tool count
+          const idx = _agents.findIndex(a => a.id === data.agentId);
+          if (idx >= 0) _agents[idx].toolUseCount = (_agents[idx].toolUseCount || 0) + 1;
+          // Live-update the tool feed element if visible
+          const toolEl = $(`as-agent-tools-${data.agentId}`);
+          if (toolEl) {
+            const tools = _agentRecentTools[data.agentId] || [];
+            toolEl.textContent = tools.map(t => t.replace('mcp__SynaBun__', '')).join(' > ');
+          }
+        }
+      }
+    }
+  });
+
+  on('sync:agent:launched', async () => {
+    await refreshAgents();
+    if (_view === 'running') renderRunningMain();
+  });
+
+  on('sync:agent:status', async (data) => {
+    // Update local agent status
+    const idx = _agents.findIndex(a => a.id === data?.agentId);
+    if (idx >= 0) _agents[idx].status = data.status;
+    if (_view === 'running') renderRunningMain();
+  });
+
+  on('sync:agent:removed', (data) => {
+    _agents = _agents.filter(a => a.id !== data?.agentId);
+    delete _agentOutputs[data?.agentId];
+    delete _agentRecentTools[data?.agentId];
+    delete _agentJournals[data?.agentId];
+    if (_view === 'running') renderRunningMain();
+  });
+
+  on('sync:agent:iteration', (data) => {
+    const idx = _agents.findIndex(a => a.id === data?.agentId);
+    if (idx >= 0) {
+      _agents[idx].currentIteration = data.iteration;
+      _agents[idx].totalIterations = data.total;
+    }
+    if (_view === 'running') renderRunningMain();
+  });
+
+  on('sync:agent:iteration-complete', (data) => {
+    if (!data?.agentId) return;
+    if (!_agentJournals[data.agentId]) _agentJournals[data.agentId] = [];
+    _agentJournals[data.agentId].push({
+      iteration: data.iteration,
+      summary: data.summary,
+      done: data.done,
+      next: data.next,
+      state: data.state,
+      toolCount: data.toolCount,
+    });
+    // Keep bounded
+    if (_agentJournals[data.agentId].length > 20) _agentJournals[data.agentId] = _agentJournals[data.agentId].slice(-15);
+    // Update journal on the local agent object too
+    const idx = _agents.findIndex(a => a.id === data.agentId);
+    if (idx >= 0) _agents[idx].journal = _agentJournals[data.agentId];
+    if (_view === 'running') renderRunningMain();
+  });
+}
+
+function setupScheduleWebSocket() {
+  on('sync:schedule:created', (data) => {
+    if (data?.schedule) {
+      _schedules.push(data.schedule);
+      if (_view === 'schedules') renderSchedulesMain();
+    }
+  });
+
+  on('sync:schedule:updated', (data) => {
+    if (data?.schedule) {
+      const idx = _schedules.findIndex(s => s.id === data.schedule.id);
+      if (idx >= 0) _schedules[idx] = data.schedule;
+      else _schedules.push(data.schedule);
+      if (_view === 'schedules') renderSchedulesMain();
+    }
+  });
+
+  on('sync:schedule:deleted', (data) => {
+    if (data?.scheduleId) {
+      _schedules = _schedules.filter(s => s.id !== data.scheduleId);
+      if (_view === 'schedules') renderSchedulesMain();
+    }
+  });
+
+  on('sync:schedule:fired', (data) => {
+    if (data?.scheduleName) showToast(`Schedule fired: ${data.scheduleName}`);
+  });
+
+  on('sync:schedule:completed', (data) => {
+    loadScheduleData().then(() => { if (_view === 'schedules') renderSchedulesMain(); });
+    // Auto-attach the floating terminal so the user can see the scheduled loop running.
+    // The server-side loop driver handles the initial message and auto-confirm —
+    // this just provides UI visibility.
+    if (data?.terminalSessionId) {
+      emit('terminal:attach-floating', {
+        terminalSessionId: data.terminalSessionId,
+        profile: data.profile || 'claude-code',
+        snapToPanel: false,
+      });
+    }
+  });
+
+  on('sync:schedule:failed', (data) => {
+    if (data?.reason) showToast(`Schedule failed: ${data.reason}`);
+    loadScheduleData().then(() => { if (_view === 'schedules') renderSchedulesMain(); });
+  });
+
+  on('sync:schedule:timer-set', (data) => {
+    if (data?.scheduleId && data?.firesAt) {
+      _scheduleTimerData[data.scheduleId] = { firesAt: data.firesAt, minutes: data.minutes };
+      if (_view === 'schedules') renderSchedulesMain();
+    }
+  });
+
+  on('sync:schedule:timer-fired', (data) => {
+    if (data?.scheduleName) showToast(`Timer fired: ${data.scheduleName}`);
+    if (data?.scheduleId) delete _scheduleTimerData[data.scheduleId];
+    loadScheduleData().then(() => { if (_view === 'schedules') renderSchedulesMain(); });
+  });
+
+  on('sync:schedule:timer-cancelled', (data) => {
+    if (data?.scheduleId) delete _scheduleTimerData[data.scheduleId];
+    if (_view === 'schedules') renderSchedulesMain();
+  });
+
+  // Quick timer events
+  on('sync:quick-timer:set', (data) => {
+    if (data?.timerId && !_quickTimers.some(t => t.id === data.timerId)) {
+      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, usesBrowser: data.usesBrowser });
+      if (_view === 'schedules') renderSchedulesMain();
+    }
+  });
+
+  on('sync:quick-timer:fired', (data) => {
+    if (data?.templateName) showToast(`Timer fired: ${data.templateName}`);
+    if (data?.timerId) _quickTimers = _quickTimers.filter(t => t.id !== data.timerId);
+    if (_view === 'schedules') renderSchedulesMain();
+  });
+
+  on('sync:quick-timer:fired-now', (data) => {
+    if (data?.templateName) showToast(`Running now: ${data.templateName}`);
+    if (_view === 'schedules') renderSchedulesMain();
+  });
+
+  on('sync:quick-timer:cancelled', (data) => {
+    if (data?.timerId) _quickTimers = _quickTimers.filter(t => t.id !== data.timerId);
+    if (_view === 'schedules') renderSchedulesMain();
+  });
+
+  on('sync:quick-timer:failed', (data) => {
+    if (data?.reason) showToast(`Timer failed: ${data.reason}`);
+  });
 }
 
 // ═══════════════════════════════════════════
@@ -2165,11 +2679,11 @@ async function handlePanelClick(e) {
       _view = 'picker'; renderView();
       break;
 
-    case 'launch-dialog-close':
-      closeLaunchDialog();
+    case 'launch-inline-close':
+      closeLaunchInline();
       break;
 
-    case 'launch-dialog-confirm':
+    case 'launch-inline-confirm':
       confirmLaunch();
       break;
 
@@ -2251,8 +2765,34 @@ async function handlePanelClick(e) {
 
     case 'view-running':
       _view = 'running';
-      renderView();
+      refreshAgents().then(() => renderView());
       break;
+
+    case 'agent-stop': {
+      try {
+        const result = await stopAgent(id);
+        if (result?.ok) {
+          showToast('Agent stopped');
+          const idx = _agents.findIndex(a => a.id === id);
+          if (idx >= 0) _agents[idx].status = 'stopped';
+          if (_view === 'running') renderRunningMain();
+        } else { showToast(result?.error || 'Stop failed'); }
+      } catch (err) { showToast('Stop failed: ' + err.message); }
+      break;
+    }
+
+    case 'agent-remove': {
+      try {
+        const result = await removeAgent(id);
+        if (result?.ok) {
+          _agents = _agents.filter(a => a.id !== id);
+          delete _agentOutputs[id];
+          showToast('Agent removed');
+          if (_view === 'running') renderRunningMain();
+        } else { showToast(result?.error || 'Remove failed'); }
+      } catch (err) { showToast('Remove failed: ' + err.message); }
+      break;
+    }
 
     case 'delete-template': {
       if (!confirm('Delete this automation?')) break;
@@ -2315,18 +2855,214 @@ async function handlePanelClick(e) {
     case 'wizard-launch': {
       collectInputValues();
       const taskText = _wizardPreset.buildCommand(_wizardState);
+      const wizIterations = _wizardState.iterations;
+      const wizMaxMinutes = _wizardState.maxMinutes;
+      const wizUsesBrowser = _wizardState.usesBrowser;
+      _wizardState = null; _wizardStep = 0; _wizardPreset = null;
       serverLaunchLoop({
         task: taskText,
         context: null,
-        iterations: _wizardState.iterations,
-        maxMinutes: _wizardState.maxMinutes,
-        usesBrowser: _wizardState.usesBrowser,
+        iterations: wizIterations,
+        maxMinutes: wizMaxMinutes,
+        usesBrowser: wizUsesBrowser,
       });
-      _wizardState = null; _wizardStep = 0; _wizardPreset = null;
-      _view = 'welcome';
-      renderView();
       break;
     }
+
+    // ── Schedule actions ──
+
+    case 'schedule-new':
+      _editingSchedule = null;
+      _view = 'schedule-editor';
+      renderView();
+      break;
+
+    case 'schedule-edit': {
+      const sched = _schedules.find(s => s.id === id);
+      if (sched) { _editingSchedule = sched; _view = 'schedule-editor'; renderView(); }
+      break;
+    }
+
+    case 'schedule-toggle': {
+      const sched = _schedules.find(s => s.id === id);
+      if (sched) {
+        try {
+          const updated = await updateSchedule(id, { enabled: !sched.enabled });
+          const idx = _schedules.findIndex(s => s.id === id);
+          if (idx >= 0) _schedules[idx] = updated;
+          renderSchedulesMain();
+          showToast(updated.enabled ? 'Schedule enabled' : 'Schedule paused');
+        } catch (err) { showToast('Toggle failed: ' + err.message); }
+      }
+      break;
+    }
+
+    case 'schedule-test': {
+      try {
+        await testSchedule(id);
+        showToast('Schedule queued for immediate fire');
+      } catch (err) { showToast('Test failed: ' + err.message); }
+      break;
+    }
+
+    case 'schedule-delete': {
+      if (!confirm('Delete this schedule?')) break;
+      try {
+        await deleteSchedule(id);
+        _schedules = _schedules.filter(s => s.id !== id);
+        renderSchedulesMain();
+        showToast('Schedule deleted');
+      } catch (err) { showToast('Delete failed: ' + err.message); }
+      break;
+    }
+
+    case 'schedule-timer-toggle': {
+      const row = document.getElementById(`as-timer-row-${id}`);
+      if (row) row.style.display = row.style.display === 'none' ? 'flex' : 'none';
+      break;
+    }
+
+    case 'schedule-timer-fire': {
+      const mins = Number(el.dataset.minutes);
+      if (!mins) break;
+      try {
+        const result = await startScheduleTimer(id, mins);
+        _scheduleTimerData[id] = { firesAt: result.firesAt, minutes: result.minutes };
+        renderSchedulesMain();
+        showToast(`Timer set: fires in ${mins}m`);
+      } catch (err) { showToast('Timer failed: ' + err.message); }
+      break;
+    }
+
+    case 'schedule-timer-custom': {
+      const input = document.querySelector(`.as-sched-timer-input[data-id="${id}"]`);
+      const mins = Number(input?.value);
+      if (!mins || mins < 1) { showToast('Enter minutes (1+)'); break; }
+      try {
+        const result = await startScheduleTimer(id, mins);
+        _scheduleTimerData[id] = { firesAt: result.firesAt, minutes: result.minutes };
+        renderSchedulesMain();
+        showToast(`Timer set: fires in ${mins}m`);
+      } catch (err) { showToast('Timer failed: ' + err.message); }
+      break;
+    }
+
+    case 'schedule-timer-cancel': {
+      try {
+        await cancelScheduleTimer(id);
+        delete _scheduleTimerData[id];
+        renderSchedulesMain();
+        showToast('Timer cancelled');
+      } catch (err) { showToast('Cancel failed: ' + err.message); }
+      break;
+    }
+
+    case 'qt-profile': {
+      const profileId = btn.dataset.profile;
+      if (!profileId) break;
+      _launchProfile = profileId;
+      storage.setItem('as-launch-profile', profileId);
+      // Update model to default for new profile
+      const models = CLI_MODELS[profileId] || [];
+      const defaultModel = models.find(m => m.tier === 'default') || models[0];
+      _launchModel = defaultModel?.id || null;
+      storage.setItem('as-launch-model', _launchModel);
+      renderSchedulesMain();
+      break;
+    }
+
+    case 'qt-model': {
+      const modelId = btn.dataset.model;
+      if (!modelId) break;
+      _launchModel = modelId;
+      storage.setItem('as-launch-model', _launchModel);
+      // Update visual selection inline (avoid full re-render)
+      $('as-qt-models')?.querySelectorAll('.as-launch-model').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      break;
+    }
+
+    case 'qt-select': {
+      const mins = Number(btn.dataset.minutes);
+      if (!mins) break;
+      _selectedQtMinutes = mins;
+      // Clear custom input when preset selected
+      const customInput = $('as-qt-custom-min');
+      if (customInput) customInput.value = '';
+      // Update visual selection
+      btn.closest('.as-qt-presets')?.querySelectorAll('.as-qt-preset[data-action="qt-select"]').forEach(b => b.classList.remove('as-qt-preset--selected'));
+      btn.classList.add('as-qt-preset--selected');
+      break;
+    }
+
+    case 'qt-go': {
+      const templateId = $('as-qt-template')?.value;
+      if (!templateId) { showToast('Select a template first'); break; }
+      // Custom input takes priority if filled, otherwise use selected preset
+      const customVal = Number($('as-qt-custom-min')?.value);
+      const mins = (customVal && customVal >= 1) ? customVal : _selectedQtMinutes;
+      if (!mins) { showToast('Select a time or enter minutes'); break; }
+      const qtProfile = _launchProfile || 'claude-code';
+      const qtModel = _launchModel || null;
+      const qtBrowser = !!$('as-qt-browser')?.checked;
+      try {
+        const result = await createQuickTimer(templateId, mins, { profile: qtProfile, model: qtModel, usesBrowser: qtBrowser });
+        // Guard: WebSocket sync:quick-timer:set may arrive before this HTTP response
+        if (!_quickTimers.some(t => t.id === result.timerId)) {
+          _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, usesBrowser: result.usesBrowser });
+        }
+        _selectedQtMinutes = null;
+        _qtUsesBrowser = null;
+        renderSchedulesMain();
+        const label = mins >= 60 ? `${mins / 60}h` : `${mins}m`;
+        showToast(`Timer set: ${result.templateName} in ${label}`);
+      } catch (err) { showToast('Timer failed: ' + err.message); }
+      break;
+    }
+
+    case 'qt-now': {
+      const templateId = $('as-qt-template')?.value;
+      if (!templateId) { showToast('Select a template first'); break; }
+      const qtProfile = _launchProfile || 'claude-code';
+      const qtModel = _launchModel || null;
+      const qtBrowser = !!$('as-qt-browser')?.checked;
+      try {
+        const result = await triggerQuickTimerNow(templateId, { profile: qtProfile, model: qtModel, usesBrowser: qtBrowser });
+        showToast(`Firing now: ${result.templateName}`);
+      } catch (err) { showToast('Run Now failed: ' + err.message); }
+      break;
+    }
+
+    case 'qt-cancel': {
+      try {
+        await cancelQuickTimer(id);
+        _quickTimers = _quickTimers.filter(t => t.id !== id);
+        renderSchedulesMain();
+        showToast('Timer cancelled');
+      } catch (err) { showToast('Cancel failed: ' + err.message); }
+      break;
+    }
+
+    case 'toggle-advanced-schedules':
+      _showAdvancedSchedules = !_showAdvancedSchedules;
+      renderSchedulesMain();
+      break;
+
+    case 'schedule-save':
+      await saveScheduleFromEditor();
+      break;
+
+    case 'schedule-cancel':
+      _editingSchedule = null;
+      _view = 'schedules';
+      renderView();
+      break;
+
+    case 'schedule-back':
+      _view = 'schedules';
+      _editingSchedule = null;
+      renderView();
+      break;
   }
 }
 
@@ -2347,10 +3083,10 @@ function wireRulesListEvents(container, state) {
     } else {
       list.innerHTML = state.rules.map((rule, i) => `
         <div class="awiz-rule-item" draggable="true" data-rule-idx="${i}">
-          <span class="awiz-rule-grip" title="Drag to reorder">\u2261</span>
+          <span class="awiz-rule-grip" data-tooltip="Drag to reorder">\u2261</span>
           <span class="awiz-rule-num">${i + 1}</span>
           <span class="awiz-rule-text">${esc(rule)}</span>
-          <button class="awiz-rule-remove" data-remove-idx="${i}" title="Remove">&times;</button>
+          <button class="awiz-rule-remove" data-remove-idx="${i}" data-tooltip="Remove">&times;</button>
         </div>`).join('');
       wireDragDrop();
     }
@@ -2439,6 +3175,455 @@ function wireInputSync(container) {
       _wizardState[input.dataset.key] = input.type === 'number' ? Number(input.value) : input.value;
     });
   });
+}
+
+// ═══════════════════════════════════════════
+// SCHEDULES
+// ═══════════════════════════════════════════
+
+async function loadScheduleData() {
+  try { _schedules = await fetchSchedules(); } catch { _schedules = []; }
+  try { _scheduleTimerData = await fetchScheduleTimers(); } catch { _scheduleTimerData = {}; }
+  try { _quickTimers = await fetchQuickTimers(); } catch { _quickTimers = []; }
+}
+
+const CRON_PRESET_GROUPS = [
+  { group: 'Frequency', presets: [
+    { label: 'Every 15 Min', cron: '*/15 * * * *', desc: 'Every 15 minutes' },
+    { label: 'Every 30 Min', cron: '*/30 * * * *', desc: 'Every 30 minutes' },
+    { label: 'Every Hour', cron: '0 * * * *', desc: 'Every hour at :00' },
+    { label: 'Every 2 Hours', cron: '0 */2 * * *', desc: 'Every 2 hours at :00' },
+    { label: 'Every 3 Hours', cron: '0 */3 * * *', desc: 'Every 3 hours at :00' },
+    { label: 'Every 6 Hours', cron: '0 */6 * * *', desc: 'Every 6 hours at :00' },
+  ]},
+  { group: 'Daily', presets: [
+    { label: 'Morning 9am', cron: '0 9 * * *', desc: 'Every day at 9:00' },
+    { label: 'Midday 12pm', cron: '0 12 * * *', desc: 'Every day at 12:00' },
+    { label: 'Evening 6pm', cron: '0 18 * * *', desc: 'Every day at 18:00' },
+    { label: '2x (10am, 6pm)', cron: '0 10,18 * * *', desc: 'Every day at 10:00, 18:00' },
+    { label: '3x (9am, 2pm, 7pm)', cron: '0 9,14,19 * * *', desc: 'Every day at 9:00, 14:00, 19:00' },
+    { label: '4x (8a, 12p, 4p, 8p)', cron: '0 8,12,16,20 * * *', desc: 'Every day at 8:00, 12:00, 16:00, 20:00' },
+  ]},
+  { group: 'Weekly', presets: [
+    { label: 'Weekdays 9am', cron: '0 9 * * 1-5', desc: 'Mon–Fri at 9:00' },
+    { label: 'Weekdays 2x', cron: '0 10,18 * * 1-5', desc: 'Mon–Fri at 10:00, 18:00' },
+    { label: 'Weekdays 3x', cron: '0 9,14,19 * * 1-5', desc: 'Mon–Fri at 9:00, 14:00, 19:00' },
+    { label: 'Weekends 10am', cron: '0 10 * * 0,6', desc: 'Sat & Sun at 10:00' },
+    { label: 'Mon/Wed/Fri', cron: '0 9 * * 1,3,5', desc: 'Mon, Wed, Fri at 9:00' },
+    { label: 'Tue/Thu', cron: '0 9 * * 2,4', desc: 'Tue, Thu at 9:00' },
+  ]},
+];
+// Flat list for backward compat
+const CRON_PRESETS = CRON_PRESET_GROUPS.flatMap(g => g.presets);
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function describeCronClient(cronStr) {
+  const fields = cronStr.trim().split(/\s+/);
+  if (fields.length !== 5) return cronStr;
+  const [minute, hour, , , dayOfWeek] = fields;
+  let dayPart = '';
+  if (dayOfWeek === '*') dayPart = 'Every day';
+  else if (dayOfWeek === '1-5') dayPart = 'Weekdays';
+  else if (dayOfWeek === '0,6') dayPart = 'Weekends';
+  else dayPart = dayOfWeek.split(',').map(d => DAY_NAMES[+d] || d).join(', ');
+  const pad = (n) => String(n).padStart(2, '0');
+  let timePart;
+  // Handle */N minute patterns (e.g. */15, */30)
+  const minStep = minute.match(/^\*\/(\d+)$/);
+  if (minStep && hour === '*') {
+    return `${dayPart} — every ${minStep[1]} minutes`;
+  }
+  // Handle */N hour patterns (e.g. */2, */3, */6)
+  const hourStep = hour.match(/^\*\/(\d+)$/);
+  if (hourStep) {
+    timePart = `every ${hourStep[1]} hours at :${pad(+minute)}`;
+  } else if (hour.includes(',')) {
+    timePart = hour.split(',').map(h => `${pad(+h)}:${pad(+minute)}`).join(', ');
+  } else if (hour === '*') {
+    timePart = `every hour at :${pad(+minute)}`;
+  } else {
+    timePart = `${pad(+hour)}:${pad(+minute)}`;
+  }
+  return `${dayPart} at ${timePart}`;
+}
+
+function formatNextRun(nextRun) {
+  if (!nextRun) return 'N/A';
+  const d = new Date(nextRun);
+  const now = new Date();
+  const diffMs = d - now;
+  if (diffMs < 0) return 'Overdue';
+  if (diffMs < 60_000) return 'Under a minute';
+  if (diffMs < 3600_000) return `${Math.round(diffMs / 60_000)}m`;
+  if (diffMs < 86400_000) return `${Math.round(diffMs / 3600_000)}h`;
+  return `${Math.round(diffMs / 86400_000)}d`;
+}
+
+function scheduleStatusBadge(schedule) {
+  if (!schedule.enabled) return '<span class="as-sched-badge as-sched-badge--paused">Paused</span>';
+  if (schedule.lastRunResult === 'template_missing') return '<span class="as-sched-badge as-sched-badge--error">Missing Template</span>';
+  if (schedule.lastRunResult?.startsWith('error:')) return '<span class="as-sched-badge as-sched-badge--error">Error</span>';
+  if (schedule.lastRunResult === 'launched') return '<span class="as-sched-badge as-sched-badge--ok">Active</span>';
+  return '<span class="as-sched-badge as-sched-badge--ok">Active</span>';
+}
+
+function formatTimerCountdown(firesAtISO) {
+  const diff = new Date(firesAtISO) - Date.now();
+  if (diff <= 0) return 'firing...';
+  const mins = Math.ceil(diff / 60_000);
+  if (mins >= 60) {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+  return `${mins}m`;
+}
+
+function renderSchedulesMain() {
+  const main = $('as-main');
+  if (!main) return;
+
+  const allTemplates = [...PRESET_TEMPLATES, ..._templates];
+  const templateMap = {};
+  for (const t of allTemplates) templateMap[t.id] = t;
+
+  // ── Active Quick Timers ──
+  let timersHTML = '';
+  if (_quickTimers.length > 0) {
+    let timerCards = '';
+    for (const qt of _quickTimers) {
+      const profileLabel = CLI_PROFILES.find(p => p.id === qt.profile)?.label || qt.profile || 'Claude Code';
+      const modelObj = qt.model ? (CLI_MODELS[qt.profile || 'claude-code'] || []).find(m => m.id === qt.model) : null;
+      const modelLabel = modelObj?.label || '';
+      const metaParts = [profileLabel, modelLabel, qt.usesBrowser ? 'Browser' : ''].filter(Boolean);
+      timerCards += `
+        <div class="as-qt-active-card">
+          <div class="as-qt-active-pulse"></div>
+          <div class="as-qt-active-info">
+            <span class="as-qt-active-name">${esc(qt.templateName)}</span>
+            <span class="as-qt-active-meta">${esc(metaParts.join(' \u00b7 '))}</span>
+          </div>
+          <span class="as-qt-active-countdown">${formatTimerCountdown(qt.firesAt)}</span>
+          <button class="as-qt-cancel" data-action="qt-cancel" data-id="${qt.id}" data-tooltip="Cancel timer">${AS_ICONS.close}</button>
+        </div>`;
+    }
+    timersHTML = `<div class="as-qt-active-timers">${timerCards}</div>`;
+  }
+
+  // ── Quick Timer Creator ──
+  const templateOptions = allTemplates.map(t =>
+    `<option value="${t.id}">${esc(t.name)}</option>`
+  ).join('');
+
+  const qtPresetButtons = [
+    { minutes: 5, label: '5m' }, { minutes: 15, label: '15m' }, { minutes: 30, label: '30m' },
+    { minutes: 60, label: '1h' }, { minutes: 120, label: '2h' }, { minutes: 240, label: '4h' },
+  ].map(p => `<button class="as-qt-preset${_selectedQtMinutes === p.minutes ? ' as-qt-preset--selected' : ''}" data-action="qt-select" data-minutes="${p.minutes}">${p.label}</button>`).join('');
+
+  // CLI/Model/Browser settings for quick timer
+  const qtProfile = _launchProfile || 'claude-code';
+  const qtModels = CLI_MODELS[qtProfile] || [];
+  const qtDefaultModel = qtModels.find(m => m.tier === 'default') || qtModels[0];
+  const qtCurrentModel = _launchModel && qtModels.some(m => m.id === _launchModel) ? _launchModel : qtDefaultModel?.id;
+
+  const qtProfileChips = CLI_PROFILES.map(p => `
+    <button class="as-launch-profile${p.id === qtProfile ? ' active' : ''}" data-action="qt-profile" data-profile="${p.id}">
+      <span class="as-launch-profile-name">${p.label}</span>
+      <span class="as-launch-profile-org">${p.desc}</span>
+    </button>
+  `).join('');
+
+  const qtModelChips = qtModels.map(m => `
+    <button class="as-launch-model${m.id === qtCurrentModel ? ' active' : ''}${m.tier ? ` as-launch-model--${m.tier}` : ''}" data-action="qt-model" data-model="${m.id}">
+      <span class="as-launch-model-name">${m.label}</span>
+      <span class="as-launch-model-desc">${m.desc}</span>
+    </button>
+  `).join('');
+
+  // Determine browser toggle default from selected template
+  const selectedTpl = $('as-qt-template')?.value;
+  const selectedTemplate = selectedTpl ? allTemplates.find(t => t.id === selectedTpl) : null;
+  const qtBrowserDefault = _qtUsesBrowser !== null ? _qtUsesBrowser : (selectedTemplate ? !!selectedTemplate.usesBrowser : false);
+
+  const qtCreatorHTML = `
+    <div class="as-qt-creator">
+      <select class="as-qt-select" id="as-qt-template">
+        <option value="">Select template...</option>
+        ${templateOptions}
+      </select>
+      <div class="as-qt-group">
+        <span class="as-launch-label">CLI</span>
+        <div class="as-launch-profiles" id="as-qt-profiles">${qtProfileChips}</div>
+      </div>
+      <div class="as-qt-group">
+        <span class="as-launch-label">Model</span>
+        <div class="as-launch-models" id="as-qt-models">${qtModelChips}</div>
+      </div>
+      <div class="as-qt-group">
+        <span class="as-launch-label">Browser</span>
+        <label class="as-qt-browser-toggle">
+          <input type="checkbox" id="as-qt-browser" ${qtBrowserDefault ? 'checked' : ''}>
+          <span class="as-qt-switch"></span>
+          <span class="as-qt-browser-label">Uses browser</span>
+        </label>
+      </div>
+      <div class="as-qt-group">
+        <span class="as-launch-label">Timer</span>
+        <div class="as-qt-presets">${qtPresetButtons}
+          <input class="as-qt-custom-input" id="as-qt-custom-min" type="number" min="1" max="1440" placeholder="min" />
+        </div>
+      </div>
+      <div class="as-qt-actions">
+        <button class="as-launch-go" data-action="qt-go">${_s('<path d="M5 3l8 5-8 5V3z"/>')} Go</button>
+        <button class="as-launch-cancel" data-action="qt-now" data-tooltip="Fire immediately">Run Now</button>
+      </div>
+    </div>`;
+
+  // ── Recurring Cron Schedules ──
+  let cronHTML = '';
+  let cronListHTML = '';
+  if (_showAdvancedSchedules) {
+    if (_schedules.length === 0) {
+      cronListHTML = '<div class="as-qt-empty">No recurring schedules.</div>';
+    } else {
+      for (const s of _schedules) {
+        const tpl = templateMap[s.templateId];
+        const tplName = tpl ? esc(tpl.name) : '<em>Missing</em>';
+        cronListHTML += `
+          <div class="as-sched-card${s.enabled ? '' : ' as-sched-card--disabled'}">
+            <div class="as-sched-card-left">
+              <div class="as-sched-card-info">
+                <div class="as-sched-card-name">${esc(s.name)}</div>
+                <div class="as-sched-card-meta">${tplName} &middot; ${esc(describeCronClient(s.cron))}</div>
+                <div class="as-sched-card-next">Next: ${formatNextRun(s.nextRun)} &middot; Runs: ${s.runCount || 0}</div>
+              </div>
+            </div>
+            <div class="as-sched-card-right">
+              ${scheduleStatusBadge(s)}
+              <button class="as-sched-action" data-action="schedule-toggle" data-id="${s.id}" data-tooltip="${s.enabled ? 'Pause' : 'Enable'}">
+                ${s.enabled ? _s('<path d="M5 3v10M11 3v10"/>') : _s('<path d="M5 3l8 5-8 5V3z"/>')}
+              </button>
+              <button class="as-sched-action" data-action="schedule-test" data-id="${s.id}" data-tooltip="Test fire now">${AS_ICONS.bolt}</button>
+              <button class="as-sched-action" data-action="schedule-edit" data-id="${s.id}" data-tooltip="Edit">${AS_ICONS.pencil}</button>
+              <button class="as-sched-action as-sched-action--danger" data-action="schedule-delete" data-id="${s.id}" data-tooltip="Delete">${AS_ICONS.close}</button>
+            </div>
+          </div>`;
+      }
+    }
+    cronHTML = `
+      <div class="as-qt-cron-section">
+        <div class="as-qt-cron-header" data-action="toggle-advanced-schedules">
+          <div class="as-qt-cron-header-left">
+            <div class="as-qt-cron-icon">${_s('<circle cx="7" cy="7" r="5"/><path d="M7 4v3l2 2"/>')}</div>
+            <span>Recurring Schedules</span>
+            ${_schedules.length ? `<span class="as-qt-cron-count">${_schedules.length}</span>` : ''}
+          </div>
+          <span class="as-qt-chevron as-qt-chevron--open">${_s('<path d="M4 6l4 4 4-4"/>')}</span>
+        </div>
+        <div class="as-qt-cron-body">
+          <div class="as-sched-list">${cronListHTML}</div>
+          <button class="as-qt-btn as-qt-btn--secondary" data-action="schedule-new">+ New Cron Schedule</button>
+        </div>
+      </div>`;
+  } else {
+    cronHTML = `
+      <div class="as-qt-cron-section">
+        <div class="as-qt-cron-header" data-action="toggle-advanced-schedules">
+          <div class="as-qt-cron-header-left">
+            <div class="as-qt-cron-icon">${_s('<circle cx="7" cy="7" r="5"/><path d="M7 4v3l2 2"/>')}</div>
+            <span>Recurring Schedules</span>
+            ${_schedules.length ? `<span class="as-qt-cron-count">${_schedules.length}</span>` : ''}
+          </div>
+          <span class="as-qt-chevron">${_s('<path d="M4 6l4 4 4-4"/>')}</span>
+        </div>
+      </div>`;
+  }
+
+  main.innerHTML = `
+    <div class="as-schedules">
+      <div class="as-sched-header">
+        <button class="as-back-btn" data-action="go-welcome">${AS_ICONS.back}</button>
+        <h3>Schedules</h3>
+      </div>
+      ${timersHTML}
+      ${qtCreatorHTML}
+      ${cronHTML}
+    </div>
+  `;
+
+  // Wire template select → auto-set browser toggle from template's usesBrowser
+  const tplSelect = $('as-qt-template');
+  if (tplSelect) {
+    tplSelect.addEventListener('change', () => {
+      const tpl = allTemplates.find(t => t.id === tplSelect.value);
+      const browserCheckbox = $('as-qt-browser');
+      if (browserCheckbox && tpl) {
+        browserCheckbox.checked = !!tpl.usesBrowser;
+        _qtUsesBrowser = null; // reset to template default
+      }
+    });
+  }
+
+  // Wire browser toggle → track user override
+  const browserCheckbox = $('as-qt-browser');
+  if (browserCheckbox) {
+    browserCheckbox.addEventListener('change', () => {
+      _qtUsesBrowser = browserCheckbox.checked;
+    });
+  }
+}
+
+function renderScheduleEditorMain() {
+  const main = $('as-main');
+  if (!main) return;
+
+  const s = _editingSchedule;
+  const isEdit = !!s;
+  const allTemplates = [...PRESET_TEMPLATES, ..._templates];
+
+  const presetsHTML = CRON_PRESET_GROUPS.map(g => `
+    <div class="as-sched-preset-group">
+      <div class="as-sched-preset-group-label">${esc(g.group)}</div>
+      <div class="as-sched-preset-grid">
+        ${g.presets.map(p => `<button class="as-sched-preset" data-cron="${esc(p.cron)}" data-tooltip="${esc(p.desc)}">${esc(p.label)}</button>`).join('')}
+      </div>
+    </div>`).join('');
+
+  const templateOptions = allTemplates.map(t =>
+    `<option value="${t.id}"${(s?.templateId === t.id) ? ' selected' : ''}>${esc(t.name)} (${t.category})</option>`
+  ).join('');
+
+  // Reorder: Mon(1)–Sat(6) then Sun(0) so 2-column grid pairs weekdays nicely
+  const dayOrder = [1, 2, 3, 4, 5, 6, 0];
+  const dayThemesHTML = dayOrder.map(idx => {
+    const name = DAY_NAMES[idx];
+    const val = s?.dayThemes?.[String(idx)]?.contextOverride || '';
+    return `
+      <div class="as-sched-daytheme">
+        <label>${name}</label>
+        <input type="text" data-day="${idx}" placeholder="Context override for ${name}..." value="${esc(val)}" />
+      </div>`;
+  }).join('');
+
+  const tz = s?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  main.innerHTML = `
+    <div class="as-sched-editor">
+      <div class="as-sched-header">
+        <button class="as-back-btn" data-action="schedule-back">${AS_ICONS.back}</button>
+        <h3>${isEdit ? 'Edit Schedule' : 'New Schedule'}</h3>
+      </div>
+
+      <div class="as-sched-form">
+        <div class="as-sched-field-row">
+          <div class="as-sched-field as-sched-field--flex">
+            <label>Name</label>
+            <input type="text" id="as-sched-name" placeholder="e.g. Morning Social Post" value="${esc(s?.name || '')}" />
+          </div>
+          <div class="as-sched-field as-sched-field--flex">
+            <label>Template</label>
+            <select id="as-sched-template">${templateOptions}</select>
+          </div>
+        </div>
+
+        <div class="as-sched-field">
+          <label>Schedule (Cron)</label>
+          <div class="as-sched-presets-grouped">${presetsHTML}</div>
+          <div class="as-sched-cron-row">
+            <input type="text" id="as-sched-cron" placeholder="0 9,14,19 * * 1-5" value="${esc(s?.cron || '0 9,14,19 * * 1-5')}" />
+            <span class="as-sched-cron-desc" id="as-sched-cron-desc">${esc(describeCronClient(s?.cron || '0 9,14,19 * * 1-5'))}</span>
+          </div>
+        </div>
+
+        <div class="as-sched-field-row">
+          <div class="as-sched-field as-sched-field--flex">
+            <label>Timezone</label>
+            <input type="text" id="as-sched-tz" value="${esc(tz)}" />
+          </div>
+          <div class="as-sched-field as-sched-field--flex as-sched-field--toggle-wrap">
+            <label>Status</label>
+            <label class="as-sched-toggle-label">
+              <input type="checkbox" id="as-sched-enabled" ${s?.enabled !== false ? 'checked' : ''} />
+              Enabled
+            </label>
+          </div>
+        </div>
+
+        <div class="as-sched-field">
+          <label>Day Themes <span class="as-sched-hint">(optional context overrides per day of week)</span></label>
+          <div class="as-sched-daythemes-grid" id="as-sched-daythemes">${dayThemesHTML}</div>
+        </div>
+
+        <div class="as-sched-actions">
+          <button class="as-header-btn" data-action="schedule-save">${isEdit ? 'Save Changes' : 'Create Schedule'}</button>
+          <button class="as-header-btn as-header-btn--secondary" data-action="schedule-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Wire cron preset clicks
+  main.querySelectorAll('.as-sched-preset').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cronInput = $('as-sched-cron');
+      if (cronInput) {
+        cronInput.value = btn.dataset.cron;
+        updateCronDesc();
+      }
+    });
+  });
+
+  // Wire cron input live description
+  $('as-sched-cron')?.addEventListener('input', updateCronDesc);
+}
+
+function updateCronDesc() {
+  const cronInput = $('as-sched-cron');
+  const descEl = $('as-sched-cron-desc');
+  if (cronInput && descEl) {
+    descEl.textContent = describeCronClient(cronInput.value);
+  }
+}
+
+async function saveScheduleFromEditor() {
+  const name = $('as-sched-name')?.value?.trim();
+  const templateId = $('as-sched-template')?.value;
+  const cron = $('as-sched-cron')?.value?.trim();
+  const timezone = $('as-sched-tz')?.value?.trim();
+  const enabled = $('as-sched-enabled')?.checked ?? true;
+
+  if (!name) { showToast('Name is required'); return; }
+  if (!templateId) { showToast('Select a template'); return; }
+  if (!cron || cron.split(/\s+/).length !== 5) { showToast('Valid 5-field cron expression required'); return; }
+
+  // Collect day themes
+  const dayThemes = {};
+  const dayInputs = document.querySelectorAll('#as-sched-daythemes input[data-day]');
+  dayInputs.forEach(input => {
+    const val = input.value.trim();
+    if (val) dayThemes[input.dataset.day] = { contextOverride: val };
+  });
+
+  const params = { name, templateId, cron, timezone, enabled, dayThemes };
+
+  try {
+    if (_editingSchedule) {
+      const updated = await updateSchedule(_editingSchedule.id, params);
+      const idx = _schedules.findIndex(s => s.id === _editingSchedule.id);
+      if (idx >= 0) _schedules[idx] = updated;
+      showToast('Schedule updated');
+    } else {
+      const created = await createSchedule(params);
+      _schedules.push(created);
+      showToast('Schedule created');
+    }
+    _editingSchedule = null;
+    _view = 'schedules';
+    renderView();
+  } catch (err) {
+    showToast('Save failed: ' + err.message);
+  }
 }
 
 // ═══════════════════════════════════════════

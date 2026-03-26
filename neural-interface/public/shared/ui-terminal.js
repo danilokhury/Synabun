@@ -14,9 +14,28 @@ import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { getWhiteboardElementById } from './ui-whiteboard.js';
 import { createFrameRenderer } from './utils.js';
+import { notify, NOTIF_TYPE } from './ui-notifications.js';
 
 const $ = (id) => document.getElementById(id);
 const CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini']);
+
+/** Cross-browser clipboard write with fallback for non-secure contexts. */
+function _clipCopy(text) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => _clipFallback(text));
+  } else {
+    _clipFallback(text);
+  }
+}
+function _clipFallback(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch {}
+  ta.remove();
+}
 
 // ── Profiles ──
 
@@ -144,52 +163,24 @@ const _cliSessionStatus = new Map(); // sessionId → { status, lastOutput, time
 const _CLI_STATUS_HTML = '<span class="cli-status-badge" data-status="idle"><span class="cli-status-dot"></span><span class="cli-status-label">Idle</span></span>';
 const _CLI_LABELS = { idle: 'Idle', working: 'Working', action: 'Action', done: 'Done' };
 
-// ── Notification engine ──
-let _audioCtx = null;
+// ── Notification engine (delegates to shared ui-notifications.js) ──
 const _prevStatus = new Map(); // sessionId → previous status
 
-function _getNotifEnabled() {
-  return storage.getItem(KEYS.TERMINAL_NOTIFICATIONS) !== 'off';
-}
-
-function _playTone(freq, duration = 0.15, vol = 0.3) {
-  try {
-    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = _audioCtx.createOscillator();
-    const gain = _audioCtx.createGain();
-    osc.connect(gain);
-    gain.connect(_audioCtx.destination);
-    osc.frequency.value = freq;
-    osc.type = 'sine';
-    gain.gain.setValueAtTime(vol, _audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + duration);
-    osc.start();
-    osc.stop(_audioCtx.currentTime + duration);
-  } catch {}
-}
-
 function _notifyStatusChange(sessionId, newStatus) {
-  if (!_getNotifEnabled()) { _prevStatus.set(sessionId, newStatus); return; }
+  const enabled = storage.getItem(KEYS.TERMINAL_NOTIFICATIONS) !== 'off';
+  if (!enabled) { _prevStatus.set(sessionId, newStatus); return; }
   const prev = _prevStatus.get(sessionId);
   _prevStatus.set(sessionId, newStatus);
   if (!prev || prev !== CLI_STATUS.WORKING) return; // only notify on Working → X
   if (newStatus === CLI_STATUS.WORKING) return;
 
-  // Sound: action = urgent double beep, idle/done = gentle single tone
-  if (newStatus === CLI_STATUS.ACTION) {
-    _playTone(880, 0.12, 0.35);
-    setTimeout(() => _playTone(880, 0.12, 0.35), 180);
-  } else {
-    _playTone(660, 0.18, 0.25);
-  }
+  const session = _sessions.find(s => s.id === sessionId);
+  const label = session?.label || 'Claude Code';
 
-  // Browser notification (only if tab not focused)
-  if (document.hidden && Notification.permission === 'granted') {
-    const session = _sessions.find(s => s.id === sessionId);
-    const title = newStatus === CLI_STATUS.ACTION ? 'Action Required' : 'Task Complete';
-    const body = session?.label || 'Claude Code';
-    const n = new Notification(title, { body, tag: `synabun-cli-${sessionId}`, silent: true });
-    n.onclick = () => { window.focus(); n.close(); };
+  if (newStatus === CLI_STATUS.ACTION) {
+    notify('cli', NOTIF_TYPE.ACTION, label);
+  } else if (newStatus === CLI_STATUS.DONE) {
+    notify('cli', NOTIF_TYPE.DONE, label);
   }
 }
 
@@ -449,18 +440,6 @@ function _sendResize(session) {
   } catch {}
 }
 
-// ── Auto-scroll: track whether user is at the bottom of scrollback ──
-// Scroll events from fitAddon.fit() are ignored via _fitInProgress flag.
-// TUI apps (alternate buffer) are excluded in ws.onmessage.
-function _initAutoScroll(session) {
-  const xv = session.viewport.querySelector('.xterm-viewport');
-  if (!xv) return;
-  xv.addEventListener('scroll', () => {
-    if (session._fitInProgress) return;
-    const { scrollTop, scrollHeight, clientHeight } = xv;
-    session._autoScroll = scrollHeight - scrollTop - clientHeight < 2;
-  }, { passive: true });
-}
 
 // ── Session registry (persists across page refresh) ──
 
@@ -1431,7 +1410,7 @@ async function openSession(profile, cwd, existingSessionId) {
     if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       const sel = term.getSelection();
       if (sel) {
-        if (e.type === 'keydown') navigator.clipboard.writeText(sel).catch(() => {});
+        if (e.type === 'keydown') _clipCopy(sel);
         return false; // block — copied text
       }
       return true; // no selection — let xterm send \x03 (SIGINT)
@@ -1440,7 +1419,7 @@ async function openSession(profile, cwd, existingSessionId) {
     if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
       if (e.type === 'keydown') {
         const sel = term.getSelection();
-        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        if (sel) _clipCopy(sel);
       }
       return false;
     }
@@ -1502,7 +1481,7 @@ async function openSession(profile, cwd, existingSessionId) {
     _selTimer = setTimeout(() => {
       _selTimer = null;
       const sel = term.getSelection();
-      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      if (sel) _clipCopy(sel);
     }, 150);
   });
 
@@ -1527,11 +1506,12 @@ async function openSession(profile, cwd, existingSessionId) {
       const msg = JSON.parse(e.data);
       if (msg.type === 'output' || msg.type === 'replay') {
         term.write(msg.data);
-        // Auto-scroll to bottom if user hasn't scrolled up, skip in TUI alternate buffer
-        // Also skip if user has an active selection — scrollToBottom clears xterm selections
-        const s = _sessions.find(s => s.id === sessionId);
-        if (s?._autoScroll && term.buffer.active.type === 'normal' && !term.hasSelection()) {
-          term.scrollToBottom();
+        // Accumulate output for _sendOnceReady replay buffer check
+        const sess = _sessions.find(s => s.id === sessionId);
+        if (sess) {
+          if (!sess._replayBuf) sess._replayBuf = '';
+          sess._replayBuf += msg.data;
+          if (sess._replayBuf.length > 16384) sess._replayBuf = sess._replayBuf.slice(-8192);
         }
       }
       if (msg.type === 'exit') {
@@ -1544,12 +1524,11 @@ async function openSession(profile, cwd, existingSessionId) {
         term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
-        // Copy path to clipboard — don't insert into PTY (corrupts TUI apps)
-        navigator.clipboard.writeText(msg.path).catch(() => {});
-        showTermToast(`Image saved — path copied to clipboard`);
+        _clipCopy(msg.path);
+        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
-        // Whiteboard image drag-drop — write path into PTY so CLI agent sees the image
         ws.send(JSON.stringify({ type: 'input', data: msg.path }));
         showTermToast(`Image dropped — ${msg.path.split(/[\\/]/).pop()}`);
       }
@@ -1558,7 +1537,7 @@ async function openSession(profile, cwd, existingSessionId) {
         ws.send(JSON.stringify({ type: 'input', data: msg.path }));
         showTermToast(`Memory dropped — ${msg.path.split(/[\\/]/).pop()}`);
       }
-    } catch {}
+    } catch {};
   };
 
   ws.onclose = () => {
@@ -1599,10 +1578,8 @@ async function openSession(profile, cwd, existingSessionId) {
     renderer,
     dead: false,
     pinned: false,
-    _autoScroll: true,
     _fitInProgress: false,
   };
-  _initAutoScroll(session);
   _pushSession(session);
   _pendingSessionIds.delete(sessionId);
   _activeIdx = _sessions.indexOf(session);
@@ -1725,8 +1702,9 @@ async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}
           htmlTerm.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
         }
         if (msg.type === 'image_saved' && msg.path) {
-          navigator.clipboard.writeText(msg.path).catch(() => {});
-          showTermToast(`Image saved — path copied to clipboard`);
+          _clipCopy(msg.path);
+          ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+          showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
         }
         if (msg.type === 'image_dropped' && msg.path) {
           ws.send(JSON.stringify({ type: 'input', data: msg.path }));
@@ -1763,7 +1741,6 @@ async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}
       _claudeSessionId: options.claudeSessionId || null,
       _isHtmlTerm: true,
       _htmlTerm: htmlTerm,
-      _autoScroll: true,
       _fitInProgress: false,
     };
     _pushSession(session);
@@ -1805,7 +1782,9 @@ async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}
  * Mirrors reconnectSession() but creates HtmlTermRenderer instead of xterm.
  */
 async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
-  await loadHtmlTermRenderer();
+  // Only await if not yet loaded — avoids yielding to microtask queue when
+  // renderer is already cached, preventing race conditions with attachDetached.
+  if (!_HtmlTermRenderer) await loadHtmlTermRenderer();
   ensurePanel();
 
   const viewport = document.createElement('div');
@@ -1858,6 +1837,14 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
       const msg = JSON.parse(e.data);
       if (msg.type === 'output' || msg.type === 'replay') {
         htmlTerm.write(msg.data);
+        // Accumulate all output (including replay) so _sendOnceReady can detect
+        // CLI ready patterns even when it attaches after replay already fired.
+        const sess = _sessions.find(s => s.id === sessionId);
+        if (sess) {
+          if (!sess._replayBuf) sess._replayBuf = '';
+          sess._replayBuf += msg.data;
+          if (sess._replayBuf.length > 16384) sess._replayBuf = sess._replayBuf.slice(-8192);
+        }
         if (CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
       }
       if (msg.type === 'exit') {
@@ -1873,8 +1860,9 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
         htmlTerm.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
-        navigator.clipboard.writeText(msg.path).catch(() => {});
-        showTermToast(`Image saved — path copied to clipboard`);
+        _clipCopy(msg.path);
+        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
         ws.send(JSON.stringify({ type: 'input', data: msg.path }));
@@ -1912,7 +1900,6 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
     _floatColor: options.floatColor || null,
     _isHtmlTerm: true,
     _htmlTerm: htmlTerm,
-    _autoScroll: true,
     _fitInProgress: false,
   };
   _pushSession(session);
@@ -1941,19 +1928,26 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
  */
 async function openBrowserSession(url, fresh, _unused, force) {
   if (isGuest() && !hasPermission('browser')) return;
-  // Auto-unstick _opening if it's been true for over 15 seconds (previous attempt crashed/hung)
-  if (_opening && _openingAt && (Date.now() - _openingAt > 15000)) {
-    console.warn('[browser] _opening guard stuck for >15s, resetting');
+  // Auto-unstick _opening if it's been true for over 10 seconds (previous attempt crashed/hung)
+  if (_opening && _openingAt && (Date.now() - _openingAt > 10000)) {
+    console.warn('[browser] _opening guard stuck for >10s, resetting');
     _opening = false;
   }
   // fresh or force bypass the _opening guard
   if (_opening && !fresh && !force) return;
 
   // If a browser tab already exists and not requesting fresh/force, just switch to it
+  // BUT only if the underlying session is still alive (WebSocket open)
   const existingBrowserTab = document.querySelector('.term-tab[data-profile="browser"]');
   if (existingBrowserTab && !url && !fresh && !force) {
-    existingBrowserTab.click();
-    return;
+    const liveSession = _sessions.find(s => s._isBrowser && !s.dead && s.ws && s.ws.readyState === WebSocket.OPEN);
+    if (liveSession) {
+      existingBrowserTab.click();
+      return;
+    }
+    // Session is dead/stale — clean up before creating a fresh one
+    const deadIdx = _sessions.findIndex(s => s._isBrowser && (!s.ws || s.ws.readyState !== WebSocket.OPEN));
+    if (deadIdx >= 0) closeSession(deadIdx);
   }
 
   _opening = true;
@@ -2069,10 +2063,32 @@ async function openBrowserSession(url, fresh, _unused, force) {
     } catch {}
   };
 
+  let _wsReconnectAttempted = false;
   ws.onclose = () => {
     const sess = _sessions.find(s => s.id === sessionId);
     if (sess && !sess.dead) {
-      // Browser sessions can't be recovered — auto-close instead of leaving dead tab
+      // Try one reconnect before giving up — covers transient WS drops
+      if (!_wsReconnectAttempted) {
+        _wsReconnectAttempted = true;
+        console.log('[browser] WS closed unexpectedly, attempting reconnect for', sessionId);
+        setTimeout(() => {
+          const sess2 = _sessions.find(s => s.id === sessionId);
+          if (!sess2 || sess2.dead) return;
+          const proto2 = location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const ws2 = new WebSocket(`${proto2}//${location.host}/ws/browser/${sessionId}`);
+          ws2.onmessage = ws.onmessage;
+          ws2.onclose = () => {
+            const sess3 = _sessions.find(s => s.id === sessionId);
+            if (sess3 && !sess3.dead) {
+              const idx = _sessions.indexOf(sess3);
+              if (idx >= 0) closeSession(idx);
+            }
+          };
+          ws2.onerror = () => {};
+          sess2.ws = ws2;
+        }, 1500);
+        return;
+      }
       const idx = _sessions.indexOf(sess);
       if (idx >= 0) closeSession(idx);
     }
@@ -2289,9 +2305,28 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
     } catch {}
   };
 
+  let _wsReconnAttempted = false;
   ws.onclose = () => {
     const sess = _sessions.find(s => s.id === sessionId);
     if (sess && !sess.dead) {
+      if (!_wsReconnAttempted) {
+        _wsReconnAttempted = true;
+        console.log('[browser] Reconnect WS closed, retrying once for', sessionId);
+        setTimeout(() => {
+          const sess2 = _sessions.find(s => s.id === sessionId);
+          if (!sess2 || sess2.dead) return;
+          const proto2 = location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const ws2 = new WebSocket(`${proto2}//${location.host}/ws/browser/${sessionId}`);
+          ws2.onmessage = ws.onmessage;
+          ws2.onclose = () => {
+            const sess3 = _sessions.find(s => s.id === sessionId);
+            if (sess3 && !sess3.dead) { const idx = _sessions.indexOf(sess3); if (idx >= 0) closeSession(idx); }
+          };
+          ws2.onerror = () => {};
+          sess2.ws = ws2;
+        }, 1500);
+        return;
+      }
       const idx = _sessions.indexOf(sess);
       if (idx >= 0) closeSession(idx);
     }
@@ -2442,7 +2477,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
     if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       const sel = term.getSelection();
       if (sel) {
-        if (e.type === 'keydown') navigator.clipboard.writeText(sel).catch(() => {});
+        if (e.type === 'keydown') _clipCopy(sel);
         return false;
       }
       return true;
@@ -2450,7 +2485,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
     if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
       if (e.type === 'keydown') {
         const sel = term.getSelection();
-        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        if (sel) _clipCopy(sel);
       }
       return false;
     }
@@ -2509,7 +2544,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
     _selTimer = setTimeout(() => {
       _selTimer = null;
       const sel = term.getSelection();
-      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      if (sel) _clipCopy(sel);
     }, 150);
   });
 
@@ -2529,11 +2564,12 @@ async function reconnectSession(sessionId, profile, options = {}) {
       const msg = JSON.parse(e.data);
       if (msg.type === 'output' || msg.type === 'replay') {
         term.write(msg.data);
-        // Auto-scroll to bottom if user hasn't scrolled up, skip in TUI alternate buffer
-        // Also skip if user has an active selection — scrollToBottom clears xterm selections
-        const s = _sessions.find(s => s.id === sessionId);
-        if (s?._autoScroll && term.buffer.active.type === 'normal' && !term.hasSelection()) {
-          term.scrollToBottom();
+        // Accumulate output for _sendOnceReady replay buffer check
+        const sess = _sessions.find(s => s.id === sessionId);
+        if (sess) {
+          if (!sess._replayBuf) sess._replayBuf = '';
+          sess._replayBuf += msg.data;
+          if (sess._replayBuf.length > 16384) sess._replayBuf = sess._replayBuf.slice(-8192);
         }
       }
       if (msg.type === 'exit') {
@@ -2549,8 +2585,9 @@ async function reconnectSession(sessionId, profile, options = {}) {
         term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
-        navigator.clipboard.writeText(msg.path).catch(() => {});
-        showTermToast(`Image saved — path copied to clipboard`);
+        _clipCopy(msg.path);
+        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
         ws.send(JSON.stringify({ type: 'input', data: msg.path }));
@@ -2598,10 +2635,8 @@ async function reconnectSession(sessionId, profile, options = {}) {
     _userRenamed: options.userRenamed || false,
     _claudeSessionId: options.claudeSessionId || null,
     _floatColor: options.floatColor || null,
-    _autoScroll: true,
     _fitInProgress: false,
   };
-  _initAutoScroll(session);
   _pushSession(session);
   _activeIdx = _sessions.indexOf(session);
 
@@ -2868,9 +2903,6 @@ function _reconnectTerminalWs(session, attempt = 0) {
           if (CLI_PROFILES.has(session.profile)) _scheduleCliStatusCheck(session.id);
         } else if (session.term) {
           session.term.write(msg.data);
-          if (session._autoScroll && session.term.buffer?.active?.type === 'normal' && !session.term.hasSelection?.()) {
-            session.term.scrollToBottom();
-          }
         }
       }
       if (msg.type === 'exit') {
@@ -2883,8 +2915,9 @@ function _reconnectTerminalWs(session, attempt = 0) {
         else if (session.term) session.term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
-        navigator.clipboard.writeText(msg.path).catch(() => {});
-        showTermToast(`Image saved — path copied to clipboard`);
+        _clipCopy(msg.path);
+        session.ws?.send(JSON.stringify({ type: 'input', data: msg.path }));
+        showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
         session.ws?.send(JSON.stringify({ type: 'input', data: msg.path }));
@@ -3040,10 +3073,19 @@ function initContextMenu(viewport, term, ws) {
     e.preventDefault();
     const menu = ensureContextMenu();
 
-    // Position at cursor
-    menu.style.left = e.clientX + 'px';
-    menu.style.top = e.clientY + 'px';
+    // Position at cursor, clamped to viewport edges
+    menu.style.left = '0px';
+    menu.style.top = '0px';
     menu.classList.add('open');
+    const rect = menu.getBoundingClientRect();
+    let x = e.clientX;
+    let y = e.clientY;
+    if (x + rect.width > window.innerWidth) x = window.innerWidth - rect.width - 4;
+    if (y + rect.height > window.innerHeight) y = e.clientY - rect.height;
+    if (x < 0) x = 4;
+    if (y < 0) y = 4;
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
 
     // Find session for this viewport
     const session = _sessions.find(s => s.viewport === viewport);
@@ -3061,7 +3103,7 @@ function initContextMenu(viewport, term, ws) {
           const sel = session?._isHtmlTerm
             ? session._htmlTerm?.getSelection()
             : term?.getSelection();
-          if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+          if (sel) _clipCopy(sel);
           break;
         }
         case 'paste':
@@ -3368,7 +3410,7 @@ function _updateSnappedEdges() {
   const leftPanelEdge = explorerW + fileExplorerW;
   const claudeW = parseFloat(cs.getPropertyValue('--claude-panel-width')) || 0;
   const rightPanelEdge = window.innerWidth - claudeW;
-  const topEdge = 48; // navbar height
+  const topEdge = parseFloat(cs.getPropertyValue('--navbar-height')) || 48;
   const bottomEdge = window.innerHeight;
 
   for (const [sid, dt] of _detachedTabs) {
@@ -3430,7 +3472,7 @@ export function tileFloatingTerminals() {
   const termPanel = document.getElementById('terminal-panel');
   const termH = (termPanel && !termPanel.classList.contains('hidden') && !termPanel.classList.contains('detached'))
     ? termPanel.getBoundingClientRect().height : 0;
-  const TOP_PAD = 48; // navbar height
+  const TOP_PAD = parseFloat(cs.getPropertyValue('--navbar-height')) || 48;
   const areaL = sidebarW;
   const areaT = TOP_PAD;
   const areaW = window.innerWidth - sidebarW - claudeW;
@@ -3696,7 +3738,7 @@ function detachTab(idx) {
         ? session._htmlTerm?.getSelection()
         : session.term?.getSelection();
       if (sel) {
-        navigator.clipboard.writeText(sel).catch(() => {});
+        _clipCopy(sel);
         e.preventDefault();
         e.stopPropagation();
       }
@@ -4478,10 +4520,24 @@ export async function initTerminal() {
     launchDetached(profile, data?.initialMessage, data?.autoSubmit);
   });
 
+  // Block sync:terminal:created from auto-creating sessions that will be
+  // managed by attachDetached. Emitted by automation-studio BEFORE launchLoop
+  // so the sync handler skips the terminal session the server is about to create.
+  let _expectManagedTerminal = false;
+  let _expectManagedTimer = null;
+  on('terminal:expect-managed', () => {
+    _expectManagedTerminal = true;
+    // Safety: auto-clear after 30s in case terminal:attach-floating never fires
+    clearTimeout(_expectManagedTimer);
+    _expectManagedTimer = setTimeout(() => { _expectManagedTerminal = false; }, 30000);
+  });
+
   // Attach to a pre-created terminal session (e.g. from /api/loop/launch)
   on('terminal:attach-floating', (data) => {
+    _expectManagedTerminal = false;
+    clearTimeout(_expectManagedTimer);
     if (!data?.terminalSessionId) return;
-    attachDetached(data.terminalSessionId, data.profile || 'claude-code', data.initialMessage, data.autoSubmit)
+    attachDetached(data.terminalSessionId, data.profile || 'claude-code', data.initialMessage, data.autoSubmit, data.snapToPanel)
       .catch(err => console.error('[SynaBun] terminal:attach-floating error:', err));
   });
 
@@ -4521,9 +4577,11 @@ export async function initTerminal() {
   // ── Terminal session sync from other clients ──
   on('sync:terminal:created', async (msg) => {
     // Another client created a terminal session — reconnect to it.
-    // Skip if this client is currently creating a session (_opening) or has it
-    // pending (_pendingSessionIds) — the broadcast came from our own POST.
-    if (_opening || _pendingSessionIds.has(msg.sessionId)) return;
+    // Skip if this client is currently creating a session (_opening), has it
+    // pending (_pendingSessionIds), or is expecting a managed session from
+    // the automation studio (_expectManagedTerminal) — the broadcast came
+    // from our own POST and attachDetached will handle it.
+    if (_opening || _expectManagedTerminal || _pendingSessionIds.has(msg.sessionId)) return;
     if (msg.sessionId && !_sessions.find(s => s.id === msg.sessionId)) {
       const p = msg.profile || 'shell';
       if (CLI_PROFILES.has(p)) {
@@ -4545,13 +4603,39 @@ export async function initTerminal() {
   });
 
   // ── Browser session sync from server (MCP agent created/destroyed a session) ──
+  // Block sync:browser:created from auto-creating a floating browser tab when the
+  // automation studio is about to claim the session for the side panel embed.
+  let _expectManagedBrowser = false;
+  let _expectManagedBrowserTimer = null;
+  on('browser:expect-managed', () => {
+    _expectManagedBrowser = true;
+    clearTimeout(_expectManagedBrowserTimer);
+    _expectManagedBrowserTimer = setTimeout(() => { _expectManagedBrowser = false; }, 30000);
+  });
+
   on('sync:browser:created', async (msg) => {
-    if (_opening) return;
+    // Always clear _opening on browser creation — the session is ready
+    _opening = false;
     if (!msg.sessionId) return;
+    // Skip if automation studio is managing this browser for side panel embed
+    if (_expectManagedBrowser) {
+      _expectManagedBrowser = false;
+      clearTimeout(_expectManagedBrowserTimer);
+      console.log('[browser] Skipping sync:browser:created — managed by side panel');
+      return;
+    }
     if (_sessions.find(s => s.id === msg.sessionId)) return;
     if (document.querySelector(`.browser-viewport[data-session-id="${msg.sessionId}"]`)) return;
-    // If Claude panel is open, let it handle the browser embed instead
-    if (document.querySelector('.claude-panel.open')) return;
+    // If Claude panel is open, give it 2s to claim. If it doesn't, terminal takes over.
+    if (document.querySelector('.claude-panel.open')) {
+      await new Promise(r => setTimeout(r, 2000));
+      // Re-check: if Claude panel already wired it (embed visible), bail
+      if (document.querySelector('#cp-browser-embed.active')) return;
+      // Panel didn't claim it — check session still exists and unclaimed
+      if (_sessions.find(s => s.id === msg.sessionId)) return;
+      if (document.querySelector(`.browser-viewport[data-session-id="${msg.sessionId}"]`)) return;
+      console.log('[browser] Claude panel did not claim session, terminal taking over:', msg.sessionId);
+    }
     await reconnectBrowserSession(msg.sessionId, { url: msg.url, title: '' }, null);
   });
 
@@ -4669,10 +4753,15 @@ export async function initTerminal() {
     if (!dataUrl) return;
     const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
     if (!match) return;
-    // Find active session with open WS
+    // Find active session with open WS — try pane indices first, then fall back to any open session
+    let session = null;
     const activeIdx = _activePaneIdx[0] >= 0 ? _activePaneIdx[0] : _activePaneIdx[1];
-    const session = _sessions[activeIdx];
+    if (activeIdx >= 0) session = _sessions[activeIdx];
     if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) {
+      // Fallback: find any session with an open WebSocket
+      session = _sessions.find(s => s.ws && s.ws.readyState === WebSocket.OPEN) || null;
+    }
+    if (!session) {
       showTermToast('No active terminal session');
       return;
     }
@@ -4716,27 +4805,62 @@ async function runCommandInNewTab({ command, cwd, label }) {
 }
 
 /** Attach to a pre-created terminal session and detach as floating window */
-async function attachDetached(terminalSessionId, profile, initialMessage, autoSubmit) {
+async function attachDetached(terminalSessionId, profile, initialMessage, autoSubmit, snapToPanel) {
   const p = profile || 'claude-code';
+  console.log('[SynaBun] attachDetached: start, id =', terminalSessionId, ', profile =', p, ', _opening =', _opening);
   // Guard against the sync:terminal:created handler creating a duplicate session
   // for the same ID while we're setting up our own connection.
   _pendingSessionIds.add(terminalSessionId);
   try {
-    // CLI profiles (claude-code, codex, gemini) use the HTML term renderer,
-    // not xterm.js. Route through reconnectHtmlTermSession to match the
-    // renderer used by normal CLI opens and reconnects.
-    if (CLI_PROFILES.has(p)) {
-      await reconnectHtmlTermSession(terminalSessionId, p);
-    } else {
-      await openSession(p, null, terminalSessionId);
+    // Check if sync:terminal:created already created this session (race: server
+    // broadcasts terminal:session-created via WS before the HTTP response from
+    // /api/loop/launch arrives, so the sync handler often wins). If so, reuse it
+    // instead of creating a duplicate with a second WebSocket connection.
+    const existingIdx = _sessions.findIndex(s => s.id === terminalSessionId);
+    console.log('[SynaBun] attachDetached: existingIdx =', existingIdx, ', _sessions.length =', _sessions.length);
+    if (existingIdx < 0) {
+      // No existing session — create one.
+      // CLI profiles (claude-code, codex, gemini) use the HTML term renderer,
+      // not xterm.js. Route through reconnectHtmlTermSession to match the
+      // renderer used by normal CLI opens and reconnects.
+      if (CLI_PROFILES.has(p)) {
+        console.log('[SynaBun] attachDetached: creating via reconnectHtmlTermSession');
+        await reconnectHtmlTermSession(terminalSessionId, p);
+      } else {
+        console.log('[SynaBun] attachDetached: creating via openSession');
+        await openSession(p, null, terminalSessionId);
+      }
     }
     _pendingSessionIds.delete(terminalSessionId);
-    const idx = _sessions.length - 1;
-    if (idx >= 0) detachTab(idx);
+
+    // Find session by ID — never assume it's the last entry in _sessions.
+    // The sync handler or openBrowserSession may have pushed other sessions
+    // after this one, making _sessions.length - 1 point to the wrong session.
+    const idx = _sessions.findIndex(s => s.id === terminalSessionId);
+    console.log('[SynaBun] attachDetached: post-create idx =', idx, ', alreadyDetached =', _detachedTabs.has(terminalSessionId));
+    if (idx >= 0 && !_detachedTabs.has(terminalSessionId)) detachTab(idx);
+
+    // If snapToPanel requested, position the floating tab next to the Claude panel
+    if (snapToPanel && idx >= 0) {
+      const dt = _detachedTabs.get(terminalSessionId);
+      if (dt?.el) {
+        const panelWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--claude-panel-width')) || 0;
+        if (panelWidth > 0) {
+          const availWidth = window.innerWidth - panelWidth - 16;
+          const w = Math.min(700, availWidth * 0.6);
+          const h = Math.min(500, window.innerHeight - 96);
+          dt.el.style.left = (window.innerWidth - panelWidth - w - 24) + 'px';
+          dt.el.style.top = '56px';
+          dt.el.style.width = w + 'px';
+          dt.el.style.height = h + 'px';
+        }
+      }
+    }
 
     if (initialMessage && idx >= 0) {
-      console.log('[SynaBun] attachDetached: calling _sendOnceReady, session.id =', _sessions[idx]?.id, ', hasWs =', !!_sessions[idx]?.ws);
-      _sendOnceReady(_sessions[idx], initialMessage, !!autoSubmit);
+      const session = _sessions[idx];
+      console.log('[SynaBun] attachDetached: calling _sendOnceReady, session.id =', session?.id, ', hasWs =', !!session?.ws);
+      _sendOnceReady(session, initialMessage, !!autoSubmit);
     }
   } catch (err) {
     _pendingSessionIds.delete(terminalSessionId);
@@ -4748,14 +4872,19 @@ async function attachDetached(terminalSessionId, profile, initialMessage, autoSu
 /** Send a message to a session once the WebSocket is ready and CLI has booted.
  *  Watches terminal output for the CLI's input prompt (e.g. Claude Code's ">" or ❯)
  *  instead of using a blind timeout — prevents input from being swallowed by the
- *  shell (cmd.exe) before the CLI is ready. Falls back to 15s timeout. */
+ *  shell (cmd.exe) before the CLI is ready. Falls back to 15s timeout.
+ *
+ *  KEY FIX: Also checks session._replayBuf for output that arrived BEFORE this
+ *  function was called (e.g. replay data from reconnectHtmlTermSession's ws.onopen).
+ *  Without this, the CLI prompt is missed when the PTY boots faster than the
+ *  automation studio's browser-open + launchLoop HTTP round-trip. */
 function _sendOnceReady(session, message, autoSubmit) {
   if (!session?.ws) {
     console.warn('[SynaBun] _sendOnceReady: no session.ws — aborting');
     return;
   }
 
-  console.log('[SynaBun] _sendOnceReady: starting, ws.readyState =', session.ws.readyState, ', msg length =', message?.length);
+  console.log('[SynaBun] _sendOnceReady: starting, ws.readyState =', session.ws.readyState, ', msg length =', message?.length, ', replayBuf length =', session._replayBuf?.length || 0);
 
   // Strip ANSI escape sequences so color codes around prompts don't block matching.
   // ConPTY on Windows sends private-mode CSI like \x1b[?25h (show cursor) after prompts.
@@ -4818,6 +4947,20 @@ function _sendOnceReady(session, message, autoSubmit) {
     }, 500);
   }
 
+  // Check if the CLI prompt already appeared in replay data that arrived
+  // before this function was called (the core race condition fix).
+  function checkReplayBuffer() {
+    if (session._replayBuf) {
+      const clean = session._replayBuf.replace(ANSI_RE, '');
+      if (READY_PATTERNS.some(p => p.test(clean))) {
+        console.log('[SynaBun] _sendOnceReady: ready pattern found in existing replay buffer — sending immediately');
+        doSend();
+        return true;
+      }
+    }
+    return false;
+  }
+
   function onMessage(e) {
     try {
       const msg = JSON.parse(e.data);
@@ -4826,7 +4969,7 @@ function _sendOnceReady(session, message, autoSubmit) {
         // Strip ANSI codes before matching — CLI prompts are colorized
         const clean = _outputBuf.replace(ANSI_RE, '');
         if (READY_PATTERNS.some(p => p.test(clean))) {
-          console.log('[SynaBun] _sendOnceReady: ready pattern matched');
+          console.log('[SynaBun] _sendOnceReady: ready pattern matched in live output');
           doSend();
         }
       }
@@ -4834,7 +4977,13 @@ function _sendOnceReady(session, message, autoSubmit) {
   }
 
   function attach() {
-    console.log('[SynaBun] _sendOnceReady: attach() — adding message listener');
+    // Before adding a listener for future messages, check what already arrived.
+    // The replay from ws.onopen fires synchronously before this function runs
+    // (reconnectHtmlTermSession awaits, replay lands in ws.onmessage, accumulates
+    // in session._replayBuf). If the CLI prompt is already there, send now.
+    if (checkReplayBuffer()) return;
+
+    console.log('[SynaBun] _sendOnceReady: attach() — adding message listener (no prompt in replay buffer yet)');
     _listener = onMessage;
     session.ws.addEventListener('message', _listener);
     // Fallback: if no prompt detected within MAX_WAIT, send anyway
@@ -4850,6 +4999,8 @@ function _sendOnceReady(session, message, autoSubmit) {
     // Safety net: if the WS never opens, force-send after MAX_WAIT to avoid silent failure
     setTimeout(() => {
       if (!_sent) {
+        // One last check of the replay buffer before force-sending
+        if (checkReplayBuffer()) return;
         console.warn('[SynaBun] _sendOnceReady: WS never opened — forcing send attempt');
         doSend();
       }
@@ -5368,10 +5519,12 @@ function openDirPickerModal(initialPath) {
 
     const overlay = document.createElement('div');
     overlay.className = 'term-picker-overlay';
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    // Overlay click disabled — close only via ESC or cancel button
     document.body.appendChild(overlay);
 
-    function close(result) { overlay.remove(); resolve(result); }
+    function close(result) { document.removeEventListener('keydown', onPickerEsc); overlay.remove(); resolve(result); }
+    const onPickerEsc = (e) => { if (e.key === 'Escape') close(null); };
+    document.addEventListener('keydown', onPickerEsc);
 
     async function renderDir(dirPath) {
       overlay.innerHTML = '';

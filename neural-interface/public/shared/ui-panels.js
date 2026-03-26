@@ -10,6 +10,11 @@ import { state, emit } from './state.js';
 const MIN_W = 140;
 const MIN_H = 100;
 
+/** Read the dynamically-measured navbar height from the CSS variable */
+function getNavbarHeight() {
+  return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--navbar-height')) || 48;
+}
+
 // ── Viewport clamping ──
 
 export function clampPanelsToViewport() {
@@ -29,10 +34,11 @@ export function clampPanelsToViewport() {
     }
 
     if (el.style.top) {
+      const navH = getNavbarHeight();
       const currentTop = parseInt(el.style.top);
-      const maxTop = Math.max(48, window.innerHeight - rect.height - 10);
-      if (currentTop < 48) {
-        el.style.top = '48px';
+      const maxTop = Math.max(navH, window.innerHeight - rect.height - 10);
+      if (currentTop < navH) {
+        el.style.top = navH + 'px';
       } else if (currentTop > maxTop) {
         el.style.top = maxTop + 'px';
       }
@@ -85,7 +91,7 @@ export function restorePanelLayout(el, sizeOnly) {
     const data = JSON.parse(saved);
     if (!sizeOnly) {
       if (data.left && data.left !== 'auto') el.style.left = data.left;
-      if (data.top) el.style.top = Math.max(48, parseInt(data.top)) + 'px';
+      if (data.top) { const nh = getNavbarHeight(); el.style.top = Math.max(nh, parseInt(data.top)) + 'px'; }
       if (data.right) el.style.right = data.right;
     }
     if (data.width) el.style.width = data.width;
@@ -192,7 +198,8 @@ export function initPanelSystem() {
       if (dir === 't' || dir === 'tr' || dir === 'tl') { newH = Math.max(rMinH, startH - dy); newT = startT + startH - newH; }
 
       newL = Math.max(0, newL);
-      newT = Math.max(48, newT);
+      const navH2 = getNavbarHeight();
+      newT = Math.max(navH2, newT);
       const maxWidth = window.innerWidth / rScale - newL - 10;
       const maxHeight = window.innerHeight / rScale - newT - 10;
       newW = Math.min(newW, maxWidth);
@@ -222,8 +229,9 @@ export function initPanelSystem() {
         finalTop  = Math.round(finalTop / gs) * gs;
       }
 
-      // Keep panels below the title bar (48px)
-      finalTop = Math.max(48, finalTop);
+      // Keep panels below the title bar
+      const navH = getNavbarHeight();
+      finalTop = Math.max(navH, finalTop);
       el.style.left = finalLeft + 'px';
       el.style.top  = finalTop + 'px';
     }

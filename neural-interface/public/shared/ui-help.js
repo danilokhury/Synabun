@@ -81,11 +81,22 @@ export function initHelp() {
 
   if (helpBtn) helpBtn.addEventListener('click', openHelp);
   if (helpClose) helpClose.addEventListener('click', closeHelp);
-  if (helpOverlay) {
-    helpOverlay.addEventListener('click', (e) => {
-      if (e.target === helpOverlay) closeHelp();
+  // Overlay click disabled — close only via ESC or close button
+
+  const helpBdToggle = document.getElementById('help-backdrop-toggle');
+  if (helpBdToggle) {
+    helpBdToggle.addEventListener('click', () => {
+      if (helpOverlay) {
+        helpOverlay.classList.toggle('backdrop-hidden');
+        helpBdToggle.classList.toggle('active', helpOverlay.classList.contains('backdrop-hidden'));
+      }
     });
   }
+
+  // ESC key to close
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && helpOverlay?.classList.contains('open')) closeHelp();
+  });
 
   // Global toggle-help shortcut (via central keybinds)
   registerAction('toggle-help', () => {
