@@ -20,7 +20,7 @@
  *    a single response.
  *
  * Safety: Max 3 retries per flag to prevent infinite loops.
- * Loop: Max 50 iterations / 60 minutes hard cap.
+ * Loop: Iteration cap is authoritative. Inactivity (45 min) catches stuck loops.
  *
  * Input (stdin JSON):
  *   { session_id, transcript_path, cwd, hook_event_name: "Stop",
@@ -243,6 +243,10 @@ async function main() {
   // Determine if a loop is active BEFORE checking compaction. Loops must NEVER
   // be blocked by compaction — it stalls iteration transitions and kills the loop.
   // We do a fast scan here; the full loop logic is below in CHECK 1.5.
+  // When SYNABUN_TERMINAL_SESSION is set (server-launched loop), only count
+  // loops owned by THIS terminal — prevents other automations from suppressing
+  // compaction in unrelated sessions.
+  const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION || '';
   let hasActiveLoop = false;
   try {
     if (existsSync(LOOP_DIR)) {
@@ -251,6 +255,8 @@ async function main() {
         try {
           const candidate = JSON.parse(readFileSync(join(LOOP_DIR, f), 'utf-8'));
           if (candidate.active && (candidate.currentIteration || 0) > 0) {
+            // When running inside a loop terminal, only match OUR loop
+            if (terminalSessionEnv && candidate.terminalSessionId && candidate.terminalSessionId !== terminalSessionEnv) continue;
             hasActiveLoop = true;
             break;
           }
@@ -340,13 +346,17 @@ async function main() {
     }
   }
 
-  // Fallback scan: ONLY for unclaimed loops (currentIteration === 0) where the
-  // session ID may have changed before the first [SynaBun Loop] marker arrived.
-  // We deliberately do NOT pick up running loops (currentIteration > 0) — those
-  // are owned by a specific session and renaming them causes cross-session leaks
-  // when multiple Claude panels are open simultaneously. Running loops are always
-  // re-claimed via the [SynaBun Loop] message path in prompt-submit, which is
-  // the safe/intentional claim point.
+  // Fallback scan — two strategies depending on whether we know our terminal ID.
+  //
+  // Strategy A (SYNABUN_TERMINAL_SESSION set — server-launched loop):
+  //   Match by terminalSessionId field. This is safe for ANY currentIteration
+  //   because the env var proves ownership. Rename the file to {sessionId}.json
+  //   so future stop-hook calls get an exact match.
+  //
+  // Strategy B (no env var — manual/legacy loop):
+  //   ONLY match unclaimed loops (currentIteration === 0, no terminalSessionId).
+  //   Running loops (currentIteration > 0) are NOT picked up here to prevent
+  //   cross-session leaks when multiple Claude panels are open simultaneously.
   if (!loop) {
     try {
       const allFiles = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
@@ -355,14 +365,25 @@ async function main() {
         const fp = join(LOOP_DIR, f);
         try {
           const candidate = JSON.parse(readFileSync(fp, 'utf-8'));
-          if (candidate.active && candidate.currentIteration === 0) {
-            // Skip server-launched loops — they have a terminalSessionId and
-            // will be claimed via the [SynaBun Loop] marker in prompt-submit.
-            // Claiming them here causes cross-session leaks when multiple
-            // Claude panels are open simultaneously.
-            if (candidate.terminalSessionId) continue;
-            const loopMaxMs = ((candidate.maxMinutes || 60) + 5) * 60 * 1000;
-            if (now - new Date(candidate.startedAt).getTime() > loopMaxMs) continue;
+          if (!candidate.active) continue;
+          // Skip loops inactive for >45 minutes (stuck, not time-capped)
+          const lastAct = new Date(candidate.lastIterationAt || candidate.startedAt || 0).getTime();
+          if (now - lastAct > 45 * 60 * 1000) continue;
+
+          // Strategy A: env-based ownership proof — safe for any iteration
+          if (terminalSessionEnv && candidate.terminalSessionId === terminalSessionEnv) {
+            loop = candidate;
+            const newPath = join(LOOP_DIR, `${sessionId}.json`);
+            if (fp !== newPath) {
+              try { renameSync(fp, newPath); loopFlagPath = newPath; } catch { loopFlagPath = fp; }
+            } else {
+              loopFlagPath = fp;
+            }
+            break;
+          }
+
+          // Strategy B: legacy — only unclaimed iteration-0 loops without terminalSessionId
+          if (!terminalSessionEnv && candidate.currentIteration === 0 && !candidate.terminalSessionId) {
             loop = candidate;
             const newPath = join(LOOP_DIR, `${sessionId}.json`);
             if (fp !== newPath) {
@@ -378,13 +399,11 @@ async function main() {
   }
 
   if (loop?.active) {
-    const elapsed = Date.now() - new Date(loop.startedAt).getTime();
-    const maxMs = (loop.maxMinutes || 30) * 60 * 1000;
     const iterationsDone = loop.currentIteration || 0;
     const totalIterations = loop.totalIterations || 10;
 
-    // Check caps — iteration limit or time limit reached
-    if (iterationsDone >= totalIterations || elapsed >= maxMs) {
+    // Check cap — iteration limit only (time cap removed; inactivity catches stuck loops)
+    if (iterationsDone >= totalIterations) {
       // Loop finished — delete the file (no history keeping)
       try { unlinkSync(loopFlagPath); } catch { /* ok */ }
       // Fall through to remember/conversation checks
@@ -627,13 +646,14 @@ async function main() {
     // ─── Emit combined block or soft cleanup ───
     if (obligations.length > 0) {
       let reason;
+      const SUMMARY_SUFFIX = `\n\nAfter completing all memory operations, end your response with a brief task completion summary so the user sees it as the final message.`;
       if (obligations.length === 1) {
         // Single obligation — use verbose format for full context
-        reason = obligations[0].verbose;
+        reason = obligations[0].verbose + SUMMARY_SUFFIX;
       } else {
         // Multiple obligations — combined concise format
         const items = obligations.map((o, i) => `${i + 1}. ${o.short}`).join('\n');
-        reason = `SynaBun: Complete before stopping:\n\n${items}\n\nHandle all items in ONE response, then stop.`;
+        reason = `SynaBun: Complete before stopping:\n\n${items}\n\nHandle all items in ONE response. End with a brief task completion summary so the user sees it last.`;
       }
       process.stdout.write(JSON.stringify({ decision: 'block', reason }));
       return;
@@ -656,7 +676,7 @@ async function main() {
       markPlanStored(standalonePlan.name);
       process.stdout.write(JSON.stringify({
         decision: 'block',
-        reason: `SynaBun: Plan "${planTitle}" was approved but not stored in memory. Call \`remember\` with the plan content. Category: \`plans-${project}\`, importance: 7, tags: ["plan", "implementation", "${project}"], source: "auto-saved".\n\nPlan file: ${standalonePlan.name}\n\n${planContent.slice(0, 4000)}`,
+        reason: `SynaBun: Plan "${planTitle}" was approved but not stored in memory. Call \`remember\` with the plan content. Category: \`plans-${project}\`, importance: 7, tags: ["plan", "implementation", "${project}"], source: "auto-saved".\n\nPlan file: ${standalonePlan.name}\n\n${planContent.slice(0, 4000)}\n\nAfter storing the plan, end with a brief task completion summary so the user sees it as the final message.`,
       }));
       return;
     } catch { /* fall through to allow stop */ }

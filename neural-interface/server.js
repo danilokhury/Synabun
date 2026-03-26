@@ -754,6 +754,21 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
+// GET /api/recall-impact — Memory counts by importance threshold for recall settings UI
+app.get('/api/recall-impact', (req, res) => {
+  try {
+    const d = getDb();
+    const rows = d.prepare(`
+      SELECT importance, COUNT(*) as cnt, CAST(AVG(LENGTH(content)) AS INTEGER) as avg_len
+      FROM memories WHERE trashed_at IS NULL GROUP BY importance ORDER BY importance
+    `).all();
+    res.json({ rows });
+  } catch (err) {
+    console.error('GET /api/recall-impact error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/memory/:id — Single memory detail
 app.get('/api/memory/:id', async (req, res) => {
   try {
@@ -2212,9 +2227,12 @@ function handleClaudeSkinWebSocket(ws) {
       //   Live text rendering uses stream_event deltas instead (small payloads).
       // ============================================================
     ];
-    // Pre-approve tools the user has already allowed this session
+    // Pre-approve tools the user has already allowed this session.
+    // NOTE: Do NOT add AskUserQuestion here — --allowedTools causes the CLI to EXECUTE it
+    // (hanging on stdin in --print mode) instead of DENYING it (which triggers the
+    // permission_denial → control_request → ask card flow we actually want).
     if (approvedTools.size > 0) {
-      args.push('--allowedTools', [...approvedTools].join(' '));
+      args.push('--allowedTools', [...approvedTools].join(','));
     }
     // Allow access to parent directory so the model can reach sibling projects
     const parentDir = dirname(workDir);
@@ -2413,6 +2431,22 @@ function handleClaudeSkinWebSocket(ws) {
           const GATED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'Bash'];
           const toolUses = (event.message?.content || []).filter(b => b.type === 'tool_use');
           for (const tool of toolUses) {
+            // AskUserQuestion: send control_request so the client renders an interactive
+            // ask card instead of letting it fall through as a permission_denial later.
+            // This is the primary trigger — the permission_denial path is a backup.
+            if (tool.name === 'AskUserQuestion') {
+              const requestId = `perm-${tool.id}`;
+              const input = tool.input || {};
+              permCardToolNames.set(requestId, 'AskUserQuestion');
+              console.log(`[claude-skin] ▶ AskUserQuestion detected → sending control_request`);
+              sendToClient({
+                type: 'control_request',
+                request_id: requestId,
+                request: { tool_name: 'AskUserQuestion', subtype: 'can_use_tool', input },
+              });
+              awaitingPermission = true;
+              continue;
+            }
             if (GATED_TOOLS.includes(tool.name) && !approvedTools.has(tool.name)) {
               const requestId = `perm-${tool.id}`;
               const input = tool.input || {};
@@ -4264,8 +4298,8 @@ app.post('/api/loop/templates', (req, res) => {
     description: (description || '').trim(),
     task: task.trim(),
     context: (context || '').trim() || null,
-    iterations: Math.min(Math.max(iterations || 10, 1), 50),
-    maxMinutes: Math.min(Math.max(maxMinutes || 30, 1), 120),
+    iterations: Math.min(Math.max(iterations || 10, 1), 200),
+    maxMinutes: Math.min(Math.max(maxMinutes || 30, 1), 480),
     usesBrowser: usesBrowser || false,
     icon: icon || '\u{1F504}',
     category: category || 'custom',
@@ -4309,8 +4343,8 @@ app.post('/api/loop/templates/import', (req, res) => {
       description: (t.description || '').trim(),
       task: t.task.trim(),
       context: (t.context || '').trim() || null,
-      iterations: Math.min(Math.max(t.iterations || 10, 1), 50),
-      maxMinutes: Math.min(Math.max(t.maxMinutes || 30, 1), 120),
+      iterations: Math.min(Math.max(t.iterations || 10, 1), 200),
+      maxMinutes: Math.min(Math.max(t.maxMinutes || 30, 1), 480),
       usesBrowser: t.usesBrowser || false,
       icon: t.icon || '\u{1F504}',
       category: t.category || 'custom',
@@ -4340,8 +4374,8 @@ app.put('/api/loop/templates/:id', (req, res) => {
   if (description !== undefined) templates[idx].description = description.trim();
   if (task !== undefined) templates[idx].task = task.trim();
   if (context !== undefined) templates[idx].context = context.trim() || null;
-  if (iterations !== undefined) templates[idx].iterations = Math.min(Math.max(iterations, 1), 50);
-  if (maxMinutes !== undefined) templates[idx].maxMinutes = Math.min(Math.max(maxMinutes, 1), 120);
+  if (iterations !== undefined) templates[idx].iterations = Math.min(Math.max(iterations, 1), 200);
+  if (maxMinutes !== undefined) templates[idx].maxMinutes = Math.min(Math.max(maxMinutes, 1), 480);
   if (icon !== undefined) templates[idx].icon = icon;
   if (category !== undefined) templates[idx].category = category;
   if (usesBrowser !== undefined) templates[idx].usesBrowser = !!usesBrowser;
@@ -4363,8 +4397,9 @@ app.delete('/api/loop/templates/:id', (req, res) => {
 // GET /api/loop/active — scan for active loop status
 app.get('/api/loop/active', (req, res) => {
   try {
-    if (!existsSync(LOOP_DIR)) return res.json({ active: false });
+    if (!existsSync(LOOP_DIR)) return res.json({ active: false, loops: [] });
     const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
+    const activeLoops = [];
     for (const f of files) {
       try {
         const filePath = resolve(LOOP_DIR, f);
@@ -4385,8 +4420,7 @@ app.get('/api/loop/active', (req, res) => {
               continue;
             }
           }
-          return res.json({
-            active: true,
+          activeLoops.push({
             sessionId: f.replace('.json', ''),
             task: data.task,
             context: data.context,
@@ -4397,6 +4431,9 @@ app.get('/api/loop/active', (req, res) => {
             remainingMinutes: Math.max(0, Math.round(((data.maxMinutes || 30) * 60 * 1000 - elapsed) / 60000)),
             startedAt: data.startedAt,
             lastIterationAt: data.lastIterationAt,
+            browserSessionId: data.browserSessionId || null,
+            browserTabId: data.browserTabId || null,
+            terminalSessionId: data.terminalSessionId || null,
           });
         } else {
           // Inactive loop file — delete it (no history keeping)
@@ -4404,7 +4441,12 @@ app.get('/api/loop/active', (req, res) => {
         }
       } catch { /* skip corrupt */ }
     }
-    return res.json({ active: false });
+    // Backward compat: first active loop populates top-level fields
+    if (activeLoops.length > 0) {
+      const first = activeLoops[0];
+      return res.json({ active: true, ...first, loops: activeLoops });
+    }
+    return res.json({ active: false, loops: [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4413,7 +4455,7 @@ app.get('/api/loop/active', (req, res) => {
 // POST /api/loop/launch — create loop state + terminal session atomically
 app.post('/api/loop/launch', async (req, res) => {
   try {
-    const { task, context, iterations, maxMinutes, usesBrowser, cwd, profile, model } = req.body;
+    const { task, context, iterations, maxMinutes, usesBrowser, cwd, profile, model, browserSessionId: requestedBrowserSessionId } = req.body;
     if (!task?.trim()) return res.status(400).json({ error: 'task is required' });
 
     // Validate profile if provided
@@ -4426,56 +4468,107 @@ app.post('/api/loop/launch', async (req, res) => {
     // 1. Ensure loop directory exists
     if (!existsSync(LOOP_DIR)) mkdirSync(LOOP_DIR, { recursive: true });
 
-    // 1b. Prevent duplicate launches — stop any active/pending loops first
+    // 1b. Clean up stale/dead loop files — but allow multiple concurrent loops
     const existing = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
     for (const f of existing) {
       try {
         const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
-        if (data.active || data.pending) {
-          if (data.terminalSessionId && terminalSessions.has(data.terminalSessionId)) {
-            try { terminalSessions.get(data.terminalSessionId).pty.kill(); } catch {}
-            terminalSessions.delete(data.terminalSessionId);
-          }
-          // Kill and delete — no history keeping
+        if (!data.active && !data.pending) continue; // already finished
+        // Only kill loops whose terminal is dead (stale cleanup)
+        const termAlive = data.terminalSessionId && terminalSessions.has(data.terminalSessionId);
+        if (!termAlive) {
+          console.log(`[loop] Cleaning up stale loop file ${f} (terminal gone)`);
           try { unlinkSync(resolve(LOOP_DIR, f)); } catch { /* ok */ }
         }
+        // Active loops with live terminals are left running — multi-loop coexistence
       } catch { /* skip corrupt */ }
     }
 
-    // 1c. Reuse existing browser session opened by the UI.
-    // The UI opens the browser BEFORE calling this endpoint (same path as Apps menu),
-    // which creates the viewport + WebSocket screencast that keeps the session alive.
-    // We only reuse here — never create server-side (no viewer = grace timer kills it).
+    // 1c. Acquire a DEDICATED browser session for this loop.
+    // Each automation gets its own browser session for isolation — no sharing.
+    // The UI may pre-create one (passing browserSessionId), or we create server-side.
     let browserSessionId = null;
+    let browserTabId = null;
     if (usesBrowser) {
-      // Wait up to 15s for the UI-opened browser session to be ready.
-      // The UI emits browser:open BEFORE calling this endpoint, but Chrome
-      // takes time to launch. Without waiting, the loop starts without a
-      // browser and the MCP agent creates a second one (mirror mode).
-      const maxWait = 15000;
-      const pollInterval = 500;
-      let waited = 0;
-      while (waited < maxWait) {
-        const existingIds = [...browserSessions.keys()];
-        if (existingIds.length > 0) {
-          browserSessionId = existingIds[0];
-          break;
+      // Strategy 1: UI pre-created a dedicated session — claim it
+      if (requestedBrowserSessionId && browserSessions.has(requestedBrowserSessionId)) {
+        const candidate = browserSessions.get(requestedBrowserSessionId);
+        try {
+          await candidate.page.evaluate('1');
+          browserSessionId = requestedBrowserSessionId;
+          console.log(`[loop] Claimed UI-created browser session ${browserSessionId}`);
+        } catch {
+          console.warn(`[loop] UI-provided session ${requestedBrowserSessionId} is a zombie — destroying`);
+          await destroyBrowserSession(requestedBrowserSessionId).catch(() => {});
         }
-        await new Promise(r => setTimeout(r, pollInterval));
-        waited += pollInterval;
       }
 
+      // Strategy 2: No session from UI — wait briefly for one the UI is opening
+      if (!browserSessionId && !requestedBrowserSessionId) {
+        const maxWait = 15000;
+        const pollInterval = 500;
+        let waited = 0;
+        // Look for the NEWEST session (not existingIds[0]) to avoid stealing another loop's session.
+        // Track which sessions existed before we started waiting.
+        const preExistingIds = new Set(browserSessions.keys());
+        while (waited < maxWait) {
+          for (const [id, session] of browserSessions) {
+            if (preExistingIds.has(id)) continue; // skip sessions that existed before launch
+            try {
+              await session.page.evaluate('1');
+              browserSessionId = id;
+              break;
+            } catch {
+              console.warn(`[loop] New browser session ${id} is a zombie — destroying`);
+              await destroyBrowserSession(id).catch(() => {});
+            }
+          }
+          if (browserSessionId) break;
+          await new Promise(r => setTimeout(r, pollInterval));
+          waited += pollInterval;
+        }
+        if (browserSessionId) {
+          console.log(`[loop] Found new browser session ${browserSessionId} (waited ${waited}ms)`);
+        }
+      }
+
+      // Strategy 3: Still nothing — create a dedicated session server-side
+      if (!browserSessionId) {
+        try {
+          const result = await createBrowserSession({ url: 'about:blank' });
+          browserSessionId = result.sessionId;
+          console.log(`[loop] Created dedicated browser session ${browserSessionId}`);
+          broadcastSync({
+            type: 'browser:session-created',
+            sessionId: browserSessionId, url: 'about:blank',
+            profileMode: result.profileMode, profileSource: result.profileSource,
+          });
+        } catch (err) {
+          console.warn(`[loop] Failed to create browser session: ${err.message} — MCP agent will auto-create`);
+        }
+      }
+
+      // Claim the session: clear grace timer, create a dedicated tab
       if (browserSessionId) {
-        // Cancel any pending grace timer — this session is needed by the loop
-        const reusedSession = browserSessions.get(browserSessionId);
-        if (reusedSession?.graceTimer) {
-          clearTimeout(reusedSession.graceTimer);
-          reusedSession.graceTimer = null;
+        const claimedSession = browserSessions.get(browserSessionId);
+        if (claimedSession?.graceTimer) {
+          clearTimeout(claimedSession.graceTimer);
+          claimedSession.graceTimer = null;
           console.log(`[loop] Cleared grace timer on session ${browserSessionId}`);
         }
-        console.log(`[loop] Reusing existing browser session ${browserSessionId} (waited ${waited}ms)`);
-      } else {
-        console.warn(`[loop] usesBrowser=true but no browser session found after ${maxWait}ms — MCP agent will auto-create`);
+        if (claimedSession?.tabs && claimedSession.tabs.size > 0) {
+          try {
+            const newTab = await createSessionTab(claimedSession, browserSessionId, 'about:blank');
+            browserTabId = newTab.tabId;
+            await _switchSessionTab(claimedSession, browserSessionId, browserTabId);
+            console.log(`[loop] Created new tab ${browserTabId} in session ${browserSessionId}`);
+          } catch (err) {
+            console.warn(`[loop] Failed to create new tab, reusing active tab:`, err.message);
+            browserTabId = claimedSession.activeTabId;
+          }
+        } else {
+          browserTabId = claimedSession?.activeTabId || null;
+        }
       }
     }
 
@@ -4484,7 +4577,13 @@ app.post('/api/loop/launch', async (req, res) => {
     // MCP servers (e.g. supabase OAuth) trigger the "needs auth" prompt that blocks loops.
     // The SynaBun MCP server is registered globally in ~/.claude.json, so it's always available.
     const loopCwd = cwd || PROJECT_ROOT;
-    const terminalSessionId = createTerminalSession(cliProfile, 120, 30, loopCwd, { model });
+    // Pre-generate terminal session ID so we can inject it into the PTY environment.
+    // SYNABUN_TERMINAL_SESSION lets hooks correlate with the correct loop file
+    // after /clear changes the Claude session ID. This is the key to multi-loop isolation.
+    const terminalSessionId = randomBytes(16).toString('hex');
+    const loopExtraEnv = { SYNABUN_TERMINAL_SESSION: terminalSessionId };
+    if (browserSessionId) loopExtraEnv.SYNABUN_BROWSER_SESSION = browserSessionId;
+    createTerminalSession(cliProfile, 120, 30, loopCwd, { model, extraEnv: loopExtraEnv, sessionId: terminalSessionId });
 
     // 3. Create pending loop state file (placeholder — prompt-submit hook will rename)
     const pendingId = 'pending-' + randomBytes(8).toString('hex');
@@ -4492,9 +4591,9 @@ app.post('/api/loop/launch', async (req, res) => {
       active: true,
       task: task.trim(),
       context: context?.trim() || null,
-      totalIterations: Math.min(Math.max(iterations || 10, 1), 50),
+      totalIterations: Math.min(Math.max(iterations || 10, 1), 200),
       currentIteration: 0,
-      maxMinutes: Math.min(Math.max(maxMinutes || 30, 1), 60),
+      maxMinutes: Math.min(Math.max(maxMinutes || 30, 1), 480),
       startedAt: new Date().toISOString(),
       lastIterationAt: null,
       retries: 0,
@@ -4502,6 +4601,7 @@ app.post('/api/loop/launch', async (req, res) => {
       terminalSessionId,
       usesBrowser: !!usesBrowser,
       browserSessionId,
+      browserTabId: browserTabId || null,
       profile: cliProfile,
       model: model || null,
     };
@@ -4512,7 +4612,7 @@ app.post('/api/loop/launch', async (req, res) => {
 
     broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile: cliProfile });
 
-    res.json({ ok: true, pendingId, terminalSessionId, browserSessionId });
+    res.json({ ok: true, pendingId, terminalSessionId, browserSessionId, browserTabId: loopState.browserTabId });
   } catch (err) {
     console.error('POST /api/loop/launch error:', err.message);
     res.status(500).json({ error: err.message });
@@ -4535,6 +4635,12 @@ app.post('/api/loop/stop', (req, res) => {
             const session = terminalSessions.get(data.terminalSessionId);
             try { session.pty.kill(); } catch {}
             terminalSessions.delete(data.terminalSessionId);
+          }
+          // Destroy the loop's dedicated browser session
+          if (data.browserSessionId && browserSessions.has(data.browserSessionId)) {
+            destroyBrowserSession(data.browserSessionId).catch(err => {
+              console.warn(`[loop/stop] Failed to destroy browser session ${data.browserSessionId}:`, err.message);
+            });
           }
           // Delete the loop file — no history keeping
           try { unlinkSync(filePath); } catch { /* ok */ }
@@ -4738,40 +4844,62 @@ async function launchScheduledLoop(schedule) {
   try {
     if (!existsSync(LOOP_DIR)) mkdirSync(LOOP_DIR, { recursive: true });
 
-    // Stop any active loops first (same logic as /api/loop/launch)
+    // Clean up stale/dead loop files — but allow multiple concurrent loops
     const existing = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
     for (const f of existing) {
       try {
         const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
-        if (data.active || data.pending) {
-          if (data.terminalSessionId && terminalSessions.has(data.terminalSessionId)) {
-            try { terminalSessions.get(data.terminalSessionId).pty.kill(); } catch {}
-            terminalSessions.delete(data.terminalSessionId);
-          }
-          try { unlinkSync(resolve(LOOP_DIR, f)); } catch {}
+        if (!data.active && !data.pending) continue; // already finished
+        // Only kill loops whose terminal is dead (stale cleanup)
+        const termAlive = data.terminalSessionId && terminalSessions.has(data.terminalSessionId);
+        if (!termAlive) {
+          console.log(`[schedule] Cleaning up stale loop file ${f} (terminal gone)`);
+          try { unlinkSync(resolve(LOOP_DIR, f)); } catch { /* ok */ }
         }
-      } catch {}
+        // Active loops with live terminals are left running — multi-loop coexistence
+      } catch { /* skip corrupt */ }
     }
 
     const cliProfile = schedule.profile || 'claude-code';
     const cliModel = schedule.model || null;
-    const terminalSessionId = createTerminalSession(cliProfile, 120, 30, PROJECT_ROOT, {});
+    const scheduledUsesBrowser = schedule.usesBrowser !== undefined ? !!schedule.usesBrowser : !!template.usesBrowser;
+
+    // Create dedicated browser session for scheduled loops that need one
+    let scheduledBrowserSessionId = null;
+    const schedExtraEnv = {};
+    if (scheduledUsesBrowser) {
+      try {
+        const result = await createBrowserSession({ url: 'about:blank' });
+        scheduledBrowserSessionId = result.sessionId;
+        schedExtraEnv.SYNABUN_BROWSER_SESSION = scheduledBrowserSessionId;
+        console.log(`[schedule] Created dedicated browser session ${scheduledBrowserSessionId}`);
+        broadcastSync({
+          type: 'browser:session-created',
+          sessionId: scheduledBrowserSessionId, url: 'about:blank',
+          profileMode: result.profileMode, profileSource: result.profileSource,
+        });
+      } catch (err) {
+        console.warn(`[schedule] Failed to create browser session: ${err.message}`);
+      }
+    }
+
+    const terminalSessionId = createTerminalSession(cliProfile, 120, 30, PROJECT_ROOT, { model: cliModel, extraEnv: schedExtraEnv });
 
     const pendingId = 'pending-' + randomBytes(8).toString('hex');
     const loopState = {
       active: true,
       task: template.task,
       context: context || null,
-      totalIterations: Math.min(Math.max(template.iterations || 10, 1), 50),
+      totalIterations: Math.min(Math.max(template.iterations || 10, 1), 200),
       currentIteration: 0,
-      maxMinutes: Math.min(Math.max(template.maxMinutes || 30, 1), 60),
+      maxMinutes: Math.min(Math.max(template.maxMinutes || 30, 1), 480),
       startedAt: new Date().toISOString(),
       lastIterationAt: null,
       retries: 0,
       pending: true,
       terminalSessionId,
-      usesBrowser: schedule.usesBrowser !== undefined ? !!schedule.usesBrowser : !!template.usesBrowser,
-      browserSessionId: null,
+      usesBrowser: scheduledUsesBrowser,
+      browserSessionId: scheduledBrowserSessionId,
       profile: cliProfile,
       model: cliModel,
       scheduledBy: schedule.id,
@@ -4793,8 +4921,8 @@ async function launchScheduledLoop(schedule) {
       saveSchedules(schedules);
     }
 
-    broadcastSync({ type: 'schedule:completed', scheduleId: schedule.id, pendingId, terminalSessionId });
-    console.log(`[schedule] Launched loop for "${schedule.name}" → terminal ${terminalSessionId}`);
+    broadcastSync({ type: 'schedule:completed', scheduleId: schedule.id, pendingId, terminalSessionId, profile: cliProfile });
+    console.log(`[schedule] Launched loop for "${schedule.name}" → terminal ${terminalSessionId} (${cliProfile}/${cliModel || 'default'})`);
   } catch (err) {
     console.error(`[schedule] Failed to launch loop for "${schedule.name}":`, err.message);
     const schedules = loadSchedules();
@@ -4980,6 +5108,42 @@ app.delete('/api/quick-timers/:id', (req, res) => {
   console.log(`[quick-timer] Cancelled timer ${req.params.id}`);
   broadcastSync({ type: 'quick-timer:cancelled', timerId: req.params.id });
   res.json({ ok: true });
+});
+
+// POST /api/quick-timer/now — fire a template immediately (same pipeline as scheduled, for debugging)
+app.post('/api/quick-timer/now', (req, res) => {
+  try {
+    const { templateId, profile, model, usesBrowser } = req.body;
+    if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
+
+    const templates = readLoopTemplates();
+    const template = templates.find(t => t.id === templateId);
+    if (!template) return res.status(400).json({ error: 'Template not found' });
+
+    const timerProfile = profile || 'claude-code';
+    const timerModel = model || null;
+    const timerUsesBrowser = usesBrowser !== undefined ? !!usesBrowser : !!template.usesBrowser;
+
+    const fakeSchedule = {
+      id: `qt-now-${randomBytes(4).toString('hex')}`,
+      name: `Now: ${template.name}`,
+      templateId,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      dayThemes: {},
+      profile: timerProfile,
+      model: timerModel,
+      usesBrowser: timerUsesBrowser,
+    };
+
+    console.log(`[quick-timer] Firing NOW "${template.name}" profile=${timerProfile} model=${timerModel || 'default'}`);
+    _scheduleQueue.push(fakeSchedule);
+    processScheduleQueue();
+
+    broadcastSync({ type: 'quick-timer:fired-now', templateName: template.name, profile: timerProfile, model: timerModel });
+    res.json({ ok: true, templateName: template.name, profile: timerProfile, model: timerModel, usesBrowser: timerUsesBrowser });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Schedule REST API ──
@@ -5424,15 +5588,8 @@ async function launchAgentController(opts) {
 
   // Run in background — don't block the API response
   (async () => {
-    const startTime = Date.now();
-    const timeCap = maxMinutes * 60 * 1000;
-
     for (let i = 1; i <= iterations; i++) {
       if (agent._stopped) break;
-      if (Date.now() - startTime > timeCap) {
-        console.log(`[agent] ${agentId} time cap reached (${maxMinutes}min)`);
-        break;
-      }
 
       agent.currentIteration = i;
       agent._iterOutputStart = agent.textOutput.length;
@@ -7173,6 +7330,7 @@ const SYNABUN_TOOL_PERMISSIONS = [
   'mcp__SynaBun__browser_extract_li_messages',
   'mcp__SynaBun__browser_extract_li_search_people',
   'mcp__SynaBun__browser_extract_li_network',
+  'mcp__SynaBun__browser_extract_li_jobs',
   'mcp__SynaBun__discord_guild',
   'mcp__SynaBun__discord_channel',
   'mcp__SynaBun__discord_role',
@@ -7263,6 +7421,7 @@ const SYNABUN_TOOL_CATEGORIES = [
       { key: 'mcp__SynaBun__browser_extract_li_messages', label: 'Extract messages', desc: 'Pull LinkedIn messaging threads', group: 'LinkedIn' },
       { key: 'mcp__SynaBun__browser_extract_li_search_people', label: 'Search people', desc: 'Pull people search results', group: 'LinkedIn' },
       { key: 'mcp__SynaBun__browser_extract_li_network', label: 'Extract network', desc: 'Pull My Network invitations & suggestions', group: 'LinkedIn' },
+      { key: 'mcp__SynaBun__browser_extract_li_jobs', label: 'Extract jobs', desc: 'Pull job listings from search & recommendations', group: 'LinkedIn' },
       { key: 'mcp__SynaBun__discord_guild', label: 'Server management', desc: 'Server info, channels, members, roles, audit log', group: 'Discord' },
       { key: 'mcp__SynaBun__discord_channel', label: 'Channel management', desc: 'Create, edit, delete, list channels', group: 'Discord' },
       { key: 'mcp__SynaBun__discord_role', label: 'Role management', desc: 'Create, edit, delete, assign roles', group: 'Discord' },
@@ -9928,7 +10087,7 @@ function getTerminalProfile(profileId, opts = {}) {
 
 function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
   if (!pty) throw new Error('Terminal not available: node-pty failed to load. Run: cd neural-interface && npm run postinstall');
-  const sessionId = randomBytes(16).toString('hex');
+  const sessionId = opts.sessionId || randomBytes(16).toString('hex');
   const profileCfg = getTerminalProfile(profile, opts);
 
   // Strip VSCode env vars so spawned CLIs (e.g. claude) don't think they're inside VSCode
@@ -9943,7 +10102,7 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     cols: cols || 120,
     rows: rows || 30,
     cwd: cwd || process.env.USERPROFILE || process.env.HOME || process.cwd(),
-    env: { ...cleanEnv, ...profileCfg.env },
+    env: { ...cleanEnv, ...profileCfg.env, ...(opts.extraEnv || {}) },
     useConpty: IS_WIN,
   });
 
@@ -9967,20 +10126,42 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     }, 5000);
   }
 
-  ptyProcess.onData((data) => {
-    // Append to ring buffer for replay on reconnect
-    session.outputBuffer.push(data);
-    session.outputBufferBytes += data.length;
+  // ── Output coalescing ──
+  // PTY onData fires per chunk (can be many times per ms). Each separate
+  // WebSocket message triggers a write() + reflow on the client. By batching
+  // chunks per event-loop tick we send one larger message instead of many small
+  // ones, reducing client-side write() calls from N/frame to ~1/frame.
+  let _outputCoalesceBuf = '';
+  let _outputCoalesceScheduled = false;
+  const _flushCoalesced = () => {
+    _outputCoalesceScheduled = false;
+    if (!_outputCoalesceBuf) return;
+    const coalesced = _outputCoalesceBuf;
+    _outputCoalesceBuf = '';
+
+    // Append to ring buffer (one entry per flush, not per chunk)
+    session.outputBuffer.push(coalesced);
+    session.outputBufferBytes += coalesced.length;
     while (session.outputBufferBytes > TERMINAL_BUFFER_MAX_BYTES && session.outputBuffer.length > 1) {
       session.outputBufferBytes -= session.outputBuffer.shift().length;
     }
 
-    // Live link capture hook — called when a live-mode link is capturing this session's output
+    const msg = JSON.stringify({ type: 'output', data: coalesced });
+    session.clients.forEach(ws => {
+      if (ws.readyState === 1) ws.send(msg);
+    });
+  };
+
+  ptyProcess.onData((data) => {
+    // Accumulate into coalesce buffer
+    _outputCoalesceBuf += data;
+
+    // Live link capture hook (needs per-chunk immediacy for prompt detection)
     if (session._linkCaptureCallback) {
       session._linkCaptureCallback(data);
     }
 
-    // Loop driver capture — accumulates output for prompt detection
+    // Loop driver capture (needs per-chunk immediacy for prompt detection)
     if (session._loopDriverBuffer !== undefined) {
       session._loopDriverBuffer += data;
       if (session._loopDriverBuffer.length > 16384) {
@@ -9988,11 +10169,11 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
       }
     }
 
-    const msg = JSON.stringify({ type: 'output', data });
-    session.clients.forEach(ws => {
-      if (ws.readyState === 1) ws.send(msg);
-    });
-
+    // Schedule flush for end of current event-loop tick
+    if (!_outputCoalesceScheduled) {
+      _outputCoalesceScheduled = true;
+      setImmediate(_flushCoalesced);
+    }
   });
 
   ptyProcess.onExit(({ exitCode }) => {
@@ -10077,18 +10258,25 @@ function loopPromptReady(buffer) {
 /**
  * Attach a loop driver to a terminal session. The driver watches for the
  * `awaitingNext` flag in the loop state file. When detected, it sends /clear
- * to the PTY, waits for the prompt, then sends the next iteration message.
+ * to the PTY via fixed delays, then sends the next iteration message.
+ *
+ * Prompt detection (loopPromptReady) is ONLY used for the initial boot claim
+ * where we need to detect when the CLI has started. For iteration transitions,
+ * we use deterministic delays — the stop hook guarantees the PTY is at the prompt.
  */
 function attachLoopDriver(terminalSessionId) {
   const session = terminalSessions.get(terminalSessionId);
   if (!session) return;
 
-  // Initialize capture buffer
+  // Initialize capture buffer (used only for initial boot prompt detection)
   session._loopDriverBuffer = '';
+  session._loopDriverStartedAt = Date.now();
+  session._pendingClaimed = false;
+  session._pendingClaimedAt = null;
   let driving = false; // prevent re-entrance
 
   let consecutiveFailures = 0;
-  const MAX_DRIVE_FAILURES = 20; // more tolerance — prompt detection is fragile
+  const MAX_DRIVE_FAILURES = 5; // with deterministic delays, failures are real problems
 
   const interval = setInterval(async () => {
     if (driving) return;
@@ -10096,6 +10284,27 @@ function attachLoopDriver(terminalSessionId) {
       clearInterval(interval);
       console.log('[loop-driver] Terminal session gone, clearing driver interval');
       return;
+    }
+
+    // Cooldown after pending claim: don't scan for awaitingNext while the first
+    // iteration is still running. Once the pending file is gone (renamed by hook)
+    // AND some time has passed, resume normal scanning.
+    if (session._pendingClaimedAt) {
+      const sinceClaim = Date.now() - session._pendingClaimedAt;
+      // Check if any pending files for this terminal still exist
+      const stillPending = existsSync(LOOP_DIR) && readdirSync(LOOP_DIR)
+        .filter(f => f.startsWith('pending-') && f.endsWith('.json'))
+        .some(pf => {
+          try {
+            const ps = JSON.parse(readFileSync(resolve(LOOP_DIR, pf), 'utf-8'));
+            return ps.terminalSessionId === terminalSessionId;
+          } catch { return false; }
+        });
+      // If pending file is still there, the hook hasn't claimed yet — wait
+      // If claimed but less than 60s ago, the first iteration is likely still running
+      if (stillPending || sinceClaim < 60_000) return;
+      // First iteration should be underway — clear cooldown and resume normal scanning
+      session._pendingClaimedAt = null;
     }
 
     // Scan for any loop state file with awaitingNext
@@ -10130,9 +10339,6 @@ function attachLoopDriver(terminalSessionId) {
             console.error(`[loop-driver] ${MAX_DRIVE_FAILURES} consecutive failures — deleting loop`);
             try { unlinkSync(resolve(LOOP_DIR, f)); } catch { /* ok */ }
             consecutiveFailures = 0;
-          } else {
-            // Back off before next retry to let any in-progress Claude response finish
-            await new Promise(r => setTimeout(r, Math.min(consecutiveFailures * 5000, 30000)));
           }
         }
 
@@ -10144,19 +10350,44 @@ function attachLoopDriver(terminalSessionId) {
       // message directly to the PTY once Claude's > prompt is detected.
       // This makes the server authoritative for the first iteration claim, bypassing
       // the client-side _sendOnceReady which can silently fail if the WS is closed.
-      if (!driving) {
-        const pendingFiles = readdirSync(LOOP_DIR)
-          .filter(f => f.startsWith('pending-') && f.endsWith('.json'));
-        for (const pf of pendingFiles) {
-          let pendingState;
-          try { pendingState = JSON.parse(readFileSync(resolve(LOOP_DIR, pf), 'utf-8')); } catch { continue; }
-          if (pendingState.terminalSessionId !== terminalSessionId) continue;
-          if (!pendingState.active && !pendingState.pending) continue;
-          if (loopPromptReady(session._loopDriverBuffer || '')) {
-            console.log(`[loop-driver] Claiming pending loop ${pf} via PTY write`);
-            session.pty.write('[SynaBun Loop] Begin task.\r');
+      if (!driving && !session._pendingClaimed) {
+        // Boot delay: CLI needs ~8-12s to start. Don't poll too early.
+        const bootElapsed = Date.now() - (session._loopDriverStartedAt || Date.now());
+        if (bootElapsed < 8000) {
+          // Too early — let CLI boot
+        } else {
+          const pendingFiles = readdirSync(LOOP_DIR)
+            .filter(f => f.startsWith('pending-') && f.endsWith('.json'));
+          for (const pf of pendingFiles) {
+            let pendingState;
+            try { pendingState = JSON.parse(readFileSync(resolve(LOOP_DIR, pf), 'utf-8')); } catch { continue; }
+            if (pendingState.terminalSessionId !== terminalSessionId) continue;
+            if (!pendingState.active && !pendingState.pending) continue;
+
+            // Check for prompt OR use fallback after 30s of waiting
+            const waitedForPrompt = bootElapsed - 8000;
+            const promptDetected = loopPromptReady(session._loopDriverBuffer || '');
+            const fallbackFire = waitedForPrompt > 30000;
+
+            if (promptDetected || fallbackFire) {
+              console.log(`[loop-driver] Claiming pending loop ${pf} via PTY write (prompt=${promptDetected}, fallback=${fallbackFire}, waited=${Math.round(bootElapsed / 1000)}s)`);
+              session._pendingClaimed = true;
+              session._pendingClaimedAt = Date.now();
+              session._loopDriverBuffer = '';
+
+              // Send the initial task message
+              const chunkTime = writeToLoopPty(session, '[SynaBun Loop] Begin task.', true);
+
+              // Auto-confirm Enter after the message settles (handles Y/n prompt)
+              setTimeout(() => {
+                try {
+                  session.pty.write('\r');
+                  console.log('[loop-driver] Sent auto-confirm Enter for pending claim');
+                } catch { /* pty may be dead */ }
+              }, chunkTime + 4000);
+            }
+            break;
           }
-          break;
         }
       }
     } catch { /* ok */ }
@@ -10166,119 +10397,45 @@ function attachLoopDriver(terminalSessionId) {
 }
 
 /**
- * Wait for the > prompt to appear in the PTY output buffer.
- * Resolves true if prompt detected, false on timeout.
- */
-function waitForLoopPrompt(session, timeoutMs = 15000) {
-  return new Promise((resolve) => {
-    const start = Date.now();
-    const check = setInterval(() => {
-      if (loopPromptReady(session._loopDriverBuffer || '')) {
-        clearInterval(check);
-        resolve(true);
-      } else if (Date.now() - start > timeoutMs) {
-        clearInterval(check);
-        console.warn('[loop-driver] Prompt detection timed out after', timeoutMs, 'ms');
-        resolve(false);
-      }
-    }, 500);
-  });
-}
-
-/**
- * Drive the next loop iteration: /clear → wait → iteration prompt → auto-confirm.
- * Returns true if successful, false if prompt detection failed (loop should retry).
- * On repeated failures, force-sends /clear + iteration message as a last resort.
+ * Drive the next loop iteration: fixed delay → /clear → fixed delay → iteration prompt → auto-confirm.
+ * Uses deterministic delays instead of fragile PTY prompt detection.
+ * The stop hook only sets awaitingNext after Claude has fully stopped, so the PTY
+ * IS at the > prompt — we just need a small grace period for rendering.
  */
 async function driveNextIteration(session, loopState, filename) {
   const loopPath = resolve(LOOP_DIR, filename);
   const iter = loopState.currentIteration;
-  const forceMode = (loopState._driveRetries || 0) >= 3; // after 3 retries, force-send
 
-  console.log(`[loop-driver] Driving iteration ${iter}/${loopState.totalIterations}${forceMode ? ' (FORCE MODE)' : ''}`);
+  console.log(`[loop-driver] Driving iteration ${iter}/${loopState.totalIterations}`);
 
-  if (forceMode) {
-    // Force mode: skip prompt detection entirely — just blast /clear and iteration message.
-    // This handles cases where the prompt is present but detection fails (ANSI quirks, etc.)
-    console.log(`[loop-driver] Force-sending /clear + iteration message (retries exhausted)`);
-    session._loopDriverBuffer = '';
-    session.pty.write('/clear\r');
-    // Wait a fixed 8s for /clear to process
-    await new Promise(r => setTimeout(r, 8000));
-    session._loopDriverBuffer = '';
-    const iterMsg = `[SynaBun Loop] Iteration ${iter}. Begin task.`;
-    const chunkTime = writeToLoopPty(session, iterMsg, true);
-    setTimeout(() => {
-      try { session.pty.write('\r'); } catch { /* ok */ }
-      console.log('[loop-driver] Sent auto-confirm Enter (force mode)');
-    }, chunkTime + 4000);
-    // Clear retry counter and awaitingNext
-    try {
-      const freshState = JSON.parse(readFileSync(loopPath, 'utf-8'));
-      freshState.awaitingNext = false;
-      freshState._driveRetries = 0;
-      writeFileSync(loopPath, JSON.stringify(freshState, null, 2));
-    } catch (err) {
-      console.warn('[loop-driver] Failed to clear awaitingNext (force):', err.message);
-    }
-    return true;
-  }
-
-  // Step 1: Wait for > prompt (Claude finished stopping)
-  const alreadyAtPrompt = loopPromptReady(session._loopDriverBuffer || '');
-  session._loopDriverBuffer = '';
-  if (!alreadyAtPrompt) {
-    let promptReady = await waitForLoopPrompt(session, 30000);
-    if (!promptReady) {
-      console.warn(`[loop-driver] Prompt not detected after 30s for iteration ${iter}, retrying with 45s...`);
-      promptReady = await waitForLoopPrompt(session, 45000);
-    }
-    if (!promptReady) {
-      // Track retries in the loop state for force mode escalation
-      try {
-        const freshState = JSON.parse(readFileSync(loopPath, 'utf-8'));
-        freshState._driveRetries = (freshState._driveRetries || 0) + 1;
-        writeFileSync(loopPath, JSON.stringify(freshState, null, 2));
-      } catch { /* ok */ }
-      console.error(`[loop-driver] Prompt not detected after 75s for iteration ${iter} (retry ${(loopState._driveRetries || 0) + 1}/3 before force mode)`);
-      return false;
-    }
-  }
+  // Step 1: Grace delay — let PTY finish rendering after Claude stopped
+  await new Promise(r => setTimeout(r, 2000));
 
   // Step 2: Send /clear to reset conversation context
   session._loopDriverBuffer = '';
   session.pty.write('/clear\r');
   console.log('[loop-driver] Sent /clear');
 
-  // Step 3: Wait for > prompt after /clear completes
-  let promptReady = await waitForLoopPrompt(session, 30000);
-  if (!promptReady) {
-    console.warn(`[loop-driver] Prompt not detected after /clear (30s) for iteration ${iter}, retrying with 45s...`);
-    promptReady = await waitForLoopPrompt(session, 45000);
-  }
-  if (!promptReady) {
-    // /clear was sent but prompt not detected — still try to send the message
-    // since /clear likely completed and the prompt format just isn't matching
-    console.warn(`[loop-driver] Prompt not detected after /clear but proceeding anyway (iteration ${iter})`);
-    await new Promise(r => setTimeout(r, 3000)); // small grace delay
-  }
+  // Step 3: Wait for /clear to process (CLI clears conversation, renders fresh prompt)
+  await new Promise(r => setTimeout(r, 5000));
 
   // Step 4: Send the iteration message (prompt-submit hook will inject full context)
+  session._loopDriverBuffer = '';
   const iterMsg = `[SynaBun Loop] Iteration ${iter}. Begin task.`;
   const chunkTime = writeToLoopPty(session, iterMsg, true);
-  console.log(`[loop-driver] Sent iteration ${iter} message (${iterMsg.length} chars)`);
+  console.log(`[loop-driver] Sent iteration ${iter} message`);
 
   // Step 5: Auto-confirm (Enter after all chunks + settle time)
   setTimeout(() => {
     try { session.pty.write('\r'); } catch { /* ok */ }
     console.log('[loop-driver] Sent auto-confirm Enter');
-  }, chunkTime + 4000);
+  }, chunkTime + 3000);
 
-  // Step 6: Clear awaitingNext flag + reset retry counter
+  // Step 6: Clear awaitingNext flag
   try {
     const freshState = JSON.parse(readFileSync(loopPath, 'utf-8'));
     freshState.awaitingNext = false;
-    freshState._driveRetries = 0;
+    delete freshState._driveRetries; // no longer needed
     writeFileSync(loopPath, JSON.stringify(freshState, null, 2));
   } catch (err) {
     console.warn('[loop-driver] Failed to clear awaitingNext:', err.message);
@@ -12334,6 +12491,11 @@ async function createBrowserSession(options = {}) {
     '--enable-webgl',
     '--disable-session-crashed-bubble',
     '--hide-crash-restore-bubble',
+    // Prevent Chrome from throttling rendering when the window loses OS focus.
+    // Without these, CDP screencast freezes when the browser isn't the foreground app.
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
   ];
 
   // Note: --use-gl=swiftshader removed — Playwright's new headless mode handles GPU
@@ -12581,20 +12743,24 @@ async function createBrowserSession(options = {}) {
         } catch (e) {
           console.warn(`[browser] Full profile copy failed, falling back to partial: ${e.message}`);
         }
-        // Remove lock files and active WAL/SHM files that Chrome holds locks on
-        const lockFiles = [
-          'Cookies-wal', 'Cookies-shm',
-          'Login Data-wal', 'Login Data-shm',
-          'Web Data-wal', 'Web Data-shm',
-          'Favicons-wal', 'Favicons-shm',
-          'Top Sites-wal', 'Top Sites-shm',
-          'Shortcuts-wal', 'Shortcuts-shm',
-          'LOCK', 'lockfile',
-        ];
-        for (const lf of lockFiles) {
-          const p = resolve(mirrorDefault, lf);
-          try { if (existsSync(p)) unlinkSync(p); } catch {}
-        }
+        // Remove ALL SQLite journals and LevelDB locks recursively.
+        // Chrome profiles have 20+ SQLite databases — a hardcoded list misses many
+        // (History, DIPS, Network Action Predictor, etc.) causing "error opening
+        // your profile" when databases are copied mid-transaction while Chrome runs.
+        const junkPatterns = /(-wal|-shm|-journal)$/;
+        const junkExact = new Set(['LOCK', 'lockfile', 'LOG', 'LOG.old']);
+        let cleanedCount = 0;
+        try {
+          const entries = readdirSync(mirrorDefault, { recursive: true });
+          for (const rel of entries) {
+            const name = (typeof rel === 'string' ? rel : String(rel)).split('/').pop();
+            if (junkPatterns.test(name) || junkExact.has(name)) {
+              const full = resolve(mirrorDefault, typeof rel === 'string' ? rel : String(rel));
+              try { unlinkSync(full); cleanedCount++; } catch {}
+            }
+          }
+        } catch {}
+        if (cleanedCount) console.log(`[browser] Cleaned ${cleanedCount} lock/journal files from mirror profile`);
       }
       userDataDir = mirrorRoot;
       _profileDirectory = null; // mirror uses "Default" subfolder directly
@@ -12806,11 +12972,14 @@ async function createBrowserSession(options = {}) {
     throw new Error('Cannot create CDP session for screencast: ' + err.message);
   }
 
+  // Generate first tab ID
+  const firstTabId = randomBytes(4).toString('hex');
+
   const session = {
     browser,
     context,
-    page,
-    cdpSession,
+    page,              // alias → active tab's page (backward compat)
+    cdpSession,        // alias → active tab's CDP session (backward compat)
     _isPersistent,
     _profileMode: _profileMode || 'clean',
     _profileSourceName: _profileSourceName || null,
@@ -12820,36 +12989,75 @@ async function createBrowserSession(options = {}) {
     graceTimer: null,
     currentUrl: startUrl,
     title: await page.title().catch(() => ''),
+    // ── Multi-tab support ──
+    tabs: new Map(),          // tabId → { page, cdpSession, url, title }
+    activeTabId: firstTabId,
   };
 
-  // Listen for URL changes
-  page.on('framenavigated', async (frame) => {
-    if (frame === page.mainFrame()) {
-      session.currentUrl = page.url();
-      session.title = await page.title().catch(() => '');
-      const msg = JSON.stringify({ type: 'navigated', url: session.currentUrl, title: session.title });
-      session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
-    }
+  // Register the first tab
+  session.tabs.set(firstTabId, {
+    page,
+    cdpSession,
+    url: startUrl,
+    title: session.title,
   });
 
-  // Listen for page load
-  page.on('load', async () => {
-    session.title = await page.title().catch(() => '');
-    const msg = JSON.stringify({ type: 'loaded', url: page.url(), title: session.title });
-    session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
-  });
-
-  // Handle page close (user closed tab in headed mode, or crash)
-  page.on('close', () => {
-    console.log(`Browser page closed for session ${sessionId}`);
-    session.clients.forEach(ws => {
-      if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Page closed' }));
-        ws.close(1000, 'Page closed');
+  // Wire page events for a tab (reusable for new tabs)
+  function wireTabPageEvents(tabId, tabPage) {
+    tabPage.on('framenavigated', async (frame) => {
+      if (frame === tabPage.mainFrame()) {
+        const url = tabPage.url();
+        const title = await tabPage.title().catch(() => '');
+        const tabEntry = session.tabs.get(tabId);
+        if (tabEntry) { tabEntry.url = url; tabEntry.title = title; }
+        // Only broadcast to clients if this is the active tab
+        if (session.activeTabId === tabId) {
+          session.currentUrl = url;
+          session.title = title;
+          const msg = JSON.stringify({ type: 'navigated', url, title });
+          session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+        }
       }
     });
-    session.clients.clear();
-  });
+
+    tabPage.on('load', async () => {
+      const title = await tabPage.title().catch(() => '');
+      const tabEntry = session.tabs.get(tabId);
+      if (tabEntry) { tabEntry.title = title; tabEntry.url = tabPage.url(); }
+      if (session.activeTabId === tabId) {
+        session.title = title;
+        const msg = JSON.stringify({ type: 'loaded', url: tabPage.url(), title });
+        session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+      }
+    });
+
+    tabPage.on('close', () => {
+      console.log(`Browser tab ${tabId} page closed for session ${sessionId}`);
+      session.tabs.delete(tabId);
+      // If active tab closed, switch to another tab if available
+      if (session.activeTabId === tabId) {
+        const remaining = [...session.tabs.keys()];
+        if (remaining.length > 0) {
+          _switchSessionTab(session, sessionId, remaining[0]).catch(() => {});
+        } else {
+          // No tabs left — notify clients
+          session.clients.forEach(ws => {
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: 'error', message: 'All tabs closed' }));
+              ws.close(1000, 'All tabs closed');
+            }
+          });
+          session.clients.clear();
+        }
+      }
+      broadcastSync({ type: 'browser:tab-closed', sessionId, tabId, remainingTabs: session.tabs.size });
+    });
+  }
+
+  // Wire events for the first tab
+  wireTabPageEvents(firstTabId, page);
+  // Store the wiring function on the session for creating new tabs
+  session._wireTabPageEvents = wireTabPageEvents;
 
   // Handle context close (browser quit)
   context.on('close', () => {
@@ -12928,12 +13136,100 @@ async function stopScreencast(session) {
   } catch {}
 }
 
+// ── Multi-tab helpers ──
+
+/**
+ * Create a new tab (page) in an existing browser session.
+ * Returns { tabId, url, title }.
+ */
+async function createSessionTab(session, sessionId, url = 'about:blank') {
+  const tabId = randomBytes(4).toString('hex');
+  const page = await session.context.newPage();
+  if (url && url !== 'about:blank') {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+  }
+  const cdpSession = await session.context.newCDPSession(page);
+  const title = await page.title().catch(() => '');
+
+  session.tabs.set(tabId, { page, cdpSession, url: page.url(), title });
+  if (session._wireTabPageEvents) session._wireTabPageEvents(tabId, page);
+
+  console.log(`[browser] New tab ${tabId} created in session ${sessionId} (total: ${session.tabs.size})`);
+  broadcastSync({ type: 'browser:tab-created', sessionId, tabId, url: page.url(), title, tabCount: session.tabs.size });
+  return { tabId, url: page.url(), title };
+}
+
+/**
+ * Switch the active tab — stops screencast on old tab, starts on new one.
+ * Updates backward-compat aliases (session.page, session.cdpSession).
+ */
+async function _switchSessionTab(session, sessionId, tabId) {
+  const tabEntry = session.tabs.get(tabId);
+  if (!tabEntry) throw new Error(`Tab ${tabId} not found`);
+  if (session.activeTabId === tabId) return; // already active
+
+  // Stop screencast on current tab
+  await stopScreencast(session);
+
+  // Switch aliases
+  session.activeTabId = tabId;
+  session.page = tabEntry.page;
+  session.cdpSession = tabEntry.cdpSession;
+  session.currentUrl = tabEntry.url;
+  session.title = tabEntry.title;
+
+  // Start screencast on new tab
+  await startScreencast(session);
+
+  // Notify clients of the switch
+  const msg = JSON.stringify({
+    type: 'tab-switched',
+    tabId,
+    url: session.currentUrl,
+    title: session.title,
+    tabCount: session.tabs.size,
+  });
+  session.clients.forEach(ws => { if (ws.readyState === 1) ws.send(msg); });
+
+  console.log(`[browser] Switched to tab ${tabId} in session ${sessionId}`);
+  broadcastSync({ type: 'browser:tab-switched', sessionId, tabId, url: session.currentUrl, title: session.title });
+}
+
+/**
+ * Close a single tab in a session. If it's the last tab, destroys the whole session.
+ */
+async function closeSessionTab(session, sessionId, tabId) {
+  const tabEntry = session.tabs.get(tabId);
+  if (!tabEntry) return;
+
+  session.tabs.delete(tabId);
+
+  if (session.tabs.size === 0) {
+    // Last tab — destroy the whole session
+    await destroyBrowserSession(sessionId);
+    return;
+  }
+
+  // If closing the active tab, switch to another
+  if (session.activeTabId === tabId) {
+    const nextTabId = [...session.tabs.keys()][0];
+    await _switchSessionTab(session, sessionId, nextTabId);
+  }
+
+  // Close the page
+  try { await tabEntry.page.close(); } catch {}
+  console.log(`[browser] Tab ${tabId} closed in session ${sessionId} (remaining: ${session.tabs.size})`);
+}
+
 /**
  * Clean up a browser session.
  */
 async function destroyBrowserSession(sessionId) {
   const session = browserSessions.get(sessionId);
   if (!session) return;
+
+  // Remove from Map immediately to prevent races (new sessions seeing zombie entries)
+  browserSessions.delete(sessionId);
 
   // Save storage state (cookies, localStorage) for ALL context types.
   // Mirror dirs get wiped on next launch, so storageState is the only way
@@ -12988,7 +13284,6 @@ async function destroyBrowserSession(sessionId) {
   } else {
     try { await session.browser.close(); } catch {}
   }
-  browserSessions.delete(sessionId);
   broadcastSync({ type: 'browser:session-deleted', sessionId });
 }
 
@@ -13005,6 +13300,13 @@ app.get('/api/browser/sessions', (req, res) => {
     profileMode: s._profileMode || 'clean',
     profileSource: s._profileSourceName || null,
     wsEndpoint: s._isPersistent ? null : (s.browser.wsEndpoint?.() || null),
+    activeTabId: s.activeTabId || null,
+    tabs: s.tabs ? [...s.tabs.entries()].map(([tid, t]) => ({
+      id: tid,
+      url: t.url,
+      title: t.title,
+      active: tid === s.activeTabId,
+    })) : [],
   }));
   res.json({ sessions });
 });
@@ -13033,6 +13335,51 @@ app.delete('/api/browser/sessions/:id', async (req, res) => {
   try {
     await destroyBrowserSession(req.params.id);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Tab management endpoints ──
+
+app.get('/api/browser/sessions/:id/tabs', (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const tabs = [...session.tabs.entries()].map(([tid, t]) => ({
+    id: tid, url: t.url, title: t.title, active: tid === session.activeTabId,
+  }));
+  res.json({ tabs, activeTabId: session.activeTabId });
+});
+
+app.post('/api/browser/sessions/:id/tabs', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    const { url } = req.body;
+    const tab = await createSessionTab(session, req.params.id, url || 'about:blank');
+    res.json({ ok: true, ...tab });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/browser/sessions/:id/tabs/:tabId/activate', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    await _switchSessionTab(session, req.params.id, req.params.tabId);
+    res.json({ ok: true, activeTabId: req.params.tabId, url: session.currentUrl, title: session.title });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/browser/sessions/:id/tabs/:tabId', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  try {
+    await closeSessionTab(session, req.params.id, req.params.tabId);
+    res.json({ ok: true, remainingTabs: session.tabs?.size ?? 0 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -13732,6 +14079,33 @@ const httpServer = app.listen(PORT, async () => {
   } catch (err) {
     console.warn('  OpenClaw bridge sync warning:', err.message);
   }
+
+  // Clean up orphaned loop state files from previous server runs.
+  // After a restart, PTY sessions are gone but loop files remain with awaitingNext: true.
+  // No terminal session exists to drive them, so delete them to prevent ghost loops.
+  try {
+    if (existsSync(LOOP_DIR)) {
+      const loopFiles = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
+      let cleaned = 0;
+      for (const f of loopFiles) {
+        const fp = resolve(LOOP_DIR, f);
+        try {
+          const data = JSON.parse(readFileSync(fp, 'utf-8'));
+          if (!data.active && !data.pending) {
+            // Inactive — safe to delete
+            unlinkSync(fp);
+            cleaned++;
+          } else if (data.terminalSessionId && !terminalSessions.has(data.terminalSessionId)) {
+            // Active/pending but terminal is dead (server restarted) — orphaned
+            console.log(`[startup] Cleaning orphaned loop ${f} (terminal ${data.terminalSessionId} gone)`);
+            unlinkSync(fp);
+            cleaned++;
+          }
+        } catch { /* skip corrupt files */ }
+      }
+      if (cleaned > 0) console.log(`  Loops:     cleaned ${cleaned} orphaned loop file${cleaned !== 1 ? 's' : ''}`);
+    }
+  } catch { /* ok */ }
 });
 
 // ═══════════════════════════════════════════
@@ -14135,11 +14509,27 @@ async function handleBrowserWebSocket(ws, url) {
   session.clients.add(ws);
   if (session.graceTimer) { clearTimeout(session.graceTimer); session.graceTimer = null; }
 
-  // Send current state
+  // Validate the browser page is still alive before reusing the session
+  try {
+    await session.page.evaluate('1');
+  } catch {
+    console.warn('[ws-browser] Page is dead for session', sessionId, '— destroying zombie');
+    session.clients.delete(ws);
+    await destroyBrowserSession(sessionId);
+    ws.send(JSON.stringify({ type: 'error', message: 'Browser session expired' }));
+    ws.close();
+    return;
+  }
+
+  // Send current state including tab info
   ws.send(JSON.stringify({
     type: 'init',
     url: session.currentUrl,
     title: session.title,
+    activeTabId: session.activeTabId || null,
+    tabs: session.tabs ? [...session.tabs.entries()].map(([tid, t]) => ({
+      id: tid, url: t.url, title: t.title, active: tid === session.activeTabId,
+    })) : [],
   }));
 
   // Start screencast if not already running
@@ -14203,6 +14593,29 @@ async function handleBrowserWebSocket(ws, url) {
           everyNthFrame: scCfg2.everyNthFrame || 2,
         }).catch(() => {});
         session.screencastActive = true;
+      } else if (msg.type === 'switch-tab' && msg.tabId) {
+        // Client requests tab switch
+        try {
+          await _switchSessionTab(session, sessionId, msg.tabId);
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: `Tab switch failed: ${err.message}` }));
+        }
+      } else if (msg.type === 'new-tab') {
+        // Client requests new tab
+        try {
+          const tab = await createSessionTab(session, sessionId, msg.url || 'about:blank');
+          await _switchSessionTab(session, sessionId, tab.tabId);
+          ws.send(JSON.stringify({ type: 'tab-created', tabId: tab.tabId, url: tab.url, title: tab.title }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: `New tab failed: ${err.message}` }));
+        }
+      } else if (msg.type === 'close-tab' && msg.tabId) {
+        // Client requests tab close
+        try {
+          await closeSessionTab(session, sessionId, msg.tabId);
+        } catch (err) {
+          ws.send(JSON.stringify({ type: 'error', message: `Close tab failed: ${err.message}` }));
+        }
       }
     } catch { /* ignore malformed */ }
   });

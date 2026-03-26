@@ -295,7 +295,7 @@ export function openKeybindsModal() {
   const backdrop = document.createElement('div');
   backdrop.className = 'kb-backdrop';
   backdrop.id = 'kb-backdrop';
-  backdrop.addEventListener('click', closeKeybindsModal);
+  // Backdrop click disabled — close only via ESC or close button
 
   const panel = document.createElement('div');
   panel.className = 'keybinds-panel glass';
@@ -304,6 +304,9 @@ export function openKeybindsModal() {
   panel.innerHTML = `
     <div class="settings-panel-header">
       <h3>Keyboard Shortcuts</h3>
+      <button class="backdrop-toggle-btn" id="kb-backdrop-toggle" data-tooltip="Toggle backdrop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
       <button class="settings-panel-close kb-close">&times;</button>
     </div>
     <div class="kb-hint">Click any action to rebind. Press <kbd>Esc</kbd> to cancel recording.</div>
@@ -326,6 +329,17 @@ export function openKeybindsModal() {
 
   // Wire events
   panel.querySelector('.kb-close').addEventListener('click', closeKeybindsModal);
+
+  const kbBdToggle = panel.querySelector('#kb-backdrop-toggle');
+  if (kbBdToggle) {
+    kbBdToggle.addEventListener('click', () => {
+      const kbBackdrop = document.getElementById('kb-backdrop');
+      if (kbBackdrop) {
+        kbBackdrop.classList.toggle('backdrop-hidden');
+        kbBdToggle.classList.toggle('active', kbBackdrop.classList.contains('backdrop-hidden'));
+      }
+    });
+  }
 
   // Row or key button clicks → start recording
   panel.querySelectorAll('.kb-row').forEach(row => {

@@ -7,6 +7,7 @@ import { storage } from './storage.js';
 import { emit, on } from './state.js';
 import { fetchClaudeSessions, fetchBrowserSessions } from './api.js';
 import { createFrameRenderer } from './utils.js';
+import { notify, NOTIF_TYPE } from './ui-notifications.js';
 
 const CLAUDE_ICON = '<svg fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
 
@@ -257,7 +258,7 @@ function injectStyles() {
     /* ── Panel shell — floating macOS-style container ── */
     .claude-panel {
       position: fixed;
-      top: 64px; right: 16px;
+      top: 68px; right: 16px;
       width: 22%; min-width: 320px; max-width: 700px;
       bottom: 16px;
       z-index: 200;
@@ -1520,18 +1521,17 @@ function injectStyles() {
     .cp-gauge-section[data-cat="cache-write"] { background: rgba(150,100,200,0.45); }
     .cp-gauge-section[data-cat="input"] { background: rgba(100,200,150,0.45); }
     .cp-gauge-section[data-cat="output"] { background: rgba(220,170,80,0.45); }
-    .cp-gauge-tip {
-      position: absolute; bottom: calc(100% + 6px); left: 50%;
-      transform: translateX(-50%);
+    #cp-gauge-tooltip {
+      position: fixed;
       background: rgba(8,8,10,0.95); border: 1px solid rgba(255,255,255,0.1);
       border-radius: 4px; padding: 2px 6px;
       font-size: 8.5px; font-family: 'JetBrains Mono', monospace;
       color: rgba(255,255,255,0.6);
       white-space: nowrap; pointer-events: none;
       opacity: 0; transition: opacity 0.15s;
-      z-index: 10;
+      z-index: 999999;
     }
-    .cp-gauge-section:hover .cp-gauge-tip { opacity: 1; }
+    #cp-gauge-tooltip.visible { opacity: 1; }
     .cp-gauge-label {
       position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
@@ -2029,7 +2029,7 @@ function closeTab(idx) {
   const tab = _tabs[idx];
   tab.closed = true;
   clearTimeout(tab.reconnectTimer);
-  finishTab(tab);
+  finishTab(tab, true);
   if (tab.ws) tab.ws.close();
   // Release session lock
   if (tab.sessionId) _releaseSessionLock(tab.sessionId);
@@ -2274,8 +2274,9 @@ window.addEventListener('focus', () => {
   // If tab says it's running but WS is dead, force finish
   if (tab.running && (!tab.ws || tab.ws.readyState > WebSocket.OPEN)) {
     console.warn('[claude-panel] Focus re-sync: tab running but WS dead — forcing finish');
-    finishTab(tab);
+    finishTab(tab, true);
     appendStatus(tab, 'Connection lost — session recovered.');
+    notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code');
   }
   // Re-sync input disabled state with current tab
   const $input = _panel?.querySelector('#cp-input');
@@ -2562,7 +2563,7 @@ async function loadSessionHistory(sid, $msgs) {
         if (m.tools?.length) {
           for (const t of m.tools) {
             if (typeof t === 'object' && t.name) {
-              wrap.appendChild(buildTool(t));
+              wrap.appendChild(buildTool(t, activeTab()));
             } else {
               // Legacy: tool name string only
               const tName = String(t);
@@ -2726,7 +2727,7 @@ function renderGauge(tab) {
     // Animate existing sections to 0 width before removing
     const existing = $gauge.querySelectorAll('.cp-gauge-section');
     if (existing.length) {
-      existing.forEach(el => { el.style.width = '0%'; el.querySelector('.cp-gauge-tip')?.remove(); });
+      existing.forEach(el => { el.style.width = '0%'; });
       setTimeout(() => { existing.forEach(el => el.remove()); }, 450);
     }
     $gauge.dataset.urgency = '';
@@ -2751,7 +2752,7 @@ function renderGauge(tab) {
         el = document.createElement('div');
         el.className = 'cp-gauge-section';
         el.dataset.cat = cat;
-        el.innerHTML = `<div class="cp-gauge-tip"></div>`;
+        el.innerHTML = '';
         // Insert in order: find the next sibling that should come after this cat
         const catIdx = CATS.indexOf(cat);
         let inserted = false;
@@ -2765,14 +2766,41 @@ function renderGauge(tab) {
         el.offsetWidth; // force reflow
       }
       el.style.width = pct(d.val);
-      const tip = el.querySelector('.cp-gauge-tip');
-      if (tip) tip.textContent = d.label;
+      el.dataset.tipLabel = d.label;
     } else if (el) {
       // Animate to 0 then remove
       el.style.width = '0%';
       el.addEventListener('transitionend', () => el.remove(), { once: true });
     }
   }
+
+  // Shared tooltip on document.body (escapes panel overflow:hidden + backdrop-filter)
+  let $tip = document.getElementById('cp-gauge-tooltip');
+  if (!$tip) {
+    $tip = document.createElement('div');
+    $tip.id = 'cp-gauge-tooltip';
+    document.body.appendChild($tip);
+  }
+  $gauge.querySelectorAll('.cp-gauge-section').forEach(sec => {
+    if (sec._tipWired) return;
+    sec._tipWired = true;
+    sec.addEventListener('mouseenter', () => {
+      const label = sec.dataset.tipLabel;
+      if (!label) return;
+      const t = document.getElementById('cp-gauge-tooltip');
+      if (!t) return;
+      const r = sec.getBoundingClientRect();
+      t.textContent = label;
+      t.style.left = (r.left + r.width / 2) + 'px';
+      t.style.top = (r.top - 6) + 'px';
+      t.style.transform = 'translate(-50%, -100%)';
+      t.classList.add('visible');
+    });
+    sec.addEventListener('mouseleave', () => {
+      const t = document.getElementById('cp-gauge-tooltip');
+      if (t) t.classList.remove('visible');
+    });
+  });
 
   const pctUsed = Math.round((total / ctxWindow) * 100);
   $gauge.dataset.urgency = pctUsed < 50 ? '' : pctUsed < 75 ? 'warn' : pctUsed < 90 ? 'high' : 'critical';
@@ -2865,7 +2893,7 @@ function _processTabMsg(tab, msg) {
       } else {
         // No orphan found — process died during refresh, clear running state
         console.log('[claude-panel] No orphan to reattach — session idle');
-        finishTab(tab);
+        finishTab(tab, true);
         saveTabs();
       }
       break;
@@ -2873,12 +2901,12 @@ function _processTabMsg(tab, msg) {
     case 'control_request': handleControlRequest(tab, msg); break;
     case 'stderr': if (msg.text?.trim()) appendStatus(tab, msg.text.trim()); break;
     case 'done':
-      finishTab(tab);
+      finishTab(tab, !tab.running);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       if (tab.planMode) renderPostPlanActions(tab);
       break;
     case 'aborted':
-      finishTab(tab);
+      finishTab(tab, !!tab._btwPending);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       // /btw: if there's a pending message, send it immediately instead of showing "Aborted"
       if (tab._btwPending) {
@@ -2910,9 +2938,10 @@ function _processTabMsg(tab, msg) {
       }
       break;
     case 'error':
-      finishTab(tab);
+      finishTab(tab, true);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       appendError(tab, msg.message);
+      notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code');
       break;
   }
 }
@@ -3022,11 +3051,14 @@ function handleTabEvent(tab, ev) {
     return;
   }
   if (ev.type === 'result') {
+    const isError = (ev.subtype === 'error_during_execution' || ev.subtype === 'error') && (ev.error || ev.result);
     // Display error for error_during_execution results
-    if ((ev.subtype === 'error_during_execution' || ev.subtype === 'error') && (ev.error || ev.result)) {
+    if (isError) {
       appendError(tab, ev.error || ev.result);
     }
-    finishTab(tab);
+    finishTab(tab, true);
+    if (isError) notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code');
+    else notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code');
     tab.turns++;
     if (ev.usage) {
       const u = ev.usage;
@@ -3249,15 +3281,13 @@ function renderPostPlanActions(tab) {
           card.style.opacity = '1'; card.style.pointerEvents = 'auto';
         }
       } else if (a.action === 'plan') {
-        // Remove the card entirely, re-enter plan mode
-        const cardMsg = card.closest('.msg');
-        if (cardMsg) cardMsg.remove(); else card.remove();
-        tab.planMode = true;
-        const $plan = _panel?.querySelector('#cp-plan-toggle');
-        if ($plan) $plan.classList.add('active');
-        appendStatus(tab, 'Plan mode ON — edit your plan, then send.');
-        const $input = _panel?.querySelector('#cp-input');
-        if ($input) $input.focus();
+        // Open plan file in SynaBun code editor for direct editing
+        if (!tab.planFilePath) {
+          appendStatus(tab, 'No plan file found — send your edits in chat instead.');
+          card.style.opacity = '1'; card.style.pointerEvents = 'auto';
+          return;
+        }
+        emit('open-plan-editor', { filePath: tab.planFilePath, tabId: tab.id });
       } else if (a.prompt) {
         // Exit plan mode before sending implementation prompt
         tab.planMode = false;
@@ -3346,7 +3376,7 @@ function renderAssistant(tab, msg) {
       }
       const existingToolIds = new Set([...wrap.querySelectorAll('.tool-card, .plan-card')].map(c => c.dataset.toolId));
       for (const t of regularTools) {
-        if (!existingToolIds.has(t.id || '')) wrap.appendChild(buildTool(t));
+        if (!existingToolIds.has(t.id || '')) wrap.appendChild(buildTool(t, tab));
       }
       const existingAskIds = new Set([...wrap.querySelectorAll('.ask-card')].map(c => c.dataset.toolId));
       for (const t of askTools) {
@@ -3385,7 +3415,7 @@ function renderAssistant(tab, msg) {
     linkifyFilePaths(body);
     wrap.appendChild(body);
   }
-  for (const t of regularTools) wrap.appendChild(buildTool(t));
+  for (const t of regularTools) wrap.appendChild(buildTool(t, tab));
   for (const t of askTools) wrap.appendChild(buildAskFromToolUse(tab, t));
   el.appendChild(wrap);
   $msgs.appendChild(el);
@@ -3476,7 +3506,7 @@ function buildAskFromToolUse(tab, block) {
     } else {
       const hint = document.createElement('div');
       hint.className = 'ask-hint';
-      hint.textContent = 'Type your answer below and press Enter';
+      hint.innerHTML = 'Type your answer below and press Enter <span class="ask-hint-img">— paste or drag images too</span>';
       container.appendChild(hint);
       tab.pendingAsk = { requestId: null, toolUseId, questions: input.questions || [q], questionText };
       setRunning(tab, false);
@@ -3801,9 +3831,10 @@ function updateSynaBunResult(card, ev) {
   card.classList.add(ev.is_error ? 'tool-error' : 'tool-ok');
 }
 
-function buildTool(block) {
-  // Plan files get a special rendered card
+function buildTool(block, tab) {
+  // Plan files get a special rendered card — track path on tab for editor access
   if (block.name === 'Write' && isPlanFile(block.input?.file_path)) {
+    if (tab) tab.planFilePath = block.input.file_path;
     return buildPlanCard(block);
   }
   // SynaBun MCP tools get branded cards
@@ -3953,6 +3984,7 @@ function _showNextPerm(tab) {
   if (!next) { _flushMsgBuffer(tab); return; }
   tab._activePerm = true;
   renderPermissionPrompt(tab, next.requestId, next.req);
+  notify('panel', NOTIF_TYPE.ACTION, tab.label || 'Claude Code');
 }
 
 /** Detect SynaBun skill ask cards by question/header text or known menu option labels */
@@ -3972,6 +4004,7 @@ function renderAskUserQuestion(tab, requestId, input) {
   if (!$msgs) return;
   hideThinking(tab);
   tab.askRenderedViaControl = true;
+  notify('panel', NOTIF_TYPE.ASK, tab.label || 'Claude Code');
 
   // Normalize: accept questions array, single question object, or flat input
   const questions = Array.isArray(input?.questions) ? input.questions
@@ -4049,7 +4082,7 @@ function renderAskUserQuestion(tab, requestId, input) {
     } else {
       const hint = document.createElement('div');
       hint.className = 'ask-hint';
-      hint.textContent = 'Type your answer below and press Enter';
+      hint.innerHTML = 'Type your answer below and press Enter <span class="ask-hint-img">— paste or drag images too</span>';
       card.appendChild(hint);
       tab.pendingAsk = { requestId: null, toolUseId: tab.pendingAskToolUseId, questions: input.questions || [q], questionText };
       setRunning(tab, false);
@@ -4254,8 +4287,9 @@ function setRunning(tab, r) {
     tab._runningTimeout = setTimeout(() => {
       if (tab.running && (!tab._lastWsActivity || Date.now() - tab._lastWsActivity > RUNNING_TIMEOUT_MS - 5000)) {
         console.warn('[claude-panel] Running timeout for tab', tab.id, '— forcing finish');
-        finishTab(tab);
+        finishTab(tab, true);
         appendStatus(tab, 'Session timed out — no response received.');
+        notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code');
       }
     }, RUNNING_TIMEOUT_MS);
   }
@@ -4292,7 +4326,11 @@ function _updateSendIcon($send, $input) {
   }
 }
 
-function finishTab(tab) { hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.sendStartedAt = null; tab._exitPlanMsgId = null; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs(); }
+function finishTab(tab, skipNotif) {
+  const wasRunning = tab.running;
+  hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.sendStartedAt = null; tab._exitPlanMsgId = null; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs();
+  if (wasRunning && !skipNotif) notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code');
+}
 
 function send() {
   const tab = activeTab();
@@ -4344,9 +4382,18 @@ function send() {
 
   if (tab.pendingAsk && text) {
     $input.value = ''; autoResize();
-    appendUser(tab, text); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
+    const askImages = tab.attachedImages.length ? [...tab.attachedImages] : null;
+    appendUser(tab, text, askImages); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
     const answers = {};
-    answers[tab.pendingAsk.questionText] = text;
+    if (askImages) {
+      answers[tab.pendingAsk.questionText] = text + `\n[${askImages.length} inspiration image(s) attached — visible in chat above]`;
+      tab.attachedImages = [];
+      updateAttachBadge();
+      const preview = _panel?.querySelector('#cp-image-preview');
+      if (preview) preview.innerHTML = '';
+    } else {
+      answers[tab.pendingAsk.questionText] = text;
+    }
     sendAskAnswer(tab, tab.pendingAsk.questions, answers);
     tab.pendingAsk = null;
     return;
@@ -4423,8 +4470,26 @@ function showBrowserEmbed(sessionId, url) {
     } catch {}
   };
 
+  let _cpWsReconnAttempted = false;
   ws.onclose = () => {
-    if (_browserEmbed?.sessionId === sessionId) hideBrowserEmbed();
+    if (_browserEmbed?.sessionId === sessionId) {
+      // Try one reconnect before hiding — covers transient WS drops
+      if (!_cpWsReconnAttempted) {
+        _cpWsReconnAttempted = true;
+        console.log('[claude-panel] Browser WS closed, retrying once for', sessionId);
+        setTimeout(() => {
+          if (_browserEmbed?.sessionId !== sessionId) return;
+          const proto2 = location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const ws2 = new WebSocket(`${proto2}//${location.host}/ws/browser/${sessionId}`);
+          ws2.onmessage = ws.onmessage;
+          ws2.onclose = () => { if (_browserEmbed?.sessionId === sessionId) hideBrowserEmbed(); };
+          ws2.onerror = () => {};
+          _browserEmbed.ws = ws2;
+        }, 1500);
+        return;
+      }
+      hideBrowserEmbed();
+    }
   };
 
   // Show with animation
@@ -4551,22 +4616,9 @@ function _wireBrowserSync() {
   if (_browserSyncWired) return;
   _browserSyncWired = true;
 
-  // Auto-show browser embed ONLY when the panel's Claude process triggered it
-  on('sync:browser:created', async (msg) => {
-    if (!_panel || !_visible) return; // panel not open, let terminal handle it
-    const tab = activeTab();
-    if (!tab?.running) return; // Claude not actively processing — browser was opened externally
-    if (!msg.sessionId) return;
-    if (_browserEmbedVisible && _browserEmbed?.sessionId === msg.sessionId) return;
-    showBrowserEmbed(msg.sessionId, msg.url);
-  });
-
-  // Auto-hide when browser session is destroyed
-  on('sync:browser:deleted', (msg) => {
-    if (_browserEmbed?.sessionId === msg.sessionId) {
-      hideBrowserEmbed();
-    }
-  });
+  // Browser sessions are always rendered as floating windows — no side panel embed.
+  // sync:browser:created, claude-panel:show-browser, and claude-panel:ensure-open
+  // are intentionally NOT handled here.
 }
 
 function autoResize() {
@@ -4659,10 +4711,14 @@ export async function toggleClaudePanel() {
     _panel.classList.add('open');
     const pw = _panel.style.width || '22%';
     document.documentElement.style.setProperty('--claude-panel-width', pw.endsWith('px') ? (parseFloat(pw) + 16) + 'px' : 'calc(' + pw + ' + 16px)');
+    document.documentElement.style.setProperty('--claude-panel-gap', '16px');
+    document.querySelector('.fe-editor-panel')?.classList.add('panel-adjacent');
     _panel.querySelector('#cp-input')?.focus();
   } else {
     _panel.classList.remove('open');
     document.documentElement.style.setProperty('--claude-panel-width', '0px');
+    document.documentElement.style.setProperty('--claude-panel-gap', '0px');
+    document.querySelector('.fe-editor-panel')?.classList.remove('panel-adjacent');
   }
   renderPills(); // Sync pill visibility with panel open/close state
   window.dispatchEvent(new Event('resize'));
@@ -4672,13 +4728,19 @@ export function isClaudePanelOpen() { return _visible; }
 
 /** Open the panel (if closed) and pre-fill the input with text, placing cursor at the end.
  *  If opts.asFile is true or text looks like a file path, attach as a file chip instead. */
-export function sendToPanel(text, opts = {}) {
-  if (!_visible) toggleClaudePanel();
+export async function sendToPanel(text, opts = {}) {
+  if (!_visible) await toggleClaudePanel();
+
+  // Create a fresh tab if requested
+  if (opts.newTab) {
+    createTab(null, opts.tabLabel || 'New chat');
+  }
+
   const tab = activeTab();
   if (!tab) return;
 
-  // Detect file paths — attach as file chip instead of text
-  const looksLikePath = opts.asFile || /^[A-Za-z]:[/\\]/.test(text) || (text.startsWith('/') && text.includes('/') && !text.includes(' '));
+  // Detect file paths — attach as file chip instead of text (skip for autoSubmit — those are commands, not paths)
+  const looksLikePath = !opts.autoSubmit && (opts.asFile || /^[A-Za-z]:[/\\]/.test(text) || (text.startsWith('/') && text.includes('/') && !text.includes(' ')));
   if (looksLikePath) {
     _attachPathToTab(tab, text);
     _panel?.querySelector('#cp-input')?.focus();
@@ -4696,6 +4758,21 @@ export function sendToPanel(text, opts = {}) {
   autoResize();
   $input.focus();
   $input.setSelectionRange($input.value.length, $input.value.length);
+
+  // Auto-submit: wait for WebSocket to be ready, then click send
+  if (opts.autoSubmit) {
+    $input.dispatchEvent(new Event('input', { bubbles: true }));
+    const trySubmit = () => {
+      const t = activeTab();
+      if (t?.ws?.readyState === WebSocket.OPEN) {
+        const $send = _panel?.querySelector('#cp-send');
+        if ($send) { $send.disabled = false; $send.click(); }
+      } else {
+        setTimeout(trySubmit, 150);
+      }
+    };
+    setTimeout(trySubmit, 150);
+  }
 }
 
 /** Attach a file path to the active tab — fetches content and shows chip */
@@ -5006,14 +5083,31 @@ function wireEvents() {
   if ($attach) {
     const fileInput = document.createElement('input');
     fileInput.type = 'file'; fileInput.multiple = true; fileInput.style.display = 'none';
+    fileInput.accept = 'image/*,text/*,.js,.ts,.jsx,.tsx,.py,.rb,.go,.rs,.java,.c,.cpp,.h,.css,.html,.json,.yaml,.yml,.toml,.md,.sh,.sql,.xml,.csv';
     document.body.appendChild(fileInput);
     $attach.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', async () => {
       const tab = activeTab();
       if (!tab) return;
       for (const file of fileInput.files) {
+        // Images → attach as image (base64), same as paste/drop
+        if (file.type.startsWith('image/')) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result;
+            const base64 = dataUrl.split(',')[1];
+            const mediaType = file.type;
+            tab.attachedImages.push({ base64, mediaType });
+            updateAttachBadge();
+            addImagePreview(dataUrl, tab.attachedImages.length - 1);
+            $send.disabled = false;
+          };
+          reader.readAsDataURL(file);
+          continue;
+        }
+        // Text/code files
         if (!_isTextFile(file.name)) {
-          appendStatus(tab, `Skipped "${file.name}" — only text/code files supported`);
+          appendStatus(tab, `Skipped "${file.name}" — only text/code or image files supported`);
           continue;
         }
         if (file.size > 100000) {
@@ -5222,8 +5316,32 @@ function wireEvents() {
     const $send = _panel?.querySelector('#cp-send');
     if ($send) $send.disabled = false;
   });
+
+  // ── Plan editor — receive edited plan from file explorer and send to Claude ──
+  on('plan-saved', ({ filePath, content }) => {
+    const tab = activeTab();
+    if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+
+    // Remove post-plan action cards
+    tab.messagesEl?.querySelectorAll('.post-plan-card').forEach(el => {
+      const msg = el.closest('.msg'); if (msg) msg.remove(); else el.remove();
+    });
+
+    // Exit plan mode
+    tab.planMode = false;
+    const $plan = _panel?.querySelector('#cp-plan-toggle');
+    if ($plan) $plan.classList.remove('active');
+
+    // Send updated plan to Claude
+    const prompt = `The user has directly edited the plan. Here is the updated plan:\n\n${content}\n\nProceed with the implementation based on this updated plan.`;
+    const $input = _panel?.querySelector('#cp-input');
+    if ($input) { $input.value = prompt; send(); }
+  });
 }
 
+// Side panel browser launch removed — all automations use floating browsers only.
+
 export function initClaudePanel() {
-  // Will be initialized on first toggle
+  // Placeholder — panel is lazy-initialized on first toggleClaudePanel().
+  // Event listeners that must work before first toggle are registered at module level above.
 }

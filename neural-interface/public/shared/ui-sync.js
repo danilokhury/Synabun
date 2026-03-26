@@ -46,6 +46,11 @@ const SYNC_HANDLERS = {
   'browser:session-created': (msg) => emit('sync:browser:created', msg),
   'browser:session-deleted': (msg) => emit('sync:browser:deleted', msg),
 
+  // Browser tab lifecycle sync
+  'browser:tab-created':  (msg) => emit('sync:browser:tab-created', msg),
+  'browser:tab-switched': (msg) => emit('sync:browser:tab-switched', msg),
+  'browser:tab-closed':   (msg) => emit('sync:browser:tab-closed', msg),
+
   // Browser auto-open (triggered by menu/keybind manual open)
   'browser:open': (msg) => emit('browser:open', msg),
 
@@ -81,6 +86,7 @@ const SYNC_HANDLERS = {
   // Quick timer events
   'quick-timer:set':       (msg) => emit('sync:quick-timer:set', msg),
   'quick-timer:fired':     (msg) => emit('sync:quick-timer:fired', msg),
+  'quick-timer:fired-now': (msg) => emit('sync:quick-timer:fired-now', msg),
   'quick-timer:cancelled': (msg) => emit('sync:quick-timer:cancelled', msg),
   'quick-timer:failed':    (msg) => emit('sync:quick-timer:failed', msg),
 

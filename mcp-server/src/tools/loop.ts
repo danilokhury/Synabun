@@ -25,14 +25,35 @@ function ensureLoopDir() {
 
 /**
  * Resolve the session ID for loop state file.
- * Priority: explicit param > CLAUDE_SESSION_ID env > scan directory for any active loop.
+ * Priority: explicit param > CLAUDE_SESSION_ID env > SYNABUN_TERMINAL_SESSION env > scan.
+ *
+ * When SYNABUN_TERMINAL_SESSION is set (server-launched loop), find the loop file
+ * by matching the terminalSessionId field. This survives /clear (which changes
+ * CLAUDE_SESSION_ID) and prevents cross-loop contamination with multiple automations.
  */
 function resolveSessionId(explicit?: string): string | null {
   if (explicit) return explicit;
   if (process.env.CLAUDE_SESSION_ID) return process.env.CLAUDE_SESSION_ID;
 
-  // Fallback: scan for any active loop file
   ensureLoopDir();
+
+  // Priority: find loop file owned by this terminal session (survives /clear)
+  const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION;
+  if (terminalSessionEnv) {
+    try {
+      const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
+      for (const file of files) {
+        try {
+          const data = JSON.parse(readFileSync(join(LOOP_DIR, file), 'utf-8'));
+          if (data?.active && data.terminalSessionId === terminalSessionEnv) {
+            return file.replace('.json', '');
+          }
+        } catch { /* skip corrupt files */ }
+      }
+    } catch { /* dir read failed */ }
+  }
+
+  // Fallback: scan for any active loop file (legacy — no terminal scoping)
   try {
     const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
     for (const file of files) {
@@ -232,12 +253,12 @@ function handleStatus(args: { session_id?: string }) {
   }
 
   const elapsed = Math.round((Date.now() - new Date(state.startedAt).getTime()) / 60000);
-  const timeLeft = Math.max(0, state.maxMinutes - elapsed);
+  const iterationsRemaining = state.totalIterations - (state.currentIteration || 0);
 
   return text([
-    `Loop active: iteration ${state.currentIteration}/${state.totalIterations}`,
+    `Loop active: iteration ${state.currentIteration}/${state.totalIterations} (${iterationsRemaining} remaining)`,
     `Task: ${state.task}`,
-    `Elapsed: ${elapsed} min | Remaining: ${timeLeft} min`,
+    `Elapsed: ${elapsed} min`,
     state.context ? `Context: ${state.context}` : '',
     state.lastIterationAt ? `Last iteration: ${state.lastIterationAt}` : '',
   ].filter(Boolean).join('\n'));

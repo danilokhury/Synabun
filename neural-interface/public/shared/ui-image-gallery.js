@@ -99,6 +99,9 @@ function buildPanelHTML() {
       </div>
       <div class="ig-header-right">
         <button class="ig-btn" id="ig-refresh" data-tooltip="Refresh">${ICON_REFRESH}</button>
+        <button class="backdrop-toggle-btn" id="ig-backdrop-toggle" data-tooltip="Toggle backdrop">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
         <button class="ig-btn" id="ig-close" data-tooltip="Close">${ICON_CLOSE}</button>
       </div>
     </div>
@@ -198,7 +201,7 @@ function wireLightbox() {
   const lb = document.getElementById('ig-lightbox');
   if (!lb) return;
 
-  lb.querySelector('#ig-lb-overlay')?.addEventListener('click', closeLightbox);
+  // Overlay click disabled — close only via ESC or close button
   lb.querySelector('#ig-lb-close')?.addEventListener('click', closeLightbox);
   lb.querySelector('#ig-lb-prev')?.addEventListener('click', () => navigateLightbox(-1));
   lb.querySelector('#ig-lb-next')?.addEventListener('click', () => navigateLightbox(1));
@@ -283,6 +286,16 @@ function wirePanel() {
   _panel.querySelector('#ig-close')?.addEventListener('click', closePanel);
   _panel.querySelector('#ig-refresh')?.addEventListener('click', refreshImages);
 
+  const igBdToggle = _panel.querySelector('#ig-backdrop-toggle');
+  if (igBdToggle) {
+    igBdToggle.addEventListener('click', () => {
+      if (_backdrop) {
+        _backdrop.classList.toggle('backdrop-hidden');
+        igBdToggle.classList.toggle('active', _backdrop.classList.contains('backdrop-hidden'));
+      }
+    });
+  }
+
   // Search
   const searchInput = _panel.querySelector('#ig-search');
   if (searchInput) {
@@ -364,9 +377,13 @@ function wirePanel() {
 }
 
 function handleKey(e) {
+  if (e.key === 'Escape') {
+    if (_lightboxImg) { closeLightbox(); e.stopPropagation(); }
+    else if (_panel) { closePanel(); e.stopPropagation(); }
+    return;
+  }
   if (!_lightboxImg) return;
-  if (e.key === 'Escape') { closeLightbox(); e.stopPropagation(); }
-  else if (e.key === 'ArrowLeft') navigateLightbox(-1);
+  if (e.key === 'ArrowLeft') navigateLightbox(-1);
   else if (e.key === 'ArrowRight') navigateLightbox(1);
 }
 
@@ -375,7 +392,7 @@ function openPanel() {
 
   _backdrop = document.createElement('div');
   _backdrop.className = 'ig-backdrop';
-  _backdrop.addEventListener('click', closePanel);
+  // Backdrop click disabled — close only via ESC or close button
   document.body.appendChild(_backdrop);
 
   _panel = document.createElement('div');

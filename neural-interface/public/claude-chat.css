@@ -692,6 +692,7 @@
   font-size: 11px; color: rgba(100,160,255,0.5);
   font-family: 'JetBrains Mono', 'Fira Code', monospace; font-style: italic;
 }
+.ask-hint-img { color: rgba(100,160,255,0.35); }
 
 /* ── Permission prompt cards ── */
 .perm-card {

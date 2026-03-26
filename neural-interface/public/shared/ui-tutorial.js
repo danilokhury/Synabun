@@ -454,8 +454,15 @@ function _renderStep(index) {
 
   step.onEnter?.({ nextStep, prevStep, skipTutorial, emit });
 
+  // If step has onEnter, delay render to let CSS transitions settle (panels slide 0.3s)
+  const renderDelay = step.onEnter ? 380 : 0;
+
   if (step.whiteboardMode) {
-    _renderWhiteboardStep(step, index);
+    if (renderDelay > 0) {
+      setTimeout(() => _renderWhiteboardStep(step, index), renderDelay);
+    } else {
+      _renderWhiteboardStep(step, index);
+    }
   } else {
     // Legacy overlay mode
     if (step.focusModeRequired) {

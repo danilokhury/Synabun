@@ -146,6 +146,7 @@
       "mcp__SynaBun__browser_extract_li_messages",
       "mcp__SynaBun__browser_extract_li_search_people",
       "mcp__SynaBun__browser_extract_li_network",
+      "mcp__SynaBun__browser_extract_li_jobs",
       "mcp__SynaBun__discord_guild",
       "mcp__SynaBun__discord_channel",
       "mcp__SynaBun__discord_role",

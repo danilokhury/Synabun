@@ -993,6 +993,13 @@ export async function cancelQuickTimer(id) {
   });
 }
 
+export async function triggerQuickTimerNow(templateId, { profile, model, usesBrowser } = {}) {
+  return jsonFetch('/api/quick-timer/now', {
+    method: 'POST',
+    ...jsonBody({ templateId, profile, model, usesBrowser }),
+  });
+}
+
 // ── Isolated Agents ──
 
 export async function launchAgent(params) {

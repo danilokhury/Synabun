@@ -688,6 +688,7 @@ function duplicateMultipleElements(ids) {
 
 let _ctxMenu = null;   // Floating context menu element
 let _rotateEl = null;  // Floating rotation handle element
+let _moveEl = null;    // Floating move handle element (text/list)
 
 function selectElement(id, { additive = false } = {}) {
   if (additive) {
@@ -872,6 +873,31 @@ function showContextMenu(id) {
     _drag = dragData;
   });
 
+  // Floating move handle for text/list elements (lets you drag even in edit mode)
+  if (el.type === 'text' || el.type === 'list') {
+    _moveEl = document.createElement('div');
+    _moveEl.className = 'wb-move-float';
+    _moveEl.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>';
+
+    _moveEl.addEventListener('mousedown', (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      exitEditMode();
+      exitListEditMode();
+      const el2 = _elements.find(e2 => e2.id === id);
+      if (!el2) return;
+      _drag = {
+        type: 'move', id,
+        startX: ev.clientX, startY: ev.clientY,
+        origX: el2.x, origY: el2.y,
+        before: { ...el2 },
+      };
+    });
+
+    _moveEl.style.zIndex = _nextZIndex + 100;
+    _root.appendChild(_moveEl);
+  }
+
   _ctxMenu.style.zIndex = _nextZIndex + 100;
   _rotateEl.style.zIndex = _nextZIndex + 100;
   _root.appendChild(_ctxMenu);
@@ -893,19 +919,27 @@ function positionContextMenu(el) {
   const rootRect = _root?.getBoundingClientRect();
   if (!rootRect) return;
 
-  let cx, topY, rightX, bottomY;
+  let cx, topY, rightX, bottomY, leftX;
   if ((el.type === 'arrow' || el.type === 'pen') && el.points?.length) {
     const xs = el.points.map(p => p[0]);
     const ys = el.points.map(p => p[1]);
     cx = xs.reduce((s, v) => s + v, 0) / xs.length;
     topY = Math.min(...ys);
+    leftX = Math.min(...xs);
     rightX = Math.max(...xs);
     bottomY = Math.max(...ys);
   } else {
-    cx = el.x + (el.width || 0) / 2;
+    let ew = el.width || 0, eh = el.height || 0;
+    // Text/list auto-size: read actual dimensions from DOM
+    if ((el.type === 'text' || el.type === 'list') && (!ew || !eh)) {
+      const dom = _elementsDiv?.querySelector(`[data-wb-id="${el.id}"]`);
+      if (dom) { ew = dom.offsetWidth; eh = dom.offsetHeight; }
+    }
+    cx = el.x + ew / 2;
     topY = el.y;
-    rightX = el.x + (el.width || 0);
-    bottomY = el.y + (el.height || 0);
+    leftX = el.x;
+    rightX = el.x + ew;
+    bottomY = el.y + eh;
   }
 
   // Context menu — centered above element
@@ -928,6 +962,17 @@ function positionContextMenu(el) {
     rTop = Math.max(8, rTop);
     _rotateEl.style.left = rLeft + 'px';
     _rotateEl.style.top = rTop + 'px';
+  }
+
+  // Move handle — left side of element (text/list only)
+  if (_moveEl) {
+    const elH = bottomY - topY;
+    let mLeft = leftX - 44;
+    let mTop = topY + (elH / 2) - 12;
+    mLeft = Math.max(8, mLeft);
+    mTop = Math.max(8, mTop);
+    _moveEl.style.left = mLeft + 'px';
+    _moveEl.style.top = mTop + 'px';
   }
 }
 
@@ -1006,6 +1051,7 @@ function positionContextMenuMulti() {
 function hideContextMenu() {
   if (_ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; }
   if (_rotateEl) { _rotateEl.remove(); _rotateEl = null; }
+  if (_moveEl) { _moveEl.remove(); _moveEl = null; }
 }
 
 
@@ -1584,6 +1630,7 @@ function onMouseDown(e) {
   if (e.target.closest('#wb-toolbar')) return;
   if (e.target.closest('.wb-ctx-menu')) return;
   if (e.target.closest('.wb-rotate-float')) return;
+  if (e.target.closest('.wb-move-float')) return;
   if (e.target.closest('.wb-drag-to-term')) return;
   if (e.button !== 0) return;
   // Block drawing for guests without whiteboard permission (select/view still allowed)

@@ -11,6 +11,7 @@ import { getMenuItems } from './registry.js';
 import { openHelp } from './ui-help.js';
 import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
+import { sendToPanel } from './ui-claude-panel.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -22,6 +23,17 @@ let hoverMode = false;  // after first click, hovering over labels opens them
 export function initMenubar() {
   const menubar = document.querySelector('.menubar');
   if (!menubar) return;
+
+  // ── Keep --navbar-height in sync with actual title bar height ──
+  const titleBar = document.getElementById('title-bar');
+  if (titleBar) {
+    const updateNavbarHeight = () => {
+      const h = titleBar.offsetHeight;
+      if (h > 0) document.documentElement.style.setProperty('--navbar-height', h + 'px');
+    };
+    updateNavbarHeight();
+    new ResizeObserver(updateNavbarHeight).observe(titleBar);
+  }
 
   const items = menubar.querySelectorAll('.menubar-item');
 
@@ -299,6 +311,13 @@ function wireAutomationsMenu() {
       emit('automations:open');
     });
   }
+  const schedulesItem = $('menu-automations-schedules');
+  if (schedulesItem) {
+    schedulesItem.addEventListener('click', () => {
+      closeAll();
+      emit('automations:open-schedules');
+    });
+  }
   const newItem = $('menu-automations-new');
   if (newItem) {
     newItem.addEventListener('click', () => {
@@ -330,6 +349,7 @@ function wireTerminalMenu() {
     'menu-terminal-discord': () => emit('browser:open', { url: 'https://discord.com/app' }),
     'menu-terminal-x':       () => emit('browser:open', { url: 'https://x.com' }),
     'menu-terminal-whatsapp': () => emit('browser:open', { url: 'https://web.whatsapp.com' }),
+    'menu-app-leonardo':     () => { emit('browser:open', { url: 'https://app.leonardo.ai' }); emit('leonardo:launch'); },
     'menu-command-runner':   () => emit('command-runner:open'),
     'menu-terminal-link':    () => emit('link:toggle'),
     'menu-terminal-toggle':  () => emit('terminal:toggle'),
@@ -351,6 +371,11 @@ function wireTerminalMenu() {
   Object.entries(items).forEach(([id, handler]) => {
     const el = $(id);
     if (el) el.addEventListener('click', () => { closeAll(); handler(); });
+  });
+
+  // Leonardo.AI — open panel with /leonardo skill after browser launches
+  on('leonardo:launch', () => {
+    setTimeout(() => sendToPanel('/leonardo', { newTab: true, tabLabel: 'Leonardo.AI', autoSubmit: true }), 500);
   });
 
   // Keyboard shortcuts: toggle terminal (via central keybinds)
