@@ -9,7 +9,7 @@ import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
 import { storage } from './storage.js';
 import { sendToPanel } from './ui-claude-panel.js';
-import { on } from './state.js';
+import { on, emit } from './state.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -37,6 +37,8 @@ let _redoStack = [];
 let _undoBurstOpen = false;       // true while user is in a typing burst
 let _folderColors = {};           // { "/path/to/folder": "#hex" }
 let _customIcons = null;          // { extensions: {}, filenames: {} } from server
+let _planEditMode = false;        // true when editing a plan file from Claude panel
+let _planEditFilePath = null;     // path of the plan file being edited
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 500;
@@ -1266,13 +1268,13 @@ function showToast(msg) {
   if (!toast) {
     toast = document.createElement('div');
     toast.id = 'fe-toast';
-    toast.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);background:rgba(30,30,34,0.95);color:#e0e0e0;padding:6px 16px;border-radius:6px;font-size:12px;font-family:var(--ff-mono);z-index:100000;pointer-events:none;opacity:0;transition:opacity 0.2s;border:1px solid rgba(255,255,255,0.1);';
+    toast.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);background:rgba(30,30,34,0.95);color:#e0e0e0;padding:6px 16px;border-radius:6px;font-size:12px;font-family:var(--ff-mono);z-index:2147483647;pointer-events:none;opacity:0;transition:opacity 0.2s;border:1px solid rgba(255,255,255,0.1);';
     document.body.appendChild(toast);
   }
   toast.textContent = msg;
   toast.style.opacity = '1';
   clearTimeout(toast._timer);
-  toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 1500);
+  toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 3500);
 }
 
 // ═══════════════════════════════════════════
@@ -1447,7 +1449,7 @@ let _shLang = '';
 let _shLines = null;      // cached line split for large files
 let _shViewStart = 0;     // first buffered line
 let _shViewEnd = 0;       // last buffered line
-const SH_LINE_H = 12 * 1.65;
+const SH_LINE_H = 20;
 const SH_BUFFER = 80;     // lines of buffer above/below viewport
 const SH_REBUFFER = 30;   // re-render when within this many lines of buffer edge
 
@@ -1573,7 +1575,7 @@ function updateLineHighlight() {
   const val = textarea.value;
   const pos = textarea.selectionStart;
   const lineNum = val.substring(0, pos).split('\n').length - 1;
-  const lineH = 12 * 1.65;
+  const lineH = 20;
   hl.style.top = `${10 + lineNum * lineH - textarea.scrollTop}px`;
 }
 
@@ -1664,6 +1666,7 @@ async function openFileEditor(filePath) {
     const editorPanel = $('fe-editor-panel');
     if (editorPanel) editorPanel.classList.add('open');
     document.body.classList.add('fe-editor-open');
+    if (document.querySelector('.claude-panel.open')) editorPanel?.classList.add('panel-adjacent');
 
     const textarea = $('fe-editor-textarea');
     if (textarea) {
@@ -1702,6 +1705,16 @@ async function openFileEditor(filePath) {
     const sizeEl = $('fe-editor-size');
     if (sizeEl) sizeEl.textContent = formatSize(data.size || 0);
 
+    // Plan edit banner
+    const edPanel = $('fe-editor-panel');
+    edPanel?.querySelector('.fe-plan-banner')?.remove();
+    if (_planEditMode) {
+      const banner = document.createElement('div');
+      banner.className = 'fe-plan-banner';
+      banner.textContent = 'Editing plan — save to send to Claude';
+      edPanel?.prepend(banner);
+    }
+
     updateGutter();
     updateHighlight();
     updateCursorPos();
@@ -1724,6 +1737,9 @@ function closeFileEditor() {
   _editorDirty = false;
   _editorIsMarkdown = false;
   _editorPreviewMode = false;
+  _planEditMode = false;
+  _planEditFilePath = null;
+  $('fe-editor-panel')?.querySelector('.fe-plan-banner')?.remove();
   _shLang = '';
   _shLines = null;
   _shViewStart = 0;
@@ -1766,6 +1782,19 @@ async function saveFileEditor() {
     }
     _editorOriginal = textarea.value;
     updateEditorDirtyState();
+
+    // Plan edit: emit saved content to Claude panel, then close editor
+    if (_planEditMode && _editorFilePath === _planEditFilePath) {
+      const savedContent = textarea.value;
+      const savedPath = _editorFilePath;
+      _planEditMode = false;
+      _planEditFilePath = null;
+      showToast('Plan saved — sending to Claude');
+      emit('plan-saved', { filePath: savedPath, content: savedContent });
+      closeFileEditor();
+      return;
+    }
+
     showToast('Saved');
   } catch {
     showToast('Save failed');
@@ -1940,7 +1969,7 @@ function selectFindMatch(focusTextarea) {
   // Scroll match into view
   const text = textarea.value.substring(0, m.start);
   const lineNum = text.split('\n').length;
-  const lineHeight = 12 * 1.65; // matches font-size * line-height
+  const lineHeight = 20;
   const targetScroll = (lineNum - 5) * lineHeight; // a few lines above
   textarea.scrollTop = Math.max(0, targetScroll);
 }
@@ -2025,7 +2054,7 @@ function goToLine(lineNum) {
   for (let i = 0; i < target - 1; i++) pos += lines[i].length + 1;
   textarea.focus();
   textarea.setSelectionRange(pos, pos);
-  const lineHeight = 12 * 1.65;
+  const lineHeight = 20;
   textarea.scrollTop = Math.max(0, (target - 5) * lineHeight);
   updateCursorPos();
   updateLineHighlight();
@@ -2280,6 +2309,13 @@ export function initFileExplorer() {
   // Re-render tree when custom icons change
   on('sync:icons:changed', () => {
     loadCustomIcons().then(() => { if (_rootLoaded) buildFileTree(); });
+  });
+
+  // ── Plan editor — open plan file from Claude panel for direct editing ──
+  on('open-plan-editor', ({ filePath }) => {
+    _planEditMode = true;
+    _planEditFilePath = filePath;
+    openFileEditor(filePath);
   });
 
   const panel = $('file-explorer-panel');

@@ -69,6 +69,13 @@ export async function resolveSession(
   sessionId?: string,
   autoCreate?: { url?: string }
 ): Promise<{ sessionId: string } | { error: string }> {
+  // Agent-scoped browser session — set by the agent orchestrator to pin
+  // this MCP instance to a specific browser session (multi-agent isolation).
+  const pinnedSession = process.env.SYNABUN_BROWSER_SESSION;
+  if (pinnedSession && !sessionId) {
+    return { sessionId: pinnedSession };
+  }
+
   if (sessionId) {
     // Trust the server — it will 404 if the session doesn't exist.
     // Skipping the extra GET /api/browser/sessions verification call saves a full round-trip.
@@ -194,6 +201,14 @@ export async function snapshot(sessionId: string, selector?: string): Promise<Ni
 
 export async function getContent(sessionId: string): Promise<NiResponse> {
   return request('GET', `/api/browser/sessions/${sessionId}/content`);
+}
+
+export async function getMarkdown(sessionId: string): Promise<NiResponse> {
+  return request('GET', `/api/browser/sessions/${sessionId}/markdown`, undefined, LONG_TIMEOUT);
+}
+
+export async function fetchMarkdown(url: string, timeout?: number): Promise<NiResponse> {
+  return request('POST', '/api/fetch-markdown', { url, timeout }, LONG_TIMEOUT);
 }
 
 export async function screenshot(sessionId: string): Promise<NiResponse> {

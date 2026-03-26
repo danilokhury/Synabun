@@ -13,6 +13,9 @@
  *   - Cached cell dimensions to avoid repeated measurements
  *   - Row content hashing to skip unchanged rows during full re-renders
  *   - Smooth auto-scroll with requestAnimationFrame batching
+ *   - Write batching: multiple write() calls per frame are flushed once in rAF
+ *   - Live-mode scroll bypass: skips spacer/scrollTop updates when pinned to bottom
+ *   - Deferred spacer sync: spacer height only updated when user scrolls up
  *
  * Usage:
  *   const renderer = new HtmlTermRenderer(container, ws, { onTitle, onResize });
@@ -107,6 +110,14 @@ export class HtmlTermRenderer {
     // Span pools for DOM diffing — avoids innerHTML replacement per row
     this._rowSpanPools = [];
 
+    // Write batching — accumulates data from multiple write() calls,
+    // flushed once per rAF in _render(). Prevents N reflows/frame → 1.
+    this._writeBuf = '';
+    this._altTransitionPending = false;
+
+    // Deferred spacer — only sync spacer height when leaving live mode
+    this._spacerDirty = false;
+
     // Resize debounce state
     this._resizeTimer = null;
     this._resizePending = false;
@@ -135,9 +146,22 @@ export class HtmlTermRenderer {
 
   // ─── Public API ────────────────────────────────────────
 
-  /** Feed raw PTY data */
+  /** Feed raw PTY data — batched per animation frame to prevent scroll shaking.
+   *  Multiple write() calls between frames accumulate in _writeBuf and are
+   *  flushed once in _render(), eliminating per-chunk reflows. */
   write(data) {
     if (this._disposed || !this._buffer) return;
+    this._writeBuf += data;
+    this._scheduleRender();
+  }
+
+  /** Flush accumulated write buffer through the terminal buffer.
+   *  Called once per frame from _render() — all spacer/scroll side-effects
+   *  happen inside the same rAF, eliminating multi-frame desync. */
+  _flushWrites() {
+    if (!this._writeBuf) return false;
+    const data = this._writeBuf;
+    this._writeBuf = '';
 
     this._buffer.write(data);
 
@@ -147,21 +171,16 @@ export class HtmlTermRenderer {
       if (this._options.onTitle) this._options.onTitle(this._lastTitle);
     }
 
-    // Alt screen transition → force live mode and reset scroll
+    // Alt screen transition → force live mode
     if (this._buffer._altTransitionPending) {
       this._isLive = true;
       this._buffer._altTransitionPending = false;
     }
 
-    // Update spacer height (scrollback may have grown)
-    this._updateSpacerHeight();
+    // Mark spacer as needing update (deferred to scroll-up or transition)
+    this._spacerDirty = true;
 
-    // In live mode, keep scroll pinned to bottom (skip _isAtBottom check — we know)
-    if (this._isLive && !this._selecting) {
-      this._scrollToMax();
-    }
-
-    this._scheduleRender();
+    return true;
   }
 
   /** Set WebSocket (for deferred connect) */
@@ -177,9 +196,8 @@ export class HtmlTermRenderer {
     if (changed) {
       this._buffer.resize(this._cols, this._rows);
       this._rebuildRows();
-      this._updateSpacerHeight();
+      this._spacerDirty = true;
       this._isLive = true; // resize snaps back to live view
-      this._scrollToMax();
       this._scheduleRender();
       if (this._options.onResize) {
         this._options.onResize(this._cols, this._rows);
@@ -209,6 +227,11 @@ export class HtmlTermRenderer {
 
   scrollToBottom() {
     this._isLive = true;
+    // Sync spacer before scrolling so scrollHeight is correct
+    if (this._spacerDirty) {
+      this._updateSpacerHeight();
+      this._spacerDirty = false;
+    }
     this._scrollToMax();
     this._scheduleRender();
   }
@@ -342,7 +365,8 @@ export class HtmlTermRenderer {
     if (!this._buffer || !this._cellHeight) return;
     // Total virtual height: scrollback rows + screen rows.
     // _rowsEl is position:absolute so doesn't contribute to scrollHeight.
-    const h = (this._buffer.scrollbackLength + this._rows) * this._cellHeight;
+    // Math.round eliminates sub-pixel jitter that causes scrollbar flicker.
+    const h = Math.round((this._buffer.scrollbackLength + this._rows) * this._cellHeight);
     this._spacer.style.height = h + 'px';
   }
 
@@ -376,6 +400,9 @@ export class HtmlTermRenderer {
   _render() {
     if (this._disposed || !this._buffer) return;
 
+    // ── Phase 1: Flush batched writes (all accumulated since last frame) ──
+    const hadWrites = this._flushWrites();
+
     // Ensure correct row element count
     while (this._rowEls.length < this._rows) {
       const el = document.createElement('div');
@@ -398,18 +425,29 @@ export class HtmlTermRenderer {
     let firstVisible;
 
     if (this._isLive) {
-      // Live mode: skip spacer math entirely — always render from buffer bottom.
-      // This eliminates the scrollTop/spacer desync timing window.
+      // ── Live mode: sync spacer + pin scroll once per frame ──
+      // Write batching (Phase 1) ensures this runs at most once per rAF,
+      // not per write() chunk — eliminating N reflows/frame → 1.
+      if (this._spacerDirty) {
+        this._updateSpacerHeight();
+        this._spacerDirty = false;
+      }
+      if (!this._selecting) {
+        this._scrollToMax();
+      }
       firstVisible = scrollback;
     } else {
-      // Scrolled-up mode: use spacer-based positioning
-      // Force layout reflow so scrollTop is correctly clamped after spacer height changes
-      void this._scrollEl.scrollHeight;
+      // ── Scrolled-up mode: sync spacer + use native scroll position ──
+      if (this._spacerDirty) {
+        this._updateSpacerHeight();
+        this._spacerDirty = false;
+      }
 
+      // Clamp firstVisible using calculated max instead of forcing reflow
+      const maxFirst = scrollback;
       firstVisible = this._getFirstVisibleRow();
-      const maxFirstVisible = scrollback;
-      if (firstVisible > maxFirstVisible) {
-        firstVisible = maxFirstVisible;
+      if (firstVisible > maxFirst) {
+        firstVisible = maxFirst;
         this._suppressScrollEvent = true;
         this._scrollEl.scrollTop = firstVisible * this._cellHeight;
       }
@@ -435,11 +473,9 @@ export class HtmlTermRenderer {
     const isLive = firstVisible >= scrollback;
 
     if (scrolled || selDirty) {
-      // Scroll position changed or selection changed — full re-render
       this._renderAllVisible(firstVisible, scrollback, sel);
     } else if ((dirty.size || dirty.length) > 0) {
       if (isLive) {
-        // Live view: dirty row indices map directly to screen positions
         for (const rowIdx of dirty) {
           if (rowIdx >= 0 && rowIdx < this._rows) {
             const row = this._buffer.getRow(rowIdx);
@@ -447,7 +483,6 @@ export class HtmlTermRenderer {
           }
         }
       } else {
-        // Scrolled up: re-render everything visible to be safe
         this._renderAllVisible(firstVisible, scrollback, sel);
       }
     }
@@ -946,9 +981,16 @@ export class HtmlTermRenderer {
       this._suppressScrollEvent = false;
       return;
     }
-    // User scrolled — check if they scrolled away from bottom (exit live mode)
-    // or scrolled back to bottom (re-enter live mode)
+    const wasLive = this._isLive;
     this._isLive = this._isAtBottom();
+
+    // Transitioning from live → scrolled-up: sync spacer height now so
+    // native scroll positioning works correctly with current scrollback.
+    if (wasLive && !this._isLive && this._spacerDirty) {
+      this._updateSpacerHeight();
+      this._spacerDirty = false;
+    }
+
     this._scheduleRender();
   }
 

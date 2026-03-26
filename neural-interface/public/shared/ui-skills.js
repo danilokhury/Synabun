@@ -262,7 +262,7 @@ async function openPanel() {
   // Backdrop
   _backdrop = document.createElement('div');
   _backdrop.className = 'studio-backdrop';
-  _backdrop.addEventListener('click', () => closePanel());
+  // Backdrop click disabled — close only via ESC or close button
   document.body.appendChild(_backdrop);
 
   // Panel
@@ -272,9 +272,9 @@ async function openPanel() {
   _panel.innerHTML = buildPanelHTML();
   document.body.appendChild(_panel);
 
-  // Always open centered at default size
-  _panel.style.left = Math.max(20, (window.innerWidth - 720) / 2) + 'px';
-  _panel.style.top = Math.max(48, (window.innerHeight - 500) / 2) + 'px';
+  // Always open centered at default size (matches Automation Studio)
+  _panel.style.left = Math.max(20, (window.innerWidth - 900) / 2) + 'px';
+  _panel.style.top = Math.max(48, (window.innerHeight - 520) / 2) + 'px';
 
   wirePanel();
   await loadLibrary();
@@ -322,6 +322,9 @@ function buildPanelHTML() {
           <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
         </svg>
       </button>
+      <button class="backdrop-toggle-btn" id="ss-backdrop-toggle" data-tooltip="Toggle backdrop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
       <button class="ss-close" id="ss-close">&times;</button>
     </div>
 
@@ -355,6 +358,13 @@ function wirePanel() {
   $('ss-focus')?.addEventListener('click', () => {
     _focusMode = !_focusMode;
     $('ss-focus')?.classList.toggle('active', _focusMode);
+  });
+
+  $('ss-backdrop-toggle')?.addEventListener('click', () => {
+    if (_backdrop) {
+      _backdrop.classList.toggle('backdrop-hidden');
+      $('ss-backdrop-toggle')?.classList.toggle('active', _backdrop.classList.contains('backdrop-hidden'));
+    }
   });
 
   // Search
@@ -630,17 +640,17 @@ function renderLibraryMain() {
       </div>
       <p class="ss-welcome-sub">Browse, edit, and create Claude Code skills, commands, and agents.</p>
       <div class="ss-stats-row">
-        <div class="ss-stat ss-stat--skill">
+        <div class="ss-stat">
           <span class="ss-stat-num">${skillCount}</span>
-          <span class="ss-stat-label"><span class="ss-filter-dot skill"></span> Skills</span>
+          <span class="ss-stat-label">Skills</span>
         </div>
-        <div class="ss-stat ss-stat--command">
+        <div class="ss-stat">
           <span class="ss-stat-num">${cmdCount}</span>
-          <span class="ss-stat-label"><span class="ss-filter-dot command"></span> Commands</span>
+          <span class="ss-stat-label">Commands</span>
         </div>
-        <div class="ss-stat ss-stat--agent">
+        <div class="ss-stat">
           <span class="ss-stat-num">${agentCount}</span>
-          <span class="ss-stat-label"><span class="ss-filter-dot agent"></span> Agents</span>
+          <span class="ss-stat-label">Agents</span>
         </div>
       </div>
       <p class="ss-welcome-hint">Select an item from the sidebar, or create a new one.</p>

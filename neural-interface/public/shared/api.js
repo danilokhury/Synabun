@@ -920,3 +920,124 @@ export async function searchMemoriesByCategory(query, category, limit = 15) {
     ...jsonBody({ query, category, limit }),
   });
 }
+
+// ── Loop Schedules ──
+
+export async function fetchSchedules() {
+  return jsonFetch('/api/schedules');
+}
+
+export async function createSchedule(params) {
+  return jsonFetch('/api/schedules', {
+    method: 'POST',
+    ...jsonBody(params),
+  });
+}
+
+export async function fetchSchedule(id) {
+  return jsonFetch(`/api/schedules/${encodeURIComponent(id)}`);
+}
+
+export async function updateSchedule(id, params) {
+  return jsonFetch(`/api/schedules/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    ...jsonBody(params),
+  });
+}
+
+export async function deleteSchedule(id) {
+  return jsonFetch(`/api/schedules/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function testSchedule(id) {
+  return jsonFetch(`/api/schedules/${encodeURIComponent(id)}/test`, {
+    method: 'POST',
+  });
+}
+
+export async function startScheduleTimer(id, minutes) {
+  return jsonFetch(`/api/schedules/${encodeURIComponent(id)}/timer`, {
+    method: 'POST',
+    ...jsonBody({ minutes }),
+  });
+}
+
+export async function cancelScheduleTimer(id) {
+  return jsonFetch(`/api/schedules/${encodeURIComponent(id)}/timer`, {
+    method: 'DELETE',
+  });
+}
+
+export async function fetchScheduleTimers() {
+  return jsonFetch('/api/schedules/timers');
+}
+
+// ── Quick Timers ──
+
+export async function createQuickTimer(templateId, minutes, { profile, model, usesBrowser } = {}) {
+  return jsonFetch('/api/quick-timer', {
+    method: 'POST',
+    ...jsonBody({ templateId, minutes, profile, model, usesBrowser }),
+  });
+}
+
+export async function fetchQuickTimers() {
+  return jsonFetch('/api/quick-timers');
+}
+
+export async function cancelQuickTimer(id) {
+  return jsonFetch(`/api/quick-timers/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function triggerQuickTimerNow(templateId, { profile, model, usesBrowser } = {}) {
+  return jsonFetch('/api/quick-timer/now', {
+    method: 'POST',
+    ...jsonBody({ templateId, profile, model, usesBrowser }),
+  });
+}
+
+// ── Isolated Agents ──
+
+export async function launchAgent(params) {
+  return jsonFetch('/api/agents/launch', {
+    method: 'POST',
+    ...jsonBody(params),
+  });
+}
+
+export async function fetchAgents() {
+  return jsonFetch('/api/agents');
+}
+
+export async function fetchAgent(id) {
+  return jsonFetch(`/api/agents/${id}`);
+}
+
+export async function stopAgent(id) {
+  return jsonFetch(`/api/agents/${id}/stop`, { method: 'POST' });
+}
+
+export async function removeAgent(id) {
+  return jsonFetch(`/api/agents/${id}`, { method: 'DELETE' });
+}
+
+// ─── Image Gallery ──────────────────────
+
+export async function fetchImages() {
+  return jsonFetch('/api/images');
+}
+
+export async function toggleImageFavorite(filename, favorite) {
+  return jsonFetch('/api/images/favorite', {
+    method: 'POST',
+    ...jsonBody({ filename, favorite }),
+  });
+}
+
+export async function deleteImage(filename) {
+  return jsonFetch(`/api/images/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+}

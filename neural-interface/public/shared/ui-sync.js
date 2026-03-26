@@ -46,6 +46,11 @@ const SYNC_HANDLERS = {
   'browser:session-created': (msg) => emit('sync:browser:created', msg),
   'browser:session-deleted': (msg) => emit('sync:browser:deleted', msg),
 
+  // Browser tab lifecycle sync
+  'browser:tab-created':  (msg) => emit('sync:browser:tab-created', msg),
+  'browser:tab-switched': (msg) => emit('sync:browser:tab-switched', msg),
+  'browser:tab-closed':   (msg) => emit('sync:browser:tab-closed', msg),
+
   // Browser auto-open (triggered by menu/keybind manual open)
   'browser:open': (msg) => emit('browser:open', msg),
 
@@ -59,6 +64,31 @@ const SYNC_HANDLERS = {
   'link:resumed':        (msg) => emit('sync:link:resumed', msg),
   'link:error':          (msg) => emit('sync:link:error', msg),
   'link:chunk':          (msg) => emit('sync:link:chunk', msg),
+
+  // Isolated agent events
+  'agent:output':    (msg) => emit('sync:agent:output', msg),
+  'agent:launched':  (msg) => emit('sync:agent:launched', msg),
+  'agent:status':    (msg) => emit('sync:agent:status', msg),
+  'agent:removed':   (msg) => emit('sync:agent:removed', msg),
+  'agent:iteration': (msg) => emit('sync:agent:iteration', msg),
+
+  // Schedule events
+  'schedule:created':   (msg) => emit('sync:schedule:created', msg),
+  'schedule:updated':   (msg) => emit('sync:schedule:updated', msg),
+  'schedule:deleted':   (msg) => emit('sync:schedule:deleted', msg),
+  'schedule:fired':     (msg) => emit('sync:schedule:fired', msg),
+  'schedule:completed':       (msg) => emit('sync:schedule:completed', msg),
+  'schedule:failed':          (msg) => emit('sync:schedule:failed', msg),
+  'schedule:timer-set':       (msg) => emit('sync:schedule:timer-set', msg),
+  'schedule:timer-fired':     (msg) => emit('sync:schedule:timer-fired', msg),
+  'schedule:timer-cancelled': (msg) => emit('sync:schedule:timer-cancelled', msg),
+
+  // Quick timer events
+  'quick-timer:set':       (msg) => emit('sync:quick-timer:set', msg),
+  'quick-timer:fired':     (msg) => emit('sync:quick-timer:fired', msg),
+  'quick-timer:fired-now': (msg) => emit('sync:quick-timer:fired-now', msg),
+  'quick-timer:cancelled': (msg) => emit('sync:quick-timer:cancelled', msg),
+  'quick-timer:failed':    (msg) => emit('sync:quick-timer:failed', msg),
 
   // Skin change sync
   'skin:changed': (msg) => emit('sync:skin:changed', msg),
@@ -158,7 +188,7 @@ export function showGuestToast(msg = 'This action is disabled by the host') {
   toast.textContent = msg;
   toast.style.opacity = '1';
   clearTimeout(toast._timer);
-  toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 2500);
+  toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 3500);
 }
 
 export function initSync() {

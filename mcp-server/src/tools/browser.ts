@@ -42,6 +42,7 @@ import {
   browserExtractLiMessagesSchema, browserExtractLiMessagesDescription, handleBrowserExtractLiMessages,
   browserExtractLiSearchPeopleSchema, browserExtractLiSearchPeopleDescription, handleBrowserExtractLiSearchPeople,
   browserExtractLiNetworkSchema, browserExtractLiNetworkDescription, handleBrowserExtractLiNetwork,
+  browserExtractLiJobsSchema, browserExtractLiJobsDescription, handleBrowserExtractLiJobs,
 } from './browser-observe.js';
 
 import {
@@ -51,7 +52,7 @@ import {
 } from './browser-advanced.js';
 
 /**
- * Register all 38 browser MCP tools on the given server instance.
+ * Register all 39 browser MCP tools on the given server instance.
  * Browser tools are static (no dynamic schema refresh needed).
  */
 export function registerBrowserTools(server: McpServer) {
@@ -97,6 +98,7 @@ export function registerBrowserTools(server: McpServer) {
   server.tool('browser_extract_li_messages', browserExtractLiMessagesDescription, browserExtractLiMessagesSchema, handleBrowserExtractLiMessages);
   server.tool('browser_extract_li_search_people', browserExtractLiSearchPeopleDescription, browserExtractLiSearchPeopleSchema, handleBrowserExtractLiSearchPeople);
   server.tool('browser_extract_li_network', browserExtractLiNetworkDescription, browserExtractLiNetworkSchema, handleBrowserExtractLiNetwork);
+  server.tool('browser_extract_li_jobs', browserExtractLiJobsDescription, browserExtractLiJobsSchema, handleBrowserExtractLiJobs);
 
   // Advanced
   server.tool('browser_evaluate', browserEvaluateDescription, browserEvaluateSchema, handleBrowserEvaluate);
