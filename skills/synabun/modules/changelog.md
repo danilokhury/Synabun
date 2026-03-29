@@ -112,7 +112,7 @@ Then use `AskUserQuestion` with:
 - **Edit first** — "I want to adjust entries before saving"
 - **Cancel** — "Don't save anything"
 
-**If user picks "Edit first":** Ask what they want to change (free text). Incorporate feedback, re-draft, and present again. Loop until satisfied or cancelled.
+**If user picks "Edit first":** The Neural Interface opens the entries in the code editor. The user edits and saves, and you receive the answer prefixed with `"Edit first — here are the edited entries:"` followed by the edited content. Use these edited entries exactly as provided — proceed directly to Phase 4. Do NOT re-draft or ask additional questions.
 
 **If user picks "Cancel":** End with a brief message. Do not write anything.
 

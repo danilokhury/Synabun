@@ -150,3 +150,49 @@ The domain/default pair of (com.apple.screencapture, location) does not exist
 (Use `node --trace-warnings ...` to show where the warning was created)
 2026-03-25 23:16:44.313 defaults[1410:12869] 
 The domain/default pair of (com.apple.screencapture, location) does not exist
+(node:565) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-26 12:26:11.137 defaults[748:8598] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+[browser] Could not clean mirror dir: ENOTEMPTY, Directory not empty: /Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4 '/Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4'
+[screencast] Page.startScreencast FAILED: cdpSession.send: Target page, context or browser has been closed
+[ws-browser] Page is dead for session 2888095530aabec80513b30851eb4d6c — destroying zombie
+[screencast] Page.startScreencast FAILED: cdpSession.send: Target page, context or browser has been closed
+(node:592) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-27 02:59:31.757 defaults[721:8244] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+[browser] Could not clean mirror dir: ENOTEMPTY, Directory not empty: /Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4 '/Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4'
+[browser] Could not clean mirror dir: ENOTEMPTY, Directory not empty: /Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4 '/Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4'
+[ws-browser] Page is dead for session fb6258405df84fe22362414b8b80b14c — destroying zombie
+[screencast] Page.startScreencast FAILED: cdpSession.send: Target page, context or browser has been closed
+[browser] Could not clean mirror dir: ENOTEMPTY, Directory not empty: /Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4 '/Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4'
+[browser] Could not clean mirror dir: ENOTEMPTY, Directory not empty: /Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4 '/Users/danilokhury/Apps/Synabun/data/browser-profiles/c141af32ddb4'
+(node:561) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-27 12:19:11.338 defaults[732:8773] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+(node:565) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-27 14:04:00.976 defaults[713:8928] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+(node:622) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-27 20:13:10.200 defaults[687:7960] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument
+(node:598) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-27 22:36:15.645 defaults[805:10984] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument
+(node:550) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-28 00:56:53.041 defaults[748:9316] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument
+(node:710) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+2026-03-28 12:18:57.968 defaults[777:9252] 
+The domain/default pair of (com.apple.screencapture, location) does not exist
+libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument

@@ -3,7 +3,7 @@
  * 100% browser-based — all interaction happens via SynaBun's browser automation.
  * No API key required.
  *
- * Tools: leonardo_browser_navigate, leonardo_browser_generate, leonardo_browser_library, leonardo_browser_download
+ * Tools: leonardo_browser_navigate, leonardo_browser_generate, leonardo_browser_library, leonardo_browser_download, leonardo_browser_reference
  */
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
@@ -120,5 +120,104 @@ export async function handleBrowserDownload(args) {
         return text('Screenshot captured of the current Leonardo.ai page.');
     }
     return text(`Unknown action: ${args.action}`);
+}
+// ── Browser Reference (upload reference images) ──────────────
+export const browserReferenceSchema = {
+    type: z.enum([
+        'image_ref', 'style_ref', 'content_ref', 'character_ref',
+        'image_to_image', 'start_frame', 'end_frame',
+    ]).describe('Reference type. Image generation: image_ref, style_ref, content_ref, character_ref, image_to_image. ' +
+        'Video generation: start_frame, end_frame. Availability depends on the selected model — check the model advisor.'),
+    filePaths: z.array(z.string()).describe('Absolute file paths of images to upload as reference. Get paths from image_staged tool or from user-attached images.'),
+    autoClear: z.boolean().optional().describe('Auto-delete the source images from data/images/ after successful upload. Default: true.'),
+};
+export const browserReferenceDescription = 'Upload reference image(s) to Leonardo.ai for guided generation. Supports image references, style/content/character references, ' +
+    'image-to-image, and video start/end frames. Must be called AFTER selecting a model (reference type availability is model-dependent) ' +
+    'and BEFORE calling leonardo_browser_generate. Uses browser automation to click the reference panel, upload the file(s), and confirm. ' +
+    'By default, auto-clears uploaded images from the SynaBun image store after success.';
+export async function handleBrowserReference(args) {
+    const sessionId = await getSession();
+    if (!sessionId)
+        return text('No browser session available. Open Leonardo.ai first.');
+    const { type, filePaths, autoClear = true } = args;
+    const isVideo = type === 'start_frame' || type === 'end_frame';
+    // Step 1: Open the reference panel
+    let openResult;
+    if (isVideo) {
+        // Video: click "Add Image Guidance to generation" button
+        openResult = await ni.evaluate(sessionId, `(() => {
+      const btns = document.querySelectorAll('button');
+      for (const b of btns) {
+        if (b.textContent.includes('Image Guidance') || b.textContent.includes('Add Image')) {
+          b.click(); return 'opened';
+        }
+      }
+      return 'not found';
+    })()`);
+    }
+    else {
+        // Image: click "Add elements" button
+        openResult = await ni.evaluate(sessionId, `(() => {
+      const btns = document.querySelectorAll('button');
+      for (const b of btns) {
+        if (b.textContent.includes('Add elements') || b.textContent.includes('Add Elements')) {
+          b.click(); return 'opened';
+        }
+      }
+      return 'not found';
+    })()`);
+    }
+    if (openResult.error)
+        return text(`Failed to open reference panel: ${openResult.error}`);
+    await wait(1500);
+    // Step 2: For image references, click the specific reference type tab/button
+    if (!isVideo) {
+        const typeLabels = {
+            'image_ref': ['Image Reference', 'Image Ref', 'Image Input'],
+            'style_ref': ['Style Reference', 'Style Ref'],
+            'content_ref': ['Content Reference', 'Content Ref'],
+            'character_ref': ['Character Reference', 'Character Ref'],
+            'image_to_image': ['Image to Image', 'Img2Img'],
+        };
+        const labels = typeLabels[type] || [type];
+        const labelSearch = labels.map(l => `b.textContent.includes('${l}')`).join(' || ');
+        const selectResult = await ni.evaluate(sessionId, `(() => {
+      const btns = document.querySelectorAll('button, [role="tab"], [role="menuitem"]');
+      for (const b of btns) {
+        if (${labelSearch}) { b.click(); return 'selected'; }
+      }
+      return 'not found — use browser_snapshot to see available options';
+    })()`);
+        if (selectResult.error)
+            return text(`Failed to select reference type: ${selectResult.error}. Use browser_snapshot to see the panel.`);
+        await wait(1000);
+    }
+    // Step 3: Find file input and upload
+    const uploadResult = await ni.upload(sessionId, 'input[type="file"]', filePaths);
+    if (uploadResult.error) {
+        // Fallback: try broader selector
+        const fallback = await ni.upload(sessionId, 'input[accept*="image"]', filePaths);
+        if (fallback.error) {
+            return text(`Failed to upload reference image(s): ${uploadResult.error}. ` +
+                `The file input may not be visible yet — try browser_snapshot to inspect the panel, ` +
+                `then use browser_upload manually with the correct selector.`);
+        }
+    }
+    await wait(1000);
+    // Step 4: Auto-clear source images if requested
+    if (autoClear) {
+        const { basename } = await import('path');
+        for (const fp of filePaths) {
+            const filename = basename(fp);
+            try {
+                await ni.deleteImage(filename);
+            }
+            catch { /* ignore cleanup errors */ }
+        }
+    }
+    const typeLabel = type.replace(/_/g, ' ');
+    return text(`Reference uploaded (${typeLabel}): ${filePaths.length} image(s).\n` +
+        `${autoClear ? 'Source images auto-cleared from store.\n' : ''}` +
+        `Use browser_snapshot to verify the reference is applied, then proceed with leonardo_browser_generate.`);
 }
 //# sourceMappingURL=leonardo-browser-tools.js.map

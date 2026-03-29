@@ -44,6 +44,7 @@
   "recordVideo": null,
   "recordHar": null,
   "screencast": {
+    "disabled": true,
     "format": "jpeg",
     "quality": 40,
     "maxWidth": 1280,

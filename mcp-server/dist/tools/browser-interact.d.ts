@@ -18,12 +18,14 @@ export declare function handleBrowserClick(args: {
 export declare const browserFillSchema: {
     selector: z.ZodString;
     value: z.ZodString;
+    nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserFillDescription: string;
 export declare function handleBrowserFill(args: {
     selector: string;
     value: string;
+    nthMatch?: number;
     sessionId?: string;
 }): Promise<{
     content: {
@@ -34,12 +36,14 @@ export declare function handleBrowserFill(args: {
 export declare const browserTypeSchema: {
     selector: z.ZodOptional<z.ZodString>;
     text: z.ZodString;
+    nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserTypeDescription: string;
 export declare function handleBrowserType(args: {
     selector?: string;
     text: string;
+    nthMatch?: number;
     sessionId?: string;
 }): Promise<{
     content: {
@@ -49,11 +53,13 @@ export declare function handleBrowserType(args: {
 }>;
 export declare const browserHoverSchema: {
     selector: z.ZodString;
+    nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserHoverDescription = "Hover over an element. Useful for revealing dropdowns, tooltips, or hover-triggered content. Accepts Playwright selectors.";
 export declare function handleBrowserHover(args: {
     selector: string;
+    nthMatch?: number;
     sessionId?: string;
 }): Promise<{
     content: {
@@ -64,12 +70,14 @@ export declare function handleBrowserHover(args: {
 export declare const browserSelectSchema: {
     selector: z.ZodString;
     value: z.ZodString;
+    nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserSelectDescription = "Select an option from a <select> dropdown by CSS selector and option value.";
 export declare function handleBrowserSelect(args: {
     selector: string;
     value: string;
+    nthMatch?: number;
     sessionId?: string;
 }): Promise<{
     content: {
@@ -112,12 +120,14 @@ export declare function handleBrowserScroll(args: {
 export declare const browserUploadSchema: {
     selector: z.ZodString;
     filePaths: z.ZodArray<z.ZodString, "many">;
+    nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserUploadDescription: string;
 export declare function handleBrowserUpload(args: {
     selector: string;
     filePaths: string[];
+    nthMatch?: number;
     sessionId?: string;
 }): Promise<{
     content: {

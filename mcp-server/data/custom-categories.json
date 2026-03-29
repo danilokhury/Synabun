@@ -406,6 +406,12 @@
       "created_at": "2026-03-19T04:35:50.477Z",
       "parent": "research",
       "color": "#3b82f6"
+    },
+    {
+      "name": "linkedin-engagement",
+      "description": "LinkedIn engagement activities: comments, likes, interactions with posts about AI coding, vibe coding, MCP servers",
+      "created_at": "2026-03-27T03:35:38.166Z",
+      "parent": "social-interactions"
     }
   ]
 }

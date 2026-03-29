@@ -297,7 +297,7 @@ Fires after `ExitPlanMode` tool calls. When Claude exits plan mode (plan approve
 
 **What it does:**
 
-1. Finds the most recently modified `.md` file in `~/.claude/plans/`
+1. Finds the most recently modified `.md` file in `data/plans/` (falls back to `~/.claude/plans/`)
 2. Auto-creates a child category under `plans` for the project if needed
 3. Generates a local embedding (Transformers.js) for the plan content
 4. Stores the plan in the SQLite memory database with project metadata

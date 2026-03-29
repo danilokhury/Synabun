@@ -11,6 +11,7 @@ import {
   browserGenerateSchema, browserGenerateDescription, handleBrowserGenerate,
   browserLibrarySchema, browserLibraryDescription, handleBrowserLibrary,
   browserDownloadSchema, browserDownloadDescription, handleBrowserDownload,
+  browserReferenceSchema, browserReferenceDescription, handleBrowserReference,
 } from './leonardo-browser-tools.js';
 
 /**
@@ -23,4 +24,5 @@ export function registerLeonardoTools(server: McpServer) {
   server.tool('leonardo_browser_generate', browserGenerateDescription, browserGenerateSchema, handleBrowserGenerate);
   server.tool('leonardo_browser_library', browserLibraryDescription, browserLibrarySchema, handleBrowserLibrary);
   server.tool('leonardo_browser_download', browserDownloadDescription, browserDownloadSchema, handleBrowserDownload);
+  server.tool('leonardo_browser_reference', browserReferenceDescription, browserReferenceSchema, handleBrowserReference);
 }

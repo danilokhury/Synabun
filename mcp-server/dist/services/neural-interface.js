@@ -117,17 +117,17 @@ export async function reload(sessionId) {
 export async function click(sessionId, selector, nthMatch) {
     return request('POST', `/api/browser/sessions/${sessionId}/click`, { selector, ...(nthMatch !== undefined && { nthMatch }) });
 }
-export async function fill(sessionId, selector, value) {
-    return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value });
+export async function fill(sessionId, selector, value, nthMatch) {
+    return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value, ...(nthMatch !== undefined && { nthMatch }) });
 }
-export async function type(sessionId, selector, text) {
-    return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text });
+export async function type(sessionId, selector, text, nthMatch) {
+    return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text, ...(nthMatch !== undefined && { nthMatch }) });
 }
-export async function hover(sessionId, selector) {
-    return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector });
+export async function hover(sessionId, selector, nthMatch) {
+    return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector, ...(nthMatch !== undefined && { nthMatch }) });
 }
-export async function selectOption(sessionId, selector, value) {
-    return request('POST', `/api/browser/sessions/${sessionId}/select`, { selector, value });
+export async function selectOption(sessionId, selector, value, nthMatch) {
+    return request('POST', `/api/browser/sessions/${sessionId}/select`, { selector, value, ...(nthMatch !== undefined && { nthMatch }) });
 }
 export async function pressKey(sessionId, key) {
     return request('POST', `/api/browser/sessions/${sessionId}/press`, { key });
@@ -135,8 +135,8 @@ export async function pressKey(sessionId, key) {
 export async function scroll(sessionId, opts) {
     return request('POST', `/api/browser/sessions/${sessionId}/scroll`, opts);
 }
-export async function upload(sessionId, selector, filePaths) {
-    return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths }, LONG_TIMEOUT);
+export async function upload(sessionId, selector, filePaths, nthMatch) {
+    return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths, ...(nthMatch !== undefined && { nthMatch }) }, LONG_TIMEOUT);
 }
 // ── Observation ──
 export async function snapshot(sessionId, selector) {
@@ -227,5 +227,12 @@ export async function gitLog(path, count) {
 }
 export async function gitBranches(path) {
     return request('GET', `/api/terminal/branches?path=${encodeURIComponent(path)}`);
+}
+// ── Image store ──
+export async function listImages() {
+    return request('GET', '/api/images');
+}
+export async function deleteImage(filename) {
+    return request('DELETE', `/api/images/${encodeURIComponent(filename)}`);
 }
 //# sourceMappingURL=neural-interface.js.map

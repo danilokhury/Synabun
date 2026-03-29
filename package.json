@@ -8,10 +8,45 @@
     "type": "git",
     "url": "https://github.com/danilokhury/Synabun.git"
   },
+  "homepage": "https://synabun.ai",
   "type": "module",
-  "scripts": {
-    "start": "node setup.js"
+  "bin": {
+    "synabun": "./setup.js"
   },
+  "files": [
+    "setup.js",
+    "postinstall.js",
+    "mcp-server/package.json",
+    "mcp-server/tsconfig.json",
+    "mcp-server/src/",
+    "mcp-server/run.mjs",
+    "mcp-server/data/.gitkeep",
+    "neural-interface/package.json",
+    "neural-interface/server.js",
+    "neural-interface/public/",
+    "neural-interface/templates/",
+    "neural-interface/scripts/",
+    "hooks/",
+    "skills/",
+    "data/.gitkeep",
+    "CLAUDE.md",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "start": "node setup.js",
+    "postinstall": "node postinstall.js"
+  },
+  "keywords": [
+    "claude",
+    "memory",
+    "mcp",
+    "vector",
+    "embeddings",
+    "ai",
+    "persistent-memory",
+    "claude-code"
+  ],
   "engines": {
     "node": ">=22.0.0"
   }

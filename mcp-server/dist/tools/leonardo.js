@@ -3,7 +3,7 @@
  * 100% browser-based — no API key required.
  * Registers 4 Leonardo browser tools on the given server instance.
  */
-import { browserNavigateSchema, browserNavigateDescription, handleBrowserNavigate, browserGenerateSchema, browserGenerateDescription, handleBrowserGenerate, browserLibrarySchema, browserLibraryDescription, handleBrowserLibrary, browserDownloadSchema, browserDownloadDescription, handleBrowserDownload, } from './leonardo-browser-tools.js';
+import { browserNavigateSchema, browserNavigateDescription, handleBrowserNavigate, browserGenerateSchema, browserGenerateDescription, handleBrowserGenerate, browserLibrarySchema, browserLibraryDescription, handleBrowserLibrary, browserDownloadSchema, browserDownloadDescription, handleBrowserDownload, browserReferenceSchema, browserReferenceDescription, handleBrowserReference, } from './leonardo-browser-tools.js';
 /**
  * Register all Leonardo.ai MCP tools on the given server instance.
  * These are browser-based tools that automate the Leonardo.ai web UI.
@@ -14,5 +14,6 @@ export function registerLeonardoTools(server) {
     server.tool('leonardo_browser_generate', browserGenerateDescription, browserGenerateSchema, handleBrowserGenerate);
     server.tool('leonardo_browser_library', browserLibraryDescription, browserLibrarySchema, handleBrowserLibrary);
     server.tool('leonardo_browser_download', browserDownloadDescription, browserDownloadSchema, handleBrowserDownload);
+    server.tool('leonardo_browser_reference', browserReferenceDescription, browserReferenceSchema, handleBrowserReference);
 }
 //# sourceMappingURL=leonardo.js.map
