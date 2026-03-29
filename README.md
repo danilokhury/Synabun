@@ -130,14 +130,22 @@ The Neural Interface includes an embedded terminal powered by `node-pty` (native
 
 </details>
 
-### One-Command Setup
+### Install via npm
 
 ```bash
-cd /path/to/Synabun
+npm install -g synabun
+synabun
+```
+
+### Or clone from GitHub
+
+```bash
+git clone https://github.com/danilokhury/Synabun.git
+cd Synabun
 npm start
 ```
 
-This will:
+Either method will:
 1. Check prerequisites (Node.js 22.5+)
 2. Install all dependencies
 3. Build the MCP server
