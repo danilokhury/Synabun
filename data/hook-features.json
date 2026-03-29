@@ -1,1 +1,7 @@
-{"conversationMemory":true,"greeting":false,"userLearning":true,"userLearningThreshold":3,"autoStoreOnEnd":false}
+{
+  "conversationMemory": true,
+  "greeting": true,
+  "userLearning": true,
+  "userLearningThreshold": 3,
+  "autoStoreOnEnd": false
+}
