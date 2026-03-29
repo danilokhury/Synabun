@@ -5,6 +5,7 @@
 
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
+import { emit } from './state.js';
 
 // ── Sound presets ──
 // Each preset defines tones for 'action' and 'done' events
@@ -120,13 +121,13 @@ export function playTestSound(presetName, type = NOTIF_TYPE.ACTION) {
 
 // ── Banner (OS) notifications via service worker ──
 
-function _sendBanner(title, body, tag) {
+function _sendBanner(title, body, tag, routing) {
   const sw = navigator.serviceWorker?.controller;
   if (sw) {
-    sw.postMessage({ type: 'SHOW_NOTIFICATION', title, body, tag });
+    sw.postMessage({ type: 'SHOW_NOTIFICATION', title, body, tag, routing });
   } else if (navigator.serviceWorker?.ready) {
     navigator.serviceWorker.ready.then(reg => {
-      reg.showNotification(title, { body, tag, silent: true });
+      reg.showNotification(title, { body, tag, silent: true, data: routing });
     });
   }
 }
@@ -175,7 +176,7 @@ function _ensureToastContainer(position) {
   return _toastContainer;
 }
 
-function _showToast(type, title, body, source) {
+function _showToast(type, title, body, source, opts) {
   const s = getNotifSettings();
   if (!s.toast) return;
   const container = _ensureToastContainer(s.toastPosition);
@@ -196,7 +197,15 @@ function _showToast(type, title, body, source) {
     <button class="notif-toast-close">&times;</button>
   `;
 
-  // Dismiss on click
+  // Click toast body → show the source panel/terminal (with session/tab specificity)
+  toast.addEventListener('click', (e) => {
+    if (e.target.closest('.notif-toast-close')) return;
+    const event = source === 'panel' ? 'claude-panel:show' : 'terminal:show';
+    emit(event, { sessionId: opts?.sessionId, tabId: opts?.tabId });
+    _dismissToast(toast);
+  });
+
+  // Dismiss on close button
   toast.querySelector('.notif-toast-close').addEventListener('click', () => _dismissToast(toast));
 
   // Add to container
@@ -229,7 +238,7 @@ function _dismissToast(toast) {
 // type: NOTIF_TYPE value
 // label: session label for the notification body
 
-export function notify(source, type, label) {
+export function notify(source, type, label, opts) {
   const s = getNotifSettings();
   if (!s.enabled) return;
 
@@ -253,14 +262,25 @@ export function notify(source, type, label) {
   if (s.sound) playNotifSound(type);
 
   // In-app toast
-  _showToast(type, title, body, source);
+  _showToast(type, title, body, source, opts);
 
   // OS banner (only when tab hidden, unless bannerFocused)
   if (s.banner && Notification.permission === 'granted') {
     if (document.hidden || s.bannerFocused) {
-      _sendBanner(title, body, `synabun-${source}-${Date.now()}`);
+      _sendBanner(title, body, `synabun-${source}-${Date.now()}`, { source, ...opts });
     }
   }
+}
+
+// ── OS banner click routing (service worker → client) ──
+
+if (navigator.serviceWorker) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type !== 'NOTIFICATION_CLICK') return;
+    const { source, sessionId, tabId } = e.data;
+    const event = source === 'panel' ? 'claude-panel:show' : 'terminal:show';
+    emit(event, { sessionId, tabId });
+  });
 }
 
 // ── Exports for settings test buttons ──

@@ -30,6 +30,9 @@ const _camKeys = {
   q: false, e: false, shift: false, space: false,
 };
 
+// Focus mode — blocks all keyboard/mouse camera input
+let _cameraPaused = false;
+
 // ── Module state ──
 let _graph = null;
 let _origControlsUpdate = null;
@@ -336,7 +339,7 @@ export function updateCamHud() {
  * Reads _camKeys state, computes smoothed velocity, applies to camera + orbit target.
  */
 export function updateCameraMovement() {
-  if (!_graph) return;
+  if (_cameraPaused || !_graph) return;
   const cam = _graph.camera();
   const controls = _graph.controls();
   if (!cam || !controls) return;
@@ -453,7 +456,7 @@ function bindKeyListeners() {
   }
 
   function onKeyDown(e) {
-    if (isEditing()) return;
+    if (_cameraPaused || isEditing()) return;
 
     const k = e.key.toLowerCase();
     if (k === 'w' || k === 'a' || k === 's' || k === 'd' || k === 'q' || k === 'e') {
@@ -465,7 +468,7 @@ function bindKeyListeners() {
   }
 
   function onKeyUp(e) {
-    if (isEditing()) return;
+    if (_cameraPaused || isEditing()) return;
     const k = e.key.toLowerCase();
     if (k === 'w' || k === 'a' || k === 's' || k === 'd' || k === 'q' || k === 'e') {
       _camKeys[k] = false;
@@ -481,7 +484,7 @@ function bindKeyListeners() {
     _lastFrameTime = 0;  // avoid deltaTime spike on refocus
   }
 
-  function onMouseDown(e) { if (e.button === 0 || e.button === 2) _mouseDown = true; }
+  function onMouseDown(e) { if (!_cameraPaused && (e.button === 0 || e.button === 2)) _mouseDown = true; }
   function onMouseUp()    { _mouseDown = false; }
 
   document.addEventListener('keydown', onKeyDown);
@@ -640,4 +643,19 @@ export function initCamera(graph) {
       _graph = null;
     },
   };
+}
+
+/** Pause camera input (focus mode). Clears any held keys. */
+export function pauseCamera() {
+  _cameraPaused = true;
+  _camKeys.w = _camKeys.a = _camKeys.s = _camKeys.d = false;
+  _camKeys.q = _camKeys.e = _camKeys.shift = _camKeys.space = false;
+  _mouseDown = false;
+  _lastFrameTime = 0;
+}
+
+/** Resume camera input after focus mode exit. */
+export function resumeCamera() {
+  _cameraPaused = false;
+  _lastFrameTime = 0;
 }

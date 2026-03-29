@@ -688,6 +688,13 @@ function buildBrowserTab() {
                 </div>
               </div>
               <div class="bc-card-row">
+                <label class="bc-lbl">Stream</label>
+                <div class="bc-inline-group">
+                  <button class="cc-toggle" id="bc-screencastEnabled"></button>
+                  <span class="bc-hint-inline">Live browser preview in Neural Interface</span>
+                </div>
+              </div>
+              <div class="bc-card-row">
                 <label class="bc-lbl">Screencast</label>
                 <div class="bc-inline-group">
                   <input type="hidden" id="bc-screencastFormat" value="jpeg">
@@ -1999,22 +2006,22 @@ function buildMemoryTab() {
           <div class="settings-hint" style="margin-bottom:10px">Choose how the AI searches your memory. Profiles configure multiple parameters at once.</div>
           <div class="recall-profiles" id="recall-profiles">
             <div class="recall-profile-card" data-recall-profile="quick">
-              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg></div>
               <div class="recall-profile-name">Quick</div>
               <div class="recall-profile-desc">3 results &middot; important only</div>
             </div>
             <div class="recall-profile-card active" data-recall-profile="balanced">
-              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg></div>
               <div class="recall-profile-name">Balanced</div>
               <div class="recall-profile-desc">5 results &middot; standard matching</div>
             </div>
             <div class="recall-profile-card" data-recall-profile="deep">
-              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></div>
+              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z"/><circle cx="12" cy="12" r="2"/></svg></div>
               <div class="recall-profile-name">Deep</div>
               <div class="recall-profile-desc">10 results &middot; sessions included</div>
             </div>
             <div class="recall-profile-card" data-recall-profile="custom">
-              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>
+              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></div>
               <div class="recall-profile-name">Custom</div>
               <div class="recall-profile-desc">Configure each parameter</div>
             </div>
@@ -2113,7 +2120,7 @@ function buildMemoryTab() {
           </div>
         </div>
 
-        <!-- Memory Sync -->
+        <!-- Memory Sync (commented out)
         <div class="iface-section">
           <div class="gfx-group-title">Memory Sync</div>
           <div class="settings-hint" style="margin-bottom:10px">Scan for memories whose related files have changed since they were last stored. Stale memories may contain outdated information about renamed functions, moved files, or changed APIs.</div>
@@ -2123,6 +2130,7 @@ function buildMemoryTab() {
           </button>
           <div class="sync-results" id="sync-results"></div>
         </div>
+        -->
 
       </div>`;
 }
@@ -2668,10 +2676,6 @@ export async function openSettingsModal() {
     <div class="settings-panel-header drag-handle" data-drag="settings-panel">
       <div class="stg-header-left">
         <h3>Settings</h3>
-        <span class="stg-status-badge">
-          <span class="stg-status-dot ${settings.storage === 'sqlite' ? 'connected' : 'disconnected'}"></span>
-          SQLite
-        </span>
       </div>
       <button class="backdrop-toggle-btn" id="stg-backdrop-toggle" data-tooltip="Toggle backdrop">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -2724,16 +2728,6 @@ export async function openSettingsModal() {
     if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onSettingsEsc); }
   };
   document.addEventListener('keydown', onSettingsEsc);
-
-  // ── Focus mode ──
-  let _focusMode = false;
-  const focusBtn = overlay.querySelector('#stg-focus');
-  if (focusBtn) {
-    focusBtn.addEventListener('click', () => {
-      _focusMode = !_focusMode;
-      focusBtn.classList.toggle('active', _focusMode);
-    });
-  }
 
   // ── Close helper ──
   const close = () => {
@@ -3448,21 +3442,51 @@ export async function openSettingsModal() {
 
   function updateImpactIndicator() {
     const d = getControlsState();
-    // Token estimate: results * avg content chars / 4 (rough chars-to-tokens)
     if (_recallImpactData) {
       let reachable = 0;
       let totalLen = 0;
+      let totalTagsLen = 0;
+      let totalFilesLen = 0;
       let totalCount = 0;
       for (const row of _recallImpactData.rows) {
         if (d.minImportance === 0 || row.importance >= d.minImportance) {
           reachable += row.cnt;
           totalLen += row.avg_len * row.cnt;
+          totalTagsLen += (row.avg_tags_len || 0) * row.cnt;
+          totalFilesLen += (row.avg_files_len || 0) * row.cnt;
           totalCount += row.cnt;
         }
       }
       const avgLen = totalCount > 0 ? totalLen / totalCount : 500;
+      const avgTagsLen = totalCount > 0 ? totalTagsLen / totalCount : 30;
+      const avgFilesLen = totalCount > 0 ? totalFilesLen / totalCount : 40;
       const effectiveLen = d.maxChars > 0 ? Math.min(avgLen, d.maxChars) : avgLen;
-      const estTokens = Math.round(d.limit * (effectiveLen / 4 + 30)); // +30 for metadata per result
+
+      // Token estimate: chars / 3.7 (average ratio for mixed text)
+      // Per memory: content + metadata header (~80 chars: UUID, score, importance, age)
+      //           + category/project/tags line + files line + newlines
+      const metadataCharsPerResult = 80 + avgTagsLen + avgFilesLen + 30;
+      const contentTokens = d.limit * (effectiveLen / 3.7);
+      const metadataTokens = d.limit * (metadataCharsPerResult / 3.7);
+      const headerTokens = 15; // "Found N memories and M session chunks for ..."
+
+      // Session chunks: estimated when sessions are on or auto
+      let sessionTokens = 0;
+      if (d.includeSessions !== 'never') {
+        const ss = _recallImpactData.sessionStats;
+        const sessionLimit = Math.max(3, Math.floor(d.limit / 2));
+        if (ss && ss.count > 0) {
+          // Per chunk: summary + header (~90 chars) + session line (~70 chars) + details
+          const charsPerChunk = (ss.avg_summary_len || 150) + 160 + (ss.avg_details_len || 80);
+          sessionTokens = sessionLimit * (charsPerChunk / 3.7);
+        } else {
+          // Fallback estimate when no session data available
+          sessionTokens = sessionLimit * 120;
+        }
+        if (d.includeSessions === 'auto') sessionTokens *= 0.6; // auto doesn't always trigger
+      }
+
+      const estTokens = Math.round(contentTokens + metadataTokens + headerTokens + sessionTokens);
       rcImpactTokens.textContent = estTokens > 999 ? (estTokens / 1000).toFixed(1) + 'k' : estTokens;
       rcImpactReachable.textContent = reachable;
     }
@@ -3489,12 +3513,25 @@ export async function openSettingsModal() {
     setActiveProfile(profile);
   }).catch(() => setActiveProfile('balanced'));
 
-  // Profile card clicks
+  // Profile card clicks + mouse-tracking glow + background icon clone
   rcProfiles.querySelectorAll('.recall-profile-card').forEach(card => {
     card.addEventListener('click', () => {
       setActiveProfile(card.dataset.recallProfile);
       saveRecallSettings();
     });
+    card.addEventListener('mousemove', e => {
+      const r = card.getBoundingClientRect();
+      card.style.setProperty('--mx', ((e.clientX - r.left) / r.width * 100) + '%');
+      card.style.setProperty('--my', ((e.clientY - r.top) / r.height * 100) + '%');
+    });
+    // Clone icon SVG into oversized background element
+    const iconSvg = card.querySelector('.recall-profile-icon svg');
+    if (iconSvg) {
+      const bg = document.createElement('div');
+      bg.className = 'recall-bg-icon';
+      bg.appendChild(iconSvg.cloneNode(true));
+      card.appendChild(bg);
+    }
   });
 
   // Slider wiring
@@ -4445,7 +4482,7 @@ export async function openSettingsModal() {
             cachedConfig = JSON.stringify(data.config, null, 2);
             preview.textContent = cachedConfig;
           } else if (data.ok) {
-            cachedConfig = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/dist/preload.js'], env: { DOTENV_PATH: setupStatus.paths?.envPath || '<path-to>/synabun/.env' } } } }, null, 2);
+            cachedConfig = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs'], env: { DOTENV_PATH: setupStatus.paths?.envPath || '<path-to>/synabun/.env' } } } }, null, 2);
             preview.textContent = cachedConfig;
           } else { preview.textContent = 'Could not load config.'; }
         }).catch(() => { preview.textContent = 'Failed to load.'; });
@@ -4467,7 +4504,7 @@ export async function openSettingsModal() {
             cachedConfig = data.toml;
             preview.textContent = cachedConfig;
           } else if (data.ok) {
-            const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/dist/preload.js';
+            const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs';
             const ep = setupStatus.paths?.envPath || '<path-to>/synabun/.env';
             cachedConfig = `[mcp_servers.SynaBun]\ncommand = "node"\nargs = ["${mp}"]\n\n[mcp_servers.SynaBun.env]\nDOTENV_PATH = "${ep}"`;
             preview.textContent = cachedConfig;
@@ -4497,6 +4534,17 @@ export async function openSettingsModal() {
     const setToggle = (id, on) => { const t = bcToggle(id); if (t) { t.classList.toggle('on', on); } };
 
     // Wire toggle clicks
+    // Stream toggle — warn on enable
+    const streamToggle = bcToggle('bc-screencastEnabled');
+    if (streamToggle) {
+      streamToggle.addEventListener('click', () => {
+        streamToggle.classList.toggle('on');
+        if (streamToggle.classList.contains('on')) {
+          alert('Browser stream consumes significant GPU resources and is mostly cosmetic. The automation browser runs headful — you can interact with it directly.');
+        }
+      });
+    }
+
     const toggleIds = [
       'bc-isMobile', 'bc-hasTouch', 'bc-stealthFingerprint', 'bc-geoEnabled',
       'bc-offline', 'bc-javaScriptEnabled', 'bc-ignoreHTTPSErrors', 'bc-bypassCSP',
@@ -5064,6 +5112,7 @@ export async function openSettingsModal() {
 
         // Screencast
         screencast: {
+          disabled: !isToggleOn('bc-screencastEnabled'),
           format: val('bc-screencastFormat') || 'jpeg',
           quality: num('bc-screencastQuality', 60),
           maxWidth: num('bc-screencastMaxWidth', 1280),
@@ -5198,6 +5247,7 @@ export async function openSettingsModal() {
       }
 
       // Screencast
+      setToggle('bc-screencastEnabled', !cfg.screencast?.disabled);
       if (cfg.screencast) {
         setVal('bc-screencastFormat', cfg.screencast.format || 'jpeg');
         setVal('bc-screencastQuality', cfg.screencast.quality ?? 60);

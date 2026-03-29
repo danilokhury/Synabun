@@ -64,6 +64,19 @@ Never store directly in parent categories.
 - `reflect` requires FULL UUID — use the one returned by `remember`, or `recall` to find existing memories.
 - Sequential MCP calls only — never parallel.
 
+### Plan Mode (MANDATORY)
+
+When in plan mode and you need clarification or have questions:
+- **ALWAYS** use `AskUserQuestion` to present options — never write questions as plain text
+- Load the tool via `ToolSearch` first if its schema is not yet available
+- Structure as distinct choices (2-4 options per question, max 4 questions)
+- Use for approach clarification BEFORE finalizing the plan
+- Use `ExitPlanMode` (not AskUserQuestion) for final plan approval
+
+### Multi-Select Questions
+
+When using `AskUserQuestion`, set `multiSelect: true` when options are NOT mutually exclusive — i.e., the user could reasonably want more than one. Examples: selecting multiple features, tags, effects, or follow-up actions. Keep single-select (default) for inherently exclusive choices (one model, one style, one dimension).
+
 ---
 
 ## Coexistence with Other Tools
@@ -106,6 +119,8 @@ If you notice the AI defaulting to another tool's memory features, add the enfor
 - remember returns full UUID. Use reflect only to update existing memories.
 - Sequential MCP calls only
 - Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical, 10=foundational
+- Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
+- AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
 ```
 
 ### Generic
@@ -116,6 +131,8 @@ Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
 - Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
 - remember returns full UUID. reflect is for updating existing memories.
 - Sequential calls only. Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical
+- Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
+- AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
 ```
 
 ### Gemini
@@ -126,6 +143,8 @@ Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
 - Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
 - remember returns full UUID. reflect is for updating existing memories.
 - Sequential calls only. Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical
+- Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
+- AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
 ```
 
 ### Codex
@@ -136,6 +155,8 @@ Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
 - Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
 - remember returns full UUID. reflect is for updating existing memories.
 - Sequential calls only. Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical
+- Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
+- AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
 ```
 
 ---
@@ -184,7 +205,7 @@ synabun/
 ```bash
 node neural-interface/server.js                    # UI on :3344
 cd mcp-server && npm run build                     # Build MCP
-claude mcp add SynaBun -s user -e DOTENV_PATH="..." -- node ".../mcp-server/dist/preload.js"
+claude mcp add SynaBun -s user -- node ".../mcp-server/run.mjs"
 ```
 
 **Architecture:** SQLite database (data/memory.db), local Transformers.js embeddings (384 dims), per-connection categories, ESM hooks, modular Neural Interface (vanilla JS + Three.js, shared/ modules), paths from `resolve(__dirname, '..')`.
