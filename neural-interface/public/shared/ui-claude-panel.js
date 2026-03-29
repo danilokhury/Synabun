@@ -874,21 +874,15 @@ function injectStyles() {
     .perm-btn-allow:hover:not(:disabled) { background: rgba(245,180,60,0.2); color: rgba(245,200,100,1); border-color: rgba(245,180,60,0.35); }
     .perm-btn-deny { background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.35); border-color: rgba(255,255,255,0.06); }
     .perm-btn-deny:hover:not(:disabled) { background: rgba(255,80,80,0.08); color: rgba(255,120,120,0.7); border-color: rgba(255,80,80,0.15); }
-    .perm-always {
-      font-size: 9px; color: var(--t-faint); margin-left: auto;
-      display: flex; align-items: center; gap: 3px; cursor: pointer;
-      transition: color 0.15s; font-family: 'JetBrains Mono', monospace;
-    }
-    .perm-always:hover { color: var(--t-secondary); }
-    .perm-always input { width: 10px; height: 10px; cursor: pointer; }
+    .perm-btn-always { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.45); border-color: rgba(255,255,255,0.08); }
+    .perm-btn-always:hover:not(:disabled) { background: rgba(245,180,60,0.12); color: rgba(245,195,90,0.85); border-color: rgba(245,180,60,0.2); }
     .perm-status {
       font-size: 9px; font-weight: 600; font-family: 'JetBrains Mono', monospace;
-      color: var(--t-faint); letter-spacing: 0.3px;
+      color: var(--t-faint); letter-spacing: 0.3px; margin-left: auto;
     }
     .perm-card.resolved { opacity: 0.45; box-shadow: none; animation: none; background: var(--s-subtle); border-color: var(--b-subtle); }
     .perm-card.resolved .perm-btn { pointer-events: none; }
-    .perm-card.resolved .perm-btn-allow { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.4); border-color: rgba(255,255,255,0.08); }
-    .perm-card.resolved .perm-always { display: none; }
+    .perm-card.resolved .perm-btn-allow, .perm-card.resolved .perm-btn-always { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.4); border-color: rgba(255,255,255,0.08); }
     .perm-card.resolved .perm-header { color: var(--t-faint); }
 
     /* ── Status / errors / thinking ── */
@@ -3052,9 +3046,10 @@ function handleTabMsg(tab, msg) {
     return;
   }
   if (msg.type === 'control_request') console.log('[claude-panel] Got control_request msg:', msg.type, msg.request_id, msg.request?.subtype, msg.request?.tool_name);
-  // Buffer only terminal messages while a permission prompt is active
-  // Allow event messages through so streaming content remains visible
-  if (tab._activePerm && msg.type !== 'control_request' && msg.type !== 'event') {
+  // Buffer ALL messages while user is being prompted (permission card or AskUserQuestion).
+  // Nothing appears until the user interacts — only control_request passes through
+  // so new permission cards can still queue up.
+  if ((tab._activePerm || tab.pendingAskRequestId) && msg.type !== 'control_request') {
     if (tab._msgBuffer.length < 500) tab._msgBuffer.push(msg);
     return;
   }
@@ -3914,6 +3909,10 @@ function sendAskAnswer(tab, questions, answers) {
   tab.pendingAskRequestId = null;
   tab.pendingAskToolUseId = null;
   tab.pendingAskBufferedAnswer = null;
+  // Flush BEFORE clearing askRenderedViaControl — buffered assistant events
+  // must see the flag so buildAskFromToolUse returns a hidden placeholder
+  // instead of rendering a duplicate card.
+  if (!tab._activePerm) _flushMsgBuffer(tab);
   tab.askRenderedViaControl = false;
   showThinking(tab);
   setRunning(tab, true);
@@ -4388,6 +4387,9 @@ function _isSynaBunAsk(questions) {
 function renderAskUserQuestion(tab, requestId, input) {
   const $msgs = tab.messagesEl;
   if (!$msgs) return;
+  // DOM-level dedup: if an active (non-submitted) ask card already exists, skip
+  const existing = $msgs.querySelector('.ask-card .ask-submit:not([disabled])');
+  if (existing) return;
   hideThinking(tab);
   tab.askRenderedViaControl = true;
   notify('panel', NOTIF_TYPE.ASK, tab.label || 'Claude Code', { tabId: tab.id });
@@ -4631,6 +4633,10 @@ function renderPermissionPrompt(tab, requestId, req) {
   const actions = document.createElement('div');
   actions.className = 'perm-actions';
 
+  const alwaysBtn = document.createElement('button');
+  alwaysBtn.className = 'perm-btn perm-btn-always';
+  alwaysBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_CHECK + '</span>Always';
+
   const allowBtn = document.createElement('button');
   allowBtn.className = 'perm-btn perm-btn-allow';
   allowBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_CHECK + '</span>Allow';
@@ -4639,37 +4645,35 @@ function renderPermissionPrompt(tab, requestId, req) {
   denyBtn.className = 'perm-btn perm-btn-deny';
   denyBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_X + '</span>Deny';
 
-  const alwaysLbl = document.createElement('label');
-  alwaysLbl.className = 'perm-always';
-  const alwaysCb = document.createElement('input');
-  alwaysCb.type = 'checkbox';
-  const alwaysText = document.createElement('span');
-  alwaysText.textContent = 'Always';
-  alwaysLbl.append(alwaysCb, alwaysText);
-
   // Status badge for resolved state
   const statusBadge = document.createElement('span');
   statusBadge.className = 'perm-status';
   statusBadge.hidden = true;
 
-  const resolve = (behavior) => {
-    const always = alwaysCb.checked && behavior === 'allow';
+  const resolve = (behavior, always = false) => {
     if (always) _autoAllowTools.add(toolName);
     card.classList.remove('active-perm');
     card.classList.add('resolved', behavior === 'allow' ? 'resolved-allow' : 'resolved-deny');
     allowBtn.disabled = true;
+    alwaysBtn.disabled = true;
     denyBtn.disabled = true;
-    statusBadge.textContent = behavior === 'allow' ? 'Allowed' : 'Denied';
+    statusBadge.textContent = always ? 'Always' : (behavior === 'allow' ? 'Allowed' : 'Denied');
     statusBadge.hidden = false;
     sendPermissionResponse(tab, requestId, behavior, always);
+    // On deny: clear queued permissions and buffered messages — process is being killed
+    if (behavior === 'deny') {
+      tab._permQueue.length = 0;
+      tab._msgBuffer.length = 0;
+    }
     tab._activePerm = false;
     _showNextPerm(tab);
   };
 
+  alwaysBtn.addEventListener('click', () => resolve('allow', true));
   allowBtn.addEventListener('click', () => resolve('allow'));
   denyBtn.addEventListener('click', () => resolve('deny'));
 
-  actions.append(allowBtn, denyBtn, alwaysLbl, statusBadge);
+  actions.append(alwaysBtn, allowBtn, denyBtn, statusBadge);
   card.appendChild(actions);
   wrap.appendChild(card);
   el.appendChild(wrap);

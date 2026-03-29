@@ -424,8 +424,8 @@ function maskKey(value) {
 app.get('/', (req, res, next) => {
   const vars = parseEnvFile(ENV_PATH);
   if (vars.SETUP_COMPLETE === 'true') return next();
-  // SQLite + local embeddings need no external config — check if DB exists
-  if (existsSync(getDbPath())) return next();
+  // Only SETUP_COMPLETE gates onboarding — DB existence is unreliable because
+  // the MCP server can create memory.db before the user visits the UI
   res.redirect('/onboarding.html');
 });
 
@@ -2745,8 +2745,10 @@ function handleClaudeSkinWebSocket(ws) {
             inTurn = true;
             lastEventTime = Date.now();
           } else {
-            // User denied — send done to client
-            console.log(`[claude-skin] ✗ Permission denied for ${toolName} by user`);
+            // User denied — kill the process to prevent further permission spam,
+            // then send done to client so the UI resets cleanly.
+            console.log(`[claude-skin] ✗ Permission denied for ${toolName} by user — killing process`);
+            killProc();
             if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'done', code: 0 }));
           }
           lastPermissionDenials = null;
