@@ -214,9 +214,35 @@ function updateUndoButtons() {
 // PERSISTENCE
 // ═══════════════════════════════════════════
 
+/** Flush in-progress list edits from contenteditable DOM back into _elements (without exiting edit mode). */
+function flushListEdits() {
+  const dom = _root?.querySelector('.wb-list.editing');
+  if (!dom) return;
+  const ul = dom.querySelector('ul');
+  const elId = dom.dataset.wbId;
+  const el = _elements.find(e => e.id === elId);
+  if (el && ul) {
+    el.items = [...ul.querySelectorAll('li')].map(li => li.innerText.trimEnd());
+    if (!el.items.length) el.items = [''];
+  }
+}
+
+/** Flush in-progress text edits from contenteditable DOM back into _elements (without exiting edit mode). */
+function flushTextEdits() {
+  const editingText = _root?.querySelector('.wb-text.editing .wb-text-content');
+  if (!editingText) return;
+  const dom = editingText.closest('[data-wb-id]');
+  if (dom) {
+    const el = _elements.find(e => e.id === dom.dataset.wbId);
+    if (el) el.content = editingText.textContent || '';
+  }
+}
+
 function persistDebounced() {
   clearTimeout(_persistTimer);
   _persistTimer = setTimeout(() => {
+    flushTextEdits();
+    flushListEdits();
     const snapshot = { elements: _elements, nextZIndex: _nextZIndex };
     storage.setItem(KEYS.WHITEBOARD, JSON.stringify(snapshot));
     // Send to server for cross-client sync (skip if remote update or guest without whiteboard perm)
@@ -1234,24 +1260,23 @@ function generateHandDrawnShape(shape, w, h, id) {
 
 /** Simplify points using Ramer-Douglas-Peucker algorithm. */
 /** Smooth points using Laplacian (moving average) — preserves stroke shape, removes jitter. */
-function smoothPoints(pts, passes = 5) {
+function smoothPoints(pts, iterations = 3) {
   if (pts.length <= 2) return pts;
   let result = pts;
-  for (let p = 0; p < passes; p++) {
+  // Chaikin corner-cutting: subdivides AND smooths each pass
+  for (let p = 0; p < iterations; p++) {
     const next = [result[0]]; // anchor first point
-    for (let i = 1; i < result.length - 1; i++) {
-      const prev = result[i - 1], cur = result[i], nxt = result[i + 1];
-      next.push([
-        cur[0] * 0.4 + (prev[0] + nxt[0]) * 0.3,
-        cur[1] * 0.4 + (prev[1] + nxt[1]) * 0.3,
-      ]);
+    for (let i = 0; i < result.length - 1; i++) {
+      const a = result[i], b = result[i + 1];
+      next.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+      next.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
     }
     next.push(result[result.length - 1]); // anchor last point
     result = next;
   }
-  // Only thin very dense strokes — keep up to 200 points
-  if (result.length > 200) {
-    const step = Math.ceil(result.length / 200);
+  // Cap point count to keep SVG path data reasonable
+  if (result.length > 500) {
+    const step = Math.ceil(result.length / 500);
     const thinned = [result[0]];
     for (let i = step; i < result.length - 1; i += step) thinned.push(result[i]);
     thinned.push(result[result.length - 1]);
@@ -1274,7 +1299,7 @@ function pointsToSmoothPath(pts) {
     const p2 = pts[Math.min(pts.length - 1, i + 1)];
     const p3 = pts[Math.min(pts.length - 1, i + 2)];
 
-    const t = 0.4;
+    const t = 1 / 6;
     const cp1x = p1[0] + (p2[0] - p0[0]) * t;
     const cp1y = p1[1] + (p2[1] - p0[1]) * t;
     const cp2x = p2[0] - (p3[0] - p1[0]) * t;
@@ -1297,7 +1322,7 @@ function closedSmoothPath(pts) {
     const p2 = pts[(i + 1) % n];
     const p3 = pts[(i + 2) % n];
 
-    const t = 0.3;
+    const t = 1 / 6;
     const cp1x = p1[0] + (p2[0] - p0[0]) * t;
     const cp1y = p1[1] + (p2[1] - p0[1]) * t;
     const cp2x = p2[0] - (p3[0] - p1[0]) * t;
@@ -1358,7 +1383,7 @@ function penMove(x, y) {
   if (!_penPoints) return;
   const last = _penPoints[_penPoints.length - 1];
   const dist = Math.hypot(x - last[0], y - last[1]);
-  if (dist < 3) return;  // skip jitter
+  if (dist < 2) return;  // skip jitter
   _penPoints.push([x, y]);
 
   // Real-time smooth preview
@@ -1670,6 +1695,8 @@ function onMouseDown(e) {
 
     // Click on element → select + start drag (or multi-drag)
     if (targetId) {
+      exitEditMode();
+      exitListEditMode();
       const el = _elements.find(e2 => e2.id === targetId);
       if (el && el.type !== 'arrow' && el.type !== 'pen') {
         if (additive) {
@@ -1695,6 +1722,8 @@ function onMouseDown(e) {
 
     // Click on arrow/pen stroke → select + start drag
     if (arrowId) {
+      exitEditMode();
+      exitListEditMode();
       const el = _elements.find(e2 => e2.id === arrowId);
       if (el) {
         if (additive) {
@@ -1728,6 +1757,7 @@ function onMouseDown(e) {
 
     // Click on empty canvas
     exitEditMode();
+    exitListEditMode();
     if (_multiSelectMode || additive) {
       // Multi-select mode or Shift held → start marquee drag
       if (!additive) deselectAll();
@@ -1742,6 +1772,7 @@ function onMouseDown(e) {
 
   if (_activeTool === 'text') {
     exitEditMode();
+    exitListEditMode();
     const el = addElement({
       id: _genId(),
       type: 'text',
@@ -1790,6 +1821,7 @@ function onMouseDown(e) {
 
   if (_activeTool === 'shape') {
     exitEditMode();
+    exitListEditMode();
     deselectAll();
     const id = _genId();
     const el = {
@@ -1812,6 +1844,7 @@ function onMouseDown(e) {
 
   if (_activeTool === 'section') {
     exitEditMode();
+    exitListEditMode();
     deselectAll();
     const id = _genId();
     const def = SECTION_TYPES[_activeSectionType] || SECTION_TYPES.content;
@@ -1838,6 +1871,7 @@ function onMouseDown(e) {
 
   if (_activeTool === 'pen') {
     exitEditMode();
+    exitListEditMode();
     deselectAll();
     penStart(pt.x, pt.y);
     e.preventDefault();
@@ -1846,6 +1880,7 @@ function onMouseDown(e) {
 
   if (_activeTool === 'arrow') {
     exitEditMode();
+    exitListEditMode();
     if (!_arrowCreating) {
       // First click → start multi-point arrow
       const anchorId = findNearestAnchor(pt.x, pt.y, null);
@@ -2355,6 +2390,13 @@ function onKeyDown(e) {
   }
 
   if (!isEditing) {
+    // M → toggle multi-select mode
+    if (e.key === 'm' || e.key === 'M') {
+      toggleMultiSelectMode(!_multiSelectMode);
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      return;
+    }
     if ((e.key === 'Delete' || e.key === 'Backspace') && _selectedIds.size > 0) {
       if (_selectedIds.size > 1) {
         deleteMultipleElements([..._selectedIds]);
@@ -2710,14 +2752,8 @@ export function getWhiteboardElementById(id) {
 
 export function getWhiteboardSnapshot() {
   // Flush any in-progress edits so content is captured
-  const editingText = _root?.querySelector('.wb-text.editing .wb-text-content');
-  if (editingText) {
-    const dom = editingText.closest('[data-wb-id]');
-    if (dom) {
-      const el = _elements.find(e => e.id === dom.dataset.wbId);
-      if (el) el.content = editingText.textContent || '';
-    }
-  }
+  flushTextEdits();
+  flushListEdits();
   return {
     elements: _elements.map(el => {
       const copy = { ...el };
@@ -3180,12 +3216,9 @@ async function _captureScreenshot(requestId) {
         ctx.lineWidth = el.strokeWidth || 3;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
-        ctx.beginPath();
-        ctx.moveTo(el.points[0][0], el.points[0][1]);
-        for (let i = 1; i < el.points.length; i++) {
-          ctx.lineTo(el.points[i][0], el.points[i][1]);
-        }
-        ctx.stroke();
+        const pathD = el.pathD || pointsToSmoothPath(el.points);
+        const p2d = new Path2D(pathD);
+        ctx.stroke(p2d);
       } else if (el.type === 'section') {
         const def = SECTION_TYPES[el.sectionType] || SECTION_TYPES.content;
         const color = el.color || def.color;

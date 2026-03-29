@@ -10,11 +10,12 @@ Guide the user through creating the perfect image on Leonardo.ai. Ask questions 
 
 Ask the user to describe their image concept. If `$TOPIC` was set by the router, use it as the starting point and skip asking — but still categorize it.
 
-Use `AskUserQuestion`:
-> **What kind of image do you want to create?**
-> Describe your vision — subject, scene, mood, purpose.
+**Do NOT use AskUserQuestion here** — this requires free-text input. Output a natural chat message:
 
-After they respond, categorize into one of:
+> **What kind of image do you want to create?**
+> Describe your vision — subject, scene, mood, purpose. You can also paste or drag reference images for inspiration.
+
+Wait for the user's typed response. After they respond, categorize into one of:
 - **Portrait/People** — headshots, characters, fashion, editorial
 - **Landscape/Architecture** — environments, buildings, scenery
 - **Product/Commercial** — product shots, e-commerce, branding
@@ -61,6 +62,53 @@ If **Auto**, select based on category:
 | Sci-Fi/Fantasy | FLUX.2 Pro | High fidelity |
 
 Store as `$MODEL`.
+
+---
+
+## Phase 2.5 — Reference Images (Optional)
+
+Check if the user attached images with their **current message** (file paths appear at the top of the prompt). Do NOT check `image_staged` here — old staged images are not reference candidates.
+
+**If images are attached to the current message**, present options based on the selected model's capabilities. Use `AskUserQuestion`:
+
+> **You have N reference image(s) available. How should Leonardo use them?**
+
+Options — show ONLY those supported by `$MODEL` (see model-advisor.md capability table):
+
+| Reference Type | Supported By | What It Does |
+|----------------|-------------|--------------|
+| **Image Reference** | Nano Banana 2, Seedream 4.5, GPT Image-1.5, Nano Banana Pro, FLUX.1 Kontext | Use image as direct visual reference |
+| **Style Reference** | Lucid Origin, Lucid Realism, FLUX Dev, FLUX Schnell, Phoenix 1.0/0.9 | Extract and apply the visual style |
+| **Content Reference** | Lucid Origin, Lucid Realism, FLUX Dev, FLUX Schnell, Phoenix 1.0/0.9 | Extract and match the content/composition |
+| **Character Reference** | Phoenix 1.0, Phoenix 0.9 | Maintain character consistency |
+| **Image-to-Image** | Phoenix 1.0, Phoenix 0.9 | Transform the reference into a new image |
+| **Skip** | — | "Don't use reference images" |
+
+If the selected model supports NONE of the reference types, inform the user and skip: *"[Model] doesn't support reference images. Continuing without."*
+
+Store as `$REFERENCE_TYPE` and `$REFERENCE_PATHS`.
+
+**If no images are attached**, ask the user if they'd like to use reference images. First check if `$MODEL` supports any reference types from the table above — if it supports NONE, skip this phase silently.
+
+If the model supports at least one reference type, use `AskUserQuestion`:
+
+> **Would you like to use reference images?**
+> Reference images let Leonardo match a style, composition, or visual from an existing image.
+
+- **Yes** — "I have images I'd like to use as reference"
+- **No** — "Continue without reference images"
+
+If **Yes**, respond with this message (plain text, not AskUserQuestion):
+
+> **Attach your reference image(s) to the chat.**
+> Copy the message below, paste it in the input box, attach your images, and send:
+> ```
+> Here are my reference images
+> ```
+
+Then wait for the user's next message. Check for file paths at the top of their message and also check `image_staged` (action: "list", type: "attachment") for newly attached images. If images are found, proceed with the reference type selection above (the "If images are attached" flow). If no images were found, inform the user no images were detected and ask them to try again or skip.
+
+If **No**, continue to Phase 3.
 
 ---
 
@@ -134,9 +182,29 @@ Store as `$NUM_IMAGES`.
 
 ---
 
+## Phase 5.5 — Creative Brief
+
+You've gathered all the technical settings. Now get the user's **detailed creative vision** before engineering the prompt.
+
+**Do NOT use AskUserQuestion here** — this requires free-text input. Output a natural chat message summarizing the config and asking for the detailed description:
+
+> **Here's your setup:**
+> - **Model:** $MODEL
+> - **Style:** $STYLE
+> - **Dimensions:** $DIMENSIONS
+> - **Images:** $NUM_IMAGES
+> [If reference images: **Reference:** $REFERENCE_TYPE with N image(s)]
+>
+> **Now describe your image in detail.**
+> What's the subject? The scene, composition, lighting, mood, colors? Any specific elements you want included or avoided? The more detail you give, the better I can craft the prompt.
+
+Wait for the user's typed response. Store their detailed description as `$CREATIVE_BRIEF`. This replaces the brief Phase 1 concept as the **primary input** for prompt engineering below.
+
+---
+
 ## Phase 6 — Prompt Engineering
 
-Now engineer the optimal prompt based on everything gathered. Follow these rules:
+Now engineer the optimal prompt using `$CREATIVE_BRIEF` (the user's detailed description from Phase 5.5) combined with the style context from earlier phases. Follow these rules:
 
 ### Image Prompt Rules
 1. **Subject first** — the main focus of the image
@@ -165,7 +233,24 @@ Now engineer the optimal prompt based on everything gathered. Follow these rules
 **Engineered:** "Pair of white minimalist sneakers floating on a clean gradient background, studio lighting with soft shadows, 3/4 angle view showing sole detail, crisp commercial photography with even diffused lighting, neutral tones with bright white product pop"
 
 ### Build the prompt
-Using the user's description from Phase 1 and all style context, craft the perfect prompt. Show it to the user and ask for approval before proceeding.
+Using `$CREATIVE_BRIEF` from Phase 5.5 and all style context, craft the perfect prompt.
+
+**You MUST display the engineered prompt before asking for review.** Show it in a formatted block:
+
+> **Engineered Prompt:**
+> ```
+> [your engineered prompt here]
+> ```
+> [If negative prompt: **Negative:** `[negative prompt]`]
+
+Then use `AskUserQuestion` for review:
+> **How does this prompt look?**
+- **Looks good — generate** — "Use this prompt as-is and proceed to generation"
+- **Tweak it** — "I want to adjust the prompt before generating"
+- **Rewrite it** — "Start the prompt from scratch with different direction"
+
+If **Tweak it**: ask what they want changed (plain text, not AskUserQuestion), apply changes, show the updated prompt, and ask again.
+If **Rewrite it**: ask for new direction (plain text), re-engineer from scratch, show the new prompt, and ask again.
 
 ### Build negative prompt (if applicable)
 For photorealistic images: "blurry, low quality, deformed, distorted, extra limbs, text, watermark, signature, cropped"

@@ -117,6 +117,19 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 
 No Docker, no API keys, no external services required.
 
+<details>
+<summary><strong>Optional: Build tools for terminal features</strong></summary>
+
+The Neural Interface includes an embedded terminal powered by `node-pty` (native addon). If build tools are missing, `npm install` will warn but continue — everything else works fine.
+
+| Platform | Install |
+|----------|---------|
+| macOS | `xcode-select --install` |
+| Linux | `sudo apt install build-essential python3` |
+| Windows | [VS Build Tools 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++" |
+
+</details>
+
 ### One-Command Setup
 
 ```bash

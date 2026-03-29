@@ -2147,7 +2147,7 @@ TOOLS.forEach(t => {
 
 function getMcpSetup(id) {
   const root = (wizardState.projectRoot || '').replace(/\\/g, '/');
-  const mcpPath = root + '/mcp-server/dist/preload.js';
+  const mcpPath = root + '/mcp-server/run.mjs';
   const envPath = root + '/.env';
 
   if (id === 'claude') {
@@ -2268,6 +2268,18 @@ async function onCompleteStep() {
 
   const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
   document.getElementById('restartToolName').textContent = tool.name;
+
+  // Auto-register hooks globally for Claude Code users
+  if (tool.id === 'claude') {
+    try {
+      await fetch('/api/claude-code/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: 'global' }),
+      });
+      wizardState.hooksRegistered = true;
+    } catch { /* non-critical — user can enable via Settings later */ }
+  }
 
   const items = [
     { label: 'Memory name set', done: !!wizardState.collectionName },

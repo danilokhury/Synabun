@@ -63,6 +63,7 @@ import {
   preloadCategoryLogos, scheduleGraphRemoval, cancelScheduledRemoval,
   refreshGraph, reheatSimulation, getAllCards,
   stopAnimation, startAnimation,
+  pauseInteraction, resumeInteraction,
 } from './graph.js';
 
 
@@ -485,11 +486,16 @@ on('viz:toggle', (enabled) => {
   }
 });
 
-// Focus mode isolation — clear 2D-specific interactive state
+// Focus mode isolation — zero-resource mode for 2D
 on('focus:enter', () => {
   state.hoveredNodeId = null;
   clearLasso();
   hideContextMenu();
+  pauseInteraction();
+});
+
+on('focus:exit', () => {
+  resumeInteraction();
 });
 
 // Workspace scene snapshot (2D)

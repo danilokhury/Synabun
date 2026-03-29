@@ -206,7 +206,8 @@ async function main() {
           // Active loop detected (pending or already running)
           if (data.active || data.pending) {
             // Multi-loop isolation: only match OUR terminal's loop
-            if (terminalSessionEnv && data.terminalSessionId && data.terminalSessionId !== terminalSessionEnv) continue;
+            // If the loop belongs to a specific terminal, only match if this session is that same terminal
+            if (data.terminalSessionId && data.terminalSessionId !== terminalSessionEnv) continue;
             isLoopSession = true;
             break;
           }

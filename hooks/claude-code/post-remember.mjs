@@ -40,7 +40,7 @@ for (const dir of [PENDING_COMPACT_DIR, PENDING_REMEMBER_DIR]) {
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
-const EDIT_THRESHOLD = 3;
+const EDIT_THRESHOLD = 1;
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -129,11 +129,10 @@ async function main() {
   }
 
   // ─── USER LEARNING CLEARING (remember or reflect for communication-style/personality) ───
+  // Since user learning is non-blocking (prompt-submit nudge only), any remember or
+  // reflect targeting communication-style clears the flag immediately.
   const UL_CATEGORIES = ['communication-style', 'personality'];
   const isRememberUL = toolName.includes('remember') && UL_CATEGORIES.includes(toolInput.category || '');
-  // For reflect: only clear if the stop hook has actively blocked for user learning
-  // (userLearningBlockActive). This prevents unrelated reflects from falsely clearing
-  // the pending flag before the stop hook ever enforces it.
   const isReflectUL = toolName.includes('reflect');
 
   if (isRememberUL || isReflectUL) {
@@ -141,11 +140,8 @@ async function main() {
     if (existsSync(ulFlagPath)) {
       try {
         const ulFlag = JSON.parse(readFileSync(ulFlagPath, 'utf-8'));
-        // remember with correct category → always clear
-        // reflect → only clear if stop hook has actively enforced UL (blockActive flag)
-        if (isRememberUL || (isReflectUL && ulFlag.userLearningPending && ulFlag.userLearningBlockActive)) {
+        if (ulFlag.userLearningPending && (isRememberUL || isReflectUL)) {
           ulFlag.userLearningPending = false;
-          ulFlag.userLearningBlockActive = false;
           ulFlag.userLearningObserved = true;
           writeFileSync(ulFlagPath, JSON.stringify(ulFlag));
         }
@@ -154,7 +150,8 @@ async function main() {
   }
 
   // ─── REMEMBER FLAG CLEARING ───
-  if (toolName.includes('remember')) {
+  // Both remember and reflect count as storing work — clear edit tracking for either.
+  if (toolName.includes('remember') || toolName.includes('reflect')) {
     const category = toolInput.category || '';
 
     if (category === 'conversations') {

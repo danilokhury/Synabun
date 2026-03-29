@@ -162,6 +162,7 @@ const _cliSessionStatus = new Map(); // sessionId → { status, lastOutput, time
 
 const _CLI_STATUS_HTML = '<span class="cli-status-badge" data-status="idle"><span class="cli-status-dot"></span><span class="cli-status-label">Idle</span></span>';
 const _CLI_LABELS = { idle: 'Idle', working: 'Working', action: 'Action', done: 'Done' };
+const SVG_CHECK_DONE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 8 7 12 13 4"/></svg>';
 
 // ── Notification engine (delegates to shared ui-notifications.js) ──
 const _prevStatus = new Map(); // sessionId → previous status
@@ -178,9 +179,9 @@ function _notifyStatusChange(sessionId, newStatus) {
   const label = session?.label || 'Claude Code';
 
   if (newStatus === CLI_STATUS.ACTION) {
-    notify('cli', NOTIF_TYPE.ACTION, label);
+    notify('cli', NOTIF_TYPE.ACTION, label, { sessionId });
   } else if (newStatus === CLI_STATUS.DONE) {
-    notify('cli', NOTIF_TYPE.DONE, label);
+    notify('cli', NOTIF_TYPE.DONE, label, { sessionId });
   }
 }
 
@@ -276,13 +277,25 @@ function _updateSessionBadges(sessionId, status) {
     const lbl = badge.querySelector('.cli-status-label');
     if (lbl) lbl.textContent = _CLI_LABELS[status] || '';
   }
-  // Minimized pill badge
+  // Minimized pill badge + icon swap on done
   const pill = document.querySelector(`.term-minimized-pill[data-session-id="${sessionId}"]`);
   if (pill) {
     const badge = _ensureBadge(pill);
     badge.dataset.status = status;
     const lbl = badge.querySelector('.cli-status-label');
     if (lbl) lbl.textContent = _CLI_LABELS[status] || '';
+    const ico = pill.querySelector('.term-minimized-pill-icon');
+    if (ico) {
+      if (status === CLI_STATUS.DONE) {
+        if (!ico.dataset.originalIcon) ico.dataset.originalIcon = ico.innerHTML;
+        ico.innerHTML = SVG_CHECK_DONE;
+        ico.classList.add('done');
+      } else if (ico.dataset.originalIcon) {
+        ico.innerHTML = ico.dataset.originalIcon;
+        ico.classList.remove('done');
+        delete ico.dataset.originalIcon;
+      }
+    }
   }
 }
 
@@ -1928,6 +1941,15 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
  */
 async function openBrowserSession(url, fresh, _unused, force) {
   if (isGuest() && !hasPermission('browser')) return;
+  // Block floating browser window when stream is disabled
+  try {
+    const cfgRes = await fetch('/api/browser/config');
+    const cfgData = await cfgRes.json();
+    if (cfgData.config?.screencast?.disabled) {
+      console.log('[browser] Stream disabled — skipping openBrowserSession');
+      return;
+    }
+  } catch {}
   // Auto-unstick _opening if it's been true for over 10 seconds (previous attempt crashed/hung)
   if (_opening && _openingAt && (Date.now() - _openingAt > 10000)) {
     console.warn('[browser] _opening guard stuck for >10s, resetting');
@@ -2024,19 +2046,22 @@ async function openBrowserSession(url, fresh, _unused, force) {
   // Connect WebSocket for screencast
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/browser/${sessionId}`);
+  ws.binaryType = 'blob'; // receive binary frames as Blob (zero-copy)
 
   const urlInput = navbar.querySelector('.browser-url-input');
   const titleLabel = navbar.querySelector('.browser-title-label');
 
   ws.onmessage = (e) => {
+    // Binary message = screencast frame (first byte 0x01 marker, rest is JPEG)
+    if (e.data instanceof Blob) {
+      frameRenderer.render(e.data.slice(1)); // strip marker byte, pass raw JPEG Blob
+      return;
+    }
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'frame' && msg.data) {
-        frameRenderer.render(msg.data);
-      } else if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
+      if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
         if (msg.url) {
           urlInput.value = msg.url;
-          // Update session metadata
           const sess = _sessions.find(s => s.id === sessionId);
           if (sess) sess._browserUrl = msg.url;
         }
@@ -2049,7 +2074,6 @@ async function openBrowserSession(url, fresh, _unused, force) {
               sess.label = msg.title.length > 30 ? msg.title.slice(0, 30) + '…' : msg.title;
               renderTabBar();
             }
-            // Update floating tab title if detached
             const dt = _detachedTabs.get(sessionId);
             if (dt) {
               const titleEl = dt.el.querySelector('.term-float-tab-title');
@@ -2076,6 +2100,7 @@ async function openBrowserSession(url, fresh, _unused, force) {
           if (!sess2 || sess2.dead) return;
           const proto2 = location.protocol === 'https:' ? 'wss:' : 'ws:';
           const ws2 = new WebSocket(`${proto2}//${location.host}/ws/browser/${sessionId}`);
+          ws2.binaryType = 'blob';
           ws2.onmessage = ws.onmessage;
           ws2.onclose = () => {
             const sess3 = _sessions.find(s => s.id === sessionId);
@@ -2118,6 +2143,15 @@ async function openBrowserSession(url, fresh, _unused, force) {
   });
 
   // ── Forward mouse events from canvas to browser ──
+  // Idle-resume wrapper: resumes screencast if idle-paused, resets idle timer
+  function _onCanvasInteraction() {
+    const sess = _sessions.find(s => s.id === sessionId);
+    if (sess) {
+      _resumeFromIdleIfNeeded(sess);
+      _resetBrowserIdleTimer(sess);
+    }
+  }
+
   function canvasCoords(e) {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -2126,14 +2160,17 @@ async function openBrowserSession(url, fresh, _unused, force) {
   }
 
   canvas.addEventListener('click', (e) => {
+    _onCanvasInteraction();
     const { x, y } = canvasCoords(e);
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'click', x, y }));
   });
   canvas.addEventListener('dblclick', (e) => {
+    _onCanvasInteraction();
     const { x, y } = canvasCoords(e);
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'dblclick', x, y }));
   });
   canvas.addEventListener('wheel', (e) => {
+    _onCanvasInteraction();
     e.preventDefault();
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY }));
@@ -2143,6 +2180,7 @@ async function openBrowserSession(url, fresh, _unused, force) {
   // Forward keyboard events when canvas is focused
   canvas.tabIndex = 0;
   canvas.addEventListener('keydown', (e) => {
+    _onCanvasInteraction();
     e.preventDefault();
     if (ws.readyState === WebSocket.OPEN) {
       // For printable single characters, use keypress (type text)
@@ -2154,43 +2192,17 @@ async function openBrowserSession(url, fresh, _unused, force) {
     }
   });
   canvas.addEventListener('keyup', (e) => {
+    _onCanvasInteraction();
     e.preventDefault();
     if (e.key.length > 1 && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'keyup', key: e.key }));
     }
   });
 
-  // ── Resize observer → resize browser viewport to match container ──
-  // Track last good dimensions to avoid sending tiny sizes on minimize
-  let _lastGoodWidth = 1280, _lastGoodHeight = 800;
-  let _resizeTimer = null;
-
-  function sendBrowserResize() {
-    const rect = canvasWrap.getBoundingClientRect();
-    const w = Math.round(rect.width);
-    const h = Math.round(rect.height);
-    // Skip tiny dimensions (window minimized or hidden)
-    if (w < 100 || h < 100) return;
-    // Skip if dimensions haven't actually changed
-    if (w === _lastGoodWidth && h === _lastGoodHeight) return;
-    _lastGoodWidth = w;
-    _lastGoodHeight = h;
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'resize', width: w, height: h }));
-    }
-  }
-
-  const ro = new ResizeObserver(() => { clearTimeout(_resizeTimer); _resizeTimer = setTimeout(sendBrowserResize, 200); });
-  ro.observe(canvasWrap);
-
-  // Re-send proper dimensions when window is restored from minimize
-  const _visibilityHandler = () => {
-    if (!document.hidden) {
-      // Small delay to let the layout settle after restore
-      setTimeout(() => sendBrowserResize(), 150);
-    }
-  };
-  document.addEventListener('visibilitychange', _visibilityHandler);
+  // Browser viewport stays fixed at configured size (1280x800).
+  // CSS object-fit: contain handles display scaling — no server resize needed.
+  const ro = null;
+  const _visibilityHandler = null;
 
   // Build tab label with profile info
   let tabLabel = 'Browser';
@@ -2223,6 +2235,8 @@ async function openBrowserSession(url, fresh, _unused, force) {
     _browserCtx: ctx,
     _frameRenderer: frameRenderer,
     _visibilityHandler,
+    _idleTimer: null,
+    _screencastIdlePaused: false,
   };
   _pushSession(session);
   _activeIdx = _sessions.indexOf(session);
@@ -2237,12 +2251,25 @@ async function openBrowserSession(url, fresh, _unused, force) {
   // Auto-detach browser tabs into floating windows
   detachTab(_activeIdx);
 
+  // Start idle timer for screencast auto-pause
+  _resetBrowserIdleTimer(session);
+
   saveSessionRegistry();
   } finally { _opening = false; }
 }
 
 /** Reconnect to an existing server-side browser session (no new browser launched) */
 async function reconnectBrowserSession(sessionId, liveData, saved) {
+  // Block floating browser window when stream is disabled
+  try {
+    const cfgRes = await fetch('/api/browser/config');
+    const cfgData = await cfgRes.json();
+    if (cfgData.config?.screencast?.disabled) {
+      console.log('[browser] Stream disabled — suppressing floating browser window for', sessionId);
+      return;
+    }
+  } catch {}
+
   ensurePanel();
 
   const viewport = document.createElement('div');
@@ -2285,16 +2312,19 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
   const frameRenderer = createFrameRenderer(canvas, ctx);
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/browser/${sessionId}`);
+  ws.binaryType = 'blob';
 
   const urlInput = navbar.querySelector('.browser-url-input');
   const titleLabel = navbar.querySelector('.browser-title-label');
 
   ws.onmessage = (e) => {
+    if (e.data instanceof Blob) {
+      frameRenderer.render(e.data.slice(1));
+      return;
+    }
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'frame' && msg.data) {
-        frameRenderer.render(msg.data);
-      } else if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
+      if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
         if (msg.url) { urlInput.value = msg.url; const sess = _sessions.find(s => s.id === sessionId); if (sess) sess._browserUrl = msg.url; }
         if (msg.title) {
           titleLabel.textContent = msg.title;
@@ -2317,6 +2347,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
           if (!sess2 || sess2.dead) return;
           const proto2 = location.protocol === 'https:' ? 'wss:' : 'ws:';
           const ws2 = new WebSocket(`${proto2}//${location.host}/ws/browser/${sessionId}`);
+          ws2.binaryType = 'blob';
           ws2.onmessage = ws.onmessage;
           ws2.onclose = () => {
             const sess3 = _sessions.find(s => s.id === sessionId);
@@ -2345,32 +2376,22 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
     }
   });
 
-  // Mouse/keyboard forwarding
-  function canvasCoords(e) { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left) * (canvas.width / r.width), y: (e.clientY - r.top) * (canvas.height / r.height) }; }
-  canvas.addEventListener('click', (e) => { const c = canvasCoords(e); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'click', ...c })); });
-  canvas.addEventListener('dblclick', (e) => { const c = canvasCoords(e); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'dblclick', ...c })); });
-  canvas.addEventListener('wheel', (e) => { e.preventDefault(); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY })); }, { passive: false });
-  canvas.tabIndex = 0;
-  canvas.addEventListener('keydown', (e) => { e.preventDefault(); if (ws.readyState === WebSocket.OPEN) { if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) ws.send(JSON.stringify({ type: 'keypress', text: e.key })); else ws.send(JSON.stringify({ type: 'keydown', key: e.key })); } });
-  canvas.addEventListener('keyup', (e) => { e.preventDefault(); if (e.key.length > 1 && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'keyup', key: e.key })); });
-
-  let _lastGoodW2 = 1280, _lastGoodH2 = 800;
-  let _resizeTimer2 = null;
-  function sendReconnResize() {
-    const rect = canvasWrap.getBoundingClientRect();
-    const w = Math.round(rect.width);
-    const h = Math.round(rect.height);
-    if (w < 100 || h < 100) return;
-    if (w === _lastGoodW2 && h === _lastGoodH2) return;
-    _lastGoodW2 = w; _lastGoodH2 = h;
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'resize', width: w, height: h }));
-    }
+  // Mouse/keyboard forwarding with idle timer integration
+  function _onCanvasInteraction() {
+    const sess = _sessions.find(s => s.id === sessionId);
+    if (sess) { _resumeFromIdleIfNeeded(sess); _resetBrowserIdleTimer(sess); }
   }
-  const ro = new ResizeObserver(() => { clearTimeout(_resizeTimer2); _resizeTimer2 = setTimeout(sendReconnResize, 200); });
-  ro.observe(canvasWrap);
-  const _visibilityHandler = () => { if (!document.hidden) setTimeout(() => sendReconnResize(), 150); };
-  document.addEventListener('visibilitychange', _visibilityHandler);
+  function canvasCoords(e) { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left) * (canvas.width / r.width), y: (e.clientY - r.top) * (canvas.height / r.height) }; }
+  canvas.addEventListener('click', (e) => { _onCanvasInteraction(); const c = canvasCoords(e); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'click', ...c })); });
+  canvas.addEventListener('dblclick', (e) => { _onCanvasInteraction(); const c = canvasCoords(e); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'dblclick', ...c })); });
+  canvas.addEventListener('wheel', (e) => { _onCanvasInteraction(); e.preventDefault(); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY })); }, { passive: false });
+  canvas.tabIndex = 0;
+  canvas.addEventListener('keydown', (e) => { _onCanvasInteraction(); e.preventDefault(); if (ws.readyState === WebSocket.OPEN) { if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) ws.send(JSON.stringify({ type: 'keypress', text: e.key })); else ws.send(JSON.stringify({ type: 'keydown', key: e.key })); } });
+  canvas.addEventListener('keyup', (e) => { _onCanvasInteraction(); e.preventDefault(); if (e.key.length > 1 && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'keyup', key: e.key })); });
+
+  // Browser viewport stays fixed — CSS object-fit: contain handles scaling.
+  const ro = null;
+  const _visibilityHandler = null;
 
   const session = {
     id: sessionId, profile: 'browser', cwd: null,
@@ -2381,6 +2402,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
     _userRenamed: saved?.userRenamed || false,
     _isBrowser: true, _browserUrl: currentUrl, _browserTitle: liveData?.title || '',
     _browserCanvas: canvas, _browserCtx: ctx, _frameRenderer: frameRenderer, _visibilityHandler,
+    _idleTimer: null, _screencastIdlePaused: false,
   };
   _pushSession(session);
   _activeIdx = _sessions.indexOf(session);
@@ -2394,6 +2416,9 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
 
   // Auto-detach browser tabs into floating windows
   detachTab(_activeIdx);
+
+  // Start idle timer for screencast auto-pause
+  _resetBrowserIdleTimer(session);
 }
 
 /** Reconnect to an existing server-side PTY session (no new PTY created) */
@@ -2714,6 +2739,7 @@ async function closeSession(idx) {
   // Cleanup — mark dead first to prevent ws.onclose from re-entering
   session.dead = true;
   _untrackCliSession(session.id);
+  clearTimeout(session._idleTimer);
   if (session.ro) session.ro.disconnect();
   if (session._frameRenderer) session._frameRenderer.destroy();
   if (session.ws) session.ws.close();
@@ -3348,6 +3374,31 @@ function formatMemoryForCLI(node) {
 
 // ── Per-tab detach (floating tab windows) ──
 
+// ── Browser screencast idle timeout (5 minutes) ──
+const BROWSER_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+
+function _resetBrowserIdleTimer(session) {
+  if (!session?._isBrowser) return;
+  clearTimeout(session._idleTimer);
+  session._screencastIdlePaused = false;
+  session._idleTimer = setTimeout(() => {
+    if (session.dead) return;
+    if (session.ws?.readyState === WebSocket.OPEN) {
+      session.ws.send(JSON.stringify({ type: 'pause-screencast' }));
+      session._screencastIdlePaused = true;
+    }
+  }, BROWSER_IDLE_TIMEOUT_MS);
+}
+
+function _resumeFromIdleIfNeeded(session) {
+  if (!session?._screencastIdlePaused) return;
+  if (session.ws?.readyState === WebSocket.OPEN) {
+    session.ws.send(JSON.stringify({ type: 'resume-screencast' }));
+  }
+  session._screencastIdlePaused = false;
+  _resetBrowserIdleTimer(session);
+}
+
 function bringTabToFront(sessionId) {
   const tabState = _detachedTabs.get(sessionId);
   if (!tabState) return;
@@ -3363,6 +3414,8 @@ function bringTabToFront(sessionId) {
         requestAnimationFrame(() => session.term.focus());
       }
     }
+    // Still apply browser focus throttle for pinned browser tabs
+    if (session?._isBrowser) _applyBrowserFocusThrottle(sessionId);
     return;
   }
   _floatZCounter++;
@@ -3374,6 +3427,28 @@ function bringTabToFront(sessionId) {
     const ta = session.viewport?.querySelector('.xterm-helper-textarea');
     if (document.activeElement !== ta) {
       requestAnimationFrame(() => session.term.focus());
+    }
+  }
+  // Throttle non-focused browser screencasts, resume focused one
+  if (session?._isBrowser) _applyBrowserFocusThrottle(sessionId);
+}
+
+function _applyBrowserFocusThrottle(focusedSessionId) {
+  for (const s of _sessions) {
+    if (!s._isBrowser || s.dead) continue;
+    const ts = _detachedTabs.get(s.id);
+    if (ts?.minimized) continue; // already paused — don't override
+    if (s.id === focusedSessionId) {
+      // Resume focused window to full rate + reset idle timer
+      if (s.ws?.readyState === WebSocket.OPEN) {
+        s.ws.send(JSON.stringify({ type: 'resume-screencast' }));
+      }
+      _resetBrowserIdleTimer(s);
+    } else {
+      // Throttle non-focused windows to ~2fps
+      if (s.ws?.readyState === WebSocket.OPEN) {
+        s.ws.send(JSON.stringify({ type: 'throttle-screencast' }));
+      }
     }
   }
 }
@@ -3576,8 +3651,9 @@ function detachTab(idx) {
 
   // Default position: offset from center based on how many are already detached
   const offset = _detachedTabs.size * 30;
-  const w = Math.min(700, window.innerWidth * 0.5);
-  const h = Math.min(420, window.innerHeight * 0.5);
+  const isBrowser = session.profile === 'browser';
+  const w = Math.min(isBrowser ? 960 : 700, window.innerWidth * (isBrowser ? 0.65 : 0.5));
+  const h = Math.min(isBrowser ? 640 : 420, window.innerHeight * (isBrowser ? 0.6 : 0.5));
   win.style.left = ((window.innerWidth - w) / 2 + offset) + 'px';
   win.style.top = Math.max(48, (window.innerHeight - h) / 2 + offset) + 'px';
   win.style.width = w + 'px';
@@ -3654,18 +3730,38 @@ function detachTab(idx) {
   // Wire close button — close directly without docking back (closeSession handles detached cleanup)
   win.querySelector('.close-btn').addEventListener('click', (e) => {
     e.stopPropagation();
-    const idx = _sessions.indexOf(session);
-    if (idx >= 0) closeSession(idx);
+    // Use findIndex by ID — session object may have been replaced by _pushSession
+    // after reconnection, making indexOf (object identity) return -1
+    const idx = _sessions.findIndex(s => s.id === session.id);
+    if (idx >= 0) {
+      closeSession(idx);
+    } else {
+      // Session already gone from _sessions — clean up orphaned floating window
+      const tabState = _detachedTabs.get(session.id);
+      if (tabState) {
+        if (tabState.cleanup) tabState.cleanup();
+        tabState.el.remove();
+        if (tabState.pill) tabState.pill.remove();
+        _detachedTabs.delete(session.id);
+        _updateSnappedEdges();
+      } else {
+        win.remove();
+      }
+      renderTabBar();
+      saveSessionRegistry();
+    }
   });
 
   // Wire pin button — toggle pinned + always-on-top
   const pinBtnEl = win.querySelector('.pin-btn');
   pinBtnEl.addEventListener('click', (e) => {
     e.stopPropagation();
-    session.pinned = !session.pinned;
-    win.classList.toggle('pinned', session.pinned);
-    pinBtnEl.setAttribute('data-tooltip', session.pinned ? 'Unpin' : 'Pin on top');
-    if (session.pinned) {
+    // Re-find live session to avoid stale closure after reconnection
+    const live = _sessions.find(s => s.id === session.id) || session;
+    live.pinned = !live.pinned;
+    win.classList.toggle('pinned', live.pinned);
+    pinBtnEl.setAttribute('data-tooltip', live.pinned ? 'Unpin' : 'Pin on top');
+    if (live.pinned) {
       win.style.zIndex = '10002';
     } else {
       win.style.zIndex = '';
@@ -3838,6 +3934,11 @@ function minimizeTab(sessionId) {
   tabState.savedRect = { left: r.left, top: r.top, width: r.width, height: r.height };
   tabState.minimized = true;
 
+  // Pause screencast for browser sessions to save resources
+  if (session._isBrowser && session.ws?.readyState === WebSocket.OPEN) {
+    session.ws.send(JSON.stringify({ type: 'pause-screencast' }));
+  }
+
   // Create pill in tray first (need its position for animation target)
   const tray = document.getElementById('term-minimized-tray');
   if (!tray) { tabState.el.style.display = 'none'; return; }
@@ -3914,6 +4015,14 @@ function restoreTab(sessionId) {
   tabState.minimized = false;
   const el = tabState.el;
   const saved = tabState.savedRect;
+
+  // Resume screencast for browser sessions + reset idle timer
+  const session = _sessions.find(s => s.id === sessionId);
+  if (session?._isBrowser && session.ws?.readyState === WebSocket.OPEN) {
+    session.ws.send(JSON.stringify({ type: 'resume-screencast' }));
+    session._screencastIdlePaused = false;
+    _resetBrowserIdleTimer(session);
+  }
 
   // Get pill position for animation start point
   let startDX = 0, startDY = 0;
@@ -4512,6 +4621,13 @@ export async function initTerminal() {
   });
 
   on('terminal:toggle', () => togglePanel());
+  on('terminal:show', (data) => {
+    if (!_panel || _panel.classList.contains('hidden')) showPanel();
+    if (data?.sessionId) {
+      const idx = _sessions.findIndex(s => s.id === data.sessionId);
+      if (idx >= 0) switchToSession(idx);
+    }
+  });
 
   on('terminal:close', () => hidePanel());
 
@@ -4617,6 +4733,15 @@ export async function initTerminal() {
     // Always clear _opening on browser creation — the session is ready
     _opening = false;
     if (!msg.sessionId) return;
+    // Skip if browser stream is disabled — automation runs headful, no NI preview needed
+    try {
+      const cfgRes = await fetch('/api/browser/config');
+      const cfgData = await cfgRes.json();
+      if (cfgData.config?.screencast?.disabled) {
+        console.log('[browser] Stream disabled — skipping floating browser window');
+        return;
+      }
+    } catch {}
     // Skip if automation studio is managing this browser for side panel embed
     if (_expectManagedBrowser) {
       _expectManagedBrowser = false;
@@ -4662,13 +4787,19 @@ export async function initTerminal() {
     } catch {}
     const liveMap = new Map(liveSessions.map(s => [s.id, s]));
 
-    // Fetch live browser sessions
+    // Fetch live browser sessions + check stream config
     let liveBrowserSessions = [];
+    let _streamDisabled = false;
     try {
       const data = await fetchBrowserSessions();
       liveBrowserSessions = data.sessions || [];
     } catch {}
-    const liveBrowserMap = new Map(liveBrowserSessions.map(s => [s.id, s]));
+    try {
+      const cfgRes = await fetch('/api/browser/config');
+      const cfgData = await cfgRes.json();
+      _streamDisabled = !!cfgData.config?.screencast?.disabled;
+    } catch {}
+    const liveBrowserMap = _streamDisabled ? new Map() : new Map(liveBrowserSessions.map(s => [s.id, s]));
 
     const liveIds = new Set([...liveMap.keys(), ...liveBrowserMap.keys()]);
 

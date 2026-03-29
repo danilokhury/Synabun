@@ -35,7 +35,6 @@ let _wizardStep = 0;
 let _wizardData = {};
 let _previewMode = false;   // false = raw editor, true = rendered preview
 let _wizPreviewMode = false; // wizard step 4 preview mode
-let _focusMode = false;     // darkens backdrop fully
 
 // ── Tab system ──
 // Each tab: { id, artifactId, artifact, artifactContent, label, path, content, originalContent, dirty }
@@ -292,7 +291,6 @@ function closePanel() {
   _selectedContent = null;
   _view = 'library';
   _editorDirty = false;
-  _focusMode = false;
   _tabs = [];
   _activeTabIdx = 0;
 }
@@ -317,11 +315,6 @@ function buildPanelHTML() {
         <button class="ss-header-btn" id="ss-new-btn">+ New</button>
         <button class="ss-header-btn" id="ss-import-btn">Import</button>
       </div>
-      <button class="ss-focus-btn" id="ss-focus" data-tooltip="Focus mode">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
-          <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
-        </svg>
-      </button>
       <button class="backdrop-toggle-btn" id="ss-backdrop-toggle" data-tooltip="Toggle backdrop">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
       </button>
@@ -353,12 +346,6 @@ function wirePanel() {
   // Header buttons
   $('ss-new-btn')?.addEventListener('click', () => switchToWizard());
   $('ss-import-btn')?.addEventListener('click', () => triggerImport());
-
-  // Focus mode
-  $('ss-focus')?.addEventListener('click', () => {
-    _focusMode = !_focusMode;
-    $('ss-focus')?.classList.toggle('active', _focusMode);
-  });
 
   $('ss-backdrop-toggle')?.addEventListener('click', () => {
     if (_backdrop) {

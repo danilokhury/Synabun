@@ -108,6 +108,16 @@ Read $SKILL_DIR/modules/browser-guide.md
 
 Follow the browser guide to set each parameter via `browser_click`, `browser_fill`, `browser_evaluate`, etc. The guide maps every setting to its UI element.
 
+### 3c-ii. Upload reference images (if any)
+
+If the prompter module set `$REFERENCE_TYPE` and `$REFERENCE_PATHS` (or `$START_FRAME` / `$END_FRAME` for video):
+
+```
+leonardo_browser_reference type: "$REFERENCE_TYPE" filePaths: ["$PATH1", "$PATH2"] autoClear: true
+```
+
+This opens the reference panel, selects the correct reference type, uploads the image(s), and auto-clears them from the SynaBun image store. Use `browser_snapshot` after to verify the reference is applied.
+
 ### 3d. Present summary to user before generating
 
 Show the user what you're about to generate:
@@ -116,6 +126,7 @@ Generating [type]...
 Prompt: "[the engineered prompt]"
 Model: [selected model]
 [Style/Dimensions/Motion controls if applicable]
+[Reference: $REFERENCE_TYPE with N image(s) — if applicable]
 ```
 
 ### 3e. Fill prompt and generate

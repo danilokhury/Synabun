@@ -754,15 +754,63 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
+// POST /api/hook-recall — Lightweight recall for hook-side auto-injection
+app.post('/api/hook-recall', async (req, res) => {
+  try {
+    const { query, project, limit = 3, min_score = 0.4 } = req.body;
+    if (!query) return res.status(400).json({ results: [] });
+
+    const embedding = await getEmbedding(query);
+    const results = dbSearchMemories(embedding, limit, {
+      project,
+      scoreThreshold: min_score,
+    });
+
+    res.json({
+      results: results.map(r => ({
+        id: r.id,
+        score: r.score,
+        category: r.category,
+        project: r.project,
+        content: r.content.length > 300 ? r.content.substring(0, 300) + '...' : r.content,
+        tags: r.tags,
+        importance: r.importance,
+        created_at: r.created_at,
+        related_files: r.related_files,
+      })),
+    });
+  } catch (err) {
+    // Graceful degradation — hooks should never be blocked by recall errors
+    res.json({ results: [] });
+  }
+});
+
 // GET /api/recall-impact — Memory counts by importance threshold for recall settings UI
 app.get('/api/recall-impact', (req, res) => {
   try {
     const d = getDb();
     const rows = d.prepare(`
-      SELECT importance, COUNT(*) as cnt, CAST(AVG(LENGTH(content)) AS INTEGER) as avg_len
+      SELECT importance, COUNT(*) as cnt, CAST(AVG(LENGTH(content)) AS INTEGER) as avg_len,
+             CAST(AVG(CASE WHEN tags IS NOT NULL AND tags != '[]' THEN LENGTH(tags) ELSE 0 END) AS INTEGER) as avg_tags_len,
+             CAST(AVG(CASE WHEN related_files IS NOT NULL AND related_files != '[]' THEN LENGTH(related_files) ELSE 0 END) AS INTEGER) as avg_files_len
       FROM memories WHERE trashed_at IS NULL GROUP BY importance ORDER BY importance
     `).all();
-    res.json({ rows });
+    // Session chunk stats for token estimation
+    let sessionStats = { count: 0, avg_summary_len: 0, avg_details_len: 0 };
+    try {
+      const sc = d.prepare(`
+        SELECT COUNT(*) as count,
+               CAST(AVG(LENGTH(summary)) AS INTEGER) as avg_summary_len,
+               CAST(AVG(
+                 COALESCE(LENGTH(tools_used), 0) +
+                 COALESCE(LENGTH(files_modified), 0) +
+                 COALESCE(LENGTH(related_memory_ids), 0)
+               ) AS INTEGER) as avg_details_len
+        FROM session_chunks
+      `).get();
+      if (sc) sessionStats = sc;
+    } catch { /* session_chunks table may not exist */ }
+    res.json({ rows, sessionStats });
   } catch (err) {
     console.error('GET /api/recall-impact error:', err.message);
     res.status(500).json({ error: err.message });
@@ -2388,18 +2436,8 @@ function handleClaudeSkinWebSocket(ws) {
             lastCostBySession.set(sid, event.total_cost_usd);
             if (delta > 0) { try { addCost(delta, sid); } catch {} }
           }
-          // ── Auto-compact detection via token count drop ──
-          // When context is compacted, total input tokens drop significantly.
-          // Detect >50% drop between turns and inject a synthetic compact_boundary event.
-          if (event.usage) {
-            const u = event.usage;
-            const currTotal = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-            if (prevTurnTokens > 0 && currTotal > 0 && currTotal < prevTurnTokens * 0.5) {
-              console.log(`[claude-skin] Auto-compact detected: ${prevTurnTokens} → ${currTotal} tokens (${Math.round((1 - currTotal / prevTurnTokens) * 100)}% drop)`);
-              sendToClient({ type: 'event', event: { type: 'system', subtype: 'compact_detected', message: `Context auto-compacted (${Math.round(prevTurnTokens / 1000)}K → ${Math.round(currTotal / 1000)}K)` } });
-            }
-            prevTurnTokens = currTotal;
-          }
+          // NOTE: result.usage is CUMULATIVE across all API calls in this CLI process.
+          // Auto-compact detection moved to assistant events where usage is per-turn.
           // Force-kill if process doesn't exit within 5s after result
           // (known Claude CLI issue #25629: process hangs with open stdout after completion)
           setTimeout(() => {
@@ -2415,8 +2453,14 @@ function handleClaudeSkinWebSocket(ws) {
             awaitingPermission = true;
             for (const denial of denials) {
               const requestId = `perm-${denial.tool_use_id}`;
+              // Skip if proactive control_request was already sent for this tool
+              if (permCardToolNames.has(requestId)) {
+                console.log(`[claude-skin] ▶ Skipping duplicate permission card for ${denial.tool_name} (proactive already sent)`);
+                continue;
+              }
               const input = denial.tool_input || {};
               console.log(`[claude-skin] ▶ Permission denied for ${denial.tool_name} → sending permission card ${requestId}`);
+              permCardToolNames.set(requestId, denial.tool_name);
               sendToClient({
                 type: 'control_request',
                 request_id: requestId,
@@ -2424,6 +2468,20 @@ function handleClaudeSkinWebSocket(ws) {
               });
             }
             return; // Don't send 'done' yet — wait for user response
+          }
+        }
+        // ── Auto-compact detection via per-turn token count drop ──
+        // assistant events carry per-turn (non-cumulative) usage — the correct source.
+        // Detect >50% drop between turns and inject a synthetic compact_boundary event.
+        if (event.type === 'assistant' && event.message?.usage) {
+          const u = event.message.usage;
+          const currTotal = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+          if (currTotal > 0) {
+            if (prevTurnTokens > 0 && currTotal < prevTurnTokens * 0.5) {
+              console.log(`[claude-skin] Auto-compact detected: ${prevTurnTokens} → ${currTotal} tokens (${Math.round((1 - currTotal / prevTurnTokens) * 100)}% drop)`);
+              sendToClient({ type: 'event', event: { type: 'system', subtype: 'compact_detected', message: `Context auto-compacted (${Math.round(prevTurnTokens / 1000)}K → ${Math.round(currTotal / 1000)}K)` } });
+            }
+            prevTurnTokens = currTotal;
           }
         }
         // ── Proactive permission card ──
@@ -3236,6 +3294,7 @@ app.get('/api/images', (req, res) => {
           filename: f,
           type,
           size: st.size,
+          path: fp,
           createdAt: st.birthtimeMs || st.ctimeMs,
           modifiedAt: st.mtimeMs,
           favorite: favs.has(f),
@@ -5569,7 +5628,8 @@ async function launchAgentController(opts) {
     _addDirs: addDirs || null,
     _lineBuffer: '',
     _stopped: false,
-    _activeSessionId: null, // set per-iteration, rotated every SESSION_CONTINUITY_WINDOW iterations
+    _activeSessionId: null, // set per-iteration
+    _usesBrowser: !!browserSessionId, // true if loop uses browser automation
     _iterOutputStart: 0, // tracks where each iteration's output starts in textOutput
     _iterToolStart: 0, // tracks where each iteration's tools start in toolUses
   };
@@ -5588,6 +5648,12 @@ async function launchAgentController(opts) {
 
   // Run in background — don't block the API response
   (async () => {
+    // Mark the initial browser session as agent-owned (prevents grace timer / context-close from killing it)
+    if (agent._usesBrowser && agent.browserSessionId) {
+      const initBs = browserSessions.get(agent.browserSessionId);
+      if (initBs) initBs._agentOwned = agentId;
+    }
+
     for (let i = 1; i <= iterations; i++) {
       if (agent._stopped) break;
 
@@ -5595,12 +5661,41 @@ async function launchAgentController(opts) {
       agent._iterOutputStart = agent.textOutput.length;
       agent._iterToolStart = agent.toolUses.length;
 
-      // Fresh session EVERY iteration — prevents context bloat and compaction.
-      // Each iteration gets a clean slate with full journal re-injection for continuity.
-      // This is critical: --resume accumulates context which triggers compaction,
-      // causing hangs and lost focus. Fresh sessions are predictable and fast.
+      // Fresh Claude session EVERY iteration — prevents context bloat and compaction.
       agent._activeSessionId = randomUUID();
       agent._resumableSessionId = null; // ensure --resume is never used
+
+      // ── Per-iteration browser session: fresh browser for every iteration ──
+      // Destroy the old session (saves cookies) then create a new one.
+      // This eliminates the "browser dies between iterations" class of bugs entirely.
+      if (agent._usesBrowser && i > 1) {
+        if (agent.browserSessionId) {
+          await destroyBrowserSession(agent.browserSessionId).catch(e =>
+            console.warn(`[agent] ${agentId} browser destroy: ${e.message}`)
+          );
+          agent.browserSessionId = null;
+        }
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const nb = await createBrowserSession({ url: 'about:blank' });
+            agent.browserSessionId = nb.sessionId;
+            const bs = browserSessions.get(nb.sessionId);
+            if (bs) bs._agentOwned = agentId;
+            agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, agent.browserSessionId);
+            console.log(`[agent] ${agentId} fresh browser ${agent.browserSessionId} for iteration ${i}`);
+            break;
+          } catch (err) {
+            console.warn(`[agent] ${agentId} browser create attempt ${attempt}/3: ${err.message}`);
+            if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
+            else {
+              console.error(`[agent] ${agentId} all browser create attempts failed for iteration ${i}`);
+              // Update MCP config without browser so agent doesn't reference a dead session
+              agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, null);
+            }
+          }
+        }
+      }
+
       if (i > 1) console.log(`[agent] ${agentId} fresh session for iteration ${i}`);
 
       broadcastSync({ type: 'agent:iteration', agentId, iteration: i, total: iterations });
@@ -5715,38 +5810,16 @@ async function launchAgentController(opts) {
         await new Promise(r => setTimeout(r, 2000));
       }
 
-      // Browser session health-check between loop iterations.
-      // If the browser session died (closed by grace timer, crash, etc.), re-create it.
-      if (mode === 'loop' && agent.browserSessionId && !agent._stopped && i < iterations) {
-        if (!browserSessions.has(agent.browserSessionId)) {
-          console.log(`[agent] ${agentId} browser session ${agent.browserSessionId} died, re-creating...`);
-          try {
-            const newBrowser = await createBrowserSession({ url: 'about:blank' });
-            agent.browserSessionId = newBrowser.sessionId;
-            agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, agent.browserSessionId);
-            broadcastSync({
-              type: 'browser:session-created',
-              sessionId: agent.browserSessionId, url: 'about:blank',
-              profileMode: newBrowser.profileMode, profileSource: newBrowser.profileSource,
-            });
-            console.log(`[agent] ${agentId} re-created browser session ${agent.browserSessionId}`);
-          } catch (err) {
-            console.warn(`[agent] ${agentId} browser re-create failed: ${err.message}`);
-          }
-        } else {
-          // Cancel any grace timer on the session to keep it alive
-          const bSession = browserSessions.get(agent.browserSessionId);
-          if (bSession?.graceTimer) {
-            clearTimeout(bSession.graceTimer);
-            bSession.graceTimer = null;
-          }
-        }
-      }
-
       // Small stabilization delay between iterations (let MCP server settle)
       if (mode === 'loop' && !agent._stopped && i < iterations) {
         await new Promise(r => setTimeout(r, 1000));
       }
+    }
+
+    // Clean up the final browser session when the loop ends
+    if (agent._usesBrowser && agent.browserSessionId) {
+      await destroyBrowserSession(agent.browserSessionId).catch(() => {});
+      agent.browserSessionId = null;
     }
 
     agent.endedAt = new Date().toISOString();
@@ -6495,7 +6568,9 @@ app.get('/api/projects', (req, res) => {
 function validateProjectPath(filePath) {
   const normalized = resolve(filePath);
   const registeredProjects = loadHookProjects();
-  const allowedRoots = [resolve(PROJECT_ROOT), ...registeredProjects.map(p => resolve(p.path))];
+  const claudePlansDir = resolve(join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans'));
+  const localPlansDir = resolve(join(PROJECT_ROOT, 'data', 'plans'));
+  const allowedRoots = [resolve(PROJECT_ROOT), ...registeredProjects.map(p => resolve(p.path)), localPlansDir, claudePlansDir];
   const matched = allowedRoots.find(r => normalized === r || normalized.startsWith(r + sep));
   return matched ? normalized : null;
 }
@@ -6603,6 +6678,52 @@ app.delete('/api/file-content', (req, res) => {
       unlinkSync(normalized);
     }
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/latest-plan — Find most recently modified plan file (data/plans/ preferred, ~/.claude/plans/ fallback)
+app.get('/api/latest-plan', (req, res) => {
+  try {
+    const localPlansDir = join(PROJECT_ROOT, 'data', 'plans');
+    const legacyPlansDir = join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans');
+    const maxAge = 5 * 60 * 1000; // 5 minutes
+    const now = Date.now();
+    const files = [];
+    for (const dir of [localPlansDir, legacyPlansDir]) {
+      if (!existsSync(dir)) continue;
+      for (const f of readdirSync(dir).filter(f => f.endsWith('.md'))) {
+        if (files.some(r => r.name === f)) continue;
+        const fullPath = join(dir, f);
+        const st = statSync(fullPath);
+        if ((now - st.mtimeMs) < maxAge) {
+          files.push({ name: f, path: fullPath.replace(/\\/g, '/'), mtime: st.mtimeMs });
+        }
+      }
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+
+    if (!files.length) return res.json({ ok: true, found: false });
+    res.json({ ok: true, found: true, path: files[0].path, name: files[0].name });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/create-plan — Materialize plan content into a file in data/plans/
+app.post('/api/create-plan', (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content || typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
+
+    const plansDir = join(PROJECT_ROOT, 'data', 'plans');
+    if (!existsSync(plansDir)) mkdirSync(plansDir, { recursive: true });
+
+    const name = `synabun-plan-${Date.now()}.md`;
+    const fullPath = join(plansDir, name);
+    writeFileSync(fullPath, content, 'utf-8');
+    res.json({ ok: true, path: fullPath.replace(/\\/g, '/'), name });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -6983,9 +7104,9 @@ app.get('/api/setup/check-deps', async (req, res) => {
   deps.push({
     id: 'node',
     name: 'Node.js',
-    ok: nodeMajor >= 18,
+    ok: nodeMajor >= 22,
     version: `v${nodeVersion}`,
-    detail: nodeMajor >= 18 ? `v${nodeVersion}` : `v${nodeVersion} (need 18+)`,
+    detail: nodeMajor >= 22 ? `v${nodeVersion}` : `v${nodeVersion} (need 22.5+ for built-in SQLite)`,
     url: 'https://nodejs.org/',
   });
 
@@ -7138,7 +7259,7 @@ app.post('/api/setup/write-mcp-json', (req, res) => {
     const { targetDir } = req.body;
     if (!targetDir) return res.status(400).json({ error: 'targetDir required' });
 
-    const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'preload.js').replace(/\\/g, '/');
+    const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
     const envPath = resolve(PROJECT_ROOT, '.env').replace(/\\/g, '/');
 
     const mcpEntry = {
@@ -7216,7 +7337,7 @@ const HOOK_SCRIPTS = [
   { event: 'Stop',              script: 'stop.mjs',          timeout: 3 },
   { event: 'PreToolUse',        script: 'pre-websearch.mjs', timeout: 3, matcher: '^WebSearch$|^WebFetch$' },
   { event: 'PostToolUse',       script: 'post-remember.mjs', timeout: 3, matcher: '^Edit$|^Write$|^NotebookEdit$|Syna[Bb]un__remember' },
-  { event: 'PostToolUse',       script: 'post-plan.mjs',     timeout: 15, matcher: '^ExitPlanMode$' },
+  { event: 'PostToolUse',       script: 'post-plan.mjs',     timeout: 15, matcher: '^(Enter|Exit)PlanMode$' },
 ];
 
 function getClaudeSettingsPath(projectPath) {
@@ -7353,11 +7474,22 @@ const SYNABUN_TOOL_PERMISSIONS = [
   'mcp__SynaBun__card_screenshot',
 ];
 
-// No-op — permissions are OFF by default.
-// Users enable them via Settings → Permissions toggles.
+// Ensure base permissions structure + built-in tool permissions that SynaBun requires.
+// MCP tool permissions are toggled via Settings UI; this only injects non-MCP essentials.
 function ensureSynaBunPermissions(settings) {
   if (!settings.permissions) settings.permissions = {};
   if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
+
+  // Plan files now write to data/plans/ (project-local) instead of ~/.claude/plans/.
+  // No special Write permission needed — data/ is within the project root.
+  // Clean up legacy rule if present from older installations.
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const legacyPlanRule = `Write(${join(home, '.claude', 'plans', '*')})`;
+  const legacyIdx = settings.permissions.allow.indexOf(legacyPlanRule);
+  if (legacyIdx !== -1) {
+    settings.permissions.allow.splice(legacyIdx, 1);
+  }
+
   return settings;
 }
 
@@ -7874,8 +8006,8 @@ app.get('/api/claude-code/sessions/:sessionId/messages', (req, res) => {
           if (obj.message?.usage) lastUsage = obj.message.usage;
           if (obj.message?.model) lastModel = obj.message.model;
         } else if (obj.type === 'result') {
-          // Result events often have the most accurate final usage for a turn
-          if (obj.usage) lastUsage = obj.usage;
+          // NOTE: result.usage is CUMULATIVE — do NOT use it for context gauge.
+          // assistant.message.usage has correct per-turn values.
         } else if (obj.type === 'tool_result' || obj.type === 'tool') {
           // Extract tool results for pairing with tool_use cards in history
           const content = obj.message?.content || obj.content;
@@ -7906,11 +8038,11 @@ app.get('/api/claude-code/sessions/:sessionId/messages', (req, res) => {
         cache_creation_input_tokens: lastUsage.cache_creation_input_tokens || 0,
       };
     }
-    // Infer actual context window from model — CLI uses 1M by default for opus/sonnet 4.6
+    // Infer context window from model — CLI reports 200K via modelUsage.contextWindow
     if (lastModel) {
       const CLI_CONTEXT_WINDOWS = {
-        'claude-opus-4-6': 1000000,
-        'claude-sonnet-4-6': 1000000,
+        'claude-opus-4-6': 200000,
+        'claude-sonnet-4-6': 200000,
         'claude-haiku-4-5-20251001': 200000,
       };
       const cw = CLI_CONTEXT_WINDOWS[lastModel];
@@ -8072,7 +8204,7 @@ app.get('/api/claude-code/integrations', (req, res) => {
       mcpConnected = !!(cj.mcpServers && cj.mcpServers.SynaBun);
     } catch {}
 
-    const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'preload.js').replace(/\\/g, '/');
+    const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
     const envPath = resolve(PROJECT_ROOT, '.env').replace(/\\/g, '/');
     const cliCommand = `claude mcp add SynaBun -s user -e DOTENV_PATH="${envPath}" -- node "${mcpIndexPath}"`;
 
@@ -8499,7 +8631,7 @@ app.post('/api/claude-code/mcp', (req, res) => {
   try {
     const home = process.env.USERPROFILE || process.env.HOME || '';
     const claudeJsonPath = join(home, '.claude.json');
-    const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'preload.js').replace(/\\/g, '/');
+    const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
     const envPath = resolve(PROJECT_ROOT, '.env').replace(/\\/g, '/');
 
     let data = {};
@@ -12707,9 +12839,19 @@ async function createBrowserSession(options = {}) {
       // Wipe mirror dir completely on every launch. Stale GPU/shader caches from a
       // different Chromium version (e.g., Playwright Chromium vs system Chrome) crash
       // the browser. Auth files are re-synced below, so nothing is lost.
-      try {
-        if (existsSync(mirrorRoot)) { rmSync(mirrorRoot, { recursive: true, force: true }); }
-      } catch (e) { console.warn(`[browser] Could not clean mirror dir: ${e.message}`); }
+      for (let _cleanAttempt = 1; _cleanAttempt <= 3; _cleanAttempt++) {
+        try {
+          if (existsSync(mirrorRoot)) { rmSync(mirrorRoot, { recursive: true, force: true }); }
+          break; // success
+        } catch (e) {
+          if (_cleanAttempt < 3) {
+            console.warn(`[browser] Mirror cleanup attempt ${_cleanAttempt}/3 failed (${e.code}), retrying...`);
+            await new Promise(r => setTimeout(r, 500 * _cleanAttempt));
+          } else {
+            console.warn(`[browser] Could not clean mirror dir after 3 attempts: ${e.message}`);
+          }
+        }
+      }
       const mirrorDefault = resolve(mirrorRoot, 'Default');
       mkdirSync(mirrorDefault, { recursive: true });
       console.log(`[browser] Mirroring ${_profileSourceName} → ${mirrorRoot} (clean)`);
@@ -13059,13 +13201,15 @@ async function createBrowserSession(options = {}) {
   // Store the wiring function on the session for creating new tabs
   session._wireTabPageEvents = wireTabPageEvents;
 
-  // Handle context close (browser quit)
+  // Handle context close (browser quit / crash)
   context.on('close', () => {
-    console.log(`Browser context closed for session ${sessionId}`);
+    console.log(`Browser context closed for session ${sessionId}${session._agentOwned ? ` (agent-owned: ${session._agentOwned})` : ''}`);
     session.clients.forEach(ws => {
       if (ws.readyState === 1) ws.close(1000, 'Browser closed');
     });
     session.clients.clear();
+    // Always clean up from the map — the context is dead, tools will fail anyway.
+    // Agent iteration loop will create a fresh session on next iteration.
     browserSessions.delete(sessionId);
     broadcastSync({ type: 'browser:session-deleted', sessionId });
   });
@@ -13084,41 +13228,47 @@ async function createBrowserSession(options = {}) {
  */
 async function startScreencast(session) {
   if (session.screencastActive) return;
+
+  const scCfg = loadBrowserConfig().screencast || {};
+  if (scCfg.disabled) {
+    console.log('[screencast] Stream disabled in browser config — skipping');
+    return;
+  }
+
   session.screencastActive = true;
 
   console.log('[screencast] Starting screencast, CDP session exists:', !!session.cdpSession, 'persistent:', !!session._isPersistent);
 
   let frameCount = 0;
-  session.cdpSession.on('Page.screencastFrame', async (params) => {
+  session.cdpSession.on('Page.screencastFrame', (params) => {
     frameCount++;
     if (frameCount <= 3) console.log(`[screencast] Frame #${frameCount} received (${params.data?.length || 0} chars)`);
-    const msg = JSON.stringify({
-      type: 'frame',
-      data: params.data,               // base64 JPEG
-      metadata: params.metadata,        // { offsetTop, pageScaleFactor, ... }
-      sessionId: params.sessionId,      // CDP ack ID
-    });
+
+    // Send raw JPEG bytes as binary WebSocket message (no base64/JSON overhead).
+    // First byte = 0x01 (frame marker) so clients distinguish binary frames
+    // from JSON text messages (navigated, loaded, error, etc.).
+    const jpegBuf = Buffer.from(params.data, 'base64');
+    const bin = Buffer.allocUnsafe(1 + jpegBuf.length);
+    bin[0] = 0x01; // frame marker
+    jpegBuf.copy(bin, 1);
     session.clients.forEach(ws => {
       // Skip clients with congested write buffers to prevent frame backlog
-      if (ws.readyState === 1 && ws.bufferedAmount < 512 * 1024) ws.send(msg);
+      if (ws.readyState === 1 && ws.bufferedAmount < 512 * 1024) ws.send(bin);
     });
 
-    // Acknowledge frame to keep the stream going
-    try {
-      await session.cdpSession.send('Page.screencastFrameAck', {
-        sessionId: params.sessionId,
-      });
-    } catch {}
+    // Fire-and-forget ACK — no await, removes ACK latency from the frame pipeline
+    session.cdpSession.send('Page.screencastFrameAck', {
+      sessionId: params.sessionId,
+    }).catch(() => {});
   });
 
-  const scCfg = loadBrowserConfig().screencast || {};
   try {
     await session.cdpSession.send('Page.startScreencast', {
       format: scCfg.format || 'jpeg',
-      quality: scCfg.quality ?? 60,
+      quality: scCfg.quality ?? 80,
       maxWidth: scCfg.maxWidth || 1280,
       maxHeight: scCfg.maxHeight || 800,
-      everyNthFrame: scCfg.everyNthFrame || 2,
+      everyNthFrame: scCfg.everyNthFrame || 1,
     });
     console.log('[screencast] Page.startScreencast sent successfully');
   } catch (err) {
@@ -13549,10 +13699,21 @@ app.post('/api/browser/sessions/:id/click', async (req, res) => {
 app.post('/api/browser/sessions/:id/fill', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector: rawFillSel, value, timeout } = req.body;
+  const { selector: rawFillSel, value, timeout, nthMatch } = req.body;
   if (!rawFillSel) return res.status(400).json({ error: 'selector required' });
+  const selector = normalizeSelector(rawFillSel);
   try {
-    await session.page.locator(normalizeSelector(rawFillSel)).fill(value ?? '', { timeout: timeout || 5000 });
+    const loc = session.page.locator(selector);
+    const count = await loc.count().catch(() => -1);
+    if (count === 0) {
+      const hints = await getInteractiveHints(session.page);
+      return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
+    }
+    if (count > 1 && nthMatch === undefined) {
+      return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
+    }
+    const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
+    await target.fill(value ?? '', { timeout: timeout || 5000 });
     session.currentUrl = session.page.url();
     session.title = await session.page.title().catch(() => '');
     res.json({ ok: true, url: session.currentUrl, title: session.title });
@@ -13564,10 +13725,21 @@ app.post('/api/browser/sessions/:id/fill', async (req, res) => {
 app.post('/api/browser/sessions/:id/type', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector: rawTypeSel, text, timeout } = req.body;
+  const { selector: rawTypeSel, text, timeout, nthMatch } = req.body;
   try {
     if (rawTypeSel) {
-      await session.page.locator(normalizeSelector(rawTypeSel)).pressSequentially(text ?? '', { timeout: timeout || 5000 });
+      const selector = normalizeSelector(rawTypeSel);
+      const loc = session.page.locator(selector);
+      const count = await loc.count().catch(() => -1);
+      if (count === 0) {
+        const hints = await getInteractiveHints(session.page);
+        return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
+      }
+      if (count > 1 && nthMatch === undefined) {
+        return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
+      }
+      const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
+      await target.pressSequentially(text ?? '', { timeout: timeout || 5000 });
     } else {
       // No selector: type into the currently focused element via keyboard
       await session.page.keyboard.type(text ?? '');
@@ -13583,10 +13755,21 @@ app.post('/api/browser/sessions/:id/type', async (req, res) => {
 app.post('/api/browser/sessions/:id/hover', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector: rawHoverSel, timeout } = req.body;
+  const { selector: rawHoverSel, timeout, nthMatch } = req.body;
   if (!rawHoverSel) return res.status(400).json({ error: 'selector required' });
+  const selector = normalizeSelector(rawHoverSel);
   try {
-    await session.page.locator(normalizeSelector(rawHoverSel)).hover({ timeout: timeout || 5000 });
+    const loc = session.page.locator(selector);
+    const count = await loc.count().catch(() => -1);
+    if (count === 0) {
+      const hints = await getInteractiveHints(session.page);
+      return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
+    }
+    if (count > 1 && nthMatch === undefined) {
+      return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
+    }
+    const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
+    await target.hover({ timeout: timeout || 5000 });
     session.currentUrl = session.page.url();
     session.title = await session.page.title().catch(() => '');
     res.json({ ok: true, url: session.currentUrl, title: session.title });
@@ -13598,10 +13781,21 @@ app.post('/api/browser/sessions/:id/hover', async (req, res) => {
 app.post('/api/browser/sessions/:id/select', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector: rawSelSel, value, timeout } = req.body;
+  const { selector: rawSelSel, value, timeout, nthMatch } = req.body;
   if (!rawSelSel) return res.status(400).json({ error: 'selector required' });
+  const selector = normalizeSelector(rawSelSel);
   try {
-    await session.page.locator(normalizeSelector(rawSelSel)).selectOption(value ?? '', { timeout: timeout || 5000 });
+    const loc = session.page.locator(selector);
+    const count = await loc.count().catch(() => -1);
+    if (count === 0) {
+      const hints = await getInteractiveHints(session.page);
+      return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
+    }
+    if (count > 1 && nthMatch === undefined) {
+      return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
+    }
+    const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
+    await target.selectOption(value ?? '', { timeout: timeout || 5000 });
     session.currentUrl = session.page.url();
     session.title = await session.page.title().catch(() => '');
     res.json({ ok: true, url: session.currentUrl, title: session.title });
@@ -13918,11 +14112,22 @@ app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
 app.post('/api/browser/sessions/:id/upload', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
-  const { selector: rawSel, filePaths } = req.body;
+  const { selector: rawSel, filePaths, nthMatch } = req.body;
   if (!rawSel) return res.status(400).json({ error: 'selector required' });
   if (!Array.isArray(filePaths) || !filePaths.length) return res.status(400).json({ error: 'filePaths must be a non-empty array' });
+  const selector = normalizeSelector(rawSel);
   try {
-    await session.page.locator(normalizeSelector(rawSel)).setInputFiles(filePaths);
+    const loc = session.page.locator(selector);
+    const count = await loc.count().catch(() => -1);
+    if (count === 0) {
+      const hints = await getInteractiveHints(session.page);
+      return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
+    }
+    if (count > 1 && nthMatch === undefined) {
+      return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
+    }
+    const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
+    await target.setInputFiles(filePaths);
     await session.page.waitForTimeout(500);
     session.currentUrl = session.page.url();
     session.title = await session.page.title().catch(() => '');
@@ -14578,19 +14783,47 @@ async function handleBrowserWebSocket(ws, url) {
       } else if (msg.type === 'keypress') {
         // For typing text characters
         await session.page.keyboard.type(msg.text || '').catch(() => {});
+      } else if (msg.type === 'pause-screencast') {
+        await stopScreencast(session).catch(() => {});
+      } else if (msg.type === 'resume-screencast') {
+        if (session.screencastActive) {
+          // Already streaming (throttled) — restart at full rate
+          const scCfg = loadBrowserConfig().screencast || {};
+          await session.cdpSession.send('Page.startScreencast', {
+            format: scCfg.format || 'jpeg',
+            quality: scCfg.quality ?? 80,
+            maxWidth: scCfg.maxWidth || 1280,
+            maxHeight: scCfg.maxHeight || 800,
+            everyNthFrame: scCfg.everyNthFrame || 1,
+          }).catch(() => {});
+        } else {
+          // Was fully paused — start fresh
+          await startScreencast(session).catch(() => {});
+        }
+      } else if (msg.type === 'throttle-screencast') {
+        // Reduce to ~2fps for non-focused browser windows
+        if (session.screencastActive) {
+          const scCfg = loadBrowserConfig().screencast || {};
+          await session.cdpSession.send('Page.startScreencast', {
+            format: scCfg.format || 'jpeg',
+            quality: Math.min(scCfg.quality ?? 80, 50),
+            maxWidth: scCfg.maxWidth || 1280,
+            maxHeight: scCfg.maxHeight || 800,
+            everyNthFrame: 15,
+          }).catch(() => {});
+        }
       } else if (msg.type === 'resize') {
-        // Resize viewport
+        // Resize viewport and update screencast dimensions without stopping
         const w = Math.max(320, Math.min(3840, msg.width || 1280));
         const h = Math.max(200, Math.min(2160, msg.height || 800));
         await session.page.setViewportSize({ width: w, height: h }).catch(() => {});
-        // Restart screencast with new dimensions
-        await stopScreencast(session);
+        // Send new startScreencast directly — CDP replaces params atomically, no gap
         const scCfg2 = loadBrowserConfig().screencast || {};
         await session.cdpSession.send('Page.startScreencast', {
           format: scCfg2.format || 'jpeg',
-          quality: scCfg2.quality ?? 60,
+          quality: scCfg2.quality ?? 80,
           maxWidth: w, maxHeight: h,
-          everyNthFrame: scCfg2.everyNthFrame || 2,
+          everyNthFrame: scCfg2.everyNthFrame || 1,
         }).catch(() => {});
         session.screencastActive = true;
       } else if (msg.type === 'switch-tab' && msg.tabId) {
@@ -14628,9 +14861,9 @@ async function handleBrowserWebSocket(ws, url) {
       // Grace period before killing browser
       session.graceTimer = setTimeout(async () => {
         if (session.clients.size === 0 && browserSessions.has(sessionId)) {
-          // Don't destroy if an active loop is using this browser session
-          if (isSessionUsedByActiveLoop(sessionId)) {
-            console.log(`[browser] Grace period: skipping destroy — active loop uses session ${sessionId}`);
+          // Don't destroy if an active agent or loop owns this session
+          if (session._agentOwned || isSessionUsedByActiveLoop(sessionId)) {
+            console.log(`[browser] Grace period: skipping destroy — active agent/loop uses session ${sessionId}`);
             return;
           }
           await destroyBrowserSession(sessionId);
