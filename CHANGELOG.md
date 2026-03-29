@@ -10,6 +10,30 @@
 ### Added — Minimized Pill Checkmark Icon on Task Complete
 - **Profile icon swaps to green checkmark when CLI status is DONE** — When a minimized terminal pill's CLI status changes to `done`, the `.term-minimized-pill-icon` innerHTML is replaced with a checkmark SVG (`SVG_CHECK_DONE` constant, 16x16 polyline). Original icon is preserved in `dataset.originalIcon` and restored when status changes away from `done`. Icon swap logic added to the pill section of `_updateSessionBadges()` in `ui-terminal.js`. Green color (`rgba(100, 200, 120, 0.8)`) applied via `.term-minimized-pill-icon.done` CSS class in `styles.css`, matching the existing DONE badge palette
 
+### Fixed — Permission Spam in Claude Code Sidepanel
+- **Events leaked through buffer gate** — `handleTabMsg()` in `ui-claude-panel.js` allowed `event` type messages through while `_activePerm` was set, causing thinking dots and streaming text to render below active permission cards. Also, `AskUserQuestion` control requests had zero message buffering — `pendingAskRequestId` was never checked by the buffer gate. Changed the gate to block ALL message types (except `control_request`) when either `_activePerm` or `pendingAskRequestId` is set
+- **Process not killed on deny** — The `control_response` handler in `server.js` sent a `done` message to the client on permission denial but never called `killProc()`. The still-running Claude CLI process continued executing, triggered more tool uses, and flooded the user with additional permission cards. Now calls `killProc()` before sending `done` in the deny branch
+- **Queue and buffer not cleared on deny** — After killing the process, queued permission cards (`_permQueue`) and buffered messages (`_msgBuffer`) from the now-dead process would still pop up sequentially. The `resolve('deny')` path in `renderPermissionPrompt()` now empties both arrays immediately
+
+### Fixed — AskUserQuestion Buffer Flush
+- **Buffered messages not flushed after answering** — Since `pendingAskRequestId` now gates the message buffer, `sendAskAnswer()` needed a corresponding `_flushMsgBuffer(tab)` call after clearing `pendingAskRequestId` to release buffered messages once the user responds
+
+### Changed — Permission Card "Always" Button UX
+- **Replaced checkbox + label with dedicated button** — Removed the `alwaysLbl`/`alwaysCb`/`alwaysText` checkbox elements from `renderPermissionPrompt()` in `ui-claude-panel.js`. Added a `perm-btn-always` button as the leftmost element in the actions row: `[Always] [Allow] [Deny]`. One click auto-allows the tool for the session and resolves the card. Status badge shows "Always" when used. CSS: subtle default styling (`rgba(255,255,255,0.04)`) that warms to match the Allow button on hover
+
+### Added — Permission System Test Suite
+- **81-test suite for sidepanel permission blocking** — Created `tests/automated/permission-system.test.mjs` with three test categories: source validation (28 tests verifying code patterns in `ui-claude-panel.js` and `server.js` — buffer gate, deny cleanup, Always button DOM, CSS, `killProc()` ordering), logic simulation (52 tests with mock tab objects covering buffer gate during perm/ask/idle states, buffer capacity, deny vs allow behavior, `autoAllowTools` set management, `_showNextPerm()` queue processing, full permission spam scenario, mixed perm+ask scenario, and sequential allows), and server integration (1 test verifying `killProc()` before `done` on deny). Registered in `run-all.mjs` as key `"permissions"` for `node tests/automated/run-all.mjs permissions`
+
+### Fixed — AskUserQuestion Card Duplication
+- **Buffer flushed after dedup flag cleared** — `sendAskAnswer()` in `ui-claude-panel.js` cleared `askRenderedViaControl = false` before calling `_flushMsgBuffer()`. Buffered `assistant` events flushed after the user answered saw the flag as false, causing `buildAskFromToolUse()` to render full duplicate cards instead of hidden placeholders. Reordered to flush the buffer first while `askRenderedViaControl` is still true, then clear the flag
+- **No DOM-level guard against duplicate ask cards** — `renderAskUserQuestion()` (control_request render path) had no check for whether an active ask card already existed in the DOM. Added a querySelector guard for `.ask-card .ask-submit:not([disabled])` — if an active card is found, the render is skipped entirely
+
+### Added — Interactive Feature Stress Test (Claude Code Sidepanel)
+- **Full QA pass across all interactive card types** — Validated 8 `AskUserQuestion` variations in `ui-claude-panel.js`: single-select with recommended option, multi-select (4 options), max 4-question batch (mixed single/multi), code snippet previews, markdown rich previews, long description overflow, rapid-fire back-to-back (3x), and interleaved with tool calls (Glob + Ask). All rendered correctly with no duplication or overlap
+- **Plan Mode validation** — Tested in-plan `AskUserQuestion` clarification, 15-step plan content rendering, and `ExitPlanMode`. Confirmed `ExitPlanMode` requires system-level plan mode state (via `EnterPlanMode`) — user-typed `[PLAN MODE]` prompt prefix does not set the system flag
+- **TodoWrite validation** — Tested 10-item task list creation with mixed states (completed/in_progress/pending), rapid state transitions (3 sequential updates sweeping pending → completed), and full completion sweep
+- **Combined flow validation** — Tested Bash + AskUserQuestion + TodoWrite in a single response, Agent subagent + AskUserQuestion (agent researched test files, ask used results as context), and Glob + AskUserQuestion interleaving
+
 ## 2026-03-28
 
 ### Added — Browser Stream Toggle (Settings > Browser)
