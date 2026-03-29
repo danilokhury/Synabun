@@ -13,6 +13,7 @@ import { startTutorial } from './ui-tutorial.js';
 import { toggleClaudePanel } from './ui-claude-panel.js';
 import { toggleSessionMonitor } from './ui-sessions.js';
 import { toggleImageGallery } from './ui-image-gallery.js';
+import { initUpdate } from './ui-update.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -215,4 +216,7 @@ export function initNavbar() {
 
     registerAction('toggle-toolbar', () => collapseBtn.click());
   }
+
+  // ── Update alert ──
+  initUpdate();
 }
