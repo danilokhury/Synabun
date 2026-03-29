@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ensureDatabase, closeDatabase, reopenDatabase } from './services/sqlite.js';
-import { warmupEmbeddings } from './services/local-embeddings.js';
+
 import { rememberSchema, rememberDescription, handleRemember, buildRememberSchema } from './tools/remember.js';
 import { recallSchema, recallDescription, handleRecall, buildRecallSchema } from './tools/recall.js';
 import { forgetSchema, forgetDescription, handleForget } from './tools/forget.js';
@@ -17,6 +17,8 @@ import { registerCardTools } from './tools/card.js';
 import { registerTicTacToeTools } from './tools/tictactoe.js';
 import { registerDiscordTools } from './tools/discord.js';
 import { registerGitTools } from './tools/git.js';
+import { registerLeonardoTools } from './tools/leonardo.js';
+import { registerImageTools } from './tools/image.js';
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, initCategoryCache } from './services/categories.js';
 import { getEnvPath } from './config.js';
 import { readFileSync, watch, existsSync } from 'fs';
@@ -27,7 +29,7 @@ function buildServerInstructions(): string {
 Tool groups:
 - Memory: remember, recall, reflect, forget, restore, memories
 - Categories: category (action: create/update/delete/list)
-- Browser: browser_navigate, browser_click, browser_type, browser_fill, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_go_back, browser_go_forward, browser_reload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network
+- Browser: browser_navigate, browser_click, browser_type, browser_fill, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_go_back, browser_go_forward, browser_reload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session, browser_extract_tweets, browser_extract_fb_posts, browser_extract_tiktok_videos, browser_extract_tiktok_search, browser_extract_tiktok_studio, browser_extract_tiktok_profile, browser_extract_wa_chats, browser_extract_wa_messages, browser_extract_ig_feed, browser_extract_ig_profile, browser_extract_ig_post, browser_extract_ig_reels, browser_extract_ig_search, browser_extract_li_feed, browser_extract_li_profile, browser_extract_li_post, browser_extract_li_notifications, browser_extract_li_messages, browser_extract_li_search_people, browser_extract_li_network, browser_extract_li_jobs
 - Whiteboard: whiteboard_read, whiteboard_add, whiteboard_update, whiteboard_remove, whiteboard_screenshot
 - Cards: card_list, card_open, card_close, card_update, card_screenshot
 - TicTacToe: tictactoe (action: start/move/state/end)
@@ -35,10 +37,14 @@ Tool groups:
 - Loop: loop (action: start/stop/status)
 - Git: git (action: status/diff/commit/log/branches)
 - Discord: discord_guild, discord_channel, discord_role, discord_message, discord_member, discord_onboarding, discord_webhook, discord_thread
+- Images: image_staged (action: list/clear/remove)
+- Leonardo (browser-based): leonardo_browser_navigate, leonardo_browser_generate, leonardo_browser_library, leonardo_browser_download, leonardo_browser_reference
 
 Use "category" with action "list" to see valid category names before using remember/recall/reflect.
 
-Discord tools require DISCORD_BOT_TOKEN in .env. Set DISCORD_GUILD_ID for default guild. Each tool uses an "action" parameter to select the operation.`;
+Discord tools require DISCORD_BOT_TOKEN in .env. Set DISCORD_GUILD_ID for default guild. Each tool uses an "action" parameter to select the operation.
+
+Leonardo tools are 100% browser-based — no API key needed. Use leonardo_browser_navigate to go to the right page, then use generic browser tools (browser_click, browser_fill, browser_snapshot) to configure settings (model, style, dimensions, motion controls), and leonardo_browser_generate to fill the prompt and click Generate. Use the /leonardo skill for the full guided creation experience.`;
 }
 
 // Register all tools on a given McpServer instance.
@@ -59,6 +65,8 @@ export function registerTools(server: McpServer) {
   registerTicTacToeTools(server);
   registerDiscordTools(server);
   registerGitTools(server);
+  registerLeonardoTools(server);
+  registerImageTools(server);
   return { rememberTool, recallTool, reflectTool, memoriesTool };
 }
 
@@ -98,11 +106,6 @@ async function main() {
       err instanceof Error ? err.message : err
     );
   }
-
-  // Warmup embedding model in background (non-blocking)
-  warmupEmbeddings().catch((err) => {
-    console.error('Embedding model warmup failed:', err instanceof Error ? err.message : err);
-  });
 
   // Initialize category cache (loads from SQLite or starts empty)
   await initCategoryCache();

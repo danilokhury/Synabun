@@ -7,6 +7,7 @@ import { storage } from './storage.js';
 import { emit, on } from './state.js';
 import { fetchClaudeSessions, fetchBrowserSessions } from './api.js';
 import { createFrameRenderer } from './utils.js';
+import { notify, NOTIF_TYPE } from './ui-notifications.js';
 
 const CLAUDE_ICON = '<svg fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
 
@@ -145,6 +146,7 @@ const STOR = {
   autoAccept: 'synabun-claude-panel-autoaccept',
   windowRegistry: 'synabun-claude-panel-windows',   // JSON map of windowId → lastSeen timestamp
   bootId: 'synabun-claude-panel-boot-id',           // server boot ID — detect restarts
+  defaultModel: 'synabun-claude-panel-default-model', // user's preferred default model
 };
 
 const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
@@ -209,9 +211,30 @@ function buildPanel() {
       <div class="cp-browser-canvas-wrap"><canvas class="cp-browser-canvas" width="1280" height="800"></canvas></div>
     </div>
     <div class="cp-bottom">
+      <div class="cp-queue-tray" id="cp-queue-tray" hidden>
+        <div class="cp-queue-header">
+          <button class="cp-queue-expand" title="Expand queue">
+            <svg viewBox="0 0 16 16" width="10" height="10"><polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+          <span class="cp-queue-title">Queue</span>
+          <span class="cp-queue-count">0</span>
+          <div class="cp-queue-actions">
+            <button class="cp-queue-pause" title="Pause queue processing">
+              <svg viewBox="0 0 16 16" width="10" height="10"><rect x="3" y="3" width="3" height="10" fill="currentColor"/><rect x="10" y="3" width="3" height="10" fill="currentColor"/></svg>
+            </button>
+            <button class="cp-queue-clear" title="Clear all queued">
+              <svg viewBox="0 0 16 16" width="10" height="10"><line x1="4" y1="4" x2="12" y2="12" stroke="currentColor" stroke-width="2"/><line x1="12" y1="4" x2="4" y2="12" stroke="currentColor" stroke-width="2"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="cp-queue-items"></div>
+      </div>
       <div class="cp-project-bar">
         <div class="cp-dropdown" id="cp-project" data-placeholder="project..."><span class="cp-dd-label">project...</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
         <div class="cp-dropdown cp-dropdown-sm" id="cp-branch" data-placeholder="branch"><span class="cp-dd-label">branch</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
+        <div class="cp-bar-actions">
+          <button class="cp-bar-action" id="cp-action-changelog" data-tooltip="Generate changelog"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h8.5v13H4a1.5 1.5 0 01-1.5-1.5V3A1.5 1.5 0 014 1.5z"/><path d="M5.5 5h5M5.5 7.5h3M5.5 10h4"/></svg></button>
+        </div>
       </div>
       <div class="cp-input-area">
         <div class="cp-input-wrap">
@@ -253,9 +276,9 @@ function injectStyles() {
     /* ── Panel shell — floating macOS-style container ── */
     .claude-panel {
       position: fixed;
-      top: 64px; right: 16px;
+      top: calc(var(--navbar-height, 48px) + 20px); right: 20px;
       width: 22%; min-width: 320px; max-width: 700px;
-      bottom: 16px;
+      bottom: 20px;
       z-index: 200;
       display: flex;
       flex-direction: column;
@@ -265,8 +288,11 @@ function injectStyles() {
       border: 0.5px solid rgba(255,255,255,0.06);
       border-radius: 16px;
       box-shadow:
-        0 16px 48px rgba(0,0,0,0.5),
-        0 4px 16px rgba(0,0,0,0.3);
+        0 0 0 0.5px rgba(0,0,0,0.3),
+        0 1px 2px rgba(0,0,0,0.15),
+        0 4px 8px rgba(0,0,0,0.12),
+        0 12px 24px rgba(0,0,0,0.14),
+        0 32px 64px rgba(0,0,0,0.18);
       overflow: hidden;
       transform: translateX(calc(100% + 20px));
       transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1),
@@ -576,68 +602,100 @@ function injectStyles() {
 
     /* ── AskUserQuestion interactive cards ── */
     .ask-card {
-      background: rgba(255,255,255,0.025);
-      border: 1px solid rgba(100,160,255,0.12);
-      border-radius: 10px; padding: 10px 12px;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 8px; padding: 10px 12px;
       margin-top: 6px;
     }
     .ask-header {
-      font-size: 9px; font-weight: 700; color: rgba(100,160,255,0.6);
-      text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;
+      font-size: 10px; font-weight: 600; color: rgba(255,255,255,0.45);
+      letter-spacing: 0.3px; margin-bottom: 6px;
       font-family: 'JetBrains Mono', monospace;
       display: flex; align-items: center; gap: 5px;
     }
-    .ask-header::before {
-      content: '';
-      display: inline-block; width: 14px; height: 14px;
-      background: url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' fill='none' stroke='rgba(100,160,255,0.6)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='8' cy='8' r='6'/%3E%3Cpath d='M6 6.5a2 2 0 013.5 1.5c0 1-1.5 1.5-1.5 1.5'/%3E%3Cpath d='M8 11.5h0'/%3E%3C/svg%3E") no-repeat center;
-      flex-shrink: 0;
-    }
     .ask-question {
-      font-size: 12px; color: rgba(255,255,255,0.8); margin-bottom: 8px; line-height: 1.45;
+      font-size: 12px; color: rgba(255,255,255,0.75); margin-bottom: 8px; line-height: 1.45;
     }
-    .ask-options { display: flex; flex-direction: column; gap: 4px; }
+    .ask-options { display: flex; flex-direction: column; gap: 3px; }
     .ask-option {
       display: flex; align-items: flex-start; gap: 8px;
-      padding: 7px 10px; border-radius: 8px; cursor: pointer;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.06);
-      text-align: left; transition: all 0.15s;
+      padding: 6px 9px; border-radius: 6px; cursor: pointer;
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.05);
+      text-align: left; transition: background 0.12s, border-color 0.12s;
     }
     .ask-option::before {
       content: '';
-      width: 14px; height: 14px; flex-shrink: 0; margin-top: 1px;
-      border: 1.5px solid rgba(255,255,255,0.15); border-radius: 50%;
-      transition: all 0.15s;
+      width: 13px; height: 13px; flex-shrink: 0; margin-top: 1px;
+      border: 1.5px solid rgba(255,255,255,0.13); border-radius: 50%;
+      transition: border-color 0.12s, background 0.12s;
     }
     .ask-option:hover:not(:disabled) {
-      background: rgba(100,160,255,0.06);
-      border-color: rgba(100,160,255,0.18);
+      background: rgba(255,255,255,0.04);
+      border-color: rgba(255,255,255,0.10);
     }
     .ask-option:hover:not(:disabled)::before {
-      border-color: rgba(100,160,255,0.4);
+      border-color: rgba(255,255,255,0.3);
     }
     .ask-option.selected {
-      background: rgba(100,160,255,0.10);
-      border-color: rgba(100,160,255,0.3);
+      background: rgba(255,255,255,0.05);
+      border-color: rgba(255,255,255,0.12);
     }
     .ask-option.selected::before {
-      border-color: rgba(100,160,255,0.8);
-      background: rgba(100,160,255,0.8);
-      box-shadow: inset 0 0 0 2px rgba(14,14,18,0.85);
+      border-color: rgba(255,255,255,0.6);
+      background: rgba(255,255,255,0.6);
+      box-shadow: inset 0 0 0 2px rgba(14,14,18,0.9);
+    }
+    /* Multi-select: square checkbox instead of circle radio */
+    .ask-options.multi .ask-option::before { border-radius: 3px; }
+    .ask-options.multi .ask-option.selected::before { border-radius: 3px; }
+    .ask-multi-hint {
+      font-size: 9px; color: rgba(255,255,255,0.25);
+      font-family: 'JetBrains Mono', monospace;
+      font-style: italic; margin-bottom: 4px;
     }
     .ask-option:disabled:not(.selected) { opacity: 0.3; cursor: default; }
     .ask-option-wrap { display: flex; flex-direction: column; gap: 1px; }
     .ask-option-label {
-      font-size: 11.5px; font-weight: 600; color: rgba(255,255,255,0.85);
+      font-size: 11.5px; font-weight: 500; color: rgba(255,255,255,0.8);
     }
     .ask-option-desc {
-      font-size: 10px; color: rgba(255,255,255,0.35); line-height: 1.3;
+      font-size: 10px; color: rgba(255,255,255,0.3); line-height: 1.3;
     }
     .ask-hint {
-      font-size: 10px; color: rgba(100,160,255,0.45);
+      font-size: 10px; color: rgba(255,255,255,0.25);
       font-family: 'JetBrains Mono', monospace; font-style: italic;
     }
+    /* ── Batched submit bar ── */
+    .ask-submit-bar {
+      display: flex; justify-content: flex-end; align-items: center;
+      margin-top: 10px; padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.04);
+    }
+    .ask-submit {
+      font-size: 10px; font-weight: 600; font-family: 'JetBrains Mono', monospace;
+      padding: 6px 14px; border-radius: 6px; cursor: pointer;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.10);
+      color: rgba(255,255,255,0.35);
+      transition: all 0.12s; letter-spacing: 0.3px;
+    }
+    .ask-submit:disabled { opacity: 0.35; cursor: default; }
+    .ask-submit:not(:disabled) { color: rgba(255,255,255,0.8); }
+    .ask-submit:not(:disabled):hover {
+      background: rgba(255,255,255,0.10);
+      border-color: rgba(255,255,255,0.18);
+    }
+    .ask-text-input {
+      width: 100%; padding: 6px 8px; border-radius: 6px;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+      color: rgba(255,255,255,0.85); font-size: 11px;
+      font-family: 'JetBrains Mono', monospace; outline: none;
+      transition: border-color 0.12s;
+    }
+    .ask-text-input:focus { border-color: rgba(255,255,255,0.2); }
+    .ask-text-input::placeholder { color: rgba(255,255,255,0.15); }
+    .ask-text-input:disabled { opacity: 0.4; cursor: default; }
 
     /* ── SynaBun-branded ask card ── */
     .ask-card.synabun-ask { position: relative; overflow: hidden; }
@@ -652,15 +710,15 @@ function injectStyles() {
       transform: scale(0.85);
       width: 28px;
       opacity: 0;
-      transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
-                  transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: opacity 0.4s ease,
+                  transform 0.4s ease;
       pointer-events: none;
       z-index: 0;
     }
     .synabun-ask-bg-logo img {
       width: 100%;
       height: auto;
-      opacity: 0.07;
+      opacity: 0.05;
     }
     .synabun-ask:hover .synabun-ask-bg-logo {
       opacity: 1;
@@ -669,26 +727,26 @@ function injectStyles() {
 
     /* ── Plan cards (inline rendered markdown) ── */
     .cp-messages .plan-card {
-      border: 1px solid rgba(100,200,120,0.15); border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.07); border-radius: 8px;
       margin: 4px 0; overflow: hidden; font-size: 11px;
-      background: rgba(100,200,120,0.03);
+      background: rgba(255,255,255,0.02);
     }
-    .cp-messages .plan-card[open] { border-color: rgba(100,200,120,0.25); }
+    .cp-messages .plan-card[open] { border-color: rgba(255,255,255,0.12); }
     .cp-messages .plan-card > summary {
       display: flex; align-items: center; gap: 7px;
       padding: 5px 10px; cursor: pointer; user-select: none;
-      list-style: none; transition: background 0.15s;
+      list-style: none; transition: background 0.12s;
     }
     .cp-messages .plan-card > summary::-webkit-details-marker { display: none; }
-    .cp-messages .plan-card > summary:hover { background: var(--s-hover); }
+    .cp-messages .plan-card > summary:hover { background: rgba(255,255,255,0.04); }
     .cp-messages .plan-card .plan-icon {
       width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
-      font-size: 9px; font-weight: 700; color: rgba(100,200,120,0.9);
-      background: rgba(100,200,120,0.12); border-radius: 5px;
+      font-size: 9px; font-weight: 700; color: rgba(130,200,140,0.8);
+      background: rgba(130,200,140,0.08); border-radius: 5px;
       font-family: 'JetBrains Mono', monospace;
     }
     .cp-messages .plan-card .plan-label {
-      font-family: 'JetBrains Mono', monospace; color: rgba(100,200,120,0.9);
+      font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.55);
       font-weight: 600; font-size: 10.5px;
     }
     .cp-messages .plan-card .plan-file {
@@ -698,24 +756,22 @@ function injectStyles() {
     .cp-messages .plan-card .plan-chevron {
       color: var(--t-faint); font-size: 13px; transition: transform 0.2s;
     }
-    .cp-messages .plan-card[open] .plan-chevron { transform: rotate(90deg); color: rgba(100,200,120,0.6); }
+    .cp-messages .plan-card[open] .plan-chevron { transform: rotate(90deg); color: rgba(255,255,255,0.4); }
     .cp-messages .plan-card .plan-body {
-      border-top: 1px solid rgba(100,200,120,0.1); padding: 8px 12px;
+      border-top: 1px solid rgba(255,255,255,0.05); padding: 8px 12px;
     }
 
     /* ── Post-plan action card ── */
     .post-plan-card {
-      background: var(--s-subtle);
-      border: 1px solid rgba(100,200,120,0.25);
+      border: 1px solid rgba(255,255,255,0.07);
       border-radius: 8px; padding: 8px 10px;
       margin-top: 4px; position: relative;
-      background: rgba(100,200,120,0.04);
-      box-shadow: 0 0 16px rgba(100,200,120,0.06), 0 0 40px rgba(100,200,120,0.03);
-      transition: opacity 0.3s, border-color 0.2s;
+      background: rgba(255,255,255,0.02);
+      transition: opacity 0.3s, border-color 0.12s;
     }
-    .post-plan-card:hover { border-color: rgba(100,200,120,0.35); }
+    .post-plan-card:hover { border-color: rgba(255,255,255,0.12); }
     .post-plan-header {
-      font-size: 8.5px; font-weight: 700; color: rgba(100,200,120,0.7);
+      font-size: 8.5px; font-weight: 700; color: rgba(255,255,255,0.4);
       letter-spacing: 0.6px; margin-bottom: 6px;
       font-family: 'JetBrains Mono', monospace; text-transform: uppercase;
     }
@@ -724,24 +780,24 @@ function injectStyles() {
     }
     .post-plan-action {
       padding: 4px 10px; border-radius: 5px; font-size: 10px; font-weight: 600;
-      cursor: pointer; border: 1px solid transparent; transition: all 0.15s;
+      cursor: pointer; border: 1px solid transparent; transition: all 0.12s;
       font-family: 'JetBrains Mono', monospace;
     }
     .post-plan-action.pp-primary {
-      background: rgba(100,200,120,0.12); color: rgba(130,220,150,0.85);
-      border-color: rgba(100,200,120,0.2);
+      background: rgba(130,200,140,0.08); color: rgba(160,210,165,0.8);
+      border-color: rgba(130,200,140,0.12);
     }
     .post-plan-action.pp-primary:hover {
-      background: rgba(100,200,120,0.2); color: rgba(150,230,160,1);
-      border-color: rgba(100,200,120,0.35);
+      background: rgba(130,200,140,0.14); color: rgba(170,220,175,0.95);
+      border-color: rgba(130,200,140,0.22);
     }
     .post-plan-action.pp-secondary {
       background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.35);
       border-color: rgba(255,255,255,0.06);
     }
     .post-plan-action.pp-secondary:hover {
-      background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);
-      border-color: rgba(255,255,255,0.15);
+      background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.6);
+      border-color: rgba(255,255,255,0.12);
     }
 
     /* ── Permission prompt cards ── */
@@ -913,7 +969,7 @@ function injectStyles() {
       background: rgba(22, 22, 26, 0.95);
       padding-bottom: 4px;
       z-index: 2;
-      box-shadow: 0 -2px 8px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.06);
+      box-shadow: var(--shadow-sm), 0 0 0 1px rgba(255,255,255,0.06);
     }
 
     .cp-input-area {
@@ -928,6 +984,7 @@ function injectStyles() {
       padding: 1px;
       background: rgba(255,255,255,0.05);
       transition: background 0.4s;
+      min-width: 0; overflow: hidden;
     }
     .cp-input-wrap::before {
       content: '';
@@ -1166,7 +1223,7 @@ function injectStyles() {
       border-radius: 8px;
       padding: 4px;
       z-index: 300;
-      box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
+      box-shadow: var(--shadow-lg);
       max-height: 200px; overflow-y: auto;
       scrollbar-width: thin;
       scrollbar-color: rgba(255,255,255,0.06) transparent;
@@ -1182,6 +1239,19 @@ function injectStyles() {
     }
     .cp-dd-item:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.8); }
     .cp-dd-item.selected { color: rgba(255,255,255,0.85); background: rgba(255,255,255,0.08); }
+
+    /* Model dropdown: anchor menu to right edge to prevent off-screen overflow */
+    #cp-model .cp-dd-menu { left: auto; right: 0; }
+    .cp-dd-model-item { display: flex; align-items: center; gap: 6px; }
+    .cp-dd-model-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .cp-dd-model-star {
+      flex-shrink: 0; font-size: 9px; color: rgba(255,255,255,0.12);
+      cursor: pointer; transition: color 0.15s, transform 0.15s;
+      line-height: 1;
+    }
+    .cp-dd-model-star:hover { color: rgba(255,200,60,0.6); transform: scale(1.3); }
+    .cp-dd-model-star.is-default { color: rgba(255,200,60,0.85); }
+    .cp-dd-model-star.is-default:hover { color: rgba(255,200,60,1); }
 
     .cp-cost {
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
@@ -1206,12 +1276,17 @@ function injectStyles() {
 
     /* ── Image preview strip (inside input wrap) ── */
     .cp-image-preview {
-      display: flex; gap: 6px; padding: 8px 12px 6px;
+      display: flex; flex-wrap: nowrap; gap: 6px; padding: 8px 12px 6px;
       overflow-x: auto; flex-shrink: 0;
       background: rgba(12,12,16,0.9);
       border-radius: 13px 13px 0 0;
       border-bottom: 1px solid rgba(255,255,255,0.04);
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.1) transparent;
     }
+    .cp-image-preview::-webkit-scrollbar { height: 4px; }
+    .cp-image-preview::-webkit-scrollbar-track { background: transparent; }
+    .cp-image-preview::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
     .cp-image-preview:empty { display: none; border-bottom: none; }
     .cp-thumb {
       position: relative; flex-shrink: 0;
@@ -1266,7 +1341,7 @@ function injectStyles() {
       border: 1px solid rgba(255,255,255,0.08);
       border-radius: 10px; padding: 4px;
       z-index: 310; max-height: 200px; overflow-y: auto;
-      box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
+      box-shadow: var(--shadow-lg);
     }
     .cp-slash-hints.open { display: block; }
     .cp-slash-item {
@@ -1312,7 +1387,7 @@ function injectStyles() {
       display: flex; align-items: center;
       background: rgba(22, 22, 26, 0.95);
       z-index: 3;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.06);
+      box-shadow: var(--shadow-sm), 0 0 0 1px rgba(255,255,255,0.06);
     }
     .cp-header-actions {
       display: flex; align-items: center; gap: 3px; margin-left: auto; flex-shrink: 0;
@@ -1340,7 +1415,7 @@ function injectStyles() {
       display: flex; align-items: center; gap: 5px;
       color: rgba(255,255,255,0.55);
       font-size: 11px; font-family: 'JetBrains Mono', monospace;
-      cursor: pointer; padding: 5px 10px; border-radius: 8px;
+      cursor: pointer; padding: 5px 10px; border-radius: 8px 0 0 8px;
       transition: background 0.15s, color 0.15s;
       max-width: 100%; overflow: hidden;
     }
@@ -1350,15 +1425,16 @@ function injectStyles() {
     }
     .cp-header-rename-btn {
       display: flex; align-items: center; justify-content: center;
-      width: 24px; height: 24px; border-radius: 7px;
-      border: none; background: rgba(255,255,255,0.04);
+      width: 24px; align-self: stretch; border-radius: 0 8px 8px 0;
+      border: none; border-left: 1px solid rgba(255,255,255,0.06);
+      background: rgba(255,255,255,0.03);
       color: rgba(255,255,255,0.4); cursor: pointer;
       transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1); position: relative;
       -webkit-tap-highlight-color: transparent;
       touch-action: manipulation;
       flex-shrink: 0;
     }
-    .cp-header-rename-btn:hover { color: rgba(100,160,255,0.95); background: rgba(100,160,255,0.14); transform: scale(1.05); }
+    .cp-header-rename-btn:hover { color: rgba(100,160,255,0.95); background: rgba(100,160,255,0.14); }
     .cp-header-rename-btn:active { transform: scale(0.92); transition-duration: 0.06s; }
     .cp-header-rename-btn svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
     .cp-project-bar {
@@ -1366,6 +1442,20 @@ function injectStyles() {
       padding: 4px 10px 0;
       flex-shrink: 0;
     }
+    .cp-bar-actions {
+      display: flex; align-items: center; gap: 2px;
+      margin-left: auto;
+    }
+    .cp-bar-action {
+      display: flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px;
+      background: none; border: none; border-radius: 5px;
+      color: rgba(255,255,255,0.3);
+      cursor: pointer; transition: all 0.15s ease;
+      padding: 0;
+    }
+    .cp-bar-action:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.06); }
+    .cp-bar-action:active { transform: scale(0.9); transition-duration: 0.06s; }
     .cp-session-menu {
       display: none; position: absolute;
       top: calc(100% + 2px); left: 8px; right: 8px;
@@ -1375,7 +1465,7 @@ function injectStyles() {
       border: 1px solid rgba(255,255,255,0.08);
       border-radius: 10px; padding: 4px;
       z-index: 310; max-height: 360px; overflow-y: auto;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      box-shadow: var(--shadow-lg);
       scrollbar-width: thin;
       scrollbar-color: rgba(255,255,255,0.06) transparent;
     }
@@ -1466,12 +1556,12 @@ function injectStyles() {
       background: rgba(22, 22, 26, 0.95);
       border-radius: 10px;
       z-index: 2;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.06);
+      box-shadow: var(--shadow-sm), 0 0 0 1px rgba(255,255,255,0.06);
     }
     .cp-gauge {
       flex: 1; height: 16px; border-radius: 6px;
       background: rgba(255,255,255,0.03);
-      display: flex; overflow: hidden;
+      display: flex; overflow: visible;
       position: relative; cursor: default;
       transition: background 0.5s, box-shadow 0.5s;
     }
@@ -1483,32 +1573,34 @@ function injectStyles() {
       transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
       position: relative; border-radius: 2px;
     }
+    .cp-gauge-section:first-of-type { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
+    .cp-gauge-section:last-of-type { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
     .cp-gauge-section[data-cat="cache-read"] { background: rgba(100,140,200,0.45); }
     .cp-gauge-section[data-cat="cache-write"] { background: rgba(150,100,200,0.45); }
     .cp-gauge-section[data-cat="input"] { background: rgba(100,200,150,0.45); }
     .cp-gauge-section[data-cat="output"] { background: rgba(220,170,80,0.45); }
-    .cp-gauge-tip {
-      position: absolute; bottom: calc(100% + 6px); left: 50%;
-      transform: translateX(-50%);
+    #cp-gauge-tooltip {
+      position: fixed;
       background: rgba(8,8,10,0.95); border: 1px solid rgba(255,255,255,0.1);
       border-radius: 4px; padding: 2px 6px;
       font-size: 8.5px; font-family: 'JetBrains Mono', monospace;
       color: rgba(255,255,255,0.6);
       white-space: nowrap; pointer-events: none;
       opacity: 0; transition: opacity 0.15s;
-      z-index: 10;
+      z-index: 999999;
     }
-    .cp-gauge-section:hover .cp-gauge-tip { opacity: 1; }
+    #cp-gauge-tooltip.visible { opacity: 1; }
     .cp-gauge-label {
       position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.35); white-space: nowrap;
+      color: rgba(255,255,255,0.6); white-space: nowrap;
       z-index: 2; pointer-events: none; letter-spacing: 0.3px;
       transition: color 0.5s;
+      text-shadow: 0 0 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.5);
     }
-    .cp-context-bar:has(.cp-gauge[data-urgency="warn"]) .cp-gauge-label { color: rgba(220,200,80,0.5); }
-    .cp-context-bar:has(.cp-gauge[data-urgency="high"]) .cp-gauge-label { color: rgba(220,150,60,0.6); }
-    .cp-context-bar:has(.cp-gauge[data-urgency="critical"]) .cp-gauge-label { color: rgba(220,80,60,0.7); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="warn"]) .cp-gauge-label { color: rgba(220,200,80,0.75); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="high"]) .cp-gauge-label { color: rgba(220,150,60,0.8); }
+    .cp-context-bar:has(.cp-gauge[data-urgency="critical"]) .cp-gauge-label { color: rgba(220,80,60,0.85); }
     .cp-compact-btn {
       background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
       color: rgba(255,255,255,0.35); cursor: pointer;
@@ -1698,6 +1790,127 @@ function injectStyles() {
       transition: color 0.15s;
     }
     .cp-path-chip-x:hover { color: rgba(255,60,60,0.8); }
+
+    /* ── Queue tray ── */
+    .cp-queue-tray {
+      margin: 0 8px 4px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.03);
+      border: 0.5px solid rgba(255,255,255,0.06);
+      overflow: hidden;
+    }
+    .cp-queue-tray[hidden] { display: none; }
+    .cp-queue-header {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .cp-queue-title {
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.5px;
+      color: rgba(255,255,255,0.5);
+      flex: 1;
+    }
+    .cp-queue-count {
+      font-size: 10px; font-weight: 700;
+      color: rgba(120,180,255,0.9);
+      background: rgba(120,180,255,0.12);
+      padding: 1px 6px; border-radius: 8px;
+      min-width: 16px; text-align: center;
+      transition: color 0.2s, background 0.2s;
+    }
+    .cp-queue-count.pulse {
+      animation: cp-queue-pulse 0.4s ease;
+    }
+    @keyframes cp-queue-pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.3); }
+      100% { transform: scale(1); }
+    }
+    .cp-queue-tray.paused .cp-queue-count {
+      color: rgba(255,180,60,0.9);
+      background: rgba(255,180,60,0.12);
+    }
+    .cp-queue-actions { display: flex; gap: 2px; }
+    .cp-queue-actions button {
+      background: none; border: none; color: rgba(255,255,255,0.4);
+      cursor: pointer; padding: 2px 4px; border-radius: 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .cp-queue-actions button:hover {
+      color: rgba(255,255,255,0.8);
+      background: rgba(255,255,255,0.06);
+    }
+    .cp-queue-expand {
+      background: none; border: none; color: rgba(255,255,255,0.3);
+      cursor: pointer; padding: 2px; transition: transform 0.2s;
+    }
+    .cp-queue-tray.expanded .cp-queue-expand { transform: rotate(180deg); }
+    .cp-queue-pause.paused { color: rgba(255,180,60,0.9) !important; }
+
+    /* Queue items container */
+    .cp-queue-items {
+      max-height: 0; overflow: hidden;
+      transition: max-height 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      padding: 0 6px;
+    }
+    .cp-queue-tray.expanded .cp-queue-items {
+      max-height: 200px; overflow-y: auto;
+      padding-bottom: 6px;
+    }
+
+    /* Individual queue item */
+    .cp-queue-item {
+      display: flex; align-items: center; gap: 4px;
+      padding: 4px 6px;
+      margin-top: 3px;
+      background: rgba(255,255,255,0.03);
+      border: 0.5px solid rgba(255,255,255,0.05);
+      border-radius: 6px;
+      font-size: 11px; color: rgba(255,255,255,0.7);
+      cursor: grab;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .cp-queue-item:hover {
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.1);
+    }
+    .cp-queue-item.dragging { opacity: 0.4; background: rgba(120,180,255,0.08); }
+    .cp-queue-item.drag-over { border-color: rgba(120,180,255,0.4); border-style: dashed; }
+    .cp-queue-item.sending {
+      border-color: rgba(120,180,255,0.5);
+      background: rgba(120,180,255,0.08);
+    }
+    .cp-queue-drag {
+      color: rgba(255,255,255,0.2); cursor: grab;
+      font-size: 10px; user-select: none; flex-shrink: 0;
+    }
+    .cp-queue-text {
+      flex: 1; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; min-width: 0;
+    }
+    .cp-queue-text input {
+      width: 100%; background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(120,180,255,0.3);
+      border-radius: 4px; color: #fff; font-size: 11px;
+      padding: 2px 4px; outline: none;
+    }
+    .cp-queue-edit, .cp-queue-remove {
+      background: none; border: none;
+      color: rgba(255,255,255,0.3); cursor: pointer;
+      padding: 1px 3px; border-radius: 3px; flex-shrink: 0;
+      font-size: 10px; transition: color 0.15s;
+    }
+    .cp-queue-edit:hover, .cp-queue-remove:hover { color: rgba(255,255,255,0.8); }
+    .cp-queue-remove:hover { color: rgba(255,100,100,0.9) !important; }
+    .cp-queue-attach-badge {
+      font-size: 9px; color: rgba(120,180,255,0.7); flex-shrink: 0;
+    }
+
+    /* Queue send icon */
+    .cp-send.queue-mode { }
+    .cp-send.queue-mode svg { opacity: 0.9; }
   `;
   document.head.appendChild(style);
 }
@@ -1738,6 +1951,52 @@ function ddPopulate(dd, items, selectedValue) {
 }
 function ddGetValue(dd) { return dd?._value || ''; }
 
+// ── Model dropdown with default-model support ──
+function ddPopulateModels(dd, items, selectedValue) {
+  const menu = dd.querySelector('.cp-dd-menu');
+  menu.innerHTML = '';
+  const defModel = _getDefaultModel();
+  for (const item of items) {
+    const el = document.createElement('div');
+    el.className = 'cp-dd-item cp-dd-model-item' + (item.value === selectedValue ? ' selected' : '');
+    const label = document.createElement('span');
+    label.className = 'cp-dd-model-label';
+    label.textContent = item.label;
+    el.appendChild(label);
+    const star = document.createElement('span');
+    star.className = 'cp-dd-model-star' + (item.value === defModel ? ' is-default' : '');
+    star.innerHTML = '&#9733;';
+    star.title = item.value === defModel ? 'Default model' : 'Set as default';
+    star.addEventListener('click', (e) => {
+      e.stopPropagation();
+      storage.setItem(STOR.defaultModel, item.value);
+      // Update all stars in this menu
+      menu.querySelectorAll('.cp-dd-model-star').forEach(s => {
+        s.classList.remove('is-default');
+        s.title = 'Set as default';
+      });
+      star.classList.add('is-default');
+      star.title = 'Default model';
+    });
+    el.appendChild(star);
+    el.dataset.value = item.value;
+    el.addEventListener('click', () => {
+      dd._value = item.value;
+      dd.querySelector('.cp-dd-label').textContent = item.label;
+      dd.classList.add('has-value');
+      dd.classList.remove('open');
+      menu.querySelectorAll('.cp-dd-item').forEach(i => i.classList.remove('selected'));
+      el.classList.add('selected');
+      dd.dispatchEvent(new Event('change'));
+    });
+    menu.appendChild(el);
+  }
+  if (selectedValue) {
+    const match = items.find(i => i.value === selectedValue);
+    if (match) { dd.querySelector('.cp-dd-label').textContent = match.label; dd.classList.add('has-value'); dd._value = selectedValue; }
+  }
+}
+
 // ── Model helpers (composite value = "modelId:contextWindow") ──
 function _getModelId() {
   const $model = _panel?.querySelector('#cp-model');
@@ -1749,6 +2008,11 @@ function _getContextWindow() {
   const raw = ddGetValue($model);
   const parts = raw.split(':');
   return parts[1] ? parseInt(parts[1], 10) : 200000;
+}
+
+// ── Default model helper ──
+function _getDefaultModel() {
+  return storage.getItem(STOR.defaultModel) || '';
 }
 
 // ── Think intensity helpers ──
@@ -1779,10 +2043,17 @@ document.addEventListener('click', (e) => {
 // ── Tab lifecycle ──
 function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } = {}) {
   if (_tabs.length >= MAX_TABS) return null;
+  // Capture current dropdown state for the new tab's project/model/effort
+  const _$proj = _panel?.querySelector('#cp-project');
+  const _$mod = _panel?.querySelector('#cp-model');
+  const _$think = _panel?.querySelector('#cp-think-toggle');
   const tab = {
     id: crypto.randomUUID(),
     sessionId,
     label,
+    project: ddGetValue(_$proj) || '',       // per-tab project isolation
+    model: _getDefaultModel(),                  // per-tab model — defaults to user's preferred model
+    effort: _$think?.dataset.effort || 'off', // per-tab effort isolation
     ws: null,
     reconnectTimer: null,
     running: false,
@@ -1799,6 +2070,7 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } =
     pillEl: null,
     draft: '',
     usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 0, // 0 = use dropdown fallback; set from result.modelUsage or session history
     compacting: false,
     turns: 0,
     thinkStartedAt: null,
@@ -1808,6 +2080,9 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } =
     _permQueue: [],
     _activePerm: false,
     _msgBuffer: [],
+    queue: [],
+    queuePaused: false,
+    queueExpanded: false,
   };
   // Create messages div
   const container = _panel.querySelector('#cp-messages-container');
@@ -1884,10 +2159,10 @@ function switchTab(idx) {
       $input.disabled = false;
       _updateSendIcon($send, $input);
     } else {
-      $send.classList.remove('abort'); $send.classList.remove('btw');
+      $send.classList.remove('abort'); $send.classList.remove('btw'); $send.classList.remove('queue-mode');
       $send.innerHTML = _ICON_SEND;
       $input.disabled = false;
-      $send.disabled = !$input.value.trim() && !tab.attachedImages.length;
+      $send.disabled = !$input.value.trim() && !tab.attachedImages.length && !tab.attachedFiles.length;
     }
   }
   // Scroll
@@ -1903,12 +2178,32 @@ function switchTab(idx) {
       else addFilePreview(f.name, i);
     });
   }
+  // Restore per-tab project/model/effort dropdowns (session isolation)
+  const $project = _panel?.querySelector('#cp-project');
+  const $model = _panel?.querySelector('#cp-model');
+  const $think = _panel?.querySelector('#cp-think-toggle');
+  if ($project && tab.project) {
+    const items = _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() }));
+    ddPopulate($project, items, tab.project);
+    loadBranches(tab.project);
+  } else if ($project && !tab.project) {
+    const items = _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() }));
+    ddPopulate($project, items, '');
+  }
+  if ($model) {
+    const items = _models.map(m => ({ value: `${m.id}:${m.contextWindow || 200000}`, label: m.label }));
+    const modelVal = tab.model || _getDefaultModel();
+    ddPopulateModels($model, items, modelVal);
+    if (modelVal && !tab.model) { tab.model = modelVal; saveTabs(); }
+  }
+  if ($think && tab.effort) _setEffort($think, tab.effort);
   // Sync plan toggle
   const $plan = _panel?.querySelector('#cp-plan-toggle');
   if ($plan) $plan.classList.toggle('active', tab.planMode);
   // Sync context gauge
   renderGauge(tab);
   renderPills();
+  renderQueue(tab);
   saveTabs();
 }
 
@@ -1917,7 +2212,7 @@ function closeTab(idx) {
   const tab = _tabs[idx];
   tab.closed = true;
   clearTimeout(tab.reconnectTimer);
-  finishTab(tab);
+  finishTab(tab, true);
   if (tab.ws) tab.ws.close();
   // Release session lock
   if (tab.sessionId) _releaseSessionLock(tab.sessionId);
@@ -2005,7 +2300,7 @@ function updatePillRunning(tab) {
 function saveTabs() {
   try {
     storage.setItem(STOR.tabs, JSON.stringify({
-      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false })),
+      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, queue: t.queue || [], queuePaused: t.queuePaused || false })),
       activeIdx: _activeTabIdx,
     }));
     _updateWindowRegistry();
@@ -2053,6 +2348,12 @@ function restoreTabs() {
           const t = createTab(saved.sessionId, saved.label, { autoSwitch: false });
           if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
           if (t && saved.running) t._wasRunning = true; // trigger reattach on WS open
+          if (t && saved.project) t.project = saved.project;
+          if (t) t.model = saved.model || _getDefaultModel();
+          if (t && saved.effort) t.effort = saved.effort;
+          if (t && saved.planMode) t.planMode = true;
+          if (t && saved.queue?.length) t.queue = saved.queue;
+          if (t && saved.queuePaused) t.queuePaused = true;
         }
         switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
         return;
@@ -2069,6 +2370,9 @@ function restoreTabs() {
           const t = createTab(saved.sessionId, saved.label, { autoSwitch: false });
           if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
           if (t && saved.running) t._wasRunning = true;
+          if (t && saved.project) t.project = saved.project;
+          if (t) t.model = saved.model || _getDefaultModel();
+          if (t && saved.effort) t.effort = saved.effort;
         }
         switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
         // Don't remove legacy key — other windows may still need it during rollout
@@ -2155,8 +2459,9 @@ window.addEventListener('focus', () => {
   // If tab says it's running but WS is dead, force finish
   if (tab.running && (!tab.ws || tab.ws.readyState > WebSocket.OPEN)) {
     console.warn('[claude-panel] Focus re-sync: tab running but WS dead — forcing finish');
-    finishTab(tab);
+    finishTab(tab, true);
     appendStatus(tab, 'Connection lost — session recovered.');
+    notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code', { tabId: tab.id });
   }
   // Re-sync input disabled state with current tab
   const $input = _panel?.querySelector('#cp-input');
@@ -2166,7 +2471,7 @@ window.addEventListener('focus', () => {
     if (!tab.running) {
       $send.classList.remove('abort');
       $send.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M12 5l7 7-7 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
-      $send.disabled = !$input.value.trim() && !tab.attachedImages.length;
+      $send.disabled = !$input.value.trim() && !tab.attachedImages.length && !tab.attachedFiles.length;
     }
   }
 });
@@ -2235,11 +2540,13 @@ async function renderSessionMenu() {
         const sid = el.dataset.sid;
         const label = el.querySelector('.cp-sess-prompt')?.textContent || 'Resumed';
         selectSession(sid, label);
-        // Update cwd to match the session's project
+        // Update cwd to match the session's project (per-tab)
         const $project = _panel?.querySelector('#cp-project');
         if ($project && el.dataset.cwd) {
           ddPopulate($project, _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() })), el.dataset.cwd);
           storage.setItem(STOR.project, el.dataset.cwd);
+          const tab = activeTab();
+          if (tab) { tab.project = el.dataset.cwd; saveTabs(); }
         }
         menu.classList.remove('open');
       });
@@ -2257,6 +2564,10 @@ async function renderSessionMenu() {
         input.type = 'text'; input.value = currentName;
         input.className = 'cp-rename-input';
         input.placeholder = 'Session name...';
+        // Prevent clicks on input from bubbling to session item (which selects session)
+        input.addEventListener('click', (e) => e.stopPropagation());
+        input.addEventListener('mousedown', (e) => e.stopPropagation());
+        input.addEventListener('dblclick', (e) => e.stopPropagation());
         promptEl.textContent = '';
         promptEl.appendChild(input);
         btn.style.display = 'none';
@@ -2326,6 +2637,7 @@ async function selectSession(sid, label) {
   tab.currentMsgId = null;
   tab.label = label || 'New chat';
   tab.usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 };
+  tab.contextWindow = 0;
   tab.compacting = false;
   _setCompactingUI(false);
   tab.turns = 0;
@@ -2350,7 +2662,6 @@ async function selectSession(sid, label) {
 }
 
 function renameSession(sid, currentLabel) {
-  if (!sid) return;
   const btn = _panel?.querySelector('.cp-session-label');
   if (!btn) return;
 
@@ -2367,6 +2678,10 @@ function renameSession(sid, currentLabel) {
   input.value = currentLabel || '';
   input.className = 'cp-rename-input';
   input.placeholder = 'Session name...';
+  // Prevent clicks on input from bubbling to session button (which toggles menu)
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('mousedown', (e) => e.stopPropagation());
+  input.addEventListener('dblclick', (e) => e.stopPropagation());
   btn.textContent = '';
   btn.appendChild(input);
   input.focus();
@@ -2378,15 +2693,16 @@ function renameSession(sid, currentLabel) {
     committed = true;
     const val = input.value.trim();
     input.remove();
+    const tab = activeTab();
+    const effectiveSid = sid || tab?.sessionId;
     if (val) {
-      storage.setItem(LABEL_PREFIX + sid, val);
+      if (effectiveSid) storage.setItem(LABEL_PREFIX + effectiveSid, val);
       btn.textContent = val;
     } else {
-      storage.removeItem(LABEL_PREFIX + sid);
-      btn.textContent = getLabel(sid) || sid.slice(0, 8) + '...';
+      if (effectiveSid) storage.removeItem(LABEL_PREFIX + effectiveSid);
+      btn.textContent = effectiveSid ? (getLabel(effectiveSid) || effectiveSid.slice(0, 8) + '...') : 'New chat';
     }
-    const tab = activeTab();
-    if (tab && tab.sessionId === sid) {
+    if (tab) {
       tab.label = btn.textContent;
       updatePillLabel(tab);
       saveTabs();
@@ -2425,6 +2741,7 @@ async function loadSessionHistory(sid, $msgs) {
         const wrap = document.createElement('div'); wrap.className = 'msg-content';
         if (m.text) {
           const body = document.createElement('div'); body.className = 'msg-body';
+          body._rawMd = m.text;
           body.innerHTML = md(m.text);
           linkifyFilePaths(body);
           wrap.appendChild(body);
@@ -2432,7 +2749,7 @@ async function loadSessionHistory(sid, $msgs) {
         if (m.tools?.length) {
           for (const t of m.tools) {
             if (typeof t === 'object' && t.name) {
-              wrap.appendChild(buildTool(t));
+              wrap.appendChild(buildTool(t, activeTab()));
             } else {
               // Legacy: tool name string only
               const tName = String(t);
@@ -2465,6 +2782,7 @@ async function loadSessionHistory(sid, $msgs) {
         }
       }
     }
+    pruneMessages($msgs);
     if (data.total > data.messages.length) {
       const note = document.createElement('div'); note.className = 'msg-status';
       note.textContent = `Showing last ${data.messages.length} of ${data.total} messages`;
@@ -2477,6 +2795,7 @@ async function loadSessionHistory(sid, $msgs) {
       tab.usage.outputTokens = data.usage.output_tokens || 0;
       tab.usage.cacheRead = data.usage.cache_read_input_tokens || 0;
       tab.usage.cacheWrite = data.usage.cache_creation_input_tokens || 0;
+      if (data.contextWindow) tab.contextWindow = data.contextWindow;
       tab.turns = data.turns || 0;
       renderGauge(tab);
     }
@@ -2556,6 +2875,9 @@ function _updateCostLabel() {
   $cost.textContent = `$${sc.toFixed(2)}`;
   const monthLabel = new Date().toLocaleString('en', { month: 'short' });
   $cost.title = `Session cost · ${monthLabel} total: $${_totalCost.toFixed(2)}`;
+  // Sync navbar cost label directly
+  const navLabel = document.querySelector('#titlebar-cost-btn .bar-cost-label');
+  if (navLabel) navLabel.textContent = '$' + sc.toFixed(2);
 }
 
 // ── Context gauge ──
@@ -2585,22 +2907,22 @@ function renderGauge(tab) {
   const cacheWrite = u.cacheWrite || 0;
   const uncachedInput = u.inputTokens || 0;
   const total = uncachedInput + cacheRead + cacheWrite;
-  const ctxWindow = _getContextWindow();
+  const ctxWindow = tab.contextWindow || _getContextWindow();
   const fmt = (v) => v >= 1000000 ? (v / 1000000).toFixed(v % 1000000 === 0 ? 0 : 1) + 'M' : v >= 1000 ? (v / 1000).toFixed(1) + 'K' : String(v);
 
   if (total === 0) {
     // Animate existing sections to 0 width before removing
     const existing = $gauge.querySelectorAll('.cp-gauge-section');
     if (existing.length) {
-      existing.forEach(el => { el.style.width = '0%'; el.querySelector('.cp-gauge-tip')?.remove(); });
-      setTimeout(() => { $gauge.innerHTML = ''; }, 450);
+      existing.forEach(el => { el.style.width = '0%'; });
+      setTimeout(() => { existing.forEach(el => el.remove()); }, 450);
     }
     $gauge.dataset.urgency = '';
     if ($label) { $label.textContent = ''; $label.title = ''; }
     return;
   }
 
-  const pct = (v) => Math.max(0, (v / ctxWindow) * 100).toFixed(2) + '%';
+  const pct = (v) => { const p = (v / ctxWindow) * 100; return (p > 0 ? Math.max(0.5, p) : 0).toFixed(2) + '%'; };
   const CATS = ['cache-read', 'cache-write', 'input'];
   const data = {
     'cache-read': { val: cacheRead, label: `Cached: ${fmt(cacheRead)} tokens` },
@@ -2617,7 +2939,7 @@ function renderGauge(tab) {
         el = document.createElement('div');
         el.className = 'cp-gauge-section';
         el.dataset.cat = cat;
-        el.innerHTML = `<div class="cp-gauge-tip"></div>`;
+        el.innerHTML = '';
         // Insert in order: find the next sibling that should come after this cat
         const catIdx = CATS.indexOf(cat);
         let inserted = false;
@@ -2631,14 +2953,41 @@ function renderGauge(tab) {
         el.offsetWidth; // force reflow
       }
       el.style.width = pct(d.val);
-      const tip = el.querySelector('.cp-gauge-tip');
-      if (tip) tip.textContent = d.label;
+      el.dataset.tipLabel = d.label;
     } else if (el) {
       // Animate to 0 then remove
       el.style.width = '0%';
       el.addEventListener('transitionend', () => el.remove(), { once: true });
     }
   }
+
+  // Shared tooltip on document.body (escapes panel overflow:hidden + backdrop-filter)
+  let $tip = document.getElementById('cp-gauge-tooltip');
+  if (!$tip) {
+    $tip = document.createElement('div');
+    $tip.id = 'cp-gauge-tooltip';
+    document.body.appendChild($tip);
+  }
+  $gauge.querySelectorAll('.cp-gauge-section').forEach(sec => {
+    if (sec._tipWired) return;
+    sec._tipWired = true;
+    sec.addEventListener('mouseenter', () => {
+      const label = sec.dataset.tipLabel;
+      if (!label) return;
+      const t = document.getElementById('cp-gauge-tooltip');
+      if (!t) return;
+      const r = sec.getBoundingClientRect();
+      t.textContent = label;
+      t.style.left = (r.left + r.width / 2) + 'px';
+      t.style.top = (r.top - 6) + 'px';
+      t.style.transform = 'translate(-50%, -100%)';
+      t.classList.add('visible');
+    });
+    sec.addEventListener('mouseleave', () => {
+      const t = document.getElementById('cp-gauge-tooltip');
+      if (t) t.classList.remove('visible');
+    });
+  });
 
   const pctUsed = Math.round((total / ctxWindow) * 100);
   $gauge.dataset.urgency = pctUsed < 50 ? '' : pctUsed < 75 ? 'warn' : pctUsed < 90 ? 'high' : 'critical';
@@ -2665,7 +3014,11 @@ function _isTextFile(name) {
 
 function buildPromptWithAttachments(tab, userText) {
   if (!tab.attachedFiles.length) return userText;
-  let prompt = '';
+  const fileCount = tab.attachedFiles.length;
+  const header = fileCount === 1
+    ? `The user attached a file (${tab.attachedFiles[0].path || tab.attachedFiles[0].name}). Its content is provided below.\n\n`
+    : `The user attached ${fileCount} files. Their contents are provided below.\n\n`;
+  let prompt = header;
   for (const f of tab.attachedFiles) {
     const pathAttr = f.path || f.name;
     prompt += `<file path="${pathAttr}">\n${f.content}\n</file>\n\n`;
@@ -2673,7 +3026,7 @@ function buildPromptWithAttachments(tab, userText) {
   prompt += userText;
   tab.attachedFiles = [];
   updateAttachBadge();
-  _panel?.querySelectorAll('.cp-file-chip').forEach(c => c.remove());
+  _panel?.querySelectorAll('.cp-file-chip, .cp-path-chip').forEach(c => c.remove());
   return prompt;
 }
 
@@ -2702,7 +3055,7 @@ function handleTabMsg(tab, msg) {
   // Buffer only terminal messages while a permission prompt is active
   // Allow event messages through so streaming content remains visible
   if (tab._activePerm && msg.type !== 'control_request' && msg.type !== 'event') {
-    tab._msgBuffer.push(msg);
+    if (tab._msgBuffer.length < 500) tab._msgBuffer.push(msg);
     return;
   }
   _processTabMsg(tab, msg);
@@ -2731,7 +3084,7 @@ function _processTabMsg(tab, msg) {
       } else {
         // No orphan found — process died during refresh, clear running state
         console.log('[claude-panel] No orphan to reattach — session idle');
-        finishTab(tab);
+        finishTab(tab, true);
         saveTabs();
       }
       break;
@@ -2739,12 +3092,28 @@ function _processTabMsg(tab, msg) {
     case 'control_request': handleControlRequest(tab, msg); break;
     case 'stderr': if (msg.text?.trim()) appendStatus(tab, msg.text.trim()); break;
     case 'done':
-      finishTab(tab);
+      finishTab(tab, !tab.running);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
-      if (tab.planMode) renderPostPlanActions(tab);
+      // Fallback plan completion: --print mode doesn't emit tool_result for built-in tools,
+      // so updateToolResult never fires for ExitPlanMode. renderAssistant sets _exitPlanPending
+      // when it sees the ExitPlanMode tool_use block. Render post-plan actions here if
+      // updateToolResult didn't already handle it (no spurious cards — flag is only set
+      // when ExitPlanMode is actually in the response).
+      if (tab._exitPlanPending && !tab._exitPlanHandled) {
+        tab._exitPlanHandled = true;
+        tab._exitPlanPending = false;
+        renderPostPlanActions(tab);
+      }
+      // Queue: auto-advance to next message
+      if (tab.queue.length > 0 && !tab.queuePaused) {
+        setTimeout(() => advanceQueue(tab), 300);
+      } else if (tab.queue.length === 0 && tab._queueWasActive) {
+        tab._queueWasActive = false;
+        appendStatus(tab, 'Queue complete');
+      }
       break;
     case 'aborted':
-      finishTab(tab);
+      finishTab(tab, !!tab._btwPending);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       // /btw: if there's a pending message, send it immediately instead of showing "Aborted"
       if (tab._btwPending) {
@@ -2753,8 +3122,10 @@ function _processTabMsg(tab, msg) {
         const $project = _panel?.querySelector('#cp-project');
         const $model = _panel?.querySelector('#cp-model');
         tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
-        let prompt = btw.text;
-        if (tab.planMode && prompt) prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes]\n\n${prompt}`;
+        // Restore files from btw snapshot so buildPromptWithAttachments can process them
+        if (btw.files) tab.attachedFiles = btw.files;
+        let prompt = buildPromptWithAttachments(tab, btw.text);
+        if (tab.planMode && prompt) prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\n${prompt}`;
         const btwMsg = {
           type: 'query', prompt,
           cwd: ddGetValue($project) || undefined,
@@ -2773,12 +3144,17 @@ function _processTabMsg(tab, msg) {
         tab.ws.send(JSON.stringify(btwMsg));
       } else {
         appendStatus(tab, 'Aborted.');
+        // Queue: advance after abort if no /btw pending
+        if (tab.queue.length > 0 && !tab.queuePaused) {
+          setTimeout(() => advanceQueue(tab), 300);
+        }
       }
       break;
     case 'error':
-      finishTab(tab);
+      finishTab(tab, true);
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       appendError(tab, msg.message);
+      notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code', { tabId: tab.id });
       break;
   }
 }
@@ -2807,6 +3183,23 @@ function handleTabEvent(tab, ev) {
     // Update existing compact status instead of appending a new line
     const el = tab.messagesEl?.querySelector('.msg-compact-status');
     if (el) el.textContent = 'Context compacted';
+    return;
+  }
+  if (ev.type === 'system' && ev.subtype === 'compact_detected') {
+    // Auto-compact detected via token count drop — show status + clear compacting UI
+    tab.compacting = false;
+    if (tab === activeTab()) _setCompactingUI(false);
+    const $msgs = tab.messagesEl;
+    if ($msgs) {
+      let el = $msgs.querySelector('.msg-compact-status');
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'msg-status msg-compact-status';
+        $msgs.appendChild(el);
+      }
+      el.textContent = ev.message || 'Context auto-compacted';
+    }
+    if (tab === activeTab()) scrollEnd();
     return;
   }
   if (ev.type === 'system' && ev.subtype === 'session_reset') {
@@ -2845,10 +3238,10 @@ function handleTabEvent(tab, ev) {
   if (ev.type === 'assistant' && ev.message) {
     if (ev.message.usage) {
       const u = ev.message.usage;
-      tab.usage.inputTokens = u.input_tokens ?? 0;
-      tab.usage.outputTokens = u.output_tokens ?? 0;
-      tab.usage.cacheRead = u.cache_read_input_tokens ?? 0;
-      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? 0;
+      tab.usage.inputTokens = u.input_tokens ?? tab.usage.inputTokens;
+      tab.usage.outputTokens = u.output_tokens ?? tab.usage.outputTokens;
+      tab.usage.cacheRead = u.cache_read_input_tokens ?? tab.usage.cacheRead;
+      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? tab.usage.cacheWrite;
       if (tab.compacting) {
         tab.compacting = false;
         if (tab === activeTab()) _setCompactingUI(false);
@@ -2871,23 +3264,41 @@ function handleTabEvent(tab, ev) {
     return;
   }
   if (ev.type === 'result') {
+    const isError = (ev.subtype === 'error_during_execution' || ev.subtype === 'error') && (ev.error || ev.result);
     // Display error for error_during_execution results
-    if ((ev.subtype === 'error_during_execution' || ev.subtype === 'error') && (ev.error || ev.result)) {
+    if (isError) {
       appendError(tab, ev.error || ev.result);
     }
-    finishTab(tab);
+    // Plan completion: check BEFORE finishTab clears flags. --print mode emits result
+    // event (not done message) as the terminal event, so this is the primary handler.
+    if (tab._exitPlanPending && !tab._exitPlanHandled) {
+      tab._exitPlanHandled = true;
+      tab._exitPlanPending = false;
+      renderPostPlanActions(tab);
+    }
+    finishTab(tab, true);
+    if (isError) notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code', { tabId: tab.id });
+    else notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code', { tabId: tab.id });
     tab.turns++;
+    // NOTE: result.usage is CUMULATIVE across all API calls in this CLI process,
+    // not the current context window state. Do NOT update tab.usage from it —
+    // the gauge already gets correct per-turn values from assistant/message_start events.
     if (ev.usage) {
-      const u = ev.usage;
-      tab.usage.inputTokens = u.input_tokens ?? tab.usage.inputTokens;
-      tab.usage.outputTokens = u.output_tokens ?? tab.usage.outputTokens;
-      tab.usage.cacheRead = u.cache_read_input_tokens ?? tab.usage.cacheRead;
-      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? tab.usage.cacheWrite;
       if (tab.compacting) {
         tab.compacting = false;
         if (tab === activeTab()) _setCompactingUI(false);
       }
-      if (tab === activeTab()) renderGauge(tab);
+    }
+    // Extract actual context window from modelUsage (CLI reports the real value)
+    if (ev.modelUsage) {
+      const modelKey = Object.keys(ev.modelUsage)[0];
+      if (modelKey) {
+        const cw = ev.modelUsage[modelKey].contextWindow;
+        if (cw && cw > 0) {
+          tab.contextWindow = cw;
+          if (tab === activeTab()) renderGauge(tab);
+        }
+      }
     }
     if (ev.total_cost_usd != null) {
       const prevCost = tab.sessionCost;
@@ -2899,7 +3310,7 @@ function handleTabEvent(tab, ev) {
         const $cost = _panel?.querySelector('#cp-cost');
         if ($cost) { $cost.classList.add('flash'); setTimeout(() => $cost.classList.remove('flash'), 800); }
       }
-      emit('cost:updated', { amount: delta > 0 ? delta : 0, total: _totalCost });
+      emit('cost:updated', { amount: delta > 0 ? delta : 0, total: _totalCost, sessionCost: tab.sessionCost });
       saveTabs();
     }
     if (ev.session_id) { tab.sessionId = ev.session_id; saveTabs(); }
@@ -2918,6 +3329,24 @@ function handleStreamDelta(tab, apiEvent) {
     const msgId = apiEvent.message?.id || null;
     tab._stream = { el: null, textBuf: '', thinkBuf: '', bodyEl: null, thinkEl: null, blockIdx: -1, blockType: null, mdTimer: null, msgId };
     hideThinking(tab);
+    // Extract usage from message_start for real-time gauge updates during streaming
+    if (apiEvent.message?.usage) {
+      const u = apiEvent.message.usage;
+      tab.usage.inputTokens = u.input_tokens ?? tab.usage.inputTokens;
+      tab.usage.outputTokens = u.output_tokens ?? tab.usage.outputTokens;
+      tab.usage.cacheRead = u.cache_read_input_tokens ?? tab.usage.cacheRead;
+      tab.usage.cacheWrite = u.cache_creation_input_tokens ?? tab.usage.cacheWrite;
+      if (tab === activeTab()) renderGauge(tab);
+    }
+    return;
+  }
+
+  if (evType === 'message_delta') {
+    // Extract cumulative output tokens from message_delta for real-time gauge
+    if (apiEvent.usage?.output_tokens) {
+      tab.usage.outputTokens = apiEvent.usage.output_tokens;
+      if (tab === activeTab()) renderGauge(tab);
+    }
     return;
   }
 
@@ -2925,6 +3354,7 @@ function handleStreamDelta(tab, apiEvent) {
     // Finalize: flush any pending markdown render
     if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer);
     if (tab._stream?.bodyEl && tab._stream.textBuf) {
+      tab._stream.bodyEl._rawMd = tab._stream.textBuf;
       tab._stream.bodyEl.innerHTML = md(tab._stream.textBuf);
       linkifyFilePaths(tab._stream.bodyEl);
     }
@@ -2949,6 +3379,7 @@ function handleStreamDelta(tab, apiEvent) {
       wrap.className = 'msg-content';
       el.appendChild(wrap);
       $msgs.appendChild(el);
+      pruneMessages($msgs);
       tab._stream.el = el;
       // Wire this as the current message so renderAssistant dedup finds it
       if (tab._stream.msgId) { tab.currentMsgId = tab._stream.msgId; tab.currentMsgEl = el; }
@@ -3011,6 +3442,7 @@ function handleStreamDelta(tab, apiEvent) {
       tab._stream.mdTimer = null;
     }
     if (tab._stream.bodyEl && tab._stream.textBuf) {
+      tab._stream.bodyEl._rawMd = tab._stream.textBuf;
       tab._stream.bodyEl.innerHTML = md(tab._stream.textBuf);
       linkifyFilePaths(tab._stream.bodyEl);
     }
@@ -3020,7 +3452,7 @@ function handleStreamDelta(tab, apiEvent) {
   }
 }
 
-function renderPostPlanActions(tab) {
+function renderPostPlanActions(tab, headerText) {
   const $msgs = tab.messagesEl;
   if (!$msgs) return;
   // Remove any existing post-plan cards
@@ -3041,7 +3473,7 @@ function renderPostPlanActions(tab) {
 
   const hdr = document.createElement('div');
   hdr.className = 'post-plan-header';
-  hdr.textContent = 'PLAN COMPLETE';
+  hdr.textContent = headerText || 'PLAN COMPLETE';
   card.appendChild(hdr);
 
   const actionsRow = document.createElement('div');
@@ -3060,22 +3492,67 @@ function renderPostPlanActions(tab) {
       card.style.opacity = '0.45';
       card.style.pointerEvents = 'none';
       if (a.action === 'compact') {
+        // Guard: cannot compact while running
+        if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); card.style.opacity = '1'; card.style.pointerEvents = 'auto'; return; }
         if (tab.ws?.readyState === WebSocket.OPEN) {
+          tab.compacting = true;
+          if (tab === activeTab()) _setCompactingUI(true);
           tab.ws.send(JSON.stringify({ type: 'compact' }));
           appendStatus(tab, 'Compacting context...');
+        } else {
+          appendStatus(tab, 'Connection lost — cannot compact. Try refreshing.');
+          card.style.opacity = '1'; card.style.pointerEvents = 'auto';
         }
       } else if (a.action === 'plan') {
-        tab.planMode = true;
-        const $plan = _panel?.querySelector('#cp-plan-toggle');
-        if ($plan) $plan.classList.add('active');
-        appendStatus(tab, 'Plan mode ON — Claude will plan without making changes');
+        // Open plan file in SynaBun code editor for direct editing
+        // If tab doesn't have planFilePath (plan was text-only, no Write to ~/.claude/plans/),
+        // fall back to scanning plans dir for the most recently modified file
+        const openPlan = (path) => emit('open-plan-editor', { filePath: path, tabId: tab.id });
+        const noFile = () => { appendStatus(tab, 'No plan file found — send your edits in chat instead.'); card.style.opacity = '1'; card.style.pointerEvents = 'auto'; };
+        if (tab.planFilePath) {
+          openPlan(tab.planFilePath);
+        } else {
+          // Fallback chain: scan disk → materialize from DOM → error
+          fetch('/api/latest-plan').then(r => r.json()).then(data => {
+            if (data.found) {
+              tab.planFilePath = data.path;
+              openPlan(data.path);
+            } else {
+              // No file on disk — try to extract plan text from conversation and create one
+              const planText = extractPlanText(tab);
+              if (!planText) { noFile(); return; }
+              fetch('/api/create-plan', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content: planText }),
+              }).then(r => r.json()).then(result => {
+                if (result.ok) {
+                  tab.planFilePath = result.path;
+                  openPlan(result.path);
+                } else { noFile(); }
+              }).catch(noFile);
+            }
+          }).catch(noFile);
+          return; // async — don't fall through
+        }
       } else if (a.prompt) {
         // Exit plan mode before sending implementation prompt
         tab.planMode = false;
         const $plan = _panel?.querySelector('#cp-plan-toggle');
         if ($plan) $plan.classList.remove('active');
+        if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) {
+          appendStatus(tab, 'Connection lost — cannot send. Try refreshing.');
+          card.style.opacity = '1'; card.style.pointerEvents = 'auto';
+          return;
+        }
+        // Include full edited plan content if user edited before implementing
+        let finalPrompt = a.prompt;
+        if (tab._editedPlanContent) {
+          finalPrompt = `The user has reviewed and approved this updated plan:\n\n${tab._editedPlanContent}\n\nProceed with implementation.`;
+          delete tab._editedPlanContent;
+        }
         const $input = _panel?.querySelector('#cp-input');
-        if ($input) { $input.value = a.prompt; send(); }
+        if ($input) { $input.value = finalPrompt; send(); }
       }
     });
     actionsRow.appendChild(btn);
@@ -3101,16 +3578,32 @@ function renderAssistant(tab, msg) {
   const askTools = tools.filter(t => t.name === 'AskUserQuestion');
   const regularTools = tools.filter(t => t.name !== 'AskUserQuestion');
 
-  // Detect ExitPlanMode — auto-toggle plan mode off and show post-plan actions immediately
-  if (tools.some(t => t.name === 'ExitPlanMode')) {
+  // Skip render if only content is AskUserQuestion tools already rendered via control_request
+  // — prevents an empty AI avatar appearing below the interactive question card
+  const msgId = msg.id || null;
+  if (!texts.length && !thinks.length && !regularTools.length && tab.askRenderedViaControl) {
+    if (msgId && tab.currentMsgId === msgId && tab.currentMsgEl) {
+      tab.currentMsgEl.remove();
+      tab.currentMsgId = null;
+      tab.currentMsgEl = null;
+    }
+    return;
+  }
+
+  // ExitPlanMode detection: --print mode doesn't emit tool_result events for
+  // built-in tools, so updateToolResult() never fires. Detect ExitPlanMode here
+  // when the tool_use block appears, set a flag, and let the done handler render
+  // post-plan actions. updateToolResult still handles it if tool_result ever fires.
+  if (tab.planMode && tools.some(t => t.name === 'ExitPlanMode') && !tab._exitPlanHandled) {
+    tab._exitPlanWasPlanMode = true;
+    tab._exitPlanPending = true;
     tab.planMode = false;
     const $plan = _panel?.querySelector('#cp-plan-toggle');
     if ($plan) $plan.classList.remove('active');
-    renderPostPlanActions(tab);
+    saveTabs();
   }
 
   // Partial message dedup
-  const msgId = msg.id || null;
   if (msgId && msgId === tab.currentMsgId && tab.currentMsgEl) {
     const wrap = tab.currentMsgEl.querySelector('.msg-content');
     if (wrap) {
@@ -3148,7 +3641,7 @@ function renderAssistant(tab, msg) {
       }
       const existingToolIds = new Set([...wrap.querySelectorAll('.tool-card, .plan-card')].map(c => c.dataset.toolId));
       for (const t of regularTools) {
-        if (!existingToolIds.has(t.id || '')) wrap.appendChild(buildTool(t));
+        if (!existingToolIds.has(t.id || '')) wrap.appendChild(buildTool(t, tab));
       }
       const existingAskIds = new Set([...wrap.querySelectorAll('.ask-card')].map(c => c.dataset.toolId));
       for (const t of askTools) {
@@ -3183,14 +3676,17 @@ function renderAssistant(tab, msg) {
   if (texts.length) {
     const body = document.createElement('div');
     body.className = 'msg-body';
-    body.innerHTML = md(texts.map(b => b.text).join('\n'));
+    const rawMd = texts.map(b => b.text).join('\n');
+    body._rawMd = rawMd;
+    body.innerHTML = md(rawMd);
     linkifyFilePaths(body);
     wrap.appendChild(body);
   }
-  for (const t of regularTools) wrap.appendChild(buildTool(t));
+  for (const t of regularTools) wrap.appendChild(buildTool(t, tab));
   for (const t of askTools) wrap.appendChild(buildAskFromToolUse(tab, t));
   el.appendChild(wrap);
   $msgs.appendChild(el);
+  pruneMessages($msgs);
 
   if (msgId) { tab.currentMsgId = msgId; tab.currentMsgEl = el; }
   if (tab === activeTab()) scrollEnd();
@@ -3215,6 +3711,7 @@ function buildAskFromToolUse(tab, block) {
   const questions = Array.isArray(input.questions) ? input.questions
     : (input.question || input.text || input.options) ? [input]
     : [input];
+  const allQuestions = input.questions || questions;
   const container = document.createElement('div');
   container.className = 'ask-card';
   container.dataset.toolId = toolUseId;
@@ -3228,8 +3725,26 @@ function buildAskFromToolUse(tab, block) {
     container.appendChild(bgLogo);
   }
 
+  // Batched answer collection
+  const pendingAnswers = {};
+  const totalQuestions = questions.length;
+  const submitBar = document.createElement('div');
+  submitBar.className = 'ask-submit-bar';
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'ask-submit';
+  submitBtn.disabled = true;
+  submitBtn.textContent = `Submit (0/${totalQuestions})`;
+  submitBar.appendChild(submitBtn);
+
+  function updateSubmitState() {
+    const answered = Object.keys(pendingAnswers).length;
+    submitBtn.textContent = `Submit (${answered}/${totalQuestions})`;
+    submitBtn.disabled = answered < totalQuestions;
+  }
+
   for (const q of questions) {
     const questionText = q.question || q.text || q.header || '';
+    const isMultiSelect = q.multiSelect === true;
 
     if (q.header) {
       const hdr = document.createElement('div');
@@ -3244,9 +3759,20 @@ function buildAskFromToolUse(tab, block) {
       container.appendChild(qEl);
     }
 
+    if (isMultiSelect) {
+      const hint = document.createElement('div');
+      hint.className = 'ask-multi-hint';
+      hint.textContent = 'Select all that apply';
+      container.appendChild(hint);
+    }
+
     if (q.options?.length) {
       const opts = document.createElement('div');
       opts.className = 'ask-options';
+      if (isMultiSelect) opts.classList.add('multi');
+      // Detect changelog ask — has both "Save as-is" and "Edit first" options
+      const optLabels = q.options.map(o => typeof o === 'string' ? o : (o.label || o.value || ''));
+      const isChangelogAsk = optLabels.some(l => /save as.is/i.test(l)) && optLabels.some(l => /edit first/i.test(l));
       for (const opt of q.options) {
         const optLabel = typeof opt === 'string' ? opt : (opt.label || opt.value || String(opt));
         const optDesc = typeof opt === 'string' ? '' : (opt.description || '');
@@ -3266,24 +3792,80 @@ function buildAskFromToolUse(tab, block) {
         }
         btn.appendChild(optWrap);
         btn.addEventListener('click', () => {
-          opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
-          btn.classList.add('selected');
-          const answers = {};
-          answers[questionText] = optLabel;
-          sendAskAnswer(tab, input.questions || [q], answers);
+          // Changelog "Edit first" — bypass batch, trigger editor directly
+          if (isChangelogAsk && /edit first/i.test(optLabel)) {
+            opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
+            btn.classList.add('selected');
+            tab._changelogAsk = { questions: allQuestions, questionText };
+            const changelogText = extractPlanText(tab);
+            if (!changelogText) {
+              appendStatus(tab, 'No changelog content found to edit.');
+              opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = false; });
+              btn.classList.remove('selected');
+              return;
+            }
+            fetch('/api/create-plan', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: changelogText }),
+            }).then(r => r.json()).then(result => {
+              if (result.ok) {
+                emit('open-changelog-editor', { filePath: result.path, tabId: tab.id });
+              } else {
+                appendStatus(tab, 'Failed to create changelog draft.');
+                opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = false; });
+                btn.classList.remove('selected');
+              }
+            }).catch(() => {
+              appendStatus(tab, 'Failed to create changelog draft.');
+              opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = false; });
+              btn.classList.remove('selected');
+            });
+            return;
+          }
+          // Batched selection — toggle freely, don't send yet
+          if (isMultiSelect) {
+            btn.classList.toggle('selected');
+            const selected = [];
+            opts.querySelectorAll('.ask-option.selected').forEach(b => {
+              selected.push(b.querySelector('.ask-option-label').textContent);
+            });
+            if (selected.length > 0) pendingAnswers[questionText] = selected.join(', ');
+            else delete pendingAnswers[questionText];
+          } else {
+            opts.querySelectorAll('.ask-option').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            pendingAnswers[questionText] = optLabel;
+          }
+          updateSubmitState();
         });
         opts.appendChild(btn);
       }
       container.appendChild(opts);
     } else {
-      const hint = document.createElement('div');
-      hint.className = 'ask-hint';
-      hint.textContent = 'Type your answer below and press Enter';
-      container.appendChild(hint);
-      tab.pendingAsk = { requestId: null, toolUseId, questions: input.questions || [q], questionText };
-      setRunning(tab, false);
+      // Text input fallback — inline input within the card
+      const textInput = document.createElement('input');
+      textInput.type = 'text';
+      textInput.className = 'ask-text-input';
+      textInput.placeholder = 'Type your answer...';
+      textInput.addEventListener('input', () => {
+        if (textInput.value.trim()) pendingAnswers[questionText] = textInput.value.trim();
+        else delete pendingAnswers[questionText];
+        updateSubmitState();
+      });
+      container.appendChild(textInput);
     }
   }
+
+  // Submit button — sends all answers as a batch
+  submitBtn.addEventListener('click', () => {
+    container.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
+    container.querySelectorAll('.ask-text-input').forEach(i => { i.disabled = true; });
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Submitted';
+    sendAskAnswer(tab, allQuestions, pendingAnswers);
+  });
+  container.appendChild(submitBar);
 
   hideThinking(tab);
   setRunning(tab, false);
@@ -3305,17 +3887,28 @@ function sendAskAnswer(tab, questions, answers) {
       response: { behavior: 'allow', updatedInput: { questions, answers } },
     }));
   } else {
-    // Pipe mode — CLI auto-executed AskUserQuestion, send selection as follow-up query
-    const $project = _panel?.querySelector('#cp-project');
-    console.log('[claude-panel] Sending ask answer as follow-up query:', answerText);
-    tab.ws.send(JSON.stringify({
-      type: 'query',
-      prompt: answerText,
-      sessionId: tab.sessionId || undefined,
-      model: _getModelId() || undefined,
-      cwd: ddGetValue($project) || undefined,
-      effort: _getEffort() || undefined,
-    }));
+    // No request_id yet — buffer the answer for when control_request arrives.
+    // In --print mode, AskUserQuestion appears as a permission_denial in the result event.
+    // The server sends a control_request shortly after. Buffer and flush on arrival.
+    console.log('[claude-panel] Buffering ask answer (control_request pending):', answerText);
+    tab.pendingAskBufferedAnswer = { questions, answers };
+    // Fallback: if control_request doesn't arrive within 3s, send as follow-up query
+    setTimeout(() => {
+      if (!tab.pendingAskBufferedAnswer) return; // already flushed
+      console.log('[claude-panel] Fallback: control_request not received, sending as query');
+      const buffered = tab.pendingAskBufferedAnswer;
+      tab.pendingAskBufferedAnswer = null;
+      const fallbackText = Object.values(buffered.answers).join(', ');
+      const $project = _panel?.querySelector('#cp-project');
+      tab.ws.send(JSON.stringify({
+        type: 'query',
+        prompt: `The user answered your question: "${fallbackText}"\nContinue based on their selection.`,
+        sessionId: tab.sessionId || undefined,
+        model: _getModelId() || undefined,
+        cwd: ddGetValue($project) || undefined,
+        effort: _getEffort() || undefined,
+      }));
+    }, 3000);
   }
 
   tab.pendingAskRequestId = null;
@@ -3327,7 +3920,22 @@ function sendAskAnswer(tab, questions, answers) {
 }
 
 function isPlanFile(filePath) {
-  return filePath && /[/\\]\.claude[/\\]plans[/\\]/.test(filePath);
+  return filePath && (/[/\\]data[/\\]plans[/\\]/.test(filePath) || /[/\\]\.claude[/\\]plans[/\\]/.test(filePath));
+}
+
+/** Extract plan text from the last assistant message(s) in the tab's messages container. */
+function extractPlanText(tab) {
+  if (!tab.messagesEl) return '';
+  const msgs = tab.messagesEl.querySelectorAll('.msg.msg-assistant');
+  // Walk backward — the plan is typically in the last few assistant messages before the post-plan card
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const body = msgs[i].querySelector('.msg-body');
+    if (!body) continue;
+    const text = (body._rawMd || body.innerText)?.trim();
+    // Skip very short messages (status lines, greetings) — plan content is substantial
+    if (text && text.length > 100) return text;
+  }
+  return '';
 }
 
 function buildPlanCard(block) {
@@ -3592,9 +4200,10 @@ function updateSynaBunResult(card, ev) {
   card.classList.add(ev.is_error ? 'tool-error' : 'tool-ok');
 }
 
-function buildTool(block) {
-  // Plan files get a special rendered card
+function buildTool(block, tab) {
+  // Plan files get a special rendered card — track path on tab for editor access
   if (block.name === 'Write' && isPlanFile(block.input?.file_path)) {
+    if (tab) tab.planFilePath = block.input.file_path;
     return buildPlanCard(block);
   }
   // SynaBun MCP tools get branded cards
@@ -3606,6 +4215,7 @@ function buildTool(block) {
   const card = document.createElement('div');
   card.className = 'tool-card';
   card.dataset.toolId = block.id || '';
+  card.dataset.toolName = block.name;
   const hdr = document.createElement('div');
   hdr.className = 'tool-hdr';
   const icon = document.createElement('span'); icon.className = 'tool-icon';
@@ -3648,6 +4258,21 @@ function updateToolResult(tab, ev) {
   if (card.classList.contains('synabun-card')) {
     updateSynaBunResult(card, ev);
     return;
+  }
+  // ExitPlanMode — clear plan mode and mark handled so done handler doesn't double-render.
+  // Sidepanel plan mode is SIMULATED (prompt prefix, not native EnterPlanMode), so ExitPlanMode
+  // always errors with "You are not in plan mode" in --print mode. Render post-plan actions if
+  // either: ExitPlanMode succeeded (native) OR we were in simulated plan mode (error is expected).
+  const toolName = card.dataset.toolName || '';
+  if (toolName === 'ExitPlanMode') {
+    const wasPlanMode = tab._exitPlanWasPlanMode || tab.planMode;
+    tab.planMode = false;
+    tab._exitPlanHandled = true;
+    tab._exitPlanPending = false;
+    const $plan = _panel?.querySelector('#cp-plan-toggle');
+    if ($plan) $plan.classList.remove('active');
+    saveTabs();
+    if (!ev.is_error || wasPlanMode) renderPostPlanActions(tab);
   }
   const rLbl = card.querySelector('.tool-result-label');
   const rSec = card.querySelector('.tool-result-content');
@@ -3706,7 +4331,8 @@ function handleControlRequest(tab, msg) {
     // AskUserQuestion: save the request_id — answer is sent via control_response when user picks an option
     tab.pendingAskRequestId = requestId;
     // If tool_use block hasn't rendered the ask card yet, render from control_request input
-    if (!tab.pendingAskToolUseId) {
+    // Also check askRenderedViaControl to prevent duplicate cards from denial control_requests
+    if (!tab.pendingAskToolUseId && !tab.askRenderedViaControl) {
       renderAskUserQuestion(tab, requestId, req.input);
     }
     // Flush buffered answer if user already clicked before control_request arrived
@@ -3744,6 +4370,7 @@ function _showNextPerm(tab) {
   if (!next) { _flushMsgBuffer(tab); return; }
   tab._activePerm = true;
   renderPermissionPrompt(tab, next.requestId, next.req);
+  notify('panel', NOTIF_TYPE.ACTION, tab.label || 'Claude Code', { tabId: tab.id });
 }
 
 /** Detect SynaBun skill ask cards by question/header text or known menu option labels */
@@ -3763,11 +4390,13 @@ function renderAskUserQuestion(tab, requestId, input) {
   if (!$msgs) return;
   hideThinking(tab);
   tab.askRenderedViaControl = true;
+  notify('panel', NOTIF_TYPE.ASK, tab.label || 'Claude Code', { tabId: tab.id });
 
   // Normalize: accept questions array, single question object, or flat input
   const questions = Array.isArray(input?.questions) ? input.questions
     : (input?.question || input?.text || input?.options) ? [input]
     : input ? [input] : [];
+  const allQuestions = input.questions || questions;
   const el = document.createElement('div');
   el.className = 'msg msg-assistant';
 
@@ -3779,8 +4408,26 @@ function renderAskUserQuestion(tab, requestId, input) {
   const wrap = document.createElement('div');
   wrap.className = 'msg-content';
 
+  // Batched answer collection
+  const pendingAnswers = {};
+  const totalQuestions = questions.length;
+  const submitBar = document.createElement('div');
+  submitBar.className = 'ask-submit-bar';
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'ask-submit';
+  submitBtn.disabled = true;
+  submitBtn.textContent = `Submit (0/${totalQuestions})`;
+  submitBar.appendChild(submitBtn);
+
+  function updateSubmitState() {
+    const answered = Object.keys(pendingAnswers).length;
+    submitBtn.textContent = `Submit (${answered}/${totalQuestions})`;
+    submitBtn.disabled = answered < totalQuestions;
+  }
+
   for (const q of questions) {
     const questionText = q.question || q.text || q.header || '';
+    const isMultiSelect = q.multiSelect === true;
     const card = document.createElement('div');
     card.className = 'ask-card';
 
@@ -3806,9 +4453,20 @@ function renderAskUserQuestion(tab, requestId, input) {
       card.appendChild(qEl);
     }
 
+    if (isMultiSelect) {
+      const hint = document.createElement('div');
+      hint.className = 'ask-multi-hint';
+      hint.textContent = 'Select all that apply';
+      card.appendChild(hint);
+    }
+
     if (q.options?.length) {
       const opts = document.createElement('div');
       opts.className = 'ask-options';
+      if (isMultiSelect) opts.classList.add('multi');
+      // Detect changelog ask — has both "Save as-is" and "Edit first" options
+      const optLabels = q.options.map(o => typeof o === 'string' ? o : (o.label || o.value || ''));
+      const isChangelogAsk = optLabels.some(l => /save as.is/i.test(l)) && optLabels.some(l => /edit first/i.test(l));
       for (const opt of q.options) {
         const optLabel = typeof opt === 'string' ? opt : (opt.label || opt.value || String(opt));
         const optDesc = typeof opt === 'string' ? '' : (opt.description || '');
@@ -3828,25 +4486,82 @@ function renderAskUserQuestion(tab, requestId, input) {
         }
         btn.appendChild(optWrap);
         btn.addEventListener('click', () => {
-          opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
-          btn.classList.add('selected');
-          const answers = {};
-          answers[questionText] = optLabel;
-          sendAskAnswer(tab, input.questions || [q], answers);
+          // Changelog "Edit first" — bypass batch, trigger editor directly
+          if (isChangelogAsk && /edit first/i.test(optLabel)) {
+            opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
+            btn.classList.add('selected');
+            tab._changelogAsk = { questions: allQuestions, questionText };
+            const changelogText = extractPlanText(tab);
+            if (!changelogText) {
+              appendStatus(tab, 'No changelog content found to edit.');
+              opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = false; });
+              btn.classList.remove('selected');
+              return;
+            }
+            fetch('/api/create-plan', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: changelogText }),
+            }).then(r => r.json()).then(result => {
+              if (result.ok) {
+                emit('open-changelog-editor', { filePath: result.path, tabId: tab.id });
+              } else {
+                appendStatus(tab, 'Failed to create changelog draft.');
+                opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = false; });
+                btn.classList.remove('selected');
+              }
+            }).catch(() => {
+              appendStatus(tab, 'Failed to create changelog draft.');
+              opts.querySelectorAll('.ask-option').forEach(b => { b.disabled = false; });
+              btn.classList.remove('selected');
+            });
+            return;
+          }
+          // Batched selection — toggle freely, don't send yet
+          if (isMultiSelect) {
+            btn.classList.toggle('selected');
+            const selected = [];
+            opts.querySelectorAll('.ask-option.selected').forEach(b => {
+              selected.push(b.querySelector('.ask-option-label').textContent);
+            });
+            if (selected.length > 0) pendingAnswers[questionText] = selected.join(', ');
+            else delete pendingAnswers[questionText];
+          } else {
+            opts.querySelectorAll('.ask-option').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            pendingAnswers[questionText] = optLabel;
+          }
+          updateSubmitState();
         });
         opts.appendChild(btn);
       }
       card.appendChild(opts);
     } else {
-      const hint = document.createElement('div');
-      hint.className = 'ask-hint';
-      hint.textContent = 'Type your answer below and press Enter';
-      card.appendChild(hint);
-      tab.pendingAsk = { requestId: null, toolUseId: tab.pendingAskToolUseId, questions: input.questions || [q], questionText };
-      setRunning(tab, false);
+      // Text input fallback — inline input within the card
+      const textInput = document.createElement('input');
+      textInput.type = 'text';
+      textInput.className = 'ask-text-input';
+      textInput.placeholder = 'Type your answer...';
+      textInput.addEventListener('input', () => {
+        if (textInput.value.trim()) pendingAnswers[questionText] = textInput.value.trim();
+        else delete pendingAnswers[questionText];
+        updateSubmitState();
+      });
+      card.appendChild(textInput);
     }
     wrap.appendChild(card);
   }
+
+  // Submit button — sends all answers as a batch
+  submitBtn.addEventListener('click', () => {
+    wrap.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
+    wrap.querySelectorAll('.ask-text-input').forEach(i => { i.disabled = true; });
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Submitted';
+    sendAskAnswer(tab, allQuestions, pendingAnswers);
+  });
+  wrap.appendChild(submitBar);
+
   el.appendChild(wrap);
   $msgs.appendChild(el);
   setRunning(tab, false);
@@ -3975,11 +4690,21 @@ function sendPermissionResponse(tab, requestId, behavior, always = false) {
 }
 
 // ── UI helpers (per-tab) ──
-function appendUser(tab, text, images) {
+function appendUser(tab, text, images, files) {
   const $msgs = tab.messagesEl;
   if (!$msgs) return;
   const el = document.createElement('div'); el.className = 'msg msg-user';
   const bubble = document.createElement('div'); bubble.className = 'msg-bubble';
+  if (files?.length) {
+    for (const f of files) {
+      const chip = document.createElement('div');
+      chip.className = 'msg-file-chip';
+      chip.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;vertical-align:middle;margin-right:4px;opacity:0.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+      chip.appendChild(document.createTextNode(f.name || f.path?.split(/[/\\]/).pop() || 'file'));
+      chip.style.cssText = 'display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;background:rgba(255,255,255,0.08);font-size:12px;margin-bottom:4px;opacity:0.85;';
+      bubble.appendChild(chip);
+    }
+  }
   if (images?.length) {
     for (const img of images) {
       const imgEl = document.createElement('img');
@@ -4019,18 +4744,33 @@ function hideThinking(tab) {
 function appendStatus(tab, text) {
   const $msgs = tab.messagesEl; if (!$msgs) return;
   const el = document.createElement('div'); el.className = 'msg-status'; el.textContent = text;
-  $msgs.appendChild(el); if (tab === activeTab()) scrollEnd();
+  $msgs.appendChild(el); pruneMessages($msgs); if (tab === activeTab()) scrollEnd();
 }
 function appendError(tab, text) {
   const $msgs = tab.messagesEl; if (!$msgs) return;
   const el = document.createElement('div'); el.className = 'msg-error'; el.textContent = text;
-  $msgs.appendChild(el); if (tab === activeTab()) scrollEnd();
+  $msgs.appendChild(el); pruneMessages($msgs); if (tab === activeTab()) scrollEnd();
 }
 
 function scrollEnd() {
   const tab = activeTab();
   const $msgs = tab?.messagesEl;
   if ($msgs) requestAnimationFrame(() => requestAnimationFrame(() => { $msgs.scrollTop = $msgs.scrollHeight; }));
+}
+
+// ── DOM pruning ──
+// Prevent unbounded DOM growth by removing oldest messages when threshold exceeded.
+const MAX_MSG_CHILDREN = 600;
+const PRUNE_BATCH = 150;
+
+function pruneMessages($msgs) {
+  if (!$msgs || $msgs.childElementCount <= MAX_MSG_CHILDREN) return;
+  const removeCount = Math.min(PRUNE_BATCH, $msgs.childElementCount - (MAX_MSG_CHILDREN - PRUNE_BATCH));
+  for (let i = 0; i < removeCount; i++) {
+    const child = $msgs.firstElementChild;
+    if (!child) break;
+    child.remove();
+  }
 }
 
 const RUNNING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes — safety net for stuck running state
@@ -4045,8 +4785,9 @@ function setRunning(tab, r) {
     tab._runningTimeout = setTimeout(() => {
       if (tab.running && (!tab._lastWsActivity || Date.now() - tab._lastWsActivity > RUNNING_TIMEOUT_MS - 5000)) {
         console.warn('[claude-panel] Running timeout for tab', tab.id, '— forcing finish');
-        finishTab(tab);
+        finishTab(tab, true);
         appendStatus(tab, 'Session timed out — no response received.');
+        notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code', { tabId: tab.id });
       }
     }, RUNNING_TIMEOUT_MS);
   }
@@ -4061,31 +4802,44 @@ function setRunning(tab, r) {
     $input.disabled = false;
     _updateSendIcon($send, $input);
   } else {
-    $send.classList.remove('abort'); $send.classList.remove('btw'); $send.innerHTML = _ICON_SEND; $input.disabled = false; $input.focus();
+    $send.classList.remove('abort'); $send.classList.remove('btw'); $send.classList.remove('queue-mode'); $send.innerHTML = _ICON_SEND; $input.disabled = false; $input.focus();
   }
 }
 
-// Dynamic send icon: while running, show send arrow if text present, stop icon if empty
+// Dynamic send icon: while running, show queue icon if text present (default), stop icon if empty
 const _ICON_STOP = '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
 const _ICON_SEND = '<svg viewBox="0 0 24 24"><path d="M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M12 5l7 7-7 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
-function _updateSendIcon($send, $input) {
+const _ICON_QUEUE_SEND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="6" y1="7" x2="18" y2="7"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="17" x2="18" y2="17"/></svg>';
+function _updateSendIcon($send, $input, forceShift) {
   if (!$send || !$input) return;
   const tab = activeTab();
   if (!tab?.running) return;
   const hasText = $input.value.trim().length > 0;
   $send.disabled = false;
   if (hasText) {
-    $send.classList.remove('abort'); $send.classList.add('btw');
-    $send.innerHTML = _ICON_SEND;
+    $send.classList.remove('abort');
+    if (forceShift) {
+      // Shift held: show /btw send arrow
+      $send.classList.add('btw'); $send.classList.remove('queue-mode');
+      $send.innerHTML = _ICON_SEND;
+    } else {
+      // Default: show queue icon
+      $send.classList.remove('btw'); $send.classList.add('queue-mode');
+      $send.innerHTML = _ICON_QUEUE_SEND;
+    }
   } else {
-    $send.classList.add('abort'); $send.classList.remove('btw');
+    $send.classList.add('abort'); $send.classList.remove('btw'); $send.classList.remove('queue-mode');
     $send.innerHTML = _ICON_STOP;
   }
 }
 
-function finishTab(tab) { hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.sendStartedAt = null; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs(); }
+function finishTab(tab, skipNotif) {
+  const wasRunning = tab.running;
+  hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.askRenderedViaControl = false; tab.sendStartedAt = null; tab._exitPlanMsgId = null; tab._exitPlanPending = false; tab._exitPlanHandled = false; tab._exitPlanWasPlanMode = false; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs();
+  if (wasRunning && !skipNotif) notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code', { tabId: tab.id });
+}
 
-function send() {
+function send({ shift = false } = {}) {
   const tab = activeTab();
   if (!tab) return;
   const $input = _panel?.querySelector('#cp-input');
@@ -4095,19 +4849,33 @@ function send() {
   const text = $input.value.trim();
   if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
   if (tab.running) {
-    if (!text && !tab.attachedImages.length) {
+    if (!text && !tab.attachedImages.length && !tab.attachedFiles.length) {
       // Empty send while running = abort (stop)
       tab.ws.send(JSON.stringify({ type: 'abort' })); return;
     }
-    // /btw: has text while running — interrupt and continue with new context
-    tab.ws.send(JSON.stringify({ type: 'abort' }));
-    tab._btwPending = { text, images: tab.attachedImages.length ? [...tab.attachedImages] : null };
+    if (shift) {
+      // Shift+Enter: /btw — interrupt and continue with new context
+      tab.ws.send(JSON.stringify({ type: 'abort' }));
+      tab._btwPending = { text, images: tab.attachedImages.length ? [...tab.attachedImages] : null, files: tab.attachedFiles.length ? [...tab.attachedFiles] : null };
+      $input.value = ''; autoResize();
+      appendUser(tab, text, tab._btwPending.images);
+      hideSlashHints();
+      return;
+    }
+    // Enter (default): add to queue
+    const images = tab.attachedImages.length ? [...tab.attachedImages] : null;
+    const files = tab.attachedFiles.length ? [...tab.attachedFiles] : null;
     $input.value = ''; autoResize();
-    appendUser(tab, text, tab._btwPending.images);
+    if (images) { tab.attachedImages = []; updateAttachBadge(); const preview = _panel?.querySelector('#cp-image-preview'); if (preview) preview.innerHTML = ''; }
+    if (files) { tab.attachedFiles = []; updateAttachBadge(); }
+    addToQueue(tab, text, images, files);
     hideSlashHints();
+    // Pulse the count badge
+    const $count = _panel?.querySelector('.cp-queue-count');
+    if ($count) { $count.classList.remove('pulse'); void $count.offsetWidth; $count.classList.add('pulse'); }
     return;
   }
-  if (!text && !tab.attachedImages.length) return;
+  if (!text && !tab.attachedImages.length && !tab.attachedFiles.length) return;
 
   // Clear post-plan action cards on new message
   tab.messagesEl?.querySelectorAll('.post-plan-card').forEach(el => { const msg = el.closest('.msg'); if (msg) msg.remove(); else el.remove(); });
@@ -4135,9 +4903,18 @@ function send() {
 
   if (tab.pendingAsk && text) {
     $input.value = ''; autoResize();
-    appendUser(tab, text); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
+    const askImages = tab.attachedImages.length ? [...tab.attachedImages] : null;
+    appendUser(tab, text, askImages); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
     const answers = {};
-    answers[tab.pendingAsk.questionText] = text;
+    if (askImages) {
+      answers[tab.pendingAsk.questionText] = text + `\n[${askImages.length} inspiration image(s) attached — visible in chat above]`;
+      tab.attachedImages = [];
+      updateAttachBadge();
+      const preview = _panel?.querySelector('#cp-image-preview');
+      if (preview) preview.innerHTML = '';
+    } else {
+      answers[tab.pendingAsk.questionText] = text;
+    }
     sendAskAnswer(tab, tab.pendingAsk.questions, answers);
     tab.pendingAsk = null;
     return;
@@ -4145,10 +4922,11 @@ function send() {
 
   $input.value = ''; autoResize();
   const pendingImages = tab.attachedImages.length ? [...tab.attachedImages] : null;
-  appendUser(tab, text, pendingImages); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
+  const pendingFiles = tab.attachedFiles.length ? [...tab.attachedFiles] : null;
+  appendUser(tab, text, pendingImages, pendingFiles); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
   let prompt = buildPromptWithAttachments(tab, text);
   if (tab.planMode && prompt) {
-    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes]\n\n${prompt}`;
+    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\n${prompt}`;
   }
 
   // Update pill label on first message
@@ -4179,6 +4957,243 @@ function send() {
   tab.ws.send(JSON.stringify(msg));
 }
 
+// ── Message Queue System ──
+
+const _ICON_QUEUE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="6" y1="7" x2="18" y2="7"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="17" x2="18" y2="17"/></svg>';
+const _ICON_PLAY = '<svg viewBox="0 0 16 16" width="10" height="10"><polygon points="4,2 14,8 4,14" fill="currentColor"/></svg>';
+const _ICON_PAUSE = '<svg viewBox="0 0 16 16" width="10" height="10"><rect x="3" y="3" width="3" height="10" fill="currentColor"/><rect x="10" y="3" width="3" height="10" fill="currentColor"/></svg>';
+
+function addToQueue(tab, text, images, files) {
+  tab.queue.push({
+    id: crypto.randomUUID(),
+    text,
+    images: images?.length ? [...images] : null,
+    files: files?.length ? [...files] : null,
+  });
+  tab._queueWasActive = true;
+  renderQueue(tab);
+  saveTabs();
+  // If Claude is idle and queue was just started and not paused, auto-advance
+  if (tab.queue.length === 1 && !tab.running && !tab.queuePaused && !tab._activePerm && !tab.pendingAsk) {
+    setTimeout(() => advanceQueue(tab), 300);
+  }
+}
+
+function renderQueue(tab) {
+  if (tab !== activeTab()) return;
+  const $tray = _panel?.querySelector('#cp-queue-tray');
+  const $items = $tray?.querySelector('.cp-queue-items');
+  const $count = $tray?.querySelector('.cp-queue-count');
+  if (!$tray || !$items || !$count) return;
+
+  if (tab.queue.length === 0) {
+    $tray.hidden = true;
+    $tray.classList.remove('expanded');
+    return;
+  }
+
+  $tray.hidden = false;
+  $count.textContent = tab.queue.length;
+  $tray.classList.toggle('paused', tab.queuePaused);
+  if (tab.queueExpanded) $tray.classList.add('expanded');
+
+  // Update pause button icon
+  const $pause = $tray.querySelector('.cp-queue-pause');
+  if ($pause) {
+    $pause.classList.toggle('paused', tab.queuePaused);
+    $pause.innerHTML = tab.queuePaused ? _ICON_PLAY : _ICON_PAUSE;
+    $pause.title = tab.queuePaused ? 'Resume queue processing' : 'Pause queue processing';
+  }
+
+  $items.innerHTML = '';
+  tab.queue.forEach((item, idx) => {
+    const el = document.createElement('div');
+    el.className = 'cp-queue-item';
+    el.draggable = true;
+    el.dataset.idx = idx;
+    el.dataset.id = item.id;
+
+    const drag = document.createElement('span');
+    drag.className = 'cp-queue-drag';
+    drag.textContent = '⠿';
+
+    const textSpan = document.createElement('span');
+    textSpan.className = 'cp-queue-text';
+    textSpan.textContent = item.text.length > 60 ? item.text.slice(0, 60) + '…' : item.text;
+    textSpan.title = item.text;
+
+    const attachBadge = document.createElement('span');
+    attachBadge.className = 'cp-queue-attach-badge';
+    const parts = [];
+    if (item.images?.length) parts.push(`${item.images.length}img`);
+    if (item.files?.length) parts.push(`${item.files.length}file`);
+    if (parts.length) attachBadge.textContent = parts.join('+');
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'cp-queue-edit';
+    editBtn.title = 'Edit';
+    editBtn.innerHTML = '<svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 2.5l4 4L5 15H1v-4z"/></svg>';
+    editBtn.addEventListener('click', (e) => { e.stopPropagation(); editQueueItem(tab, item.id); });
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'cp-queue-remove';
+    removeBtn.title = 'Remove';
+    removeBtn.innerHTML = '<svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>';
+    removeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeFromQueue(tab, item.id); });
+
+    el.appendChild(drag);
+    el.appendChild(textSpan);
+    if (parts.length) el.appendChild(attachBadge);
+    el.appendChild(editBtn);
+    el.appendChild(removeBtn);
+
+    // Drag-to-reorder handlers
+    el.addEventListener('dragstart', (e) => {
+      el.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(idx));
+    });
+    el.addEventListener('dragend', () => {
+      el.classList.remove('dragging');
+      $items.querySelectorAll('.cp-queue-item').forEach(i => i.classList.remove('drag-over'));
+    });
+    el.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      el.classList.add('drag-over');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      el.classList.remove('drag-over');
+      const fromIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+      const toIdx = parseInt(el.dataset.idx, 10);
+      if (fromIdx === toIdx || isNaN(fromIdx) || isNaN(toIdx)) return;
+      const [moved] = tab.queue.splice(fromIdx, 1);
+      tab.queue.splice(toIdx, 0, moved);
+      renderQueue(tab);
+      saveTabs();
+    });
+
+    $items.appendChild(el);
+  });
+}
+
+function advanceQueue(tab) {
+  if (!tab.queue.length || tab.queuePaused || tab.running || tab._activePerm || tab.pendingAsk) return;
+  const item = tab.queue.shift();
+  // Brief highlight before sending
+  const $tray = _panel?.querySelector('#cp-queue-tray');
+  const firstItem = $tray?.querySelector('.cp-queue-item');
+  if (firstItem) firstItem.classList.add('sending');
+  setTimeout(() => {
+    _sendQueued(tab, item);
+    renderQueue(tab);
+    saveTabs();
+    // Queue complete notification
+    if (tab.queue.length === 0 && !tab.queuePaused) {
+      // Will fire after this message completes via done handler
+    }
+  }, 200);
+}
+
+function _sendQueued(tab, item) {
+  if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+  const $project = _panel?.querySelector('#cp-project');
+  appendUser(tab, item.text, item.images, item.files);
+  tab.sendStartedAt = Date.now();
+  showThinking(tab);
+  setRunning(tab, true);
+
+  // Restore attachments for buildPromptWithAttachments
+  if (item.files) tab.attachedFiles = item.files;
+  let prompt = buildPromptWithAttachments(tab, item.text);
+  if (tab.planMode && prompt) {
+    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\n${prompt}`;
+  }
+
+  // Update pill label if first message
+  if (tab.label === 'New chat' && item.text) {
+    tab.label = trunc(item.text, 20);
+    updatePillLabel(tab);
+    const headerLabel = _panel?.querySelector('.cp-session-label');
+    if (headerLabel) headerLabel.textContent = tab.label;
+    saveTabs();
+  }
+
+  const msg = {
+    type: 'query', prompt,
+    cwd: ddGetValue($project) || undefined,
+    sessionId: tab.sessionId || undefined,
+    model: _getModelId() || undefined,
+    effort: _getEffort() || undefined,
+    windowId: _windowId,
+  };
+  if (item.images) {
+    msg.images = item.images.map(i => ({ base64: i.base64, mediaType: i.mediaType }));
+    tab.attachedImages = [];
+    updateAttachBadge();
+    const preview = _panel?.querySelector('#cp-image-preview');
+    if (preview) preview.innerHTML = '';
+  }
+  tab.ws.send(JSON.stringify(msg));
+}
+
+function pauseQueue(tab) {
+  tab.queuePaused = !tab.queuePaused;
+  renderQueue(tab);
+  saveTabs();
+  if (!tab.queuePaused && !tab.running && tab.queue.length) {
+    setTimeout(() => advanceQueue(tab), 300);
+  }
+}
+
+function removeFromQueue(tab, id) {
+  tab.queue = tab.queue.filter(i => i.id !== id);
+  renderQueue(tab);
+  saveTabs();
+}
+
+function editQueueItem(tab, id) {
+  const $tray = _panel?.querySelector('#cp-queue-tray');
+  if (!$tray) return;
+  const idx = tab.queue.findIndex(i => i.id === id);
+  if (idx === -1) return;
+  const item = tab.queue[idx];
+  const $item = $tray.querySelector(`.cp-queue-item[data-id="${id}"]`);
+  const $text = $item?.querySelector('.cp-queue-text');
+  if (!$text) return;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = item.text;
+  $text.textContent = '';
+  $text.appendChild(input);
+  input.focus();
+  input.select();
+
+  const commit = () => {
+    const val = input.value.trim();
+    if (val) {
+      tab.queue[idx].text = val;
+      saveTabs();
+    }
+    renderQueue(tab);
+  };
+  input.addEventListener('blur', commit, { once: true });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { e.preventDefault(); renderQueue(tab); }
+  });
+}
+
+function clearQueue(tab) {
+  tab.queue = [];
+  tab.queuePaused = false;
+  renderQueue(tab);
+  saveTabs();
+}
+
 // ── Browser embed: live screencast inside the panel ──
 
 function showBrowserEmbed(sessionId, url) {
@@ -4196,17 +5211,20 @@ function showBrowserEmbed(sessionId, url) {
   // Connect screencast WebSocket
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/browser/${sessionId}`);
+  ws.binaryType = 'blob';
 
   const frameRenderer = createFrameRenderer(canvas, ctx);
   _browserEmbed = { sessionId, ws, canvas, ctx, urlBar, container, frameRenderer };
   _browserEmbedVisible = true;
 
   ws.onmessage = (e) => {
+    if (e.data instanceof Blob) {
+      frameRenderer.render(e.data.slice(1));
+      return;
+    }
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'frame' && msg.data) {
-        frameRenderer.render(msg.data);
-      } else if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
+      if (msg.type === 'navigated' || msg.type === 'loaded' || msg.type === 'init') {
         if (msg.url) urlBar.value = msg.url;
       } else if (msg.type === 'error') {
         console.warn('[claude-panel] Browser embed error:', msg.message);
@@ -4214,8 +5232,26 @@ function showBrowserEmbed(sessionId, url) {
     } catch {}
   };
 
+  let _cpWsReconnAttempted = false;
   ws.onclose = () => {
-    if (_browserEmbed?.sessionId === sessionId) hideBrowserEmbed();
+    if (_browserEmbed?.sessionId === sessionId) {
+      if (!_cpWsReconnAttempted) {
+        _cpWsReconnAttempted = true;
+        console.log('[claude-panel] Browser WS closed, retrying once for', sessionId);
+        setTimeout(() => {
+          if (_browserEmbed?.sessionId !== sessionId) return;
+          const proto2 = location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const ws2 = new WebSocket(`${proto2}//${location.host}/ws/browser/${sessionId}`);
+          ws2.binaryType = 'blob';
+          ws2.onmessage = ws.onmessage;
+          ws2.onclose = () => { if (_browserEmbed?.sessionId === sessionId) hideBrowserEmbed(); };
+          ws2.onerror = () => {};
+          _browserEmbed.ws = ws2;
+        }, 1500);
+        return;
+      }
+      hideBrowserEmbed();
+    }
   };
 
   // Show with animation
@@ -4227,18 +5263,9 @@ function showBrowserEmbed(sessionId, url) {
   // Wire nav buttons
   _wireBrowserEmbedEvents();
 
-  // Resize observer — update canvas display size only (do NOT resize browser viewport)
-  // The browser stays at its original viewport (e.g. 1280x800) and frames scale to fit.
-  const canvasWrap = container.querySelector('.cp-browser-canvas-wrap');
-  const ro = new ResizeObserver(() => {
-    const rect = canvasWrap.getBoundingClientRect();
-    const w = Math.round(rect.width), h = Math.round(rect.height);
-    if (w < 10 || h < 10) return;
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
-  });
-  ro.observe(canvasWrap);
-  _browserEmbed.ro = ro;
+  // No ResizeObserver needed — .cp-browser-canvas-wrap uses aspect-ratio: 16/10
+  // and .cp-browser-canvas uses width: 100%; height: 100% via CSS.
+  // Frames scale via canvas buffer dimensions + CSS layout automatically.
 }
 
 function hideBrowserEmbed() {
@@ -4342,22 +5369,9 @@ function _wireBrowserSync() {
   if (_browserSyncWired) return;
   _browserSyncWired = true;
 
-  // Auto-show browser embed ONLY when the panel's Claude process triggered it
-  on('sync:browser:created', async (msg) => {
-    if (!_panel || !_visible) return; // panel not open, let terminal handle it
-    const tab = activeTab();
-    if (!tab?.running) return; // Claude not actively processing — browser was opened externally
-    if (!msg.sessionId) return;
-    if (_browserEmbedVisible && _browserEmbed?.sessionId === msg.sessionId) return;
-    showBrowserEmbed(msg.sessionId, msg.url);
-  });
-
-  // Auto-hide when browser session is destroyed
-  on('sync:browser:deleted', (msg) => {
-    if (_browserEmbed?.sessionId === msg.sessionId) {
-      hideBrowserEmbed();
-    }
-  });
+  // Browser sessions are always rendered as floating windows — no side panel embed.
+  // sync:browser:created, claude-panel:show-browser, and claude-panel:ensure-open
+  // are intentionally NOT handled here.
 }
 
 function autoResize() {
@@ -4408,8 +5422,11 @@ async function loadConfig() {
     if ($model) {
       // Composite value: "modelId:contextWindow" to differentiate models with same id but different context
       const items = _models.map(m => ({ value: `${m.id}:${m.contextWindow || 200000}`, label: m.label }));
-      const saved = storage.getItem(STOR.model);
-      ddPopulate($model, items, saved || '');
+      // Apply user's default model preference (per-tab model restored later by switchTab())
+      const defModel = _getDefaultModel();
+      ddPopulateModels($model, items, defModel);
+      // Clean up stale global key (model now lives per-tab only)
+      storage.removeItem(STOR.model);
     }
   } catch {}
 }
@@ -4446,11 +5463,15 @@ export async function toggleClaudePanel() {
   if (_visible) {
     _panel.classList.add('open');
     const pw = _panel.style.width || '22%';
-    document.documentElement.style.setProperty('--claude-panel-width', pw.endsWith('px') ? (parseFloat(pw) + 16) + 'px' : 'calc(' + pw + ' + 16px)');
+    document.documentElement.style.setProperty('--claude-panel-width', pw.endsWith('px') ? (parseFloat(pw) + 20) + 'px' : 'calc(' + pw + ' + 20px)');
+    document.documentElement.style.setProperty('--claude-panel-gap', '20px');
+    document.querySelector('.fe-editor-panel')?.classList.add('panel-adjacent');
     _panel.querySelector('#cp-input')?.focus();
   } else {
     _panel.classList.remove('open');
     document.documentElement.style.setProperty('--claude-panel-width', '0px');
+    document.documentElement.style.setProperty('--claude-panel-gap', '0px');
+    document.querySelector('.fe-editor-panel')?.classList.remove('panel-adjacent');
   }
   renderPills(); // Sync pill visibility with panel open/close state
   window.dispatchEvent(new Event('resize'));
@@ -4460,13 +5481,19 @@ export function isClaudePanelOpen() { return _visible; }
 
 /** Open the panel (if closed) and pre-fill the input with text, placing cursor at the end.
  *  If opts.asFile is true or text looks like a file path, attach as a file chip instead. */
-export function sendToPanel(text, opts = {}) {
-  if (!_visible) toggleClaudePanel();
+export async function sendToPanel(text, opts = {}) {
+  if (!_visible) await toggleClaudePanel();
+
+  // Create a fresh tab if requested
+  if (opts.newTab) {
+    createTab(null, opts.tabLabel || 'New chat');
+  }
+
   const tab = activeTab();
   if (!tab) return;
 
-  // Detect file paths — attach as file chip instead of text
-  const looksLikePath = opts.asFile || /^[A-Za-z]:[/\\]/.test(text) || (text.startsWith('/') && text.includes('/') && !text.includes(' '));
+  // Detect file paths — attach as file chip instead of text (skip for autoSubmit — those are commands, not paths)
+  const looksLikePath = !opts.autoSubmit && (opts.asFile || /^[A-Za-z]:[/\\]/.test(text) || (text.startsWith('/') && text.includes('/') && !text.includes(' ')));
   if (looksLikePath) {
     _attachPathToTab(tab, text);
     _panel?.querySelector('#cp-input')?.focus();
@@ -4484,6 +5511,21 @@ export function sendToPanel(text, opts = {}) {
   autoResize();
   $input.focus();
   $input.setSelectionRange($input.value.length, $input.value.length);
+
+  // Auto-submit: wait for WebSocket to be ready, then click send
+  if (opts.autoSubmit) {
+    $input.dispatchEvent(new Event('input', { bubbles: true }));
+    const trySubmit = () => {
+      const t = activeTab();
+      if (t?.ws?.readyState === WebSocket.OPEN) {
+        const $send = _panel?.querySelector('#cp-send');
+        if ($send) { $send.disabled = false; $send.click(); }
+      } else {
+        setTimeout(trySubmit, 150);
+      }
+    };
+    setTimeout(trySubmit, 150);
+  }
 }
 
 /** Attach a file path to the active tab — fetches content and shows chip */
@@ -4709,7 +5751,7 @@ function wireEvents() {
       // While running, dynamically switch send icon based on text content
       _updateSendIcon($send, $input);
     } else {
-      $send.disabled = !$input.value.trim() && !tab?.attachedImages.length;
+      $send.disabled = !$input.value.trim() && !tab?.attachedImages.length && !tab?.attachedFiles.length;
     }
     // Slash command hints
     const text = $input.value;
@@ -4728,12 +5770,56 @@ function wireEvents() {
       if (e.key === 'Escape') { e.preventDefault(); hideSlashHints(); return; }
     }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); hideSlashHints(); send(); }
+    // Shift+Enter while running = /btw interrupt (otherwise default newline behavior)
+    if (e.key === 'Enter' && e.shiftKey && activeTab()?.running && $input.value.trim()) { e.preventDefault(); hideSlashHints(); send({ shift: true }); return; }
+    // Shift+Tab to toggle plan mode
+    if (e.key === 'Tab' && e.shiftKey) {
+      e.preventDefault();
+      const tab = activeTab();
+      if (!tab) return;
+      tab.planMode = !tab.planMode;
+      const $plan = _panel?.querySelector('#cp-plan-toggle');
+      if ($plan) $plan.classList.toggle('active', tab.planMode);
+      appendStatus(tab, tab.planMode ? 'Plan mode ON — Claude will plan without making changes' : 'Plan mode OFF');
+      return;
+    }
     // Ctrl+L to clear
     if (e.key === 'l' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const tab = activeTab(); if (tab?.messagesEl) tab.messagesEl.innerHTML = ''; }
     // Escape to abort — only if no btw text typed
     if (e.key === 'Escape' && activeTab()?.running && !$input.value.trim()) { activeTab()?.ws?.send(JSON.stringify({ type: 'abort' })); }
   });
+  // Shift key visual hint: swap queue icon ↔ /btw arrow while shift held
+  $input.addEventListener('keydown', (e) => {
+    if (e.key === 'Shift' && activeTab()?.running) _updateSendIcon($send, $input, true);
+  });
+  $input.addEventListener('keyup', (e) => {
+    if (e.key === 'Shift' && activeTab()?.running) _updateSendIcon($send, $input, false);
+  });
   $send.addEventListener('click', send);
+
+  // Queue tray event wiring
+  const $queueTray = _panel.querySelector('#cp-queue-tray');
+  if ($queueTray) {
+    $queueTray.querySelector('.cp-queue-header').addEventListener('click', (e) => {
+      // Don't toggle expand when clicking action buttons
+      if (e.target.closest('.cp-queue-actions')) return;
+      const tab = activeTab();
+      if (!tab) return;
+      tab.queueExpanded = !tab.queueExpanded;
+      $queueTray.classList.toggle('expanded', tab.queueExpanded);
+    });
+    $queueTray.querySelector('.cp-queue-pause').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tab = activeTab();
+      if (tab) pauseQueue(tab);
+    });
+    $queueTray.querySelector('.cp-queue-clear').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tab = activeTab();
+      if (tab) clearQueue(tab);
+    });
+  }
+
   $close.addEventListener('click', () => closeTab(_activeTabIdx));
   $slide.addEventListener('click', () => toggleClaudePanel());
   $minimize.addEventListener('click', () => {
@@ -4794,14 +5880,31 @@ function wireEvents() {
   if ($attach) {
     const fileInput = document.createElement('input');
     fileInput.type = 'file'; fileInput.multiple = true; fileInput.style.display = 'none';
+    fileInput.accept = 'image/*,text/*,.js,.ts,.jsx,.tsx,.py,.rb,.go,.rs,.java,.c,.cpp,.h,.css,.html,.json,.yaml,.yml,.toml,.md,.sh,.sql,.xml,.csv';
     document.body.appendChild(fileInput);
     $attach.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', async () => {
       const tab = activeTab();
       if (!tab) return;
       for (const file of fileInput.files) {
+        // Images → attach as image (base64), same as paste/drop
+        if (file.type.startsWith('image/')) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result;
+            const base64 = dataUrl.split(',')[1];
+            const mediaType = file.type;
+            tab.attachedImages.push({ base64, mediaType });
+            updateAttachBadge();
+            addImagePreview(dataUrl, tab.attachedImages.length - 1);
+            $send.disabled = false;
+          };
+          reader.readAsDataURL(file);
+          continue;
+        }
+        // Text/code files
         if (!_isTextFile(file.name)) {
-          appendStatus(tab, `Skipped "${file.name}" — only text/code files supported`);
+          appendStatus(tab, `Skipped "${file.name}" — only text/code or image files supported`);
           continue;
         }
         if (file.size > 100000) {
@@ -4837,6 +5940,8 @@ function wireEvents() {
       const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
       _setEffort($think, next);
       storage.setItem(STOR.effort, next);
+      const tab = activeTab();
+      if (tab) { tab.effort = next; saveTabs(); }
     });
   }
 
@@ -4877,21 +5982,51 @@ function wireEvents() {
     });
   }
 
+  // Bar action buttons (quick skills)
+  _panel.querySelector('#cp-action-changelog')?.addEventListener('click', () => {
+    const tab = activeTab();
+    if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+    if (tab.running) return;
+    const $input = _panel?.querySelector('#cp-input');
+    if (!$input) return;
+    $input.value = '/synabun changelog';
+    autoResize();
+    send();
+  });
+
   // Session selector
   const $sessBtn = _panel.querySelector('#cp-session-btn');
   const $sessMenu = _panel.querySelector('#cp-session-menu');
-  $sessBtn.addEventListener('click', () => {
-    const isOpen = $sessMenu.classList.toggle('open');
-    if (isOpen) renderSessionMenu();
-  });
-  // Double-click session label to rename
   const $sessLabel = _panel.querySelector('.cp-session-label');
-  $sessLabel?.addEventListener('dblclick', (e) => {
+  let _sessClickTimer = null;
+
+  $sessBtn.addEventListener('click', (e) => {
+    // Block menu toggle while rename input is active
+    if ($sessLabel?.querySelector('.cp-rename-input')) return;
+    // If the click landed on the label text, don't open the menu (label click triggers rename)
+    if (e.target === $sessLabel || e.target.closest('.cp-session-label')) return;
+    // Delay single-click to allow dblclick to cancel it
+    if (_sessClickTimer) { clearTimeout(_sessClickTimer); _sessClickTimer = null; }
+    _sessClickTimer = setTimeout(() => {
+      _sessClickTimer = null;
+      const isOpen = $sessMenu.classList.toggle('open');
+      if (isOpen) renderSessionMenu();
+    }, 220);
+  });
+
+  // Single-click on session label to rename directly
+  $sessLabel?.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (_sessClickTimer) { clearTimeout(_sessClickTimer); _sessClickTimer = null; }
     $sessMenu.classList.remove('open');
     const tab = activeTab();
-    if (tab?.sessionId) renameSession(tab.sessionId, $sessLabel.textContent);
+    renameSession(tab?.sessionId || null, $sessLabel.textContent);
   });
+  // Prevent mousedown on label from triggering button focus shift while rename is active
+  $sessLabel?.addEventListener('mousedown', (e) => {
+    if ($sessLabel.querySelector('.cp-rename-input')) e.stopPropagation();
+  });
+
   // Rename button (explicit pencil icon next to session label)
   const $renameBtn = _panel.querySelector('#cp-header-rename');
   // Prevent mousedown from blurring an active rename input before click fires
@@ -4900,9 +6035,10 @@ function wireEvents() {
   });
   $renameBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (_sessClickTimer) { clearTimeout(_sessClickTimer); _sessClickTimer = null; }
     $sessMenu.classList.remove('open');
     const tab = activeTab();
-    if (tab?.sessionId) renameSession(tab.sessionId, $sessLabel.textContent);
+    renameSession(tab?.sessionId || null, $sessLabel.textContent);
   });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.cp-header')) $sessMenu?.classList.remove('open');
@@ -4917,15 +6053,18 @@ function wireEvents() {
 
   ddSetup($project); ddSetup($model); ddSetup($branch);
   $project.addEventListener('change', () => {
-    storage.setItem(STOR.project, ddGetValue($project));
-    loadBranches(ddGetValue($project));
+    const val = ddGetValue($project);
+    storage.setItem(STOR.project, val);
+    const tab = activeTab();
+    if (tab) { tab.project = val; saveTabs(); }
+    loadBranches(val);
     // Reset session when switching projects
     selectSession(null, 'New chat');
   });
   $model.addEventListener('change', () => {
-    storage.setItem(STOR.model, ddGetValue($model));
+    const val = ddGetValue($model);
     const tab = activeTab();
-    if (tab) renderGauge(tab);
+    if (tab) { tab.model = val; renderGauge(tab); saveTabs(); }
   });
   $branch.addEventListener('change', async () => {
     if (!ddGetValue($branch) || !ddGetValue($project)) return;
@@ -4950,9 +6089,9 @@ function wireEvents() {
     });
     window.addEventListener('mousemove', (e) => {
       if (!dragging) return;
-      const w = Math.min(700, Math.max(320, window.innerWidth - e.clientX - 16));
+      const w = Math.min(700, Math.max(320, window.innerWidth - e.clientX - 20));
       _panel.style.width = w + 'px';
-      document.documentElement.style.setProperty('--claude-panel-width', (w + 16) + 'px');
+      document.documentElement.style.setProperty('--claude-panel-width', (w + 20) + 'px');
     });
     window.addEventListener('mouseup', () => {
       if (!dragging) return;
@@ -4980,8 +6119,105 @@ function wireEvents() {
     const $send = _panel?.querySelector('#cp-send');
     if ($send) $send.disabled = false;
   });
+
+  // ── Plan editor — receive edited plan, show updated plan + re-prompt with action buttons ──
+  on('plan-saved', ({ filePath, content }) => {
+    const tab = activeTab();
+    if (!tab) return;
+    const $msgs = tab.messagesEl;
+    if (!$msgs) return;
+
+    // Remove old post-plan action cards
+    $msgs.querySelectorAll('.post-plan-card').forEach(el => {
+      const msg = el.closest('.msg'); if (msg) msg.remove(); else el.remove();
+    });
+
+    // Store edited content for when user clicks "Continue with implementation"
+    tab._editedPlanContent = content;
+    if (filePath) tab.planFilePath = filePath;
+
+    // Render synthetic assistant message showing the updated plan
+    const el = document.createElement('div');
+    el.className = 'msg msg-assistant';
+    const avatar = document.createElement('div');
+    avatar.className = 'msg-avatar';
+    avatar.innerHTML = CLAUDE_ICON;
+    el.appendChild(avatar);
+    const wrap = document.createElement('div');
+    wrap.className = 'msg-content';
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    body._rawMd = content;
+    body.innerHTML = md(content);
+    wrap.appendChild(body);
+    el.appendChild(wrap);
+    $msgs.appendChild(el);
+
+    // Re-render post-plan card with 3 buttons (Implement / Compact / Edit)
+    renderPostPlanActions(tab, 'PLAN UPDATED');
+    scrollEnd();
+  });
+
+  on('changelog-saved', ({ content }) => {
+    const tab = activeTab();
+    if (!tab || !tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+
+    // Send edited changelog content back as the AskUserQuestion answer
+    if (tab._changelogAsk) {
+      const { questions, questionText } = tab._changelogAsk;
+      tab._changelogAsk = null;
+      const answers = {};
+      answers[questionText] = `Edit first — here are the edited entries:\n\n${content}`;
+      sendAskAnswer(tab, questions, answers);
+    } else {
+      // Fallback: send as a regular message if ask context was lost
+      const $input = _panel?.querySelector('#cp-input');
+      if ($input) {
+        $input.value = `The user has edited the changelog entries. Here are the updated entries:\n\n${content}\n\nWrite these entries to CHANGELOG.md.`;
+        send();
+      }
+    }
+  });
+
+  // ── Edit cancelled — re-enable options when editor closed without saving ──
+  on('plan-edit-cancelled', () => {
+    const tab = activeTab();
+    if (!tab) return;
+    // Restore post-plan card interactivity
+    tab.messagesEl?.querySelectorAll('.post-plan-card').forEach(card => {
+      card.style.opacity = '1';
+      card.style.pointerEvents = 'auto';
+    });
+  });
+
+  on('changelog-edit-cancelled', () => {
+    const tab = activeTab();
+    if (!tab) return;
+    tab._changelogAsk = null;
+    // Re-enable all ask option buttons in the last ask card
+    const askCards = tab.messagesEl?.querySelectorAll('.ask-options');
+    if (askCards?.length) {
+      const lastAsk = askCards[askCards.length - 1];
+      lastAsk.querySelectorAll('.ask-option').forEach(b => {
+        b.disabled = false;
+        b.classList.remove('selected');
+      });
+    }
+  });
 }
 
+// Side panel browser launch removed — all automations use floating browsers only.
+
+// Show panel without toggling it closed (used by notification click-through)
+on('claude-panel:show', (data) => {
+  if (!_visible) toggleClaudePanel();
+  if (data?.tabId) {
+    const idx = _tabs.findIndex(t => t.id === data.tabId);
+    if (idx >= 0) switchTab(idx);
+  }
+});
+
 export function initClaudePanel() {
-  // Will be initialized on first toggle
+  // Placeholder — panel is lazy-initialized on first toggleClaudePanel().
+  // Event listeners that must work before first toggle are registered at module level above.
 }

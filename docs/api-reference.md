@@ -1242,10 +1242,7 @@ Generates or updates a `.mcp.json` file in the specified directory, adding a `Sy
   "mcpServers": {
     "SynaBun": {
       "command": "node",
-      "args": ["<project-root>/mcp-server/dist/preload.js"],
-      "env": {
-        "DOTENV_PATH": "<project-root>/.env"
-      }
+      "args": ["<project-root>/mcp-server/run.mjs"]
     }
   }
 }

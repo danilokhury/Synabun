@@ -1,4 +1,4 @@
-const CACHE_NAME = 'synabun-offline-v4';
+const CACHE_NAME = 'synabun-offline-v7';
 const OFFLINE_URL = '/offline.html';
 
 self.addEventListener('install', (event) => {
@@ -21,5 +21,32 @@ self.addEventListener('fetch', (event) => {
   if (event.request.mode !== 'navigate') return;
   event.respondWith(
     fetch(event.request).catch(() => caches.match(OFFLINE_URL))
+  );
+});
+
+// ── Notifications (required for Safari PWA) ──
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SHOW_NOTIFICATION') {
+    const { title, body, tag, routing } = event.data;
+    event.waitUntil(
+      self.registration.showNotification(title, { body, tag, silent: true, data: routing || null })
+    );
+  }
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const routing = event.notification.data;
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      const target = list.length > 0 ? list[0] : null;
+      if (target) {
+        target.focus();
+        if (routing) target.postMessage({ type: 'NOTIFICATION_CLICK', ...routing });
+      } else {
+        clients.openWindow('/');
+      }
+    })
   );
 });
