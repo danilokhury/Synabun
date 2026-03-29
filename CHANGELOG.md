@@ -34,6 +34,9 @@
 - **TodoWrite validation** — Tested 10-item task list creation with mixed states (completed/in_progress/pending), rapid state transitions (3 sequential updates sweeping pending → completed), and full completion sweep
 - **Combined flow validation** — Tested Bash + AskUserQuestion + TodoWrite in a single response, Agent subagent + AskUserQuestion (agent researched test files, ask used results as context), and Glob + AskUserQuestion interleaving
 
+### Fixed — Session Dropdown Chevron Hit Target Too Small
+- **`▾` arrow in `.cp-session-btn` nearly unclickable** — The `.cp-dd-arrow` chevron that opens the session dropdown menu was `font-size: 7px` with no padding, making it extremely difficult to click. Since clicking the `.cp-session-label` text triggers rename (not dropdown), the chevron was the only clickable area for opening the menu. Added scoped CSS for `.cp-session-btn .cp-dd-arrow`: bumped font to `9px`, added `padding: 4px 6px` with negative margin to extend hit area without affecting layout, plus `border-radius` and hover highlight (`background: rgba(255,255,255,0.08)`) for visual feedback
+
 ## 2026-03-28
 
 ### Added — Browser Stream Toggle (Settings > Browser)

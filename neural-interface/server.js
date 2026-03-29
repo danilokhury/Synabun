@@ -6016,6 +6016,63 @@ app.post('/api/search/memories', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════
+// NPM UPDATE CHECK
+// ═══════════════════════════════════════════
+
+let _npmUpdateCache = { current: null, latest: null, updateAvailable: false, checkedAt: null };
+
+async function checkNpmUpdate() {
+  try {
+    const pkgPath = resolve(PROJECT_ROOT, 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    const current = pkg.version;
+    _npmUpdateCache.current = current;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch('https://registry.npmjs.org/synabun/latest', { signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (!res.ok) throw new Error(`npm registry returned ${res.status}`);
+    const data = await res.json();
+    const latest = data.version;
+
+    const cur = current.split('.').map(Number);
+    const lat = latest.split('.').map(Number);
+    const updateAvailable = lat[0] > cur[0]
+      || (lat[0] === cur[0] && lat[1] > cur[1])
+      || (lat[0] === cur[0] && lat[1] === cur[1] && lat[2] > cur[2]);
+
+    _npmUpdateCache = { current, latest, updateAvailable, checkedAt: new Date().toISOString() };
+
+    if (updateAvailable) {
+      console.log(`  Updates:   v${current} → v${latest} available`);
+    } else {
+      console.log(`  Updates:   up to date (v${current})`);
+    }
+  } catch (err) {
+    if (!_npmUpdateCache.current) {
+      try {
+        const pkg = JSON.parse(readFileSync(resolve(PROJECT_ROOT, 'package.json'), 'utf-8'));
+        _npmUpdateCache.current = pkg.version;
+      } catch {}
+    }
+    _npmUpdateCache.checkedAt = new Date().toISOString();
+    console.log(`  Updates:   check failed (${err.message})`);
+  }
+}
+
+app.get('/api/system/version', async (req, res) => {
+  if (_npmUpdateCache.checkedAt) {
+    const age = Date.now() - new Date(_npmUpdateCache.checkedAt).getTime();
+    if (age > 6 * 60 * 60 * 1000) {
+      checkNpmUpdate().catch(() => {});
+    }
+  }
+  res.json(_npmUpdateCache);
+});
+
+// ═══════════════════════════════════════════
 // FULL SYSTEM BACKUP & RESTORE
 // ═══════════════════════════════════════════
 
@@ -6690,7 +6747,7 @@ app.get('/api/latest-plan', (req, res) => {
   try {
     const localPlansDir = join(PROJECT_ROOT, 'data', 'plans');
     const legacyPlansDir = join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans');
-    const maxAge = 5 * 60 * 1000; // 5 minutes
+    const maxAge = 24 * 60 * 60 * 1000; // 24 hours
     const now = Date.now();
     const files = [];
     for (const dir of [localPlansDir, legacyPlansDir]) {
@@ -14313,6 +14370,9 @@ const httpServer = app.listen(PORT, async () => {
       if (cleaned > 0) console.log(`  Loops:     cleaned ${cleaned} orphaned loop file${cleaned !== 1 ? 's' : ''}`);
     }
   } catch { /* ok */ }
+
+  // Check for npm updates
+  try { await checkNpmUpdate(); } catch {}
 });
 
 // ═══════════════════════════════════════════

@@ -1417,6 +1417,12 @@ function injectStyles() {
     .cp-session-btn .cp-session-label {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    .cp-session-btn .cp-dd-arrow {
+      font-size: 9px; padding: 4px 6px; margin: -4px -6px -4px 0;
+      border-radius: 0 6px 6px 0; cursor: pointer;
+      transition: background 0.15s, color 0.2s, transform 0.2s;
+    }
+    .cp-session-btn .cp-dd-arrow:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.5); }
     .cp-header-rename-btn {
       display: flex; align-items: center; justify-content: center;
       width: 24px; align-self: stretch; border-radius: 0 8px 8px 0;
@@ -2294,7 +2300,7 @@ function updatePillRunning(tab) {
 function saveTabs() {
   try {
     storage.setItem(STOR.tabs, JSON.stringify({
-      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, queue: t.queue || [], queuePaused: t.queuePaused || false })),
+      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, planFilePath: t.planFilePath || '', queue: t.queue || [], queuePaused: t.queuePaused || false })),
       activeIdx: _activeTabIdx,
     }));
     _updateWindowRegistry();
@@ -2346,6 +2352,7 @@ function restoreTabs() {
           if (t) t.model = saved.model || _getDefaultModel();
           if (t && saved.effort) t.effort = saved.effort;
           if (t && saved.planMode) t.planMode = true;
+          if (t && saved.planFilePath) t.planFilePath = saved.planFilePath;
           if (t && saved.queue?.length) t.queue = saved.queue;
           if (t && saved.queuePaused) t.queuePaused = true;
         }
@@ -3087,18 +3094,14 @@ function _processTabMsg(tab, msg) {
     case 'control_request': handleControlRequest(tab, msg); break;
     case 'stderr': if (msg.text?.trim()) appendStatus(tab, msg.text.trim()); break;
     case 'done':
-      finishTab(tab, !tab.running);
-      if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
-      // Fallback plan completion: --print mode doesn't emit tool_result for built-in tools,
-      // so updateToolResult never fires for ExitPlanMode. renderAssistant sets _exitPlanPending
-      // when it sees the ExitPlanMode tool_use block. Render post-plan actions here if
-      // updateToolResult didn't already handle it (no spurious cards — flag is only set
-      // when ExitPlanMode is actually in the response).
+      // Plan completion: check BEFORE finishTab clears flags (same pattern as result handler).
       if (tab._exitPlanPending && !tab._exitPlanHandled) {
         tab._exitPlanHandled = true;
         tab._exitPlanPending = false;
         renderPostPlanActions(tab);
       }
+      finishTab(tab, !tab.running);
+      if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       // Queue: auto-advance to next message
       if (tab.queue.length > 0 && !tab.queuePaused) {
         setTimeout(() => advanceQueue(tab), 300);
@@ -3589,8 +3592,10 @@ function renderAssistant(tab, msg) {
   // built-in tools, so updateToolResult() never fires. Detect ExitPlanMode here
   // when the tool_use block appears, set a flag, and let the done handler render
   // post-plan actions. updateToolResult still handles it if tool_result ever fires.
-  if (tab.planMode && tools.some(t => t.name === 'ExitPlanMode') && !tab._exitPlanHandled) {
-    tab._exitPlanWasPlanMode = true;
+  // ExitPlanMode detection: detect regardless of current planMode state — planMode may have
+  // been toggled off mid-stream (tab switch, reconnect, race). Track whether it WAS active.
+  if (tools.some(t => t.name === 'ExitPlanMode') && !tab._exitPlanHandled) {
+    tab._exitPlanWasPlanMode = tab._exitPlanWasPlanMode || tab.planMode;
     tab._exitPlanPending = true;
     tab.planMode = false;
     const $plan = _panel?.querySelector('#cp-plan-toggle');
@@ -3919,7 +3924,7 @@ function sendAskAnswer(tab, questions, answers) {
 }
 
 function isPlanFile(filePath) {
-  return filePath && (/[/\\]data[/\\]plans[/\\]/.test(filePath) || /[/\\]\.claude[/\\]plans[/\\]/.test(filePath));
+  return filePath && (/[/\\]data[/\\]plans[/\\]/.test(filePath) || /[/\\]\.claude[/\\]plans[/\\]/.test(filePath) || /(?:^|[/\\])PLAN\.md$/.test(filePath));
 }
 
 /** Extract plan text from the last assistant message(s) in the tab's messages container. */
