@@ -33,6 +33,7 @@ const TEST_FILES = [
   { name: 'Cron Parser', file: 'cron-parser.test.mjs', key: 'cron' },
   { name: 'API Endpoints', file: 'api-endpoints.test.mjs', key: 'api' },
   { name: 'Hook Logic', file: 'hook-tests.test.mjs', key: 'hooks' },
+  { name: 'Permission System', file: 'permission-system.test.mjs', key: 'permissions' },
 ];
 
 function runFile(filePath) {
