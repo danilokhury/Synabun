@@ -150,6 +150,10 @@ export function getSharedHTML() {
             <span class="menu-shortcut">T</span>
           </div>
           <div class="menu-sep"></div>
+          <div class="menu-item" id="menu-install-app" style="display:none">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span> Install as App</span>
+          </div>
           <div class="menu-item" id="menu-restart-server">
             <span class="menu-check"></span>
             <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></span> Restart Server</span>
@@ -323,12 +327,12 @@ export function getSharedHTML() {
 
   <div class="bar-right">
     <div class="bar-group">
-      <button id="titlebar-sessions-btn" class="bar-icon" data-tooltip="Session Monitor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="3"/><path d="M8 21h8M12 17v4"/><path d="M7.5 13V10"/><path d="M10.5 13V11"/><path d="M13.5 13V8"/><path d="M16.5 13V9.5"/></svg></button>
-      <button id="titlebar-gallery-btn" class="bar-icon" data-tooltip="Image Gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="17" height="14" rx="2.5"/><circle cx="7.5" cy="11.5" r="2"/><path d="M2 17l4.5-3.5 3 2.5 2.5-2L19 20"/></svg></button>
+      <button id="titlebar-cost-btn" class="bar-icon bar-cost-btn" data-tooltip="Cost Tracker"><span class="bar-cost-label">$0</span></button>
+      <button id="titlebar-sessions-btn" class="bar-icon" data-tooltip="Session Monitor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10V18C3 19.1046 3.89543 20 5 20H9M3 10V6C3 4.89543 3.89543 4 5 4H19C20.1046 4 21 4.89543 21 6V10M3 10H21M21 10V13"/><path d="M15 16L13 18L15 20"/><path d="M19 16L21 18L19 20"/><circle cx="6" cy="7" r="1" fill="currentColor"/><circle cx="9" cy="7" r="1" fill="currentColor"/></svg></button>
+      <button id="titlebar-gallery-btn" class="bar-icon" data-tooltip="Image Gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 7L15 9L20 4"/><path d="M2 12.5001L3.75159 10.9675C4.66286 10.1702 6.03628 10.2159 6.89249 11.0721L11.1822 15.3618C11.8694 16.0491 12.9512 16.1428 13.7464 15.5839L14.0446 15.3744C15.1888 14.5702 16.7369 14.6634 17.7765 15.599L21 18.5001"/><path d="M22 12C22 16.714 22 19.0711 20.5355 20.5355C19.0711 22 16.714 22 12 22C7.28595 22 4.92893 22 3.46447 20.5355C2 19.0711 2 16.714 2 12C2 10.8717 2 9.87835 2.02008 9M12 2C7.28595 2 4.92893 2 3.46447 3.46447C3.03965 3.88929 2.73806 4.38921 2.52396 5"/></svg></button>
     </div>
     <span class="bar-divider"></span>
     <div class="bar-group">
-      <button id="titlebar-cost-btn" class="bar-icon bar-cost-btn" data-tooltip="Cost Tracker"><span class="bar-cost-label">$0</span></button>
       <button id="titlebar-tutorial-btn" class="bar-icon" data-tooltip="Toggle Tutorial"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor" stroke="none"/></svg></button>
     </div>
     <span class="bar-divider"></span>
@@ -685,7 +689,7 @@ export function getSharedHTML() {
       <button class="wb-tool active" data-tool="select" data-tooltip="Select">
         <svg viewBox="0 0 24 24"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>
       </button>
-      <button class="wb-tool" id="wb-multiselect" data-tooltip="Multi-select (drag to select)">
+      <button class="wb-tool" id="wb-multiselect" data-tooltip="Multi-select (M)">
         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="1" fill="none" stroke-dasharray="3 2"/><path d="M8 2v2M14 2v2M20 8h2M20 14h2M8 20v2M14 20v2M2 8h2M2 14h2"/></svg>
       </button>
       <button class="wb-tool" data-tool="text" data-tooltip="Text · hold Ctrl = multi">

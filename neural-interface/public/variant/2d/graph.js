@@ -108,6 +108,9 @@ const _pointer = {
 // Position save timer
 let _posSaveTimer = null;
 
+// Focus mode — true when visualization is paused (zero-resource mode)
+let _focusPaused = false;
+
 // Pan inertia — coasting after mouse release
 const _panInertia = {
   vx: 0,
@@ -353,6 +356,24 @@ export function startAnimation() {
   if (!_animFrameId && _canvas) {
     _animFrameId = requestAnimationFrame(_renderLoop);
   }
+}
+
+/** Pause all interaction (focus mode — zero resource consumption). */
+export function pauseInteraction() {
+  _focusPaused = true;
+  _panInertia.active = false;
+  // Reset any in-flight drag/pan so state doesn't stick across focus toggles
+  _pointer.isPanning = false;
+  _pointer.isDragging = false;
+  // Ensure canvas doesn't block pointer events to layers below (whiteboard).
+  // This also covers the boot race where viz:toggle fires before _bootComplete.
+  if (_canvas) _canvas.classList.add('viz-hidden-2d');
+}
+
+/** Resume interaction after focus mode exit. */
+export function resumeInteraction() {
+  _focusPaused = false;
+  if (_canvas) _canvas.classList.remove('viz-hidden-2d');
 }
 
 // ═══════════════════════════════════════════
@@ -1247,7 +1268,7 @@ function _schedulePositionSave() {
 // ═══════════════════════════════════════════
 
 function _onPointerDown(e) {
-  if (e.button !== 0) return; // left-click only
+  if (_focusPaused || e.button !== 0) return;
   // Skip if Shift (lasso mode handled by lasso.js)
   if (e.shiftKey) return;
 
@@ -1280,6 +1301,7 @@ function _onPointerDown(e) {
 const DRAG_THRESHOLD = 5; // pixels before drag/pan starts
 
 function _onPointerMove(e) {
+  if (_focusPaused) return;
   // Check if we've exceeded the drag threshold before actually moving
   if ((_pointer.isPanning || _pointer.isDragging) && !_pointer.hasMoved) {
     const tdx = e.clientX - _pointer.downScreenX;
@@ -1326,6 +1348,7 @@ function _onPointerMove(e) {
 }
 
 function _onPointerUp(e) {
+  if (_focusPaused) return;
   const wasDragging = _pointer.isDragging;
   const wasPanning = _pointer.isPanning;
   const moved = _pointer.hasMoved;
@@ -1388,6 +1411,7 @@ function _onPointerUp(e) {
 }
 
 function _onPointerLeave() {
+  if (_focusPaused) return;
   if (state.hoveredNodeId) {
     state.hoveredNodeId = null;
     _canvas.style.cursor = 'grab';
@@ -1396,6 +1420,7 @@ function _onPointerLeave() {
 }
 
 function _onWheel(e) {
+  if (_focusPaused) return;
   e.preventDefault();
   // Accumulate zoom target — each tick multiplies by factor
   const zoomFactor = e.deltaY > 0 ? 0.88 : 1.12;
@@ -1410,6 +1435,7 @@ function _onWheel(e) {
 }
 
 function _onDblClick(e) {
+  if (_focusPaused) return;
   const hit = _hitTest(e.clientX, e.clientY);
   if (hit && hit.type === 'card') {
     // Unpin card
@@ -1422,6 +1448,7 @@ function _onDblClick(e) {
 }
 
 function _onContextMenu(e) {
+  if (_focusPaused) { e.preventDefault(); return; }
   e.preventDefault();
   const hit = _hitTest(e.clientX, e.clientY);
   if (hit && hit.type === 'card') {

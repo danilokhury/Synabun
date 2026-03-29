@@ -39,6 +39,8 @@ let _folderColors = {};           // { "/path/to/folder": "#hex" }
 let _customIcons = null;          // { extensions: {}, filenames: {} } from server
 let _planEditMode = false;        // true when editing a plan file from Claude panel
 let _planEditFilePath = null;     // path of the plan file being edited
+let _changelogEditMode = false;   // true when editing a changelog draft from Claude panel
+let _changelogEditFilePath = null; // path of the changelog draft being edited
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 500;
@@ -1705,13 +1707,18 @@ async function openFileEditor(filePath) {
     const sizeEl = $('fe-editor-size');
     if (sizeEl) sizeEl.textContent = formatSize(data.size || 0);
 
-    // Plan edit banner
+    // Plan/changelog edit banner
     const edPanel = $('fe-editor-panel');
     edPanel?.querySelector('.fe-plan-banner')?.remove();
     if (_planEditMode) {
       const banner = document.createElement('div');
       banner.className = 'fe-plan-banner';
       banner.textContent = 'Editing plan — save to send to Claude';
+      edPanel?.prepend(banner);
+    } else if (_changelogEditMode) {
+      const banner = document.createElement('div');
+      banner.className = 'fe-plan-banner';
+      banner.textContent = 'Editing changelog — save to send to Claude';
       edPanel?.prepend(banner);
     }
 
@@ -1731,6 +1738,10 @@ function closeFileEditor() {
     if (!confirm('Discard unsaved changes?')) return false;
   }
 
+  // Emit cancel events before clearing flags so Claude panel can re-enable buttons
+  if (_planEditMode) emit('plan-edit-cancelled');
+  if (_changelogEditMode) emit('changelog-edit-cancelled');
+
   _editorOpen = false;
   _editorFilePath = null;
   _editorOriginal = '';
@@ -1739,6 +1750,8 @@ function closeFileEditor() {
   _editorPreviewMode = false;
   _planEditMode = false;
   _planEditFilePath = null;
+  _changelogEditMode = false;
+  _changelogEditFilePath = null;
   $('fe-editor-panel')?.querySelector('.fe-plan-banner')?.remove();
   _shLang = '';
   _shLines = null;
@@ -1791,6 +1804,17 @@ async function saveFileEditor() {
       _planEditFilePath = null;
       showToast('Plan saved — sending to Claude');
       emit('plan-saved', { filePath: savedPath, content: savedContent });
+      closeFileEditor();
+      return;
+    }
+
+    // Changelog edit: emit saved content to Claude panel, then close editor
+    if (_changelogEditMode && _editorFilePath === _changelogEditFilePath) {
+      const savedContent = textarea.value;
+      _changelogEditMode = false;
+      _changelogEditFilePath = null;
+      showToast('Changelog saved — sending to Claude');
+      emit('changelog-saved', { content: savedContent });
       closeFileEditor();
       return;
     }
@@ -2315,6 +2339,13 @@ export function initFileExplorer() {
   on('open-plan-editor', ({ filePath }) => {
     _planEditMode = true;
     _planEditFilePath = filePath;
+    openFileEditor(filePath);
+  });
+
+  // ── Changelog editor — open changelog draft from Claude panel for direct editing ──
+  on('open-changelog-editor', ({ filePath }) => {
+    _changelogEditMode = true;
+    _changelogEditFilePath = filePath;
     openFileEditor(filePath);
   });
 

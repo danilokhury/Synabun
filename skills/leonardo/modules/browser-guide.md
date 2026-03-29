@@ -107,8 +107,50 @@ browser_click selector: "[role='radio']:has-text('NUMBER')"
 ```
 **Options:** 1 (default), 2, 3, 4
 
-### Add Elements
+### Add Elements / Reference Images
 Click the "Add elements" button near the prompt to access image-to-image, style reference, content reference, and other advanced features (availability depends on selected model).
+
+**Preferred method — use the dedicated tool:**
+```
+leonardo_browser_reference type: "style_ref" filePaths: ["/path/to/image.png"] autoClear: true
+```
+This automates the full flow: opens the panel, selects the reference type, uploads the file(s), and auto-clears from the SynaBun image store.
+
+**Manual method (fallback):**
+1. Click "Add elements":
+```javascript
+(() => {
+  const btns = document.querySelectorAll('button');
+  for (const b of btns) {
+    if (b.textContent.includes('Add elements')) { b.click(); return 'opened'; }
+  }
+  return 'not found';
+})()
+```
+2. Wait for panel to open, then `browser_snapshot` to see available reference types.
+3. Click the desired reference type (e.g., "Style Reference", "Image Reference", "Content Reference").
+4. Upload the image file:
+```
+browser_upload selector: "input[type='file']" filePaths: ["/path/to/image.png"]
+```
+5. Optionally adjust the strength slider if visible.
+6. Close the panel with Escape or continue to prompt.
+
+**Reference type availability by model:**
+| Model | Image Ref | Style Ref | Content Ref | Character Ref | Image-to-Image |
+|-------|-----------|-----------|-------------|---------------|----------------|
+| Lucid Origin | — | Yes | Yes | — | — |
+| Lucid Realism | — | Yes | Yes | — | — |
+| FLUX Dev | — | Yes | Yes | — | — |
+| FLUX Schnell | — | Yes | Yes | — | — |
+| Phoenix 1.0 | — | Yes | Yes | Yes | Yes |
+| Phoenix 0.9 | — | Yes | Yes | Yes | Yes |
+| Nano Banana 2 | Yes | — | — | — | — |
+| Seedream 4.5 | Yes | — | — | — | — |
+| GPT Image-1.5 | Yes | — | — | — | — |
+| Nano Banana Pro | Yes | — | — | — | — |
+| FLUX.1 Kontext | Yes | — | — | — | — |
+| Ideogram 3.0 | — | — | — | — | — |
 
 ### Prompt
 The prompt textbox has `aria-label="Prompt"`. Use `leonardo_browser_generate` to fill it and click Generate, or fill manually:
@@ -255,8 +297,48 @@ To toggle a switch, find and click it:
 })()
 ```
 
-### Image Guidance (Start Frame)
-Click "Add Image Guidance to generation" button near the prompt to add a start frame image for image-to-video generation.
+### Image Guidance (Start/End Frame & Reference)
+
+**Preferred method — use the dedicated tool:**
+```
+leonardo_browser_reference type: "start_frame" filePaths: ["/path/to/image.png"] autoClear: true
+```
+For end frames (supported models only):
+```
+leonardo_browser_reference type: "end_frame" filePaths: ["/path/to/image.png"] autoClear: true
+```
+
+**Manual method (fallback):**
+1. Click "Add Image Guidance to generation" button near the prompt:
+```javascript
+(() => {
+  const btns = document.querySelectorAll('button');
+  for (const b of btns) {
+    if (b.textContent.includes('Image Guidance') || b.textContent.includes('Add Image')) {
+      b.click(); return 'opened';
+    }
+  }
+  return 'not found';
+})()
+```
+2. Upload the image:
+```
+browser_upload selector: "input[type='file']" filePaths: ["/path/to/image.png"]
+```
+3. For end frame, look for an "End Frame" tab or toggle after uploading the start frame.
+
+**Video reference capabilities by model:**
+| Model | Start Frame | End Frame | Image Ref |
+|-------|-------------|-----------|-----------|
+| All video models | Yes | — | — |
+| Kling Video 3.0 | Yes | Yes | — |
+| Kling Video O3 Omni | Yes | Yes | Yes |
+| Veo 3.1 | Yes | Yes | Yes |
+| Kling O1 | Yes | Yes | Yes |
+| Seedance 1.0 Lite | Yes | Yes | Yes |
+| Kling 2.5 Turbo | Yes | Yes | — |
+| Kling 2.1 Pro | Yes | Yes | — |
+| Seedance 1.0 Pro | Yes | Yes | — |
 
 ### Prompt & Generate
 Same as image page — use `leonardo_browser_generate` to fill prompt and click Generate.

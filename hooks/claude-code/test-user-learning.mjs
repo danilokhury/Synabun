@@ -153,48 +153,43 @@ async function main() {
     // ─── TEST 3b: Stop block has anti-misuse guardrails ───
     console.log(`\n${Y}Test 3b: Stop block contains anti-misuse guardrails${X}`);
 
-    assert(stopReason.includes('NOT `conversations`'), 'Stop block forbids conversations category');
+    assert(stopReason.includes('NOT') && stopReason.includes('conversations'), 'Stop block forbids conversations category');
     assert(stopReason.includes('NOT a session summary'), 'Stop block says NOT a session summary');
     assert(stopReason.includes('GOOD'), 'Stop block has GOOD example');
     assert(stopReason.includes('BAD'), 'Stop block has BAD example');
     assert(stopReason.includes('AVOID DUPLICATES'), 'Stop block warns about duplicates');
     assert(stopReason.includes('reflect'), 'Stop block mentions reflect as an option');
 
-    // ─── TEST 3c: Retry message also forbids conversations ───
-    console.log(`\n${Y}Test 3c: Retry block message reinforces category rule${X}`);
+    // ─── TEST 3c: After 1 retry, stop allows (lightweight enforcement) ───
+    console.log(`\n${Y}Test 3c: Stop allows after 1 retry (lightweight enforcement)${X}`);
 
     flag = readFlag();
     assert(flag.userLearningRetries === 1, `userLearningRetries = 1 (got ${flag?.userLearningRetries})`);
 
+    // 2nd stop call — should allow (1-retry max for user learning)
     const stop1b = await runHook(STOP_HOOK, { session_id: TEST_SESSION });
-    const retryReason = stop1b.parsed.reason || '';
-    assert(retryReason.includes('communication-style'), 'Retry message requires communication-style');
-    assert(retryReason.includes('reflect'), 'Retry message mentions reflect as an option');
+    assert(!stop1b.parsed.decision, 'Stop allows after 1 retry (user learning max reached)');
 
-    // Reset retries for Test 4 (we used 2 retries in 3/3b/3c)
+    // Reset for Test 4
     flag = readFlag();
+    flag.userLearningPending = true;
     flag.userLearningRetries = 0;
     writeFlag(flag);
 
     // ═══════════════════════════════════════════════════════════
-    // TEST 4: Stop hook retries up to MAX_RETRIES then gives up
+    // TEST 4: Stop hook blocks once then gives up (1-retry max)
     // ═══════════════════════════════════════════════════════════
-    console.log(`\n${Y}Test 4: Stop hook retries and gives up after MAX_RETRIES${X}`);
+    console.log(`\n${Y}Test 4: Stop hook blocks once then gives up (lightweight)${X}`);
 
     const stop2 = await runHook(STOP_HOOK, { session_id: TEST_SESSION });
     assert(stop2.parsed.decision === 'block', 'Block on retry 1');
 
+    // After 1 retry, should soft-cleanup and allow
     const stop3 = await runHook(STOP_HOOK, { session_id: TEST_SESSION });
-    assert(stop3.parsed.decision === 'block', 'Block on retry 2');
-
-    const stop3b = await runHook(STOP_HOOK, { session_id: TEST_SESSION });
-    assert(stop3b.parsed.decision === 'block', 'Block on retry 3');
-
-    const stop4 = await runHook(STOP_HOOK, { session_id: TEST_SESSION });
-    assert(!stop4.parsed.decision, 'No block after max retries (allows stop)');
+    assert(!stop3.parsed.decision, 'No block after 1 retry (allows stop)');
 
     flag = readFlag();
-    assert(flag.userLearningPending === false, 'userLearningPending cleared after max retries');
+    assert(flag.userLearningPending === false, 'userLearningPending cleared after soft cleanup');
     assert(flag.userLearningRetries === 0, 'userLearningRetries reset to 0');
 
     // ═══════════════════════════════════════════════════════════
@@ -269,12 +264,12 @@ async function main() {
     assert(flag.userLearningPending === true, 'userLearningPending preserved after bug-fixes remember');
 
     // ═══════════════════════════════════════════════════════════
-    // TEST 7: Reflect only clears pending when stop hook enforced UL (blockActive)
+    // TEST 7: Reflect clears pending when userLearningPending is true
     // ═══════════════════════════════════════════════════════════
-    console.log(`\n${Y}Test 7: Reflect clears pending only when userLearningBlockActive${X}`);
+    console.log(`\n${Y}Test 7: Reflect clears pending when userLearningPending is true${X}`);
     cleanup();
 
-    // 7a: reflect WITHOUT blockActive → should NOT clear (prevents false clears from unrelated reflects)
+    // 7a: reflect when pending is true → should clear (Claude is acting on the UL nudge)
     writeFlag({
       editCount: 0, retries: 0, files: [],
       messageCount: 5, totalSessionMessages: 5,
@@ -284,34 +279,13 @@ async function main() {
     await runHook(POST_REMEMBER, {
       session_id: TEST_SESSION,
       tool_name: 'mcp__SynaBun__reflect',
-      tool_input: { memory_id: 'some-unrelated-uuid', content: 'Unrelated reflect during normal work' },
+      tool_input: { memory_id: 'some-comm-style-uuid', content: 'Updated: user is direct, terse, no greetings' },
       tool_response: { success: true },
     });
 
     flag = readFlag();
-    assert(flag.userLearningPending === true, 'Reflect without blockActive does NOT clear pending');
-    assert(!flag.userLearningObserved, 'Reflect without blockActive does NOT set observed');
-
-    // 7b: reflect WITH blockActive → should clear (stop hook enforced UL, Claude reflected on comm-style memory)
-    cleanup();
-    writeFlag({
-      editCount: 0, retries: 0, files: [],
-      messageCount: 5, totalSessionMessages: 5,
-      userLearningPending: true, userLearningBlockActive: true,
-      userLearningNudgeCount: 1, userLearningRetries: 1,
-    });
-
-    await runHook(POST_REMEMBER, {
-      session_id: TEST_SESSION,
-      tool_name: 'mcp__SynaBun__reflect',
-      tool_input: { memory_id: 'some-communication-style-uuid', content: 'Updated: user is direct, terse, no greetings' },
-      tool_response: { success: true },
-    });
-
-    flag = readFlag();
-    assert(flag.userLearningPending === false, 'Reflect with blockActive clears pending');
-    assert(flag.userLearningBlockActive === false, 'blockActive cleared after reflect');
-    assert(flag.userLearningObserved === true, 'userLearningObserved set after enforced reflect');
+    assert(flag.userLearningPending === false, 'Reflect clears pending when userLearningPending is true');
+    assert(flag.userLearningObserved === true, 'userLearningObserved set after reflect');
 
     // ═══════════════════════════════════════════════════════════
     // TEST 7b: Reflect does NOT set observed when pending is false
@@ -454,14 +428,14 @@ async function main() {
     cleanup();
 
     writeFlag({
-      editCount: 1, retries: 0, files: ['some-file.js'],
+      editCount: 0, retries: 0, files: [],
       messageCount: 2, totalSessionMessages: 7,
       totalEdits: 5, greetingDelivered: true, rememberCount: 1,
       userLearningNudgeCount: 2, userLearningPending: false, userLearningRetries: 0,
       userLearningObserved: true,
     });
 
-    // Stop hook with editCount < 3 and no blocking conditions → softCleanup runs
+    // Stop hook with editCount=0 and no blocking conditions → softCleanup runs
     await runHook(STOP_HOOK, { session_id: TEST_SESSION });
     flag = readFlag();
     assert(flag.userLearningNudgeCount === 2, `nudgeCount preserved (got ${flag?.userLearningNudgeCount})`);
@@ -506,9 +480,9 @@ async function main() {
     assert(!stopAllow.parsed.decision, 'Lifecycle: stop allows after user learning complete');
 
     // ═══════════════════════════════════════════════════════════
-    // TEST 14: Edit-heavy session — user learning fires after task remember
+    // TEST 14: Edit-heavy session — user learning bundled with task remember
     // ═══════════════════════════════════════════════════════════
-    console.log(`\n${Y}Test 14: User learning fires after task-remember in edit-heavy session${X}`);
+    console.log(`\n${Y}Test 14: User learning bundled with task-remember in edit-heavy session${X}`);
     cleanup();
 
     // Simulate: 3 messages + 3 edits + userLearningPending
@@ -519,10 +493,13 @@ async function main() {
       greetingDelivered: true,
     });
 
-    // Stop should block for EDITS first (CHECK 2 before CHECK 2.5)
-    const stopEdits = await runHook(STOP_HOOK, { session_id: TEST_SESSION });
-    assert(stopEdits.parsed.decision === 'block', 'Edit-heavy: blocks for task remember first');
-    assert((stopEdits.parsed.reason || '').includes('edits'), 'Edit-heavy: reason mentions edits');
+    // Stop should block with BOTH obligations bundled in one block
+    const stopBundled = await runHook(STOP_HOOK, { session_id: TEST_SESSION });
+    assert(stopBundled.parsed.decision === 'block', 'Bundled: blocks with combined obligations');
+    const bundledReason = stopBundled.parsed.reason || '';
+    assert(bundledReason.includes('Task memory'), 'Bundled: reason includes task memory');
+    assert(bundledReason.includes('User learning'), 'Bundled: reason includes user learning');
+    assert(bundledReason.includes('communication-style'), 'Bundled: reason mentions communication-style');
 
     // Claude does task remember → editCount resets, userLearningPending preserved
     await runHook(POST_REMEMBER, {
@@ -533,13 +510,8 @@ async function main() {
     });
 
     flag = readFlag();
-    assert(flag.editCount === 0, 'Edit-heavy: editCount reset after task remember');
-    assert(flag.userLearningPending === true, 'Edit-heavy: userLearningPending still true');
-
-    // Stop should now block for USER LEARNING (CHECK 2.5)
-    const stopUL = await runHook(STOP_HOOK, { session_id: TEST_SESSION });
-    assert(stopUL.parsed.decision === 'block', 'Edit-heavy: blocks for user learning after task remember');
-    assert((stopUL.parsed.reason || '').includes('communication-style'), 'Edit-heavy: reason mentions communication-style');
+    assert(flag.editCount === 0, 'Bundled: editCount reset after task remember');
+    assert(flag.userLearningPending === true, 'Bundled: userLearningPending still true (needs comm-style remember)');
 
   } finally {
     cleanup();

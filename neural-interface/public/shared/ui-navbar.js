@@ -176,7 +176,7 @@ export function initNavbar() {
   }
 
   // ── Window Controls Overlay (PWA standalone) ──
-  // Dormant until browsers support WCO on macOS. Activates automatically when supported.
+  // Toggles body.wco-active when the overlay chevron is clicked (traffic lights move into content).
   if ('windowControlsOverlay' in navigator) {
     const wco = navigator.windowControlsOverlay;
     const updateWco = () => document.body.classList.toggle('wco-active', wco.visible);

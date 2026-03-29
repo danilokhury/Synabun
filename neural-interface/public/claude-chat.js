@@ -687,6 +687,7 @@ function finish() {
 let pendingAsk = null;
 let pendingAskRequestId = null;
 let pendingAskBufferedAnswer = null;
+let askRenderedViaControl = false;
 let attachedImages = [];
 const _autoAllowTools = new Set();
 
@@ -699,8 +700,8 @@ function handleControlRequest(msg) {
 
   if (toolName === 'AskUserQuestion') {
     pendingAskRequestId = requestId;
-    // Render if tool_use block hasn't done it already
-    if (!pendingAsk) renderAskUserQuestion(requestId, req.input);
+    // Render if not already rendered (prevents duplicate cards from proactive + denial control_requests)
+    if (!pendingAsk && !askRenderedViaControl) renderAskUserQuestion(requestId, req.input);
     // Flush buffered answer if user already clicked before control_request arrived
     if (pendingAskBufferedAnswer) {
       const buf = pendingAskBufferedAnswer;
@@ -722,7 +723,9 @@ function handleControlRequest(msg) {
 
 function renderAskUserQuestion(requestId, input) {
   hideThinking();
+  askRenderedViaControl = true;
   const questions = input?.questions || [input];
+  const allQuestions = input.questions || questions;
   const el = document.createElement('div');
   el.className = 'msg msg-assistant';
 
@@ -734,7 +737,26 @@ function renderAskUserQuestion(requestId, input) {
   const wrap = document.createElement('div');
   wrap.className = 'msg-content';
 
+  // Batched answer collection
+  const batchAnswers = {};
+  const totalQuestions = questions.length;
+  const submitBar = document.createElement('div');
+  submitBar.className = 'ask-submit-bar';
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'ask-submit';
+  submitBtn.disabled = true;
+  submitBtn.textContent = `Submit (0/${totalQuestions})`;
+  submitBar.appendChild(submitBtn);
+
+  function updateSubmitState() {
+    const answered = Object.keys(batchAnswers).length;
+    submitBtn.textContent = `Submit (${answered}/${totalQuestions})`;
+    submitBtn.disabled = answered < totalQuestions;
+  }
+
   for (const q of questions) {
+    const questionText = q.question || q.text || q.header || '';
+    const isMultiSelect = q.multiSelect === true;
     const card = document.createElement('div');
     card.className = 'ask-card';
     if (q.header) {
@@ -743,40 +765,73 @@ function renderAskUserQuestion(requestId, input) {
       hdr.textContent = q.header;
       card.appendChild(hdr);
     }
-    if (q.question) {
+    if (questionText && questionText !== q.header) {
       const qEl = document.createElement('div');
       qEl.className = 'ask-question';
-      qEl.textContent = q.question;
+      qEl.textContent = questionText;
       card.appendChild(qEl);
+    }
+    if (isMultiSelect) {
+      const hint = document.createElement('div');
+      hint.className = 'ask-multi-hint';
+      hint.textContent = 'Select all that apply';
+      card.appendChild(hint);
     }
     if (q.options?.length) {
       const opts = document.createElement('div');
       opts.className = 'ask-options';
+      if (isMultiSelect) opts.classList.add('multi');
       for (const opt of q.options) {
+        const optLabel = typeof opt === 'string' ? opt : (opt.label || opt.value || String(opt));
+        const optDesc = typeof opt === 'string' ? '' : (opt.description || '');
         const btn = document.createElement('button');
         btn.className = 'ask-option';
-        btn.innerHTML = `<span class="ask-option-label">${esc(opt.label)}</span>` +
-          (opt.description ? `<span class="ask-option-desc">${esc(opt.description)}</span>` : '');
+        btn.innerHTML = `<span class="ask-option-wrap"><span class="ask-option-label">${esc(optLabel)}</span>` +
+          (optDesc ? `<span class="ask-option-desc">${esc(optDesc)}</span>` : '') + `</span>`;
         btn.addEventListener('click', () => {
-          opts.querySelectorAll('.ask-option').forEach(b => b.disabled = true);
-          btn.classList.add('selected');
-          const answers = {};
-          answers[q.question] = opt.label;
-          sendControlResponse(requestId, input.questions || [q], answers);
+          if (isMultiSelect) {
+            btn.classList.toggle('selected');
+            const selected = [];
+            opts.querySelectorAll('.ask-option.selected').forEach(b => {
+              selected.push(b.querySelector('.ask-option-label').textContent);
+            });
+            if (selected.length > 0) batchAnswers[questionText] = selected.join(', ');
+            else delete batchAnswers[questionText];
+          } else {
+            opts.querySelectorAll('.ask-option').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            batchAnswers[questionText] = optLabel;
+          }
+          updateSubmitState();
         });
         opts.appendChild(btn);
       }
       card.appendChild(opts);
     } else {
-      const hint = document.createElement('div');
-      hint.className = 'ask-hint';
-      hint.textContent = 'Type your answer below and press Enter';
-      card.appendChild(hint);
-      pendingAsk = { requestId, questions: input.questions || [q], questionText: q.question };
-      setRunning(false);
+      const textInput = document.createElement('input');
+      textInput.type = 'text';
+      textInput.className = 'ask-text-input';
+      textInput.placeholder = 'Type your answer...';
+      textInput.addEventListener('input', () => {
+        if (textInput.value.trim()) batchAnswers[questionText] = textInput.value.trim();
+        else delete batchAnswers[questionText];
+        updateSubmitState();
+      });
+      card.appendChild(textInput);
     }
     wrap.appendChild(card);
   }
+
+  // Submit button — sends all answers as a batch
+  submitBtn.addEventListener('click', () => {
+    wrap.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
+    wrap.querySelectorAll('.ask-text-input').forEach(i => { i.disabled = true; });
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Submitted';
+    sendControlResponse(requestId, allQuestions, batchAnswers);
+  });
+  wrap.appendChild(submitBar);
+
   el.appendChild(wrap);
   $msgs.appendChild(el);
   scrollEnd();
@@ -799,6 +854,7 @@ function sendControlResponse(requestId, questions, answers) {
   }));
   pendingAskRequestId = null;
   pendingAskBufferedAnswer = null;
+  askRenderedViaControl = false;
   showThinking();
   setRunning(true);
 }

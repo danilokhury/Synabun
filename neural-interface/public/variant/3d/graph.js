@@ -74,6 +74,9 @@ let noLinksScaleBoost = 1.0;
 // Pointer-over-UI guard
 let _pointerOverUI = false;
 
+// Focus mode — true when visualization is paused (zero-resource mode)
+let _focusPaused = false;
+
 // ── Raw Three.js objects (replaces ForceGraph3D) ──
 let _scene    = null;
 let _camera   = null;
@@ -763,6 +766,7 @@ function createTagObject(node) {
 
 function _initMouseTracking() {
   document.addEventListener('mousemove', (e) => {
+    if (_focusPaused) return;
     // Use container bounds for correct raycasting when explorer sidebar shifts the graph
     const rect = _graphContainer
       ? _graphContainer.getBoundingClientRect()
@@ -779,6 +783,7 @@ function _initMouseTracking() {
   // (onNodeDrag only fires on mousemove, not on wheel scroll).
   const wheelTarget = _graphContainer || document;
   wheelTarget.addEventListener('wheel', (e) => {
+    if (_focusPaused) return;
     if (!_drag.active || !_drag.node || !graph) return;
 
     e.preventDefault();
@@ -1403,7 +1408,7 @@ function _pickNode(mouseNDC) {
 let _prevHoveredNode = null;
 
 function _onPointerMove(e) {
-  if (_pointerOverUI) return;
+  if (_focusPaused || _pointerOverUI) return;
 
   const rect = _graphContainer
     ? _graphContainer.getBoundingClientRect()
@@ -1426,7 +1431,7 @@ function _onPointerMove(e) {
 }
 
 function _onPointerDown(e) {
-  if (e.button !== 0 || _pointerOverUI) return;
+  if (_focusPaused || e.button !== 0 || _pointerOverUI) return;
   _pointerDownPos = { x: e.clientX, y: e.clientY };
   _pointerDownTime = performance.now();
 
@@ -1439,7 +1444,7 @@ function _onPointerDown(e) {
 }
 
 function _onPointerUp(e) {
-  if (e.button !== 0) return;
+  if (_focusPaused || e.button !== 0) return;
 
   if (_drag.active) {
     const wasDrag = _pointerDownPos
@@ -2347,6 +2352,18 @@ export function stopAnimation() {
 /** Restart the animation loop after stopping. */
 export function startAnimation() {
   if (!animFrameId) animate();
+}
+
+/** Pause all interaction (focus mode — zero resource consumption). */
+export function pauseInteraction() {
+  _focusPaused = true;
+  if (_controls) _controls.enabled = false;
+}
+
+/** Resume interaction after focus mode exit. */
+export function resumeInteraction() {
+  _focusPaused = false;
+  if (_controls) _controls.enabled = true;
 }
 
 /** Clear saved node positions from localStorage. */

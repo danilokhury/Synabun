@@ -19,6 +19,7 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { detectProject } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
@@ -471,14 +472,74 @@ function checkUserLearning(features, sessionId) {
   return `SynaBun User Learning reminder: You've had ${msgCount} exchanges. If you've noticed new behavioral patterns (how they give instructions, correct you, make decisions, or signal frustration), call \`recall\` category \`communication-style\` — then \`reflect\` to update an existing entry, or \`remember\` only if genuinely new. Do NOT create duplicates. Do NOT store surface-level formatting observations.`;
 }
 
+// ============================================================
+// AUTO-RECALL — Hook-side memory injection
+// Calls NI server to fetch relevant memories for the user's prompt
+// and formats them for injection into additionalContext.
+// ============================================================
+
+function formatAge(isoDate) {
+  const diffMs = Date.now() - new Date(isoDate).getTime();
+  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (days === 0) return 'today';
+  if (days === 1) return '1 day ago';
+  if (days < 30) return `${days} days ago`;
+  const months = Math.floor(days / 30);
+  return months === 1 ? '1 month ago' : `${months} months ago`;
+}
+
+async function autoRecall(prompt, cwd) {
+  try {
+    const niUrl = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
+    const project = detectProject(cwd);
+
+    const resp = await fetch(`${niUrl}/api/hook-recall`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: prompt,
+        project: project !== 'global' ? project : undefined,
+        limit: 3,
+        min_score: 0.4,
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+
+    if (!resp.ok) return '';
+    const data = await resp.json();
+    if (!data.results || data.results.length === 0) return '';
+
+    const lines = data.results.map((r, i) => {
+      const score = (r.score * 100).toFixed(0);
+      const age = formatAge(r.created_at);
+      const tags = r.tags?.length ? `Tags: ${r.tags.join(', ')}` : '';
+      const files = r.related_files?.length ? `Files: ${r.related_files.slice(0, 3).join(', ')}` : '';
+      const details = [tags, files].filter(Boolean).join(' | ');
+      return `${i + 1}. [${r.category} | importance ${r.importance}, ${age}, ${score}% match] ${r.content}${details ? `\n   ${details}` : ''}`;
+    });
+
+    return [
+      '=== SynaBun: Related Memories ===',
+      ...lines,
+      'These memories may be relevant. Use as context — call recall for deeper search if needed.',
+      '=== End Memories ===',
+    ].join('\n');
+  } catch {
+    // NI down, timeout, or error — silently skip
+    return '';
+  }
+}
+
 async function main() {
   let prompt = '';
   let sessionId = '';
+  let cwd = '';
   try {
     const raw = await readStdin();
     const input = JSON.parse(raw);
     prompt = input.prompt || '';
     sessionId = input.session_id || '';
+    cwd = input.cwd || '';
   } catch { /* proceed with empty */ }
 
   const trimmed = prompt.trim();
@@ -766,6 +827,12 @@ async function main() {
     primaryContext = NUDGE.nonEnglish;
   }
 
+  // --- Auto-recall: inject relevant memories from NI server ---
+  let autoRecallContext = '';
+  if (!activeLoopNotice && currentMessageCount >= 2) {
+    autoRecallContext = await autoRecall(trimmed, cwd);
+  }
+
   // --- User Learning (independent — appends to any primary context) ---
   const userLearningContext = checkUserLearning(features, sessionId);
 
@@ -775,7 +842,7 @@ async function main() {
     : '';
 
   // --- Emit combined output ---
-  const combined = [bootCancel, activeLoopNotice, primaryContext, userLearningContext].filter(Boolean).join('\n\n');
+  const combined = [bootCancel, activeLoopNotice, primaryContext, autoRecallContext, userLearningContext].filter(Boolean).join('\n\n');
 
   if (combined) {
     process.stdout.write(JSON.stringify({
