@@ -242,6 +242,7 @@ function buildPanel() {
           <div class="cp-input-inner">
             <textarea class="cp-input" id="cp-input" placeholder="Message SynaBun..." rows="1" autocomplete="off" spellcheck="false"></textarea>
             <div class="cp-slash-hints" id="cp-slash-hints"></div>
+            <button class="cp-mic" id="cp-mic" title="Hold to speak"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
             <button class="cp-send" id="cp-send" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
           </div>
         </div>
@@ -1127,6 +1128,48 @@ function injectStyles() {
       50% { opacity: 1; }
     }
     .cp-send svg { width: 12px; height: 12px; position: relative; z-index: 1; }
+
+    /* ── Mic button — push-to-talk, matches send button style ── */
+    .cp-mic {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px;
+      color: rgba(255,255,255,0.25);
+      width: 28px; height: 28px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; flex-shrink: 0;
+      transition: all 0.25s cubic-bezier(0.22, 0.68, 0, 1.2);
+      position: sticky; bottom: 3px; align-self: flex-end;
+      overflow: hidden;
+    }
+    .cp-mic:hover {
+      color: rgba(255,255,255,0.6);
+      border-color: rgba(255,255,255,0.15);
+      box-shadow: 0 0 8px rgba(255,255,255,0.04);
+      transform: translateY(-1px);
+    }
+    .cp-mic:active {
+      transform: translateY(0px) scale(0.95);
+      transition-duration: 0.08s;
+    }
+    .cp-mic svg { width: 13px; height: 13px; position: relative; z-index: 1; }
+    .cp-mic.recording {
+      color: rgba(255,160,60,0.95);
+      border-color: rgba(255,140,40,0.35);
+      box-shadow: 0 0 12px rgba(255,140,40,0.15);
+      animation: cp-mic-pulse 1.5s ease-in-out infinite;
+    }
+    .cp-mic.recording:hover {
+      color: #ffaa44;
+      border-color: rgba(255,140,40,0.5);
+      box-shadow: 0 0 16px rgba(255,140,40,0.2);
+    }
+    @keyframes cp-mic-pulse {
+      0%, 100% { box-shadow: 0 0 8px rgba(255,140,40,0.1); }
+      50% { box-shadow: 0 0 16px rgba(255,140,40,0.25); }
+    }
+    .cp-mic.unsupported { display: none; }
+
     .cp-send.btw {
       border-color: rgba(100,180,255,0.3);
       color: rgba(120,180,255,0.9);
@@ -5975,6 +6018,64 @@ function wireEvents() {
       $auto.classList.toggle('active', _autoAcceptAll);
       storage.setItem(STOR.autoAccept, _autoAcceptAll);
     });
+  }
+
+  // ── Voice input (push-to-talk via Web Speech API) ──
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const $mic = _panel.querySelector('#cp-mic');
+  if (!SpeechRecognition || !$mic) {
+    if ($mic) $mic.classList.add('unsupported');
+  } else {
+    let _recognition = null;
+    let _voicePrefix = '';
+
+    function startVoice() {
+      if (_recognition) return;
+      _voicePrefix = $input.value;
+      _recognition = new SpeechRecognition();
+      _recognition.continuous = true;
+      _recognition.interimResults = true;
+      _recognition.lang = 'en-US';
+      _recognition.onresult = (ev) => {
+        let transcript = '';
+        for (let i = 0; i < ev.results.length; i++) {
+          transcript += ev.results[i][0].transcript;
+        }
+        $input.value = _voicePrefix + (_voicePrefix && transcript ? ' ' : '') + transcript;
+        autoResize();
+        $input.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      _recognition.onerror = (ev) => {
+        $mic.classList.remove('recording');
+        if (ev.error === 'not-allowed') {
+          const tab = activeTab();
+          if (tab) appendStatus(tab, 'Microphone permission denied — allow it in browser settings.');
+        }
+        _recognition = null;
+      };
+      _recognition.onend = () => {
+        $mic.classList.remove('recording');
+        _recognition = null;
+      };
+      _recognition.start();
+      $mic.classList.add('recording');
+    }
+
+    function stopVoice() {
+      if (!_recognition) return;
+      try { _recognition.stop(); } catch {}
+      $mic.classList.remove('recording');
+      _recognition = null;
+    }
+
+    $mic.addEventListener('mousedown', (e) => { e.preventDefault(); startVoice(); });
+    $mic.addEventListener('mouseup', stopVoice);
+    $mic.addEventListener('mouseleave', stopVoice);
+    $mic.addEventListener('touchstart', (e) => { e.preventDefault(); startVoice(); });
+    $mic.addEventListener('touchend', (e) => { e.preventDefault(); stopVoice(); });
+
+    // Cleanup on tab deactivate or panel hide
+    document.addEventListener('visibilitychange', () => { if (document.hidden) stopVoice(); });
   }
 
   // Compact button

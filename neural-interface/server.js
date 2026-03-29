@@ -2283,12 +2283,21 @@ function handleClaudeSkinWebSocket(ws) {
       args.push('--allowedTools', [...approvedTools].join(','));
     }
     // Allow access to parent directory so the model can reach sibling projects
+    // Skip for filesystem roots (J:\, /) — adding an entire drive/root hangs the CLI
     const parentDir = dirname(workDir);
-    if (parentDir && parentDir !== workDir) args.push('--add-dir', parentDir);
+    if (parentDir && parentDir !== workDir && dirname(parentDir) !== parentDir) {
+      args.push('--add-dir', parentDir);
+    }
     if (sessionId) args.push('--resume', sessionId);
     if (model) args.push('--model', model);
     if (effort && ['low', 'medium', 'high', 'max'].includes(effort)) args.push('--effort', effort);
-    const claudeBin = getClaudeBin();
+    let claudeBin = getClaudeBin();
+    // On Windows, .js files can't be executed directly by CreateProcessW.
+    // Prepend the Node.js binary so the CLI actually runs.
+    if (process.platform === 'win32' && /\.js$/i.test(claudeBin)) {
+      args.unshift(claudeBin);
+      claudeBin = process.execPath;
+    }
     // On Windows, .cmd/.bat batch files REQUIRE shell:true (cmd.exe /c) to execute.
     // Without it, spawn() fires ENOENT because CreateProcessW can't run batch scripts directly.
     const useShell = !claudeBin.includes(sep)
