@@ -28,7 +28,8 @@ export function initCostWidget() {
   if (!container) return;
 
   _collapsed = storage.getItem(KEYS.COST_WIDGET_COLLAPSED) === 'true';
-  _docked = storage.getItem(KEYS.COST_WIDGET_DOCKED) === 'true';
+  const _dockedPref = storage.getItem(KEYS.COST_WIDGET_DOCKED);
+  _docked = _dockedPref === null ? true : _dockedPref === 'true';
 
   _widget = document.createElement('div');
   _widget.id = 'cost-widget';
