@@ -93,13 +93,43 @@ function formatAge(isoDate: string): string {
   return `${months} months ago`;
 }
 
-function getRecallMaxChars(): number {
+interface RecallDefaults {
+  limit: number;
+  minImportance: number;
+  minScore: number;
+  maxChars: number;
+  includeSessions: 'auto' | 'always' | 'never';
+  recencyBoost: boolean;
+}
+
+const RECALL_DEFAULTS: RecallDefaults = {
+  limit: 5,
+  minImportance: 0,
+  minScore: 0.3,
+  maxChars: 0,
+  includeSessions: 'auto',
+  recencyBoost: false,
+};
+
+function getRecallDefaults(): RecallDefaults {
   try {
     const settingsPath = path.resolve(config.dataDir, 'display-settings.json');
     const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    return data.recallMaxChars ?? 0;
+    const d = data.recallDefaults;
+    if (!d) {
+      // Legacy: only recallMaxChars exists
+      return { ...RECALL_DEFAULTS, maxChars: data.recallMaxChars ?? 0 };
+    }
+    return {
+      limit: d.limit ?? RECALL_DEFAULTS.limit,
+      minImportance: d.minImportance ?? RECALL_DEFAULTS.minImportance,
+      minScore: d.minScore ?? RECALL_DEFAULTS.minScore,
+      maxChars: d.maxChars ?? RECALL_DEFAULTS.maxChars,
+      includeSessions: d.includeSessions ?? RECALL_DEFAULTS.includeSessions,
+      recencyBoost: d.recencyBoost ?? RECALL_DEFAULTS.recencyBoost,
+    };
   } catch {
-    return 0; // default: no limit
+    return { ...RECALL_DEFAULTS };
   }
 }
 
@@ -114,15 +144,17 @@ export async function handleRecall(args: {
   include_sessions?: boolean;
   recency_boost?: boolean;
 }) {
+  const defaults = getRecallDefaults();
   const query = args.query;
   const category = args.category;
   const project = args.project;
   const tags = args.tags;
-  const limit = args.limit ?? 5;
-  const minImportance = args.min_importance;
-  const minScore = args.min_score ?? 0.3;
-  const includeSessionsExplicit = args.include_sessions;
-  const recencyBoost = args.recency_boost ?? false;
+  const limit = args.limit ?? defaults.limit;
+  const minImportance = args.min_importance ?? (defaults.minImportance > 0 ? defaults.minImportance : undefined);
+  const minScore = args.min_score ?? defaults.minScore;
+  const includeSessionsExplicit = args.include_sessions ??
+    (defaults.includeSessions === 'always' ? true : defaults.includeSessions === 'never' ? false : undefined);
+  const recencyBoost = args.recency_boost ?? defaults.recencyBoost;
 
   if (category) {
     const catCheck = validateCategory(category);
@@ -206,7 +238,7 @@ export async function handleRecall(args: {
     return text(`No memories found for "${query}"${category ? ` in category ${category}` : ''}${project ? ` for project ${project}` : ''}.`);
   }
 
-  const maxChars = getRecallMaxChars();
+  const maxChars = defaults.maxChars;
 
   const lines = scored.map((r, i) => {
     const p = r.payload;

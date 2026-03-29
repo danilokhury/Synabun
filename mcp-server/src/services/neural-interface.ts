@@ -69,6 +69,13 @@ export async function resolveSession(
   sessionId?: string,
   autoCreate?: { url?: string }
 ): Promise<{ sessionId: string } | { error: string }> {
+  // Agent-scoped browser session — set by the agent orchestrator to pin
+  // this MCP instance to a specific browser session (multi-agent isolation).
+  const pinnedSession = process.env.SYNABUN_BROWSER_SESSION;
+  if (pinnedSession && !sessionId) {
+    return { sessionId: pinnedSession };
+  }
+
   if (sessionId) {
     // Trust the server — it will 404 if the session doesn't exist.
     // Skipping the extra GET /api/browser/sessions verification call saves a full round-trip.
@@ -150,20 +157,20 @@ export async function click(sessionId: string, selector: string, nthMatch?: numb
   return request('POST', `/api/browser/sessions/${sessionId}/click`, { selector, ...(nthMatch !== undefined && { nthMatch }) });
 }
 
-export async function fill(sessionId: string, selector: string, value: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value });
+export async function fill(sessionId: string, selector: string, value: string, nthMatch?: number): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value, ...(nthMatch !== undefined && { nthMatch }) });
 }
 
-export async function type(sessionId: string, selector: string | null, text: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text });
+export async function type(sessionId: string, selector: string | null, text: string, nthMatch?: number): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text, ...(nthMatch !== undefined && { nthMatch }) });
 }
 
-export async function hover(sessionId: string, selector: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector });
+export async function hover(sessionId: string, selector: string, nthMatch?: number): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector, ...(nthMatch !== undefined && { nthMatch }) });
 }
 
-export async function selectOption(sessionId: string, selector: string, value: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/select`, { selector, value });
+export async function selectOption(sessionId: string, selector: string, value: string, nthMatch?: number): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/select`, { selector, value, ...(nthMatch !== undefined && { nthMatch }) });
 }
 
 export async function pressKey(sessionId: string, key: string): Promise<NiResponse> {
@@ -180,9 +187,10 @@ export async function scroll(
 export async function upload(
   sessionId: string,
   selector: string,
-  filePaths: string[]
+  filePaths: string[],
+  nthMatch?: number
 ): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths }, LONG_TIMEOUT);
+  return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths, ...(nthMatch !== undefined && { nthMatch }) }, LONG_TIMEOUT);
 }
 
 // ── Observation ──
@@ -194,6 +202,14 @@ export async function snapshot(sessionId: string, selector?: string): Promise<Ni
 
 export async function getContent(sessionId: string): Promise<NiResponse> {
   return request('GET', `/api/browser/sessions/${sessionId}/content`);
+}
+
+export async function getMarkdown(sessionId: string): Promise<NiResponse> {
+  return request('GET', `/api/browser/sessions/${sessionId}/markdown`, undefined, LONG_TIMEOUT);
+}
+
+export async function fetchMarkdown(url: string, timeout?: number): Promise<NiResponse> {
+  return request('POST', '/api/fetch-markdown', { url, timeout }, LONG_TIMEOUT);
 }
 
 export async function screenshot(sessionId: string): Promise<NiResponse> {
@@ -315,4 +331,14 @@ export async function gitLog(path: string, count?: number): Promise<NiResponse> 
 
 export async function gitBranches(path: string): Promise<NiResponse> {
   return request('GET', `/api/terminal/branches?path=${encodeURIComponent(path)}`);
+}
+
+// ── Image store ──
+
+export async function listImages(): Promise<NiResponse> {
+  return request('GET', '/api/images');
+}
+
+export async function deleteImage(filename: string): Promise<NiResponse> {
+  return request('DELETE', `/api/images/${encodeURIComponent(filename)}`);
 }

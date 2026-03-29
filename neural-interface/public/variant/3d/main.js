@@ -47,13 +47,14 @@ import { initInvite } from '../../shared/ui-invite.js';
 import { initSync } from '../../shared/ui-sync.js';
 import { initKeybinds } from '../../shared/ui-keybinds.js';
 import { initTutorial } from '../../shared/ui-tutorial.js';
+import { initImageGallery } from '../../shared/ui-image-gallery.js';
 
 // ── 3D variant modules ──
 import { gfx } from './gfx.js';
 import { setGraphicsHooks } from './settings-gfx.js';
 import { initAutomationStudio } from '../../shared/ui-automation-studio.js';
 import { initCommandRunner } from '../../shared/ui-command-runner.js';
-import { initCamera, updateCameraMovement, animateCameraToNode, frameCameraToExtent, saveCameraState, restoreCameraState } from './camera.js';
+import { initCamera, updateCameraMovement, animateCameraToNode, frameCameraToExtent, saveCameraState, restoreCameraState, pauseCamera, resumeCamera } from './camera.js';
 import { applyFloorStyle, applyBgTheme, animateBackground } from './background.js';
 import {
   initGraph, getGraph, getBloomPass, applyGraphData,
@@ -62,6 +63,7 @@ import {
   navigateToNode, scheduleGraphRemoval, cancelScheduledRemoval,
   saveNodePositions, clearSavedPositions, resetLayout,
   setBloomParams, setBloomEnabled, stopAnimation, startAnimation,
+  pauseInteraction, resumeInteraction,
 } from './graph.js';
 
 
@@ -406,6 +408,7 @@ initExplorer();
 initFileExplorer();
 initSkillsStudio();
 initAutomationStudio();
+initImageGallery();
 initCommandRunner();
 initTerminal();
 initLink();
@@ -460,10 +463,17 @@ on('viz:toggle', (enabled) => {
   }
 });
 
-// Focus mode isolation — clear 3D-specific interactive state
+// Focus mode isolation — zero-resource mode for 3D
 on('focus:enter', () => {
   state.hoveredNodeId = null;
   document.body.style.cursor = 'default';
+  pauseInteraction();
+  pauseCamera();
+});
+
+on('focus:exit', () => {
+  resumeInteraction();
+  resumeCamera();
 });
 
 // Workspace scene snapshot (3D)

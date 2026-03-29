@@ -70,6 +70,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - **Claude Code Hooks** — 7 lifecycle hooks automate memory recall, storage, and session indexing
 - **User Learning** — autonomous observation of user communication patterns, preferences, and behavioral singularity across sessions
 - **Claude Code `/synabun` Command** — single slash command hub with interactive menu for brainstorming, auditing, health checks, and memory search
+- **Leonardo AI Integration** — 4 browser-based MCP tools for AI image and video generation via Leonardo.ai — no API key needed, full UI automation via Playwright with the `/leonardo` skill for guided creation
 
 ## Table of Contents
 
@@ -84,7 +85,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - [How It Works](#how-it-works)
 - [Configuration](#configuration)
 - [Claude Code Hooks](#claude-code-hooks)
-- [Claude Code `/synabun` Command](#claude-code-synabun-command)
+- [Claude Code Skills](#claude-code-skills)
 - [CLAUDE.md Integration](#claudemd-integration)
 - [Multi-Project Support](#multi-project-support)
 - [Known Limitations](#known-limitations)
@@ -115,6 +116,19 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - Node.js 22.5+ (for built-in `node:sqlite`)
 
 No Docker, no API keys, no external services required.
+
+<details>
+<summary><strong>Optional: Build tools for terminal features</strong></summary>
+
+The Neural Interface includes an embedded terminal powered by `node-pty` (native addon). If build tools are missing, `npm install` will warn but continue — everything else works fine.
+
+| Platform | Install |
+|----------|---------|
+| macOS | `xcode-select --install` |
+| Linux | `sudo apt install build-essential python3` |
+| Windows | [VS Build Tools 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++" |
+
+</details>
 
 ### One-Command Setup
 
@@ -171,7 +185,7 @@ No environment variables needed — SQLite and local embeddings work out of the 
 
 ### 3. Verify
 
-Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 66 tools listed.
+Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 72 tools listed.
 
 </details>
 
@@ -197,34 +211,34 @@ AI Assistant (any project)
     │
     │  MCP Protocol (stdio or HTTP)
     │
-┌───┴──────────────────────┐
-│   SynaBun MCP Server     │  Node.js 22.5+ / TypeScript
-│                          │
-│  66 tools across 8       │
-│  groups: Memory (9),     │
-│  Browser (38),           │
-│  Whiteboard (5),         │
-│  Cards (5), Discord (8), │
-│  Loop (1), TicTacToe (1) │
-│                          │
-│  Transformers.js         │  Local embeddings
-│  all-MiniLM-L6-v2        │  (384 dims, ~23MB model)
-│                          │
-│  node:sqlite             │  Built-in SQLite
-│  data/memory.db          │  (vectors as Float32 BLOBs)
-│                          │
-│  Playwright              │  Browser automation
-│  (Chromium)              │  (persistent sessions)
-└──────────────────────────┘
+┌───┴──────────────────────────┐
+│   SynaBun MCP Server         │  Node.js 22.5+ / TypeScript
+│                              │
+│  72 tools across 9 groups:   │
+│  Memory (8), Browser (39),   │
+│  Whiteboard (5), Cards (5),  │
+│  Discord (8), Leonardo (4),  │
+│  Git (1), Loop (1),          │
+│  TicTacToe (1)               │
+│                              │
+│  Transformers.js             │  Local embeddings
+│  all-MiniLM-L6-v2            │  (384 dims, ~23MB model)
+│                              │
+│  node:sqlite                 │  Built-in SQLite
+│  data/memory.db              │  (vectors as Float32 BLOBs)
+│                              │
+│  Playwright                  │  Browser automation
+│  (Chromium)                  │  (persistent sessions)
+└──────────────────────────────┘
 ```
 
 Everything runs in a single Node.js process — no external services, no Docker, no API keys.
 
-## MCP Tools (66)
+## MCP Tools (72)
 
-SynaBun exposes 66 tools via the Model Context Protocol, organized into 8 groups:
+SynaBun exposes 72 tools via the Model Context Protocol, organized into 9 groups:
 
-### Memory (9 tools)
+### Memory (8 tools)
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
@@ -236,17 +250,16 @@ SynaBun exposes 66 tools via the Model Context Protocol, organized into 8 groups
 | `memories` | List recent memories or get stats | `action` (recent, stats, by-category, by-project) |
 | `sync` | Detect stale memories via file hash comparison | `project` (optional filter) |
 | `category` | Create, update, delete, or list categories | `action` (create, update, delete, list), `name`, `description`, `parent` |
-| `tictactoe` | Play tic-tac-toe with your AI | `action` (start, move, state, end) |
 
-### Browser (38 tools)
+### Browser (39 tools)
 
-18 general browser automation tools + 20 social media extraction tools, all powered by Playwright with persistent Chromium sessions.
+18 general browser automation tools + 21 social media extraction tools, all powered by Playwright with persistent Chromium sessions.
 
 **General automation:**
 `browser_navigate`, `browser_click`, `browser_fill`, `browser_type`, `browser_hover`, `browser_select`, `browser_press`, `browser_evaluate`, `browser_snapshot`, `browser_content`, `browser_screenshot`, `browser_session`, `browser_go_back`, `browser_go_forward`, `browser_reload`, `browser_wait`, `browser_scroll`, `browser_upload`
 
 **Social media extraction:**
-`browser_extract_tweets`, `browser_extract_fb_posts`, `browser_extract_tiktok_videos`, `browser_extract_tiktok_search`, `browser_extract_tiktok_studio`, `browser_extract_tiktok_profile`, `browser_extract_wa_chats`, `browser_extract_wa_messages`, `browser_extract_ig_feed`, `browser_extract_ig_profile`, `browser_extract_ig_post`, `browser_extract_ig_reels`, `browser_extract_ig_search`, `browser_extract_li_feed`, `browser_extract_li_profile`, `browser_extract_li_post`, `browser_extract_li_notifications`, `browser_extract_li_messages`, `browser_extract_li_search_people`, `browser_extract_li_network`
+`browser_extract_tweets`, `browser_extract_fb_posts`, `browser_extract_tiktok_videos`, `browser_extract_tiktok_search`, `browser_extract_tiktok_studio`, `browser_extract_tiktok_profile`, `browser_extract_wa_chats`, `browser_extract_wa_messages`, `browser_extract_ig_feed`, `browser_extract_ig_profile`, `browser_extract_ig_post`, `browser_extract_ig_reels`, `browser_extract_ig_search`, `browser_extract_li_feed`, `browser_extract_li_profile`, `browser_extract_li_post`, `browser_extract_li_notifications`, `browser_extract_li_messages`, `browser_extract_li_search_people`, `browser_extract_li_network`, `browser_extract_li_jobs`
 
 ### Whiteboard (5 tools)
 
@@ -286,6 +299,19 @@ SynaBun exposes 66 tools via the Model Context Protocol, organized into 8 groups
 | Tool | Purpose |
 |------|---------|
 | `loop` | Run, stop, or check autonomous background tasks |
+
+### Leonardo AI (4 tools)
+
+Browser-based AI image and video generation via [Leonardo.ai](https://app.leonardo.ai). No API key needed — all tools automate the Leonardo.ai web UI directly via Playwright.
+
+| Tool | Purpose |
+|------|---------|
+| `leonardo_browser_navigate` | Navigate to specific Leonardo.ai pages (home, library, image editor, video, upscaler, blueprints, realtime canvas, models) |
+| `leonardo_browser_generate` | Fill the prompt and click Generate — configure UI settings (model, style, dimensions, motion controls) beforehand using generic browser tools |
+| `leonardo_browser_library` | View or search the Leonardo.ai generation library |
+| `leonardo_browser_download` | Capture the current Leonardo.ai page as a screenshot to see generation results |
+
+> **Tip:** Use the `/leonardo` skill in Claude Code for an expert-guided creation experience with a 7-phase video prompter, 6-phase image prompter, model advisor with decision matrices for 30+ models, curated prompt library, and style guide with motion controls and camera combos.
 
 ## Neural Interface
 
@@ -505,6 +531,9 @@ SQLITE_DB_PATH=/custom/path/to/memory.db   # Default: data/memory.db
 MEMORY_DATA_DIR=/custom/data/dir           # Default: mcp-server/data/
 NEURAL_PORT=3344                           # Neural Interface port (default: 3344)
 SETUP_COMPLETE=true
+
+# API keys (optional — only needed for specific integrations)
+DISCORD_BOT_TOKEN=your-token-here          # Discord server management
 ```
 
 | Variable | Description |
@@ -512,6 +541,7 @@ SETUP_COMPLETE=true
 | `SQLITE_DB_PATH` | Path to SQLite database file (default: `data/memory.db`) |
 | `MEMORY_DATA_DIR` | Data directory for runtime files (default: `mcp-server/data/`) |
 | `NEURAL_PORT` | Neural Interface server port (default: 3344) |
+| `DISCORD_BOT_TOKEN` | Discord bot token for server management tools |
 
 Set these in the `.env` file at the project root, or let SynaBun use the defaults.
 
@@ -531,23 +561,29 @@ The model runs entirely in-process — no external service calls, no API keys, n
 
 ## Claude Code Hooks
 
-SynaBun ships with 5 [Claude Code hooks](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/hooks) that automate memory usage across the entire coding session lifecycle.
+SynaBun ships with 7 [Claude Code hooks](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/hooks) that automate memory usage across the entire coding session lifecycle.
 
 | Hook | Event | Purpose |
 |------|-------|---------|
-| `session-start.mjs` | `SessionStart` | Injects category tree, project detection, behavioral rules, and 5 binding directives (incl. user learning) |
-| `prompt-submit.mjs` | `UserPromptSubmit` | Multi-tier recall trigger system with user learning nudges — nudges AI to check memory before responding |
+| `session-start.mjs` | `SessionStart` | Greeting, boot sequence, compaction recovery, loop detection, session registration |
+| `prompt-submit.mjs` | `UserPromptSubmit` | Tiered recall nudges, loop iteration injection, category tree on first threshold |
 | `pre-compact.mjs` | `PreCompact` | Captures session transcript before context compaction for conversation indexing |
-| `stop.mjs` | `Stop` | Enforces memory storage — blocks response if session isn't indexed or edits aren't remembered |
-| `post-remember.mjs` | `PostToolUse` | Tracks edit count and clears enforcement flags when memories are stored |
+| `stop.mjs` | `Stop` | Combined obligations: compaction, loops, task memory, user learning, conversation turns, auto-store, unstored plans |
+| `post-remember.mjs` | `PostToolUse` | Tracks edit count and clears enforcement flags when memories are stored. User learning flag management |
+| `pre-websearch.mjs` | `PreToolUse` | Blocks WebSearch/WebFetch during active browser sessions to prevent interference |
+| `post-plan.mjs` | `PostToolUse` | Auto-stores plans as memories when exiting plan mode |
 
 **Install via Neural Interface:** Settings > Integrations > Enable (global or per-project).
 
 For detailed hook documentation, customization options, and custom hook templates, see the [Hooks Guide](./docs/hooks.md).
 
-## Claude Code `/synabun` Command
+## Claude Code Skills
 
-SynaBun ships a single [Claude Code skill](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials/custom-slash-commands) — `/synabun` — that serves as the entry point for all memory-powered capabilities. Type `/synabun` in Claude Code and an interactive menu appears:
+SynaBun ships [Claude Code skills](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials/custom-slash-commands) — slash commands that provide expert-guided workflows.
+
+### `/synabun` — Memory Command Hub
+
+The entry point for all memory-powered capabilities. Type `/synabun` in Claude Code and an interactive menu appears:
 
 | Option | What it does |
 |--------|-------------|
@@ -556,18 +592,24 @@ SynaBun ships a single [Claude Code skill](https://docs.anthropic.com/en/docs/ag
 | **Memory Health** | Quick stats overview and staleness check — total count, category distribution, stale file references. |
 | **Search Memories** | Find something specific across your entire memory bank using semantic search. |
 
-**Usage:**
-```
-/synabun
-```
+### `/leonardo` — Master Media Prompter
 
-> **Note:** `/synabun` is the only slash command you need. All capabilities are accessible from its interactive menu — you don't need to invoke individual skills directly.
+Expert-guided AI image and video creation via Leonardo.ai. Supports quick mode for power users and interactive questionnaires for guided creation.
 
-**Install:** Copy the skill to your global skills directory:
+| Mode | Usage |
+|------|-------|
+| **Interactive menu** | `/leonardo` — choose between Create Video, Create Image, Quick Generate, or Account Info |
+| **Direct routing** | `/leonardo video sunset over ocean` or `/leonardo image cyberpunk portrait` |
+| **Quick mode** | `/leonardo quick a cinematic drone shot of a volcano` — skip the questionnaire, use smart defaults |
+
+The skill includes 5 expert modules: video prompter (7-phase cinematic questionnaire with motion controls and style stacking), image prompter (6-phase composition questionnaire with style presets), model advisor (decision matrices for 30+ models), prompt library (curated templates), and style guide (style stacking, motion controls, camera combos).
+
+**Install:** Copy the skills to your global skills directory:
 
 ```bash
-# The skill lives at:
+# Skills live at:
 ~/.claude/skills/synabun/SKILL.md
+~/.claude/skills/leonardo/SKILL.md
 ```
 
 ## CLAUDE.md Integration
@@ -580,9 +622,9 @@ Add this to any project's `CLAUDE.md` to instruct Claude to use memory automatic
 ```markdown
 ## Persistent Memory
 
-You have persistent vector memory via the `SynaBun` MCP server (66 tools).
+You have persistent vector memory via the `SynaBun` MCP server (72 tools).
 Core memory tools: remember, recall, forget, restore, reflect, memories, sync, category.
-Also available: browser automation (38 tools), whiteboard (5), cards (5), discord (8), loop, tictactoe.
+Also available: browser automation (39 tools), whiteboard (5), cards (5), discord (8), leonardo AI (4), git, loop, tictactoe.
 
 ### Auto-Recall (do this automatically)
 - At session start: recall context about the current project
@@ -713,18 +755,28 @@ Synabun/
 │   ├── api-reference.md            # Neural Interface REST API reference
 │   └── hooks.md                    # Claude Code hook system documentation
 ├── skills/
-│   └── synabun/
-│       ├── SKILL.md                # /synabun command hub (entry point)
+│   ├── synabun/
+│   │   ├── SKILL.md                # /synabun command hub (entry point)
+│   │   └── modules/
+│   │       ├── idea.md             # Brainstorm Ideas module
+│   │       └── audit.md            # Audit Memories module
+│   └── leonardo/
+│       ├── SKILL.md                # /leonardo master media prompter
 │       └── modules/
-│           ├── idea.md             # Brainstorm Ideas module
-│           └── audit.md            # Audit Memories module
+│           ├── video-prompter.md   # 5-phase video creation questionnaire
+│           ├── image-prompter.md   # 5-phase image creation questionnaire
+│           ├── model-advisor.md    # Decision matrices for 30+ models
+│           ├── prompt-library.md   # Curated prompt templates
+│           └── style-guide.md      # Style stacking & motion controls
 ├── hooks/
 │   └── claude-code/
-│       ├── session-start.mjs       # SessionStart — category tree, directives, project detection
-│       ├── prompt-submit.mjs       # UserPromptSubmit — multi-tier recall triggers
+│       ├── session-start.mjs       # SessionStart — greeting, boot sequence, compaction recovery, session registration
+│       ├── prompt-submit.mjs       # UserPromptSubmit — tiered recall nudges, loop iteration injection
 │       ├── pre-compact.mjs         # PreCompact — transcript capture before compaction
-│       ├── stop.mjs                # Stop — enforces memory storage before session end
-│       └── post-remember.mjs       # PostToolUse — edit tracking, flag clearing
+│       ├── stop.mjs                # Stop — combined obligations: compaction, loops, task memory, plans
+│       ├── post-remember.mjs       # PostToolUse — edit tracking, flag clearing, user learning
+│       ├── pre-websearch.mjs       # PreToolUse — blocks WebSearch during active browser sessions
+│       └── post-plan.mjs           # PostToolUse — auto-stores plans as memories
 ├── memory-seed/                    # Bootstrap seed data for new installations
 │   ├── README.md
 │   ├── architecture/               # 5 architecture overview memories
@@ -756,7 +808,7 @@ Synabun/
     │   └── display-settings.json    # MCP response display config
     ├── dist/                        # Compiled JS (generated by npm run build)
     └── src/
-        ├── index.ts                 # Tool registration + schema refresh (66 tools)
+        ├── index.ts                 # Tool registration + schema refresh (72 tools)
         ├── config.ts                # Namespaced env config, project detection
         ├── types.ts                 # MemoryPayload interface (incl. file_checksums)
         ├── http.ts                  # HTTP MCP transport
@@ -777,7 +829,9 @@ Synabun/
             ├── category-create.ts   # Create category (triggers schema refresh)
             ├── category-update.ts   # Edit category (triggers schema refresh)
             ├── category-delete.ts   # Delete category (triggers schema refresh)
-            └── category-list.ts     # List categories with hierarchy
+            ├── category-list.ts     # List categories with hierarchy
+            ├── leonardo.ts          # Leonardo.ai tool registration barrel (4 browser-based tools)
+            └── leonardo-browser-tools.ts # Browser-based generation, library, navigation, download
 ```
 
 ## License

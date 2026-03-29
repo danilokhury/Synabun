@@ -23,19 +23,25 @@ Execute these phases in order. Do NOT skip phases or combine them.
 
 ### Phase 1 — Context Gathering
 
+> **SCOPE RULE:** Only document work performed in THIS session. Git history contains commits from other sessions — you MUST use `$SESSION_START_COMMIT` to filter. If a git change doesn't match anything in your conversation context, **exclude it**.
+
 Analyze all available information about the session's work:
 
-1. **Conversation analysis** — Scan the entire conversation history in your context window. Extract all work performed: features added, bugs fixed, things refactored/changed, configuration modifications, file creation/deletion. Note specific function names, file paths, and technical details.
+1. **Conversation analysis** — Scan the entire conversation history in your context window. Extract all work performed: features added, bugs fixed, things refactored/changed, configuration modifications, file creation/deletion. Note specific function names, file paths, and technical details. **This is your primary source of truth.**
 
-2. **Git state** — Run these Bash commands to understand the actual code changes:
+2. **Session baseline** — Search your conversation context for a line matching `Session start commit:` followed by a commit hash. Store it as `$SESSION_START_COMMIT`. If not found, fall back to `git log --oneline -1 --before='8 hours ago' --format='%H'` as a rough approximation.
+
+3. **Git state** — Run these Bash commands to understand the actual code changes **scoped to this session**:
    - `git rev-parse --show-toplevel` — determine the project root. Store as `$PROJECT_ROOT`.
-   - `git diff --stat` — see uncommitted file changes.
-   - `git log --oneline -20` — see recent commits.
-   - `git diff HEAD~5 --stat` — aggregate changes across recent commits (adjust range if needed).
+   - `git diff --stat` — see uncommitted file changes. Cross-reference against conversation context — only include changes you actually made in this session.
+   - `git log --oneline $SESSION_START_COMMIT..HEAD` — see only commits made since this session started. Do NOT use `git log -20` or any other unscoped log command.
+   - `git diff $SESSION_START_COMMIT --stat` — aggregate changes since session start.
 
-3. **Focus filtering** — If `$ARGUMENTS` contains a focus hint, narrow the analysis to only changes related to that topic. Ignore unrelated work.
+4. **Focus filtering** — If `$ARGUMENTS` contains a focus hint, narrow the analysis to only changes related to that topic. Ignore unrelated work.
 
-4. **Date** — Determine today's date in `YYYY-MM-DD` format (from conversation context or `date +%Y-%m-%d`).
+5. **Cross-check** — Before proceeding, verify every identified change exists in BOTH the conversation context AND the session-scoped git output. Remove anything that only appears in git but was not discussed or worked on in this conversation.
+
+6. **Date** — Determine today's date in `YYYY-MM-DD` format (from conversation context or `date +%Y-%m-%d`).
 
 **Output to user:** A brief summary of what was found:
 
@@ -48,6 +54,8 @@ Found [N] changes to document:
 ---
 
 ### Phase 2 — Categorize & Draft
+
+Before drafting, do a final scope check: remove any item from your list that documents work you did NOT perform in this conversation. Git commits from other sessions must not appear in the changelog output.
 
 Categorize each piece of work into exactly one section type:
 
@@ -104,7 +112,7 @@ Then use `AskUserQuestion` with:
 - **Edit first** — "I want to adjust entries before saving"
 - **Cancel** — "Don't save anything"
 
-**If user picks "Edit first":** Ask what they want to change (free text). Incorporate feedback, re-draft, and present again. Loop until satisfied or cancelled.
+**If user picks "Edit first":** The Neural Interface opens the entries in the code editor. The user edits and saves, and you receive the answer prefixed with `"Edit first — here are the edited entries:"` followed by the edited content. Use these edited entries exactly as provided — proceed directly to Phase 4. Do NOT re-draft or ask additional questions.
 
 **If user picks "Cancel":** End with a brief message. Do not write anything.
 
@@ -182,5 +190,5 @@ Do NOT use `AskUserQuestion` here — auto-remember is mandatory per project rul
 - **Group related changes** — Multiple changes that are part of the same feature go under a single `### Added — Feature Name` header with multiple `- **Bold** — Description` entries.
 - **Separate unrelated changes** — Two unrelated features both get their own `### Added — Name` section headers, even on the same day.
 - **Don't duplicate** — If today's date section already has entries for the same work, skip those entries.
-- **Conversation is truth** — Only document work that actually happened in this session. Don't invent changes based on git history from before the session started.
+- **Conversation is truth (HARD RULE)** — NEVER include changes that were not discussed or worked on in this conversation, even if they appear in git history. Git is used only to enrich detail for work you already know about from the conversation. If a commit or diff doesn't match conversation context, it belongs to another session — skip it.
 - **Sequential MCP calls only** — Never call two SynaBun tools in the same parallel batch.

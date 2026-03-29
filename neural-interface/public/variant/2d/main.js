@@ -47,6 +47,7 @@ import { initInvite } from '../../shared/ui-invite.js';
 import { initSync } from '../../shared/ui-sync.js';
 import { initKeybinds, registerAction, getDisplayKey } from '../../shared/ui-keybinds.js';
 import { initTutorial } from '../../shared/ui-tutorial.js';
+import { initImageGallery } from '../../shared/ui-image-gallery.js';
 
 // ── 2D variant modules ──
 import { gfx, saveGfxConfig } from './gfx.js';
@@ -62,6 +63,7 @@ import {
   preloadCategoryLogos, scheduleGraphRemoval, cancelScheduledRemoval,
   refreshGraph, reheatSimulation, getAllCards,
   stopAnimation, startAnimation,
+  pauseInteraction, resumeInteraction,
 } from './graph.js';
 
 
@@ -420,6 +422,7 @@ initExplorer();
 initFileExplorer();
 initSkillsStudio();
 initAutomationStudio();
+initImageGallery();
 initCommandRunner();
 initTerminal();
 initLink();
@@ -483,11 +486,16 @@ on('viz:toggle', (enabled) => {
   }
 });
 
-// Focus mode isolation — clear 2D-specific interactive state
+// Focus mode isolation — zero-resource mode for 2D
 on('focus:enter', () => {
   state.hoveredNodeId = null;
   clearLasso();
   hideContextMenu();
+  pauseInteraction();
+});
+
+on('focus:exit', () => {
+  resumeInteraction();
 });
 
 // Workspace scene snapshot (2D)

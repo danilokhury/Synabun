@@ -7,7 +7,9 @@ mcp-server/dist/
 # Runtime data
 /data/
 mcp-server/data/
+!mcp-server/data/.gitkeep
 !mcp-server/data/custom-categories-default.json
+!data/.gitkeep
 
 # Test suite
 .tests/

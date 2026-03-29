@@ -131,6 +131,10 @@ export function getSharedHTML() {
             <span class="menu-check"></span>
             <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></span> WhatsApp</span>
           </div>
+          <div class="menu-item" id="menu-app-leonardo">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.5 2l1.5 3.5L14.5 7l-3.5 1.5L9.5 12l-1.5-3.5L4.5 7l3.5-1.5L9.5 2zM19 10l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2zM5 17l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2z"/></svg></span> Leonardo.AI</span>
+          </div>
           <div class="menu-sep"></div>
           <div class="menu-item" id="menu-command-runner">
             <span class="menu-check"></span>
@@ -146,6 +150,10 @@ export function getSharedHTML() {
             <span class="menu-shortcut">T</span>
           </div>
           <div class="menu-sep"></div>
+          <div class="menu-item" id="menu-install-app" style="display:none">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span> Install as App</span>
+          </div>
           <div class="menu-item" id="menu-restart-server">
             <span class="menu-check"></span>
             <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></span> Restart Server</span>
@@ -276,6 +284,11 @@ export function getSharedHTML() {
             <span class="menu-shortcut">A</span>
           </div>
           <div class="menu-sep"></div>
+          <div class="menu-item" id="menu-automations-schedules">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span> Schedules</span>
+          </div>
+          <div class="menu-sep"></div>
           <div class="menu-item" id="menu-automations-new">
             <span class="menu-check"></span>
             <span class="menu-text">${t('menu.automations.newAutomation')}</span>
@@ -313,12 +326,24 @@ export function getSharedHTML() {
   </div>
 
   <div class="bar-right">
-    <button id="titlebar-cost-btn" class="bar-icon bar-cost-btn" data-tooltip="Cost Tracker"><span class="bar-cost-label">$0</span></button>
-    <button id="titlebar-tutorial-btn" class="bar-icon" data-tooltip="Toggle Tutorial"><svg viewBox="0 0 24 24"><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor"/></svg></button>
-    <button id="titlebar-viz-toggle" class="bar-icon active" data-tooltip="${t('tooltip.toggleViz')}"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg></button>
-    <button id="titlebar-fullscreen-btn" class="bar-icon" data-tooltip="${t('tooltip.fullscreen')}"><svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
-    <div class="bar-sep"></div>
-    <span id="titlebar-clock" class="titlebar-clock"></span>
+    <div class="bar-group">
+      <button id="titlebar-cost-btn" class="bar-icon bar-cost-btn" data-tooltip="Cost Tracker"><span class="bar-cost-label">$0</span></button>
+      <button id="titlebar-sessions-btn" class="bar-icon" data-tooltip="Session Monitor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10V18C3 19.1046 3.89543 20 5 20H9M3 10V6C3 4.89543 3.89543 4 5 4H19C20.1046 4 21 4.89543 21 6V10M3 10H21M21 10V13"/><path d="M15 16L13 18L15 20"/><path d="M19 16L21 18L19 20"/><circle cx="6" cy="7" r="1" fill="currentColor"/><circle cx="9" cy="7" r="1" fill="currentColor"/></svg></button>
+      <button id="titlebar-gallery-btn" class="bar-icon" data-tooltip="Image Gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 7L15 9L20 4"/><path d="M2 12.5001L3.75159 10.9675C4.66286 10.1702 6.03628 10.2159 6.89249 11.0721L11.1822 15.3618C11.8694 16.0491 12.9512 16.1428 13.7464 15.5839L14.0446 15.3744C15.1888 14.5702 16.7369 14.6634 17.7765 15.599L21 18.5001"/><path d="M22 12C22 16.714 22 19.0711 20.5355 20.5355C19.0711 22 16.714 22 12 22C7.28595 22 4.92893 22 3.46447 20.5355C2 19.0711 2 16.714 2 12C2 10.8717 2 9.87835 2.02008 9M12 2C7.28595 2 4.92893 2 3.46447 3.46447C3.03965 3.88929 2.73806 4.38921 2.52396 5"/></svg></button>
+    </div>
+    <span class="bar-divider"></span>
+    <div class="bar-group">
+      <button id="titlebar-tutorial-btn" class="bar-icon" data-tooltip="Toggle Tutorial"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r=".5" fill="currentColor" stroke="none"/></svg></button>
+    </div>
+    <span class="bar-divider"></span>
+    <div class="bar-group">
+      <button id="titlebar-viz-toggle" class="bar-icon active" data-tooltip="${t('tooltip.toggleViz')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg></button>
+      <button id="titlebar-fullscreen-btn" class="bar-icon" data-tooltip="${t('tooltip.fullscreen')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+    </div>
+    <span class="bar-divider"></span>
+    <div class="bar-group bar-group--clock">
+      <span id="titlebar-clock" class="titlebar-clock"></span>
+    </div>
   </div>
 </div>
 
@@ -326,33 +351,37 @@ export function getSharedHTML() {
 <div id="topright-controls">
   <div id="topright-inner">
   <button id="topright-trash-btn" class="topright-icon-btn" data-tooltip="${t('nav.trash')}">
-    <svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" y1="10" x2="10" y2="18"/><line x1="14" y1="10" x2="14" y2="18"/></svg>
     <span class="count-badge count-badge--red" id="titlebar-trash-count"></span>
   </button>
 
   <button id="ws-grid-toggle" class="topright-icon-btn" data-tooltip="Snap to Grid">
-    <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3z" fill="none"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="1.5"/><circle cx="12" cy="6" r="1.5"/><circle cx="18" cy="6" r="1.5"/><circle cx="6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/><circle cx="6" cy="18" r="1.5"/><circle cx="12" cy="18" r="1.5"/><circle cx="18" cy="18" r="1.5"/></svg>
   </button>
 
   <button id="ws-tile-btn" class="topright-icon-btn" data-tooltip="Tile terminals">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>
   </button>
 
+  <span class="tr-divider"></span>
+
   <button id="topright-keybinds-btn" class="topright-icon-btn" data-tooltip="Keybinds">
-    <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2" fill="none"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="3"/><circle cx="7" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="17" cy="9" r="1" fill="currentColor" stroke="none"/><path d="M7 15h10"/></svg>
   </button>
 
   <button id="topright-memory-explorer-btn" class="topright-icon-btn" data-tooltip="Memory Explorer">
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4"/><path d="M12 19v4"/><path d="M4.22 4.22l2.83 2.83"/><path d="M16.95 16.95l2.83 2.83"/><path d="M1 12h4"/><path d="M19 12h4"/><path d="M4.22 19.78l2.83-2.83"/><path d="M16.95 7.05l2.83-2.83"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>
   </button>
 
   <button id="topright-file-explorer-btn" class="topright-icon-btn" data-tooltip="File Explorer">
-    <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
   </button>
+
+  <span class="tr-divider"></span>
 
   <div id="bookmarks-overlay">
     <button id="topright-bookmarks-btn" class="topright-icon-btn" data-tooltip="Bookmarks">
-      <svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
       <span class="count-badge count-badge--gold" id="bookmark-count"></span>
     </button>
     <div id="bookmarks-dropdown" style="display:none;">
@@ -361,11 +390,14 @@ export function getSharedHTML() {
   </div>
   <div id="invite-overlay">
     <button id="invite-btn" class="topright-icon-btn" data-tooltip="Share / Invite">
-      <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
       <span class="count-badge count-badge--blue" id="invite-session-count" style="display:none"></span>
     </button>
     <div id="invite-dropdown" style="display:none;"></div>
   </div>
+
+  <span class="tr-divider"></span>
+
   <div id="workspace-overlay">
     <div id="ws-indicator">
       <svg class="ws-icon" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
@@ -391,7 +423,7 @@ export function getSharedHTML() {
   </div>
   </div>
   <button id="topright-claude-panel-btn" class="topright-icon-btn" data-tooltip="Claude Code side panel">
-    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
   </button>
   <button id="topright-collapse-btn" class="topright-collapse-btn" data-tooltip="Toggle toolbar">
     <svg viewBox="0 0 24 24" class="collapse-chevron"><polyline points="9 18 15 12 9 6"/></svg>
@@ -405,6 +437,9 @@ export function getSharedHTML() {
 <!-- Help Modal -->
 <div id="help-overlay">
   <div id="help-modal" class="glass" style="position:relative;">
+    <button class="backdrop-toggle-btn" id="help-backdrop-toggle" data-tooltip="Toggle backdrop" style="position:absolute;top:16px;right:48px;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
     <button id="help-close">&times;</button>
     <h2>${t('help.title')}</h2>
     <div id="help-content"></div>
@@ -654,7 +689,7 @@ export function getSharedHTML() {
       <button class="wb-tool active" data-tool="select" data-tooltip="Select">
         <svg viewBox="0 0 24 24"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>
       </button>
-      <button class="wb-tool" id="wb-multiselect" data-tooltip="Multi-select (drag to select)">
+      <button class="wb-tool" id="wb-multiselect" data-tooltip="Multi-select (M)">
         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="1" fill="none" stroke-dasharray="3 2"/><path d="M8 2v2M14 2v2M20 8h2M20 14h2M8 20v2M14 20v2M2 8h2M2 14h2"/></svg>
       </button>
       <button class="wb-tool" data-tool="text" data-tooltip="Text · hold Ctrl = multi">
@@ -664,16 +699,17 @@ export function getSharedHTML() {
         <svg viewBox="0 0 24 24"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor"/><circle cx="4" cy="12" r="1.5" fill="currentColor"/><circle cx="4" cy="18" r="1.5" fill="currentColor"/></svg>
       </button>
       <button class="wb-tool" data-tool="arrow" data-tooltip="Arrow · hold Ctrl = multi">
-        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        <svg viewBox="0 0 24 24" fill="none"><path d="M5 17L17 5" stroke-width="2" stroke-linecap="round"/><path d="M17 5L10 5M17 5L17 12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button class="wb-tool" data-tool="shape" data-tooltip="Shape · hold Ctrl = multi">
-        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" fill="none"/><circle cx="12" cy="12" r="4" fill="none"/></svg>
+        <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3"/></svg>
       </button>
+      <div id="wb-shape-picker" class="glass" style="display:none;"></div>
       <button class="wb-tool" data-tool="pen" data-tooltip="Pencil · hold Ctrl = multi">
         <svg viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
       </button>
       <button class="wb-tool" data-tool="section" data-tooltip="Wireframe section · hold Ctrl = multi">
-        <svg viewBox="0 0 24 24" fill="none"><rect x="2" y="2" width="20" height="6" rx="1"/><rect x="2" y="10" width="9" height="12" rx="1"/><rect x="13" y="10" width="9" height="12" rx="1"/></svg>
+        <svg viewBox="0 0 24 24" fill="none"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="9" width="6" height="12" rx="1"/><rect x="10" y="9" width="12" height="7" rx="1"/><rect x="10" y="18" width="12" height="3" rx="1"/></svg>
       </button>
       <div id="wb-section-picker" class="glass" style="display:none;"></div>
       <div class="wb-tool-sep"></div>
