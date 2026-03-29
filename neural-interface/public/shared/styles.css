@@ -4691,6 +4691,144 @@
     background: var(--accent-red-bg);
     color: var(--accent-red);
   }
+  .count-badge--green {
+    background: rgba(52, 199, 89, 0.18);
+    color: #34c759;
+    border: 1px solid rgba(52, 199, 89, 0.25);
+  }
+
+  /* ── Update Modal ── */
+  .update-modal { min-width: 340px; }
+  .update-modal-title {
+    font-size: var(--fs-md);
+    font-weight: 600;
+    color: var(--t-primary);
+    margin: 0 0 4px;
+  }
+  .update-steps {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    margin-bottom: 16px;
+  }
+  .update-step-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.12);
+    transition: all 0.2s ease;
+  }
+  .update-step-dot.active {
+    background: #34c759;
+    box-shadow: 0 0 6px rgba(52,199,89,0.4);
+  }
+  .update-step-dot.done {
+    background: rgba(52,199,89,0.45);
+  }
+  .update-version-diff {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin: 14px 0 4px;
+  }
+  .update-ver {
+    font-family: var(--ff-mono);
+    font-size: 15px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: var(--r-card);
+    border: 1px solid var(--b-subtle);
+  }
+  .update-ver--old {
+    color: var(--t-muted);
+    background: rgba(255,255,255,0.04);
+  }
+  .update-ver--new {
+    color: #34c759;
+    background: rgba(52,199,89,0.08);
+    border-color: rgba(52,199,89,0.25);
+  }
+  .update-code-block {
+    position: relative;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: var(--r-card);
+    padding: 10px 40px 10px 14px;
+    font-family: var(--ff-mono);
+    font-size: 12px;
+    color: var(--t-secondary);
+    word-break: break-all;
+  }
+  .update-copy-btn {
+    position: absolute;
+    top: 50%; right: 8px;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--t-muted);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+  }
+  .update-copy-btn:hover {
+    color: var(--t-secondary);
+    background: rgba(255,255,255,0.08);
+  }
+  .update-backup-btn {
+    background: rgba(52,199,89,0.1);
+    border: 1px solid rgba(52,199,89,0.25);
+    color: #34c759;
+    font-weight: 500;
+    padding: 10px 16px;
+    border-radius: var(--r-card);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    transition: all 0.15s ease;
+  }
+  .update-backup-btn:hover { background: rgba(52,199,89,0.16); }
+  .update-backup-btn:disabled { opacity: 0.5; pointer-events: none; }
+  .update-backup-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--t-muted);
+    padding: 4px 0;
+  }
+  .update-backup-icon { font-size: 14px; font-weight: 700; }
+  .update-backup-icon.spin { animation: updateSpin 1s linear infinite; }
+  @keyframes updateSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  .update-skip-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--t-muted);
+    cursor: pointer;
+  }
+  .update-skip-label input[type="checkbox"] {
+    accent-color: #34c759;
+    width: 14px; height: 14px;
+  }
+  .update-spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid rgba(255,255,255,0.2);
+    border-top-color: #34c759;
+    border-radius: 50%;
+    animation: updateSpin 0.6s linear infinite;
+    vertical-align: -2px;
+    margin-right: 6px;
+  }
+  .tag-delete-overlay.closing {
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
 
   /* ── Dropdown panels (shared) ── */
   .dropdown-panel {
