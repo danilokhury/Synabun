@@ -76,6 +76,19 @@ function getGitBranch(cwd) {
   }
 }
 
+function getGitHead(cwd) {
+  try {
+    return execSync('git rev-parse HEAD', {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 2000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
 function resolveTemplate(template, vars) {
   return template.replace(/\{(\w+)\}/g, (match, key) => {
     return vars[key] !== undefined ? vars[key] : match;
@@ -136,6 +149,19 @@ async function main() {
   const features = getHookFeatures();
   const isCompactRestart = source === 'compact';
 
+  // Register session with Neural Interface session monitor (fire-and-forget)
+  if (sessionId) {
+    const niUrl = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
+    try {
+      fetch(`${niUrl}/api/sessions/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ claudeSessionId: sessionId, cwd, profile: 'claude-code', source: 'hook', project, terminalType: 'external' }),
+        signal: AbortSignal.timeout(3000),
+      }).catch(() => { /* NI may not be running */ });
+    } catch { /* ok */ }
+  }
+
   // Ensure all registered projects have their default category trees
   try { ensureProjectCategories(); } catch { /* non-critical */ }
 
@@ -159,9 +185,12 @@ async function main() {
 
   // Detect active loop — skip greeting + recall for autonomous loop sessions
   // Check both pending files (first iteration) AND active state files (subsequent iterations after /clear).
+  // When SYNABUN_TERMINAL_SESSION is set (server-launched loop), only match loops
+  // owned by THIS terminal — prevents unrelated sessions from entering loop mode.
   // First, deactivate stale loops (session died, terminal closed, time expired)
   cleanupStaleLoops(LOOP_DIR);
   const LOOP_STALE_MS = 10 * 60 * 1000;
+  const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION || '';
   let isLoopSession = false;
   try {
     if (existsSync(LOOP_DIR)) {
@@ -176,6 +205,9 @@ async function main() {
           if (data.stopped === true || data.finishedAt) continue;
           // Active loop detected (pending or already running)
           if (data.active || data.pending) {
+            // Multi-loop isolation: only match OUR terminal's loop
+            // If the loop belongs to a specific terminal, only match if this session is that same terminal
+            if (data.terminalSessionId && data.terminalSessionId !== terminalSessionEnv) continue;
             isLoopSession = true;
             break;
           }
@@ -279,12 +311,23 @@ async function main() {
   // BLOCK 1: SYNABUN HEADER + SESSION RECALL (condensed)
   // ============================================================
 
+  const startCommit = getGitHead(cwd);
+
   context.push(
     `## SynaBun Persistent Memory`,
     ``,
     `SynaBun memory is active. CLAUDE.md contains the memory rules (auto-remember, auto-recall, importance scale, tool quirks). Follow those rules throughout this session.`,
     ``,
+    `**Response ordering**: When finishing a task, call memory tools (remember/reflect) BEFORE writing your completion summary. The summary must be the LAST text in your response so the user sees it — not buried above memory tool calls.`,
+    ``,
   );
+
+  if (startCommit) {
+    context.push(
+      `Session start commit: \`${startCommit}\``,
+      ``,
+    );
+  }
 
   // --- COMPACTION BLOCK (only when source=compact) ---
   if (precompactData) {

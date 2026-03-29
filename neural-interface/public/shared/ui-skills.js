@@ -35,7 +35,6 @@ let _wizardStep = 0;
 let _wizardData = {};
 let _previewMode = false;   // false = raw editor, true = rendered preview
 let _wizPreviewMode = false; // wizard step 4 preview mode
-let _focusMode = false;     // darkens backdrop fully
 
 // ── Tab system ──
 // Each tab: { id, artifactId, artifact, artifactContent, label, path, content, originalContent, dirty }
@@ -262,7 +261,7 @@ async function openPanel() {
   // Backdrop
   _backdrop = document.createElement('div');
   _backdrop.className = 'studio-backdrop';
-  _backdrop.addEventListener('click', () => closePanel());
+  // Backdrop click disabled — close only via ESC or close button
   document.body.appendChild(_backdrop);
 
   // Panel
@@ -272,9 +271,9 @@ async function openPanel() {
   _panel.innerHTML = buildPanelHTML();
   document.body.appendChild(_panel);
 
-  // Always open centered at default size
-  _panel.style.left = Math.max(20, (window.innerWidth - 720) / 2) + 'px';
-  _panel.style.top = Math.max(48, (window.innerHeight - 500) / 2) + 'px';
+  // Always open centered at default size (matches Automation Studio)
+  _panel.style.left = Math.max(20, (window.innerWidth - 900) / 2) + 'px';
+  _panel.style.top = Math.max(48, (window.innerHeight - 520) / 2) + 'px';
 
   wirePanel();
   await loadLibrary();
@@ -292,7 +291,6 @@ function closePanel() {
   _selectedContent = null;
   _view = 'library';
   _editorDirty = false;
-  _focusMode = false;
   _tabs = [];
   _activeTabIdx = 0;
 }
@@ -317,10 +315,8 @@ function buildPanelHTML() {
         <button class="ss-header-btn" id="ss-new-btn">+ New</button>
         <button class="ss-header-btn" id="ss-import-btn">Import</button>
       </div>
-      <button class="ss-focus-btn" id="ss-focus" data-tooltip="Focus mode">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
-          <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
-        </svg>
+      <button class="backdrop-toggle-btn" id="ss-backdrop-toggle" data-tooltip="Toggle backdrop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
       </button>
       <button class="ss-close" id="ss-close">&times;</button>
     </div>
@@ -351,10 +347,11 @@ function wirePanel() {
   $('ss-new-btn')?.addEventListener('click', () => switchToWizard());
   $('ss-import-btn')?.addEventListener('click', () => triggerImport());
 
-  // Focus mode
-  $('ss-focus')?.addEventListener('click', () => {
-    _focusMode = !_focusMode;
-    $('ss-focus')?.classList.toggle('active', _focusMode);
+  $('ss-backdrop-toggle')?.addEventListener('click', () => {
+    if (_backdrop) {
+      _backdrop.classList.toggle('backdrop-hidden');
+      $('ss-backdrop-toggle')?.classList.toggle('active', _backdrop.classList.contains('backdrop-hidden'));
+    }
   });
 
   // Search
@@ -630,17 +627,17 @@ function renderLibraryMain() {
       </div>
       <p class="ss-welcome-sub">Browse, edit, and create Claude Code skills, commands, and agents.</p>
       <div class="ss-stats-row">
-        <div class="ss-stat ss-stat--skill">
+        <div class="ss-stat">
           <span class="ss-stat-num">${skillCount}</span>
-          <span class="ss-stat-label"><span class="ss-filter-dot skill"></span> Skills</span>
+          <span class="ss-stat-label">Skills</span>
         </div>
-        <div class="ss-stat ss-stat--command">
+        <div class="ss-stat">
           <span class="ss-stat-num">${cmdCount}</span>
-          <span class="ss-stat-label"><span class="ss-filter-dot command"></span> Commands</span>
+          <span class="ss-stat-label">Commands</span>
         </div>
-        <div class="ss-stat ss-stat--agent">
+        <div class="ss-stat">
           <span class="ss-stat-num">${agentCount}</span>
-          <span class="ss-stat-label"><span class="ss-filter-dot agent"></span> Agents</span>
+          <span class="ss-stat-label">Agents</span>
         </div>
       </div>
       <p class="ss-welcome-hint">Select an item from the sidebar, or create a new one.</p>

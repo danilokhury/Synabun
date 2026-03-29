@@ -333,15 +333,11 @@ export function cleanupStaleLoops(loopDir) {
         const loop = JSON.parse(readFileSync(fp, 'utf-8'));
 
         if (loop.active) {
-          const startedAt = new Date(loop.startedAt || 0).getTime();
           const lastActivity = new Date(loop.lastIterationAt || loop.startedAt || 0).getTime();
-          const maxMs = ((loop.maxMinutes || 60) + 5) * 60 * 1000;
-
-          const exceededTimeCap = (now - startedAt) >= maxMs;
           const noRecentActivity = (now - lastActivity) >= LOOP_STALE_INACTIVITY_MS;
 
-          if (exceededTimeCap || noRecentActivity) {
-            // Stale loop — delete immediately (no history keeping)
+          if (noRecentActivity) {
+            // Stale loop (no activity for 45 min) — delete immediately
             try { unlinkSync(fp); deleted.push(f); } catch { /* ok */ }
           }
         } else {
@@ -360,9 +356,8 @@ export function cleanupStaleLoops(loopDir) {
       const fp = join(loopDir, f);
       try {
         const loop = JSON.parse(readFileSync(fp, 'utf-8'));
-        const startedAt = new Date(loop.startedAt || 0).getTime();
-        const maxMs = ((loop.maxMinutes || 60) + 5) * 60 * 1000;
-        if ((now - startedAt) >= maxMs) {
+        const lastActivity = new Date(loop.lastIterationAt || loop.startedAt || 0).getTime();
+        if ((now - lastActivity) >= LOOP_STALE_INACTIVITY_MS) {
           try { unlinkSync(fp); deleted.push(f); } catch { /* ok */ }
         }
       } catch { /* skip corrupt */ }

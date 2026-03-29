@@ -15,6 +15,7 @@ import { registerAction } from './ui-keybinds.js';
 import { createTerminalSession } from './api.js';
 import { buildExplorePrompt } from './ui-tutorial-steps.js';
 import { FI, FI_MAP, getFileIcon } from './ui-file-explorer.js';
+import { getNotifSettings, playTestSound, sendTestBanner, SOUND_PRESETS } from './ui-notifications.js';
 
 // ── SVG icon constants ──
 
@@ -32,6 +33,7 @@ const TAB_ICONS = {
   interface: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="9" y1="9" x2="21" y2="9"/></svg>',
   graphics: '<svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
   icons: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+  notifications: '<svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
   browser: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><ellipse cx="12" cy="12" rx="4" ry="10" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="2" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="1.5"/></svg>',
   setup: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
   skins: '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-1 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9zM6.5 13c-.83 0-1.5-.67-1.5-1.5S5.67 10 6.5 10 8 10.67 8 11.5 7.33 13 6.5 13zm3-4C8.67 9 8 8.33 8 7.5S8.67 6 9.5 6s1.5.67 1.5 1.5S10.33 9 9.5 9zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 6 14.5 6s1.5.67 1.5 1.5S15.33 9 14.5 9zm3 4c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>',
@@ -52,7 +54,7 @@ const BROWSER_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><circle 
 
 // ── Toast helper ──
 
-function showCCToast(msg, duration = 3000) {
+function showCCToast(msg, duration = 3500) {
   let toast = document.querySelector('.cc-toast');
   if (!toast) {
     toast = document.createElement('div');
@@ -252,13 +254,14 @@ export function restoreInterfaceConfig() {
 
 // ── Shared tab order (variant tabs injected by order) ──
 
-const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'browser', 'collections', 'memory', 'projects', 'hooks', 'skills', 'discord', 'permissions', 'social', 'skins', 'interface', 'icons'];
+const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'notifications', 'browser', 'collections', 'memory', 'projects', 'hooks', 'skills', 'discord', 'permissions', 'social', 'skins', 'interface', 'icons'];
 
 // ── Tab descriptor map ──
 const TAB_META = {
   server:      { label: 'General',     desc: 'API keys & status',       group: 'System' },
   setup:       { label: 'Setup',       desc: 'Claude, Gemini, Codex',   group: 'System' },
   terminal:    { label: 'Terminal',    desc: 'CLI executables',          group: 'System' },
+  notifications: { label: 'Notifications', desc: 'Alerts & sounds',    group: 'System' },
   browser:     { label: 'Browser',    desc: 'Playwright config',       group: 'System' },
   collections: { label: 'Database',    desc: 'SQLite storage',          group: 'Data' },
   memory:      { label: 'Recall',      desc: 'Token budget & sync',     group: 'Data' },
@@ -514,65 +517,122 @@ function buildServerTab(settings) {
   const dbSizeMB = settings.dbSizeBytes ? (settings.dbSizeBytes / 1024 / 1024).toFixed(1) : '0';
   return `
       <div class="settings-tab-body active" data-tab="server">
-        <div class="settings-status">
-          <span class="settings-status-dot ${settings.storage === 'sqlite' ? 'connected' : 'disconnected'}"></span>
-          Storage: ${settings.storage === 'sqlite' ? 'SQLite' : settings.storage || 'Unknown'}
-        </div>
-        <div class="settings-field">
-          <label>Database Path</label>
-          <div class="settings-key-row" style="display:flex;gap:6px">
-            <input type="text" id="stg-db-path" value="${escapeHtml(settings.dbPath || '')}" autocomplete="off" spellcheck="false" style="flex:1">
-            <button class="conn-add-btn" id="stg-db-browse-btn" style="margin:0;width:auto;flex:0 0 auto;white-space:nowrap;padding:4px 10px">Browse</button>
-            <button class="conn-add-btn" id="stg-db-move-btn" style="margin:0;width:auto;flex:0 0 auto;white-space:nowrap;padding:4px 10px">Move</button>
+
+        <!-- ═══ Storage ═══ -->
+        <div class="stg-section">
+          <div class="gfx-group-title">Storage</div>
+          <div class="settings-status">
+            <span class="settings-status-dot ${settings.storage === 'sqlite' ? 'connected' : 'disconnected'}"></span>
+            Storage: ${settings.storage === 'sqlite' ? 'SQLite' : settings.storage || 'Unknown'}
           </div>
-          <div id="stg-db-browser" style="display:none;margin:4px 0 8px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
-          <div class="settings-hint" id="stg-db-hint">${settings.dbExists ? `File exists (${dbSizeMB} MB)` : 'Database not found'}</div>
-          <div id="stg-db-move-status" style="display:none;margin-top:8px;font-size:12px;align-items:center;gap:8px"></div>
-          <div id="stg-db-move-cleanup" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(109,213,140,0.08);border:1px solid rgba(109,213,140,0.2);border-radius:8px;font-size:12px;">
-            <div style="color:var(--green);margin-bottom:6px;font-weight:600">Move successful!</div>
-            <div style="color:var(--t-secondary);margin-bottom:6px">Old database files remain at the previous location.</div>
-            <div id="stg-db-mcp-notice" style="color:var(--t-muted);margin-bottom:8px;font-size:11px">Note: Restart the MCP server for the change to take effect.</div>
-            <div style="display:flex;gap:8px">
-              <button class="conn-add-btn" id="stg-db-delete-old" style="margin:0">Delete Old Files</button>
-              <button class="settings-btn-cancel" id="stg-db-keep-old" style="margin:0">Keep Them</button>
+          <div class="settings-field">
+            <label>Database Path</label>
+            <div class="settings-key-row">
+              <input type="text" id="stg-db-path" value="${escapeHtml(settings.dbPath || '')}" autocomplete="off" spellcheck="false">
+              <button class="stg-action-btn compact" id="stg-db-browse-btn">Browse</button>
+              <button class="stg-action-btn compact" id="stg-db-move-btn">Move</button>
+            </div>
+            <div id="stg-db-browser" style="display:none;margin:4px 0 8px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
+            <div class="settings-hint" id="stg-db-hint">${settings.dbExists ? `File exists (${dbSizeMB} MB)` : 'Database not found'}</div>
+            <div id="stg-db-move-status" style="display:none;margin-top:8px;font-size:12px;align-items:center;gap:8px"></div>
+            <div id="stg-db-move-cleanup" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(109,213,140,0.08);border:1px solid rgba(109,213,140,0.2);border-radius:8px;font-size:12px;">
+              <div style="color:var(--green);margin-bottom:6px;font-weight:600">Move successful!</div>
+              <div style="color:var(--t-secondary);margin-bottom:6px">Old database files remain at the previous location.</div>
+              <div id="stg-db-mcp-notice" style="color:var(--t-muted);margin-bottom:8px;font-size:11px">Note: Restart the MCP server for the change to take effect.</div>
+              <div class="stg-action-row">
+                <button class="stg-action-btn" id="stg-db-delete-old">Delete Old Files</button>
+                <button class="stg-action-btn" id="stg-db-keep-old">Keep Them</button>
+              </div>
             </div>
           </div>
-        </div>
-        <div class="settings-field">
-          <label>Embedding</label>
-          <div class="settings-key-row">
-            <input type="text" value="${settings.embedding === 'local' ? 'Local' : settings.embedding || 'unknown'} — ${settings.embeddingModel || 'n/a'} (${settings.embeddingDims || '?'}d)" readonly style="opacity:0.7;cursor:default" autocomplete="off" spellcheck="false">
+          <div class="settings-field">
+            <label>Embedding</label>
+            <div class="settings-key-row">
+              <input type="text" value="${settings.embedding === 'local' ? 'Local' : settings.embedding || 'unknown'} — ${settings.embeddingModel || 'n/a'} (${settings.embeddingDims || '?'}d)" readonly autocomplete="off" spellcheck="false">
+            </div>
+            <div class="settings-hint">Embeddings are computed locally, no API key required</div>
           </div>
-          <div class="settings-hint">Embeddings are computed locally, no API key required</div>
         </div>
-        <div class="stg-section-divider"></div>
-        <div class="gfx-group-title">System Backup & Restore</div>
-        <div class="settings-hint" style="margin-bottom:12px">
-          Create a full backup of all SynaBun data including .env config, data files,
-          category definitions, and memory database.
+
+        <!-- ═══ System Backup & Restore ═══ -->
+        <div class="stg-section">
+          <div class="gfx-group-title">System Backup & Restore</div>
+          <div class="settings-hint">
+            Create a full backup of all SynaBun data including .env config, data files,
+            category definitions, and memory database.
+          </div>
+          <div class="stg-action-row">
+            <button class="stg-action-btn" id="sys-backup-btn">
+              <svg viewBox="0 0 24 24">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download Full Backup
+            </button>
+            <button class="stg-action-btn" id="sys-restore-btn">
+              <svg viewBox="0 0 24 24">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              Restore from Backup
+            </button>
+            <input type="file" id="sys-restore-file" accept=".zip" style="display:none">
+          </div>
+          <div id="sys-backup-status" style="display:none;margin-top:10px;font-size:12px;align-items:center;gap:8px">
+            <div class="wiz-status-dot spin" id="sys-backup-dot"></div>
+            <span id="sys-backup-text"></span>
+          </div>
         </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button class="conn-add-btn" id="sys-backup-btn" style="margin:0;flex:0 0 auto">
-            <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            Download Full Backup
-          </button>
-          <button class="conn-add-btn" id="sys-restore-btn" style="margin:0;flex:0 0 auto">
-            <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            Restore from Backup
-          </button>
-          <input type="file" id="sys-restore-file" accept=".zip" style="display:none">
-        </div>
-        <div id="sys-backup-status" style="display:none;margin-top:10px;font-size:12px;align-items:center;gap:8px">
-          <div class="wiz-status-dot spin" id="sys-backup-dot"></div>
-          <span id="sys-backup-text"></span>
+
+        <!-- ═══ Auto Backup ═══ -->
+        <div class="stg-section">
+          <div class="gfx-group-title">Auto Backup</div>
+          <div class="settings-hint">
+            Automatically create backups on a schedule. Replaces the previous backup each time.
+          </div>
+
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="auto-backup-toggle">
+              <span>Enable auto backup</span>
+            </label>
+          </div>
+
+          <div id="auto-backup-options" style="display:none">
+            <div class="stg-inline-field">
+              <label>Frequency</label>
+              <select id="auto-backup-interval">
+                <option value="30">Every 30 minutes</option>
+                <option value="60">Every hour</option>
+                <option value="180">Every 3 hours</option>
+                <option value="360" selected>Every 6 hours</option>
+                <option value="720">Every 12 hours</option>
+                <option value="1440">Every 24 hours</option>
+              </select>
+            </div>
+
+            <div class="stg-inline-field">
+              <label>Backup Folder</label>
+              <div class="stg-input-row">
+                <input type="text" id="auto-backup-folder" placeholder="Select a folder..." readonly autocomplete="off" spellcheck="false">
+                <button class="stg-action-btn compact" id="auto-backup-browse">Browse</button>
+              </div>
+            </div>
+
+            <div class="stg-action-row">
+              <button class="stg-action-btn" id="auto-backup-now">
+                <svg viewBox="0 0 24 24">
+                  <polyline points="23 4 23 10 17 10"/>
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                </svg>
+                Backup Now
+              </button>
+            </div>
+
+            <div id="auto-backup-info" class="stg-info"></div>
+          </div>
         </div>
 
       </div>`;
@@ -589,8 +649,9 @@ function buildBrowserTab() {
                 <label class="bc-lbl">Chrome Path</label>
                 <div class="browser-cfg-input-row">
                   <input type="text" class="browser-cfg-input" id="bc-executablePath" placeholder="Auto-detect" spellcheck="false" autocomplete="off">
-                  <button class="cli-detect-btn" id="bc-detect-executable" data-tooltip="Detect">
-                    <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <button class="cli-detect-btn" id="bc-detect-executable" data-tooltip="Detect Chrome path">
+                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Detect
                   </button>
                 </div>
                 <div class="browser-cfg-hint" id="bc-detected-path"></div>
@@ -627,6 +688,13 @@ function buildBrowserTab() {
                 </div>
               </div>
               <div class="bc-card-row">
+                <label class="bc-lbl">Stream</label>
+                <div class="bc-inline-group">
+                  <button class="cc-toggle" id="bc-screencastEnabled"></button>
+                  <span class="bc-hint-inline">Live browser preview in Neural Interface</span>
+                </div>
+              </div>
+              <div class="bc-card-row">
                 <label class="bc-lbl">Screencast</label>
                 <div class="bc-inline-group">
                   <input type="hidden" id="bc-screencastFormat" value="jpeg">
@@ -653,8 +721,9 @@ function buildBrowserTab() {
               <div class="bc-card-row">
                 <label class="bc-lbl">Chrome Profile</label>
                 <div class="browser-cfg-input-row" style="flex:1">
-                  <button class="cli-detect-btn" id="bc-detect-profiles" data-tooltip="Scan for profiles" style="order:2">
-                    <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <button class="cli-detect-btn" id="bc-detect-profiles" data-tooltip="Scan for Chrome profiles" style="order:2">
+                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Scan
                   </button>
                 </div>
               </div>
@@ -676,7 +745,8 @@ function buildBrowserTab() {
                 <div class="browser-cfg-input-row" style="flex:1">
                   <input type="text" class="browser-cfg-input" id="bc-custom-profile-path" placeholder="Profile folder path (or pick from list above)" spellcheck="false" autocomplete="off" style="flex:1">
                   <button class="cli-detect-btn" id="bc-browse-folder" data-tooltip="Browse for folder" style="order:2">
-                    <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                    <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+                    Browse
                   </button>
                 </div>
               <div id="bc-browse-browser" style="display:none;margin:4px 0 4px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
@@ -1136,11 +1206,11 @@ function buildTerminalTab(cliConfig) {
       <div class="settings-tab-body" data-tab="terminal">
 
         <!-- CLI EXECUTABLE PATHS -->
-        <div class="iface-section" id="cc-cli-paths">
+        <div class="stg-section" id="cc-cli-paths">
           <div class="gfx-group-title">CLI Executable Paths</div>
-          <div class="cc-hint" style="margin-bottom:12px">
-            Configure the command used to launch each CLI from the terminal.<br>
-            Use a bare name for PATH lookup, a full path for custom installs, or prefix with <code style="font-size:10px;background:rgba(255,255,255,0.06);padding:1px 4px;border-radius:3px">wsl</code> for WSL.
+          <div class="settings-hint">
+            Configure the command used to launch each CLI from the terminal.
+            Use a bare name for PATH lookup, a full path for custom installs, or prefix with <code class="stg-code">wsl</code> for WSL.
           </div>
           ${cliProfiles.map(p => {
             const current = (cliConfig && cliConfig[p.id]?.command) || p.default;
@@ -1157,63 +1227,237 @@ function buildTerminalTab(cliConfig) {
                          placeholder="${p.default}"
                          spellcheck="false" autocomplete="off">
                   <button class="cli-detect-btn" data-cli-detect="${p.id}" data-tooltip="Auto-detect path">
-                    <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2">
-                      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                    </svg>
+                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Detect
                   </button>
-                  <span class="cli-path-status${isDefault ? '' : ' custom'}" id="cli-status-${p.id}">
-                    ${isDefault ? 'default' : 'custom'}
-                  </span>
                 </div>
               </div>
             </div>`;
           }).join('')}
-          <button class="conn-add-btn" id="cli-paths-save"
-                  style="width:100%;margin-top:12px;font-size:12px;padding:7px 10px;border-style:solid;background:rgba(79,195,247,0.08);border-color:rgba(79,195,247,0.25);color:rgba(79,195,247,0.9)">
+          <button class="stg-action-btn stg-save-btn" id="cli-paths-save">
             Save CLI Paths
           </button>
         </div>
 
         <!-- EXAMPLES -->
-        <div class="iface-section">
+        <div class="stg-section">
           <div class="gfx-group-title">Examples</div>
-          <div style="font-size:11px;color:var(--t-secondary);line-height:1.7">
-            <div style="display:flex;gap:8px;align-items:baseline">
-              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">claude</code>
-              <span style="color:var(--t-dim)">Default — uses system PATH</span>
+          <div class="stg-examples">
+            <div class="stg-example-row">
+              <code class="stg-code">claude</code>
+              <span>Default — uses system PATH</span>
             </div>
-            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
-              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">C:\\Users\\me\\.npm\\claude</code>
-              <span style="color:var(--t-dim)">Custom Windows path</span>
+            <div class="stg-example-row">
+              <code class="stg-code">C:\\Users\\me\\.npm\\claude</code>
+              <span>Custom Windows path</span>
             </div>
-            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
-              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">/opt/homebrew/bin/claude</code>
-              <span style="color:var(--t-dim)">Custom Unix path</span>
+            <div class="stg-example-row">
+              <code class="stg-code">/opt/homebrew/bin/claude</code>
+              <span>Custom Unix path</span>
             </div>
-            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
-              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">wsl claude</code>
-              <span style="color:var(--t-dim)">Run via WSL on Windows</span>
+            <div class="stg-example-row">
+              <code class="stg-code">wsl claude</code>
+              <span>Run via WSL on Windows</span>
             </div>
-            <div style="display:flex;gap:8px;align-items:baseline;margin-top:4px">
-              <code style="font-size:10px;background:rgba(255,255,255,0.04);padding:1px 6px;border-radius:3px;color:var(--t-muted);white-space:nowrap">wsl -d Ubuntu gemini</code>
-              <span style="color:var(--t-dim)">Specific WSL distro</span>
+            <div class="stg-example-row">
+              <code class="stg-code">wsl -d Ubuntu gemini</code>
+              <span>Specific WSL distro</span>
             </div>
           </div>
         </div>
 
-        <!-- NOTIFICATIONS -->
-        <div class="iface-section">
+      </div>`;
+}
+
+function buildNotificationsTab() {
+  const s = getNotifSettings();
+  const volume = parseInt(storage.getItem(KEYS.NOTIF_SOUND_VOLUME) || '50', 10);
+  const soundType = storage.getItem(KEYS.NOTIF_SOUND_TYPE) || 'beep';
+  const toastDur = parseInt(storage.getItem(KEYS.NOTIF_TOAST_DURATION) || '5', 10);
+  const toastPos = storage.getItem(KEYS.NOTIF_TOAST_POSITION) || 'top-right';
+  const permState = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
+  const permLabel = { granted: 'Granted', denied: 'Blocked', default: 'Not yet requested', unsupported: 'Not supported' }[permState] || permState;
+  const permColor = { granted: 'var(--accent-green, #4ade80)', denied: 'var(--accent-red, #f87171)', default: 'var(--s-light, #888)' }[permState] || 'var(--s-light)';
+
+  const presetOptions = ['beep', 'chime', 'ping', 'subtle'].map(p =>
+    `<option value="${p}" ${soundType === p ? 'selected' : ''}>${p.charAt(0).toUpperCase() + p.slice(1)}</option>`
+  ).join('');
+
+  const durationOptions = [3, 5, 10].map(d =>
+    `<option value="${d}" ${toastDur === d ? 'selected' : ''}>${d}s</option>`
+  ).join('');
+
+  const positionOptions = [
+    ['top-right', 'Top Right'], ['top-left', 'Top Left'], ['top-center', 'Top Center'],
+    ['bottom-right', 'Bottom Right'], ['bottom-left', 'Bottom Left'], ['bottom-center', 'Bottom Center'],
+  ].map(([val, label]) =>
+    `<option value="${val}" ${toastPos === val ? 'selected' : ''}>${label}</option>`
+  ).join('');
+
+  return `
+      <div class="settings-tab-body" data-tab="notifications">
+
+        <!-- MASTER TOGGLE -->
+        <div class="stg-section">
           <div class="gfx-group-title">Notifications</div>
-          <div class="cc-hint" style="margin-bottom:10px">
-            Play a sound and show a browser notification when a CLI task finishes or needs attention.
+          <div class="settings-hint">
+            Get alerted when a task finishes, needs your attention, or encounters an error.
           </div>
-          <div class="iface-toggle-row">
-            <label class="iface-toggle">
-              <input type="checkbox" id="term-notif-toggle">
-              <span class="iface-slider"></span>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-master-toggle" ${s.enabled ? 'checked' : ''}>
+              <span>Enable notifications</span>
             </label>
-            <span class="iface-toggle-label">Enable task notifications</span>
           </div>
+        </div>
+
+        <!-- OS PERMISSION -->
+        <div class="stg-section">
+          <div class="gfx-group-title">System Permission</div>
+          <div class="settings-hint">
+            Browser notification permission is required for OS banners.
+          </div>
+          <div class="stg-status-row" style="display:flex;align-items:center;gap:10px;margin-top:4px">
+            <span class="stg-status-dot" style="width:8px;height:8px;border-radius:50%;background:${permColor};flex-shrink:0"></span>
+            <span style="font-size:13px;color:var(--s-lighter)">${permLabel}</span>
+            ${permState === 'default' ? '<button class="stg-action-btn compact" id="notif-request-perm">Request Permission</button>' : ''}
+            ${permState === 'denied' ? '<span style="font-size:12px;color:var(--s-light)">Unblock in System Settings &rarr; Notifications &rarr; your browser</span>' : ''}
+          </div>
+        </div>
+
+        <!-- SOURCES -->
+        <div class="stg-section" id="notif-sources-section">
+          <div class="gfx-group-title">Sources</div>
+          <div class="settings-hint">
+            Choose which session types fire notifications.
+          </div>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-source-cli" ${s.sourceCli ? 'checked' : ''}>
+              <span>CLI Terminal</span>
+            </label>
+          </div>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-source-panel" ${s.sourcePanel ? 'checked' : ''}>
+              <span>Side Panel</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- TRIGGERS -->
+        <div class="stg-section" id="notif-triggers-section">
+          <div class="gfx-group-title">Triggers</div>
+          <div class="settings-hint">
+            Choose which events fire notifications.
+          </div>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-trigger-done" ${s.triggerDone ? 'checked' : ''}>
+              <span>Task Complete</span>
+            </label>
+          </div>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-trigger-action" ${s.triggerAction ? 'checked' : ''}>
+              <span>Action Required (permission prompts)</span>
+            </label>
+          </div>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-trigger-ask" ${s.triggerAsk ? 'checked' : ''}>
+              <span>User Question (AskUserQuestion)</span>
+            </label>
+          </div>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-trigger-error" ${s.triggerError ? 'checked' : ''}>
+              <span>Session Error / Timeout</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- SOUND -->
+        <div class="stg-section" id="notif-sound-section">
+          <div class="gfx-group-title">Sound</div>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-sound-toggle" ${s.sound ? 'checked' : ''}>
+              <span>Play sound on status change</span>
+            </label>
+          </div>
+          <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
+            <label style="font-size:13px;color:var(--s-lighter);min-width:50px">Volume</label>
+            <input type="range" id="notif-volume" min="0" max="100" value="${volume}" style="flex:1">
+            <span id="notif-volume-label" style="font-size:12px;color:var(--s-light);min-width:32px;text-align:right">${volume}%</span>
+          </div>
+          <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
+            <label style="font-size:13px;color:var(--s-lighter);min-width:50px">Preset</label>
+            <select id="notif-sound-type" style="flex:1;background:var(--s-darker);color:var(--text);border:1px solid var(--s-medium);border-radius:6px;padding:4px 8px;font-size:12px">
+              ${presetOptions}
+            </select>
+          </div>
+          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+            <button class="stg-action-btn compact" data-notif-test="action">Test Action</button>
+            <button class="stg-action-btn compact" data-notif-test="done">Test Done</button>
+            <button class="stg-action-btn compact" data-notif-test="ask">Test Ask</button>
+            <button class="stg-action-btn compact" data-notif-test="error">Test Error</button>
+          </div>
+        </div>
+
+        <!-- IN-APP TOAST -->
+        <div class="stg-section" id="notif-toast-section">
+          <div class="gfx-group-title">In-App Toast</div>
+          <div class="settings-hint">
+            Show a floating toast card inside the app when events fire.
+          </div>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-toast-toggle" ${s.toast ? 'checked' : ''}>
+              <span>Show in-app toasts</span>
+            </label>
+          </div>
+          <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
+            <label style="font-size:13px;color:var(--s-lighter);min-width:80px">Position</label>
+            <select id="notif-toast-position" style="flex:1;background:var(--s-darker);color:var(--text);border:1px solid var(--s-medium);border-radius:6px;padding:4px 8px;font-size:12px">
+              ${positionOptions}
+            </select>
+          </div>
+          <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
+            <label style="font-size:13px;color:var(--s-lighter);min-width:80px">Auto-dismiss</label>
+            <select id="notif-toast-duration" style="flex:1;background:var(--s-darker);color:var(--text);border:1px solid var(--s-medium);border-radius:6px;padding:4px 8px;font-size:12px">
+              ${durationOptions}
+            </select>
+          </div>
+        </div>
+
+        <!-- BANNERS -->
+        <div class="stg-section" id="notif-banner-section">
+          <div class="gfx-group-title">OS Banners</div>
+          <div class="settings-hint">
+            Show a system notification banner via the OS notification center.
+          </div>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-banner-toggle" ${s.banner ? 'checked' : ''}>
+              <span>Show OS notification banners</span>
+            </label>
+          </div>
+          <div class="stg-toggle-row">
+            <label>
+              <input type="checkbox" id="notif-banner-focused" ${s.bannerFocused ? 'checked' : ''}>
+              <span>Show even when app is focused</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- TEST -->
+        <div class="stg-section">
+          <div class="gfx-group-title">Test</div>
+          <div class="settings-hint">
+            Fire a full test notification (sound + toast + banner).
+          </div>
+          <button class="stg-action-btn" id="notif-test-btn">Send Test Notification</button>
         </div>
 
       </div>`;
@@ -1231,42 +1475,53 @@ function buildCollectionsTab(connections, settings) {
   return `
       <div class="settings-tab-body" data-tab="collections">
         ${mismatchBanner}
-        <div class="gfx-group-title">Memory Database</div>
-        <div class="conn-list" id="conn-list">
-          <div class="conn-item active">
-            <div class="conn-item-dot"></div>
-            <div class="conn-item-info">
-              <div class="conn-item-name">Local SQLite</div>
-              <div class="conn-item-meta">${settings.dbPath || 'memories.db'}</div>
+
+        <div class="stg-section">
+          <div class="gfx-group-title">Memory Database</div>
+          <div class="conn-list" id="conn-list">
+            <div class="conn-item active">
+              <div class="conn-item-dot"></div>
+              <div class="conn-item-info">
+                <div class="conn-item-name">Local SQLite</div>
+                <div class="conn-item-meta">${settings.dbPath || 'memories.db'}</div>
+              </div>
+              <span class="conn-item-count">${conn.points || 0} memories</span>
             </div>
-            <span class="conn-item-count">${conn.points || 0} memories</span>
           </div>
-        </div>
-        <div style="padding:8px 2px;font-size:12px;color:var(--t-muted);line-height:1.6">
-          <div><strong style="color:var(--t-secondary)">Storage:</strong> SQLite</div>
-          <div><strong style="color:var(--t-secondary)">DB Size:</strong> ${dbSizeMB} MB</div>
-          <div><strong style="color:var(--t-secondary)">Embedding:</strong> ${settings.embeddingModel || 'local'} (${settings.embeddingDims || '?'}d)</div>
+          <div class="db-stats-row">
+            <div class="db-stat">
+              <span class="db-stat-label">Storage</span>
+              <span class="db-stat-value">SQLite</span>
+            </div>
+            <div class="db-stat">
+              <span class="db-stat-label">DB Size</span>
+              <span class="db-stat-value">${dbSizeMB} MB</span>
+            </div>
+          </div>
         </div>
 
-        <div class="stg-section-divider"></div>
-        <div class="gfx-group-title">Embedding Management</div>
-        <div class="settings-hint" style="margin-bottom:12px">
-          Regenerate all memory and session chunk embeddings using the current model. Use this if you change the embedding model or provider.
-        </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button class="conn-add-btn" id="reindex-btn" style="margin:0">Reindex All Memories</button>
-          <button class="settings-btn-cancel" id="reindex-cancel-btn" style="margin:0;display:none">Cancel</button>
-        </div>
-        <div id="reindex-status" style="display:none;margin-top:10px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-            <div class="wiz-status-dot spin" id="reindex-dot"></div>
-            <span id="reindex-text" style="font-size:12px;color:var(--t-secondary)"></span>
+        <div class="stg-section">
+          <div class="gfx-group-title">Embedding Management</div>
+          <div class="settings-hint">
+            Regenerate all memory and session chunk embeddings using the current model. Use this if you change the embedding model or provider.
           </div>
-          <div style="background:rgba(255,255,255,0.06);border-radius:4px;height:4px;overflow:hidden">
-            <div id="reindex-bar" style="background:var(--green);height:100%;width:0%;transition:width 0.3s ease"></div>
+          <div class="db-reindex-row">
+            <button class="stg-action-btn db-reindex-btn" id="reindex-btn">Reindex All Memories</button>
+            <button class="stg-action-btn db-reindex-btn" id="reindex-cancel-btn" style="display:none">Cancel</button>
           </div>
-          <div id="reindex-summary" style="font-size:11px;color:var(--t-muted);margin-top:4px"></div>
+          <div id="reindex-status" class="db-reindex-status" style="display:none">
+            <div class="db-reindex-header">
+              <div class="wiz-status-dot spin" id="reindex-dot"></div>
+              <span id="reindex-text" class="db-reindex-text"></span>
+            </div>
+            <div class="db-reindex-bar-track">
+              <div id="reindex-bar" class="db-reindex-bar"></div>
+            </div>
+            <div id="reindex-summary" class="db-reindex-summary"></div>
+          </div>
+          <div class="db-model-footer">Model: ${settings.embeddingModel || 'local'} · ${settings.embeddingDims || '?'}d</div>
         </div>
+
       </div>`;
 }
 
@@ -1745,37 +2000,127 @@ function buildMemoryTab() {
   return `
       <div class="settings-tab-body" data-tab="memory">
 
+        <!-- Recall Profiles -->
         <div class="iface-section">
-          <div class="gfx-group-title">Recall Token Budget</div>
-          <div class="settings-hint" style="margin-bottom:6px">Control how much of each memory is injected into the AI context window. Lower values save tokens and reduce cost per recall.</div>
-          <div class="gfx-presets" id="recall-presets">
-            <div class="gfx-preset-card" data-recall-preset="150">
-              <span class="gfx-preset-name">Brief</span>
-              <span class="gfx-preset-desc">~40 tokens per memory</span>
+          <div class="gfx-group-title">Recall Profile</div>
+          <div class="settings-hint" style="margin-bottom:10px">Choose how the AI searches your memory. Profiles configure multiple parameters at once.</div>
+          <div class="recall-profiles" id="recall-profiles">
+            <div class="recall-profile-card" data-recall-profile="quick">
+              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg></div>
+              <div class="recall-profile-name">Quick</div>
+              <div class="recall-profile-desc">3 results &middot; important only</div>
             </div>
-            <div class="gfx-preset-card" data-recall-preset="500">
-              <span class="gfx-preset-name">Summary</span>
-              <span class="gfx-preset-desc">~130 tokens per memory</span>
+            <div class="recall-profile-card active" data-recall-profile="balanced">
+              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg></div>
+              <div class="recall-profile-name">Balanced</div>
+              <div class="recall-profile-desc">5 results &middot; standard matching</div>
             </div>
-            <div class="gfx-preset-card active" data-recall-preset="0">
-              <span class="gfx-preset-name">Full</span>
-              <span class="gfx-preset-desc">No truncation</span>
+            <div class="recall-profile-card" data-recall-profile="deep">
+              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z"/><circle cx="12" cy="12" r="2"/></svg></div>
+              <div class="recall-profile-name">Deep</div>
+              <div class="recall-profile-desc">10 results &middot; sessions included</div>
             </div>
-          </div>
-          <div class="gfx-row" style="margin-top:14px">
-            <span class="gfx-label">Limit</span>
-            <input type="range" id="recall-slider" min="100" max="2100" step="50" value="2100">
-            <span class="gfx-val" id="recall-slider-val">No limit</span>
-          </div>
-          <div class="recall-preview-box" id="recall-preview"></div>
-          <div class="recall-tips">
-            <div class="recall-tips-title">When to use each level</div>
-            <div class="recall-tip"><span class="recall-tip-tag brief">Brief</span> Routine coding &mdash; quick lookups, bug fixes, simple tasks</div>
-            <div class="recall-tip"><span class="recall-tip-tag summary">Summary</span> General development &mdash; feature work, refactoring, reviews</div>
-            <div class="recall-tip"><span class="recall-tip-tag full">Full</span> Planning &amp; brainstorming &mdash; architecture decisions, deep context needed</div>
+            <div class="recall-profile-card" data-recall-profile="custom">
+              <div class="recall-profile-icon"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></div>
+              <div class="recall-profile-name">Custom</div>
+              <div class="recall-profile-desc">Configure each parameter</div>
+            </div>
           </div>
         </div>
 
+        <!-- Impact Indicator -->
+        <div class="recall-impact" id="recall-impact">
+          <div class="recall-impact-stat">
+            <span class="recall-impact-val" id="recall-impact-tokens">&mdash;</span>
+            <span class="recall-impact-label">est. tokens / recall</span>
+          </div>
+          <div class="recall-impact-stat">
+            <span class="recall-impact-val" id="recall-impact-reachable">&mdash;</span>
+            <span class="recall-impact-label">memories reachable</span>
+          </div>
+          <div class="recall-impact-stat">
+            <span class="recall-impact-val" id="recall-impact-sessions">&mdash;</span>
+            <span class="recall-impact-label">session context</span>
+          </div>
+        </div>
+
+        <!-- Individual Controls (collapsible, auto-opens on Custom) -->
+        <div class="iface-section collapsed" data-collapsible id="recall-controls">
+          <div class="gfx-group-title" style="justify-content:space-between;cursor:pointer">
+            <span style="display:flex;align-items:center;gap:6px">
+              ${CHEVRON_ICON} Fine-Tune Controls
+            </span>
+            <span class="recall-controls-badge" id="recall-controls-badge" style="font-size:10px;color:var(--t-muted)">using profile defaults</span>
+          </div>
+          <div class="cc-section-body">
+
+            <div class="recall-control-group">
+              <div class="recall-control-row">
+                <div class="recall-control-header">
+                  <span class="recall-control-label">Results per recall</span>
+                  <span class="recall-control-val" id="rc-limit-val">5</span>
+                </div>
+                <input type="range" class="recall-range" id="rc-limit" min="1" max="20" step="1" value="5">
+                <div class="recall-control-hint">How many memories are returned per search</div>
+              </div>
+
+              <div class="recall-control-row">
+                <div class="recall-control-header">
+                  <span class="recall-control-label">Minimum importance</span>
+                  <span class="recall-control-val" id="rc-importance-val">Any</span>
+                </div>
+                <input type="range" class="recall-range" id="rc-importance" min="0" max="10" step="1" value="0">
+                <div class="recall-control-scale">
+                  <span>Any</span><span>Trivial</span><span>Normal</span><span>Significant</span><span>Critical</span>
+                </div>
+              </div>
+
+              <div class="recall-control-row">
+                <div class="recall-control-header">
+                  <span class="recall-control-label">Similarity threshold</span>
+                  <span class="recall-control-val" id="rc-score-val">0.30</span>
+                </div>
+                <input type="range" class="recall-range" id="rc-score" min="10" max="80" step="5" value="30">
+                <div class="recall-control-hint">Higher = stricter matching, fewer but more relevant results</div>
+              </div>
+
+              <div class="recall-control-row">
+                <div class="recall-control-header">
+                  <span class="recall-control-label">Content length</span>
+                  <span class="recall-control-val" id="rc-maxchars-val">No limit</span>
+                </div>
+                <input type="range" class="recall-range" id="rc-maxchars" min="100" max="2100" step="50" value="2100">
+                <div class="recall-control-hint">Max characters per memory in results. Reduces token usage.</div>
+              </div>
+
+              <div class="recall-control-row">
+                <div class="recall-control-header">
+                  <span class="recall-control-label">Session context</span>
+                </div>
+                <div class="recall-segmented" id="rc-sessions">
+                  <button class="recall-seg-btn" data-val="never">Never</button>
+                  <button class="recall-seg-btn active" data-val="auto">Auto</button>
+                  <button class="recall-seg-btn" data-val="always">Always</button>
+                </div>
+                <div class="recall-control-hint">Include past conversation chunks in recall results</div>
+              </div>
+
+              <div class="recall-control-row">
+                <div class="recall-control-header">
+                  <span class="recall-control-label">Recency boost</span>
+                  <label class="recall-toggle">
+                    <input type="checkbox" id="rc-recency">
+                    <span class="recall-toggle-track"></span>
+                  </label>
+                </div>
+                <div class="recall-control-hint">Prioritize recent memories over semantic similarity</div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+        <!-- Memory Sync (commented out)
         <div class="iface-section">
           <div class="gfx-group-title">Memory Sync</div>
           <div class="settings-hint" style="margin-bottom:10px">Scan for memories whose related files have changed since they were last stored. Stale memories may contain outdated information about renamed functions, moved files, or changed APIs.</div>
@@ -1785,6 +2130,7 @@ function buildMemoryTab() {
           </button>
           <div class="sync-results" id="sync-results"></div>
         </div>
+        -->
 
       </div>`;
 }
@@ -2006,7 +2352,7 @@ function buildInterfaceTab() {
             <span class="gfx-label">Scale</span>
             <input type="range" data-iface-key="scale" min="0.5" max="1.5" step="0.01" value="${cfg.scale}">
             <input type="number" id="ui-scale-val" class="gfx-val gfx-val-input" min="50" max="150" step="1" value="${Math.round(cfg.scale * 100)}" title="Type exact % or use arrow keys">
-            <span class="gfx-val" style="pointer-events:none;margin-left:-2px">%</span>
+            <span class="gfx-val" style="pointer-events:none;margin-left:-2px;min-width:auto">%</span>
           </div>`
         )}
 
@@ -2330,11 +2676,10 @@ export async function openSettingsModal() {
     <div class="settings-panel-header drag-handle" data-drag="settings-panel">
       <div class="stg-header-left">
         <h3>Settings</h3>
-        <span class="stg-status-badge">
-          <span class="stg-status-dot ${settings.storage === 'sqlite' ? 'connected' : 'disconnected'}"></span>
-          SQLite
-        </span>
       </div>
+      <button class="backdrop-toggle-btn" id="stg-backdrop-toggle" data-tooltip="Toggle backdrop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
       <button class="settings-panel-close" id="stg-close" data-tooltip="Close">&times;</button>
     </div>
     <div class="settings-panel-body">
@@ -2349,6 +2694,7 @@ export async function openSettingsModal() {
         ${buildServerTab(settings)}
         ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, toolPermissions, toolCategories)}
         ${buildTerminalTab(cliConfig)}
+        ${buildNotificationsTab()}
         ${buildBrowserTab()}
         ${buildSetupTab(setupStatus)}
         ${buildCollectionsTab(connections, settings)}
@@ -2369,7 +2715,7 @@ export async function openSettingsModal() {
   // ── Backdrop ──
   const backdrop = document.createElement('div');
   backdrop.className = 'studio-backdrop';
-  backdrop.addEventListener('click', () => close());
+  // Backdrop click disabled — close only via ESC or close button
   document.body.appendChild(backdrop);
 
   document.body.appendChild(overlay);
@@ -2377,18 +2723,15 @@ export async function openSettingsModal() {
   // ── Open animation (matches Skills/Automation Studio) ──
   requestAnimationFrame(() => { backdrop.classList.add('open'); overlay.classList.add('open'); });
 
-  // ── Focus mode ──
-  let _focusMode = false;
-  const focusBtn = overlay.querySelector('#stg-focus');
-  if (focusBtn) {
-    focusBtn.addEventListener('click', () => {
-      _focusMode = !_focusMode;
-      focusBtn.classList.toggle('active', _focusMode);
-    });
-  }
+  // ── ESC key to close ──
+  const onSettingsEsc = (e) => {
+    if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onSettingsEsc); }
+  };
+  document.addEventListener('keydown', onSettingsEsc);
 
   // ── Close helper ──
   const close = () => {
+    document.removeEventListener('keydown', onSettingsEsc);
     backdrop.remove();
     overlay.remove();
   };
@@ -2516,6 +2859,15 @@ export async function openSettingsModal() {
 
   // ── Close handlers ──
   overlay.querySelector('#stg-close').addEventListener('click', close);
+
+  // ── Backdrop toggle ──
+  const stgBackdropToggle = overlay.querySelector('#stg-backdrop-toggle');
+  if (stgBackdropToggle) {
+    stgBackdropToggle.addEventListener('click', () => {
+      backdrop.classList.toggle('backdrop-hidden');
+      stgBackdropToggle.classList.toggle('active', backdrop.classList.contains('backdrop-hidden'));
+    });
+  }
 
   // ── Move Database handlers ──
   const moveBrowseBtn = overlay.querySelector('#stg-db-browse-btn');
@@ -2892,59 +3244,330 @@ export async function openSettingsModal() {
   }
 
   // ══════════════════════════════════════
-  // Memory tab: Recall response size
+  // Auto Backup handlers
   // ══════════════════════════════════════
-  const recallSlider = overlay.querySelector('#recall-slider');
-  const recallSliderVal = overlay.querySelector('#recall-slider-val');
-  const recallPreview = overlay.querySelector('#recall-preview');
-  const recallPresets = overlay.querySelector('#recall-presets');
-  const PREVIEW_TEXT = 'SynaBun is a persistent vector memory system for AI assistants built with three core components: MCP Server (TypeScript/Node.js), Neural Interface (Express.js + Three.js), and SQLite with local embeddings. It stores memory vectors in a single database with cosine similarity and supports multiple projects.';
 
-  function updateRecallUI(maxChars) {
-    recallSlider.value = maxChars === 0 ? 2100 : Math.min(maxChars, 2100);
-    recallSliderVal.textContent = maxChars === 0 ? 'No limit' : maxChars + ' chars';
-    recallPresets.querySelectorAll('.gfx-preset-card').forEach(c => {
-      c.classList.toggle('active', String(maxChars) === c.dataset.recallPreset);
-    });
-    if (maxChars > 0 && PREVIEW_TEXT.length > maxChars) {
-      recallPreview.textContent = PREVIEW_TEXT.substring(0, maxChars) + '...';
-    } else {
-      recallPreview.textContent = PREVIEW_TEXT;
+  const abToggle = overlay.querySelector('#auto-backup-toggle');
+  const abOptions = overlay.querySelector('#auto-backup-options');
+  const abInterval = overlay.querySelector('#auto-backup-interval');
+  const abFolder = overlay.querySelector('#auto-backup-folder');
+  const abBrowse = overlay.querySelector('#auto-backup-browse');
+  const abNow = overlay.querySelector('#auto-backup-now');
+  const abInfo = overlay.querySelector('#auto-backup-info');
+
+  function renderAutoBackupInfo(cfg) {
+    if (!abInfo) return;
+    const parts = [];
+    if (cfg.lastBackup) {
+      const d = new Date(cfg.lastBackup);
+      parts.push(`Last backup: ${d.toLocaleString()}`);
+      if (cfg.lastBackupSize) parts[0] += ` (${(cfg.lastBackupSize / 1024 / 1024).toFixed(1)} MB)`;
     }
+    if (cfg.lastBackupError) parts.push(`<span style="color:var(--red)">Error: ${cfg.lastBackupError}</span>`);
+    if (cfg.folderPath) parts.push(`Saving to: <span style="opacity:0.7">${cfg.folderPath}/synabun-auto-backup.zip</span>`);
+    abInfo.innerHTML = parts.join('<br>');
   }
 
-  async function saveRecallSetting(maxChars) {
+  // Load initial state
+  if (abToggle) {
+    fetch('/api/system/auto-backup').then(r => r.json()).then(cfg => {
+      abToggle.checked = cfg.enabled;
+      abOptions.style.display = cfg.enabled ? '' : 'none';
+      if (cfg.intervalMinutes) abInterval.value = String(cfg.intervalMinutes);
+      if (cfg.folderPath) abFolder.value = cfg.folderPath;
+      renderAutoBackupInfo(cfg);
+    }).catch(() => {});
+
+    async function saveAutoBackupConfig() {
+      const body = {
+        enabled: abToggle.checked,
+        intervalMinutes: parseInt(abInterval.value, 10),
+        folderPath: abFolder.value,
+      };
+      try {
+        const res = await fetch('/api/system/auto-backup', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.config) renderAutoBackupInfo(data.config);
+      } catch {}
+    }
+
+    abToggle.addEventListener('change', () => {
+      abOptions.style.display = abToggle.checked ? '' : 'none';
+      saveAutoBackupConfig();
+    });
+
+    abInterval.addEventListener('change', () => saveAutoBackupConfig());
+
+    abBrowse.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/browse-folder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ description: 'Select auto-backup folder' }),
+        });
+        const data = await res.json();
+        if (data.path) {
+          abFolder.value = data.path.replace(/\/+$/, '');
+          saveAutoBackupConfig();
+        }
+      } catch {}
+    });
+
+    abNow.addEventListener('click', async () => {
+      if (!abFolder.value) {
+        abInfo.innerHTML = '<span style="color:var(--accent-dim)">Select a backup folder first.</span>';
+        return;
+      }
+      abNow.disabled = true;
+      const origHTML = abNow.innerHTML;
+      abNow.textContent = 'Backing up...';
+      abInfo.innerHTML = '<span style="opacity:0.6">Creating backup...</span>';
+      try {
+        const res = await fetch('/api/system/auto-backup/trigger', { method: 'POST' });
+        const cfg = await res.json();
+        if (cfg.error) throw new Error(cfg.error);
+        renderAutoBackupInfo(cfg);
+      } catch (err) {
+        abInfo.innerHTML = `<span style="color:var(--red)">Failed: ${err.message}</span>`;
+      } finally {
+        abNow.disabled = false;
+        abNow.innerHTML = origHTML;
+      }
+    });
+  }
+
+  // ══════════════════════════════════════
+  // Memory tab: Recall profiles + controls
+  // ══════════════════════════════════════
+
+  const RECALL_PROFILES = {
+    quick:    { limit: 3,  minImportance: 5, minScore: 0.45, maxChars: 300,  includeSessions: 'never',  recencyBoost: false },
+    balanced: { limit: 5,  minImportance: 0, minScore: 0.30, maxChars: 0,    includeSessions: 'auto',   recencyBoost: false },
+    deep:     { limit: 10, minImportance: 0, minScore: 0.20, maxChars: 0,    includeSessions: 'always', recencyBoost: false },
+  };
+
+  const IMPORTANCE_LABELS = ['Any','','Trivial','','Low','Normal','','Significant','','Critical','Foundational'];
+
+  // DOM refs
+  const rcProfiles = overlay.querySelector('#recall-profiles');
+  const rcControlsSection = overlay.querySelector('#recall-controls');
+  const rcBadge = overlay.querySelector('#recall-controls-badge');
+  const rcLimit = overlay.querySelector('#rc-limit');
+  const rcLimitVal = overlay.querySelector('#rc-limit-val');
+  const rcImportance = overlay.querySelector('#rc-importance');
+  const rcImportanceVal = overlay.querySelector('#rc-importance-val');
+  const rcScore = overlay.querySelector('#rc-score');
+  const rcScoreVal = overlay.querySelector('#rc-score-val');
+  const rcMaxchars = overlay.querySelector('#rc-maxchars');
+  const rcMaxcharsVal = overlay.querySelector('#rc-maxchars-val');
+  const rcSessions = overlay.querySelector('#rc-sessions');
+  const rcRecency = overlay.querySelector('#rc-recency');
+  const rcImpactTokens = overlay.querySelector('#recall-impact-tokens');
+  const rcImpactReachable = overlay.querySelector('#recall-impact-reachable');
+  const rcImpactSessions = overlay.querySelector('#recall-impact-sessions');
+
+  let _recallProfile = 'balanced';
+  let _recallImpactData = null; // { rows: [{ importance, cnt, avg_len }] }
+
+  function importanceName(val) {
+    if (val === 0) return 'Any';
+    if (val <= 2) return 'Trivial';
+    if (val <= 4) return 'Low';
+    if (val === 5) return 'Normal';
+    if (val <= 7) return 'Significant';
+    if (val <= 9) return 'Critical';
+    return 'Foundational';
+  }
+
+  function updateControlsFromState(d) {
+    rcLimit.value = d.limit;
+    rcLimitVal.textContent = d.limit;
+    rcImportance.value = d.minImportance;
+    rcImportanceVal.textContent = importanceName(d.minImportance);
+    rcScore.value = Math.round(d.minScore * 100);
+    rcScoreVal.textContent = d.minScore.toFixed(2);
+    rcMaxchars.value = d.maxChars === 0 ? 2100 : Math.min(d.maxChars, 2100);
+    rcMaxcharsVal.textContent = d.maxChars === 0 ? 'No limit' : d.maxChars + ' chars';
+    rcSessions.querySelectorAll('.recall-seg-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.val === d.includeSessions);
+    });
+    rcRecency.checked = d.recencyBoost;
+  }
+
+  function getControlsState() {
+    const rawMaxchars = parseInt(rcMaxchars.value, 10);
+    return {
+      limit: parseInt(rcLimit.value, 10),
+      minImportance: parseInt(rcImportance.value, 10),
+      minScore: parseInt(rcScore.value, 10) / 100,
+      maxChars: rawMaxchars >= 2100 ? 0 : rawMaxchars,
+      includeSessions: rcSessions.querySelector('.recall-seg-btn.active')?.dataset.val || 'auto',
+      recencyBoost: rcRecency.checked,
+    };
+  }
+
+  function setActiveProfile(name) {
+    _recallProfile = name;
+    rcProfiles.querySelectorAll('.recall-profile-card').forEach(c => {
+      c.classList.toggle('active', c.dataset.recallProfile === name);
+    });
+    // Auto-open controls for custom, collapse for presets
+    if (name === 'custom') {
+      rcControlsSection.classList.remove('collapsed');
+      rcBadge.textContent = 'custom configuration';
+    } else {
+      rcControlsSection.classList.add('collapsed');
+      rcBadge.textContent = 'using profile defaults';
+      updateControlsFromState(RECALL_PROFILES[name]);
+    }
+    updateImpactIndicator();
+  }
+
+  async function saveRecallSettings() {
+    const d = getControlsState();
     try {
       await fetch('/api/display-settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recallMaxChars: maxChars }),
+        body: JSON.stringify({ recallDefaults: d, profile: _recallProfile }),
       });
     } catch (e) {
-      console.error('Failed to save display settings:', e);
+      console.error('Failed to save recall settings:', e);
     }
   }
 
-  // Load current setting
-  fetch('/api/display-settings').then(r => r.json()).then(data => {
-    updateRecallUI(data.recallMaxChars ?? 0);
-  }).catch(() => updateRecallUI(0));
+  function updateImpactIndicator() {
+    const d = getControlsState();
+    if (_recallImpactData) {
+      let reachable = 0;
+      let totalLen = 0;
+      let totalTagsLen = 0;
+      let totalFilesLen = 0;
+      let totalCount = 0;
+      for (const row of _recallImpactData.rows) {
+        if (d.minImportance === 0 || row.importance >= d.minImportance) {
+          reachable += row.cnt;
+          totalLen += row.avg_len * row.cnt;
+          totalTagsLen += (row.avg_tags_len || 0) * row.cnt;
+          totalFilesLen += (row.avg_files_len || 0) * row.cnt;
+          totalCount += row.cnt;
+        }
+      }
+      const avgLen = totalCount > 0 ? totalLen / totalCount : 500;
+      const avgTagsLen = totalCount > 0 ? totalTagsLen / totalCount : 30;
+      const avgFilesLen = totalCount > 0 ? totalFilesLen / totalCount : 40;
+      const effectiveLen = d.maxChars > 0 ? Math.min(avgLen, d.maxChars) : avgLen;
 
-  // Preset clicks
-  recallPresets.querySelectorAll('.gfx-preset-card').forEach(card => {
+      // Token estimate: chars / 3.7 (average ratio for mixed text)
+      // Per memory: content + metadata header (~80 chars: UUID, score, importance, age)
+      //           + category/project/tags line + files line + newlines
+      const metadataCharsPerResult = 80 + avgTagsLen + avgFilesLen + 30;
+      const contentTokens = d.limit * (effectiveLen / 3.7);
+      const metadataTokens = d.limit * (metadataCharsPerResult / 3.7);
+      const headerTokens = 15; // "Found N memories and M session chunks for ..."
+
+      // Session chunks: estimated when sessions are on or auto
+      let sessionTokens = 0;
+      if (d.includeSessions !== 'never') {
+        const ss = _recallImpactData.sessionStats;
+        const sessionLimit = Math.max(3, Math.floor(d.limit / 2));
+        if (ss && ss.count > 0) {
+          // Per chunk: summary + header (~90 chars) + session line (~70 chars) + details
+          const charsPerChunk = (ss.avg_summary_len || 150) + 160 + (ss.avg_details_len || 80);
+          sessionTokens = sessionLimit * (charsPerChunk / 3.7);
+        } else {
+          // Fallback estimate when no session data available
+          sessionTokens = sessionLimit * 120;
+        }
+        if (d.includeSessions === 'auto') sessionTokens *= 0.6; // auto doesn't always trigger
+      }
+
+      const estTokens = Math.round(contentTokens + metadataTokens + headerTokens + sessionTokens);
+      rcImpactTokens.textContent = estTokens > 999 ? (estTokens / 1000).toFixed(1) + 'k' : estTokens;
+      rcImpactReachable.textContent = reachable;
+    }
+    const sessMap = { auto: 'Auto', always: 'On', never: 'Off' };
+    rcImpactSessions.textContent = sessMap[d.includeSessions] || 'Auto';
+  }
+
+  // Load impact data + current settings
+  fetch('/api/recall-impact').then(r => r.json()).then(data => {
+    _recallImpactData = data;
+    updateImpactIndicator();
+  }).catch(() => {});
+
+  fetch('/api/display-settings').then(r => r.json()).then(data => {
+    const profile = data.profile || 'balanced';
+    const d = data.recallDefaults;
+    if (d) {
+      updateControlsFromState(d);
+    } else if (data.recallMaxChars !== undefined) {
+      // Legacy migration
+      const legacy = { ...RECALL_PROFILES.balanced, maxChars: data.recallMaxChars ?? 0 };
+      updateControlsFromState(legacy);
+    }
+    setActiveProfile(profile);
+  }).catch(() => setActiveProfile('balanced'));
+
+  // Profile card clicks + mouse-tracking glow + background icon clone
+  rcProfiles.querySelectorAll('.recall-profile-card').forEach(card => {
     card.addEventListener('click', () => {
-      const val = parseInt(card.dataset.recallPreset, 10);
-      updateRecallUI(val);
-      saveRecallSetting(val);
+      setActiveProfile(card.dataset.recallProfile);
+      saveRecallSettings();
+    });
+    card.addEventListener('mousemove', e => {
+      const r = card.getBoundingClientRect();
+      card.style.setProperty('--mx', ((e.clientX - r.left) / r.width * 100) + '%');
+      card.style.setProperty('--my', ((e.clientY - r.top) / r.height * 100) + '%');
+    });
+    // Clone icon SVG into oversized background element
+    const iconSvg = card.querySelector('.recall-profile-icon svg');
+    if (iconSvg) {
+      const bg = document.createElement('div');
+      bg.className = 'recall-bg-icon';
+      bg.appendChild(iconSvg.cloneNode(true));
+      card.appendChild(bg);
+    }
+  });
+
+  // Slider wiring
+  function wireSlider(el, valEl, formatter, onChange) {
+    el.addEventListener('input', () => {
+      valEl.textContent = formatter(el.value);
+      if (onChange) onChange();
+      updateImpactIndicator();
+      if (_recallProfile !== 'custom') setActiveProfile('custom');
+      saveRecallSettings();
+    });
+  }
+
+  wireSlider(rcLimit, rcLimitVal, v => v);
+  wireSlider(rcImportance, rcImportanceVal, v => importanceName(parseInt(v, 10)));
+  wireSlider(rcScore, rcScoreVal, v => (parseInt(v, 10) / 100).toFixed(2));
+  wireSlider(rcMaxchars, rcMaxcharsVal, v => {
+    const n = parseInt(v, 10);
+    return n >= 2100 ? 'No limit' : n + ' chars';
+  });
+
+  // Segmented button (sessions)
+  rcSessions.querySelectorAll('.recall-seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      rcSessions.querySelectorAll('.recall-seg-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      updateImpactIndicator();
+      if (_recallProfile !== 'custom') setActiveProfile('custom');
+      saveRecallSettings();
     });
   });
 
-  // Slider changes
-  recallSlider.addEventListener('input', () => {
-    const raw = parseInt(recallSlider.value, 10);
-    const val = raw >= 2100 ? 0 : raw;
-    updateRecallUI(val);
-    saveRecallSetting(val);
+  // Toggle (recency boost)
+  rcRecency.addEventListener('change', () => {
+    if (_recallProfile !== 'custom') setActiveProfile('custom');
+    saveRecallSettings();
   });
 
   // Sync button
@@ -3195,7 +3818,6 @@ export async function openSettingsModal() {
       btn.addEventListener('click', async () => {
         const profileId = btn.dataset.cliDetect;
         const input = overlay.querySelector(`#cli-path-${profileId}`);
-        const status = overlay.querySelector(`#cli-status-${profileId}`);
         btn.style.opacity = '0.5'; btn.style.pointerEvents = 'none';
         try {
           const res = await fetch(`/api/cli/detect/${encodeURIComponent(profileId)}`, {
@@ -3206,12 +3828,8 @@ export async function openSettingsModal() {
           const data = await res.json();
           if (data.ok && data.found && data.path) {
             input.value = data.path;
-            status.textContent = 'detected';
-            status.className = 'cli-path-status detected';
             showCCToast(`Found: ${data.path}`);
           } else {
-            status.textContent = 'not found';
-            status.className = 'cli-path-status not-found';
             showCCToast('CLI not found in PATH');
           }
         } catch (err) {
@@ -3261,15 +3879,122 @@ export async function openSettingsModal() {
       });
     }
 
-    // Notification toggle
-    const notifToggle = overlay.querySelector('#term-notif-toggle');
-    if (notifToggle) {
-      notifToggle.checked = storage.getItem(KEYS.TERMINAL_NOTIFICATIONS) !== 'off';
-      notifToggle.addEventListener('change', () => {
-        storage.setItem(KEYS.TERMINAL_NOTIFICATIONS, notifToggle.checked ? 'on' : 'off');
-        if (notifToggle.checked && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+  }
+
+  // ── Notifications tab handlers ──
+  {
+    const masterToggle = overlay.querySelector('#notif-master-toggle');
+    const soundToggle = overlay.querySelector('#notif-sound-toggle');
+    const volumeSlider = overlay.querySelector('#notif-volume');
+    const volumeLabel = overlay.querySelector('#notif-volume-label');
+    const soundTypeSelect = overlay.querySelector('#notif-sound-type');
+    const bannerToggle = overlay.querySelector('#notif-banner-toggle');
+    const bannerFocused = overlay.querySelector('#notif-banner-focused');
+    const sourceCli = overlay.querySelector('#notif-source-cli');
+    const sourcePanel = overlay.querySelector('#notif-source-panel');
+    const triggerDone = overlay.querySelector('#notif-trigger-done');
+    const triggerAction = overlay.querySelector('#notif-trigger-action');
+    const triggerAsk = overlay.querySelector('#notif-trigger-ask');
+    const triggerError = overlay.querySelector('#notif-trigger-error');
+    const toastToggle = overlay.querySelector('#notif-toast-toggle');
+    const toastPosition = overlay.querySelector('#notif-toast-position');
+    const toastDuration = overlay.querySelector('#notif-toast-duration');
+    const requestPermBtn = overlay.querySelector('#notif-request-perm');
+    const testBtn = overlay.querySelector('#notif-test-btn');
+
+    function updateSubSections() {
+      const on = masterToggle?.checked;
+      for (const id of ['notif-sources-section', 'notif-triggers-section', 'notif-sound-section', 'notif-toast-section', 'notif-banner-section']) {
+        const el = overlay.querySelector(`#${id}`);
+        if (el) {
+          el.style.opacity = on ? '' : '0.4';
+          el.style.pointerEvents = on ? '' : 'none';
+        }
+      }
+    }
+    updateSubSections();
+
+    if (masterToggle) {
+      masterToggle.addEventListener('change', () => {
+        storage.setItem(KEYS.TERMINAL_NOTIFICATIONS, masterToggle.checked ? 'on' : 'off');
+        updateSubSections();
+        if (masterToggle.checked && typeof Notification !== 'undefined' && Notification.permission === 'default') {
           Notification.requestPermission();
         }
+      });
+    }
+
+    // Sources
+    if (sourceCli) sourceCli.addEventListener('change', () => storage.setItem(KEYS.NOTIF_SOURCE_CLI, sourceCli.checked ? 'on' : 'off'));
+    if (sourcePanel) sourcePanel.addEventListener('change', () => storage.setItem(KEYS.NOTIF_SOURCE_PANEL, sourcePanel.checked ? 'on' : 'off'));
+
+    // Triggers
+    if (triggerDone) triggerDone.addEventListener('change', () => storage.setItem(KEYS.NOTIF_TRIGGER_DONE, triggerDone.checked ? 'on' : 'off'));
+    if (triggerAction) triggerAction.addEventListener('change', () => storage.setItem(KEYS.NOTIF_TRIGGER_ACTION, triggerAction.checked ? 'on' : 'off'));
+    if (triggerAsk) triggerAsk.addEventListener('change', () => storage.setItem(KEYS.NOTIF_TRIGGER_ASK, triggerAsk.checked ? 'on' : 'off'));
+    if (triggerError) triggerError.addEventListener('change', () => storage.setItem(KEYS.NOTIF_TRIGGER_ERROR, triggerError.checked ? 'on' : 'off'));
+
+    // Sound
+    if (soundToggle) soundToggle.addEventListener('change', () => storage.setItem(KEYS.NOTIF_SOUND, soundToggle.checked ? 'on' : 'off'));
+    if (volumeSlider) {
+      volumeSlider.addEventListener('input', () => {
+        const val = volumeSlider.value;
+        if (volumeLabel) volumeLabel.textContent = val + '%';
+        storage.setItem(KEYS.NOTIF_SOUND_VOLUME, val);
+      });
+    }
+    if (soundTypeSelect) {
+      soundTypeSelect.addEventListener('change', () => {
+        storage.setItem(KEYS.NOTIF_SOUND_TYPE, soundTypeSelect.value);
+      });
+    }
+
+    // Per-type sound test buttons
+    overlay.querySelectorAll('[data-notif-test]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const type = btn.dataset.notifTest;
+        const preset = soundTypeSelect?.value || storage.getItem(KEYS.NOTIF_SOUND_TYPE) || 'beep';
+        playTestSound(preset, type);
+      });
+    });
+
+    // Toast
+    if (toastToggle) toastToggle.addEventListener('change', () => storage.setItem(KEYS.NOTIF_TOAST, toastToggle.checked ? 'on' : 'off'));
+    if (toastPosition) toastPosition.addEventListener('change', () => storage.setItem(KEYS.NOTIF_TOAST_POSITION, toastPosition.value));
+    if (toastDuration) toastDuration.addEventListener('change', () => storage.setItem(KEYS.NOTIF_TOAST_DURATION, toastDuration.value));
+
+    // Banners
+    if (bannerToggle) bannerToggle.addEventListener('change', () => storage.setItem(KEYS.NOTIF_BANNER, bannerToggle.checked ? 'on' : 'off'));
+    if (bannerFocused) bannerFocused.addEventListener('change', () => storage.setItem(KEYS.NOTIF_BANNER_FOCUSED, bannerFocused.checked ? 'on' : 'off'));
+
+    // Request permission
+    if (requestPermBtn) {
+      requestPermBtn.addEventListener('click', async () => {
+        const result = await Notification.requestPermission();
+        const dot = overlay.querySelector('.stg-status-dot');
+        const label = dot?.nextElementSibling;
+        if (result === 'granted') {
+          if (dot) dot.style.background = 'var(--accent-green, #4ade80)';
+          if (label) label.textContent = 'Granted';
+          requestPermBtn.remove();
+          showCCToast('Notification permission granted');
+        } else {
+          if (dot) dot.style.background = 'var(--accent-red, #f87171)';
+          if (label) label.textContent = 'Blocked';
+          requestPermBtn.remove();
+          showCCToast('Permission denied — unblock in System Settings');
+        }
+      });
+    }
+
+    // Full test notification (fires notify() which triggers sound + toast + banner)
+    if (testBtn) {
+      testBtn.addEventListener('click', () => {
+        // Import notify dynamically to avoid circular dep — use the shared module
+        import('./ui-notifications.js').then(({ notify, NOTIF_TYPE }) => {
+          notify('panel', NOTIF_TYPE.ACTION, 'Test notification — everything is working!');
+        });
+        showCCToast('Test notification sent');
       });
     }
   }
@@ -3757,7 +4482,7 @@ export async function openSettingsModal() {
             cachedConfig = JSON.stringify(data.config, null, 2);
             preview.textContent = cachedConfig;
           } else if (data.ok) {
-            cachedConfig = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/dist/preload.js'], env: { DOTENV_PATH: setupStatus.paths?.envPath || '<path-to>/synabun/.env' } } } }, null, 2);
+            cachedConfig = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs'], env: { DOTENV_PATH: setupStatus.paths?.envPath || '<path-to>/synabun/.env' } } } }, null, 2);
             preview.textContent = cachedConfig;
           } else { preview.textContent = 'Could not load config.'; }
         }).catch(() => { preview.textContent = 'Failed to load.'; });
@@ -3779,7 +4504,7 @@ export async function openSettingsModal() {
             cachedConfig = data.toml;
             preview.textContent = cachedConfig;
           } else if (data.ok) {
-            const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/dist/preload.js';
+            const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs';
             const ep = setupStatus.paths?.envPath || '<path-to>/synabun/.env';
             cachedConfig = `[mcp_servers.SynaBun]\ncommand = "node"\nargs = ["${mp}"]\n\n[mcp_servers.SynaBun.env]\nDOTENV_PATH = "${ep}"`;
             preview.textContent = cachedConfig;
@@ -3809,6 +4534,17 @@ export async function openSettingsModal() {
     const setToggle = (id, on) => { const t = bcToggle(id); if (t) { t.classList.toggle('on', on); } };
 
     // Wire toggle clicks
+    // Stream toggle — warn on enable
+    const streamToggle = bcToggle('bc-screencastEnabled');
+    if (streamToggle) {
+      streamToggle.addEventListener('click', () => {
+        streamToggle.classList.toggle('on');
+        if (streamToggle.classList.contains('on')) {
+          alert('Browser stream consumes significant GPU resources and is mostly cosmetic. The automation browser runs headful — you can interact with it directly.');
+        }
+      });
+    }
+
     const toggleIds = [
       'bc-isMobile', 'bc-hasTouch', 'bc-stealthFingerprint', 'bc-geoEnabled',
       'bc-offline', 'bc-javaScriptEnabled', 'bc-ignoreHTTPSErrors', 'bc-bypassCSP',
@@ -4376,6 +5112,7 @@ export async function openSettingsModal() {
 
         // Screencast
         screencast: {
+          disabled: !isToggleOn('bc-screencastEnabled'),
           format: val('bc-screencastFormat') || 'jpeg',
           quality: num('bc-screencastQuality', 60),
           maxWidth: num('bc-screencastMaxWidth', 1280),
@@ -4510,6 +5247,7 @@ export async function openSettingsModal() {
       }
 
       // Screencast
+      setToggle('bc-screencastEnabled', !cfg.screencast?.disabled);
       if (cfg.screencast) {
         setVal('bc-screencastFormat', cfg.screencast.format || 'jpeg');
         setVal('bc-screencastQuality', cfg.screencast.quality ?? 60);
@@ -4824,7 +5562,7 @@ export async function openSettingsModal() {
         });
       });
       exploreOverlay.querySelector('#explore-cancel').addEventListener('click', closeExplore);
-      exploreOverlay.addEventListener('click', e => { if (e.target === exploreOverlay) closeExplore(); });
+      // Overlay click disabled — close only via ESC or cancel button
       exploreOverlay.querySelector('#explore-begin').addEventListener('click', async () => {
         const beginBtn = exploreOverlay.querySelector('#explore-begin');
         beginBtn.textContent = 'Launching...';
@@ -4976,7 +5714,7 @@ export async function openSettingsModal() {
     });
 
     addOverlay.querySelector('#cc-proj-cancel').addEventListener('click', closeAdd);
-    addOverlay.addEventListener('click', e => { if (e.target === addOverlay) closeAdd(); });
+    // Overlay click disabled — close only via ESC or cancel button
     addOverlay.querySelector('#cc-proj-save').addEventListener('click', async () => {
       const projPath = addOverlay.querySelector('#cc-proj-path').value.trim();
       const label = addOverlay.querySelector('#cc-proj-label').value.trim();
@@ -5171,7 +5909,7 @@ function showSyncCopiedModal(count) {
     setTimeout(() => modal.remove(), 200);
   };
   modal.querySelector('#sync-modal-close').addEventListener('click', closeModal);
-  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+  // Overlay click disabled — close only via ESC or close button
 }
 
 
