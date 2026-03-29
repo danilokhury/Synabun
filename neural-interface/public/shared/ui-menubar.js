@@ -353,6 +353,17 @@ function wireTerminalMenu() {
     'menu-command-runner':   () => emit('command-runner:open'),
     'menu-terminal-link':    () => emit('link:toggle'),
     'menu-terminal-toggle':  () => emit('terminal:toggle'),
+    'menu-install-app':      async () => {
+      if (window._pwaInstallPrompt) {
+        window._pwaInstallPrompt.prompt();
+        const { outcome } = await window._pwaInstallPrompt.userChoice;
+        if (outcome === 'accepted') {
+          window._pwaInstallPrompt = null;
+          const el = $('menu-install-app');
+          if (el) el.style.display = 'none';
+        }
+      }
+    },
     'menu-restart-server':   async () => {
       try {
         // Cache project path before server goes down
@@ -381,6 +392,24 @@ function wireTerminalMenu() {
   // Keyboard shortcuts: toggle terminal (via central keybinds)
   registerAction('toggle-terminal', () => emit('terminal:toggle'));
   registerAction('toggle-terminal-alt', () => emit('terminal:toggle'));
+
+  // PWA install prompt — show "Install as App" when the browser supports it
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    window._pwaInstallPrompt = e;
+    const el = $('menu-install-app');
+    if (el) el.style.display = '';
+  });
+  window.addEventListener('appinstalled', () => {
+    window._pwaInstallPrompt = null;
+    const el = $('menu-install-app');
+    if (el) el.style.display = 'none';
+  });
+  // Hide if already running as installed PWA
+  if (window.matchMedia('(display-mode: standalone)').matches || navigator.standalone) {
+    const el = $('menu-install-app');
+    if (el) el.style.display = 'none';
+  }
 }
 
 // ── Variant menu items injection ──

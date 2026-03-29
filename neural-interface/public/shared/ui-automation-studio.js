@@ -47,9 +47,11 @@ let _view = 'welcome';    // 'welcome' | 'picker' | 'detail' | 'wizard' | 'runni
 let _selected = null;      // currently open template in detail view
 let _filterCategory = 'all';
 let _searchQuery = '';
-let _focusMode = false;
 let _pollTimer = null;
 let _prevLoopActive = false;
+
+// Cleanup: stored references for document-level listeners so closePanel() can remove them
+let _docListeners = [];
 
 // Detail/editor state
 let _metaDirty = false;
@@ -184,149 +186,69 @@ let _launchModel = storage.getItem('as-launch-model') || null;
 
 const PRESET_TEMPLATES = [
   {
-    id: '__preset_twitter',
-    name: 'Twitter Outreach',
-    description: 'Research-powered Twitter engagement. Recalls stored findings, navigates hashtags, and composes replies in assisted mode.',
-    task: 'Browse Twitter/X using recalled research. Find relevant threads and compose thoughtful replies for human review.',
-    context: 'ASSISTED MODE: Compose but never submit without user review. Use SynaBun browser tools only.',
-    iterations: 5,
-    maxMinutes: 45,
-    icon: 'twitter',
-    category: 'social',
-    usesBrowser: true,
+    id: '__preset_social',
+    name: 'Social Engagement',
+    description: 'Browse a social platform, find relevant threads, and interact with posts.',
+    task: 'Navigate to a social platform and engage with posts about a topic.',
+    context: 'Use SynaBun browser tools only.',
+    iterations: 50, maxMinutes: 120,
+    icon: 'chat', category: 'social', usesBrowser: true,
     steps: [
       {
-        title: 'Research Source',
-        subtitle: 'Where should the agent pull engagement targets from?',
+        title: 'Platform & Topic', subtitle: 'Where and what to engage with',
         buildContent(state) {
+          const platform = state.platform || '';
           return `
             <div class="awiz-field">
-              <label>Memory Category</label>
-              <input type="text" data-key="researchCategory" placeholder="social-interactions" value="${esc(state.researchCategory || 'social-interactions')}" />
-              <span class="awiz-hint">SynaBun memory category to recall research from</span>
+              <label>Platform</label>
+              <div class="awiz-chips" data-key="platform" data-mode="single">
+                ${chip('Twitter/X', platform, 'twitter')} ${chip('LinkedIn', platform, 'linkedin')}
+                ${chip('Facebook', platform, 'facebook')} ${chip('TikTok', platform, 'tiktok')}
+                ${chip('Instagram', platform, 'instagram')} ${chip('Reddit', platform, 'reddit')}
+              </div>
             </div>
             <div class="awiz-field">
-              <label>Filter Tags <span class="awiz-optional">(optional)</span></label>
-              <input type="text" data-key="researchTags" placeholder="research, twitter, ai, vibecoding" value="${esc(state.researchTags || '')}" />
-              <span class="awiz-hint">Comma-separated tags to narrow recall results</span>
+              <label>Topics / Hashtags</label>
+              <textarea data-key="topics" placeholder="e.g. #vibecoding, AI automation, building in public" rows="3">${esc(state.topics || '')}</textarea>
             </div>
             <div class="awiz-field">
-              <label>Fallback Hashtags</label>
-              <input type="text" data-key="fallbackHashtags" placeholder="#vibecoding, #buildinpublic, #webdev" value="${esc(state.fallbackHashtags || '')}" />
-              <span class="awiz-hint">Used if no research memories are found</span>
+              <label>Language</label>
+              <input type="text" data-key="language" placeholder="e.g. English, Portuguese, match thread language" value="${esc(state.language || '')}" />
             </div>`;
         },
         validate(state) {
-          if (!state.researchCategory?.trim() && !state.fallbackHashtags?.trim()) {
-            return 'Enter a memory category or at least one fallback hashtag';
-          }
+          if (!state.platform?.trim()) return 'Pick a platform';
+          if (!state.topics?.trim()) return 'Enter at least one topic or hashtag';
           return null;
         },
       },
       {
-        title: 'Persona',
-        subtitle: 'Define the voice and personality for engagement',
+        title: 'Persona & Tone', subtitle: 'How should the agent sound?',
         buildContent(state) {
-          const lang = state.language || 'en';
-          const formality = state.formality || 'balanced';
-          const moods = state.mood || ['helpful', 'friendly'];
-          const emoji = state.emojiUsage || 'minimal';
-          const length = state.replyLength || 'medium';
+          const tone = state.tone || 'casual';
           return `
             <div class="awiz-field">
-              <label>Language</label>
-              <div class="awiz-chips" data-key="language" data-mode="single">
-                ${chip('PT-BR', lang, 'pt-br')}
-                ${chip('English', lang, 'en')}
-                ${chip('Spanish', lang, 'es')}
-              </div>
-            </div>
-            <div class="awiz-field">
-              <label>Formality</label>
-              <div class="awiz-chips" data-key="formality" data-mode="single">
-                ${chip('Very Casual', formality, 'very-casual')}
-                ${chip('Casual', formality, 'casual')}
-                ${chip('Balanced', formality, 'balanced')}
-                ${chip('Professional', formality, 'professional')}
-                ${chip('Formal', formality, 'formal')}
-              </div>
-            </div>
-            <div class="awiz-field">
-              <label>Mood</label>
-              <div class="awiz-chips" data-key="mood" data-mode="multi">
-                ${mchip('Helpful', moods, 'helpful')}
-                ${mchip('Witty', moods, 'witty')}
-                ${mchip('Curious', moods, 'curious')}
-                ${mchip('Provocative', moods, 'provocative')}
-                ${mchip('Technical', moods, 'technical')}
-                ${mchip('Friendly', moods, 'friendly')}
-              </div>
-            </div>
-            <div class="awiz-field">
-              <label>Emoji Usage</label>
-              <div class="awiz-chips" data-key="emojiUsage" data-mode="single">
-                ${chip('None', emoji, 'none')}
-                ${chip('Minimal', emoji, 'minimal')}
-                ${chip('Moderate', emoji, 'moderate')}
-                ${chip('Heavy', emoji, 'heavy')}
+              <label>Tone</label>
+              <div class="awiz-chips" data-key="tone" data-mode="single">
+                ${chip('Casual', tone, 'casual')} ${chip('Professional', tone, 'professional')}
+                ${chip('Witty', tone, 'witty')} ${chip('Technical', tone, 'technical')}
               </div>
             </div>
             <div class="awiz-field">
               <label>Reply Length</label>
               <div class="awiz-chips" data-key="replyLength" data-mode="single">
-                ${chip('Short (1-2 sentences)', length, 'short')}
-                ${chip('Medium (3-4 sentences)', length, 'medium')}
-                ${chip('Long (paragraph)', length, 'long')}
+                ${chip('Short (1-2 sentences)', state.replyLength || 'short', 'short')}
+                ${chip('Medium (3-4 sentences)', state.replyLength, 'medium')}
               </div>
             </div>
             <div class="awiz-field">
-              <label>Voice Description <span class="awiz-optional">(optional)</span></label>
-              <textarea data-key="voiceDescription" placeholder="e.g. Sound like a fellow developer who genuinely wants to help. Use first person. Share small personal anecdotes when relevant." rows="3">${esc(state.voiceDescription || '')}</textarea>
-            </div>
-            <div class="awiz-field">
-              <label>Example Phrases <span class="awiz-optional">(optional)</span></label>
-              <textarea data-key="examplePhrases" placeholder="e.g. 'Interesting approach! Have you tried...' or 'This is exactly what I needed for my project'" rows="3">${esc(state.examplePhrases || '')}</textarea>
-              <span class="awiz-hint">Phrases for the agent to mimic in style and tone</span>
+              <label>Voice Notes <span class="awiz-optional">(optional)</span></label>
+              <textarea data-key="voiceNotes" placeholder="e.g. Sound like a fellow developer. Be genuine, not salesy." rows="3">${esc(state.voiceNotes || '')}</textarea>
             </div>`;
         },
       },
       {
-        title: 'Engagement',
-        subtitle: 'What types of interactions should the agent perform?',
-        buildContent(state) {
-          const types = state.engagementTypes || ['reply', 'like'];
-          return `
-            <div class="awiz-field">
-              <label>Engagement Types</label>
-              <div class="awiz-chips" data-key="engagementTypes" data-mode="multi">
-                ${mchip('Reply', types, 'reply')}
-                ${mchip('Like', types, 'like')}
-                ${mchip('Retweet', types, 'retweet')}
-                ${mchip('Quote Tweet', types, 'quote')}
-                ${mchip('Follow', types, 'follow')}
-              </div>
-            </div>
-            <div class="awiz-field">
-              <label>Interactions Per Iteration</label>
-              <input type="number" data-key="interactionCap" placeholder="5" value="${state.interactionCap || ''}" />
-              <span class="awiz-hint">Max posts to interact with per iteration (default: 5)</span>
-            </div>
-            <div class="awiz-field">
-              <label>Content to Avoid <span class="awiz-optional">(optional)</span></label>
-              <input type="text" data-key="avoid" placeholder="politics, controversial takes, crypto shilling" value="${esc(state.avoid || '')}" />
-            </div>`;
-        },
-        validate(state) {
-          const types = state.engagementTypes;
-          if (!Array.isArray(types) || types.length === 0) {
-            return 'Select at least one engagement type';
-          }
-          return null;
-        },
-      },
-      {
-        title: 'Rules',
-        subtitle: 'Behavioral constraints \u2014 order = priority',
+        title: 'Rules', subtitle: 'Behavioral constraints \u2014 order = priority',
         buildContent(state) {
           if (!Array.isArray(state.rules)) state.rules = [];
           const items = state.rules.map((rule, i) => `
@@ -339,10 +261,10 @@ const PRESET_TEMPLATES = [
           return `
             <div class="awiz-field">
               <div class="awiz-rule-add-row">
-                <input type="text" id="awiz-rule-input" placeholder="e.g. Never be confrontational or dismissive" />
+                <input type="text" id="awiz-rule-input" placeholder="e.g. Do NOT double post on the same thread" />
                 <button class="awiz-rule-add-btn" id="awiz-rule-add">Add</button>
               </div>
-              <div class="awiz-rules-list" id="awiz-rules-list">${items || '<div class="awiz-rules-empty">No rules yet. Add rules to guide engagement behavior.</div>'}</div>
+              <div class="awiz-rules-list" id="awiz-rules-list">${items || '<div class="awiz-rules-empty">No rules yet.</div>'}</div>
               <span class="awiz-hint">Drag to reorder. Top rules have highest priority.</span>
             </div>`;
         },
@@ -350,87 +272,89 @@ const PRESET_TEMPLATES = [
       },
     ],
     buildCommand(state) {
-      const langMap = { 'pt-br': 'Brazilian Portuguese', 'en': 'English', 'es': 'Spanish' };
-      const formalityMap = {
-        'very-casual': 'very casual, like texting a friend',
-        'casual': 'casual and relaxed',
-        'balanced': 'balanced \u2014 conversational but clear',
-        'professional': 'professional and polished',
-        'formal': 'formal and measured',
-      };
-      const lengthMap = { 'short': '1-2 sentences max', 'medium': '3-4 sentences', 'long': 'up to a full paragraph' };
-      const emojiMap = {
-        'none': 'Do NOT use any emojis.',
-        'minimal': 'Use emojis sparingly \u2014 at most 1 per reply.',
-        'moderate': 'Use emojis naturally, 2-3 per reply where appropriate.',
-        'heavy': 'Use emojis liberally to express emotion and emphasis.',
-      };
-
-      const lang = state.language || 'en';
-      const formality = state.formality || 'balanced';
-      const moods = state.mood || ['helpful', 'friendly'];
-      const emoji = state.emojiUsage || 'minimal';
-      const length = state.replyLength || 'medium';
-      const cap = state.interactionCap || 5;
-      const types = state.engagementTypes || ['reply', 'like'];
-      const category = (state.researchCategory || 'social-interactions').trim();
-      const tags = state.researchTags?.trim() || '';
-      const fallback = state.fallbackHashtags?.trim() || '';
+      const platformNames = { twitter: 'Twitter/X', linkedin: 'LinkedIn', facebook: 'Facebook', tiktok: 'TikTok', instagram: 'Instagram', reddit: 'Reddit' };
+      const toneMap = { casual: 'casual and conversational', professional: 'professional and polished', witty: 'witty and engaging', technical: 'technical and informed' };
+      const lengthMap = { short: '1-2 sentences max', medium: '3-4 sentences' };
       const rules = Array.isArray(state.rules) && state.rules.length > 0
         ? state.rules.map((r, i) => `  ${i + 1}. ${r}`).join('\n') : null;
-
       const lines = [
-        '=== TWITTER OUTREACH \u2014 ASSISTED MODE ===', '',
-        'STEP 1 \u2014 RECALL RESEARCH:',
-        `At the start of this iteration, call the SynaBun \`recall\` tool to retrieve engagement targets.`,
-        `- Query: "twitter engagement targets hashtags users topics"`,
-        `- Category: "${esc(category)}"`,
-        tags ? `- Filter for memories tagged with: ${tags}` : '',
-        'Parse the recalled memories for:',
-        '  - Hashtag URLs (e.g. https://x.com/search?q=%23...)',
-        '  - Specific user handles to engage with',
-        '  - Topic summaries and engagement opportunities',
-        fallback ? `If recall returns no results, fall back to these hashtags: ${fallback}` : 'If recall returns no results, skip this iteration and report that no research data was found.',
-        '',
-        'STEP 2 \u2014 NAVIGATE & FIND THREADS:',
-        'Using the SynaBun browser tools (browser_navigate, browser_scroll, browser_extract_tweets, browser_click, browser_snapshot, browser_fill, browser_type):',
-        '- Call browser_navigate with the hashtag search URL: https://x.com/search?q=%23HASHTAG&f=live (replace HASHTAG — use %23 not #)',
-        '- Call browser_wait with loadState:"load" to wait for the feed',
-        '- Call browser_extract_tweets to get structured JSON of all visible tweets (faster than browser_snapshot)',
-        '- Call browser_scroll {direction:"down", distance:1200} to load more, then browser_extract_tweets again',
-        '- Browse the feed and identify relevant, recent threads',
-        `- Find up to ${cap} posts worth engaging with per iteration`,
-        'IMPORTANT: Use ONLY SynaBun browser tools (browser_*). Do NOT use Playwright plugin tools.',
-        '',
-        'STEP 3 \u2014 ENGAGE:',
-        `Engagement types: ${types.join(', ')}.`,
-        state.avoid ? `Content to AVOID: ${state.avoid}.` : '',
-        '',
-        'PERSONA:',
-        `Language: ${langMap[lang] || 'English'}. ALL replies MUST be written in ${langMap[lang] || 'English'}.`,
-        `Formality: ${formalityMap[formality] || 'balanced'}.`,
-        `Mood/personality: ${moods.join(', ')}.`,
-        `Reply length: ${lengthMap[length] || '3-4 sentences'}.`,
-        emojiMap[emoji] || '',
-        state.voiceDescription ? `Voice notes: ${state.voiceDescription}` : '',
-        state.examplePhrases ? `Mimic these example phrases in style:\n${state.examplePhrases}` : '',
-        '',
-        rules ? `RULES (ordered by priority \u2014 #1 is most important):\n${rules}` : '',
-        '',
-        '=== ASSISTED MODE (CRITICAL) ===',
-        'This is ASSISTED mode. The profile owner must review every post before it goes live.',
-        'For EVERY reply or quote tweet:',
-        '  1. Navigate to the post',
-        '  2. Click the reply button to open the reply box',
-        '  3. Type your composed reply into the reply box',
-        '  4. STOP. Do NOT click the submit/post/reply button.',
-        '  5. Take a browser_screenshot so the user can see what you composed.',
-        '  6. Report what you wrote and move on to the next post.',
-        'The user will review your draft in the visual browser and decide whether to post it.',
-        'For likes, retweets, and follows: these may be performed directly (no review needed).',
-        '',
-        `Interact with up to ${cap} posts per iteration.`,
+        `Navigate to ${platformNames[state.platform] || state.platform || '[PLATFORM]'} and find recent posts about:`,
+        state.topics || '[TOPICS]', '',
+        state.language ? `Language: ${state.language}.` : '',
+        `Tone: ${toneMap[state.tone] || 'casual'}.`,
+        `Reply length: ${lengthMap[state.replyLength] || '1-2 sentences max'}.`,
+        state.voiceNotes ? `Voice: ${state.voiceNotes}` : '', '',
+        rules ? `RULES (ordered by priority):\n${rules}` : '',
+        '', 'Like posts you interact with.',
         'Be authentic. Add genuine value. Never be spammy.',
+      ];
+      return lines.filter(Boolean).join('\n');
+    },
+  },
+  {
+    id: '__preset_datacollect',
+    name: 'Data Collection',
+    description: 'Navigate websites and collect structured data into memory.',
+    task: 'Visit websites and extract specific data points.',
+    context: 'Use SynaBun browser tools to navigate. Store findings in memory.',
+    iterations: 20, maxMinutes: 60,
+    icon: 'folder', category: 'productivity', usesBrowser: true,
+    steps: [
+      {
+        title: 'Source', subtitle: 'Where to collect data from',
+        buildContent(state) {
+          return `
+            <div class="awiz-field">
+              <label>Starting URL</label>
+              <input type="text" data-key="startUrl" placeholder="https://example.com/listings" value="${esc(state.startUrl || '')}" />
+            </div>
+            <div class="awiz-field">
+              <label>What to Collect</label>
+              <textarea data-key="collectWhat" placeholder="e.g. Product names, prices, and URLs from each listing" rows="3">${esc(state.collectWhat || '')}</textarea>
+            </div>`;
+        },
+        validate(state) {
+          if (!state.startUrl?.trim()) return 'Enter a starting URL';
+          if (!state.collectWhat?.trim()) return 'Describe what data to collect';
+          return null;
+        },
+      },
+      {
+        title: 'Memory Storage', subtitle: 'Where to save collected data in SynaBun',
+        buildContent(state) {
+          return `
+            <div class="awiz-field">
+              <label>Category</label>
+              <input type="text" data-key="storageCategory" placeholder="e.g. price-tracking" value="${esc(state.storageCategory || '')}" />
+              <span class="awiz-hint">Child category under <strong>research</strong></span>
+            </div>
+            <div class="awiz-field">
+              <label>Tags</label>
+              <input type="text" data-key="storageTags" placeholder="e.g. data-collection, prices" value="${esc(state.storageTags || '')}" />
+            </div>`;
+        },
+        validate(state) {
+          if (!state.storageCategory?.trim()) return 'Choose a category for the data';
+          return null;
+        },
+      },
+    ],
+    buildCommand(state) {
+      const cat = (state.storageCategory || 'collected-data').trim().toLowerCase().replace(/\s+/g, '-');
+      const tags = state.storageTags ? state.storageTags.split(',').map(t => `"${t.trim()}"`).join(', ') : '"data-collection"';
+      const lines = [
+        `Navigate to: ${state.startUrl || '[URL]'}`,
+        `Collect: ${state.collectWhat || '[DESCRIBE DATA]'}`, '',
+        'For each page, extract the requested data points.',
+        'Paginate or scroll to load more results as needed.', '',
+        'MEMORY STORAGE (MANDATORY):',
+        'After each iteration, store collected data using the SynaBun `remember` tool:',
+        `- category: "${cat}"`,
+        `- tags: [${tags}]`,
+        '- importance: 6',
+        '- Content: Structured list of collected items with all requested fields.',
+        `If category "${cat}" does not exist, first call \`category\` with action "create", name "${cat}", parent "research".`,
+        'Do NOT skip the memory storage step.',
       ];
       return lines.filter(Boolean).join('\n');
     },
@@ -988,6 +912,7 @@ function wireLaunchInline(container) {
     if (e.key === 'Escape') { closeLaunchInline(); document.removeEventListener('keydown', escHandler); }
   };
   document.addEventListener('keydown', escHandler);
+  _docListeners.push(['keydown', escHandler]);
 }
 
 function wireModelChips(container) {
@@ -1058,15 +983,28 @@ async function confirmLaunch() {
     // Always create a new floating browser window — never embed in side panel.
     let dedicatedBrowserSessionId = null;
     if (params.usesBrowser) {
-      showToast('Opening browser...');
-      const browserReady = new Promise((resolve) => {
-        const unsub = on('sync:browser:created', (data) => { unsub(); resolve(data?.sessionId || null); });
-        setTimeout(() => { unsub(); resolve(null); }, 12000);
-      });
-      emit('browser:open', { url: 'about:blank', force: true });
-      dedicatedBrowserSessionId = await browserReady;
-      if (dedicatedBrowserSessionId) {
-        console.log('[AS] confirmLaunch: created dedicated browser session', dedicatedBrowserSessionId);
+      // Check if screencast stream is disabled — if so, skip the client-side floating
+      // browser window and let the server create a headful browser via Strategy 3.
+      let streamDisabled = false;
+      try {
+        const cfgRes = await fetch('/api/browser/config');
+        const cfgData = await cfgRes.json();
+        streamDisabled = !!cfgData.config?.screencast?.disabled;
+      } catch {}
+
+      if (!streamDisabled) {
+        showToast('Opening browser...');
+        const browserReady = new Promise((resolve) => {
+          const unsub = on('sync:browser:created', (data) => { unsub(); resolve(data?.sessionId || null); });
+          setTimeout(() => { unsub(); resolve(null); }, 12000);
+        });
+        emit('browser:open', { url: 'about:blank', force: true });
+        dedicatedBrowserSessionId = await browserReady;
+        if (dedicatedBrowserSessionId) {
+          console.log('[AS] confirmLaunch: created dedicated browser session', dedicatedBrowserSessionId);
+        }
+      } else {
+        console.log('[AS] confirmLaunch: stream disabled — server will create headful browser');
       }
     }
 
@@ -1191,12 +1129,15 @@ async function openPanel() {
 function closePanel() {
   if (!_panel) return;
   stopPolling();
+  // Remove all document-level listeners added during this panel's lifetime
+  for (const [evt, fn] of _docListeners) document.removeEventListener(evt, fn);
+  _docListeners = [];
   if (_backdrop) { _backdrop.remove(); _backdrop = null; }
   _panel.remove(); _panel = null;
   _templates = []; _activeLoop = null;
   _view = 'welcome'; _selected = null;
   resetDirty(); _editorContent = ''; _originalContent = '';
-  _previewMode = false; _focusMode = false;
+  _previewMode = false;
   _wizardState = null; _wizardStep = 0; _wizardPreset = null;
   _prevLoopActive = false; _fetchSeq = 0;
 }
@@ -1219,21 +1160,12 @@ function buildPanelHTML() {
         </button>
         <h3>Automation Studio</h3>
         <span class="as-count" id="as-total-count"></span>
-        <span class="as-active-badge" id="as-active-badge" style="display:none">
-          <span class="as-running-pulse"></span>
-          <span id="as-active-badge-name"></span>
-        </span>
       </div>
       <div class="as-header-actions">
         <button class="as-header-btn" id="as-new-btn">+ New</button>
         <button class="as-header-btn" id="as-schedules-btn">${AS_ICONS.clock} Schedules</button>
         <button class="as-header-btn" id="as-import-btn">Import</button>
       </div>
-      <button class="as-focus-btn" id="as-focus" data-tooltip="Focus mode">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14">
-          <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
-        </svg>
-      </button>
       <button class="backdrop-toggle-btn" id="as-backdrop-toggle" data-tooltip="Toggle backdrop">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
       </button>
@@ -1283,11 +1215,6 @@ function wirePanel() {
     }
   });
 
-  $('as-focus')?.addEventListener('click', () => {
-    _focusMode = !_focusMode;
-    $('as-focus')?.classList.toggle('active', _focusMode);
-  });
-
   $('as-backdrop-toggle')?.addEventListener('click', () => {
     if (_backdrop) {
       _backdrop.classList.toggle('backdrop-hidden');
@@ -1327,7 +1254,7 @@ function wirePanel() {
     }
   };
   document.addEventListener('keydown', onEsc);
-  _panel._onEsc = onEsc;
+  _docListeners.push(['keydown', onEsc]);
 
   initDrag();
 }
@@ -1348,12 +1275,15 @@ function initDrag() {
     startLeft = rect.left; startTop = rect.top;
     e.preventDefault();
   });
-  document.addEventListener('mousemove', (e) => {
+  const onMove = (e) => {
     if (!dragging) return;
     _panel.style.left = (startLeft + e.clientX - startX) + 'px';
     _panel.style.top = (startTop + e.clientY - startY) + 'px';
-  });
-  document.addEventListener('mouseup', () => { dragging = false; });
+  };
+  const onUp = () => { dragging = false; };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+  _docListeners.push(['mousemove', onMove], ['mouseup', onUp]);
 }
 
 // ═══════════════════════════════════════════
@@ -1364,7 +1294,6 @@ async function loadData() {
   try { _templates = await fetchLoopTemplates(); } catch { _templates = []; }
   try { _activeLoop = await fetchActiveLoop(); } catch { _activeLoop = null; }
   await refreshAgents();
-  updateHeaderBadge();
   updateSidebarFooter();
 }
 
@@ -1376,7 +1305,6 @@ function startPolling() {
       const prev = _activeLoop?.active;
       _activeLoop = await fetchActiveLoop();
       await refreshAgents();
-      updateHeaderBadge();
       updateSidebarFooter();
 
       if (prev && !_activeLoop?.active) {
@@ -1399,21 +1327,6 @@ function startPolling() {
 
 function stopPolling() {
   if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
-}
-
-function updateHeaderBadge() {
-  const badge = $('as-active-badge');
-  const nameEl = $('as-active-badge-name');
-  const active = _activeLoop?.active;
-  const runningAgents = _agents.filter(a => a.status === 'running').length;
-  const anyActive = active || runningAgents > 0;
-  if (badge) badge.style.display = anyActive ? '' : 'none';
-  if (anyActive && nameEl) {
-    const parts = [];
-    if (active) parts.push((_activeLoop.task || 'Loop').slice(0, 20));
-    if (runningAgents > 0) parts.push(`${runningAgents} agent${runningAgents > 1 ? 's' : ''}`);
-    nameEl.textContent = parts.join(' + ');
-  }
 }
 
 function updateSidebarFooter() {
@@ -1844,12 +1757,14 @@ function wireIconPicker(isPreset) {
   });
 
   // Close on click outside
-  document.addEventListener('click', function _closeIconPicker(e) {
+  const closeIconPicker = (e) => {
     if (!picker.contains(e.target)) {
       menu.classList.remove('open');
       trigger.classList.remove('open');
     }
-  });
+  };
+  document.addEventListener('click', closeIconPicker);
+  _docListeners.push(['click', closeIconPicker]);
 }
 
 function wireCategoryPicker(isPreset) {
@@ -1879,12 +1794,14 @@ function wireCategoryPicker(isPreset) {
     markDirty();
   });
 
-  document.addEventListener('click', function _closeCatPicker(e) {
+  const closeCatPicker = (e) => {
     if (!picker.contains(e.target)) {
       menu.classList.remove('open');
       trigger.classList.remove('open');
     }
-  });
+  };
+  document.addEventListener('click', closeCatPicker);
+  _docListeners.push(['click', closeCatPicker]);
 }
 
 function resetDirty() {
@@ -2042,7 +1959,8 @@ function handleTestRun() {
   const cmd = $('as-cmd-editor')?.value || _editorContent;
   const iterations = parseInt($('as-f-iterations')?.value || '1', 10);
   const maxMinutes = parseInt($('as-f-maxminutes')?.value || '10', 10);
-  const usesBrowser = $('as-f-browser')?.checked || _selected.usesBrowser || false;
+  const browserEl = $('as-f-browser');
+  const usesBrowser = browserEl ? browserEl.checked : (_selected.usesBrowser || false);
   serverLaunchLoop({
     task: cmd,
     context: null,
@@ -2070,7 +1988,8 @@ function proceedWithLaunch() {
   const cmd = $('as-cmd-editor')?.value || _editorContent;
   const iterations = parseInt($('as-f-iterations')?.value || String(_selected.iterations), 10);
   const maxMinutes = parseInt($('as-f-maxminutes')?.value || String(_selected.maxMinutes), 10);
-  const usesBrowser = $('as-f-browser')?.checked || _selected.usesBrowser || false;
+  const browserEl = $('as-f-browser');
+  const usesBrowser = browserEl ? browserEl.checked : (_selected.usesBrowser || false);
   serverLaunchLoop({
     task: cmd,
     context: null,
@@ -2756,7 +2675,7 @@ async function handlePanelClick(e) {
         if (result?.ok) {
           showToast(result.stopped > 0 ? 'Loop stopped' : 'No active loops');
           _activeLoop = null;
-          updateHeaderBadge(); updateSidebarFooter();
+          updateSidebarFooter();
           if (_view === 'running') renderRunningMain();
         } else { showToast(result?.error || 'Stop failed'); }
       } catch (err) { showToast('Stop failed: ' + err.message); }

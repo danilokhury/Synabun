@@ -38,17 +38,17 @@ export declare function goBack(sessionId: string): Promise<NiResponse>;
 export declare function goForward(sessionId: string): Promise<NiResponse>;
 export declare function reload(sessionId: string): Promise<NiResponse>;
 export declare function click(sessionId: string, selector: string, nthMatch?: number): Promise<NiResponse>;
-export declare function fill(sessionId: string, selector: string, value: string): Promise<NiResponse>;
-export declare function type(sessionId: string, selector: string | null, text: string): Promise<NiResponse>;
-export declare function hover(sessionId: string, selector: string): Promise<NiResponse>;
-export declare function selectOption(sessionId: string, selector: string, value: string): Promise<NiResponse>;
+export declare function fill(sessionId: string, selector: string, value: string, nthMatch?: number): Promise<NiResponse>;
+export declare function type(sessionId: string, selector: string | null, text: string, nthMatch?: number): Promise<NiResponse>;
+export declare function hover(sessionId: string, selector: string, nthMatch?: number): Promise<NiResponse>;
+export declare function selectOption(sessionId: string, selector: string, value: string, nthMatch?: number): Promise<NiResponse>;
 export declare function pressKey(sessionId: string, key: string): Promise<NiResponse>;
 export declare function scroll(sessionId: string, opts: {
     direction: string;
     distance?: number;
     selector?: string;
 }): Promise<NiResponse>;
-export declare function upload(sessionId: string, selector: string, filePaths: string[]): Promise<NiResponse>;
+export declare function upload(sessionId: string, selector: string, filePaths: string[], nthMatch?: number): Promise<NiResponse>;
 export declare function snapshot(sessionId: string, selector?: string): Promise<NiResponse>;
 export declare function getContent(sessionId: string): Promise<NiResponse>;
 export declare function getMarkdown(sessionId: string): Promise<NiResponse>;
@@ -86,5 +86,7 @@ export declare function gitDiff(path: string, maxLines?: number): Promise<NiResp
 export declare function gitCommit(path: string, message: string, files?: string[]): Promise<NiResponse>;
 export declare function gitLog(path: string, count?: number): Promise<NiResponse>;
 export declare function gitBranches(path: string): Promise<NiResponse>;
+export declare function listImages(): Promise<NiResponse>;
+export declare function deleteImage(filename: string): Promise<NiResponse>;
 export {};
 //# sourceMappingURL=neural-interface.d.ts.map

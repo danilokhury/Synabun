@@ -1,7 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ensureDatabase, closeDatabase, reopenDatabase } from './services/sqlite.js';
-import { warmupEmbeddings } from './services/local-embeddings.js';
 import { rememberSchema, rememberDescription, handleRemember, buildRememberSchema } from './tools/remember.js';
 import { recallSchema, recallDescription, handleRecall, buildRecallSchema } from './tools/recall.js';
 import { forgetSchema, forgetDescription, handleForget } from './tools/forget.js';
@@ -18,6 +17,7 @@ import { registerTicTacToeTools } from './tools/tictactoe.js';
 import { registerDiscordTools } from './tools/discord.js';
 import { registerGitTools } from './tools/git.js';
 import { registerLeonardoTools } from './tools/leonardo.js';
+import { registerImageTools } from './tools/image.js';
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, initCategoryCache } from './services/categories.js';
 import { getEnvPath } from './config.js';
 import { readFileSync, watch, existsSync } from 'fs';
@@ -35,7 +35,8 @@ Tool groups:
 - Loop: loop (action: start/stop/status)
 - Git: git (action: status/diff/commit/log/branches)
 - Discord: discord_guild, discord_channel, discord_role, discord_message, discord_member, discord_onboarding, discord_webhook, discord_thread
-- Leonardo (browser-based): leonardo_browser_navigate, leonardo_browser_generate, leonardo_browser_library, leonardo_browser_download
+- Images: image_staged (action: list/clear/remove)
+- Leonardo (browser-based): leonardo_browser_navigate, leonardo_browser_generate, leonardo_browser_library, leonardo_browser_download, leonardo_browser_reference
 
 Use "category" with action "list" to see valid category names before using remember/recall/reflect.
 
@@ -62,6 +63,7 @@ export function registerTools(server) {
     registerDiscordTools(server);
     registerGitTools(server);
     registerLeonardoTools(server);
+    registerImageTools(server);
     return { rememberTool, recallTool, reflectTool, memoriesTool };
 }
 // Create a fully configured McpServer with all tools registered.
@@ -88,10 +90,6 @@ async function main() {
     catch (err) {
         console.error('Warning: Could not initialize SQLite database on startup.', err instanceof Error ? err.message : err);
     }
-    // Warmup embedding model in background (non-blocking)
-    warmupEmbeddings().catch((err) => {
-        console.error('Embedding model warmup failed:', err instanceof Error ? err.message : err);
-    });
     // Initialize category cache (loads from SQLite or starts empty)
     await initCategoryCache();
     // Set up file watcher for external category changes

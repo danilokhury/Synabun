@@ -3,7 +3,7 @@
  * 100% browser-based — all interaction happens via SynaBun's browser automation.
  * No API key required.
  *
- * Tools: leonardo_browser_navigate, leonardo_browser_generate, leonardo_browser_library, leonardo_browser_download
+ * Tools: leonardo_browser_navigate, leonardo_browser_generate, leonardo_browser_library, leonardo_browser_download, leonardo_browser_reference
  */
 import { z } from 'zod';
 export declare const browserNavigateSchema: {
@@ -52,6 +52,22 @@ export declare const browserDownloadSchema: {
 export declare const browserDownloadDescription = "Capture a screenshot of the current Leonardo.ai page. Use to verify generation results or UI state.";
 export declare function handleBrowserDownload(args: {
     action: string;
+}): Promise<{
+    content: {
+        type: "text";
+        text: string;
+    }[];
+}>;
+export declare const browserReferenceSchema: {
+    type: z.ZodEnum<["image_ref", "style_ref", "content_ref", "character_ref", "image_to_image", "start_frame", "end_frame"]>;
+    filePaths: z.ZodArray<z.ZodString, "many">;
+    autoClear: z.ZodOptional<z.ZodBoolean>;
+};
+export declare const browserReferenceDescription: string;
+export declare function handleBrowserReference(args: {
+    type: string;
+    filePaths: string[];
+    autoClear?: boolean;
 }): Promise<{
     content: {
         type: "text";

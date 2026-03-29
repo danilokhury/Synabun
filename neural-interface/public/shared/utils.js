@@ -270,45 +270,91 @@ export function exportMemoryAsMarkdown(node) {
 
 /**
  * Creates a serialized frame renderer that prevents decode backlog.
- * Only one Image decode runs at a time; if new frames arrive during
- * decode, only the latest is kept (older frames are discarded).
+ * Accepts raw Blob/ArrayBuffer (binary WS) or base64 string (legacy fallback).
+ * Only one decode runs at a time; newer frames replace queued ones.
+ * Draws are gated to requestAnimationFrame for vsync-aligned rendering.
  *
  * @param {HTMLCanvasElement} canvas
  * @param {CanvasRenderingContext2D} ctx
- * @returns {{ render(base64: string): void, destroy(): void }}
+ * @returns {{ render(data: Blob|ArrayBuffer|string): void, destroy(): void }}
  */
 export function createFrameRenderer(canvas, ctx) {
   let pending = null;
   let rendering = false;
   let destroyed = false;
+  const useBitmap = typeof createImageBitmap === 'function';
+  const FRAME_INTERVAL = 1000 / 30; // 30fps cap
+  let lastFrameTime = 0;
 
   function flush() {
     if (destroyed || rendering || !pending) return;
+    const now = performance.now();
+    if (now - lastFrameTime < FRAME_INTERVAL) {
+      // Drop frame — too soon since last render
+      return;
+    }
+    lastFrameTime = now;
     rendering = true;
     const data = pending;
     pending = null;
 
-    const img = new Image();
-    img.onload = () => {
-      if (destroyed) return;
-      if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-      }
-      ctx.drawImage(img, 0, 0);
-      rendering = false;
-      if (pending) flush();
-    };
-    img.onerror = () => {
-      if (destroyed) return;
-      rendering = false;
-      if (pending) flush();
-    };
-    img.src = 'data:image/jpeg;base64,' + data;
+    // Convert input to a Blob for createImageBitmap
+    let blob;
+    if (data instanceof Blob) {
+      blob = data;
+    } else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+      blob = new Blob([data], { type: 'image/jpeg' });
+    } else {
+      // Legacy base64 string fallback
+      const bin = atob(data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      blob = new Blob([bytes], { type: 'image/jpeg' });
+    }
+
+    if (useBitmap) {
+      createImageBitmap(blob).then(bmp => {
+        if (destroyed) { bmp.close(); return; }
+        if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+          canvas.width = bmp.width;
+          canvas.height = bmp.height;
+        }
+        ctx.drawImage(bmp, 0, 0);
+        bmp.close();
+        rendering = false;
+        if (pending) flush();
+      }).catch(() => {
+        if (destroyed) return;
+        rendering = false;
+        if (pending) flush();
+      });
+    } else {
+      // Fallback for browsers without createImageBitmap
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        if (destroyed) { URL.revokeObjectURL(url); return; }
+        if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+        }
+        ctx.drawImage(img, 0, 0);
+        URL.revokeObjectURL(url);
+        rendering = false;
+        if (pending) flush();
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        if (destroyed) return;
+        rendering = false;
+        if (pending) flush();
+      };
+      img.src = url;
+    }
   }
 
   return {
-    render(base64) { pending = base64; flush(); },
+    render(data) { pending = data; flush(); },
     destroy() { destroyed = true; pending = null; },
   };
 }

@@ -3,9 +3,12 @@
 /**
  * SynaBun PostToolUse Hook — Plan Storage
  *
- * Matches: ^ExitPlanMode$
+ * Matches: ^(Enter|Exit)PlanMode$
  *
- * When Claude exits plan mode (plan approved), this hook:
+ * EnterPlanMode: Injects a reminder to use AskUserQuestion for
+ * clarifications instead of plain-text questions.
+ *
+ * ExitPlanMode: When Claude exits plan mode (plan approved), this hook:
  * 1. Finds the most recently modified plan file in ~/.claude/plans/
  * 2. Auto-creates a child category under "plans" for the project if needed
  * 3. Generates a local embedding and stores the plan in SQLite
@@ -36,8 +39,10 @@ function debugLog(msg) {
   } catch { /* best-effort */ }
 }
 
-// Plans directory — Claude Code stores plan .md files here
-const PLANS_DIR = join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans');
+// Plans directory — project-local to avoid ~/.claude/ sensitive-file permission prompts
+const PLANS_DIR = join(DATA_DIR, 'plans');
+// Fallback: Claude Code's ExitPlanMode may still write to ~/.claude/plans/ internally
+const PLANS_DIR_FALLBACK = join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans');
 
 // Dedup tracker — records which plan files have already been stored
 const STORED_PLANS_PATH = join(DATA_DIR, 'stored-plans.json');
@@ -141,15 +146,18 @@ function markPlanStored(fileName, memoryId) {
  * Each entry: { name, path, mtime }
  */
 function listPlanFiles() {
-  if (!existsSync(PLANS_DIR)) return [];
-  return readdirSync(PLANS_DIR)
-    .filter((f) => f.endsWith('.md'))
-    .map((f) => {
-      const fullPath = join(PLANS_DIR, f);
+  const results = [];
+  for (const dir of [PLANS_DIR, PLANS_DIR_FALLBACK]) {
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+      // Skip duplicates (same filename in both dirs — prefer primary)
+      if (results.some((r) => r.name === f)) continue;
+      const fullPath = join(dir, f);
       const stat = statSync(fullPath);
-      return { name: f, path: fullPath, mtime: stat.mtimeMs };
-    })
-    .sort((a, b) => b.mtime - a.mtime);
+      results.push({ name: f, path: fullPath, mtime: stat.mtimeMs });
+    }
+  }
+  return results.sort((a, b) => b.mtime - a.mtime);
 }
 
 /**
@@ -297,7 +305,16 @@ async function main() {
 
   debugLog(`Hook invoked — tool_name: "${toolName}", session: ${input.session_id || 'unknown'}, cwd: ${input.cwd || 'unknown'}`);
 
-  // Only handle ExitPlanMode
+  // Handle EnterPlanMode — remind Claude to use AskUserQuestion
+  if (toolName === 'EnterPlanMode') {
+    debugLog('EnterPlanMode fired — injecting AskUserQuestion reminder');
+    process.stdout.write(JSON.stringify({
+      additionalContext: `SynaBun: You are now in plan mode. When you have questions or need clarification from the user, you MUST use the \`AskUserQuestion\` tool — do NOT write questions as plain text. Load it via \`ToolSearch\` if its schema is not yet available. Use \`ExitPlanMode\` for final plan approval.\n\n**Plan file location**: Write plan files to \`${PLANS_DIR}/\` — NOT \`~/.claude/plans/\`. This avoids sensitive-file permission prompts that stall the session.`,
+    }));
+    return;
+  }
+
+  // Only handle ExitPlanMode beyond this point
   if (toolName !== 'ExitPlanMode') {
     process.stdout.write(JSON.stringify({}));
     return;
