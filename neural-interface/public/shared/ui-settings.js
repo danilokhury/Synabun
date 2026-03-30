@@ -2678,8 +2678,8 @@ export async function openSettingsModal() {
   overlay.id = 'settings-panel';
 
   // Always open centered at default size
-  overlay.style.left = Math.max(20, (window.innerWidth - 720) / 2) + 'px';
-  overlay.style.top = Math.max(48, (window.innerHeight - 500) / 2) + 'px';
+  overlay.style.left = Math.max(20, (window.innerWidth - 900) / 2) + 'px';
+  overlay.style.top = Math.max(48, (window.innerHeight - 650) / 2) + 'px';
 
   // ── Build variant tab bodies ──
   let variantTabBodies = '';
