@@ -6161,9 +6161,22 @@ app.get('/api/system/backup', async (req, res) => {
     for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
                       'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json',
                       'invite-key.json', 'invite-proxy.json', 'invite-permissions.json',
-                      'loop-templates.json', 'loop-schedules.json', 'auto-backup-config.json']) {
+                      'loop-templates.json', 'loop-schedules.json', 'auto-backup-config.json',
+                      'cost-tracking.json', 'skin-config.json', 'image-favorites.json',
+                      'browser-config.json', 'browser-storage.json', 'last-session.json',
+                      'invite-sessions.json']) {
       addFile(`data/${f}`, resolve(dataDir, f));
     }
+
+    // Session history caches (dynamically named per project cwd)
+    if (existsSync(dataDir)) {
+      for (const f of readdirSync(dataDir)) {
+        if (f.startsWith('sessions-cache-') && f.endsWith('.json')) {
+          addFile(`data/${f}`, resolve(dataDir, f));
+        }
+      }
+    }
+
     addJsonDir('data/pending-remember', resolve(dataDir, 'pending-remember'));
     addJsonDir('data/pending-compact', resolve(dataDir, 'pending-compact'));
     addJsonDir('data/loop', resolve(dataDir, 'loop'));
@@ -6171,6 +6184,9 @@ app.get('/api/system/backup', async (req, res) => {
     // Custom file icons
     addFile('data/custom-icons.json', resolve(dataDir, 'custom-icons.json'));
     addDirRecursive('data/custom-icons', resolve(dataDir, 'custom-icons'));
+
+    // Screenshots, whiteboard captures, staged images
+    addDirRecursive('data/images', resolve(dataDir, 'images'));
 
     // 3. mcp-server/data/
     if (existsSync(CATEGORIES_DATA_DIR)) {
@@ -6209,7 +6225,19 @@ app.get('/api/system/backup', async (req, res) => {
       }
     }
 
-    // 7. SQLite database file
+    // 7. Installed skins (user-customizable themes)
+    const skinsDir = join(__dirname, 'skins');
+    if (existsSync(skinsDir)) {
+      addDirRecursive('skins', skinsDir);
+    }
+
+    // 8. Global Claude Code settings (hooks, permissions)
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    if (home) {
+      addFile('claude-settings.json', join(home, '.claude', 'settings.json'));
+    }
+
+    // 9. SQLite database file
     const dbPath = getDbPath();
     if (existsSync(dbPath)) {
       try {
@@ -6346,6 +6374,25 @@ app.post('/api/system/restore',
           writeFileSync(target, entry.getData());
           results.files.push(rel);
         }
+
+        // Installed skins → neural-interface/skins/
+        if (rel.startsWith('skins/') && rel !== 'skins/') {
+          const target = join(__dirname, rel);
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, entry.getData());
+          results.files.push(rel);
+        }
+
+        // Global Claude Code settings → ~/.claude/settings.json
+        if (rel === 'claude-settings.json') {
+          const home = process.env.USERPROFILE || process.env.HOME || '';
+          if (home) {
+            const target = join(home, '.claude', 'settings.json');
+            mkdirSync(dirname(target), { recursive: true });
+            writeFileSync(target, entry.getData());
+            results.files.push(rel);
+          }
+        }
       }
     }
 
@@ -6480,14 +6527,30 @@ function buildBackupZipToFile(destPath) {
     for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
                       'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json',
                       'invite-key.json', 'invite-proxy.json', 'invite-permissions.json',
-                      'loop-templates.json', 'loop-schedules.json']) {
+                      'loop-templates.json', 'loop-schedules.json', 'auto-backup-config.json',
+                      'cost-tracking.json', 'skin-config.json', 'image-favorites.json',
+                      'browser-config.json', 'browser-storage.json', 'last-session.json',
+                      'invite-sessions.json']) {
       addFile(`data/${f}`, resolve(dataDir, f));
     }
+
+    // Session history caches (dynamically named per project cwd)
+    if (existsSync(dataDir)) {
+      for (const f of readdirSync(dataDir)) {
+        if (f.startsWith('sessions-cache-') && f.endsWith('.json')) {
+          addFile(`data/${f}`, resolve(dataDir, f));
+        }
+      }
+    }
+
     addJsonDir('data/pending-remember', resolve(dataDir, 'pending-remember'));
     addJsonDir('data/pending-compact', resolve(dataDir, 'pending-compact'));
     addJsonDir('data/loop', resolve(dataDir, 'loop'));
     addFile('data/custom-icons.json', resolve(dataDir, 'custom-icons.json'));
     addDirRecursive('data/custom-icons', resolve(dataDir, 'custom-icons'));
+
+    // Screenshots, whiteboard captures, staged images
+    addDirRecursive('data/images', resolve(dataDir, 'images'));
 
     if (existsSync(CATEGORIES_DATA_DIR)) {
       for (const f of readdirSync(CATEGORIES_DATA_DIR)) {
@@ -6516,6 +6579,18 @@ function buildBackupZipToFile(destPath) {
         if (!isDirEntry(entry)) continue;
         addDirRecursive(`bundled-skills/${entry.name}`, join(SKILLS_SOURCE_DIR, entry.name));
       }
+    }
+
+    // Installed skins (user-customizable themes)
+    const skinsDir = join(__dirname, 'skins');
+    if (existsSync(skinsDir)) {
+      addDirRecursive('skins', skinsDir);
+    }
+
+    // Global Claude Code settings (hooks, permissions)
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    if (home) {
+      addFile('claude-settings.json', join(home, '.claude', 'settings.json'));
     }
 
     const dbPath = getDbPath();
@@ -7548,9 +7623,9 @@ function ensureSynaBunPermissions(settings) {
   if (!settings.permissions) settings.permissions = {};
   if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
 
-  // Plan files now write to data/plans/ (project-local) instead of ~/.claude/plans/.
-  // No special Write permission needed — data/ is within the project root.
-  // Clean up legacy rule if present from older installations.
+  // Plan files write to data/plans/ (project-local) to avoid ~/.claude/ sensitive-file
+  // permission prompts. No Write permission rule needed — data/ is within project root.
+  // Clean up any stale Write(~/.claude/plans/*) rules from older installations.
   const home = process.env.USERPROFILE || process.env.HOME || '';
   const legacyPlanRule = `Write(${join(home, '.claude', 'plans', '*')})`;
   const legacyIdx = settings.permissions.allow.indexOf(legacyPlanRule);
@@ -8625,9 +8700,8 @@ app.put('/api/greeting/config/:project', (req, res) => {
 // Supports ?format=claude (default) | cursor | generic
 app.get('/api/claude-code/ruleset', (req, res) => {
   try {
-    const claudeMdPath = resolve(PROJECT_ROOT, 'CLAUDE.md');
     const templatePath = resolve(__dirname, 'templates', 'CLAUDE-template.md');
-    const sourcePath = existsSync(claudeMdPath) ? claudeMdPath : templatePath;
+    const sourcePath = templatePath;
     if (!existsSync(sourcePath)) {
       return res.status(404).json({ error: 'CLAUDE.md template not found' });
     }
