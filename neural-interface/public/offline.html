@@ -238,13 +238,13 @@
 </div>
 
 <script>
-  // --- Build command with full path ---
+  // --- Build restart command ---
+  // Use the global `synabun` command (works from any directory)
+  // Fallback: cd + npm start with `;` separator (works in both PowerShell and bash)
   const projectDir = localStorage.getItem('synabun-project-dir');
-  const cmd = projectDir ? `cd ${projectDir} && npm start` : 'npm start';
+  const cmd = 'synabun';
   const cmdText = document.getElementById('cmdText');
-  if (projectDir) {
-    cmdText.innerHTML = `<span>cd</span> ${projectDir} && <span>npm</span> start`;
-  }
+  cmdText.innerHTML = `<span>synabun</span>`;
   const copyBtn = document.getElementById('copyBtn');
 
   copyBtn.addEventListener('click', async () => {
