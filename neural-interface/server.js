@@ -2194,6 +2194,7 @@ function handleClaudeSkinWebSocket(ws) {
   let inTurn = false;        // true while CLI is processing a user message
   let lastEventTime = Date.now(); // shared with stall detector
   const approvedTools = new Set(); // tools the user has approved — persists across respawns
+  let mcpAllowedTools = new Set(); // MCP tools in permissions.allow — refreshed each spawn
   let lastPermissionDenials = null; // cached for retry after approval
   let awaitingPermission = false; // true when permission card shown, suppresses 'done' from close handler
   const permCardToolNames = new Map(); // requestId → toolName, for proactive permission cards
@@ -2263,6 +2264,11 @@ function handleClaudeSkinWebSocket(ws) {
 
   function spawnProc(sessionId, model, cwd, effort, prompt) {
     killProc();
+    // Read current MCP permissions so we can show proactive cards for non-allowed MCP tools
+    const _globalSettings = readClaudeSettings(getGlobalClaudeSettingsPath()) || {};
+    mcpAllowedTools = new Set(
+      (_globalSettings.permissions?.allow || []).filter(t => t.startsWith('mcp__'))
+    );
     const workDir = validateWorkDir(cwd) || PACKAGE_ROOT;
     const args = [
       '--print',
@@ -2525,6 +2531,21 @@ function handleClaudeSkinWebSocket(ws) {
                 request_id: requestId,
                 request: { tool_name: tool.name, subtype: 'can_use_tool', input },
               });
+            }
+            // MCP tools: proactive card when not session-approved and not in permissions.allow
+            // --print mode silently denies MCP tools without emitting permission_denials,
+            // so we must intercept tool_use blocks and prompt the user ourselves.
+            if (tool.name.startsWith('mcp__') && !approvedTools.has(tool.name) && !mcpAllowedTools.has(tool.name)) {
+              const requestId = `perm-${tool.id}`;
+              const input = tool.input || {};
+              permCardToolNames.set(requestId, tool.name);
+              console.log(`[claude-skin] ▶ PROACTIVE MCP permission card for ${tool.name}`);
+              sendToClient({
+                type: 'control_request',
+                request_id: requestId,
+                request: { tool_name: tool.name, subtype: 'can_use_tool', input },
+              });
+              awaitingPermission = true;
             }
           }
         }
