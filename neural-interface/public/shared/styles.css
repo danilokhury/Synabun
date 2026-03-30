@@ -7,6 +7,7 @@
   }
 
   :root {
+    color-scheme: dark;
     /* ── Text ── */
     --t-faint: rgba(255,255,255,0.2);
     --t-muted: rgba(255,255,255,0.3);
