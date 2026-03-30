@@ -66,7 +66,9 @@ Never store directly in parent categories.
 
 ### Plan Mode (MANDATORY)
 
-When in plan mode and you need clarification or have questions:
+**CRITICAL**: Plan mode = research and planning ONLY. Do NOT use Edit, Write, or NotebookEdit. Read files, search code, investigate — then present the plan. Do NOT implement until the user approves and you exit plan mode.
+
+When you need clarification or have questions:
 - **ALWAYS** use `AskUserQuestion` to present options — never write questions as plain text
 - Load the tool via `ToolSearch` first if its schema is not yet available
 - Structure as distinct choices (2-4 options per question, max 4 questions)
@@ -158,6 +160,12 @@ Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
 ```
+
+---
+
+## Plan Files
+
+When in plan mode, write plan files to the project's `data/plans/` directory — **NOT** `~/.claude/plans/`. The `~/.claude/` directory is treated as sensitive by Claude Code, causing repeated permission prompts that don't persist across context compactions. The `data/plans/` directory is within the project root and requires no special permissions.
 
 ---
 
