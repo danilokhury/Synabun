@@ -603,14 +603,19 @@ function buildServerTab(settings) {
           <div id="auto-backup-options" style="display:none">
             <div class="stg-inline-field">
               <label>Frequency</label>
-              <select id="auto-backup-interval">
-                <option value="30">Every 30 minutes</option>
-                <option value="60">Every hour</option>
-                <option value="180">Every 3 hours</option>
-                <option value="360" selected>Every 6 hours</option>
-                <option value="720">Every 12 hours</option>
-                <option value="1440">Every 24 hours</option>
-              </select>
+              <input type="hidden" id="auto-backup-interval" value="360">
+              <div class="cc-dropdown stg-dropdown" data-for="auto-backup-interval">
+                <button class="cc-dropdown-trigger" type="button">
+                  <span class="cc-dropdown-value">Every 6 hours</span>
+                  <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div class="cc-dropdown-menu">
+                  <div class="cc-dropdown-item" data-value="30">Every 30 minutes</div>
+                  <div class="cc-dropdown-item" data-value="60">Every hour</div>
+                  <div class="cc-dropdown-item" data-value="180">Every 3 hours</div>
+                  <div class="cc-dropdown-item active" data-value="360">Every 6 hours</div>
+                </div>
+              </div>
             </div>
 
             <div class="stg-inline-field">
@@ -1279,20 +1284,24 @@ function buildNotificationsTab() {
   const permLabel = { granted: 'Granted', denied: 'Blocked', default: 'Not yet requested', unsupported: 'Not supported' }[permState] || permState;
   const permColor = { granted: 'var(--accent-green, #4ade80)', denied: 'var(--accent-red, #f87171)', default: 'var(--s-light, #888)' }[permState] || 'var(--s-light)';
 
-  const presetOptions = ['beep', 'chime', 'ping', 'subtle'].map(p =>
-    `<option value="${p}" ${soundType === p ? 'selected' : ''}>${p.charAt(0).toUpperCase() + p.slice(1)}</option>`
+  const presetItems = ['beep', 'chime', 'ping', 'subtle'].map(p =>
+    `<div class="cc-dropdown-item${soundType === p ? ' active' : ''}" data-value="${p}">${p.charAt(0).toUpperCase() + p.slice(1)}</div>`
   ).join('');
+  const presetLabel = (soundType || 'beep').charAt(0).toUpperCase() + (soundType || 'beep').slice(1);
 
-  const durationOptions = [3, 5, 10].map(d =>
-    `<option value="${d}" ${toastDur === d ? 'selected' : ''}>${d}s</option>`
+  const durationItems = [3, 5, 10].map(d =>
+    `<div class="cc-dropdown-item${toastDur === d ? ' active' : ''}" data-value="${d}">${d}s</div>`
   ).join('');
+  const durationLabel = `${toastDur}s`;
 
-  const positionOptions = [
+  const positionEntries = [
     ['top-right', 'Top Right'], ['top-left', 'Top Left'], ['top-center', 'Top Center'],
     ['bottom-right', 'Bottom Right'], ['bottom-left', 'Bottom Left'], ['bottom-center', 'Bottom Center'],
-  ].map(([val, label]) =>
-    `<option value="${val}" ${toastPos === val ? 'selected' : ''}>${label}</option>`
+  ];
+  const positionItems = positionEntries.map(([val, label]) =>
+    `<div class="cc-dropdown-item${toastPos === val ? ' active' : ''}" data-value="${val}">${label}</div>`
   ).join('');
+  const positionLabel = (positionEntries.find(([v]) => v === toastPos) || positionEntries[0])[1];
 
   return `
       <div class="settings-tab-body" data-tab="notifications">
@@ -1393,9 +1402,14 @@ function buildNotificationsTab() {
           </div>
           <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
             <label style="font-size:13px;color:var(--s-lighter);min-width:50px">Preset</label>
-            <select id="notif-sound-type" style="flex:1;background:var(--s-darker);color:var(--text);border:1px solid var(--s-medium);border-radius:6px;padding:4px 8px;font-size:12px">
-              ${presetOptions}
-            </select>
+            <input type="hidden" id="notif-sound-type" value="${soundType}">
+            <div class="cc-dropdown stg-dropdown stg-dropdown-inline" data-for="notif-sound-type">
+              <button class="cc-dropdown-trigger" type="button">
+                <span class="cc-dropdown-value">${presetLabel}</span>
+                <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="cc-dropdown-menu">${presetItems}</div>
+            </div>
           </div>
           <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
             <button class="stg-action-btn compact" data-notif-test="action">Test Action</button>
@@ -1419,15 +1433,25 @@ function buildNotificationsTab() {
           </div>
           <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
             <label style="font-size:13px;color:var(--s-lighter);min-width:80px">Position</label>
-            <select id="notif-toast-position" style="flex:1;background:var(--s-darker);color:var(--text);border:1px solid var(--s-medium);border-radius:6px;padding:4px 8px;font-size:12px">
-              ${positionOptions}
-            </select>
+            <input type="hidden" id="notif-toast-position" value="${toastPos}">
+            <div class="cc-dropdown stg-dropdown stg-dropdown-inline" data-for="notif-toast-position">
+              <button class="cc-dropdown-trigger" type="button">
+                <span class="cc-dropdown-value">${positionLabel}</span>
+                <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="cc-dropdown-menu">${positionItems}</div>
+            </div>
           </div>
           <div style="margin-top:8px;display:flex;align-items:center;gap:12px">
             <label style="font-size:13px;color:var(--s-lighter);min-width:80px">Auto-dismiss</label>
-            <select id="notif-toast-duration" style="flex:1;background:var(--s-darker);color:var(--text);border:1px solid var(--s-medium);border-radius:6px;padding:4px 8px;font-size:12px">
-              ${durationOptions}
-            </select>
+            <input type="hidden" id="notif-toast-duration" value="${toastDur}">
+            <div class="cc-dropdown stg-dropdown stg-dropdown-inline" data-for="notif-toast-duration">
+              <button class="cc-dropdown-trigger" type="button">
+                <span class="cc-dropdown-value">${durationLabel}</span>
+                <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="cc-dropdown-menu">${durationItems}</div>
+            </div>
           </div>
         </div>
 
@@ -3244,6 +3268,66 @@ export async function openSettingsModal() {
   }
 
   // ══════════════════════════════════════
+  // Custom dropdown wiring (stg-dropdown)
+  // ══════════════════════════════════════
+
+  function wireStgDropdowns(container) {
+    container.querySelectorAll('.stg-dropdown').forEach(dd => {
+      const trigger = dd.querySelector('.cc-dropdown-trigger');
+      const menu = dd.querySelector('.cc-dropdown-menu');
+      const label = dd.querySelector('.cc-dropdown-value');
+      const hiddenId = dd.dataset.for;
+      const hidden = hiddenId ? container.querySelector(`#${hiddenId}`) : null;
+      if (!trigger || !menu) return;
+
+      trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        container.querySelectorAll('.stg-dropdown.open').forEach(other => {
+          if (other !== dd) other.classList.remove('open');
+        });
+        dd.classList.toggle('open');
+      });
+
+      menu.querySelectorAll('.cc-dropdown-item').forEach(item => {
+        item.addEventListener('click', () => {
+          const val = item.dataset.value;
+          if (hidden) {
+            hidden.value = val;
+            hidden.dispatchEvent(new Event('change'));
+          }
+          if (label) label.textContent = item.textContent;
+          menu.querySelectorAll('.cc-dropdown-item').forEach(i => i.classList.remove('active'));
+          item.classList.add('active');
+          dd.classList.remove('open');
+        });
+      });
+    });
+
+    document.addEventListener('click', (e) => {
+      container.querySelectorAll('.stg-dropdown.open').forEach(dd => {
+        if (!dd.contains(e.target)) dd.classList.remove('open');
+      });
+    });
+  }
+
+  function syncStgDropdown(container, hiddenId) {
+    const hidden = container.querySelector(`#${hiddenId}`);
+    const dd = container.querySelector(`.stg-dropdown[data-for="${hiddenId}"]`);
+    if (!hidden || !dd) return;
+    const val = hidden.value;
+    const label = dd.querySelector('.cc-dropdown-value');
+    const menu = dd.querySelector('.cc-dropdown-menu');
+    if (!menu) return;
+    menu.querySelectorAll('.cc-dropdown-item').forEach(item => {
+      const isMatch = item.dataset.value === val;
+      item.classList.toggle('active', isMatch);
+      if (isMatch && label) label.textContent = item.textContent;
+    });
+  }
+
+  wireStgDropdowns(overlay);
+
+  // ══════════════════════════════════════
   // Auto Backup handlers
   // ══════════════════════════════════════
 
@@ -3273,7 +3357,10 @@ export async function openSettingsModal() {
     fetch('/api/system/auto-backup').then(r => r.json()).then(cfg => {
       abToggle.checked = cfg.enabled;
       abOptions.style.display = cfg.enabled ? '' : 'none';
-      if (cfg.intervalMinutes) abInterval.value = String(cfg.intervalMinutes);
+      if (cfg.intervalMinutes) {
+        abInterval.value = String(cfg.intervalMinutes);
+        syncStgDropdown(overlay, 'auto-backup-interval');
+      }
       if (cfg.folderPath) abFolder.value = cfg.folderPath;
       renderAutoBackupInfo(cfg);
     }).catch(() => {});
