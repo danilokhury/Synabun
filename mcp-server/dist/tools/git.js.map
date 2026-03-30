@@ -1,0 +1,1 @@
+{"version":3,"file":"git.js","sourceRoot":"","sources":["../../src/tools/git.ts"],"names":[],"mappings":"AAEA,OAAO,EACL,SAAS,EAAE,cAAc,EAAE,SAAS,GACrC,MAAM,gBAAgB,CAAC;AAExB;;;GAGG;AACH,MAAM,UAAU,gBAAgB,CAAC,MAAiB;IAChD,MAAM,CAAC,IAAI,CAAC,KAAK,EAAE,cAAc,EAAE,SAAS,EAAE,SAAS,CAAC,CAAC;AAC3D,CAAC"}

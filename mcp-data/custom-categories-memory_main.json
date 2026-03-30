@@ -1,0 +1,205 @@
+{
+  "version": 1,
+  "categories": [
+    {
+      "name": "criticalpixel",
+      "description": "Branch dedicated to knowledge mainly related to criticalpixel.gg",
+      "created_at": "2026-02-15T02:30:30.021Z",
+      "color": "#7c4dff",
+      "is_parent": true,
+      "logo": "/category-logos/criticalpixel.png"
+    },
+    {
+      "name": "changelog",
+      "description": "changelog",
+      "created_at": "2026-02-15T02:30:37.617Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "synabun",
+      "description": "Knowledge about the SynaBun memory system itself — architecture, MCP server, neural interface, hooks, integrations",
+      "created_at": "2026-02-15T17:22:26.448Z",
+      "is_parent": true,
+      "color": "#ffc000",
+      "logo": "/logo-synabun.png"
+    },
+    {
+      "name": "learning",
+      "description": "learning",
+      "created_at": "2026-02-15T17:45:23.357Z",
+      "color": "#ed7d31"
+    },
+    {
+      "name": "databases",
+      "description": "databases",
+      "created_at": "2026-02-15T17:45:27.260Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "architecture",
+      "description": "System architecture, components, data flow, config, SQLite storage, multi-connection support",
+      "created_at": "2026-02-16T03:58:28.685Z",
+      "parent": "synabun",
+      "color": "#3b82f6"
+    },
+    {
+      "name": "mcp-tools",
+      "description": "The 9 MCP tools — parameters, behavior, quirks, usage patterns, scoring algorithm",
+      "created_at": "2026-02-16T03:58:35.859Z",
+      "parent": "synabun",
+      "color": "#8b5cf6"
+    },
+    {
+      "name": "neural-interface",
+      "description": "3D visualization UI, Express REST API, graph edges, memory/category/connection endpoints",
+      "created_at": "2026-02-16T03:58:39.255Z",
+      "parent": "synabun",
+      "color": "#06b6d4"
+    },
+    {
+      "name": "hooks",
+      "description": "Claude Code lifecycle hooks — SessionStart, UserPromptSubmit, installation, customization",
+      "created_at": "2026-02-16T03:58:42.487Z",
+      "parent": "synabun",
+      "color": "#f59e0b"
+    },
+    {
+      "name": "setup",
+      "description": "Installation, onboarding wizard, database setup, local embeddings, .mcp.json generation",
+      "created_at": "2026-02-16T03:58:45.948Z",
+      "parent": "synabun",
+      "color": "#22c55e"
+    },
+    {
+      "name": "development",
+      "description": "Contributing, code style, project structure, security model, testing",
+      "created_at": "2026-02-16T03:58:48.891Z",
+      "parent": "synabun",
+      "color": "#ef4444"
+    },
+    {
+      "name": "deals",
+      "description": "deals",
+      "created_at": "2026-02-16T15:10:58.484Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "bugs-to-fix",
+      "description": "bugs-to-fix",
+      "created_at": "2026-02-17T03:25:47.608Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "bug-fixes",
+      "description": "bug-fixes",
+      "created_at": "2026-02-17T03:25:52.097Z",
+      "parent": "criticalpixel"
+    },
+    {
+      "name": "conversations",
+      "description": "Indexed conversation sessions with compacted summaries for cross-session recall. Stores session metadata, dates, projects, and topic summaries to enable natural language conversation retrieval.",
+      "created_at": "2026-02-18T01:12:03.631Z",
+      "is_parent": true
+    },
+    {
+      "name": "ideas",
+      "description": "Feature ideas, product concepts, and future plans for SynaBun",
+      "created_at": "2026-02-19T06:23:49.508Z",
+      "parent": "synabun"
+    },
+    {
+      "name": "synabun-website",
+      "description": "SynaBun product website — design, responsive, content, assets, effects",
+      "created_at": "2026-02-19T19:24:43.771Z",
+      "color": "#8b5cf6",
+      "is_parent": true
+    },
+    {
+      "name": "design-system",
+      "description": "Color scheme, typography, CSS variables, visual design tokens",
+      "created_at": "2026-02-19T19:24:47.719Z",
+      "parent": "synabun-website"
+    },
+    {
+      "name": "site-structure",
+      "description": "HTML sections, page layout, navigation, content hierarchy",
+      "created_at": "2026-02-19T19:24:51.030Z",
+      "parent": "synabun-website"
+    },
+    {
+      "name": "effects-and-canvas",
+      "description": "Three.js scenes, 2D canvas effects, animations, scroll effects, interactive JS",
+      "created_at": "2026-02-19T19:24:54.603Z",
+      "parent": "synabun-website"
+    },
+    {
+      "name": "uncategorized",
+      "description": "Default category for memories that have no category assigned",
+      "created_at": "2026-02-22T03:58:46.221Z",
+      "color": "#6b7280"
+    },
+    {
+      "name": "synabun-bugs",
+      "description": "Bug fixes and known issues specific to SynaBun — MCP server, neural interface, hooks, memory system",
+      "created_at": "2026-02-22T06:48:57.907Z",
+      "parent": "synabun"
+    },
+    {
+      "name": "user-profile",
+      "description": "Knowledge about the user as a person — communication style, preferences, behavioral patterns, and interaction singularity",
+      "created_at": "2026-02-23T18:57:47.747Z",
+      "is_parent": true,
+      "color": "#000000"
+    },
+    {
+      "name": "communication-style",
+      "description": "How the user communicates: tone, formality, verbosity, language patterns, emoji usage, text quirks",
+      "created_at": "2026-02-23T18:57:51.144Z",
+      "parent": "user-profile"
+    },
+    {
+      "name": "research",
+      "description": "Research loop outputs — findings, summaries, references, and insights from automated Content Research automations",
+      "created_at": "2026-02-27T23:59:38.420Z",
+      "color": "#10b981",
+      "is_parent": true
+    },
+    {
+      "name": "asgasg",
+      "description": "Research category for asgasg topic",
+      "created_at": "2026-02-28T01:40:40.861Z",
+      "parent": "research"
+    },
+    {
+      "name": "social-interactions",
+      "description": "Research category for social media interactions, hashtag scouting, and community discussions",
+      "created_at": "2026-02-28T04:50:29.142Z",
+      "parent": "research"
+    },
+    {
+      "name": "facebook-groups",
+      "description": "Facebook groups found and joined — AI, vibecoding, MCP, automation communities in Brazil (Portuguese)",
+      "created_at": "2026-03-01T17:47:53.396Z",
+      "parent": "research"
+    },
+    {
+      "name": "plans",
+      "description": "Implementation plans stored after plan mode approval. Sub-categorized by project name. Contains full markdown plan content.",
+      "created_at": "2026-03-03T00:11:04.794Z",
+      "color": "#06d6a0",
+      "is_parent": true
+    },
+    {
+      "name": "plans-criticalpixel",
+      "description": "Implementation plans for criticalpixel project",
+      "parent": "plans",
+      "created_at": "2026-03-03T00:29:11.886Z"
+    },
+    {
+      "name": "plans-synabun-website",
+      "description": "Implementation plans for SynaBun Website project",
+      "created_at": "2026-03-03T16:22:02.725Z",
+      "parent": "plans"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "intervalMinutes": 30,
+  "folderPath": "/Users/danilokhury/Documents/SynaBun - Backups",
+  "lastBackup": null,
+  "lastBackupSize": 0,
+  "lastBackupError": null
+}
