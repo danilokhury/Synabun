@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Runtime data
+/data/
+mcp-server/data/
+neural-interface/data/
+
+# Test suite
+.tests/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.db.backup-*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Project-specific
+.claude/
+connections.json
+
+# Neural Interface runtime
+neural-interface/_test.*
+neural-interface/_wizard*
+neural-interface/_gen_wizard*
+neural-interface/_*.cjs
+neural-interface/_*.py
+neural-interface/test-ws*
+
+# Editor
+.vscode/
+
+# Logs
+*.log
