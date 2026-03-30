@@ -64,11 +64,13 @@ function scaffoldToCwd(targetDir) {
   cpSync(__dirname, targetDir, {
     recursive: true,
     filter: (src) => {
-      const normalized = src.replace(/\\/g, '/');
-      // Skip node_modules (installed fresh by setup)
-      if (normalized.includes('/node_modules')) return false;
+      // Use path relative to global package dir — the full path contains
+      // node_modules/synabun/ which would false-positive the filter
+      const rel = src.slice(__dirname.length).replace(/\\/g, '/');
+      // Skip nested node_modules (neural-interface/node_modules, etc.)
+      if (rel.includes('/node_modules')) return false;
       // Skip .env (generated fresh per installation)
-      if (normalized.endsWith('/.env')) return false;
+      if (rel === '/.env') return false;
       return true;
     },
   });
