@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2026.3.305",
+  "version": "2026.3.306",
   "description": "Persistent vector memory for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -25,6 +25,9 @@
     "neural-interface/package.json",
     "neural-interface/server.js",
     "neural-interface/lib/",
+    "neural-interface/i18n/",
+    "neural-interface/skins/",
+    "neural-interface/games/",
     "neural-interface/public/",
     "neural-interface/templates/",
     "neural-interface/scripts/",
