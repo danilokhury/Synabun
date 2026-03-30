@@ -97,6 +97,12 @@
     --claude-panel-gap: 0px;
   }
 
+  /* ── Global dark select options (Windows Chrome ignores color-scheme for option popups) ── */
+  select option {
+    background: #1a1a1e;
+    color: #d0d0d0;
+  }
+
   html {
     position: fixed;
     overflow: hidden;
@@ -4691,6 +4697,144 @@
     background: var(--accent-red-bg);
     color: var(--accent-red);
   }
+  .count-badge--green {
+    background: rgba(52, 199, 89, 0.18);
+    color: #34c759;
+    border: 1px solid rgba(52, 199, 89, 0.25);
+  }
+
+  /* ── Update Modal ── */
+  .update-modal { min-width: 340px; }
+  .update-modal-title {
+    font-size: var(--fs-md);
+    font-weight: 600;
+    color: var(--t-primary);
+    margin: 0 0 4px;
+  }
+  .update-steps {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    margin-bottom: 16px;
+  }
+  .update-step-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.12);
+    transition: all 0.2s ease;
+  }
+  .update-step-dot.active {
+    background: #34c759;
+    box-shadow: 0 0 6px rgba(52,199,89,0.4);
+  }
+  .update-step-dot.done {
+    background: rgba(52,199,89,0.45);
+  }
+  .update-version-diff {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin: 14px 0 4px;
+  }
+  .update-ver {
+    font-family: var(--ff-mono);
+    font-size: 15px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: var(--r-card);
+    border: 1px solid var(--b-subtle);
+  }
+  .update-ver--old {
+    color: var(--t-muted);
+    background: rgba(255,255,255,0.04);
+  }
+  .update-ver--new {
+    color: #34c759;
+    background: rgba(52,199,89,0.08);
+    border-color: rgba(52,199,89,0.25);
+  }
+  .update-code-block {
+    position: relative;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: var(--r-card);
+    padding: 10px 40px 10px 14px;
+    font-family: var(--ff-mono);
+    font-size: 12px;
+    color: var(--t-secondary);
+    word-break: break-all;
+  }
+  .update-copy-btn {
+    position: absolute;
+    top: 50%; right: 8px;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--t-muted);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+  }
+  .update-copy-btn:hover {
+    color: var(--t-secondary);
+    background: rgba(255,255,255,0.08);
+  }
+  .update-backup-btn {
+    background: rgba(52,199,89,0.1);
+    border: 1px solid rgba(52,199,89,0.25);
+    color: #34c759;
+    font-weight: 500;
+    padding: 10px 16px;
+    border-radius: var(--r-card);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    transition: all 0.15s ease;
+  }
+  .update-backup-btn:hover { background: rgba(52,199,89,0.16); }
+  .update-backup-btn:disabled { opacity: 0.5; pointer-events: none; }
+  .update-backup-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--t-muted);
+    padding: 4px 0;
+  }
+  .update-backup-icon { font-size: 14px; font-weight: 700; }
+  .update-backup-icon.spin { animation: updateSpin 1s linear infinite; }
+  @keyframes updateSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  .update-skip-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--t-muted);
+    cursor: pointer;
+  }
+  .update-skip-label input[type="checkbox"] {
+    accent-color: #34c759;
+    width: 14px; height: 14px;
+  }
+  .update-spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid rgba(255,255,255,0.2);
+    border-top-color: #34c759;
+    border-radius: 50%;
+    animation: updateSpin 0.6s linear infinite;
+    vertical-align: -2px;
+    margin-right: 6px;
+  }
+  .tag-delete-overlay.closing {
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
 
   /* ── Dropdown panels (shared) ── */
   .dropdown-panel {
@@ -9251,31 +9395,59 @@
     margin-bottom: 6px;
     letter-spacing: 0.02em;
   }
-  .stg-inline-field select {
+  /* Settings custom dropdown overrides */
+  .stg-dropdown { min-width: 200px; }
+  .stg-dropdown .cc-dropdown-trigger {
     background: rgba(0,0,0,0.2);
-    color: var(--t-primary);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 8px;
     padding: 8px 10px;
     font-size: 12px;
-    font-family: inherit;
-    cursor: pointer;
+    color: var(--t-primary);
     min-width: 200px;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
-    -webkit-appearance: none;
-    appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.4)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 10px center;
-    padding-right: 28px;
+    letter-spacing: 0;
   }
-  .stg-inline-field select:hover {
+  .stg-dropdown .cc-dropdown-trigger:hover {
     border-color: rgba(255,255,255,0.12);
+    background: rgba(0,0,0,0.25);
   }
-  .stg-inline-field select:focus {
+  .stg-dropdown.open .cc-dropdown-trigger {
     border-color: rgba(79,195,247,0.4);
     box-shadow: 0 0 0 2px rgba(79,195,247,0.08);
-    outline: none;
+    background: rgba(0,0,0,0.25);
+  }
+  .stg-dropdown .cc-dropdown-arrow {
+    width: 12px;
+    height: 12px;
+    stroke: rgba(255,255,255,0.4);
+  }
+  .stg-dropdown .cc-dropdown-menu {
+    border-radius: 8px;
+    padding: 4px;
+    min-width: 100%;
+    right: auto;
+  }
+  .stg-dropdown .cc-dropdown-item {
+    padding: 7px 10px;
+    font-size: 12px;
+    border-radius: 6px;
+  }
+  .stg-dropdown .cc-dropdown-item.active {
+    background: rgba(79,195,247,0.12);
+    color: var(--t-bright);
+  }
+  /* Notification inline dropdown variant */
+  .stg-dropdown.stg-dropdown-inline {
+    flex: 1;
+    min-width: 0;
+  }
+  .stg-dropdown.stg-dropdown-inline .cc-dropdown-trigger {
+    min-width: 0;
+    width: 100%;
+    padding: 4px 8px;
+  }
+  .stg-dropdown.stg-dropdown-inline .cc-dropdown-menu {
+    min-width: 120px;
   }
   .stg-inline-field .stg-input-row {
     display: flex;

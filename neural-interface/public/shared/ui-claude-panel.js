@@ -242,6 +242,7 @@ function buildPanel() {
           <div class="cp-input-inner">
             <textarea class="cp-input" id="cp-input" placeholder="Message SynaBun..." rows="1" autocomplete="off" spellcheck="false"></textarea>
             <div class="cp-slash-hints" id="cp-slash-hints"></div>
+            <button class="cp-mic" id="cp-mic" title="Hold to speak"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
             <button class="cp-send" id="cp-send" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
           </div>
         </div>
@@ -874,21 +875,15 @@ function injectStyles() {
     .perm-btn-allow:hover:not(:disabled) { background: rgba(245,180,60,0.2); color: rgba(245,200,100,1); border-color: rgba(245,180,60,0.35); }
     .perm-btn-deny { background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.35); border-color: rgba(255,255,255,0.06); }
     .perm-btn-deny:hover:not(:disabled) { background: rgba(255,80,80,0.08); color: rgba(255,120,120,0.7); border-color: rgba(255,80,80,0.15); }
-    .perm-always {
-      font-size: 9px; color: var(--t-faint); margin-left: auto;
-      display: flex; align-items: center; gap: 3px; cursor: pointer;
-      transition: color 0.15s; font-family: 'JetBrains Mono', monospace;
-    }
-    .perm-always:hover { color: var(--t-secondary); }
-    .perm-always input { width: 10px; height: 10px; cursor: pointer; }
+    .perm-btn-always { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.45); border-color: rgba(255,255,255,0.08); }
+    .perm-btn-always:hover:not(:disabled) { background: rgba(245,180,60,0.12); color: rgba(245,195,90,0.85); border-color: rgba(245,180,60,0.2); }
     .perm-status {
       font-size: 9px; font-weight: 600; font-family: 'JetBrains Mono', monospace;
-      color: var(--t-faint); letter-spacing: 0.3px;
+      color: var(--t-faint); letter-spacing: 0.3px; margin-left: auto;
     }
     .perm-card.resolved { opacity: 0.45; box-shadow: none; animation: none; background: var(--s-subtle); border-color: var(--b-subtle); }
     .perm-card.resolved .perm-btn { pointer-events: none; }
-    .perm-card.resolved .perm-btn-allow { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.4); border-color: rgba(255,255,255,0.08); }
-    .perm-card.resolved .perm-always { display: none; }
+    .perm-card.resolved .perm-btn-allow, .perm-card.resolved .perm-btn-always { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.4); border-color: rgba(255,255,255,0.08); }
     .perm-card.resolved .perm-header { color: var(--t-faint); }
 
     /* ── Status / errors / thinking ── */
@@ -1133,6 +1128,48 @@ function injectStyles() {
       50% { opacity: 1; }
     }
     .cp-send svg { width: 12px; height: 12px; position: relative; z-index: 1; }
+
+    /* ── Mic button — push-to-talk, matches send button style ── */
+    .cp-mic {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px;
+      color: rgba(255,255,255,0.25);
+      width: 28px; height: 28px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; flex-shrink: 0;
+      transition: all 0.25s cubic-bezier(0.22, 0.68, 0, 1.2);
+      position: sticky; bottom: 3px; align-self: flex-end;
+      overflow: hidden;
+    }
+    .cp-mic:hover {
+      color: rgba(255,255,255,0.6);
+      border-color: rgba(255,255,255,0.15);
+      box-shadow: 0 0 8px rgba(255,255,255,0.04);
+      transform: translateY(-1px);
+    }
+    .cp-mic:active {
+      transform: translateY(0px) scale(0.95);
+      transition-duration: 0.08s;
+    }
+    .cp-mic svg { width: 13px; height: 13px; position: relative; z-index: 1; }
+    .cp-mic.recording {
+      color: rgba(255,160,60,0.95);
+      border-color: rgba(255,140,40,0.35);
+      box-shadow: 0 0 12px rgba(255,140,40,0.15);
+      animation: cp-mic-pulse 1.5s ease-in-out infinite;
+    }
+    .cp-mic.recording:hover {
+      color: #ffaa44;
+      border-color: rgba(255,140,40,0.5);
+      box-shadow: 0 0 16px rgba(255,140,40,0.2);
+    }
+    @keyframes cp-mic-pulse {
+      0%, 100% { box-shadow: 0 0 8px rgba(255,140,40,0.1); }
+      50% { box-shadow: 0 0 16px rgba(255,140,40,0.25); }
+    }
+    .cp-mic.unsupported { display: none; }
+
     .cp-send.btw {
       border-color: rgba(100,180,255,0.3);
       color: rgba(120,180,255,0.9);
@@ -1423,6 +1460,12 @@ function injectStyles() {
     .cp-session-btn .cp-session-label {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    .cp-session-btn .cp-dd-arrow {
+      font-size: 9px; padding: 4px 6px; margin: -4px -6px -4px 0;
+      border-radius: 0 6px 6px 0; cursor: pointer;
+      transition: background 0.15s, color 0.2s, transform 0.2s;
+    }
+    .cp-session-btn .cp-dd-arrow:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.5); }
     .cp-header-rename-btn {
       display: flex; align-items: center; justify-content: center;
       width: 24px; align-self: stretch; border-radius: 0 8px 8px 0;
@@ -2300,7 +2343,7 @@ function updatePillRunning(tab) {
 function saveTabs() {
   try {
     storage.setItem(STOR.tabs, JSON.stringify({
-      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, queue: t.queue || [], queuePaused: t.queuePaused || false })),
+      tabs: _tabs.map(t => ({ id: t.id, sessionId: t.sessionId, label: t.label, sessionCost: t.sessionCost || 0, running: t.running || false, project: t.project || '', model: t.model || '', effort: t.effort || 'off', planMode: t.planMode || false, planFilePath: t.planFilePath || '', queue: t.queue || [], queuePaused: t.queuePaused || false })),
       activeIdx: _activeTabIdx,
     }));
     _updateWindowRegistry();
@@ -2352,6 +2395,7 @@ function restoreTabs() {
           if (t) t.model = saved.model || _getDefaultModel();
           if (t && saved.effort) t.effort = saved.effort;
           if (t && saved.planMode) t.planMode = true;
+          if (t && saved.planFilePath) t.planFilePath = saved.planFilePath;
           if (t && saved.queue?.length) t.queue = saved.queue;
           if (t && saved.queuePaused) t.queuePaused = true;
         }
@@ -3052,9 +3096,10 @@ function handleTabMsg(tab, msg) {
     return;
   }
   if (msg.type === 'control_request') console.log('[claude-panel] Got control_request msg:', msg.type, msg.request_id, msg.request?.subtype, msg.request?.tool_name);
-  // Buffer only terminal messages while a permission prompt is active
-  // Allow event messages through so streaming content remains visible
-  if (tab._activePerm && msg.type !== 'control_request' && msg.type !== 'event') {
+  // Buffer ALL messages while user is being prompted (permission card or AskUserQuestion).
+  // Nothing appears until the user interacts — only control_request passes through
+  // so new permission cards can still queue up.
+  if ((tab._activePerm || tab.pendingAskRequestId) && msg.type !== 'control_request') {
     if (tab._msgBuffer.length < 500) tab._msgBuffer.push(msg);
     return;
   }
@@ -3092,18 +3137,14 @@ function _processTabMsg(tab, msg) {
     case 'control_request': handleControlRequest(tab, msg); break;
     case 'stderr': if (msg.text?.trim()) appendStatus(tab, msg.text.trim()); break;
     case 'done':
-      finishTab(tab, !tab.running);
-      if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
-      // Fallback plan completion: --print mode doesn't emit tool_result for built-in tools,
-      // so updateToolResult never fires for ExitPlanMode. renderAssistant sets _exitPlanPending
-      // when it sees the ExitPlanMode tool_use block. Render post-plan actions here if
-      // updateToolResult didn't already handle it (no spurious cards — flag is only set
-      // when ExitPlanMode is actually in the response).
+      // Plan completion: check BEFORE finishTab clears flags (same pattern as result handler).
       if (tab._exitPlanPending && !tab._exitPlanHandled) {
         tab._exitPlanHandled = true;
         tab._exitPlanPending = false;
         renderPostPlanActions(tab);
       }
+      finishTab(tab, !tab.running);
+      if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       // Queue: auto-advance to next message
       if (tab.queue.length > 0 && !tab.queuePaused) {
         setTimeout(() => advanceQueue(tab), 300);
@@ -3594,8 +3635,10 @@ function renderAssistant(tab, msg) {
   // built-in tools, so updateToolResult() never fires. Detect ExitPlanMode here
   // when the tool_use block appears, set a flag, and let the done handler render
   // post-plan actions. updateToolResult still handles it if tool_result ever fires.
-  if (tab.planMode && tools.some(t => t.name === 'ExitPlanMode') && !tab._exitPlanHandled) {
-    tab._exitPlanWasPlanMode = true;
+  // ExitPlanMode detection: detect regardless of current planMode state — planMode may have
+  // been toggled off mid-stream (tab switch, reconnect, race). Track whether it WAS active.
+  if (tools.some(t => t.name === 'ExitPlanMode') && !tab._exitPlanHandled) {
+    tab._exitPlanWasPlanMode = tab._exitPlanWasPlanMode || tab.planMode;
     tab._exitPlanPending = true;
     tab.planMode = false;
     const $plan = _panel?.querySelector('#cp-plan-toggle');
@@ -3914,13 +3957,17 @@ function sendAskAnswer(tab, questions, answers) {
   tab.pendingAskRequestId = null;
   tab.pendingAskToolUseId = null;
   tab.pendingAskBufferedAnswer = null;
+  // Flush BEFORE clearing askRenderedViaControl — buffered assistant events
+  // must see the flag so buildAskFromToolUse returns a hidden placeholder
+  // instead of rendering a duplicate card.
+  if (!tab._activePerm) _flushMsgBuffer(tab);
   tab.askRenderedViaControl = false;
   showThinking(tab);
   setRunning(tab, true);
 }
 
 function isPlanFile(filePath) {
-  return filePath && (/[/\\]data[/\\]plans[/\\]/.test(filePath) || /[/\\]\.claude[/\\]plans[/\\]/.test(filePath));
+  return filePath && (/[/\\]data[/\\]plans[/\\]/.test(filePath) || /[/\\]\.claude[/\\]plans[/\\]/.test(filePath) || /(?:^|[/\\])PLAN\.md$/.test(filePath));
 }
 
 /** Extract plan text from the last assistant message(s) in the tab's messages container. */
@@ -4388,6 +4435,9 @@ function _isSynaBunAsk(questions) {
 function renderAskUserQuestion(tab, requestId, input) {
   const $msgs = tab.messagesEl;
   if (!$msgs) return;
+  // DOM-level dedup: if an active (non-submitted) ask card already exists, skip
+  const existing = $msgs.querySelector('.ask-card .ask-submit:not([disabled])');
+  if (existing) return;
   hideThinking(tab);
   tab.askRenderedViaControl = true;
   notify('panel', NOTIF_TYPE.ASK, tab.label || 'Claude Code', { tabId: tab.id });
@@ -4631,6 +4681,10 @@ function renderPermissionPrompt(tab, requestId, req) {
   const actions = document.createElement('div');
   actions.className = 'perm-actions';
 
+  const alwaysBtn = document.createElement('button');
+  alwaysBtn.className = 'perm-btn perm-btn-always';
+  alwaysBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_CHECK + '</span>Always';
+
   const allowBtn = document.createElement('button');
   allowBtn.className = 'perm-btn perm-btn-allow';
   allowBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_CHECK + '</span>Allow';
@@ -4639,37 +4693,35 @@ function renderPermissionPrompt(tab, requestId, req) {
   denyBtn.className = 'perm-btn perm-btn-deny';
   denyBtn.innerHTML = '<span class="perm-btn-icon">' + ICON_X + '</span>Deny';
 
-  const alwaysLbl = document.createElement('label');
-  alwaysLbl.className = 'perm-always';
-  const alwaysCb = document.createElement('input');
-  alwaysCb.type = 'checkbox';
-  const alwaysText = document.createElement('span');
-  alwaysText.textContent = 'Always';
-  alwaysLbl.append(alwaysCb, alwaysText);
-
   // Status badge for resolved state
   const statusBadge = document.createElement('span');
   statusBadge.className = 'perm-status';
   statusBadge.hidden = true;
 
-  const resolve = (behavior) => {
-    const always = alwaysCb.checked && behavior === 'allow';
+  const resolve = (behavior, always = false) => {
     if (always) _autoAllowTools.add(toolName);
     card.classList.remove('active-perm');
     card.classList.add('resolved', behavior === 'allow' ? 'resolved-allow' : 'resolved-deny');
     allowBtn.disabled = true;
+    alwaysBtn.disabled = true;
     denyBtn.disabled = true;
-    statusBadge.textContent = behavior === 'allow' ? 'Allowed' : 'Denied';
+    statusBadge.textContent = always ? 'Always' : (behavior === 'allow' ? 'Allowed' : 'Denied');
     statusBadge.hidden = false;
     sendPermissionResponse(tab, requestId, behavior, always);
+    // On deny: clear queued permissions and buffered messages — process is being killed
+    if (behavior === 'deny') {
+      tab._permQueue.length = 0;
+      tab._msgBuffer.length = 0;
+    }
     tab._activePerm = false;
     _showNextPerm(tab);
   };
 
+  alwaysBtn.addEventListener('click', () => resolve('allow', true));
   allowBtn.addEventListener('click', () => resolve('allow'));
   denyBtn.addEventListener('click', () => resolve('deny'));
 
-  actions.append(allowBtn, denyBtn, alwaysLbl, statusBadge);
+  actions.append(alwaysBtn, allowBtn, denyBtn, statusBadge);
   card.appendChild(actions);
   wrap.appendChild(card);
   el.appendChild(wrap);
@@ -5966,6 +6018,64 @@ function wireEvents() {
       $auto.classList.toggle('active', _autoAcceptAll);
       storage.setItem(STOR.autoAccept, _autoAcceptAll);
     });
+  }
+
+  // ── Voice input (push-to-talk via Web Speech API) ──
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const $mic = _panel.querySelector('#cp-mic');
+  if (!SpeechRecognition || !$mic) {
+    if ($mic) $mic.classList.add('unsupported');
+  } else {
+    let _recognition = null;
+    let _voicePrefix = '';
+
+    function startVoice() {
+      if (_recognition) return;
+      _voicePrefix = $input.value;
+      _recognition = new SpeechRecognition();
+      _recognition.continuous = true;
+      _recognition.interimResults = true;
+      _recognition.lang = 'en-US';
+      _recognition.onresult = (ev) => {
+        let transcript = '';
+        for (let i = 0; i < ev.results.length; i++) {
+          transcript += ev.results[i][0].transcript;
+        }
+        $input.value = _voicePrefix + (_voicePrefix && transcript ? ' ' : '') + transcript;
+        autoResize();
+        $input.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      _recognition.onerror = (ev) => {
+        $mic.classList.remove('recording');
+        if (ev.error === 'not-allowed') {
+          const tab = activeTab();
+          if (tab) appendStatus(tab, 'Microphone permission denied — allow it in browser settings.');
+        }
+        _recognition = null;
+      };
+      _recognition.onend = () => {
+        $mic.classList.remove('recording');
+        _recognition = null;
+      };
+      _recognition.start();
+      $mic.classList.add('recording');
+    }
+
+    function stopVoice() {
+      if (!_recognition) return;
+      try { _recognition.stop(); } catch {}
+      $mic.classList.remove('recording');
+      _recognition = null;
+    }
+
+    $mic.addEventListener('mousedown', (e) => { e.preventDefault(); startVoice(); });
+    $mic.addEventListener('mouseup', stopVoice);
+    $mic.addEventListener('mouseleave', stopVoice);
+    $mic.addEventListener('touchstart', (e) => { e.preventDefault(); startVoice(); });
+    $mic.addEventListener('touchend', (e) => { e.preventDefault(); stopVoice(); });
+
+    // Cleanup on tab deactivate or panel hide
+    document.addEventListener('visibilitychange', () => { if (document.hidden) stopVoice(); });
   }
 
   // Compact button
