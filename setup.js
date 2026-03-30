@@ -13,7 +13,7 @@
  */
 
 import { execSync, spawn, exec } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, cpSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
@@ -36,6 +36,45 @@ function ok(msg)   { console.log(`  ${c.green}\u2713${c.reset} ${msg}`); }
 function warn(msg) { console.log(`  ${c.yellow}!${c.reset} ${msg}`); }
 function fail(msg) { console.log(`  ${c.red}\u2717${c.reset} ${msg}`); }
 function info(msg) { console.log(`  ${c.cyan}\u2192${c.reset} ${msg}`); }
+
+// ── Global install detection & CWD scaffold ──
+
+function isGlobalInstall() {
+  const normalized = __dirname.replace(/\\/g, '/');
+  return normalized.includes('/node_modules/synabun');
+}
+
+function isAlreadyScaffolded(dir) {
+  return existsSync(resolve(dir, 'neural-interface', 'server.js'));
+}
+
+function getLocalVersion(dir) {
+  try {
+    return JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf-8')).version || '0.0.0';
+  } catch { return '0.0.0'; }
+}
+
+function getGlobalVersion() {
+  return JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')).version;
+}
+
+function scaffoldToCwd(targetDir) {
+  info('Scaffolding SynaBun into current directory...');
+
+  cpSync(__dirname, targetDir, {
+    recursive: true,
+    filter: (src) => {
+      const normalized = src.replace(/\\/g, '/');
+      // Skip node_modules (installed fresh by setup)
+      if (normalized.includes('/node_modules')) return false;
+      // Skip .env (generated fresh per installation)
+      if (normalized.endsWith('/.env')) return false;
+      return true;
+    },
+  });
+
+  ok(`Scaffolded to ${targetDir}`);
+}
 
 // ── Phase 1: Prerequisite checks ──
 
@@ -209,6 +248,52 @@ function startServer() {
 // ── Main ──
 
 function main() {
+  // ── Global install: scaffold to CWD + delegate ──
+  if (isGlobalInstall()) {
+    const cwd = process.cwd();
+    const globalVer = getGlobalVersion();
+
+    console.log('');
+    console.log(`  ${c.cyan}╔═══════════════════════════════════╗${c.reset}`);
+    console.log(`  ${c.cyan}║${c.reset}                                   ${c.cyan}║${c.reset}`);
+    console.log(`  ${c.cyan}║${c.reset}   ${c.bold}${c.cyan}[██] [██]${c.reset}   ${c.bold}${c.cyan}SynaBun${c.reset}             ${c.cyan}║${c.reset}`);
+    console.log(`  ${c.cyan}║${c.reset}                                   ${c.cyan}║${c.reset}`);
+    console.log(`  ${c.cyan}║${c.reset}   ${c.dim}Persistent Vector Memory${c.reset}       ${c.cyan}║${c.reset}`);
+    console.log(`  ${c.cyan}║${c.reset}                                   ${c.cyan}║${c.reset}`);
+    console.log(`  ${c.cyan}╚═══════════════════════════════════╝${c.reset}`);
+    console.log(`           ${c.dim}synabun.ai${c.reset}`);
+    console.log('');
+
+    if (!isAlreadyScaffolded(cwd)) {
+      info(`Scaffolding SynaBun v${globalVer} into:`);
+      console.log(`  ${c.cyan}${cwd}${c.reset}`);
+      console.log('');
+      scaffoldToCwd(cwd);
+    } else {
+      const localVer = getLocalVersion(cwd);
+      if (localVer !== globalVer) {
+        info(`Updating SynaBun: ${localVer} → ${globalVer}`);
+        scaffoldToCwd(cwd);
+        ok('Updated');
+      } else {
+        ok(`SynaBun v${globalVer} up to date`);
+      }
+    }
+
+    console.log('');
+
+    // Delegate to the local copy so __dirname resolves to CWD
+    const child = spawn('node', [resolve(cwd, 'setup.js')], {
+      cwd,
+      stdio: 'inherit',
+    });
+    child.on('exit', (code) => process.exit(code ?? 0));
+    process.on('SIGINT', () => { child.kill('SIGINT'); });
+    process.on('SIGTERM', () => { child.kill('SIGTERM'); });
+    return;
+  }
+
+  // ── Local/dev install: normal flow ──
   console.log('');
   console.log(`  ${c.cyan}╔═══════════════════════════════════╗${c.reset}`);
   console.log(`  ${c.cyan}║${c.reset}                                   ${c.cyan}║${c.reset}`);
