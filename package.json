@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "1.3.1",
+  "version": "2026.3.305",
   "description": "Persistent vector memory for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -24,6 +24,7 @@
     "mcp-server/data/.gitkeep",
     "neural-interface/package.json",
     "neural-interface/server.js",
+    "neural-interface/lib/",
     "neural-interface/public/",
     "neural-interface/templates/",
     "neural-interface/scripts/",

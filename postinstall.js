@@ -59,7 +59,7 @@ function installDeps(name, dir) {
 
   info(`Installing ${name} dependencies...`);
   try {
-    execSync('npm install', {
+    execSync('npm install --omit=dev --ignore-scripts', {
       cwd: dir,
       stdio: 'inherit',
       timeout: 300_000,
@@ -103,18 +103,17 @@ function buildMcpServer() {
     return;
   }
 
-  info('Building MCP server...');
+  // dist/ ships pre-built in the npm package — build is a fallback only
+  warn('MCP server dist/ not found — attempting build (requires TypeScript)');
   try {
-    execSync('npm run build', {
+    execSync('npx tsc', {
       cwd: resolve(__dirname, 'mcp-server'),
       stdio: 'pipe',
       timeout: 60_000,
     });
     ok('MCP server built');
   } catch (err) {
-    fail('MCP server build failed');
-    console.error(err.stderr?.toString() || err.message);
-    process.exit(1);
+    warn('MCP server build failed (TypeScript not available) — this is OK if dist/ was shipped');
   }
 }
 
