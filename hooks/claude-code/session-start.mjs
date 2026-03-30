@@ -464,6 +464,8 @@ async function main() {
       ``,
       `If an autonomous loop was active before compaction, the Stop hook will resume it automatically. Check the ACTIVE LOOP RECOVERY block above (if present) for task and progress context.`,
       ``,
+      `**Plan files**: Write plan files to the project's \`data/plans/\` directory — NOT \`~/.claude/plans/\`. This avoids sensitive-file permission prompts that don't persist across compactions.`,
+      ``,
       `---`,
       ``,
     );

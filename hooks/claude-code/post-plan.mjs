@@ -309,7 +309,7 @@ async function main() {
   if (toolName === 'EnterPlanMode') {
     debugLog('EnterPlanMode fired — injecting AskUserQuestion reminder');
     process.stdout.write(JSON.stringify({
-      additionalContext: `SynaBun: You are now in plan mode. When you have questions or need clarification from the user, you MUST use the \`AskUserQuestion\` tool — do NOT write questions as plain text. Load it via \`ToolSearch\` if its schema is not yet available. Use \`ExitPlanMode\` for final plan approval.\n\n**Plan file location**: Write plan files to \`${PLANS_DIR}/\` — NOT \`~/.claude/plans/\`. This avoids sensitive-file permission prompts that stall the session.`,
+      additionalContext: `SynaBun: You are now in plan mode.\n\n**CRITICAL CONSTRAINT**: Do NOT make code changes (Edit, Write, NotebookEdit). Plan mode is RESEARCH AND PLANNING ONLY. Investigate, read files, search code — then present your plan. Do NOT implement anything until the user explicitly approves the plan and you exit plan mode.\n\nWhen you have questions or need clarification, you MUST use the \`AskUserQuestion\` tool — do NOT write questions as plain text. Load it via \`ToolSearch\` if its schema is not yet available. Use \`ExitPlanMode\` for final plan approval.\n\n**Plan file location**: Write plan files to \`${PLANS_DIR}/\` — NOT \`~/.claude/plans/\`. This avoids sensitive-file permission prompts.`,
     }));
     return;
   }
