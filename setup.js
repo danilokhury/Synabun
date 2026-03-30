@@ -6,17 +6,20 @@
  * Usage: node setup.js   (or: npm start)
  *
  * 1. Checks Node.js version (>=22)
- * 2. Installs npm deps for neural-interface/ and mcp-server/
- * 3. Builds the MCP server TypeScript (if dist/ is missing or stale)
- * 4. Starts the Neural Interface Express server
- * 5. Auto-opens browser to onboarding wizard (or main page if setup complete)
+ * 2. Ensures data directory exists (~/.synabun or %APPDATA%/synabun)
+ * 3. Migrates data from old scaffolded installs if detected
+ * 4. Installs npm deps for neural-interface/ and mcp-server/
+ * 5. Builds the MCP server TypeScript (if dist/ is missing or stale)
+ * 6. Starts the Neural Interface Express server
+ * 7. Auto-opens browser to onboarding wizard (or main page if setup complete)
  */
 
 import { execSync, spawn, exec } from 'node:child_process';
-import { existsSync, readFileSync, cpSync } from 'node:fs';
+import { existsSync, readFileSync, cpSync, readdirSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
+import { getDataHome, ensureDataDirs, PACKAGE_ROOT } from './lib/paths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -37,45 +40,51 @@ function warn(msg) { console.log(`  ${c.yellow}!${c.reset} ${msg}`); }
 function fail(msg) { console.log(`  ${c.red}\u2717${c.reset} ${msg}`); }
 function info(msg) { console.log(`  ${c.cyan}\u2192${c.reset} ${msg}`); }
 
-// ── Global install detection & CWD scaffold ──
+// ── Data home resolution ──
 
-function isGlobalInstall() {
-  const normalized = __dirname.replace(/\\/g, '/');
-  return normalized.includes('/node_modules/synabun');
-}
+const DATA_HOME = getDataHome();
 
-function isAlreadyScaffolded(dir) {
-  return existsSync(resolve(dir, 'neural-interface', 'server.js'));
-}
+// ── Migration: detect old scaffolded install in CWD ──
 
-function getLocalVersion(dir) {
-  try {
-    return JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf-8')).version || '0.0.0';
-  } catch { return '0.0.0'; }
-}
+function migrateFromScaffold() {
+  const cwd = process.cwd();
 
-function getGlobalVersion() {
-  return JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')).version;
-}
+  // Don't migrate if we're already in the data home or package root
+  if (cwd === DATA_HOME || cwd === PACKAGE_ROOT) return;
 
-function scaffoldToCwd(targetDir) {
-  info('Scaffolding SynaBun into current directory...');
+  // Don't migrate if data home already has a .env (already set up)
+  if (existsSync(resolve(DATA_HOME, '.env'))) return;
 
-  cpSync(__dirname, targetDir, {
-    recursive: true,
-    filter: (src) => {
-      // Use path relative to global package dir — the full path contains
-      // node_modules/synabun/ which would false-positive the filter
-      const rel = src.slice(__dirname.length).replace(/\\/g, '/');
-      // Skip nested node_modules (neural-interface/node_modules, etc.)
-      if (rel.includes('/node_modules')) return false;
-      // Skip .env (generated fresh per installation)
-      if (rel === '/.env') return false;
-      return true;
-    },
-  });
+  // Detect old scaffolded install: has neural-interface/server.js + .env
+  const hasScaffold = existsSync(resolve(cwd, 'neural-interface', 'server.js'))
+    && existsSync(resolve(cwd, '.env'));
 
-  ok(`Scaffolded to ${targetDir}`);
+  if (!hasScaffold) return;
+
+  info('Detected old scaffolded install — migrating data...');
+
+  // Migrate .env
+  cpSync(resolve(cwd, '.env'), resolve(DATA_HOME, '.env'));
+
+  // Migrate data/ directory contents
+  const dataDir = resolve(cwd, 'data');
+  if (existsSync(dataDir)) {
+    cpSync(dataDir, resolve(DATA_HOME, 'data'), {
+      recursive: true,
+      filter: (src) => !src.replace(/\\/g, '/').includes('/node_modules'),
+    });
+  }
+
+  // Migrate mcp-server/data/ to mcp-data/
+  const mcpDataDir = resolve(cwd, 'mcp-server', 'data');
+  if (existsSync(mcpDataDir)) {
+    cpSync(mcpDataDir, resolve(DATA_HOME, 'mcp-data'), { recursive: true });
+  }
+
+  ok(`Migrated data to ${DATA_HOME}`);
+  info('You can safely delete the old scaffolded files from:');
+  console.log(`  ${c.dim}${cwd}${c.reset}`);
+  console.log('');
 }
 
 // ── Phase 1: Prerequisite checks ──
@@ -92,12 +101,10 @@ function checkNodeVersion() {
 // ── Phase 2: Dependency installation ──
 
 function needsInstall(dir) {
-  // Check for .package-lock.json which npm creates after a successful install
-  // A bare node_modules/ directory (e.g. from a failed npx or partial install) is not enough
   return !existsSync(resolve(dir, 'node_modules', '.package-lock.json'));
 }
 
-function installDeps(name, dir) {
+function installDeps(name, dir, { includeDev = false } = {}) {
   if (!needsInstall(dir)) {
     ok(`${name} dependencies already installed`);
     return;
@@ -105,7 +112,8 @@ function installDeps(name, dir) {
 
   info(`Installing ${name} dependencies...`);
   try {
-    execSync('npm install --omit=dev --ignore-scripts', {
+    const omitFlag = includeDev ? '' : ' --omit=dev';
+    execSync(`npm install${omitFlag} --ignore-scripts`, {
       cwd: dir,
       stdio: 'inherit',
       timeout: 300_000,
@@ -121,8 +129,7 @@ function installDeps(name, dir) {
 // ── Phase 3: Playwright Chromium (for browser automation) ──
 
 function installPlaywrightChromium() {
-  const niDir = resolve(__dirname, 'neural-interface');
-  // Check if already installed by resolving the executable path
+  const niDir = resolve(PACKAGE_ROOT, 'neural-interface');
   try {
     const result = execSync('node -e "const pw=require(\'playwright\');const p=pw.chromium.executablePath();process.stdout.write(p)"', {
       cwd: niDir, encoding: 'utf8', timeout: 10_000,
@@ -142,7 +149,6 @@ function installPlaywrightChromium() {
     });
     ok('Playwright Chromium installed');
   } catch (err) {
-    // Non-fatal — system Chrome will be used as fallback
     console.log('  (optional) Playwright Chromium install failed — system Chrome will be used');
   }
 }
@@ -150,7 +156,7 @@ function installPlaywrightChromium() {
 // ── Phase 4: MCP server build ──
 
 function needsBuild() {
-  const distIndex = resolve(__dirname, 'mcp-server', 'dist', 'index.js');
+  const distIndex = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js');
   return !existsSync(distIndex);
 }
 
@@ -160,11 +166,10 @@ function buildMcpServer() {
     return;
   }
 
-  // dist/ ships pre-built in the npm package — build is a fallback only
   warn('MCP server dist/ not found — attempting build (requires TypeScript)');
   try {
     execSync('npx tsc', {
-      cwd: resolve(__dirname, 'mcp-server'),
+      cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
       stdio: 'pipe',
       timeout: 60_000,
     });
@@ -174,10 +179,10 @@ function buildMcpServer() {
   }
 }
 
-// ── Phase 4: Setup state detection ──
+// ── Phase 5: Setup state detection ──
 
 function isSetupComplete() {
-  const envPath = resolve(__dirname, '.env');
+  const envPath = resolve(DATA_HOME, '.env');
   try {
     const content = readFileSync(envPath, 'utf-8');
     for (const line of content.split('\n')) {
@@ -190,7 +195,7 @@ function isSetupComplete() {
   return false;
 }
 
-// ── Phase 5: Server launch + browser open ──
+// ── Phase 6: Server launch + browser open ──
 
 function openBrowser(url) {
   const plat = platform();
@@ -206,14 +211,19 @@ function openBrowser(url) {
 }
 
 function startServer() {
-  const serverPath = resolve(__dirname, 'neural-interface', 'server.js');
+  const serverPath = resolve(PACKAGE_ROOT, 'neural-interface', 'server.js');
 
   info('Starting Neural Interface server...');
   console.log('');
 
   const child = spawn('node', [serverPath], {
-    cwd: resolve(__dirname, 'neural-interface'),
+    cwd: resolve(PACKAGE_ROOT, 'neural-interface'),
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      SYNABUN_DATA_HOME: DATA_HOME,
+      MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data'),
+    },
   });
 
   let opened = false;
@@ -250,52 +260,9 @@ function startServer() {
 // ── Main ──
 
 function main() {
-  // ── Global install: scaffold to CWD + delegate ──
-  if (isGlobalInstall()) {
-    const cwd = process.cwd();
-    const globalVer = getGlobalVersion();
+  const version = JSON.parse(readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf-8')).version;
 
-    console.log('');
-    console.log(`  ${c.cyan}╔═══════════════════════════════════╗${c.reset}`);
-    console.log(`  ${c.cyan}║${c.reset}                                   ${c.cyan}║${c.reset}`);
-    console.log(`  ${c.cyan}║${c.reset}   ${c.bold}${c.cyan}[██] [██]${c.reset}   ${c.bold}${c.cyan}SynaBun${c.reset}             ${c.cyan}║${c.reset}`);
-    console.log(`  ${c.cyan}║${c.reset}                                   ${c.cyan}║${c.reset}`);
-    console.log(`  ${c.cyan}║${c.reset}   ${c.dim}Persistent Vector Memory${c.reset}       ${c.cyan}║${c.reset}`);
-    console.log(`  ${c.cyan}║${c.reset}                                   ${c.cyan}║${c.reset}`);
-    console.log(`  ${c.cyan}╚═══════════════════════════════════╝${c.reset}`);
-    console.log(`           ${c.dim}synabun.ai${c.reset}`);
-    console.log('');
-
-    if (!isAlreadyScaffolded(cwd)) {
-      info(`Scaffolding SynaBun v${globalVer} into:`);
-      console.log(`  ${c.cyan}${cwd}${c.reset}`);
-      console.log('');
-      scaffoldToCwd(cwd);
-    } else {
-      const localVer = getLocalVersion(cwd);
-      if (localVer !== globalVer) {
-        info(`Updating SynaBun: ${localVer} → ${globalVer}`);
-        scaffoldToCwd(cwd);
-        ok('Updated');
-      } else {
-        ok(`SynaBun v${globalVer} up to date`);
-      }
-    }
-
-    console.log('');
-
-    // Delegate to the local copy so __dirname resolves to CWD
-    const child = spawn('node', [resolve(cwd, 'setup.js')], {
-      cwd,
-      stdio: 'inherit',
-    });
-    child.on('exit', (code) => process.exit(code ?? 0));
-    process.on('SIGINT', () => { child.kill('SIGINT'); });
-    process.on('SIGTERM', () => { child.kill('SIGTERM'); });
-    return;
-  }
-
-  // ── Local/dev install: normal flow ──
+  // Banner
   console.log('');
   console.log(`  ${c.cyan}╔═══════════════════════════════════╗${c.reset}`);
   console.log(`  ${c.cyan}║${c.reset}                                   ${c.cyan}║${c.reset}`);
@@ -306,14 +273,23 @@ function main() {
   console.log(`  ${c.cyan}╚═══════════════════════════════════╝${c.reset}`);
   console.log(`           ${c.dim}synabun.ai${c.reset}`);
   console.log('');
+  info(`v${version}`);
+  info(`Data: ${DATA_HOME}`);
+  console.log('');
+
+  // Ensure data directories
+  ensureDataDirs(DATA_HOME);
+
+  // Migrate old scaffolded installs
+  migrateFromScaffold();
 
   // Prerequisites
   checkNodeVersion();
   console.log('');
 
-  // Dependencies
-  installDeps('Neural Interface', resolve(__dirname, 'neural-interface'));
-  installDeps('MCP Server', resolve(__dirname, 'mcp-server'));
+  // Dependencies (installed in global package location)
+  installDeps('Neural Interface', resolve(PACKAGE_ROOT, 'neural-interface'));
+  installDeps('MCP Server', resolve(PACKAGE_ROOT, 'mcp-server'), { includeDev: needsBuild() });
   console.log('');
 
   // Playwright browser

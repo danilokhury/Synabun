@@ -32,10 +32,13 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlink
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { getDataHome } from '../../lib/paths.js';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CACHE_DIR = join(__dirname, '..', '..', 'data', 'precompact');
-const PENDING_DIR = join(__dirname, '..', '..', 'data', 'pending-compact');
-const DEBUG_LOG = join(__dirname, '..', '..', 'data', 'compact-debug.log');
+const DATA_HOME = getDataHome();
+const CACHE_DIR = join(DATA_HOME, 'data', 'precompact');
+const PENDING_DIR = join(DATA_HOME, 'data', 'pending-compact');
+const DEBUG_LOG = join(DATA_HOME, 'data', 'compact-debug.log');
 
 // --- Stdin ---
 
@@ -192,7 +195,7 @@ async function main() {
   };
 
   // Capture active loop state for compaction recovery
-  const LOOP_DIR = join(__dirname, '..', '..', 'data', 'loop');
+  const LOOP_DIR = join(DATA_HOME, 'data', 'loop');
   const loopPath = join(LOOP_DIR, `${sessionId}.json`);
   if (existsSync(loopPath)) {
     try {

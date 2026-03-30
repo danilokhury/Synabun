@@ -72,8 +72,8 @@ if (process.platform !== 'win32') {
   }
 }
 
-// Load .env from parent directory
-dotenvConfig({ path: resolve(__dirname, '..', '.env') });
+// Load .env from data home (or parent directory in dev mode)
+dotenvConfig({ path: resolve(process.env.SYNABUN_DATA_HOME || resolve(__dirname, '..'), '.env') });
 
 const app = express();
 const SERVER_BOOT_ID = randomUUID();
@@ -173,12 +173,13 @@ app.use((req, res, next) => {
 const PORT = process.env.NEURAL_PORT || 3344;
 // SQLite database is used directly via lib/db.js
 const EMBEDDING_DIMS = getEmbeddingDims();
-const PROJECT_ROOT = resolve(__dirname, '..');
-const IMAGES_DIR = resolve(PROJECT_ROOT, 'data', 'images');
+const PACKAGE_ROOT = resolve(__dirname, '..');
+const DATA_HOME = process.env.SYNABUN_DATA_HOME || PACKAGE_ROOT;
+const IMAGES_DIR = resolve(DATA_HOME, 'data', 'images');
 if (!existsSync(IMAGES_DIR)) mkdirSync(IMAGES_DIR, { recursive: true });
 
 // ── Image favorites persistence ──
-const IMAGE_FAVORITES_PATH = resolve(PROJECT_ROOT, 'data', 'image-favorites.json');
+const IMAGE_FAVORITES_PATH = resolve(DATA_HOME, 'data', 'image-favorites.json');
 function loadImageFavorites() {
   try { return JSON.parse(readFileSync(IMAGE_FAVORITES_PATH, 'utf-8')); }
   catch { return []; }
@@ -211,8 +212,8 @@ function reloadConfig() {
 let _reindexJob = null;
 
 // --- Custom File Icons ---
-const CUSTOM_ICONS_DIR = resolve(PROJECT_ROOT, 'data', 'custom-icons');
-const CUSTOM_ICONS_CONFIG = resolve(PROJECT_ROOT, 'data', 'custom-icons.json');
+const CUSTOM_ICONS_DIR = resolve(DATA_HOME, 'data', 'custom-icons');
+const CUSTOM_ICONS_CONFIG = resolve(DATA_HOME, 'data', 'custom-icons.json');
 
 function loadCustomIconsConfig() {
   try { return JSON.parse(readFileSync(CUSTOM_ICONS_CONFIG, 'utf-8')); }
@@ -225,7 +226,7 @@ function saveCustomIconsConfig(cfg) {
 
 // --- Category Helpers (per-connection) ---
 
-const CATEGORIES_DATA_DIR = resolve(__dirname, '..', 'mcp-server', 'data');
+const CATEGORIES_DATA_DIR = resolve(DATA_HOME, 'mcp-data');
 const GLOBAL_CATEGORIES_PATH = resolve(CATEGORIES_DATA_DIR, 'custom-categories.json');
 const NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
 const CATEGORIES_POINT_ID = '00000000-0000-0000-0000-000000000000';
@@ -303,7 +304,7 @@ function saveCategories(categories) {
 
 // --- .env Helpers ---
 
-const ENV_PATH = resolve(__dirname, '..', '.env');
+const ENV_PATH = resolve(DATA_HOME, '.env');
 
 function parseEnvFile(filePath) {
   try {
@@ -434,7 +435,7 @@ app.get('/offline.html', (req, res) => {
   const html = readFileSync(join(__dirname, 'public', 'offline.html'), 'utf-8');
   res.type('html').send(html.replace(
     `const projectDir = localStorage.getItem('synabun-project-dir');`,
-    `const projectDir = localStorage.getItem('synabun-project-dir') || ${JSON.stringify(PROJECT_ROOT)};`
+    `const projectDir = localStorage.getItem('synabun-project-dir') || ${JSON.stringify(DATA_HOME)};`
   ));
 });
 
@@ -1166,7 +1167,7 @@ app.delete('/api/trash/purge', async (req, res) => {
 // Hash a file's content with SHA-256, returns null if unreadable
 function hashFileContent(filePath) {
   try {
-    const absPath = resolve(__dirname, '..', filePath);
+    const absPath = resolve(PACKAGE_ROOT, filePath);
     const content = readFileSync(absPath);
     return createHash('sha256').update(content).digest('hex');
   } catch {
@@ -1725,7 +1726,7 @@ app.post('/api/settings/reindex/cancel', (req, res) => {
 
 // --- Display Settings Routes (MCP response control) ---
 
-const DISPLAY_SETTINGS_PATH = resolve(__dirname, '..', 'mcp-server', 'data', 'display-settings.json');
+const DISPLAY_SETTINGS_PATH = resolve(DATA_HOME, 'mcp-data', 'display-settings.json');
 
 function loadDisplaySettings() {
   try {
@@ -1767,7 +1768,7 @@ app.put('/api/display-settings', (req, res) => {
 // ═══════════════════════════════════════════
 
 const SKINS_DIR = join(__dirname, 'skins');
-const SKIN_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'skin-config.json');
+const SKIN_CONFIG_PATH = resolve(DATA_HOME, 'data', 'skin-config.json');
 const SKIN_ID_RE = /^[a-z][a-z0-9-]*$/;
 
 function loadSkinConfig() {
@@ -2214,7 +2215,7 @@ function handleClaudeSkinWebSocket(ws) {
   // ── Auto-compact early detection via pending-compact file watcher ──
   // Pre-compact hook writes data/pending-compact/{sessionId}.json BEFORE compaction.
   // Watch for new files and send compact_started event to UI immediately.
-  const _pendingCompactDir = resolve(PROJECT_ROOT, 'data', 'pending-compact');
+  const _pendingCompactDir = resolve(DATA_HOME, 'data', 'pending-compact');
   let _compactWatcher = null;
   const _seenCompactFiles = new Set();
   try {
@@ -2262,7 +2263,7 @@ function handleClaudeSkinWebSocket(ws) {
 
   function spawnProc(sessionId, model, cwd, effort, prompt) {
     killProc();
-    const workDir = validateWorkDir(cwd) || PROJECT_ROOT;
+    const workDir = validateWorkDir(cwd) || PACKAGE_ROOT;
     const args = [
       '--print',
       '--output-format', 'stream-json',
@@ -2891,11 +2892,11 @@ function handleClaudeSkinWebSocket(ws) {
 app.get('/api/claude/config', (req, res) => {
   try {
     const cliCfg = (() => {
-      try { return JSON.parse(readFileSync(resolve(PROJECT_ROOT, 'data', 'cli-config.json'), 'utf-8')); }
+      try { return JSON.parse(readFileSync(resolve(DATA_HOME, 'data', 'cli-config.json'), 'utf-8')); }
       catch { return {}; }
     })();
     const projects = (() => {
-      try { return JSON.parse(readFileSync(resolve(PROJECT_ROOT, 'data', 'claude-code-projects.json'), 'utf-8')); }
+      try { return JSON.parse(readFileSync(resolve(DATA_HOME, 'data', 'claude-code-projects.json'), 'utf-8')); }
       catch { return []; }
     })();
     const models = [
@@ -2914,7 +2915,7 @@ app.get('/api/claude/config', (req, res) => {
 
 // --- Claude Skin Cost Tracking ---
 
-const COST_PATH = resolve(__dirname, '..', 'data', 'cost-tracking.json');
+const COST_PATH = resolve(DATA_HOME, 'data', 'cost-tracking.json');
 
 function loadCostData() {
   try { return JSON.parse(readFileSync(COST_PATH, 'utf-8')); }
@@ -3175,7 +3176,7 @@ app.get('/api/claude-skin/session-locks', (req, res) => {
 
 // --- Keybinds Persistence ---
 
-const KEYBINDS_PATH = resolve(__dirname, '..', 'data', 'keybinds.json');
+const KEYBINDS_PATH = resolve(DATA_HOME, 'data', 'keybinds.json');
 
 function loadKeybinds() {
   try { return JSON.parse(readFileSync(KEYBINDS_PATH, 'utf-8')); }
@@ -3213,7 +3214,7 @@ app.put('/api/keybinds', (req, res) => {
 
 // --- UI State Persistence (replaces browser localStorage) ---
 
-const UI_STATE_PATH = resolve(__dirname, '..', 'data', 'ui-state.json');
+const UI_STATE_PATH = resolve(DATA_HOME, 'data', 'ui-state.json');
 
 function loadUiState() {
   try {
@@ -4332,9 +4333,9 @@ app.get('/api/connections', (req, res) => {
 // LOOP TEMPLATES
 // ═══════════════════════════════════════════
 
-const LOOP_TEMPLATES_PATH = resolve(PROJECT_ROOT, 'data', 'loop-templates.json');
-const LOOP_SCHEDULES_PATH = resolve(PROJECT_ROOT, 'data', 'loop-schedules.json');
-const LOOP_DIR = resolve(PROJECT_ROOT, 'data', 'loop');
+const LOOP_TEMPLATES_PATH = resolve(DATA_HOME, 'data', 'loop-templates.json');
+const LOOP_SCHEDULES_PATH = resolve(DATA_HOME, 'data', 'loop-schedules.json');
+const LOOP_DIR = resolve(DATA_HOME, 'data', 'loop');
 
 function readLoopTemplates() {
   try {
@@ -4646,7 +4647,7 @@ app.post('/api/loop/launch', async (req, res) => {
     // Default CWD to Synabun project root — it has no .mcp.json, so no auth-requiring
     // MCP servers (e.g. supabase OAuth) trigger the "needs auth" prompt that blocks loops.
     // The SynaBun MCP server is registered globally in ~/.claude.json, so it's always available.
-    const loopCwd = cwd || PROJECT_ROOT;
+    const loopCwd = cwd || PACKAGE_ROOT;
     // Pre-generate terminal session ID so we can inject it into the PTY environment.
     // SYNABUN_TERMINAL_SESSION lets hooks correlate with the correct loop file
     // after /clear changes the Claude session ID. This is the key to multi-loop isolation.
@@ -4953,7 +4954,7 @@ async function launchScheduledLoop(schedule) {
       }
     }
 
-    const terminalSessionId = createTerminalSession(cliProfile, 120, 30, PROJECT_ROOT, { model: cliModel, extraEnv: schedExtraEnv });
+    const terminalSessionId = createTerminalSession(cliProfile, 120, 30, PACKAGE_ROOT, { model: cliModel, extraEnv: schedExtraEnv });
 
     const pendingId = 'pending-' + randomBytes(8).toString('hex');
     const loopState = {
@@ -5417,9 +5418,9 @@ const AGENT_IS_WIN = process.platform === 'win32';
  */
 function buildAgentMcpConfig(withSynabun, browserSessionId) {
   if (!withSynabun) return '{"mcpServers":{}}';
-  const mcpPreload = resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'preload.js');
-  const dotenvPath = resolve(PROJECT_ROOT, '.env');
-  const env = { DOTENV_PATH: dotenvPath };
+  const mcpPreload = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'preload.js');
+  const dotenvPath = resolve(DATA_HOME, '.env');
+  const env = { DOTENV_PATH: dotenvPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') };
   if (browserSessionId) env.SYNABUN_BROWSER_SESSION = browserSessionId;
   return JSON.stringify({
     mcpServers: {
@@ -5568,7 +5569,7 @@ async function launchAgentController(opts) {
 
   const agentId = randomUUID();
   const mcpConfig = buildAgentMcpConfig(withSynabun, browserSessionId);
-  const agentCwd = cwd || PROJECT_ROOT;
+  const agentCwd = cwd || PACKAGE_ROOT;
 
   // Build default system prompt for agents — overrides CLAUDE.md boot sequence
   // so the agent goes straight to the task instead of greeting/recalling
@@ -6032,7 +6033,7 @@ let _npmUpdateCache = { current: null, latest: null, updateAvailable: false, che
 
 async function checkNpmUpdate() {
   try {
-    const pkgPath = resolve(PROJECT_ROOT, 'package.json');
+    const pkgPath = resolve(PACKAGE_ROOT, 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
     const current = pkg.version;
     _npmUpdateCache.current = current;
@@ -6062,7 +6063,7 @@ async function checkNpmUpdate() {
   } catch (err) {
     if (!_npmUpdateCache.current) {
       try {
-        const pkg = JSON.parse(readFileSync(resolve(PROJECT_ROOT, 'package.json'), 'utf-8'));
+        const pkg = JSON.parse(readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf-8'));
         _npmUpdateCache.current = pkg.version;
       } catch {}
     }
@@ -6157,7 +6158,7 @@ app.get('/api/system/backup', async (req, res) => {
     addFile('env.bak', ENV_PATH);
 
     // 2. data/ directory
-    const dataDir = resolve(PROJECT_ROOT, 'data');
+    const dataDir = resolve(DATA_HOME, 'data');
     for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
                       'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json',
                       'invite-key.json', 'invite-proxy.json', 'invite-permissions.json',
@@ -6216,7 +6217,7 @@ app.get('/api/system/backup', async (req, res) => {
       }
     }
 
-    // 6. Bundled SynaBun skills (PROJECT_ROOT/skills/) — full directory tree
+    // 6. Bundled SynaBun skills (PACKAGE_ROOT/skills/) — full directory tree
     if (existsSync(SKILLS_SOURCE_DIR)) {
       for (const entry of readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true })) {
         if (!isDirEntry(entry)) continue;
@@ -6321,7 +6322,7 @@ app.post('/api/system/restore',
       }
 
       // data/ files
-      const dataDir = resolve(PROJECT_ROOT, 'data');
+      const dataDir = resolve(DATA_HOME, 'data');
       mkdirSync(dataDir, { recursive: true });
       for (const subdir of ['pending-remember', 'pending-compact', 'loop']) {
         mkdirSync(resolve(dataDir, subdir), { recursive: true });
@@ -6335,7 +6336,7 @@ app.post('/api/system/restore',
         const rel = entry.entryName.replace(`${prefix}/`, '');
 
         if (rel.startsWith('data/') && rel !== 'data/') {
-          const target = resolve(PROJECT_ROOT, rel);
+          const target = resolve(DATA_HOME, rel);
           const dir = dirname(target);
           mkdirSync(dir, { recursive: true });
           writeFileSync(target, entry.getData());
@@ -6366,7 +6367,7 @@ app.post('/api/system/restore',
           results.files.push(rel);
         }
 
-        // Bundled SynaBun skills → PROJECT_ROOT/skills/
+        // Bundled SynaBun skills → PACKAGE_ROOT/skills/
         if (rel.startsWith('bundled-skills/') && rel !== 'bundled-skills/') {
           const subPath = rel.replace('bundled-skills/', '');
           const target = resolve(SKILLS_SOURCE_DIR, subPath);
@@ -6442,6 +6443,22 @@ app.post('/api/system/restore',
       }
     }
 
+    // Post-restore: ensure MCP server is built (critical for fresh installs + restore)
+    const mcpDistCheck = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js');
+    if (!existsSync(mcpDistCheck)) {
+      try {
+        // Ensure dev deps are installed for TypeScript
+        const mcpDir = resolve(PACKAGE_ROOT, 'mcp-server');
+        if (!existsSync(resolve(mcpDir, 'node_modules', 'typescript'))) {
+          execSync('npm install', { cwd: mcpDir, stdio: 'pipe', timeout: 180_000, env: { ...process.env, NODE_ENV: 'development' } });
+        }
+        execSync('npm run build', { cwd: mcpDir, stdio: 'pipe', timeout: 60_000 });
+        results.files.push('(auto-built MCP server)');
+      } catch (buildErr) {
+        results.errors.push(`MCP server auto-build failed: ${buildErr.message}`);
+      }
+    }
+
     res.json({ ok: true, message: 'Backup restored successfully', results });
   } catch (err) {
     console.error('POST /api/system/restore error:', err.message);
@@ -6453,7 +6470,7 @@ app.post('/api/system/restore',
 // AUTO-BACKUP SYSTEM
 // ═══════════════════════════════════════════
 
-const AUTO_BACKUP_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'auto-backup-config.json');
+const AUTO_BACKUP_CONFIG_PATH = resolve(DATA_HOME, 'data', 'auto-backup-config.json');
 
 function loadAutoBackupConfig() {
   try {
@@ -6523,7 +6540,7 @@ function buildBackupZipToFile(destPath) {
     // Same content as manual backup
     addFile('env.bak', ENV_PATH);
 
-    const dataDir = resolve(PROJECT_ROOT, 'data');
+    const dataDir = resolve(DATA_HOME, 'data');
     for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
                       'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json',
                       'invite-key.json', 'invite-proxy.json', 'invite-permissions.json',
@@ -6712,8 +6729,8 @@ function validateProjectPath(filePath) {
   const normalized = resolve(filePath);
   const registeredProjects = loadHookProjects();
   const claudePlansDir = resolve(join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans'));
-  const localPlansDir = resolve(join(PROJECT_ROOT, 'data', 'plans'));
-  const allowedRoots = [resolve(PROJECT_ROOT), ...registeredProjects.map(p => resolve(p.path)), localPlansDir, claudePlansDir];
+  const localPlansDir = resolve(join(DATA_HOME, 'data', 'plans'));
+  const allowedRoots = [resolve(DATA_HOME), ...registeredProjects.map(p => resolve(p.path)), localPlansDir, claudePlansDir];
   const matched = allowedRoots.find(r => normalized === r || normalized.startsWith(r + sep));
   return matched ? normalized : null;
 }
@@ -6829,7 +6846,7 @@ app.delete('/api/file-content', (req, res) => {
 // GET /api/latest-plan — Find most recently modified plan file (data/plans/ preferred, ~/.claude/plans/ fallback)
 app.get('/api/latest-plan', (req, res) => {
   try {
-    const localPlansDir = join(PROJECT_ROOT, 'data', 'plans');
+    const localPlansDir = join(DATA_HOME, 'data', 'plans');
     const legacyPlansDir = join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans');
     const maxAge = 24 * 60 * 60 * 1000; // 24 hours
     const now = Date.now();
@@ -6860,7 +6877,7 @@ app.post('/api/create-plan', (req, res) => {
     const { content } = req.body;
     if (!content || typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
 
-    const plansDir = join(PROJECT_ROOT, 'data', 'plans');
+    const plansDir = join(DATA_HOME, 'data', 'plans');
     if (!existsSync(plansDir)) mkdirSync(plansDir, { recursive: true });
 
     const name = `synabun-plan-${Date.now()}.md`;
@@ -6875,7 +6892,7 @@ app.post('/api/create-plan', (req, res) => {
 // GET /api/project-files — List ALL files (incl. dotfiles) for file explorer sidebar
 app.get('/api/project-files', (req, res) => {
   try {
-    const root = PROJECT_ROOT;
+    const root = DATA_HOME;
     let dir = req.query.path ? resolve(req.query.path) : root;
     const search = (req.query.search || '').trim();
 
@@ -7272,7 +7289,7 @@ app.get('/api/setup/onboarding', async (req, res) => {
     const vars = parseEnvFile(ENV_PATH);
     const setupComplete = vars.SETUP_COMPLETE === 'true';
     const dbExists = existsSync(getDbPath());
-    const mcpBuilt = existsSync(resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'index.js'));
+    const mcpBuilt = existsSync(resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js'));
 
     res.json({
       setupComplete,
@@ -7280,7 +7297,7 @@ app.get('/api/setup/onboarding', async (req, res) => {
       dbExists,
       embedding: 'local',
       mcpBuilt,
-      projectDir: PROJECT_ROOT,
+      projectDir: DATA_HOME,
       platform: process.platform,
       defaultDbDir: dirname(getDbPath()),
     });
@@ -7333,14 +7350,21 @@ app.post('/api/setup/build', async (req, res) => {
   }
 
   const dirs = [
-    { name: 'Neural Interface', path: resolve(PROJECT_ROOT, 'neural-interface') },
-    { name: 'MCP Server', path: resolve(PROJECT_ROOT, 'mcp-server') },
+    { name: 'Neural Interface', path: resolve(PACKAGE_ROOT, 'neural-interface') },
+    { name: 'MCP Server', path: resolve(PACKAGE_ROOT, 'mcp-server') },
   ];
+
+  // Check if MCP server needs building (determines if we need dev deps)
+  const mcpDist = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js');
+  const mcpNeedsBuild = !existsSync(mcpDist);
 
   // Phase 1: npm install for each directory
   for (const dir of dirs) {
     const hasModules = existsSync(resolve(dir.path, 'node_modules'));
-    if (hasModules) {
+    // If MCP server needs building, reinstall with dev deps even if node_modules exists
+    const isMcp = dir.name === 'MCP Server';
+    const needsDevDeps = isMcp && mcpNeedsBuild && !existsSync(resolve(dir.path, 'node_modules', 'typescript'));
+    if (hasModules && !needsDevDeps) {
       send('install', { dir: dir.name, status: 'skipped', output: 'node_modules already present' });
       continue;
     }
@@ -7361,8 +7385,7 @@ app.post('/api/setup/build', async (req, res) => {
   }
 
   // Phase 2: Build MCP server
-  const mcpDist = resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'index.js');
-  const mcpSrc = resolve(PROJECT_ROOT, 'mcp-server', 'src', 'index.ts');
+  const mcpSrc = resolve(PACKAGE_ROOT, 'mcp-server', 'src', 'index.ts');
   let needsBuild = !existsSync(mcpDist);
   if (!needsBuild) {
     try { needsBuild = statSync(mcpSrc).mtimeMs > statSync(mcpDist).mtimeMs; } catch { needsBuild = true; }
@@ -7374,7 +7397,7 @@ app.post('/api/setup/build', async (req, res) => {
     send('build', { status: 'start' });
     try {
       const { stdout, stderr } = await execAsync('npm run build', {
-        cwd: resolve(PROJECT_ROOT, 'mcp-server'),
+        cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
         timeout: 60_000,
       });
       send('build', { status: 'done', output: (stdout || '').slice(-500) });
@@ -7402,13 +7425,13 @@ app.post('/api/setup/write-mcp-json', (req, res) => {
     const { targetDir } = req.body;
     if (!targetDir) return res.status(400).json({ error: 'targetDir required' });
 
-    const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
-    const envPath = resolve(PROJECT_ROOT, '.env').replace(/\\/g, '/');
+    const mcpIndexPath = resolve(PACKAGE_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
+    const envPath = resolve(DATA_HOME, '.env').replace(/\\/g, '/');
 
     const mcpEntry = {
       command: 'node',
       args: [mcpIndexPath],
-      env: { DOTENV_PATH: envPath },
+      env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
     };
 
     const targetPath = resolve(targetDir, '.mcp.json');
@@ -7506,7 +7529,7 @@ function writeClaudeSettings(filePath, data) {
 }
 
 function hookCommandString(scriptName) {
-  const scriptPath = resolve(PROJECT_ROOT, 'hooks', 'claude-code', scriptName).replace(/\\/g, '/');
+  const scriptPath = resolve(PACKAGE_ROOT, 'hooks', 'claude-code', scriptName).replace(/\\/g, '/');
   return `node "${scriptPath}"`;
 }
 
@@ -7786,7 +7809,7 @@ function removeHookFromSettings(settings, onlyEvent) {
 }
 
 // Persistent list of project paths the user has registered
-const HOOK_PROJECTS_PATH = resolve(PROJECT_ROOT, 'data', 'claude-code-projects.json');
+const HOOK_PROJECTS_PATH = resolve(DATA_HOME, 'data', 'claude-code-projects.json');
 
 function loadHookProjects() {
   try {
@@ -7893,7 +7916,7 @@ function countSessionMessages(filePath) {
 // ── Session metadata cache ──
 // Persists discovered session metadata so entries survive even after
 // Claude Code deletes old JSONL files from disk.
-const SESSION_CACHE_DIR = resolve(PROJECT_ROOT, 'data');
+const SESSION_CACHE_DIR = resolve(DATA_HOME, 'data');
 const _sessionCacheMap = new Map(); // projDir → Map(sessionId → entry)
 
 function getSessionCachePath(projDir) {
@@ -8291,7 +8314,7 @@ app.post('/api/session-indexing/mirror', async (req, res) => {
 app.get('/api/claude-code/integrations', (req, res) => {
   try {
     const hookExists = HOOK_SCRIPTS.every(def =>
-      existsSync(resolve(PROJECT_ROOT, 'hooks', 'claude-code', def.script))
+      existsSync(resolve(PACKAGE_ROOT, 'hooks', 'claude-code', def.script))
     );
     const projects = loadHookProjects();
 
@@ -8347,8 +8370,8 @@ app.get('/api/claude-code/integrations', (req, res) => {
       mcpConnected = !!(cj.mcpServers && cj.mcpServers.SynaBun);
     } catch {}
 
-    const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
-    const envPath = resolve(PROJECT_ROOT, '.env').replace(/\\/g, '/');
+    const mcpIndexPath = resolve(PACKAGE_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
+    const envPath = resolve(DATA_HOME, '.env').replace(/\\/g, '/');
     const cliCommand = `claude mcp add SynaBun -s user -e DOTENV_PATH="${envPath}" -- node "${mcpIndexPath}"`;
 
     res.json({
@@ -8413,7 +8436,7 @@ app.post('/api/claude-code/integrations', (req, res) => {
       // Auto-create greeting config entry for the new project
       try {
         const greetingKey = projectLabel.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-        const gcPath = resolve(PROJECT_ROOT, 'data', 'greeting-config.json');
+        const gcPath = resolve(DATA_HOME, 'data', 'greeting-config.json');
         let gc = { version: 1, defaults: {}, projects: {}, global: {} };
         try { if (existsSync(gcPath)) gc = JSON.parse(readFileSync(gcPath, 'utf-8')); } catch {}
         if (!gc.projects) gc.projects = {};
@@ -8498,7 +8521,7 @@ app.delete('/api/claude-code/projects/:index', (req, res) => {
 
 // ── Hook Features (feature flags read by hook scripts) ──
 
-const HOOK_FEATURES_PATH = resolve(PROJECT_ROOT, 'data', 'hook-features.json');
+const HOOK_FEATURES_PATH = resolve(DATA_HOME, 'data', 'hook-features.json');
 
 function loadHookFeatures() {
   try {
@@ -8652,7 +8675,7 @@ app.put('/api/claude-code/tool-permissions', (req, res) => {
 
 // ── Greeting Config (read/write greeting-config.json for the greeting hook) ──
 
-const GREETING_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'greeting-config.json');
+const GREETING_CONFIG_PATH = resolve(DATA_HOME, 'data', 'greeting-config.json');
 
 function loadGreetingConfig() {
   try {
@@ -8773,8 +8796,8 @@ app.post('/api/claude-code/mcp', (req, res) => {
   try {
     const home = process.env.USERPROFILE || process.env.HOME || '';
     const claudeJsonPath = join(home, '.claude.json');
-    const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
-    const envPath = resolve(PROJECT_ROOT, '.env').replace(/\\/g, '/');
+    const mcpIndexPath = resolve(PACKAGE_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
+    const envPath = resolve(DATA_HOME, '.env').replace(/\\/g, '/');
 
     let data = {};
     try { data = JSON.parse(readFileSync(claudeJsonPath, 'utf-8')); } catch {}
@@ -8783,7 +8806,7 @@ app.post('/api/claude-code/mcp', (req, res) => {
       type: 'stdio',
       command: 'node',
       args: [mcpIndexPath],
-      env: { DOTENV_PATH: envPath },
+      env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
     };
     writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
 
@@ -8843,8 +8866,8 @@ function tomlRemoveSection(content, section) {
 // ── Shared MCP path helpers ──
 
 function getMcpPaths() {
-  const mcpIndexPath = resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'preload.js').replace(/\\/g, '/');
-  const envPath = resolve(PROJECT_ROOT, '.env').replace(/\\/g, '/');
+  const mcpIndexPath = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'preload.js').replace(/\\/g, '/');
+  const envPath = resolve(DATA_HOME, '.env').replace(/\\/g, '/');
   return { mcpIndexPath, envPath };
 }
 
@@ -8878,7 +8901,7 @@ app.post('/api/setup/gemini/mcp', (req, res) => {
     data.mcpServers.SynaBun = {
       command: 'node',
       args: [mcpIndexPath],
-      env: { DOTENV_PATH: envPath },
+      env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
     };
     writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
     res.json({ ok: true, message: 'SynaBun MCP registered in Gemini CLI. Restart Gemini to connect.' });
@@ -8928,7 +8951,7 @@ app.post('/api/setup/codex/mcp', (req, res) => {
     content = tomlUpsertSection(content, 'mcp_servers.SynaBun', {
       command: 'node',
       args: [mcpIndexPath],
-      env: { DOTENV_PATH: envPath },
+      env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
     });
     writeFileSync(configPath, content, 'utf-8');
     res.json({ ok: true, message: 'SynaBun MCP registered in Codex CLI. Restart Codex to connect.' });
@@ -8990,7 +9013,7 @@ app.get('/api/setup/status', (req, res) => {
 // Claude Code Skill Installation
 // ═══════════════════════════════════════════
 
-const SKILLS_SOURCE_DIR = resolve(PROJECT_ROOT, 'skills');
+const SKILLS_SOURCE_DIR = resolve(PACKAGE_ROOT, 'skills');
 
 /** Dirent.isDirectory() returns false for symlinks — check both */
 function isDirEntry(entry) {
@@ -9019,7 +9042,7 @@ function listAvailableSkills() {
   const skills = [];
   const seen = new Set();
 
-  // 1. Bundled skills (PROJECT_ROOT/skills/)
+  // 1. Bundled skills (PACKAGE_ROOT/skills/)
   if (existsSync(SKILLS_SOURCE_DIR)) {
     for (const entry of readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true })) {
       if (!isDirEntry(entry)) continue;
@@ -9865,7 +9888,7 @@ app.get('/api/health', (req, res) => {
     // getDb() auto-creates the directory, file, and schema if missing
     getDb();
     const count = countMemories();
-    res.json({ ok: true, storage: 'sqlite', memories: count, projectDir: PROJECT_ROOT });
+    res.json({ ok: true, storage: 'sqlite', memories: count, projectDir: DATA_HOME });
   } catch (err) {
     res.json({ ok: false, reason: 'db_error', detail: err.message });
   }
@@ -9877,7 +9900,7 @@ app.post('/api/health/start', (req, res) => {
 });
 
 // --- MCP API Key Management ---
-const MCP_KEY_PATH = resolve(PROJECT_ROOT, 'data', 'mcp-api-key.json');
+const MCP_KEY_PATH = resolve(DATA_HOME, 'data', 'mcp-api-key.json');
 let activeMcpKey = null;
 
 function loadMcpKey() {
@@ -9893,7 +9916,7 @@ function loadMcpKey() {
 }
 
 function saveMcpKey(key) {
-  const dir = resolve(PROJECT_ROOT, 'data');
+  const dir = resolve(DATA_HOME, 'data');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const data = { key, createdAt: new Date().toISOString() };
   writeFileSync(MCP_KEY_PATH, JSON.stringify(data, null, 2));
@@ -9933,10 +9956,10 @@ app.delete('/api/mcp-key', (req, res) => {
 });
 
 // --- Invite Key & Session Management ---
-const INVITE_KEY_PATH = resolve(PROJECT_ROOT, 'data', 'invite-key.json');
-const INVITE_SESSIONS_PATH = resolve(PROJECT_ROOT, 'data', 'invite-sessions.json');
-const INVITE_PROXY_PATH = resolve(PROJECT_ROOT, 'data', 'invite-proxy.json');
-const INVITE_PERMISSIONS_PATH = resolve(PROJECT_ROOT, 'data', 'invite-permissions.json');
+const INVITE_KEY_PATH = resolve(DATA_HOME, 'data', 'invite-key.json');
+const INVITE_SESSIONS_PATH = resolve(DATA_HOME, 'data', 'invite-sessions.json');
+const INVITE_PROXY_PATH = resolve(DATA_HOME, 'data', 'invite-proxy.json');
+const INVITE_PERMISSIONS_PATH = resolve(DATA_HOME, 'data', 'invite-permissions.json');
 
 const DEFAULT_PERMISSIONS = { terminal: false, whiteboard: false, memories: true, skills: false, cards: true, browser: false };
 
@@ -9956,7 +9979,7 @@ function loadInviteKey() {
 }
 
 function saveInviteKey(key) {
-  const dir = resolve(PROJECT_ROOT, 'data');
+  const dir = resolve(DATA_HOME, 'data');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const data = { key, createdAt: new Date().toISOString() };
   writeFileSync(INVITE_KEY_PATH, JSON.stringify(data, null, 2));
@@ -9988,7 +10011,7 @@ function loadInviteSessions() {
 }
 
 function persistInviteSessions() {
-  const dir = resolve(PROJECT_ROOT, 'data');
+  const dir = resolve(DATA_HOME, 'data');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const sessions = [...inviteSessions.entries()].map(([token, s]) => ({
     token, createdAt: s.createdAt, lastSeen: s.lastSeen, userAgent: s.userAgent
@@ -10006,7 +10029,7 @@ function loadInviteProxy() {
 }
 
 function saveInviteProxy(config) {
-  const dir = resolve(PROJECT_ROOT, 'data');
+  const dir = resolve(DATA_HOME, 'data');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(INVITE_PROXY_PATH, JSON.stringify(config, null, 2));
 }
@@ -10026,7 +10049,7 @@ function loadInvitePermissions() {
 }
 
 function saveInvitePermissions(perms) {
-  const dir = resolve(PROJECT_ROOT, 'data');
+  const dir = resolve(DATA_HOME, 'data');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   invitePermissions = { ...DEFAULT_PERMISSIONS, ...perms };
   writeFileSync(INVITE_PERMISSIONS_PATH, JSON.stringify(invitePermissions, null, 2));
@@ -10254,7 +10277,7 @@ app.post('/api/tunnel/stop', (req, res) => {
 // Mount the SynaBun MCP server as an HTTP endpoint for Claude web client
 // Auth via URL-embedded key: /mcp/<key> for tunnel access, /mcp for local access
 try {
-  const mcpPath = pathToFileURL(resolve(PROJECT_ROOT, 'mcp-server', 'dist', 'http.js')).href;
+  const mcpPath = pathToFileURL(resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'http.js')).href;
   const { createMcpRoutes } = await import(mcpPath);
   const mcpRouter = createMcpRoutes();
 
@@ -10292,7 +10315,7 @@ const TERMINAL_GRACE_PERIOD_MS = 30 * 60 * 1000; // 30 min before orphaned PTY i
 
 // ── CLI Config (custom CLI paths for terminal profiles) ──
 
-const CLI_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'cli-config.json');
+const CLI_CONFIG_PATH = resolve(DATA_HOME, 'data', 'cli-config.json');
 
 const CLI_DEFAULTS = {
   'claude-code': { command: 'claude' },
@@ -10720,7 +10743,7 @@ async function driveNextIteration(session, loopState, filename) {
 
 // ── Last Session (resume after server restart) ──
 
-const LAST_SESSION_PATH = resolve(PROJECT_ROOT, 'data', 'last-session.json');
+const LAST_SESSION_PATH = resolve(DATA_HOME, 'data', 'last-session.json');
 
 app.get('/api/last-session', (req, res) => {
   try {
@@ -10771,8 +10794,8 @@ app.delete('/api/last-session', (req, res) => {
 const sessionRegistry = new Map(); // claudeSessionId → { cwd, profile, pid, connectedAt, lastActivity, terminalType, terminalSessionId, source }
 const sessionMonitorClients = new Set(); // WebSocket clients for /ws/sessions
 const LEAK_SCAN_INTERVAL_MS = 10_000;
-const PENDING_REMEMBER_DIR = resolve(PROJECT_ROOT, 'data', 'pending-remember');
-const LOOP_DIR_MONITOR = resolve(PROJECT_ROOT, 'data', 'loop');
+const PENDING_REMEMBER_DIR = resolve(DATA_HOME, 'data', 'pending-remember');
+const LOOP_DIR_MONITOR = resolve(DATA_HOME, 'data', 'loop');
 
 function broadcastSessionEvent(event) {
   const data = JSON.stringify(event);
@@ -10899,7 +10922,7 @@ function scanForLeaks() {
   }
 
   // 4. Stale precompact flags
-  const precompactDir = resolve(PROJECT_ROOT, 'data', 'precompact');
+  const precompactDir = resolve(DATA_HOME, 'data', 'precompact');
   try {
     if (existsSync(precompactDir)) {
       const files = readdirSync(precompactDir).filter(f => f.endsWith('.json'));
@@ -12580,7 +12603,7 @@ function broadcastToWhiteboard(message, excludeWs = null) {
 
 // ── Browser config ──
 
-const BROWSER_CONFIG_PATH = resolve(PROJECT_ROOT, 'data', 'browser-config.json');
+const BROWSER_CONFIG_PATH = resolve(DATA_HOME, 'data', 'browser-config.json');
 
 function loadBrowserConfig() {
   try {
@@ -12793,9 +12816,9 @@ async function createBrowserSession(options = {}) {
   // the specific profile. Without this split, Chrome creates a NEW Default profile inside
   // the subfolder instead of using the actual selected profile.
   let userDataDir = savedCfg.userDataDir || null;
-  // Resolve relative paths to absolute against PROJECT_ROOT (e.g. "data/chrome-profile" → full path)
+  // Resolve relative paths to absolute against DATA_HOME (e.g. "data/chrome-profile" → full path)
   if (userDataDir && !userDataDir.startsWith('/') && !(/^[A-Z]:/i.test(userDataDir))) {
-    userDataDir = resolve(PROJECT_ROOT, userDataDir);
+    userDataDir = resolve(DATA_HOME, userDataDir);
   }
   let _profileDirectory = null; // Chrome --profile-directory flag
   let _sourceProfilePath = null; // Original Chrome profile dir (for cookie bootstrap)
@@ -12942,7 +12965,7 @@ async function createBrowserSession(options = {}) {
   if (savedCfg.recordHar?.path) contextOpts.recordHar = savedCfg.recordHar;
 
   // Storage state: restore for clean contexts via contextOpts (persistent contexts restored post-launch)
-  const STORAGE_STATE_PATH = resolve(PROJECT_ROOT, savedCfg.storageStatePath || 'data/browser-storage.json');
+  const STORAGE_STATE_PATH = resolve(DATA_HOME, savedCfg.storageStatePath || 'data/browser-storage.json');
   if (!userDataDir && savedCfg.persistStorage !== false && !savedCfg.clearStorageOnStart && existsSync(STORAGE_STATE_PATH)) {
     try {
       contextOpts.storageState = STORAGE_STATE_PATH;
@@ -12977,7 +13000,7 @@ async function createBrowserSession(options = {}) {
       console.log(`[browser] ${_browserLabel} profile detected — using mirror mode`);
 
       const profileHash = createHash('md5').update(_sourceProfilePath || userDataDir).digest('hex').slice(0, 12);
-      const mirrorRoot = resolve(PROJECT_ROOT, 'data', 'browser-profiles', profileHash);
+      const mirrorRoot = resolve(DATA_HOME, 'data', 'browser-profiles', profileHash);
       // Wipe mirror dir completely on every launch. Stale GPU/shader caches from a
       // different Chromium version (e.g., Playwright Chromium vs system Chrome) crash
       // the browser. Auth files are re-synced below, so nothing is lost.
@@ -13160,7 +13183,7 @@ async function createBrowserSession(options = {}) {
   // For persistent/mirror contexts, Playwright doesn't support storageState as a launch option,
   // so we inject cookies after launch. For clean contexts, storageState was already set via contextOpts.
   if (_isPersistent && savedCfg.persistStorage !== false && !savedCfg.clearStorageOnStart) {
-    const _storageStatePath = resolve(PROJECT_ROOT, savedCfg.storageStatePath || 'data/browser-storage.json');
+    const _storageStatePath = resolve(DATA_HOME, savedCfg.storageStatePath || 'data/browser-storage.json');
     if (existsSync(_storageStatePath)) {
       try {
         const savedState = JSON.parse(readFileSync(_storageStatePath, 'utf-8'));
@@ -13528,7 +13551,7 @@ async function destroyBrowserSession(sessionId) {
   // to preserve sessions (Twitter logins, etc.) across browser restarts.
   const savedCfg = loadBrowserConfig();
   if (savedCfg.persistStorage !== false && session.context) {
-    const storagePath = resolve(PROJECT_ROOT, savedCfg.storageStatePath || 'data/browser-storage.json');
+    const storagePath = resolve(DATA_HOME, savedCfg.storageStatePath || 'data/browser-storage.json');
     try {
       const dir = dirname(storagePath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -13549,10 +13572,10 @@ async function destroyBrowserSession(sessionId) {
     const _cfg = loadBrowserConfig();
     const dirsToClean = [];
     if (_cfg.userDataDir) {
-      dirsToClean.push(_cfg.userDataDir, resolve(PROJECT_ROOT, _cfg.userDataDir));
+      dirsToClean.push(_cfg.userDataDir, resolve(DATA_HOME, _cfg.userDataDir));
     }
     // Also clean mirror profile dirs
-    const mirrorsDir = resolve(PROJECT_ROOT, 'data', 'browser-profiles');
+    const mirrorsDir = resolve(DATA_HOME, 'data', 'browser-profiles');
     if (existsSync(mirrorsDir)) {
       try {
         for (const entry of readdirSync(mirrorsDir, { withFileTypes: true })) {
@@ -14314,7 +14337,7 @@ app.put('/api/browser/config', (req, res) => {
 app.get('/api/browser/detect-profiles', (req, res) => {
   try {
     const profiles = detectChromeProfiles();
-    const synabunProfile = resolve(PROJECT_ROOT, 'data', 'chrome-profile').replace(/\\/g, '/');
+    const synabunProfile = resolve(DATA_HOME, 'data', 'chrome-profile').replace(/\\/g, '/');
     const synabunExists = existsSync(synabunProfile);
     res.json({ profiles, synabunProfile, synabunProfileExists: synabunExists });
   } catch (err) {

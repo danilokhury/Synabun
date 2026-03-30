@@ -34,7 +34,7 @@
     "neural-interface/scripts/",
     "hooks/",
     "skills/",
-    "data/.gitkeep",
+    "lib/paths.js",
     "CLAUDE.md",
     "README.md",
     "CHANGELOG.md"

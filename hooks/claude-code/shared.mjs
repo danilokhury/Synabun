@@ -8,11 +8,13 @@
 import { readFileSync, existsSync, writeFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getDataHome } from '../../lib/paths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-export const DATA_DIR = join(__dirname, '..', '..', 'data');
-export const MCP_DATA_DIR = join(__dirname, '..', '..', 'mcp-server', 'data');
-export const ENV_PATH = join(__dirname, '..', '..', '.env');
+const DATA_HOME = getDataHome();
+export const DATA_DIR = join(DATA_HOME, 'data');
+export const MCP_DATA_DIR = join(DATA_HOME, 'mcp-data');
+export const ENV_PATH = join(DATA_HOME, '.env');
 export const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
 export const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 

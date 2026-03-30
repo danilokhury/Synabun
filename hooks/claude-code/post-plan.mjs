@@ -66,7 +66,8 @@ function readStdin() {
 // ─── Local embedding generation ───
 
 async function generateEmbedding(text) {
-  const embPath = join(__dirname, '..', '..', 'mcp-server', 'dist', 'services', 'local-embeddings.js');
+  const PACKAGE_ROOT = join(__dirname, '..', '..');
+  const embPath = join(PACKAGE_ROOT, 'mcp-server', 'dist', 'services', 'local-embeddings.js');
   if (!existsSync(embPath)) {
     throw new Error('MCP server not built. Run: cd mcp-server && npm run build');
   }

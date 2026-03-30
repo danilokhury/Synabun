@@ -24,9 +24,11 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { getDataHome } from '../../lib/paths.js';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SYNABUN_ROOT = join(__dirname, '..', '..');
-const LOOP_DIR = join(SYNABUN_ROOT, 'data', 'loop');
+const DATA_HOME = getDataHome();
+const LOOP_DIR = join(DATA_HOME, 'data', 'loop');
 const NI_BASE = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
 
 const BLOCK_REASON = (toolName) =>
