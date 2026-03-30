@@ -5644,7 +5644,6 @@ export async function openSettingsModal() {
             </button>
           </div>
         </div>
-        <div id="cc-proj-browser" style="display:none;margin:-4px 0 12px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
         <div class="settings-field"><label>Label <span style="color:var(--t-muted);font-weight:normal">(optional)</span></label><input type="text" id="cc-proj-label" placeholder="My Project" autocomplete="off" spellcheck="false"></div>
         <div class="cc-hint">The hook will be added to <code style="font-size:12px;background:var(--s-medium);padding:2px 5px;border-radius:4px">.claude/settings.json</code> inside this directory.</div>
         <div class="settings-actions" style="margin-top:12px"><button class="settings-btn-cancel" id="cc-proj-cancel">Cancel</button><button class="settings-btn-save" id="cc-proj-save">Add &amp; Enable</button></div>
@@ -5652,65 +5651,31 @@ export async function openSettingsModal() {
     document.body.appendChild(addOverlay);
     const closeAdd = () => addOverlay.remove();
 
-    // Folder browser
+    // Native OS folder picker
     const browseBtn = addOverlay.querySelector('#cc-proj-browse');
-    const browserEl = addOverlay.querySelector('#cc-proj-browser');
     const pathInput = addOverlay.querySelector('#cc-proj-path');
+    const labelInput = addOverlay.querySelector('#cc-proj-label');
 
-    async function loadDir(dirPath) {
-      browserEl.style.display = 'block';
-      browserEl.innerHTML = '<div style="padding:10px;color:var(--t-muted);font-size:12px">Loading...</div>';
+    browseBtn.addEventListener('click', async () => {
+      const origHTML = browseBtn.innerHTML;
+      browseBtn.innerHTML = '<div class="spinner" style="width:12px;height:12px"></div> Opening...';
+      browseBtn.disabled = true;
       try {
-        const qs = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
-        const res = await fetch(`/api/browse-directory${qs}`);
+        const res = await fetch('/api/browse-folder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ description: 'Select project folder' }),
+        });
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error);
-
-        let html = '<div style="padding:6px 10px;font-size:11px;color:var(--t-muted);border-bottom:1px solid var(--s-medium);display:flex;align-items:center;justify-content:space-between">'
-          + `<span style="font-family:'JetBrains Mono',monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(data.current)}</span>`
-          + '<button id="cc-browse-select" style="flex:0 0 auto;padding:3px 10px;background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);border-radius:4px;cursor:pointer;font-size:11px">Select</button>'
-          + '</div>';
-        html += '<div style="padding:4px 0">';
-        if (data.parent) {
-          html += `<div class="cc-browse-item" data-path="${escapeHtml(data.parent)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t-muted)">`
-            + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><polyline points="15 18 9 12 15 6"/></svg>'
-            + '.. (parent)</div>';
+        if (data.path) {
+          pathInput.value = data.path.replace(/\\/g, '/');
+          if (!labelInput.value.trim()) {
+            labelInput.value = data.path.replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
+          }
         }
-        for (const d of data.directories) {
-          html += `<div class="cc-browse-item" data-path="${escapeHtml(data.current + '/' + d)}" style="padding:4px 10px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px">`
-            + '<svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
-            + escapeHtml(d) + '</div>';
-        }
-        if (data.directories.length === 0 && !data.parent) {
-          html += '<div style="padding:8px 10px;color:var(--t-muted);font-size:12px">No subdirectories</div>';
-        }
-        html += '</div>';
-        browserEl.innerHTML = html;
-
-        // Select current directory
-        browserEl.querySelector('#cc-browse-select').addEventListener('click', () => {
-          pathInput.value = data.current.replace(/\\/g, '/');
-          browserEl.style.display = 'none';
-        });
-
-        // Navigate into subdirectory
-        browserEl.querySelectorAll('.cc-browse-item').forEach(item => {
-          item.addEventListener('mouseenter', () => item.style.background = 'var(--s-medium)');
-          item.addEventListener('mouseleave', () => item.style.background = '');
-          item.addEventListener('click', () => loadDir(item.dataset.path));
-        });
-      } catch (err) {
-        browserEl.innerHTML = `<div style="padding:10px;color:var(--accent-dim);font-size:12px">Error: ${escapeHtml(err.message)}</div>`;
-      }
-    }
-
-    browseBtn.addEventListener('click', () => {
-      if (browserEl.style.display === 'block') {
-        browserEl.style.display = 'none';
-        return;
-      }
-      const current = pathInput.value.trim();
-      loadDir(current || '');
+      } catch {}
+      browseBtn.innerHTML = origHTML;
+      browseBtn.disabled = false;
     });
 
     addOverlay.querySelector('#cc-proj-cancel').addEventListener('click', closeAdd);
