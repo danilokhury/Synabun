@@ -8925,10 +8925,10 @@
   .settings-panel {
     position: fixed;
     z-index: 300000;
-    width: 720px;
+    width: 900px;
     max-width: 95vw;
     min-width: 480px;
-    height: 500px;
+    height: 650px;
     max-height: 88vh;
     min-height: 320px;
     display: flex;

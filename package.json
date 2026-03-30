@@ -16,6 +16,7 @@
   "files": [
     "setup.js",
     "postinstall.js",
+    "preuninstall.js",
     "mcp-server/package.json",
     "mcp-server/dist/",
     "mcp-server/tsconfig.json",
@@ -40,7 +41,8 @@
   ],
   "scripts": {
     "start": "node setup.js",
-    "postinstall": "node postinstall.js"
+    "postinstall": "node postinstall.js",
+    "preuninstall": "node preuninstall.js"
   },
   "keywords": [
     "claude",
