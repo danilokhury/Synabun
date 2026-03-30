@@ -1,0 +1,100 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/session-start.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/prompt-submit.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/pre-compact.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/stop.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^WebSearch$|^WebFetch$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/pre-websearch.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^Edit$|^Write$|^NotebookEdit$|Syna[Bb]un__remember",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/post-remember.mjs\"",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "^(Enter|Exit)PlanMode$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/danilokhury/Apps/Synabun/hooks/claude-code/post-plan.mjs\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "ENABLE_TOOL_SEARCH": "true"
+  },
+  "permissions": {
+    "allow": [
+      "mcp__SynaBun__recall",
+      "mcp__SynaBun__remember",
+      "mcp__SynaBun__reflect",
+      "mcp__SynaBun__forget",
+      "mcp__SynaBun__memories",
+      "mcp__SynaBun__restore",
+      "mcp__SynaBun__sync"
+    ]
+  }
+}

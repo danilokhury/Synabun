@@ -1,0 +1,11 @@
+{
+  "recallDefaults": {
+    "limit": 10,
+    "minImportance": 0,
+    "minScore": 0.2,
+    "maxChars": 0,
+    "includeSessions": "always",
+    "recencyBoost": false
+  },
+  "profile": "deep"
+}
