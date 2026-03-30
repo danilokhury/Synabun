@@ -27,10 +27,9 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadCategories, buildCategoryReference, detectProject } from './shared.mjs';
+import { loadCategories, buildCategoryReference, detectProject, DATA_DIR } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', '..', 'data');
 const PENDING_COMPACT_DIR = join(DATA_DIR, 'pending-compact');
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 

@@ -31,10 +31,9 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync, appendFileSync, readdirSync, renameSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cleanupStaleLoops, detectProject } from './shared.mjs';
+import { cleanupStaleLoops, detectProject, DATA_DIR } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', '..', 'data');
 const PENDING_COMPACT_DIR = join(DATA_DIR, 'pending-compact');
 const LOOP_DIR = join(DATA_DIR, 'loop');
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');

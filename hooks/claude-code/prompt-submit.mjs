@@ -19,10 +19,9 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { detectProject } from './shared.mjs';
+import { detectProject, DATA_DIR } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', '..', 'data');
 const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 const LOOP_DIR = join(DATA_DIR, 'loop');

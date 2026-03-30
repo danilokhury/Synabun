@@ -2239,6 +2239,7 @@ export function initGraph(container, options = {}) {
 
   // ── 6. Resize handler ──
   window.addEventListener('resize', _onResize);
+  new ResizeObserver(_onResize).observe(container);
 
   // ── 7. Assign proxy as `graph` ──
   graph = graphProxy;

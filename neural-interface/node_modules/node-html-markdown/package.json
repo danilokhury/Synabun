@@ -1,0 +1,105 @@
+{
+  "name": "node-html-markdown",
+  "description": "Fast HTML to markdown cross-compiler, compatible with both node and the browser",
+  "version": "2.0.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "compile": "tsc",
+    "build": "yarn run clean && yarn run compile",
+    "clean": "npx -y rimraf coverage dist **/*.tsbuildinfo",
+    "------------- ": "-------------",
+    "benchmark": "cd benchmark && yarn run benchmark quick",
+    "benchmark:large": "cd benchmark && yarn run benchmark",
+    "test": "jest",
+    "test:coverage": "jest --collect-coverage",
+    "-------------  ": "-------------",
+    "prepare": "ts-patch patch tsc --silent && cd benchmark && yarn install"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "dist"
+  ],
+  "keywords": [
+    "html",
+    "markdown",
+    "converter",
+    "md",
+    "html5",
+    "node-html-parser",
+    "fast-html-parser",
+    "turndown"
+  ],
+  "author": {
+    "name": "Ron S.",
+    "url": "http://twitter.com/ron"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/crosstype/node-html-markdown.git"
+  },
+  "bugs": {
+    "url": "https://github.com/crosstype/node-html-markdown/issues"
+  },
+  "homepage": "https://github.com/crosstype/node-html-markdown#readme",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "node-html-parser": "^6.1.13"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.0.0",
+    "@types/node": "^18.19.130",
+    "jest": "^29.7.0",
+    "rimraf": "^3.0.2",
+    "standard-version": "^9.5.0",
+    "ts-jest": "^29.4.5",
+    "ts-node": "^10.9.2",
+    "ts-patch": "^3.3.0",
+    "typescript": "^5.9.3"
+  },
+  "resolutions": {
+    "minimatch": "^3.1.0",
+    "brace-expansion": "^2.0.0",
+    "shelljs": "^0.8.5"
+  },
+  "standard-version": {
+    "types": [
+      {
+        "type": "feat",
+        "section": "Features"
+      },
+      {
+        "type": "fix",
+        "section": "Fixes"
+      },
+      {
+        "type": "chore",
+        "hidden": true
+      },
+      {
+        "type": "docs",
+        "hidden": true
+      },
+      {
+        "type": "style",
+        "hidden": true
+      },
+      {
+        "type": "refactor",
+        "hidden": true
+      },
+      {
+        "type": "perf",
+        "hidden": true
+      },
+      {
+        "type": "test",
+        "hidden": true
+      }
+    ]
+  }
+}
