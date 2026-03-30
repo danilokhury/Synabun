@@ -43,6 +43,13 @@
 ### Changed — Settings Add Project Uses Native OS Folder Picker
 - **Replaced inline folder browser with native OS dialog** — The "Add Project" modal in Settings had a custom inline folder browser requiring users to navigate directories one-by-one and click a small "Select" button to confirm — confusing UX with no drive/volume switching on Windows. Replaced the entire `loadDir()` browser component (~50 lines) with a `POST /api/browse-folder` call that opens the native OS folder picker (same endpoint onboarding already uses). Browse button shows a loading spinner while the dialog is open, auto-fills the label from the selected folder name. Manual path input retained as fallback
 
+### Changed — Custom Dropdown Replacement for Settings Selects (Cross-Platform)
+- **Native `<select>` elements replaced with custom `cc-dropdown` components** — All 4 native `<select>` dropdowns in Settings (backup frequency `#auto-backup-interval`, sound preset `#notif-sound-type`, toast position `#notif-toast-position`, auto-dismiss duration `#notif-toast-duration`) converted to div-based `cc-dropdown` components with `.stg-dropdown` override class in `styles.css`. Native dropdown popups render with OS-native styling — on Windows this produces a white dropdown popup that clashes with the dark theme. Custom dropdowns reuse the existing `cc-dropdown` pattern (already used for 9 browser settings dropdowns) with settings-specific sizing
+  - `wireStgDropdowns(container)` helper in `ui-settings.js` wires all `.stg-dropdown` elements — trigger click toggle, item selection with hidden input sync via `dispatchEvent(new Event('change'))`, and click-outside-to-close
+  - `syncStgDropdown(container, hiddenId)` helper syncs dropdown display from hidden input values on initial API load
+  - `.stg-dropdown-inline` CSS variant for notification dropdowns (`flex:1`, smaller padding, no min-width)
+  - Dropdown menu uses `min-width: 100%; right: auto` to prevent horizontal overflow in the settings panel
+
 ## 2026-03-28
 
 ### Added — Browser Stream Toggle (Settings > Browser)
