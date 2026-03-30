@@ -37,6 +37,12 @@
 ### Fixed — Session Dropdown Chevron Hit Target Too Small
 - **`▾` arrow in `.cp-session-btn` nearly unclickable** — The `.cp-dd-arrow` chevron that opens the session dropdown menu was `font-size: 7px` with no padding, making it extremely difficult to click. Since clicking the `.cp-session-label` text triggers rename (not dropdown), the chevron was the only clickable area for opening the menu. Added scoped CSS for `.cp-session-btn .cp-dd-arrow`: bumped font to `9px`, added `padding: 4px 6px` with negative margin to extend hit area without affecting layout, plus `border-radius` and hover highlight (`background: rgba(255,255,255,0.08)`) for visual feedback
 
+### Fixed — White Dropdown Backgrounds on Windows
+- **Native `<select>` option menus unstyled on Windows** — Select dropdowns (toast position, auto-dismiss, sound preset, backup interval) rendered with white backgrounds on Windows Chrome/Edge because the app lacked a `color-scheme` declaration. Added `color-scheme: dark` to `:root` in both `styles.css` (main app) and `onboarding.html` (standalone page with its own `:root`), telling browsers to render all native form controls in dark mode. No impact on macOS which already respects system dark mode
+
+### Changed — Settings Add Project Uses Native OS Folder Picker
+- **Replaced inline folder browser with native OS dialog** — The "Add Project" modal in Settings had a custom inline folder browser requiring users to navigate directories one-by-one and click a small "Select" button to confirm — confusing UX with no drive/volume switching on Windows. Replaced the entire `loadDir()` browser component (~50 lines) with a `POST /api/browse-folder` call that opens the native OS folder picker (same endpoint onboarding already uses). Browse button shows a loading spinner while the dialog is open, auto-fills the label from the selected folder name. Manual path input retained as fallback
+
 ## 2026-03-28
 
 ### Added — Browser Stream Toggle (Settings > Browser)
