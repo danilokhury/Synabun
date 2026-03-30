@@ -510,7 +510,7 @@ memories({ action: "by-project", project: "myproject", limit: 20 })
 **Checklist:**
 1. Is Node.js 22.5+? `node --version` (built-in `node:sqlite` requires 22.5+)
 2. Does the database file exist? `ls mcp-server/data/memory.db`
-3. Run `npm start` to initialize the database if missing
+3. Run `npm start` (or `synabun` if installed via npm) to initialize the database if missing
 4. If locked, check for other processes using the database
 
 ---
