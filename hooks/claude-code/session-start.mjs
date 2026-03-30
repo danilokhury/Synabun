@@ -28,13 +28,13 @@ import { readFileSync, existsSync, unlinkSync, readdirSync, statSync, appendFile
 import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getHookFeatures, detectProject, ensureProjectCategories, cleanupStaleLoops } from './shared.mjs';
+import { getHookFeatures, detectProject, ensureProjectCategories, cleanupStaleLoops, DATA_DIR } from './shared.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PRECOMPACT_DIR = join(__dirname, '..', '..', 'data', 'precompact');
-const DEBUG_LOG = join(__dirname, '..', '..', 'data', 'compact-debug.log');
-const LOOP_DIR = join(__dirname, '..', '..', 'data', 'loop');
-const GREETING_CONFIG_PATH = join(__dirname, '..', '..', 'data', 'greeting-config.json');
+const PRECOMPACT_DIR = join(DATA_DIR, 'precompact');
+const DEBUG_LOG = join(DATA_DIR, 'compact-debug.log');
+const LOOP_DIR = join(DATA_DIR, 'loop');
+const GREETING_CONFIG_PATH = join(DATA_DIR, 'greeting-config.json');
 
 // --- Greeting helpers ---
 
