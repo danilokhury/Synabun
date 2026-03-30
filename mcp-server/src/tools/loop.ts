@@ -6,9 +6,9 @@ import { text } from './response.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
-// Loop state files and templates live in the project root data dir (Synabun/data/)
-const PROJECT_ROOT = process.env.SYNABUN_ROOT || join(__dirname, '..', '..', '..');
-const NI_DATA_DIR = join(PROJECT_ROOT, 'data');
+// Loop state files and templates live in DATA_HOME/data/
+const DATA_HOME = process.env.SYNABUN_DATA_HOME || process.env.SYNABUN_ROOT || join(__dirname, '..', '..', '..');
+const NI_DATA_DIR = join(DATA_HOME, 'data');
 const LOOP_DIR = join(NI_DATA_DIR, 'loop');
 const LOOP_TEMPLATES_PATH = join(NI_DATA_DIR, 'loop-templates.json');
 

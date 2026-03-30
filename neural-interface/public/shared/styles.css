@@ -263,7 +263,7 @@
     position: fixed;
     top: 0;
     left: var(--sidebar-total-width, 0px);
-    width: calc(100% - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px));
+    width: calc(100% - var(--sidebar-total-width, 0px));
     height: calc(100dvh - var(--terminal-height, 0px));
     z-index: 1;
     opacity: 1;

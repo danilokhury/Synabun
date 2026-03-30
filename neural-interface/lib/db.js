@@ -12,7 +12,7 @@ import { existsSync, mkdirSync } from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const MCP_DATA_DIR = resolve(__dirname, '..', '..', 'mcp-server', 'data');
+const MCP_DATA_DIR = process.env.MEMORY_DATA_DIR || resolve(__dirname, '..', '..', 'mcp-server', 'data');
 const DEFAULT_DB_PATH = resolve(MCP_DATA_DIR, 'memory.db');
 
 let db = null;

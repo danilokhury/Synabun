@@ -1,6 +1,6 @@
 {
   "_version": 1,
-  "_updated": "2026-03-30T19:45:37.993Z",
+  "_updated": "2026-03-30T22:07:30.517Z",
   "neural-grid-snap": false,
   "neural-panel-category-sidebar": {
     "left": "1185px",
@@ -23822,17 +23822,7 @@
       "selectedNodeId": "dc33bfe5-2c6d-4b7d-be8d-826af43d09e9"
     }
   ],
-  "neural-terminal-active-sessions": [
-    {
-      "id": "6327e42819cffd379fc078c319b31968",
-      "profile": "shell",
-      "label": "Shell",
-      "pinned": false,
-      "userRenamed": false,
-      "claudeSessionId": null,
-      "floatColor": null
-    }
-  ],
+  "neural-terminal-active-sessions": [],
   "neural-terminal-active-sessions-layout": {
     "detached": false,
     "floatPos": null,
@@ -34759,7 +34749,7 @@
   },
   "neural-whiteboard": {
     "elements": [],
-    "nextZIndex": 151
+    "nextZIndex": 156
   },
   "neural-panel-detail-card-ed517012": {
     "left": "1674px",
@@ -35260,7 +35250,7 @@
     "height": null,
     "maxHeight": null
   },
-  "neural-file-explorer-visible": true,
+  "neural-file-explorer-visible": false,
   "neural-file-explorer-width": 326,
   "neural-file-explorer-project": "/Users/danilokhury/Apps/Synabun",
   "neural-file-explorer-collapsed": [],
@@ -35609,14 +35599,13 @@
   "synabun-session-label:181744d6-52c4-4ac7-a94d-06d1d125b021": "Restyle Bottom of Prompt",
   "synabun-session-label:ec01884c-2c0b-44be-b5b9-0b7adc184f96": "Fix Changelog Skill",
   "synabun-claude-panel-windows": {
-    "01284cbb-a8c5-41b6-9c04-11346f40b151": 1774755748362,
-    "727fa7bc-d34c-4f41-a603-0000d068ae00": 1774801117987,
-    "5cfdd9a6-39c5-4a81-bf82-3cc96ec050ae": 1774812877895,
     "3a18d77f-85d6-419e-80df-6b68a4836969": 1774823284576,
     "9fedf2ba-7d1a-4f81-8cb4-5c5579a87266": 1774830693679,
-    "5dd9c577-3ecf-4038-8caa-d33d47f2b63e": 1774835295725
+    "5dd9c577-3ecf-4038-8caa-d33d47f2b63e": 1774835295725,
+    "a07f3afb-b7af-4f93-aa45-d9a5a2fe5c2d": 1774905245127,
+    "5392a51f-9dcb-4ebf-85ab-de0e16494a7a": 1774908449986
   },
-  "synabun-claude-panel-boot-id": "6f8daeb0-bad8-40c3-8120-5c5f198804eb",
+  "synabun-claude-panel-boot-id": "a355addc-e329-4af6-a543-5e13c508ed25",
   "synabun-session-label:69b559ae-aeca-4784-a4ec-e7c58407e722": "PriceFleatFIx",
   "neural-cost-widget-docked": true,
   "synabun-session-label:a0b08147-83ae-4f97-b38c-833e71c7b253": "Documentation Update",
@@ -35878,9 +35867,9 @@
       "z": 950.0000000000007
     },
     "_tag_synabun-website-architecture": {
-      "x": -45.44826719043317,
-      "y": 280,
-      "z": 950.0000000000007
+      "x": 317.86700332332487,
+      "y": 336.7067102568343,
+      "z": 925.6971241756432
     },
     "_tag_synabun-website-bugs": {
       "x": -351.0210761905173,
@@ -39748,14 +39737,14 @@
       "z": 2618.095211758144
     },
     "3a60b0ac-3662-4b7a-b322-66fa4cc1bb04": {
-      "x": 15.440340823166466,
-      "y": 107.30384757729337,
-      "z": 950.0000000000007
+      "x": 378.7556113369245,
+      "y": 164.01055783412767,
+      "z": 925.6971241756432
     },
     "41bb904c-c26b-4b4d-bc22-55eaeaa9b2ed": {
-      "x": -119.75483568858397,
-      "y": 81.9115427318801,
-      "z": 881.9290963958366
+      "x": 243.56043482517407,
+      "y": 138.6182529887144,
+      "z": 857.6262205714792
     },
     "5f78489f-67c2-4bee-a272-8fe4151a2dd1": {
       "x": -1086.9796979448888,
@@ -40423,9 +40412,9 @@
       "z": 40.96442868091224
     },
     "86b376f6-a82e-4c37-9f5a-944f011d80d3": {
-      "x": -34.629614687519485,
-      "y": 56.519237886466826,
-      "z": 1073.2729652453381
+      "x": 328.68565582623853,
+      "y": 113.22594814330112,
+      "z": 1048.9700894209807
     },
     "3838bb89-031b-4cd1-838c-450f471c9f27": {
       "x": 288.2666549174863,
@@ -42068,9 +42057,9 @@
       "z": 488.19097564170346
     },
     "07f8a01d-98f9-4eb8-8cb9-171f003a6052": {
-      "x": 38.819706891866375,
-      "y": 31.12693304105357,
-      "z": 840.0873500519796
+      "x": 402.1349774056244,
+      "y": 87.83364329788787,
+      "z": 815.7844742276221
     },
     "ef4b7a01-6b13-428a-9e7f-113cdf037644": {
       "x": 175.59550412045144,
@@ -42148,9 +42137,9 @@
       "z": -332.8496345445967
     },
     "d778838c-0054-46c9-8d42-5ad76f7e0399": {
-      "x": -190.7092229734178,
-      "y": 5.734628195640312,
-      "z": 975.6946177436978
+      "x": 172.60604754034023,
+      "y": 62.44133845247461,
+      "z": 951.3917419193403
     },
     "68128ff0-46f8-4de4-8398-6f30fda9819d": {
       "x": 3621.157462689744,
@@ -43413,9 +43402,9 @@
       "z": 326.21436825697344
     },
     "b1e55170-1158-4061-9a1a-e7c9a814fa55": {
-      "x": 82.65395324588692,
-      "y": -19.657676649772945,
-      "z": 1031.4881467821565
+      "x": 445.96922375964493,
+      "y": 37.049033607061354,
+      "z": 1007.185270957799
     },
     "6f71d944-c806-49b0-9d06-bbba68c6c2da": {
       "x": 124.43991316880808,
@@ -43433,9 +43422,9 @@
       "z": -1093.0033226521164
     },
     "c0ce1e02-75a9-4457-85b1-d50a87b323b2": {
-      "x": -84.86240550419978,
-      "y": -45.0499814951862,
-      "z": 803.3813700524765
+      "x": 278.45286500955825,
+      "y": 11.656728761648097,
+      "z": 779.0784942281191
     },
     "50b48d32-beee-457f-bce4-0c502ab2c308": {
       "x": 3559.9250542738346,
@@ -43853,9 +43842,9 @@
       "z": 972.9722767181894
     },
     "b74e7853-bd1d-4e5e-8748-b49dc1e48105": {
-      "x": -113.43940972618222,
-      "y": -70.44228634059948,
-      "z": 1080.9128075959895
+      "x": 249.87586078757582,
+      "y": -13.735576083765181,
+      "z": 1056.609931771632
     },
     "f67dcc83-cc32-4631-a4f1-e2240e7fca92": {
       "x": 2307.4903614533773,
@@ -43913,9 +43902,9 @@
       "z": -365.8207262315117
     },
     "36d9bfd7-668f-4bdc-93f3-8f1675b3aac2": {
-      "x": 84.64648469022083,
-      "y": -95.83459118601276,
-      "z": 902.489605267454
+      "x": 447.9617552039789,
+      "y": -39.12788092917846,
+      "z": 878.1867294430965
     },
     "35426f59-aa27-41da-8684-532a39de5d9d": {
       "x": 4003.705543256663,
@@ -44128,9 +44117,9 @@
       "z": -192.27843325036474
     },
     "2499b3cc-f7cb-4e95-8a07-242bd3966e41": {
-      "x": -159.83305950233873,
-      "y": -121.226896031426,
-      "z": 902.7836205314393
+      "x": 203.4822110114193,
+      "y": -64.5201857745917,
+      "z": 878.4807447070818
     },
     "d2a4cfc3-5a36-4ef0-8f11-04b9dda82a9c": {
       "x": 226.1140244159431,
@@ -44293,9 +44282,9 @@
       "z": -645.9098717736118
     },
     "bbc5f425-e95a-451a-9091-ef4207100316": {
-      "x": -2.7362103081661573,
-      "y": -146.61920087683927,
-      "z": 1041.2731846510458
+      "x": 360.5790602055919,
+      "y": -89.91249062000497,
+      "z": 1016.9703088266883
     },
     "ab83b41d-09b1-4c3b-8043-c0996179a1eb": {
       "x": -143.75219786142705,
@@ -44313,9 +44302,9 @@
       "z": -150.39737300302113
     },
     "2d904adf-4944-40ea-9eff-c1993a9fa0ef": {
-      "x": -27.2252892834548,
-      "y": -172.01150572225254,
-      "z": 891.9022748979318
+      "x": 336.08998123030324,
+      "y": -115.30479546541824,
+      "z": 867.5993990735743
     },
     "e7b77195-4c2f-49e8-a9a5-93789c64f088": {
       "x": 3643.0659454184797,
@@ -45127,50 +45116,6 @@
   "synabun-session-label:fdb13e15-cc92-4c77-9283-55d7ccf30a78": "AskQuestionRestyle",
   "synabun-session-label:f779f228-68a2-4ef7-aa2a-12edc37f3e31": "Look into the mac sy...",
   "synabun-session-label:e798654e-7cfd-4f2a-becf-a62a2fbdce28": "NotificationFIX",
-  "synabun-claude-panel-tabs-01284cbb-a8c5-41b6-9c04-11346f40b151": {
-    "tabs": [
-      {
-        "id": "80263b9c-d5bb-45d6-a8f1-53603276dcec",
-        "sessionId": "f46d5ebe-59c1-4fd1-9e5a-a09bfbab8a4c",
-        "label": "LogoFIx",
-        "sessionCost": 1.372453,
-        "running": false,
-        "project": "/Users/danilokhury/Apps/Synabun",
-        "model": "claude-opus-4-6:1000000",
-        "effort": "high",
-        "planMode": false,
-        "queue": [],
-        "queuePaused": false
-      },
-      {
-        "id": "963fbf2a-7808-4260-90cb-ad8b1bdc386d",
-        "sessionId": "c941cb9f-9cfe-4b5a-a84d-649b2cf2da34",
-        "label": "ReadyCheckPill",
-        "sessionCost": 0.959967,
-        "running": false,
-        "project": "/Users/danilokhury/Apps/Synabun",
-        "model": "claude-opus-4-6:1000000",
-        "effort": "high",
-        "planMode": false,
-        "queue": [],
-        "queuePaused": false
-      },
-      {
-        "id": "425d5aa4-7f55-4768-a91a-548e5ec42e74",
-        "sessionId": "641c1492-4660-4d32-8cda-34812e37d324",
-        "label": "BlogPost",
-        "sessionCost": 0.46918,
-        "running": false,
-        "project": "/Users/danilokhury/Apps/SynaBunWebsite",
-        "model": "claude-opus-4-6:1000000",
-        "effort": "high",
-        "planMode": false,
-        "queue": [],
-        "queuePaused": false
-      }
-    ],
-    "activeIdx": 1
-  },
   "synabun-session-label:5725b0c6-f851-449d-8ad7-14ae7634900b": "LoopCHeck",
   "synabun-session-label:fed4567f-5952-466d-9025-a5707596a713": "PLANFIX",
   "synabun-session-label:59aba052-6b79-4fd5-8e95-2d0983a55755": "iconschange",
@@ -45181,44 +45126,7 @@
   "synabun-session-label:cda252d1-f111-405a-883f-75002391be8c": "EditPlanFix",
   "synabun-session-label:f46d5ebe-59c1-4fd1-9e5a-a09bfbab8a4c": "LogoFIx",
   "synabun-session-label:641c1492-4660-4d32-8cda-34812e37d324": "BlogPost",
-  "synabun-claude-panel-tabs-727fa7bc-d34c-4f41-a603-0000d068ae00": {
-    "tabs": [
-      {
-        "id": "e500675d-aa7f-442d-b205-4315930bb143",
-        "sessionId": null,
-        "label": "New chat",
-        "sessionCost": 0,
-        "running": false,
-        "project": "/Users/danilokhury/Apps/SynaBunWebsite",
-        "model": "claude-opus-4-6:1000000",
-        "effort": "high",
-        "planMode": false,
-        "queue": [],
-        "queuePaused": false
-      }
-    ],
-    "activeIdx": 0
-  },
   "synabun-session-label:7f596110-6b0e-4c0d-b53a-52edd0ddd37b": "Open linkedin in the...",
-  "synabun-claude-panel-tabs-5cfdd9a6-39c5-4a81-bf82-3cc96ec050ae": {
-    "tabs": [
-      {
-        "id": "a0b67141-6083-48d1-bd2e-17676a772c26",
-        "sessionId": "808632d3-8c8e-452b-a020-ea302be113dc",
-        "label": "PlanFix1000",
-        "sessionCost": 0.7248069999999999,
-        "running": false,
-        "project": "/Users/danilokhury/Apps/Synabun",
-        "model": "claude-opus-4-6:1000000",
-        "effort": "high",
-        "planMode": false,
-        "planFilePath": "",
-        "queue": [],
-        "queuePaused": false
-      }
-    ],
-    "activeIdx": 0
-  },
   "synabun-session-label:0f05414d-33bf-4783-88c8-8ee2ccbec720": "ResumeFixSteam",
   "synabun-session-label:42afa2de-e1bf-4a4f-b1cd-e3a0401190a0": "UpdateImplement",
   "synabun-session-label:6b1f21cc-200b-4c90-9476-3f77eed19aba": "ToolbarIcons",
@@ -45276,6 +45184,63 @@
         "effort": "high",
         "planMode": false,
         "planFilePath": "/Users/danilokhury/Apps/Synabun/data/plans/voice-input-sidepanel.md",
+        "queue": [],
+        "queuePaused": false
+      }
+    ],
+    "activeIdx": 0
+  },
+  "synabun-claude-panel-tabs-a07f3afb-b7af-4f93-aa45-d9a5a2fe5c2d": {
+    "tabs": [
+      {
+        "id": "7d4864ad-a820-493b-a47a-8bc0ca3d087c",
+        "sessionId": null,
+        "label": "New chat",
+        "sessionCost": 0,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:1000000",
+        "effort": "high",
+        "planMode": false,
+        "planFilePath": "",
+        "queue": [],
+        "queuePaused": false
+      }
+    ],
+    "activeIdx": 0
+  },
+  "synabun-claude-panel-tabs-9781df2a-eac7-4c3d-8170-42b1083059b9": {
+    "tabs": [
+      {
+        "id": "eda95b70-2ad6-4de2-8335-078538429e0a",
+        "sessionId": null,
+        "label": "New chat",
+        "sessionCost": 0,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:1000000",
+        "effort": "high",
+        "planMode": false,
+        "planFilePath": "",
+        "queue": [],
+        "queuePaused": false
+      }
+    ],
+    "activeIdx": 0
+  },
+  "synabun-claude-panel-tabs-5392a51f-9dcb-4ebf-85ab-de0e16494a7a": {
+    "tabs": [
+      {
+        "id": "cf8dfad3-fe8e-4acb-9bcc-eb2c8aa8e369",
+        "sessionId": null,
+        "label": "New chat",
+        "sessionCost": 0,
+        "running": false,
+        "project": "/Users/danilokhury/Apps/Synabun",
+        "model": "claude-opus-4-6:1000000",
+        "effort": "high",
+        "planMode": false,
+        "planFilePath": "",
         "queue": [],
         "queuePaused": false
       }
