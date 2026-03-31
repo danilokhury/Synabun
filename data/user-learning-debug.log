@@ -39,3 +39,26 @@
 [2026-03-31T02:59:42.308Z] SKIP: max nudges reached (3 >= 3)
 [2026-03-31T03:56:15.894Z] CHECK: session=a7225956... msgCount=2 threshold=3 nudgeCount=0 maxNudges=3 observed=false
 [2026-03-31T03:56:15.894Z] SKIP: msgCount 2 < threshold 3
+[2026-03-31T04:38:53.500Z] CHECK: session=a9f1155c... msgCount=2 threshold=3 nudgeCount=0 maxNudges=3 observed=false
+[2026-03-31T04:38:53.501Z] SKIP: msgCount 2 < threshold 3
+[2026-03-31T04:42:10.075Z] CHECK: session=a9f1155c... msgCount=3 threshold=3 nudgeCount=0 maxNudges=3 observed=false
+[2026-03-31T04:42:10.075Z] FIRE: nudge #1 (expectedNudges=1)
+[2026-03-31T04:42:10.075Z] PERSIST: nudgeCount saved as 1
+[2026-03-31T04:43:45.392Z] CHECK: session=a9f1155c... msgCount=4 threshold=3 nudgeCount=1 maxNudges=3 observed=false
+[2026-03-31T04:43:45.393Z] SKIP: expectedNudges 1 <= nudgeCount 1
+[2026-03-31T05:00:54.138Z] CHECK: session=a9f1155c... msgCount=6 threshold=3 nudgeCount=1 maxNudges=3 observed=false
+[2026-03-31T05:00:54.139Z] FIRE: nudge #2 (expectedNudges=2)
+[2026-03-31T05:00:54.139Z] PERSIST: nudgeCount saved as 2
+[2026-03-31T05:03:14.777Z] CHECK: session=a9f1155c... msgCount=7 threshold=3 nudgeCount=2 maxNudges=3 observed=false
+[2026-03-31T05:03:14.778Z] SKIP: expectedNudges 2 <= nudgeCount 2
+[2026-03-31T05:04:29.823Z] CHECK: session=a9f1155c... msgCount=8 threshold=3 nudgeCount=2 maxNudges=3 observed=false
+[2026-03-31T05:04:29.824Z] SKIP: expectedNudges 2 <= nudgeCount 2
+[2026-03-31T05:06:36.560Z] CHECK: session=a9f1155c... msgCount=9 threshold=3 nudgeCount=2 maxNudges=3 observed=false
+[2026-03-31T05:06:36.560Z] FIRE: nudge #3 (expectedNudges=3)
+[2026-03-31T05:06:36.561Z] PERSIST: nudgeCount saved as 3
+[2026-03-31T05:10:59.035Z] CHECK: session=a9f1155c... msgCount=10 threshold=3 nudgeCount=3 maxNudges=3 observed=false
+[2026-03-31T05:10:59.035Z] SKIP: max nudges reached (3 >= 3)
+[2026-03-31T05:13:21.975Z] CHECK: session=a9f1155c... msgCount=11 threshold=3 nudgeCount=3 maxNudges=3 observed=false
+[2026-03-31T05:13:21.975Z] SKIP: max nudges reached (3 >= 3)
+[2026-03-31T05:18:50.045Z] CHECK: session=a9f1155c... msgCount=13 threshold=3 nudgeCount=3 maxNudges=3 observed=false
+[2026-03-31T05:18:50.045Z] SKIP: max nudges reached (3 >= 3)

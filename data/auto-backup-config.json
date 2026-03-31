@@ -2,7 +2,7 @@
   "enabled": true,
   "intervalMinutes": 30,
   "folderPath": "/Users/danilokhury/Documents/SynaBun - Backups",
-  "lastBackup": null,
-  "lastBackupSize": 0,
+  "lastBackup": "2026-03-31T05:02:58.498Z",
+  "lastBackupSize": 18368351,
   "lastBackupError": null
 }
