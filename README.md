@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/synabun"><img src="https://img.shields.io/npm/v/synabun?color=cb3837&logo=npm&logoColor=white" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/synabun"><img src="https://img.shields.io/npm/dm/synabun?color=cb3837&logo=npm&logoColor=white" alt="npm downloads" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/synabun?color=blue" alt="license" /></a>
+  <a href="https://github.com/danilokhury/Synabun/actions/workflows/ci.yml"><img src="https://github.com/danilokhury/Synabun/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://discord.gg/x6yWqE9GZP"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
   <a href="https://x.com/SynabunAI"><img src="https://img.shields.io/badge/Follow-%40SynabunAI-000000?logo=x&logoColor=white" alt="X / Twitter" /></a>
   <img src="https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white" alt="Node.js 22+" />
