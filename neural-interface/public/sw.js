@@ -1,4 +1,4 @@
-const CACHE_NAME = 'synabun-offline-v7';
+const CACHE_NAME = 'synabun-offline-v8';
 const OFFLINE_URL = '/offline.html';
 
 self.addEventListener('install', (event) => {
