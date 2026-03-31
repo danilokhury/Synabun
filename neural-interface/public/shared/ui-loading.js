@@ -134,7 +134,7 @@ export async function checkHealth() {
  */
 function updateCmdText(projectDir) {
   const cmdEl = $('loading-cmd-text');
-  if (cmdEl) cmdEl.textContent = `cd ${projectDir} && npm start`;
+  if (cmdEl) cmdEl.textContent = `cd "${projectDir}" ; npm start`;
 }
 
 // ═══════════════════════════════════════════
