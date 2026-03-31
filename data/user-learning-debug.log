@@ -37,3 +37,5 @@
 [2026-03-31T02:54:25.476Z] SKIP: max nudges reached (3 >= 3)
 [2026-03-31T02:59:42.308Z] CHECK: session=9c31ed89... msgCount=14 threshold=3 nudgeCount=3 maxNudges=3 observed=false
 [2026-03-31T02:59:42.308Z] SKIP: max nudges reached (3 >= 3)
+[2026-03-31T03:56:15.894Z] CHECK: session=a7225956... msgCount=2 threshold=3 nudgeCount=0 maxNudges=3 observed=false
+[2026-03-31T03:56:15.894Z] SKIP: msgCount 2 < threshold 3
