@@ -1,6 +1,10 @@
 {
   "name": "synabun",
+<<<<<<< HEAD
   "version": "2026.3.311",
+=======
+  "version": "2026.3.314",
+>>>>>>> main
   "description": "Persistent vector memory for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -34,7 +38,7 @@
     "neural-interface/scripts/",
     "hooks/",
     "skills/",
-    "data/.gitkeep",
+    "lib/paths.js",
     "CLAUDE.md",
     "README.md",
     "CHANGELOG.md"

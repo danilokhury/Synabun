@@ -9,7 +9,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,27 +31,13 @@ function warn(msg) { console.log(`  ${c.yellow}!${c.reset} ${msg}`); }
 function fail(msg) { console.log(`  ${c.red}\u2717${c.reset} ${msg}`); }
 function info(msg) { console.log(`  ${c.cyan}\u2192${c.reset} ${msg}`); }
 
-// ── Ensure data directories exist ──
-
-function ensureDirectories() {
-  const dirs = [
-    resolve(__dirname, 'data'),
-    resolve(__dirname, 'mcp-server', 'data'),
-  ];
-  for (const dir of dirs) {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-  }
-}
-
 // ── Dependency installation ──
 
 function needsInstall(dir) {
   return !existsSync(resolve(dir, 'node_modules', '.package-lock.json'));
 }
 
-function installDeps(name, dir) {
+function installDeps(name, dir, { includeDev = false } = {}) {
   if (!needsInstall(dir)) {
     ok(`${name} dependencies already installed`);
     return;
@@ -59,7 +45,8 @@ function installDeps(name, dir) {
 
   info(`Installing ${name} dependencies...`);
   try {
-    execSync('npm install --omit=dev --ignore-scripts', {
+    const omitFlag = includeDev ? '' : ' --omit=dev';
+    execSync(`npm install${omitFlag} --ignore-scripts`, {
       cwd: dir,
       stdio: 'inherit',
       timeout: 300_000,
@@ -70,6 +57,10 @@ function installDeps(name, dir) {
     console.error(err.stderr?.toString() || err.message);
     process.exit(1);
   }
+}
+
+function needsBuild() {
+  return !existsSync(resolve(__dirname, 'mcp-server', 'dist', 'index.js'));
 }
 
 // ── node-pty native rebuild ──
@@ -122,9 +113,8 @@ function buildMcpServer() {
 function main() {
   console.log(`\n  ${c.cyan}SynaBun${c.reset} ${c.dim}postinstall${c.reset}\n`);
 
-  ensureDirectories();
   installDeps('Neural Interface', resolve(__dirname, 'neural-interface'));
-  installDeps('MCP Server', resolve(__dirname, 'mcp-server'));
+  installDeps('MCP Server', resolve(__dirname, 'mcp-server'), { includeDev: needsBuild() });
   rebuildPty();
   buildMcpServer();
 

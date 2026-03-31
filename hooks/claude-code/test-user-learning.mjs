@@ -14,8 +14,10 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from '
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { getDataHome } from '../../lib/paths.js';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', '..', 'data');
+const DATA_DIR = join(getDataHome(), 'data');
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
 
