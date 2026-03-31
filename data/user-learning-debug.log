@@ -1,0 +1,2 @@
+[2026-03-31T01:22:46.616Z] CHECK: session=9c31ed89... msgCount=1 threshold=8 nudgeCount=0 maxNudges=3 observed=false
+[2026-03-31T01:22:46.616Z] SKIP: msgCount 1 < threshold 8
