@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install root dependencies
+        run: npm install --ignore-scripts
+
+      - name: Install MCP server dependencies
+        run: npm install
+        working-directory: mcp-server
+
+      - name: Build MCP server
+        run: npx tsc
+        working-directory: mcp-server
+
+      - name: Install Neural Interface dependencies
+        run: npm install --ignore-scripts
+        working-directory: neural-interface
+
+      - name: Run MCP server tests
+        run: npm test
+        working-directory: mcp-server
