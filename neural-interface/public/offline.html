@@ -85,7 +85,63 @@
     margin-bottom: 28px;
   }
 
-  /* --- Command block --- */
+  /* --- Start button --- */
+  .start-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(110,200,255,0.1);
+    border: 1px solid rgba(110,200,255,0.2);
+    border-radius: 10px;
+    color: rgba(110,200,255,0.8);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 12px 24px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+    margin-bottom: 12px;
+  }
+
+  .start-btn:hover {
+    background: rgba(110,200,255,0.18);
+    border-color: rgba(110,200,255,0.35);
+    color: rgba(110,200,255,1);
+  }
+
+  .start-btn:active {
+    transform: scale(0.97);
+  }
+
+  .start-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .start-hint {
+    font-size: 10px;
+    color: rgba(255,255,255,0.2);
+    margin-bottom: 20px;
+  }
+
+  /* --- Command block (fallback) --- */
+  .cmd-section {
+    margin-bottom: 24px;
+  }
+
+  .cmd-label {
+    font-size: 10px;
+    color: rgba(255,255,255,0.2);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
   .cmd-block {
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(255,255,255,0.06);
@@ -95,7 +151,7 @@
     align-items: center;
     justify-content: center;
     gap: 12px;
-    margin-bottom: 24px;
+    margin-bottom: 8px;
   }
 
   .cmd-text {
@@ -111,6 +167,13 @@
 
   .cmd-text span {
     color: rgba(110,200,255,0.6);
+  }
+
+  .cmd-or {
+    font-size: 10px;
+    color: rgba(255,255,255,0.15);
+    text-align: center;
+    margin-bottom: 8px;
   }
 
   .copy-btn {
@@ -224,11 +287,25 @@
   <div class="heading">Server is sleeping</div>
   <div class="subtext">The Neural Interface server isn't running.</div>
 
-  <div class="cmd-block">
-    <div class="cmd-text" id="cmdText">
-      <span>npm</span> start
+  <!-- Start Server button — downloads a platform-specific startup script -->
+  <button class="start-btn" id="startBtn">
+    <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+    Start Server
+  </button>
+  <div class="start-hint" id="startHint"></div>
+
+  <!-- Manual commands (fallback) -->
+  <div class="cmd-section">
+    <div class="cmd-label">or run manually</div>
+    <div class="cmd-block">
+      <div class="cmd-text" id="cmdText"><span>synabun</span></div>
+      <button class="copy-btn" id="copyBtn">Copy</button>
     </div>
-    <button class="copy-btn" id="copyBtn">Copy</button>
+    <div class="cmd-or" id="cmdOr" style="display:none">or</div>
+    <div class="cmd-block" id="cmdFallback" style="display:none">
+      <div class="cmd-text" id="cmdFallbackText"></div>
+      <button class="copy-btn" id="copyFallbackBtn">Copy</button>
+    </div>
   </div>
 
   <div class="retry" id="retry">
@@ -238,35 +315,90 @@
 </div>
 
 <script>
-  // --- Build restart command ---
-  // Use the global `synabun` command (works from any directory)
-  // Fallback: cd + npm start with `;` separator (works in both PowerShell and bash)
-  const projectDir = localStorage.getItem('synabun-project-dir');
-  const cmd = 'synabun';
-  const cmdText = document.getElementById('cmdText');
-  cmdText.innerHTML = `<span>synabun</span>`;
-  const copyBtn = document.getElementById('copyBtn');
+  // --- Platform detection ---
+  const ua = navigator.userAgent;
+  const isWin = /Win/.test(navigator.platform) || /Windows/.test(ua);
+  const isMac = /Mac/.test(navigator.platform);
+  // Linux = everything else
 
-  copyBtn.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(cmd);
-    } catch {
+  const projectDir = localStorage.getItem('synabun-project-dir');
+
+  // --- Start Server button — generates and triggers a startup script download ---
+  const startBtn = document.getElementById('startBtn');
+  const startHint = document.getElementById('startHint');
+
+  if (isWin) {
+    startHint.textContent = 'Downloads start-synabun.bat — double-click to run';
+  } else if (isMac) {
+    startHint.textContent = 'Downloads start-synabun.command — double-click to run';
+  } else {
+    startHint.textContent = 'Downloads start-synabun.sh — run with: sh ~/Downloads/start-synabun.sh';
+  }
+
+  startBtn.addEventListener('click', () => {
+    let script, filename;
+
+    if (isWin) {
+      const dir = projectDir || '%APPDATA%\\synabun';
+      script = `@echo off\r\ncd /d "${dir}"\r\nnpm start\r\n`;
+      filename = 'start-synabun.bat';
+    } else if (isMac) {
+      const dir = projectDir || '$HOME/.synabun';
+      script = `#!/bin/sh\ncd "${dir}"\nnpm start\n`;
+      filename = 'start-synabun.command';
+    } else {
+      const dir = projectDir || '$HOME/.synabun';
+      script = `#!/bin/sh\ncd "${dir}"\nnpm start\n`;
+      filename = 'start-synabun.sh';
+    }
+
+    const blob = new Blob([script], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    startBtn.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Downloaded!';
+    setTimeout(() => {
+      startBtn.innerHTML = '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg> Start Server';
+    }, 2000);
+  });
+
+  // --- Manual command fallback ---
+  if (projectDir) {
+    const sep = isWin ? ' & ' : ' ; ';
+    const fallbackCmd = `cd "${projectDir}"${sep}npm start`;
+    const cmdOr = document.getElementById('cmdOr');
+    const cmdFallback = document.getElementById('cmdFallback');
+    const cmdFallbackText = document.getElementById('cmdFallbackText');
+    cmdOr.style.display = '';
+    cmdFallback.style.display = '';
+    cmdFallbackText.innerHTML = `<span>cd</span> "${projectDir}"${sep}<span>npm</span> start`;
+    document.getElementById('copyFallbackBtn').addEventListener('click', function() { copyToClipboard(fallbackCmd, this); });
+  }
+
+  // --- Copy helper ---
+  function copyToClipboard(text, btn) {
+    navigator.clipboard.writeText(text).catch(() => {
       const ta = document.createElement('textarea');
-      ta.value = cmd;
+      ta.value = text;
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
       document.body.appendChild(ta);
       ta.select();
       document.execCommand('copy');
       document.body.removeChild(ta);
-    }
-    copyBtn.textContent = 'Copied!';
-    copyBtn.classList.add('copied');
-    setTimeout(() => {
-      copyBtn.textContent = 'Copy';
-      copyBtn.classList.remove('copied');
-    }, 1500);
-  });
+    });
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+  }
+
+  document.getElementById('copyBtn').addEventListener('click', function() { copyToClipboard('synabun', this); });
 
   // --- Auto-retry ---
   const retry = document.getElementById('retry');
