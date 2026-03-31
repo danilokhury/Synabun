@@ -165,6 +165,8 @@ async function handleStartAction() {
       if ($label) $label.textContent = t('common.retry');
     }
   } catch (err) {
+    // Server is unreachable — try protocol handler as fallback
+    window.location.href = 'synabun://start';
     if ($status) $status.textContent = t('loading.somethingWrong');
     if (btn) btn.disabled = false;
     if ($label) $label.textContent = t('common.retry');
