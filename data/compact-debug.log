@@ -18,3 +18,6 @@
 [2026-03-30T23:45:16.562Z] SESSION-START source=resume session_id=abd0d4fa-d186-4d4a-8902-8fb6459de3a5 isCompactRestart=false cacheExists=false convMemory=true
 [2026-03-30T23:46:46.069Z] STOP session_id=abd0d4fa-d186-4d4a-8902-8fb6459de3a5 compactFlagPath=null
 [2026-03-30T23:47:00.583Z] STOP session_id=abd0d4fa-d186-4d4a-8902-8fb6459de3a5 compactFlagPath=null
+[2026-03-31T00:44:27.560Z] SESSION-START source=startup session_id=9c31ed89-2d60-48df-9558-bef3409a4865 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-31T00:44:27.663Z] SESSION-START source=startup session_id=07694078-7cff-4fa0-9416-67e198a108d2 isCompactRestart=false cacheExists=false convMemory=true
+[2026-03-31T00:48:02.103Z] STOP session_id=9c31ed89-2d60-48df-9558-bef3409a4865 compactFlagPath=null
