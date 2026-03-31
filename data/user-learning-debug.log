@@ -22,3 +22,10 @@
 [2026-03-31T01:33:22.892Z] CHECK: session=9c31ed89... msgCount=7 threshold=3 nudgeCount=1 maxNudges=3 observed=false
 [2026-03-31T01:33:22.892Z] FIRE: nudge #2 (expectedNudges=2)
 [2026-03-31T01:33:22.892Z] PERSIST: nudgeCount saved as 2
+[2026-03-31T01:37:11.566Z] CHECK: session=9c31ed89... msgCount=8 threshold=3 nudgeCount=2 maxNudges=3 observed=false
+[2026-03-31T01:37:11.567Z] SKIP: expectedNudges 2 <= nudgeCount 2
+[2026-03-31T01:52:19.749Z] CHECK: session=9c31ed89... msgCount=9 threshold=3 nudgeCount=2 maxNudges=3 observed=false
+[2026-03-31T01:52:19.749Z] FIRE: nudge #3 (expectedNudges=3)
+[2026-03-31T01:52:19.749Z] PERSIST: nudgeCount saved as 3
+[2026-03-31T02:39:22.213Z] CHECK: session=9c31ed89... msgCount=10 threshold=3 nudgeCount=3 maxNudges=3 observed=false
+[2026-03-31T02:39:22.213Z] SKIP: max nudges reached (3 >= 3)
