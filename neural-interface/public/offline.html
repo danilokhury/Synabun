@@ -85,62 +85,16 @@
     margin-bottom: 28px;
   }
 
-  /* --- Start button --- */
-  .start-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    background: rgba(110,200,255,0.1);
-    border: 1px solid rgba(110,200,255,0.2);
-    border-radius: 10px;
-    color: rgba(110,200,255,0.8);
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    padding: 12px 24px;
-    cursor: pointer;
-    transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
-    margin-bottom: 12px;
-  }
-
-  .start-btn:hover {
-    background: rgba(110,200,255,0.18);
-    border-color: rgba(110,200,255,0.35);
-    color: rgba(110,200,255,1);
-  }
-
-  .start-btn:active {
-    transform: scale(0.97);
-  }
-
-  .start-btn svg {
-    width: 16px;
-    height: 16px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .start-hint {
-    font-size: 10px;
-    color: rgba(255,255,255,0.2);
-    margin-bottom: 20px;
-  }
-
-  /* --- Command block (fallback) --- */
-  .cmd-section {
-    margin-bottom: 24px;
-  }
-
+  /* --- Command labels --- */
   .cmd-label {
     font-size: 10px;
     color: rgba(255,255,255,0.2);
-    margin-bottom: 8px;
+    margin-bottom: 6px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
+
+  /* --- Command block --- */
 
   .cmd-block {
     background: rgba(255,255,255,0.03);
@@ -287,21 +241,14 @@
   <div class="heading">Server is sleeping</div>
   <div class="subtext">The Neural Interface server isn't running.</div>
 
-  <!-- Start Server button -->
-  <button class="start-btn" id="startBtn">
-    <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-    Start Server
-  </button>
-  <div class="start-hint" id="startHint"></div>
-
-  <!-- Manual commands (fallback) -->
-  <div class="cmd-section">
-    <div class="cmd-label">or run manually</div>
+  <div>
+    <div class="cmd-label">npm install</div>
     <div class="cmd-block">
       <div class="cmd-text" id="cmdText"><span>synabun</span></div>
       <button class="copy-btn" id="copyBtn">Copy</button>
     </div>
     <div class="cmd-or" id="cmdOr" style="display:none">or</div>
+    <div class="cmd-label" id="cmdFallbackLabel" style="display:none">git / local install</div>
     <div class="cmd-block" id="cmdFallback" style="display:none">
       <div class="cmd-text" id="cmdFallbackText"></div>
       <button class="copy-btn" id="copyFallbackBtn">Copy</button>
@@ -323,26 +270,6 @@
 
   const projectDir = localStorage.getItem('synabun-project-dir');
 
-  // --- Start Server button — iframe technique (most reliable cross-browser) ---
-  const startBtn = document.getElementById('startBtn');
-  const startHint = document.getElementById('startHint');
-
-  startBtn.addEventListener('click', () => {
-    // Iframe method — used by Zoom, Slack, etc. for "Open in app"
-    const iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
-    iframe.src = 'synabun://start';
-    document.body.appendChild(iframe);
-    setTimeout(() => document.body.removeChild(iframe), 3000);
-
-    // Also try direct navigation as fallback
-    setTimeout(() => { window.location.href = 'synabun://start'; }, 500);
-
-    startHint.textContent = 'Starting server...';
-    startBtn.disabled = true;
-    setTimeout(() => { startBtn.disabled = false; startHint.textContent = ''; }, 5000);
-  });
-
   // --- Manual command fallback ---
   if (projectDir) {
     const sep = isWin ? ' & ' : ' ; ';
@@ -352,6 +279,8 @@
     const cmdFallbackText = document.getElementById('cmdFallbackText');
     cmdOr.style.display = '';
     cmdFallback.style.display = '';
+    const cmdFallbackLabel = document.getElementById('cmdFallbackLabel');
+    if (cmdFallbackLabel) cmdFallbackLabel.style.display = '';
     cmdFallbackText.innerHTML = `<span>cd</span> "${projectDir}"${sep}<span>npm</span> start`;
     document.getElementById('copyFallbackBtn').addEventListener('click', function() { copyToClipboard(fallbackCmd, this); });
   }

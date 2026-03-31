@@ -20,7 +20,13 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.mode !== 'navigate') return;
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(OFFLINE_URL))
+    fetch(event.request).then((response) => {
+      // Server is up — silently refresh cached offline.html so it's always current
+      caches.open(CACHE_NAME).then((cache) =>
+        cache.add(new Request(OFFLINE_URL, { cache: 'reload' }))
+      );
+      return response;
+    }).catch(() => caches.match(OFFLINE_URL))
   );
 });
 
