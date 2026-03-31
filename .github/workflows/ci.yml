@@ -33,5 +33,5 @@ jobs:
         working-directory: neural-interface
 
       - name: Run MCP server tests
-        run: npm test
+        run: node ./node_modules/vitest/vitest.mjs run --passWithNoTests
         working-directory: mcp-server

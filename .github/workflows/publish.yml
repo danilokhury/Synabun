@@ -29,7 +29,7 @@ jobs:
         working-directory: mcp-server
 
       - name: Run MCP server tests
-        run: npm test
+        run: node ./node_modules/vitest/vitest.mjs run --passWithNoTests
         working-directory: mcp-server
 
       - name: Publish with provenance
