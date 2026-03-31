@@ -5160,7 +5160,7 @@ async function init() {
       if (health.projectDir) {
         localStorage.setItem('synabun-project-dir', health.projectDir);
         const cmdEl = document.getElementById('loading-cmd-text');
-        if (cmdEl) cmdEl.textContent = 'cd ' + health.projectDir + ' && npm start';
+        if (cmdEl) cmdEl.textContent = 'cd "' + health.projectDir + '" ; npm start';
       }
       if (!health.ok) {
         const messages = {
@@ -5177,7 +5177,7 @@ async function init() {
       const cached = localStorage.getItem('synabun-project-dir');
       if (cached) {
         const cmdEl = document.getElementById('loading-cmd-text');
-        if (cmdEl) cmdEl.textContent = 'cd ' + cached + ' && npm start';
+        if (cmdEl) cmdEl.textContent = 'cd "' + cached + '" ; npm start';
       }
     }
 
