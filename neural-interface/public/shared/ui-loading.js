@@ -104,10 +104,8 @@ function resetLoadingToConnecting() {
 export async function checkHealth() {
   try {
     const health = await fetchHealth();
-    // Cache projectDir for the server-offline command display
     if (health.projectDir) {
       localStorage.setItem('synabun-project-dir', health.projectDir);
-      updateCmdText(health.projectDir);
     }
     if (!health.ok) {
       const messages = {
@@ -130,7 +128,7 @@ export async function checkHealth() {
 }
 
 /**
- * Update the command text element with the full path to npm start.
+ * Update the command text element with the restart command.
  */
 function updateCmdText(projectDir) {
   const cmdEl = $('loading-cmd-text');
