@@ -287,7 +287,7 @@
   <div class="heading">Server is sleeping</div>
   <div class="subtext">The Neural Interface server isn't running.</div>
 
-  <!-- Start Server button — downloads a platform-specific startup script -->
+  <!-- Start Server button -->
   <button class="start-btn" id="startBtn">
     <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
     Start Server
@@ -323,49 +323,24 @@
 
   const projectDir = localStorage.getItem('synabun-project-dir');
 
-  // --- Start Server button — generates and triggers a startup script download ---
+  // --- Start Server button — iframe technique (most reliable cross-browser) ---
   const startBtn = document.getElementById('startBtn');
   const startHint = document.getElementById('startHint');
 
-  if (isWin) {
-    startHint.textContent = 'Downloads start-synabun.bat — double-click to run';
-  } else if (isMac) {
-    startHint.textContent = 'Downloads start-synabun.command — double-click to run';
-  } else {
-    startHint.textContent = 'Downloads start-synabun.sh — run with: sh ~/Downloads/start-synabun.sh';
-  }
-
   startBtn.addEventListener('click', () => {
-    let script, filename;
+    // Iframe method — used by Zoom, Slack, etc. for "Open in app"
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.src = 'synabun://start';
+    document.body.appendChild(iframe);
+    setTimeout(() => document.body.removeChild(iframe), 3000);
 
-    if (isWin) {
-      const dir = projectDir || '%APPDATA%\\synabun';
-      script = `@echo off\r\ncd /d "${dir}"\r\nnpm start\r\n`;
-      filename = 'start-synabun.bat';
-    } else if (isMac) {
-      const dir = projectDir || '$HOME/.synabun';
-      script = `#!/bin/sh\ncd "${dir}"\nnpm start\n`;
-      filename = 'start-synabun.command';
-    } else {
-      const dir = projectDir || '$HOME/.synabun';
-      script = `#!/bin/sh\ncd "${dir}"\nnpm start\n`;
-      filename = 'start-synabun.sh';
-    }
+    // Also try direct navigation as fallback
+    setTimeout(() => { window.location.href = 'synabun://start'; }, 500);
 
-    const blob = new Blob([script], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    startBtn.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg> Downloaded!';
-    setTimeout(() => {
-      startBtn.innerHTML = '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg> Start Server';
-    }, 2000);
+    startHint.textContent = 'Starting server...';
+    startBtn.disabled = true;
+    setTimeout(() => { startBtn.disabled = false; startHint.textContent = ''; }, 5000);
   });
 
   // --- Manual command fallback ---
