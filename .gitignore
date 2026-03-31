@@ -1,0 +1,10 @@
+# User runtime data
+data/
+mcp-data/
+mcp-server/data/
+
+# OS
+.DS_Store
+
+# Dependencies
+node_modules/
