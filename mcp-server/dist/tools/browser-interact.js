@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
+const tabIdField = z.string().optional().describe('Target a specific tab within the session. Auto-resolved from environment if omitted.');
 function formatClickHints(result) {
     const hints = result.hints;
     if (!hints?.length)
@@ -18,6 +19,7 @@ export const browserClickSchema = {
     selector: z.string().describe('Playwright selector for the element to click. Use CSS selectors (e.g. "button.submit", "#login"), text selectors (e.g. \'text="Sign in"\'), or Playwright extensions like \'button:has-text("Retry")\'. NEVER use :contains() — use :has-text() instead.'),
     nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple elements, click the Nth one (0-indexed). Facebook: composer trigger appears in sidebar + main — use nthMatch: 0 to click the first match.'),
     sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+    tabId: tabIdField,
 };
 export const browserClickDescription = 'Click an element on the page. Accepts Playwright selectors: CSS selectors, text="...", :has-text("..."), role=button[name="..."], or [data-testid="..."]. Use browser_snapshot first to identify interactive elements. ' +
     'Twitter/X stable selectors: [data-testid="tweetButton"] (post), [data-testid="like"], [data-testid="retweet"], [data-testid="reply"], [data-testid="SideNav_NewTweet_Button"] (compose FAB). ' +
@@ -69,10 +71,10 @@ export const browserClickDescription = 'Click an element on the page. Accepts Pl
     'Messaging compose: .msg-form__contenteditable — use browser_fill to type, then click .msg-form__send-button to send. ' +
     'Nav: a[href*="/feed/"] (Home), a[href*="/mynetwork/"] (Network), a[href*="/jobs/"] (Jobs), a[href*="/messaging/"] (Messages), a[href*="/notifications/"] (Notifications).';
 export async function handleBrowserClick(args) {
-    const resolved = await ni.resolveSession(args.sessionId);
+    const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
     if ('error' in resolved)
         return text(resolved.error);
-    const result = await ni.click(resolved.sessionId, args.selector, args.nthMatch);
+    const result = await ni.click(resolved.sessionId, args.selector, args.nthMatch, resolved.tabId);
     if (result.error)
         return text(`Click failed: ${result.error}${formatClickHints(result)}`);
     return text(`Clicked "${args.selector}" — now at ${result.url} "${result.title}"`);
@@ -83,14 +85,15 @@ export const browserFillSchema = {
     value: z.string().describe('The text value to fill into the element. Clears existing content first.'),
     nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple elements, fill the Nth one (0-indexed).'),
     sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+    tabId: tabIdField,
 };
 export const browserFillDescription = 'Clear an input field and fill it with new text. Accepts Playwright selectors: CSS, text="...", :has-text("..."), [data-testid="..."]. Twitter/X: compose box is [data-testid="tweetTextarea_0"], search is [data-testid="SearchBox_Search_Input"]. TikTok search: [data-e2e="search-user-input"]. WhatsApp search: input[aria-label="Pesquisar ou começar uma nova conversa"]. ' +
     'Instagram: comment box is textarea[aria-label="Adicione um comentário..."] (PT) / textarea[aria-label="Add a comment…"] (EN). Use browser_fill for comment text, then press Enter to submit.';
 export async function handleBrowserFill(args) {
-    const resolved = await ni.resolveSession(args.sessionId);
+    const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
     if ('error' in resolved)
         return text(resolved.error);
-    const result = await ni.fill(resolved.sessionId, args.selector, args.value, args.nthMatch);
+    const result = await ni.fill(resolved.sessionId, args.selector, args.value, args.nthMatch, resolved.tabId);
     if (result.error)
         return text(`Fill failed: ${result.error}${formatClickHints(result)}`);
     const location = result.url ? ` — ${result.url} "${result.title}"` : '';
@@ -102,6 +105,7 @@ export const browserTypeSchema = {
     text: z.string().describe('The text to type character by character (appends to existing content).'),
     nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple elements, type into the Nth one (0-indexed). Twitter/X reply dialog has 2 tweetTextarea_0 elements — use nthMatch to disambiguate.'),
     sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+    tabId: tabIdField,
 };
 export const browserTypeDescription = 'Type text character by character (simulates real keystrokes, appends to existing content). Provide a selector to target an element, or omit to type into whatever is currently focused. ' +
     'Prefer browser_type over browser_fill for contenteditable editors — both Twitter/X ([data-testid="tweetTextarea_0"]) and Facebook use them. ' +
@@ -113,10 +117,10 @@ export const browserTypeDescription = 'Type text character by character (simulat
     'WhatsApp status text composer: .lexical-rich-text-input div[contenteditable="true"]. ' +
     'Instagram: Comment on post pages uses a native textarea (NOT contenteditable) — use browser_fill instead of browser_type. For DMs, navigate to instagram.com/direct/inbox/ first. Search: click svg[aria-label="Pesquisa"] in sidebar to open search panel, then type in the input that appears.';
 export async function handleBrowserType(args) {
-    const resolved = await ni.resolveSession(args.sessionId);
+    const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
     if ('error' in resolved)
         return text(resolved.error);
-    const result = await ni.type(resolved.sessionId, args.selector ?? null, args.text, args.nthMatch);
+    const result = await ni.type(resolved.sessionId, args.selector ?? null, args.text, args.nthMatch, resolved.tabId);
     if (result.error)
         return text(`Type failed: ${result.error}${formatClickHints(result)}`);
     const target = args.selector ? `"${args.selector}"` : 'focused element';
@@ -128,13 +132,14 @@ export const browserHoverSchema = {
     selector: z.string().describe('Playwright selector for the element to hover over (CSS, text="...", :has-text("...")).'),
     nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple elements, hover over the Nth one (0-indexed).'),
     sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+    tabId: tabIdField,
 };
 export const browserHoverDescription = 'Hover over an element. Useful for revealing dropdowns, tooltips, or hover-triggered content. Accepts Playwright selectors.';
 export async function handleBrowserHover(args) {
-    const resolved = await ni.resolveSession(args.sessionId);
+    const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
     if ('error' in resolved)
         return text(resolved.error);
-    const result = await ni.hover(resolved.sessionId, args.selector, args.nthMatch);
+    const result = await ni.hover(resolved.sessionId, args.selector, args.nthMatch, resolved.tabId);
     if (result.error)
         return text(`Hover failed: ${result.error}${formatClickHints(result)}`);
     const location = result.url ? ` — ${result.url} "${result.title}"` : '';
@@ -146,13 +151,14 @@ export const browserSelectSchema = {
     value: z.string().describe('The option value to select.'),
     nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple elements, select from the Nth one (0-indexed).'),
     sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+    tabId: tabIdField,
 };
 export const browserSelectDescription = 'Select an option from a <select> dropdown by CSS selector and option value.';
 export async function handleBrowserSelect(args) {
-    const resolved = await ni.resolveSession(args.sessionId);
+    const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
     if ('error' in resolved)
         return text(resolved.error);
-    const result = await ni.selectOption(resolved.sessionId, args.selector, args.value, args.nthMatch);
+    const result = await ni.selectOption(resolved.sessionId, args.selector, args.value, args.nthMatch, resolved.tabId);
     if (result.error)
         return text(`Select failed: ${result.error}${formatClickHints(result)}`);
     const location = result.url ? ` — ${result.url} "${result.title}"` : '';
@@ -162,13 +168,14 @@ export async function handleBrowserSelect(args) {
 export const browserPressSchema = {
     key: z.string().describe('Key or key combo to press (e.g. "Enter", "Tab", "Control+A", "Escape", "ArrowDown").'),
     sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+    tabId: tabIdField,
 };
 export const browserPressDescription = 'Press a keyboard key or key combination. Supports modifiers like Control+A, Shift+Enter, etc.';
 export async function handleBrowserPress(args) {
-    const resolved = await ni.resolveSession(args.sessionId);
+    const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
     if ('error' in resolved)
         return text(resolved.error);
-    const result = await ni.pressKey(resolved.sessionId, args.key);
+    const result = await ni.pressKey(resolved.sessionId, args.key, resolved.tabId);
     if (result.error)
         return text(`Press failed: ${result.error}`);
     const location = result.url ? ` — ${result.url} "${result.title}"` : '';
@@ -180,15 +187,16 @@ export const browserScrollSchema = {
     distance: z.coerce.number().optional().describe('Pixels to scroll (default: 500).'),
     selector: z.string().optional().describe('Scroll within a specific element instead of the page. Twitter: [data-testid="primaryColumn"] for main feed. Facebook: [role="feed"] for group/page post feed. TikTok: [data-e2e="comment-list"] for comment panel, [data-tt="components_PostTable_Container"] for Studio content table. WhatsApp: [aria-label="Lista de conversas"] for chat list sidebar, [role="application"] or the main chat panel for message history.'),
     sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+    tabId: tabIdField,
 };
 export const browserScrollDescription = 'Scroll the page or a specific element. Essential for infinite scroll feeds. Twitter/X: direction "down" with distance 800–1500 to load more tweets. Facebook: use selector "[role=\\"feed\\"]" to scroll within the post feed. TikTok feed: scroll "down" 800–1000px to advance to the next video. TikTok comment panel: use selector "[data-e2e=\\"comment-list\\"]". TikTok Studio table: use selector "[data-tt=\\"components_PostTable_Container\\"]". WhatsApp chat list: use selector "[aria-label=\\"Lista de conversas\\"]". WhatsApp message history: scroll "up" to load older messages. ' +
     'Instagram: Home feed — scroll down 800–1200px to load more posts. Profile grid — scroll down to load more posts. Reels — scroll down 800px to advance to next reel. Post page comments — scroll within the comment panel to load older comments. Explore page — scroll down to load more grid posts. ' +
     'LinkedIn: Feed — scroll down 800–1200px to load more posts. Profile — scroll down to load more sections. Notifications — scroll down for older notifications. Messaging conversations sidebar — scroll within .msg-conversations-container. Search results — scroll down for more results. My Network suggestions — scroll down for more people to follow/connect.';
 export async function handleBrowserScroll(args) {
-    const resolved = await ni.resolveSession(args.sessionId);
+    const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
     if ('error' in resolved)
         return text(resolved.error);
-    const result = await ni.scroll(resolved.sessionId, { direction: args.direction, distance: args.distance, selector: args.selector });
+    const result = await ni.scroll(resolved.sessionId, { direction: args.direction, distance: args.distance, selector: args.selector }, resolved.tabId);
     if (result.error)
         return text(`Scroll failed: ${result.error}`);
     const target = args.selector ? `"${args.selector}"` : 'page';
@@ -200,15 +208,16 @@ export const browserUploadSchema = {
     filePaths: z.array(z.string()).describe('Absolute file paths to upload. Twitter supports up to 4 images or 1 video per tweet.'),
     nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple file inputs, upload to the Nth one (0-indexed).'),
     sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+    tabId: tabIdField,
 };
 export const browserUploadDescription = 'Upload one or more files via a file input element. For Twitter/X: click the media button first to reveal the hidden file input, then use selector \'input[data-testid="fileInput"]\'. ' +
     'TikTok Studio: click button:has-text("Selecionar vídeo") first, then use selector \'input[type="file"]\' — supports a single video file. ' +
     'Instagram: Click svg[aria-label="Novo post"] in sidebar to open the create dialog, then use browser_upload on the file input that appears. Supports images and videos.';
 export async function handleBrowserUpload(args) {
-    const resolved = await ni.resolveSession(args.sessionId);
+    const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
     if ('error' in resolved)
         return text(resolved.error);
-    const result = await ni.upload(resolved.sessionId, args.selector, args.filePaths, args.nthMatch);
+    const result = await ni.upload(resolved.sessionId, args.selector, args.filePaths, args.nthMatch, resolved.tabId);
     if (result.error)
         return text(`Upload failed: ${result.error}${formatClickHints(result)}`);
     return text(`Uploaded ${args.filePaths.length} file(s) via "${args.selector}" — now at ${result.url} "${result.title}"`);

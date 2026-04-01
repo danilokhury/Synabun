@@ -24,8 +24,9 @@ interface NiResponse {
  */
 export declare function resolveSession(sessionId?: string, autoCreate?: {
     url?: string;
-}): Promise<{
+}, tabId?: string): Promise<{
     sessionId: string;
+    tabId?: string;
 } | {
     error: string;
 }>;
@@ -33,34 +34,34 @@ export declare function invalidateCache(reason: string): Promise<void>;
 export declare function listSessions(): Promise<NiResponse>;
 export declare function createSession(url?: string): Promise<NiResponse>;
 export declare function closeSession(sessionId: string): Promise<NiResponse>;
-export declare function navigate(sessionId: string, url: string): Promise<NiResponse>;
-export declare function goBack(sessionId: string): Promise<NiResponse>;
-export declare function goForward(sessionId: string): Promise<NiResponse>;
-export declare function reload(sessionId: string): Promise<NiResponse>;
-export declare function click(sessionId: string, selector: string, nthMatch?: number): Promise<NiResponse>;
-export declare function fill(sessionId: string, selector: string, value: string, nthMatch?: number): Promise<NiResponse>;
-export declare function type(sessionId: string, selector: string | null, text: string, nthMatch?: number): Promise<NiResponse>;
-export declare function hover(sessionId: string, selector: string, nthMatch?: number): Promise<NiResponse>;
-export declare function selectOption(sessionId: string, selector: string, value: string, nthMatch?: number): Promise<NiResponse>;
-export declare function pressKey(sessionId: string, key: string): Promise<NiResponse>;
+export declare function navigate(sessionId: string, url: string, tabId?: string): Promise<NiResponse>;
+export declare function goBack(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function goForward(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function reload(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function click(sessionId: string, selector: string, nthMatch?: number, tabId?: string): Promise<NiResponse>;
+export declare function fill(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string): Promise<NiResponse>;
+export declare function type(sessionId: string, selector: string | null, text: string, nthMatch?: number, tabId?: string): Promise<NiResponse>;
+export declare function hover(sessionId: string, selector: string, nthMatch?: number, tabId?: string): Promise<NiResponse>;
+export declare function selectOption(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string): Promise<NiResponse>;
+export declare function pressKey(sessionId: string, key: string, tabId?: string): Promise<NiResponse>;
 export declare function scroll(sessionId: string, opts: {
     direction: string;
     distance?: number;
     selector?: string;
-}): Promise<NiResponse>;
-export declare function upload(sessionId: string, selector: string, filePaths: string[], nthMatch?: number): Promise<NiResponse>;
-export declare function snapshot(sessionId: string, selector?: string): Promise<NiResponse>;
-export declare function getContent(sessionId: string): Promise<NiResponse>;
-export declare function getMarkdown(sessionId: string): Promise<NiResponse>;
+}, tabId?: string): Promise<NiResponse>;
+export declare function upload(sessionId: string, selector: string, filePaths: string[], nthMatch?: number, tabId?: string): Promise<NiResponse>;
+export declare function snapshot(sessionId: string, selector?: string, tabId?: string): Promise<NiResponse>;
+export declare function getContent(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function getMarkdown(sessionId: string, tabId?: string): Promise<NiResponse>;
 export declare function fetchMarkdown(url: string, timeout?: number): Promise<NiResponse>;
-export declare function screenshot(sessionId: string): Promise<NiResponse>;
-export declare function evaluate(sessionId: string, script: string): Promise<NiResponse>;
+export declare function screenshot(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function evaluate(sessionId: string, script: string, tabId?: string): Promise<NiResponse>;
 export declare function waitFor(sessionId: string, opts: {
     selector?: string;
     state?: string;
     loadState?: string;
     timeout?: number;
-}): Promise<NiResponse>;
+}, tabId?: string): Promise<NiResponse>;
 export declare function getWhiteboard(): Promise<NiResponse>;
 export declare function addWhiteboardElements(elements: Record<string, unknown>[], coordMode?: string, layout?: string): Promise<NiResponse>;
 export declare function updateWhiteboardElement(id: string, updates: Record<string, unknown>, coordMode?: string): Promise<NiResponse>;

@@ -178,9 +178,19 @@ const CLI_MODELS = {
   ],
 };
 
+// Effort levels for Claude models (extended thinking)
+const EFFORT_LEVELS = [
+  { id: 'off',    label: 'Off',    desc: 'No thinking' },
+  { id: 'low',    label: 'Low',    desc: 'Minimal' },
+  { id: 'medium', label: 'Med',    desc: 'Balanced', tier: 'default' },
+  { id: 'high',   label: 'High',   desc: 'Deep' },
+  { id: 'max',    label: 'Max',    desc: 'Maximum', tier: 'top' },
+];
+
 // Persistent launch preferences (remembered across launches in session)
 let _launchProfile = storage.getItem('as-launch-profile') || 'claude-code';
 let _launchModel = storage.getItem('as-launch-model') || null;
+let _launchEffort = storage.getItem('as-launch-effort') || 'off';
 
 // ── Preset Templates with Wizard Steps ──
 
@@ -785,6 +795,12 @@ function showLaunchInline(params) {
             ${renderModelChips(profile, currentModel)}
           </div>
         </div>
+        <div class="as-launch-section" id="as-launch-effort-section" style="${profile === 'claude-code' ? '' : 'display:none'}">
+          <label class="as-launch-label">Think</label>
+          <div class="as-launch-efforts" id="as-launch-efforts">
+            ${renderEffortChips(_launchEffort)}
+          </div>
+        </div>
         <div class="as-launch-section as-launch-summary">
           <div class="as-launch-summary-row">
             <span class="as-launch-summary-key">Task</span>
@@ -856,6 +872,15 @@ function renderModelChips(profileId, selectedModel) {
   `).join('');
 }
 
+function renderEffortChips(selectedEffort) {
+  return EFFORT_LEVELS.map(e => `
+    <button class="as-launch-effort${e.id === selectedEffort ? ' active' : ''}${e.tier ? ` as-launch-effort--${e.tier}` : ''}" data-effort="${e.id}">
+      <span class="as-launch-effort-name">${e.label}</span>
+      <span class="as-launch-effort-desc">${e.desc}</span>
+    </button>
+  `).join('');
+}
+
 function wireLaunchInline(container) {
   const root = container.querySelector('.as-launch-inline');
   if (!root) return;
@@ -892,10 +917,14 @@ function wireLaunchInline(container) {
         modelsContainer.innerHTML = renderModelChips(profileId, _launchModel);
         wireModelChips(root);
       }
+      // Show/hide effort section based on profile (Claude only)
+      const effortSection = root.querySelector('#as-launch-effort-section');
+      if (effortSection) effortSection.style.display = profileId === 'claude-code' ? '' : 'none';
     });
   });
 
   wireModelChips(root);
+  wireEffortChips(root);
 
   // Agent submode toggle (Single vs Loop)
   root.querySelectorAll('.as-launch-agent-submode').forEach(btn => {
@@ -926,6 +955,17 @@ function wireModelChips(container) {
   });
 }
 
+function wireEffortChips(container) {
+  container.querySelectorAll('.as-launch-effort').forEach(btn => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.as-launch-effort').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _launchEffort = btn.dataset.effort;
+      storage.setItem('as-launch-effort', _launchEffort);
+    });
+  });
+}
+
 function closeLaunchInline() {
   _pendingLaunchParams = null;
   _launchPanelActive = false;
@@ -940,7 +980,8 @@ function closeLaunchInline() {
 
 async function confirmLaunch() {
   if (!_pendingLaunchParams) return;
-  const params = { ..._pendingLaunchParams, profile: _launchProfile, model: _launchModel };
+  const effort = (_launchProfile === 'claude-code' && _launchEffort && _launchEffort !== 'off') ? _launchEffort : undefined;
+  const params = { ..._pendingLaunchParams, profile: _launchProfile, model: _launchModel, effort };
 
   // Read agent values BEFORE closing (closeLaunchInline re-renders detail view)
   const withSynabun = !!document.getElementById('as-agent-synabun')?.checked;
@@ -960,6 +1001,7 @@ async function confirmLaunch() {
       const result = await launchAgent({
         task: params.task,
         model: params.model || undefined,
+        effort: params.effort || undefined,
         cwd: params.cwd || undefined,
         maxTurns: params.usesBrowser ? 100 : 75,
         withSynabun,
@@ -2886,6 +2928,9 @@ async function handlePanelClick(e) {
       const defaultModel = models.find(m => m.tier === 'default') || models[0];
       _launchModel = defaultModel?.id || null;
       storage.setItem('as-launch-model', _launchModel);
+      // Show/hide effort section (Claude only)
+      const qtEffortSec = $('as-qt-effort-section');
+      if (qtEffortSec) qtEffortSec.style.display = profileId === 'claude-code' ? '' : 'none';
       renderSchedulesMain();
       break;
     }
@@ -2897,6 +2942,16 @@ async function handlePanelClick(e) {
       storage.setItem('as-launch-model', _launchModel);
       // Update visual selection inline (avoid full re-render)
       $('as-qt-models')?.querySelectorAll('.as-launch-model').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      break;
+    }
+
+    case 'qt-effort': {
+      const effortId = btn.dataset.effort;
+      if (!effortId) break;
+      _launchEffort = effortId;
+      storage.setItem('as-launch-effort', _launchEffort);
+      $('as-qt-efforts')?.querySelectorAll('.as-launch-effort').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       break;
     }
@@ -2924,8 +2979,9 @@ async function handlePanelClick(e) {
       const qtProfile = _launchProfile || 'claude-code';
       const qtModel = _launchModel || null;
       const qtBrowser = !!$('as-qt-browser')?.checked;
+      const qtEffort = (qtProfile === 'claude-code' && _launchEffort && _launchEffort !== 'off') ? _launchEffort : undefined;
       try {
-        const result = await createQuickTimer(templateId, mins, { profile: qtProfile, model: qtModel, usesBrowser: qtBrowser });
+        const result = await createQuickTimer(templateId, mins, { profile: qtProfile, model: qtModel, usesBrowser: qtBrowser, effort: qtEffort });
         // Guard: WebSocket sync:quick-timer:set may arrive before this HTTP response
         if (!_quickTimers.some(t => t.id === result.timerId)) {
           _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, usesBrowser: result.usesBrowser });
@@ -2945,8 +3001,9 @@ async function handlePanelClick(e) {
       const qtProfile = _launchProfile || 'claude-code';
       const qtModel = _launchModel || null;
       const qtBrowser = !!$('as-qt-browser')?.checked;
+      const qtEffort = (qtProfile === 'claude-code' && _launchEffort && _launchEffort !== 'off') ? _launchEffort : undefined;
       try {
-        const result = await triggerQuickTimerNow(templateId, { profile: qtProfile, model: qtModel, usesBrowser: qtBrowser });
+        const result = await triggerQuickTimerNow(templateId, { profile: qtProfile, model: qtModel, usesBrowser: qtBrowser, effort: qtEffort });
         showToast(`Firing now: ${result.templateName}`);
       } catch (err) { showToast('Run Now failed: ' + err.message); }
       break;
@@ -3260,6 +3317,13 @@ function renderSchedulesMain() {
     </button>
   `).join('');
 
+  const qtEffortChips = EFFORT_LEVELS.map(e => `
+    <button class="as-launch-effort${e.id === _launchEffort ? ' active' : ''}${e.tier ? ` as-launch-effort--${e.tier}` : ''}" data-action="qt-effort" data-effort="${e.id}">
+      <span class="as-launch-effort-name">${e.label}</span>
+      <span class="as-launch-effort-desc">${e.desc}</span>
+    </button>
+  `).join('');
+
   // Determine browser toggle default from selected template
   const selectedTpl = $('as-qt-template')?.value;
   const selectedTemplate = selectedTpl ? allTemplates.find(t => t.id === selectedTpl) : null;
@@ -3278,6 +3342,10 @@ function renderSchedulesMain() {
       <div class="as-qt-group">
         <span class="as-launch-label">Model</span>
         <div class="as-launch-models" id="as-qt-models">${qtModelChips}</div>
+      </div>
+      <div class="as-qt-group" id="as-qt-effort-section" style="${qtProfile === 'claude-code' ? '' : 'display:none'}">
+        <span class="as-launch-label">Think</span>
+        <div class="as-launch-efforts" id="as-qt-efforts">${qtEffortChips}</div>
       </div>
       <div class="as-qt-group">
         <span class="as-launch-label">Browser</span>

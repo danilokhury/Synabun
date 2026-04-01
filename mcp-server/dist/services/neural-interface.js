@@ -7,6 +7,7 @@ const BASE_URL = process.env.NEURAL_INTERFACE_URL
     || `http://localhost:${process.env.NEURAL_PORT || '3344'}`;
 const DEFAULT_TIMEOUT = 10_000;
 const LONG_TIMEOUT = 30_000;
+const SESSION_CREATE_TIMEOUT = 70_000;
 async function request(method, path, body, timeout = DEFAULT_TIMEOUT) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
@@ -44,7 +45,9 @@ async function request(method, path, body, timeout = DEFAULT_TIMEOUT) {
  * - If 0 sessions exist and autoCreate is true, create one.
  * - If multiple sessions and no ID, return error listing them.
  */
-export async function resolveSession(sessionId, autoCreate) {
+export async function resolveSession(sessionId, autoCreate, tabId) {
+    // Resolve tab ID from explicit param or environment variable
+    const resolvedTabId = tabId || process.env.SYNABUN_BROWSER_TAB || undefined;
     // Agent-scoped browser session — set by the agent orchestrator to pin
     // this MCP instance to a specific browser session (multi-agent isolation).
     // Verify the pinned session still exists; fall through to auto-select if gone.
@@ -53,13 +56,13 @@ export async function resolveSession(sessionId, autoCreate) {
         const check = await request('GET', '/api/browser/sessions');
         const active = (check.sessions || []).find(s => s.id === pinnedSession);
         if (active)
-            return { sessionId: pinnedSession };
-        // Pinned session is gone — fall through to auto-select/create below
+            return { sessionId: pinnedSession, tabId: resolvedTabId };
+        return { error: `Pinned browser session ${pinnedSession} is no longer available. Launch the automation again so SynaBun can open the selected browser profile.` };
     }
     if (sessionId) {
         // Trust the server — it will 404 if the session doesn't exist.
         // Skipping the extra GET /api/browser/sessions verification call saves a full round-trip.
-        return { sessionId };
+        return { sessionId, tabId: resolvedTabId };
     }
     // List sessions
     const data = await request('GET', '/api/browser/sessions');
@@ -67,16 +70,16 @@ export async function resolveSession(sessionId, autoCreate) {
         return { error: data.error };
     const sessions = (data.sessions || []);
     if (sessions.length === 1) {
-        return { sessionId: sessions[0].id };
+        return { sessionId: sessions[0].id, tabId: resolvedTabId };
     }
     if (sessions.length === 0) {
         if (autoCreate) {
             const created = await request('POST', '/api/browser/sessions', {
                 url: autoCreate.url || 'about:blank',
-            }, LONG_TIMEOUT);
+            }, SESSION_CREATE_TIMEOUT);
             if (created.error)
                 return { error: `Failed to auto-create session: ${created.error}` };
-            return { sessionId: created.sessionId };
+            return { sessionId: created.sessionId, tabId: resolvedTabId };
         }
         return { error: 'No browser sessions open. Use browser_session to create one first, or use browser_navigate with a URL to auto-create.' };
     }
@@ -100,73 +103,77 @@ export async function listSessions() {
 export async function createSession(url) {
     return request('POST', '/api/browser/sessions', {
         url: url || 'about:blank',
-    }, LONG_TIMEOUT);
+    }, SESSION_CREATE_TIMEOUT);
 }
 export async function closeSession(sessionId) {
     return request('DELETE', `/api/browser/sessions/${sessionId}`);
 }
 // ── Navigation ──
-export async function navigate(sessionId, url) {
-    return request('POST', `/api/browser/sessions/${sessionId}/navigate`, { url }, LONG_TIMEOUT);
+export async function navigate(sessionId, url, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/navigate`, { url, ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
-export async function goBack(sessionId) {
-    return request('POST', `/api/browser/sessions/${sessionId}/back`);
+export async function goBack(sessionId, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/back`, { ...(tabId && { tabId }) });
 }
-export async function goForward(sessionId) {
-    return request('POST', `/api/browser/sessions/${sessionId}/forward`);
+export async function goForward(sessionId, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/forward`, { ...(tabId && { tabId }) });
 }
-export async function reload(sessionId) {
-    return request('POST', `/api/browser/sessions/${sessionId}/reload`, undefined, LONG_TIMEOUT);
+export async function reload(sessionId, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/reload`, { ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 // ── Interaction (selector-based) ──
-export async function click(sessionId, selector, nthMatch) {
-    return request('POST', `/api/browser/sessions/${sessionId}/click`, { selector, ...(nthMatch !== undefined && { nthMatch }) });
+export async function click(sessionId, selector, nthMatch, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/click`, { selector, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
 }
-export async function fill(sessionId, selector, value, nthMatch) {
-    return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value, ...(nthMatch !== undefined && { nthMatch }) });
+export async function fill(sessionId, selector, value, nthMatch, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
 }
-export async function type(sessionId, selector, text, nthMatch) {
-    return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text, ...(nthMatch !== undefined && { nthMatch }) });
+export async function type(sessionId, selector, text, nthMatch, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
 }
-export async function hover(sessionId, selector, nthMatch) {
-    return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector, ...(nthMatch !== undefined && { nthMatch }) });
+export async function hover(sessionId, selector, nthMatch, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
 }
-export async function selectOption(sessionId, selector, value, nthMatch) {
-    return request('POST', `/api/browser/sessions/${sessionId}/select`, { selector, value, ...(nthMatch !== undefined && { nthMatch }) });
+export async function selectOption(sessionId, selector, value, nthMatch, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/select`, { selector, value, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
 }
-export async function pressKey(sessionId, key) {
-    return request('POST', `/api/browser/sessions/${sessionId}/press`, { key });
+export async function pressKey(sessionId, key, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/press`, { key, ...(tabId && { tabId }) });
 }
-export async function scroll(sessionId, opts) {
-    return request('POST', `/api/browser/sessions/${sessionId}/scroll`, opts);
+export async function scroll(sessionId, opts, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/scroll`, { ...opts, ...(tabId && { tabId }) });
 }
-export async function upload(sessionId, selector, filePaths, nthMatch) {
-    return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths, ...(nthMatch !== undefined && { nthMatch }) }, LONG_TIMEOUT);
+export async function upload(sessionId, selector, filePaths, nthMatch, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 // ── Observation ──
-export async function snapshot(sessionId, selector) {
+export async function snapshot(sessionId, selector, tabId) {
     if (selector)
-        return request('POST', `/api/browser/sessions/${sessionId}/snapshot`, { selector });
-    return request('GET', `/api/browser/sessions/${sessionId}/snapshot`);
+        return request('POST', `/api/browser/sessions/${sessionId}/snapshot`, { selector, ...(tabId && { tabId }) });
+    const qs = tabId ? `?tabId=${tabId}` : '';
+    return request('GET', `/api/browser/sessions/${sessionId}/snapshot${qs}`);
 }
-export async function getContent(sessionId) {
-    return request('GET', `/api/browser/sessions/${sessionId}/content`);
+export async function getContent(sessionId, tabId) {
+    const qs = tabId ? `?tabId=${tabId}` : '';
+    return request('GET', `/api/browser/sessions/${sessionId}/content${qs}`);
 }
-export async function getMarkdown(sessionId) {
-    return request('GET', `/api/browser/sessions/${sessionId}/markdown`, undefined, LONG_TIMEOUT);
+export async function getMarkdown(sessionId, tabId) {
+    const qs = tabId ? `?tabId=${tabId}` : '';
+    return request('GET', `/api/browser/sessions/${sessionId}/markdown${qs}`, undefined, LONG_TIMEOUT);
 }
 export async function fetchMarkdown(url, timeout) {
     return request('POST', '/api/fetch-markdown', { url, timeout }, LONG_TIMEOUT);
 }
-export async function screenshot(sessionId) {
-    return request('GET', `/api/browser/sessions/${sessionId}/screenshot-base64`);
+export async function screenshot(sessionId, tabId) {
+    const qs = tabId ? `?tabId=${tabId}` : '';
+    return request('GET', `/api/browser/sessions/${sessionId}/screenshot-base64${qs}`);
 }
 // ── Advanced ──
-export async function evaluate(sessionId, script) {
-    return request('POST', `/api/browser/sessions/${sessionId}/evaluate`, { script }, LONG_TIMEOUT);
+export async function evaluate(sessionId, script, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/evaluate`, { script, ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
-export async function waitFor(sessionId, opts) {
-    return request('POST', `/api/browser/sessions/${sessionId}/wait`, opts, LONG_TIMEOUT);
+export async function waitFor(sessionId, opts, tabId) {
+    return request('POST', `/api/browser/sessions/${sessionId}/wait`, { ...opts, ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 // ── Whiteboard ──
 export async function getWhiteboard() {

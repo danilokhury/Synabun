@@ -4553,7 +4553,7 @@ app.get('/api/loop/active', (req, res) => {
 // POST /api/loop/launch — create loop state + terminal session atomically
 app.post('/api/loop/launch', async (req, res) => {
   try {
-    const { task, context, iterations, maxMinutes, usesBrowser, cwd, profile, model, browserSessionId: requestedBrowserSessionId } = req.body;
+    const { task, context, iterations, maxMinutes, usesBrowser, cwd, profile, model, effort, browserSessionId: requestedBrowserSessionId } = req.body;
     if (!task?.trim()) return res.status(400).json({ error: 'task is required' });
 
     // Validate profile if provided
@@ -4587,22 +4587,33 @@ app.post('/api/loop/launch', async (req, res) => {
     let browserSessionId = null;
     let browserTabId = null;
     if (usesBrowser) {
-      // Strategy 1: Reuse an existing CDP browser session (shared system browser)
-      for (const [id, session] of browserSessions) {
-        if (session._profileMode === 'cdp') {
+      // Strategy 0: Best-effort pin to the caller-provided browser session.
+      if (requestedBrowserSessionId) {
+        const requested = browserSessions.get(requestedBrowserSessionId);
+        if (requested) {
           try {
-            await session.page.evaluate('1');
-            browserSessionId = id;
-            console.log(`[loop] Reusing existing CDP browser session ${browserSessionId}`);
-            break;
-          } catch {
-            console.warn(`[loop] Existing CDP session ${id} is a zombie — destroying`);
-            await destroyBrowserSession(id).catch(() => {});
+            await requested.page.evaluate('1');
+            browserSessionId = requestedBrowserSessionId;
+            console.log(`[loop] Using requested browser session ${browserSessionId}`);
+          } catch (err) {
+            console.warn(`[loop] Requested browser session ${requestedBrowserSessionId} is unhealthy — destroying`);
+            await destroyBrowserSession(requestedBrowserSessionId).catch(() => {});
           }
+        } else {
+          console.warn(`[loop] Requested browser session ${requestedBrowserSessionId} not found — falling back to shared discovery`);
         }
       }
 
-      // Strategy 2: No existing session — ensure Chrome is debuggable, then create one
+      // Strategy 1: Reuse an existing healthy browser session
+      if (!browserSessionId) {
+        const reusable = await findReusableBrowserSession({ excludeAgentOwned: true });
+        if (reusable) {
+          browserSessionId = reusable.id;
+          console.log(`[loop] Reusing existing browser session ${browserSessionId}`);
+        }
+      }
+
+      // Strategy 2: No existing session — create one using the selected browser profile
       if (!browserSessionId) {
         try {
           const result = await createBrowserSession({ url: 'about:blank' });
@@ -4614,30 +4625,32 @@ app.post('/api/loop/launch', async (req, res) => {
             profileMode: result.profileMode, profileSource: result.profileSource,
           });
         } catch (err) {
-          console.warn(`[loop] Failed to create browser session: ${err.message} — MCP agent will auto-create`);
+          console.warn(`[loop] Failed to create browser session: ${err.message}`);
         }
       }
 
+      if (!browserSessionId) {
+        return res.status(500).json({ error: 'Could not start browser session for this loop. Open Browser Settings and verify the selected profile can launch.' });
+      }
+
       // Open a new tab in the shared session for this loop
-      if (browserSessionId) {
-        const claimedSession = browserSessions.get(browserSessionId);
-        if (claimedSession?.graceTimer) {
-          clearTimeout(claimedSession.graceTimer);
-          claimedSession.graceTimer = null;
+      const claimedSession = browserSessions.get(browserSessionId);
+      if (claimedSession?.graceTimer) {
+        clearTimeout(claimedSession.graceTimer);
+        claimedSession.graceTimer = null;
+      }
+      if (claimedSession?.tabs && claimedSession.tabs.size > 0) {
+        try {
+          const newTab = await createSessionTab(claimedSession, browserSessionId, 'about:blank');
+          browserTabId = newTab.tabId;
+          await _switchSessionTab(claimedSession, browserSessionId, browserTabId);
+          console.log(`[loop] Created new tab ${browserTabId} in session ${browserSessionId}`);
+        } catch (err) {
+          console.warn(`[loop] Failed to create new tab, reusing active tab:`, err.message);
+          browserTabId = claimedSession.activeTabId;
         }
-        if (claimedSession?.tabs && claimedSession.tabs.size > 0) {
-          try {
-            const newTab = await createSessionTab(claimedSession, browserSessionId, 'about:blank');
-            browserTabId = newTab.tabId;
-            await _switchSessionTab(claimedSession, browserSessionId, browserTabId);
-            console.log(`[loop] Created new tab ${browserTabId} in session ${browserSessionId}`);
-          } catch (err) {
-            console.warn(`[loop] Failed to create new tab, reusing active tab:`, err.message);
-            browserTabId = claimedSession.activeTabId;
-          }
-        } else {
-          browserTabId = claimedSession?.activeTabId || null;
-        }
+      } else {
+        browserTabId = claimedSession?.activeTabId || null;
       }
     }
 
@@ -4652,7 +4665,8 @@ app.post('/api/loop/launch', async (req, res) => {
     const terminalSessionId = randomBytes(16).toString('hex');
     const loopExtraEnv = { SYNABUN_TERMINAL_SESSION: terminalSessionId };
     if (browserSessionId) loopExtraEnv.SYNABUN_BROWSER_SESSION = browserSessionId;
-    createTerminalSession(cliProfile, 120, 30, loopCwd, { model, extraEnv: loopExtraEnv, sessionId: terminalSessionId });
+    if (browserTabId) loopExtraEnv.SYNABUN_BROWSER_TAB = browserTabId;
+    createTerminalSession(cliProfile, 120, 30, loopCwd, { model, effort, extraEnv: loopExtraEnv, sessionId: terminalSessionId });
 
     // 3. Create pending loop state file (placeholder — prompt-submit hook will rename)
     const pendingId = 'pending-' + randomBytes(8).toString('hex');
@@ -4673,6 +4687,7 @@ app.post('/api/loop/launch', async (req, res) => {
       browserTabId: browserTabId || null,
       profile: cliProfile,
       model: model || null,
+      effort: effort || null,
     };
     writeFileSync(resolve(LOOP_DIR, `${pendingId}.json`), JSON.stringify(loopState, null, 2));
 
@@ -4946,18 +4961,17 @@ async function launchScheduledLoop(schedule) {
 
     const cliProfile = schedule.profile || 'claude-code';
     const cliModel = schedule.model || null;
+    const cliEffort = schedule.effort || null;
     const scheduledUsesBrowser = schedule.usesBrowser !== undefined ? !!schedule.usesBrowser : !!template.usesBrowser;
 
-    // Reuse existing CDP browser session or create shared one
+    // Reuse an existing healthy browser session or create one
     let scheduledBrowserSessionId = null;
     let scheduledBrowserTabId = null;
     const schedExtraEnv = {};
     if (scheduledUsesBrowser) {
-      // Try to reuse existing CDP session
-      for (const [id, session] of browserSessions) {
-        if (session._profileMode === 'cdp') {
-          try { await session.page.evaluate('1'); scheduledBrowserSessionId = id; break; } catch {}
-        }
+      const reusable = await findReusableBrowserSession({ excludeAgentOwned: true });
+      if (reusable) {
+        scheduledBrowserSessionId = reusable.id;
       }
       // Create if none exists
       if (!scheduledBrowserSessionId) {
@@ -4974,6 +4988,9 @@ async function launchScheduledLoop(schedule) {
           console.warn(`[schedule] Failed to create browser session: ${err.message}`);
         }
       }
+      if (!scheduledBrowserSessionId) {
+        throw new Error('Could not start browser session for scheduled loop');
+      }
       // Open a new tab for this scheduled loop
       if (scheduledBrowserSessionId) {
         schedExtraEnv.SYNABUN_BROWSER_SESSION = scheduledBrowserSessionId;
@@ -4986,10 +5003,11 @@ async function launchScheduledLoop(schedule) {
             await _switchSessionTab(bSession, scheduledBrowserSessionId, scheduledBrowserTabId);
           } catch { scheduledBrowserTabId = bSession.activeTabId; }
         }
+        if (scheduledBrowserTabId) schedExtraEnv.SYNABUN_BROWSER_TAB = scheduledBrowserTabId;
       }
     }
 
-    const terminalSessionId = createTerminalSession(cliProfile, 120, 30, PACKAGE_ROOT, { model: cliModel, extraEnv: schedExtraEnv });
+    const terminalSessionId = createTerminalSession(cliProfile, 120, 30, PACKAGE_ROOT, { model: cliModel, effort: cliEffort, extraEnv: schedExtraEnv });
 
     const pendingId = 'pending-' + randomBytes(8).toString('hex');
     const loopState = {
@@ -5157,6 +5175,7 @@ function launchQuickTimer(timerId, templateId, context) {
     dayThemes: {},
     profile: timerData.profile || undefined,
     model: timerData.model || undefined,
+    effort: timerData.effort || undefined,
     usesBrowser: timerData.usesBrowser,
   };
   console.log(`[quick-timer] Firing "${template.name}" (timer ${timerId}) profile=${fakeSchedule.profile || 'default'} model=${fakeSchedule.model || 'default'}`);
@@ -5168,7 +5187,7 @@ function launchQuickTimer(timerId, templateId, context) {
 // POST /api/quick-timer — fire a template after N minutes (standalone, no schedule)
 app.post('/api/quick-timer', (req, res) => {
   try {
-    const { templateId, minutes, context, profile, model, usesBrowser } = req.body;
+    const { templateId, minutes, context, profile, model, effort, usesBrowser } = req.body;
     const mins = Number(minutes);
     if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
     if (!mins || mins < 1 || mins > 1440) return res.status(400).json({ error: 'minutes must be 1–1440' });
@@ -5181,6 +5200,7 @@ app.post('/api/quick-timer', (req, res) => {
     const firesAt = new Date(Date.now() + mins * 60_000).toISOString();
     const timerProfile = profile || 'claude-code';
     const timerModel = model || null;
+    const timerEffort = effort || null;
     const timerUsesBrowser = usesBrowser !== undefined ? !!usesBrowser : !!template.usesBrowser;
 
     const timeoutId = setTimeout(() => {
@@ -5188,10 +5208,10 @@ app.post('/api/quick-timer', (req, res) => {
       _quickTimers.delete(timerId);
     }, mins * 60_000);
 
-    _quickTimers.set(timerId, { timeoutId, templateId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, usesBrowser: timerUsesBrowser, createdAt: new Date().toISOString() });
-    console.log(`[quick-timer] Set: "${template.name}" fires in ${mins}m at ${firesAt} (${timerProfile}/${timerModel || 'default'})`);
-    broadcastSync({ type: 'quick-timer:set', timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, usesBrowser: timerUsesBrowser });
-    res.json({ ok: true, timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, usesBrowser: timerUsesBrowser });
+    _quickTimers.set(timerId, { timeoutId, templateId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, effort: timerEffort, usesBrowser: timerUsesBrowser, createdAt: new Date().toISOString() });
+    console.log(`[quick-timer] Set: "${template.name}" fires in ${mins}m at ${firesAt} (${timerProfile}/${timerModel || 'default'}${timerEffort ? '/' + timerEffort : ''})`);
+    broadcastSync({ type: 'quick-timer:set', timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, effort: timerEffort, usesBrowser: timerUsesBrowser });
+    res.json({ ok: true, timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, effort: timerEffort, usesBrowser: timerUsesBrowser });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -5220,7 +5240,7 @@ app.delete('/api/quick-timers/:id', (req, res) => {
 // POST /api/quick-timer/now — fire a template immediately (same pipeline as scheduled, for debugging)
 app.post('/api/quick-timer/now', (req, res) => {
   try {
-    const { templateId, profile, model, usesBrowser } = req.body;
+    const { templateId, profile, model, effort, usesBrowser } = req.body;
     if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
 
     const templates = readLoopTemplates();
@@ -5229,6 +5249,7 @@ app.post('/api/quick-timer/now', (req, res) => {
 
     const timerProfile = profile || 'claude-code';
     const timerModel = model || null;
+    const timerEffort = effort || null;
     const timerUsesBrowser = usesBrowser !== undefined ? !!usesBrowser : !!template.usesBrowser;
 
     const fakeSchedule = {
@@ -5239,15 +5260,16 @@ app.post('/api/quick-timer/now', (req, res) => {
       dayThemes: {},
       profile: timerProfile,
       model: timerModel,
+      effort: timerEffort,
       usesBrowser: timerUsesBrowser,
     };
 
-    console.log(`[quick-timer] Firing NOW "${template.name}" profile=${timerProfile} model=${timerModel || 'default'}`);
+    console.log(`[quick-timer] Firing NOW "${template.name}" profile=${timerProfile} model=${timerModel || 'default'}${timerEffort ? ' effort=' + timerEffort : ''}`);
     _scheduleQueue.push(fakeSchedule);
     processScheduleQueue();
 
-    broadcastSync({ type: 'quick-timer:fired-now', templateName: template.name, profile: timerProfile, model: timerModel });
-    res.json({ ok: true, templateName: template.name, profile: timerProfile, model: timerModel, usesBrowser: timerUsesBrowser });
+    broadcastSync({ type: 'quick-timer:fired-now', templateName: template.name, profile: timerProfile, model: timerModel, effort: timerEffort });
+    res.json({ ok: true, templateName: template.name, profile: timerProfile, model: timerModel, effort: timerEffort, usesBrowser: timerUsesBrowser });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -5452,12 +5474,13 @@ const AGENT_IS_WIN = process.platform === 'win32';
  * - withSynabun=false → empty config (fully isolated)
  * - withSynabun=true  → includes SynaBun MCP with optional browser session pinning
  */
-function buildAgentMcpConfig(withSynabun, browserSessionId) {
+function buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId) {
   if (!withSynabun) return '{"mcpServers":{}}';
   const mcpPreload = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'preload.js');
   const dotenvPath = resolve(DATA_HOME, '.env');
   const env = { DOTENV_PATH: dotenvPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') };
   if (browserSessionId) env.SYNABUN_BROWSER_SESSION = browserSessionId;
+  if (browserTabId) env.SYNABUN_BROWSER_TAB = browserTabId;
   return JSON.stringify({
     mcpServers: {
       SynaBun: { type: 'stdio', command: 'node', args: [mcpPreload], env },
@@ -5493,6 +5516,7 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
     agent._resumableSessionId = sessionId; // Mark this session-id as resumable for next iteration
 
     if (agent.model && agent.model !== 'default') args.push('--model', agent.model);
+    if (agent.effort && ['low', 'medium', 'high', 'max'].includes(agent.effort)) args.push('--effort', agent.effort);
     if (agent._maxTurns) args.push('--max-turns', String(agent._maxTurns));
     if (agent._systemPrompt) args.push('--system-prompt', agent._systemPrompt);
     if (agent._allowedTools?.length) args.push('--allowedTools', ...agent._allowedTools);
@@ -5598,13 +5622,13 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
  */
 async function launchAgentController(opts) {
   const {
-    task, model, cwd, allowedTools, addDirs, systemPrompt, maxTurns,
-    withSynabun = false, browserSessionId = null,
+    task, model, effort, cwd, allowedTools, addDirs, systemPrompt, maxTurns,
+    withSynabun = false, browserSessionId = null, browserTabId = null,
     mode = 'single', iterations = 1, maxMinutes = 30, context = null,
   } = opts;
 
   const agentId = randomUUID();
-  const mcpConfig = buildAgentMcpConfig(withSynabun, browserSessionId);
+  const mcpConfig = buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId);
   const agentCwd = cwd || PACKAGE_ROOT;
 
   // Build default system prompt for agents — overrides CLAUDE.md boot sequence
@@ -5649,6 +5673,7 @@ async function launchAgentController(opts) {
     sessionId: randomUUID(),
     task,
     model: model || 'default',
+    effort: effort || null,
     cwd: agentCwd,
     status: 'running',
     mode,
@@ -5729,7 +5754,8 @@ async function launchAgentController(opts) {
             agent.browserSessionId = nb.sessionId;
             const bs = browserSessions.get(nb.sessionId);
             if (bs) bs._agentOwned = agentId;
-            agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, agent.browserSessionId);
+            agent.browserTabId = bs?.activeTabId || null;
+            agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, agent.browserSessionId, agent.browserTabId);
             console.log(`[agent] ${agentId} fresh browser ${agent.browserSessionId} for iteration ${i}`);
             break;
           } catch (err) {
@@ -5738,7 +5764,7 @@ async function launchAgentController(opts) {
             else {
               console.error(`[agent] ${agentId} all browser create attempts failed for iteration ${i}`);
               // Update MCP config without browser so agent doesn't reference a dead session
-              agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, null);
+              agent._mcpConfig = buildAgentMcpConfig(agent.withSynabun, null, null);
             }
           }
         }
@@ -5886,7 +5912,7 @@ async function launchAgentController(opts) {
 app.post('/api/agents/launch', async (req, res) => {
   try {
     const {
-      task, model, cwd, allowedTools, addDirs, systemPrompt, maxTurns,
+      task, model, effort, cwd, allowedTools, addDirs, systemPrompt, maxTurns,
       withSynabun, browserProfile,
       mode, iterations, maxMinutes, context,
     } = req.body;
@@ -5906,7 +5932,8 @@ app.post('/api/agents/launch', async (req, res) => {
         });
         console.log(`[agent] Pre-created browser session ${browserSessionId} for agent`);
       } catch (err) {
-        console.warn(`[agent] Browser pre-create failed: ${err.message} — agent will auto-create on first browser_navigate`);
+        console.warn(`[agent] Browser pre-create failed: ${err.message}`);
+        return res.status(500).json({ error: `Could not start browser session for this automation: ${err.message}` });
       }
     }
 
@@ -5915,7 +5942,7 @@ app.post('/api/agents/launch', async (req, res) => {
     const effectiveMaxTurns = maxTurns || (browserSessionId ? 200 : 100);
 
     const agent = await launchAgentController({
-      task: task.trim(), model, cwd, allowedTools, addDirs, systemPrompt,
+      task: task.trim(), model, effort, cwd, allowedTools, addDirs, systemPrompt,
       maxTurns: effectiveMaxTurns,
       withSynabun: !!withSynabun,
       browserSessionId,
@@ -10446,6 +10473,14 @@ function getTerminalProfile(profileId, opts = {}) {
     if (builder) cmd = builder(cleanModel);
   }
 
+  // Append effort flag for Claude Code (extended thinking)
+  if (opts.effort && profileId === 'claude-code') {
+    const validEfforts = ['low', 'medium', 'high', 'max'];
+    if (validEfforts.includes(opts.effort)) {
+      cmd = `${cmd} --effort ${opts.effort}`;
+    }
+  }
+
   return {
     shell: DEFAULT_SHELL,
     args: IS_WIN ? ['/k', cmd] : ['-c', `${cmd}; exec $SHELL`],
@@ -12598,6 +12633,38 @@ function isSessionUsedByActiveLoop(sessionId) {
   return false;
 }
 
+async function findReusableBrowserSession(opts = {}) {
+  const { excludeAgentOwned = true } = opts;
+  const cfg = loadBrowserConfig();
+  let selectedPath = cfg.userDataDir || '';
+  if (selectedPath && !selectedPath.startsWith('/') && !(/^[A-Z]:/i.test(selectedPath))) {
+    selectedPath = resolve(DATA_HOME, selectedPath);
+  }
+  const normalize = (p) => (p || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+  const selectedNorm = normalize(selectedPath);
+  for (const [id, session] of browserSessions) {
+    if (excludeAgentOwned && session._agentOwned) continue;
+    if (selectedNorm) {
+      const sessionSelected = normalize(session._selectedProfilePath);
+      const sessionRoot = normalize(session._launchUserDataDir);
+      const sessionActiveProfile = normalize(resolve(session._launchUserDataDir || '', session._launchProfileDirectory || 'Default'));
+      if (selectedNorm !== sessionSelected && selectedNorm !== sessionRoot && selectedNorm !== sessionActiveProfile) {
+        continue;
+      }
+    } else if (session._profileMode !== 'clean') {
+      continue;
+    }
+    try {
+      await session.page.evaluate('1');
+      return { id, session };
+    } catch {
+      console.warn(`[browser] Existing session ${id} is a zombie — destroying`);
+      await destroyBrowserSession(id).catch(() => {});
+    }
+  }
+  return null;
+}
+
 // ── Real-time sync WebSocket (multi-client state broadcast) ──
 const syncClients = new Set(); // Set<WebSocket>
 
@@ -12927,44 +12994,173 @@ function detectChromeProfiles() {
   return profiles;
 }
 
+function lookupDetectedProfile(profilePath) {
+  if (!profilePath) return null;
+  const needle = profilePath.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+  return detectChromeProfiles().find(p => (
+    p.path.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '') === needle
+  )) || null;
+}
+
+function isBrowserProcessRunning(browserType = 'chrome') {
+  try {
+    if (IS_WIN) {
+      const image = browserType === 'msedge' ? 'msedge.exe' : 'chrome.exe';
+      const tasklist = execSync(`tasklist /FI "IMAGENAME eq ${image}" /NH`, { encoding: 'utf8', timeout: 3000 });
+      return tasklist.toLowerCase().includes(image.toLowerCase());
+    }
+    if (process.platform === 'darwin') {
+      const proc = browserType === 'msedge' ? 'Microsoft Edge' : browserType === 'chromium' ? 'Chromium' : 'Google Chrome';
+      const pgrep = execSync(`pgrep -x "${proc}"`, { encoding: 'utf8', timeout: 3000 });
+      return pgrep.trim().length > 0;
+    }
+    const primary = browserType === 'msedge' ? 'microsoft-edge' : browserType === 'chromium' ? 'chromium' : 'chrome';
+    const fallback = browserType === 'msedge' ? 'microsoft-edge-stable' : browserType === 'chromium' ? 'chromium-browser' : 'google-chrome';
+    const pgrep = execSync(`pgrep -x "${primary}" || pgrep -x "${fallback}"`, { encoding: 'utf8', timeout: 3000 });
+    return pgrep.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function getManagedProfileRoot() {
+  return resolve(DATA_HOME, 'data', 'chrome-profile');
+}
+
+function prepareMirroredProfile(sourceRoot, profileDirectory, browserType = 'chrome') {
+  const sourceProfileDir = resolve(sourceRoot, profileDirectory || 'Default');
+  if (!existsSync(sourceProfileDir)) {
+    throw new Error(`Selected profile directory not found: ${sourceProfileDir}`);
+  }
+
+  const mirrorKey = createHash('md5')
+    .update(`${browserType}:${sourceRoot}:${profileDirectory || 'Default'}`)
+    .digest('hex')
+    .slice(0, 12);
+  const mirrorRoot = resolve(DATA_HOME, 'data', 'browser-profiles', mirrorKey);
+  const mirrorProfileDir = resolve(mirrorRoot, profileDirectory || 'Default');
+
+  mkdirSync(mirrorRoot, { recursive: true });
+
+  // Seed the mirror once from the selected profile; after that the mirror owns its state.
+  if (!existsSync(mirrorProfileDir)) {
+    console.log(`[browser] Seeding mirrored profile from ${sourceProfileDir} -> ${mirrorProfileDir}`);
+    cpSync(sourceProfileDir, mirrorProfileDir, { recursive: true });
+  }
+
+  const localStateSrc = resolve(sourceRoot, 'Local State');
+  const localStateDest = resolve(mirrorRoot, 'Local State');
+  if (existsSync(localStateSrc)) {
+    try { copyFileSync(localStateSrc, localStateDest); } catch {}
+  }
+
+  for (const stale of ['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'DevToolsActivePort']) {
+    try {
+      const rootPath = resolve(mirrorRoot, stale);
+      if (existsSync(rootPath)) unlinkSync(rootPath);
+    } catch {}
+    try {
+      const profilePath = resolve(mirrorProfileDir, stale);
+      if (existsSync(profilePath)) unlinkSync(profilePath);
+    } catch {}
+  }
+
+  return { mirrorRoot, mirrorProfileDir };
+}
+
 // ── Shared system browser: one-time CDP setup ──
-// Ensures Chrome is running with --remote-debugging-port=9222.
-// Called ONCE on first browser need; cached for subsequent calls.
-// Self-heals if Chrome was quit externally (re-probes port 9222).
+// Prefers port 9222 for compatibility, but can self-heal to a dynamic DevTools
+// endpoint when 9222 isn't exposed in time.
 const CDP_PORT = 9222;
+const CDP_LAUNCH_TIMEOUT_MS = 20000;
 let _chromeDebuggableReady = false;
+let _chromeCdpEndpoint = null; // http://127.0.0.1:<port>
+let _chromeDebugCacheKey = null;
 
-async function ensureChromeDebuggable() {
+function _cdpCacheKey(executablePath, userDataDir, profileDirectory) {
+  const ep = (executablePath || '').replace(/\\/g, '/').toLowerCase();
+  const udd = (userDataDir || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+  const pd = (profileDirectory || '').toLowerCase();
+  return `${ep}|${udd}|${pd}`;
+}
+
+function _toHttpEndpoint(endpointOrPort) {
+  if (typeof endpointOrPort === 'number') return `http://127.0.0.1:${endpointOrPort}`;
+  if (!endpointOrPort || typeof endpointOrPort !== 'string') return null;
+  if (endpointOrPort.startsWith('http://') || endpointOrPort.startsWith('https://')) {
+    return endpointOrPort.replace(/\/+$/, '');
+  }
+  if (endpointOrPort.startsWith('ws://') || endpointOrPort.startsWith('wss://')) {
+    try {
+      const u = new URL(endpointOrPort);
+      return `http://${u.hostname}:${u.port}`;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function probeCdpEndpoint(endpointOrPort) {
   const http = await import('node:http');
+  const httpEndpoint = _toHttpEndpoint(endpointOrPort);
+  if (!httpEndpoint) return { ok: false };
 
-  const probeCDP = (port) => new Promise((resolveP) => {
-    const req = http.get(`http://127.0.0.1:${port}/json/version`, (res) => {
+  return await new Promise((resolveP) => {
+    const req = http.get(`${httpEndpoint}/json/version`, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
-      res.on('end', () => resolveP(true));
+      res.on('end', () => {
+        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+          return resolveP({ ok: false });
+        }
+        try {
+          const parsed = JSON.parse(data || '{}');
+          resolveP({
+            ok: true,
+            httpEndpoint,
+            wsEndpoint: parsed.webSocketDebuggerUrl || null,
+          });
+        } catch {
+          resolveP({ ok: true, httpEndpoint, wsEndpoint: null });
+        }
+      });
     });
-    req.on('error', () => resolveP(false));
-    req.setTimeout(2000, () => { req.destroy(); resolveP(false); });
+    req.on('error', () => resolveP({ ok: false }));
+    req.setTimeout(2000, () => { req.destroy(); resolveP({ ok: false }); });
   });
+}
 
-  // Fast path: already set up and port still alive
-  if (_chromeDebuggableReady && await probeCDP(CDP_PORT)) {
-    return CDP_PORT;
+function _readDevToolsActivePort(userDataDir) {
+  if (!userDataDir) return null;
+  try {
+    const fp = resolve(userDataDir, 'DevToolsActivePort');
+    if (!existsSync(fp)) return null;
+    const lines = readFileSync(fp, 'utf-8')
+      .split(/\r?\n/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    if (lines.length === 0) return null;
+    const parsedPort = parseInt(lines[0], 10);
+    if (!Number.isFinite(parsedPort) || parsedPort <= 0) return null;
+    const httpEndpoint = `http://127.0.0.1:${parsedPort}`;
+    let wsEndpoint = null;
+    if (lines[1]) {
+      wsEndpoint = lines[1].startsWith('ws://') || lines[1].startsWith('wss://')
+        ? lines[1]
+        : `ws://127.0.0.1:${parsedPort}${lines[1].startsWith('/') ? '' : '/'}${lines[1]}`;
+    }
+    return { port: parsedPort, httpEndpoint, wsEndpoint };
+  } catch {
+    return null;
   }
+}
 
-  // Step 1: Chrome already has debugging enabled
-  if (await probeCDP(CDP_PORT)) {
-    console.log(`[browser] Chrome already debuggable on port ${CDP_PORT}`);
-    _chromeDebuggableReady = true;
-    return CDP_PORT;
-  }
+function _stderrTail(lines, max = 8) {
+  return lines.slice(-max).join(' | ');
+}
 
-  // Step 2: Chrome running without debugging — graceful restart
-  console.log(`[browser] Chrome not debuggable on port ${CDP_PORT} — restarting with debugging`);
-  broadcastSync({ type: 'notification', level: 'info', message: `Restarting Chrome with remote debugging on port ${CDP_PORT}...` });
-
-  const { execSync: execSyncCmd } = await import('node:child_process');
-
+async function _shutdownChromeForDebugRestart(execSyncCmd) {
   if (process.platform === 'darwin') {
     try { execSyncCmd('osascript -e \'tell application "Google Chrome" to quit\'', { timeout: 3000 }); } catch {}
     const quitStart = Date.now();
@@ -12978,80 +13174,196 @@ async function ensureChromeDebuggable() {
       try { execSyncCmd(`killall -9 "${procName}"`, { timeout: 3000 }); } catch {}
     }
   } else {
-    try { execSyncCmd('pkill -9 -f "google-chrome|chromium"', { timeout: 3000 }); } catch {}
+    try { execSyncCmd('pkill -9 -f "google-chrome|chromium|msedge"', { timeout: 3000 }); } catch {}
+  }
+}
+
+async function _launchChromeAndWaitForCdp({
+  chromeBin,
+  chromeArgs,
+  userDataDir,
+  timeoutMs,
+  allowPreferredPortProbe,
+}) {
+  const { spawn: spawnChild } = await import('node:child_process');
+  const stderrLines = [];
+  let stderrWsEndpoint = null;
+  let spawnError = null;
+
+  console.log(`[browser] Spawning: ${chromeBin} ${chromeArgs.join(' ')}`);
+  const cp = spawnChild(chromeBin, chromeArgs, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+  cp.on('error', (err) => { spawnError = err; });
+  cp.stderr?.on('data', (chunk) => {
+    const text = String(chunk || '');
+    for (const line of text.split(/\r?\n/).map(s => s.trim()).filter(Boolean)) {
+      stderrLines.push(line);
+      if (stderrLines.length > 80) stderrLines.shift();
+      const m = line.match(/DevTools listening on (ws:\/\/\S+)/i);
+      if (m && m[1]) stderrWsEndpoint = m[1];
+    }
+  });
+  cp.unref();
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (spawnError) {
+      throw new Error(`Chrome spawn failed: ${spawnError.message}`);
+    }
+
+    if (stderrWsEndpoint) {
+      const probed = await probeCdpEndpoint(stderrWsEndpoint);
+      if (probed.ok) return { ...probed, source: 'stderr-devtools-endpoint' };
+    }
+
+    const fromFile = _readDevToolsActivePort(userDataDir);
+    if (fromFile?.httpEndpoint) {
+      const probed = await probeCdpEndpoint(fromFile.httpEndpoint);
+      if (probed.ok) return { ...probed, source: 'DevToolsActivePort' };
+    }
+
+    if (allowPreferredPortProbe) {
+      const preferred = await probeCdpEndpoint(CDP_PORT);
+      if (preferred.ok) return { ...preferred, source: `port-${CDP_PORT}` };
+    }
+
+    await new Promise(r => setTimeout(r, 250));
   }
 
-  await new Promise(r => setTimeout(r, 1500));
+  const diag = _stderrTail(stderrLines) || 'no stderr output';
+  throw new Error(`Chrome did not expose DevTools within ${Math.round(timeoutMs / 1000)}s (stderr: ${diag})`);
+}
 
+async function ensureChromeDebuggable(opts = {}) {
   const savedCfg = loadBrowserConfig();
-  let _uddEnsure = savedCfg.userDataDir || null;
-  if (_uddEnsure && !_uddEnsure.startsWith('/') && !(/^[A-Z]:/i.test(_uddEnsure))) {
-    _uddEnsure = resolve(DATA_HOME, _uddEnsure);
+  const {
+    userDataDir: rawUserDataDir = savedCfg.userDataDir || null,
+    profileDirectory: requestedProfileDir = null,
+    executablePath: requestedExecutablePath = null,
+    channel: requestedChannel = savedCfg.channel || null,
+    viewport = savedCfg.viewport || {},
+  } = opts;
+
+  let userDataDir = rawUserDataDir || null;
+  if (userDataDir && !userDataDir.startsWith('/') && !(/^[A-Z]:/i.test(userDataDir))) {
+    userDataDir = resolve(DATA_HOME, userDataDir);
   }
 
-  let _pdEnsure = null;
-  if (_uddEnsure) {
-    const _normParts = _uddEnsure.replace(/[\\/]+$/, '').replace(/\\/g, '/').split('/');
-    const _lastPart = _normParts[_normParts.length - 1];
-    if (/^(default|profile \d+)$/i.test(_lastPart)) {
-      _pdEnsure = _normParts.pop();
-      _uddEnsure = _normParts.join('/');
+  let profileDirectory = requestedProfileDir || null;
+  if (!profileDirectory && userDataDir) {
+    const parts = userDataDir.replace(/[\\/]+$/, '').replace(/\\/g, '/').split('/');
+    const last = parts[parts.length - 1];
+    if (/^(default|profile \d+)$/i.test(last)) {
+      profileDirectory = last;
+      userDataDir = parts.slice(0, -1).join('/');
+    }
+  }
+  if (!profileDirectory) profileDirectory = 'Default';
+
+  const chromeBin = [requestedExecutablePath, savedCfg.executablePath, findBrowserExecutable(requestedChannel)]
+    .find(p => p && existsSync(p))
+    || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
+  if (!chromeBin || !existsSync(chromeBin)) {
+    throw new Error(`Cannot find Chrome executable. Attempted: ${requestedExecutablePath || savedCfg.executablePath || requestedChannel || 'auto-detect'}`);
+  }
+
+  const cacheKey = _cdpCacheKey(chromeBin, userDataDir, profileDirectory);
+  if (_chromeDebuggableReady && _chromeCdpEndpoint && _chromeDebugCacheKey === cacheKey) {
+    const cached = await probeCdpEndpoint(_chromeCdpEndpoint);
+    if (cached.ok) return { endpoint: cached.httpEndpoint, source: 'cache' };
+  }
+
+  // Reuse preferred fixed-port endpoint only when profile+binary cache key matches.
+  if (_chromeDebugCacheKey === cacheKey) {
+    const preferred = await probeCdpEndpoint(CDP_PORT);
+    if (preferred.ok) {
+      _chromeDebuggableReady = true;
+      _chromeCdpEndpoint = preferred.httpEndpoint;
+      return { endpoint: preferred.httpEndpoint, source: `existing-port-${CDP_PORT}` };
     }
   }
 
-  if (_uddEnsure) {
+  console.log(`[browser] Chrome not debuggable for cacheKey=${cacheKey} — restarting with debugging`);
+  broadcastSync({ type: 'notification', level: 'info', message: `Restarting Chrome with remote debugging...` });
+
+  const { execSync: execSyncCmd } = await import('node:child_process');
+  await _shutdownChromeForDebugRestart(execSyncCmd);
+  await new Promise(r => setTimeout(r, 1200));
+
+  if (userDataDir) {
     for (const f of ['SingletonLock', 'DevToolsActivePort']) {
-      try { const p = resolve(_uddEnsure, f); if (existsSync(p)) unlinkSync(p); } catch {}
+      try { const p = resolve(userDataDir, f); if (existsSync(p)) unlinkSync(p); } catch {}
     }
-    const _pf = resolve(_uddEnsure, _pdEnsure || 'Default', 'Preferences');
-    if (existsSync(_pf)) {
+    const prefsFile = resolve(userDataDir, profileDirectory, 'Preferences');
+    if (existsSync(prefsFile)) {
       try {
-        const _pr = JSON.parse(readFileSync(_pf, 'utf-8'));
-        if (_pr.profile) { _pr.profile.exit_type = 'Normal'; _pr.profile.exited_cleanly = true; writeFileSync(_pf, JSON.stringify(_pr)); }
+        const prefs = JSON.parse(readFileSync(prefsFile, 'utf-8'));
+        if (prefs.profile) {
+          prefs.profile.exit_type = 'Normal';
+          prefs.profile.exited_cleanly = true;
+          writeFileSync(prefsFile, JSON.stringify(prefs));
+        }
       } catch {}
     }
   }
 
-  const _chromeBin = savedCfg.executablePath || findBrowserExecutable(savedCfg.channel)
-    || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-  if (!_chromeBin || !existsSync(_chromeBin)) {
-    throw new Error(`Cannot find Chrome executable. Got: ${_chromeBin}`);
-  }
-
-  const _vpW = savedCfg.viewport?.width || 1280;
-  const _vpH = savedCfg.viewport?.height || 800;
-  const _chromeArgs = [
-    `--remote-debugging-port=${CDP_PORT}`,
-    '--no-first-run', '--no-default-browser-check', '--disable-popup-blocking',
-    `--window-size=${_vpW},${_vpH}`,
-    '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
+  const vpW = viewport?.width || 1280;
+  const vpH = viewport?.height || 800;
+  const baseArgs = [
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-popup-blocking',
+    `--window-size=${vpW},${vpH}`,
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
     '--restore-last-session',
   ];
-  if (_uddEnsure) _chromeArgs.push(`--user-data-dir=${_uddEnsure}`);
-  if (_pdEnsure) _chromeArgs.push(`--profile-directory=${_pdEnsure}`);
+  if (userDataDir) baseArgs.push(`--user-data-dir=${userDataDir}`);
+  if (profileDirectory) baseArgs.push(`--profile-directory=${profileDirectory}`);
 
-  const { spawn: spawnChild } = await import('node:child_process');
-  console.log(`[browser] Spawning: ${_chromeBin} ${_chromeArgs.join(' ')}`);
-  const _cp = spawnChild(_chromeBin, _chromeArgs, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
-  _cp.stderr.on('data', () => {});
-  _cp.unref();
+  let ready;
+  try {
+    ready = await _launchChromeAndWaitForCdp({
+      chromeBin,
+      chromeArgs: [...baseArgs, `--remote-debugging-port=${CDP_PORT}`],
+      userDataDir,
+      timeoutMs: CDP_LAUNCH_TIMEOUT_MS,
+      allowPreferredPortProbe: true,
+    });
+  } catch (primaryErr) {
+    console.warn(`[browser] Fixed port ${CDP_PORT} debug launch failed, retrying with dynamic port: ${primaryErr.message}`);
+    await _shutdownChromeForDebugRestart(execSyncCmd);
+    await new Promise(r => setTimeout(r, 1000));
 
-  const _CDP_TIMEOUT = 20000;
-  const _launchStart = Date.now();
-  let _portReady = false;
-  while (Date.now() - _launchStart < _CDP_TIMEOUT) {
-    if (await probeCDP(CDP_PORT)) { _portReady = true; break; }
-    await new Promise(r => setTimeout(r, 300));
-  }
+    if (userDataDir) {
+      try {
+        const devtoolsPortFile = resolve(userDataDir, 'DevToolsActivePort');
+        if (existsSync(devtoolsPortFile)) unlinkSync(devtoolsPortFile);
+      } catch {}
+    }
 
-  if (!_portReady) {
-    throw new Error(`Chrome did not expose debugging on port ${CDP_PORT} within ${_CDP_TIMEOUT / 1000}s`);
+    try {
+      ready = await _launchChromeAndWaitForCdp({
+        chromeBin,
+        chromeArgs: [...baseArgs, '--remote-debugging-port=0'],
+        userDataDir,
+        timeoutMs: CDP_LAUNCH_TIMEOUT_MS,
+        allowPreferredPortProbe: false,
+      });
+    } catch (fallbackErr) {
+      throw new Error(`Primary debug launch failed (${primaryErr.message}); dynamic-port retry failed (${fallbackErr.message})`);
+    }
   }
 
   _chromeDebuggableReady = true;
-  console.log(`[browser] Chrome is debuggable on port ${CDP_PORT}`);
-  broadcastSync({ type: 'notification', level: 'info', message: `Chrome ready with debugging on port ${CDP_PORT}` });
-  return CDP_PORT;
+  _chromeCdpEndpoint = ready.httpEndpoint;
+  _chromeDebugCacheKey = cacheKey;
+  const cdpPort = (() => {
+    try { return new URL(ready.httpEndpoint).port || 'unknown'; } catch { return 'unknown'; }
+  })();
+  console.log(`[browser] Chrome debuggable at ${ready.httpEndpoint} (source=${ready.source})`);
+  broadcastSync({ type: 'notification', level: 'info', message: `Chrome ready with debugging on port ${cdpPort}` });
+  return { endpoint: ready.httpEndpoint, source: ready.source };
 }
 
 /**
@@ -13121,17 +13433,20 @@ async function createBrowserSession(options = {}) {
     userDataDir = resolve(DATA_HOME, userDataDir);
   }
   let _profileDirectory = null; // Chrome --profile-directory flag
-  let _sourceProfilePath = null; // Original Chrome profile dir (for cookie bootstrap)
-  let _isInsideChromeDir = false;
+  let _sourceProfilePath = null; // Original selected profile dir (for labels + cookie bootstrap)
   let _sourceBrowser = null; // 'chrome' | 'msedge' | 'chromium' — which browser owns this profile
+  let _selectedProfileKind = userDataDir ? 'custom' : 'clean'; // clean | managed | system | custom
 
   if (userDataDir) {
     const normalized = userDataDir.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+    const managedRoot = getManagedProfileRoot().replace(/\\/g, '/').toLowerCase();
 
     // Known Chrome/Edge/Chromium User Data root directories per platform
     const _home = process.env.HOME || process.env.USERPROFILE || '';
     const chromeRootDefs = IS_WIN ? [
       { root: ((process.env.LOCALAPPDATA || '') + '/Google/Chrome/User Data').replace(/\\/g, '/').toLowerCase(), browser: 'chrome' },
+      { root: ((process.env.LOCALAPPDATA || '') + '/Microsoft/Edge/User Data').replace(/\\/g, '/').toLowerCase(), browser: 'msedge' },
+      { root: ((process.env.LOCALAPPDATA || '') + '/Chromium/User Data').replace(/\\/g, '/').toLowerCase(), browser: 'chromium' },
       { root: ((process.env['ProgramFiles'] || '') + '/Google/Chrome/User Data').replace(/\\/g, '/').toLowerCase(), browser: 'chrome' },
     ] : process.platform === 'darwin' ? [
       { root: (_home + '/Library/Application Support/Google/Chrome').toLowerCase(), browser: 'chrome' },
@@ -13143,27 +13458,44 @@ async function createBrowserSession(options = {}) {
       { root: (_home + '/.config/microsoft-edge').toLowerCase(), browser: 'msedge' },
     ];
 
-    // Extract profile directory if path points to a profile subfolder
+    if (normalized === managedRoot || normalized.startsWith(managedRoot + '/')) {
+      _selectedProfileKind = 'managed';
+    }
+
     for (const { root, browser: rootBrowser } of chromeRootDefs.filter(d => d.root)) {
+      if (normalized === root) {
+        _selectedProfileKind = 'system';
+        _sourceBrowser = rootBrowser;
+        break;
+      }
       if (normalized.startsWith(root + '/')) {
         const remainder = normalized.slice(root.length + 1).replace(/\/+$/, '');
-        if (/^(default|profile \d+)$/.test(remainder)) {
+        if (/^(default|profile \d+)$/i.test(remainder)) {
           _sourceProfilePath = userDataDir;
           const parts = userDataDir.replace(/\\/g, '/').replace(/\/+$/, '').split('/');
           _profileDirectory = parts.pop(); // "Profile 1", "Default", etc.
-          userDataDir = parts.join('/');    // Chrome User Data root
-          _isInsideChromeDir = true;
+          userDataDir = parts.join('/');
+          _selectedProfileKind = root === managedRoot ? 'managed' : 'system';
           _sourceBrowser = rootBrowser;
           console.log(`[browser] Detected ${rootBrowser} profile: --profile-directory=${_profileDirectory}`);
           console.log(`[browser] Using ${rootBrowser} User Data dir: ${userDataDir}`);
           break;
         }
       }
-      if (normalized === root) {
-        _isInsideChromeDir = true;
-        _sourceBrowser = rootBrowser;
-        break;
+    }
+
+    if (!_profileDirectory) {
+      const parts = userDataDir.replace(/[\\/]+$/, '').replace(/\\/g, '/').split('/');
+      const last = parts[parts.length - 1];
+      if (/^(default|profile \d+)$/i.test(last)) {
+        _profileDirectory = last;
+        _sourceProfilePath = userDataDir;
+        userDataDir = parts.slice(0, -1).join('/');
       }
+    }
+
+    if (!_sourceProfilePath && userDataDir) {
+      _sourceProfilePath = resolve(userDataDir, _profileDirectory || 'Default');
     }
   }
 
@@ -13172,7 +13504,7 @@ async function createBrowserSession(options = {}) {
     stealthArgs.push('--disable-extensions');
   }
 
-  // NOTE: --profile-directory is deferred until after Chrome conflict check (mirror may clear it)
+  // NOTE: --profile-directory is appended per launch target so direct and mirror modes can differ.
 
   // Append user's extra launch args from config
   if (savedCfg.extraArgs) {
@@ -13286,8 +13618,13 @@ async function createBrowserSession(options = {}) {
   let browser, context, page;
   let _isPersistent = false;
   let _chromeProcess = null; // CDP mode: ref to spawned Chrome process
-  let _profileMode = userDataDir ? 'direct' : 'clean';
-  let _profileSourceName = _profileDirectory || (userDataDir ? 'Default' : null);
+  let _profileMode = userDataDir ? (_selectedProfileKind === 'managed' ? 'managed' : 'direct') : 'clean';
+  const _detectedSource = lookupDetectedProfile(_sourceProfilePath);
+  let _profileSourceName = _selectedProfileKind === 'managed'
+    ? 'SynaBun Profile'
+    : (_detectedSource?.name || _profileDirectory || (userDataDir ? 'Default' : null));
+  let _launchUserDataDir = userDataDir || null;
+  let _launchProfileDirectory = _profileDirectory || (userDataDir ? 'Default' : null);
 
   if (userDataDir) {
     // ── Persistent context: uses a Chrome profile directory ──
@@ -13295,57 +13632,39 @@ async function createBrowserSession(options = {}) {
     _isPersistent = true;
 
     const _browserLabel = _sourceBrowser === 'msedge' ? 'Edge' : _sourceBrowser === 'chromium' ? 'Chromium' : 'Chrome';
+    const launchPersistentProfile = async (launchRoot, launchProfileDir, launchMode) => {
+      const launchArgs = [...stealthArgs];
 
-    if (_isInsideChromeDir) {
-      // ── CDP mode: connect to real Chrome via remote debugging ──
-      // Uses ensureChromeDebuggable() for one-time Chrome restart (cached).
-      // Subsequent sessions just connect — no kill/relaunch per session.
-      _profileMode = 'cdp';
-      console.log(`[browser] ${_browserLabel} profile detected — using CDP mode (port ${CDP_PORT})`);
-
-      await ensureChromeDebuggable();
-      const cdpEndpoint = `http://127.0.0.1:${CDP_PORT}`;
-
-      // ── Connect via CDP ──
-      console.log(`[browser] Connecting via CDP: ${cdpEndpoint}`);
-      browser = await chromium.connectOverCDP(cdpEndpoint);
-      const contexts = browser.contexts();
-      context = contexts[0] || await browser.newContext(contextOpts);
-
-      // Open a fresh page for the automation (don't disturb existing tabs)
-      page = await context.newPage();
-
-      broadcastSync({ type: 'notification', level: 'info', message: `Connected to ${_browserLabel} profile "${_profileSourceName || 'Default'}" via CDP on port ${CDP_PORT}.` });
-
-    } else {
-      // ── Non-Chrome persistent profile: use Playwright's launchPersistentContext ──
-
-      // Clean singleton lock files
-      for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
-        const lf = resolve(userDataDir, lockFile);
-        try { if (existsSync(lf)) { unlinkSync(lf); console.log(`[browser] Removed stale ${lockFile}`); } } catch {}
-      }
-
-      if (_profileDirectory) {
-        stealthArgs.push(`--profile-directory=${_profileDirectory}`);
-        console.log(`[browser] Using --profile-directory=${_profileDirectory}`);
-      }
-
-      // Pre-launch: clean crash markers
-      const _prefsFile = resolve(userDataDir, _profileDirectory || 'Default', 'Preferences');
-      if (existsSync(_prefsFile)) {
+      for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'DevToolsActivePort']) {
+        const lf = resolve(launchRoot, lockFile);
         try {
-          const _prefs = JSON.parse(readFileSync(_prefsFile, 'utf-8'));
-          if (_prefs.profile) {
-            _prefs.profile.exit_type = 'Normal';
-            _prefs.profile.exited_cleanly = true;
-            writeFileSync(_prefsFile, JSON.stringify(_prefs));
+          if (existsSync(lf)) {
+            unlinkSync(lf);
+            console.log(`[browser] Removed stale ${lockFile} from ${launchMode} root`);
           }
         } catch {}
       }
 
-      const _persistentLaunchOpts = {
+      if (launchProfileDir) {
+        launchArgs.push(`--profile-directory=${launchProfileDir}`);
+        console.log(`[browser] Using --profile-directory=${launchProfileDir} (${launchMode})`);
+      }
+
+      const prefsFile = resolve(launchRoot, launchProfileDir || 'Default', 'Preferences');
+      if (existsSync(prefsFile)) {
+        try {
+          const prefs = JSON.parse(readFileSync(prefsFile, 'utf-8'));
+          if (prefs.profile) {
+            prefs.profile.exit_type = 'Normal';
+            prefs.profile.exited_cleanly = true;
+            writeFileSync(prefsFile, JSON.stringify(prefs));
+          }
+        } catch {}
+      }
+
+      const persistentLaunchOpts = {
         ...launchOpts,
+        args: launchArgs,
         ...contextOpts,
         ignoreDefaultArgs: [
           '--disable-extensions',
@@ -13356,35 +13675,85 @@ async function createBrowserSession(options = {}) {
         ],
       };
 
-      console.log(`[browser] Launching persistent context at: ${userDataDir}${_profileDirectory ? ` (profile: ${_profileDirectory})` : ''}`);
+      console.log(`[browser] Launching ${launchMode} persistent context at: ${launchRoot}${launchProfileDir ? ` (profile: ${launchProfileDir})` : ''}`);
+      let launchContext;
       try {
-        context = await chromium.launchPersistentContext(userDataDir, _persistentLaunchOpts);
+        launchContext = await chromium.launchPersistentContext(launchRoot, persistentLaunchOpts);
       } catch (err) {
         const msg = err.message || '';
         if (msg.includes('ProcessSingleton') || msg.includes('already in use') || msg.includes('lock') || msg.includes('SingletonLock')) {
-          throw new Error(`Browser profile is locked — close all ${_browserLabel || 'Chrome'} windows using this profile and try again. Original error: ${msg}`);
+          throw new Error(`Browser profile is locked. Original error: ${msg}`);
         }
         throw err;
       }
 
-      // Verify alive
       await new Promise(r => setTimeout(r, 500));
       let contextAlive = true;
       try {
-        const testPages = context.pages();
+        const testPages = launchContext.pages();
         if (testPages.length === 0) contextAlive = false;
       } catch { contextAlive = false; }
-
       if (!contextAlive) {
-        throw new Error(`Browser closed immediately after launch — profile may be locked. Close ALL browser windows and try again.`);
+        throw new Error('Browser closed immediately after launch.');
       }
-      browser = context;
 
-      const existingPages = context.pages();
-      page = await context.newPage();
-      for (const p of existingPages) {
-        await p.close().catch(() => {});
+      const launchBrowser = launchContext;
+      const existingPages = launchContext.pages();
+      const launchPage = await launchContext.newPage();
+      for (const existing of existingPages) {
+        await existing.close().catch(() => {});
       }
+
+      return { launchBrowser, launchContext, launchPage };
+    };
+
+    if (_selectedProfileKind === 'system') {
+      const requestedProfileDir = _profileDirectory || 'Default';
+
+      // CDP mode with mirrored profile: Chrome refuses remote debugging when
+      // using its own default user-data-dir. Copy the profile to a mirror
+      // directory (non-default) and spawn Chrome from there via CDP.
+      const { mirrorRoot } = prepareMirroredProfile(userDataDir, requestedProfileDir, _sourceBrowser || 'chrome');
+
+      try {
+        const cdpResult = await ensureChromeDebuggable({
+          userDataDir: mirrorRoot,
+          profileDirectory: requestedProfileDir,
+          executablePath: launchOpts.executablePath || undefined,
+          channel: launchOpts.channel || undefined,
+          viewport: { width: vpW, height: vpH },
+        });
+
+        browser = await chromium.connectOverCDP(cdpResult.endpoint);
+        context = browser.contexts()[0];
+        if (!context) throw new Error('CDP connected but no browser context available');
+
+        page = await context.newPage();
+        _isPersistent = false;
+        _profileMode = 'cdp';
+        _launchUserDataDir = mirrorRoot;
+        _launchProfileDirectory = requestedProfileDir;
+
+        console.log(`[browser] CDP connected to mirrored ${_profileSourceName || requestedProfileDir} via ${cdpResult.source}`);
+      } catch (cdpErr) {
+        throw new Error(
+          `Could not connect to ${_browserLabel} via CDP: ${cdpErr.message}`
+        );
+      }
+    } else {
+      const launchRoot = _selectedProfileKind === 'managed' ? getManagedProfileRoot() : userDataDir;
+      const launchProfileDir = _profileDirectory || 'Default';
+      if (_selectedProfileKind === 'managed') {
+        try { if (!existsSync(launchRoot)) mkdirSync(launchRoot, { recursive: true }); } catch {}
+        _profileSourceName = 'SynaBun Profile';
+      }
+      const launched = await launchPersistentProfile(launchRoot, launchProfileDir, _selectedProfileKind === 'managed' ? 'managed' : 'direct');
+      browser = launched.launchBrowser;
+      context = launched.launchContext;
+      page = launched.launchPage;
+      _profileMode = _selectedProfileKind === 'managed' ? 'managed' : 'direct';
+      _launchUserDataDir = launchRoot;
+      _launchProfileDirectory = launchProfileDir;
     }
   } else {
     // ── Standard: clean sandboxed browser ──
@@ -13393,54 +13762,11 @@ async function createBrowserSession(options = {}) {
     page = await context.newPage();
   }
 
-  // ── Restore saved cookies/localStorage from storageState ──
-  // Skip for CDP mode — real Chrome already has all cookies natively.
-  // For non-Chrome persistent contexts, inject cookies after launch.
-  if (_isPersistent && _profileMode !== 'cdp' && savedCfg.persistStorage !== false && !savedCfg.clearStorageOnStart) {
-    if (existsSync(STORAGE_STATE_PATH)) {
-      try {
-        const savedState = JSON.parse(readFileSync(STORAGE_STATE_PATH, 'utf-8'));
-        if (savedState.cookies && savedState.cookies.length > 0) {
-          await context.addCookies(savedState.cookies);
-          console.log(`[browser] Restored ${savedState.cookies.length} cookies from ${STORAGE_STATE_PATH}`);
-        }
-        // Restore localStorage lazily via addInitScript — injects stored items
-        // on first visit to each origin, before page scripts run. Avoids creating
-        // extra pages/tabs and navigating to every saved origin on launch.
-        if (savedState.origins && savedState.origins.length > 0) {
-          const storageMap = {};
-          for (const origin of savedState.origins) {
-            if (origin.localStorage && origin.localStorage.length > 0) {
-              storageMap[origin.origin] = origin.localStorage;
-            }
-          }
-          if (Object.keys(storageMap).length > 0) {
-            await context.addInitScript(`(function() {
-              var m = ${JSON.stringify(storageMap)};
-              var k = '__synabun_ls_restored_' + location.origin;
-              var items = m[location.origin];
-              if (items && !sessionStorage.getItem(k)) {
-                for (var i = 0; i < items.length; i++) {
-                  try { localStorage.setItem(items[i].name, items[i].value); } catch(e) {}
-                }
-                try { sessionStorage.setItem(k, '1'); } catch(e) {}
-              }
-            })()`);
-            console.log(`[browser] Registered lazy localStorage restore for ${Object.keys(storageMap).length} origins`);
-          }
-        }
-      } catch (e) {
-        console.warn(`[browser] Failed to restore storage state: ${e.message}`);
-      }
-    }
-  }
-
   // ── Decrypt and inject cookies from Chrome profile (macOS) ──
-  // Mirror mode copies the Cookies DB, but values are encrypted with the system Keychain.
-  // Decrypt them and inject via addCookies() so the user's Chrome logins carry over.
+  // Mirror mode may start from an isolated copy; bootstrap fresh auth from the
+  // selected source profile's Cookies DB so the mirrored copy inherits logins.
   if (_isPersistent && _profileMode === 'mirror' && !savedCfg.clearStorageOnStart) {
-    const mirrorProfileDir = resolve(userDataDir, _profileDirectory || 'Default');
-    const decryptedCookies = decryptChromeCookies(mirrorProfileDir, _sourceBrowser || 'chrome');
+    const decryptedCookies = decryptChromeCookies(_sourceProfilePath, _sourceBrowser || 'chrome');
     if (decryptedCookies.length > 0) {
       try {
         await context.addCookies(decryptedCookies);
@@ -13451,10 +13777,8 @@ async function createBrowserSession(options = {}) {
     }
   }
 
-  // ── CDP stealth injections (if enabled) ──
-  // Skip for CDP mode — real Chrome doesn't need automation-hiding and overwriting
-  // window.chrome.runtime crashes Chrome's internal extension messaging (SIGSEGV).
-  const doStealth = savedCfg.stealthFingerprint !== false && _profileMode !== 'cdp';
+  // ── Stealth injections (if enabled) ──
+  const doStealth = savedCfg.stealthFingerprint !== false;
   if (doStealth) {
     const cdpStealth = await page.context().newCDPSession(page);
     try {
@@ -13522,6 +13846,9 @@ async function createBrowserSession(options = {}) {
     _profileMode: _profileMode || 'clean',
     _profileSourceName: _profileSourceName || null,
     _storageStatePath: STORAGE_STATE_PATH,
+    _launchUserDataDir: _launchUserDataDir || null,
+    _launchProfileDirectory: _launchProfileDirectory || null,
+    _selectedProfilePath: _sourceProfilePath || null,
     _chromeProcess: _chromeProcess || null, // CDP mode: spawned Chrome process
     clients: new Set(),       // WebSocket connections for screencast
     screencastActive: false,
@@ -13617,9 +13944,8 @@ async function createBrowserSession(options = {}) {
   browserSessions.set(sessionId, session);
 
   // ── Periodic cookie autosave (every 30s) ──
-  // Protects against cookie loss when the user closes the Chrome window directly.
-  // Skip for CDP mode — real Chrome persists its own cookies natively.
-  if (savedCfg.persistStorage !== false && _profileMode !== 'cdp') {
+  // Protects against cookie loss when the user closes the window directly.
+  if (savedCfg.persistStorage !== false && !_isPersistent && _profileMode !== 'cdp') {
     session._autosaveInterval = setInterval(async () => {
       if (!session.context) { clearInterval(session._autosaveInterval); return; }
       try {
@@ -13800,9 +14126,8 @@ async function destroyBrowserSession(sessionId) {
   // Remove from Map immediately to prevent races (new sessions seeing zombie entries)
   browserSessions.delete(sessionId);
 
-  // Save storage state (cookies, localStorage) — skip for CDP mode (Chrome persists its own).
   const savedCfg = loadBrowserConfig();
-  if (savedCfg.persistStorage !== false && session.context && !session._chromeProcess) {
+  if (savedCfg.persistStorage !== false && session.context && !session._chromeProcess && !session._isPersistent && session._profileMode !== 'cdp') {
     // Use per-profile storage path from session (set at creation), fall back to config default
     const storagePath = session._storageStatePath || resolve(DATA_HOME, savedCfg.storageStatePath || 'data/browser-storage.json');
     try {
@@ -13820,11 +14145,10 @@ async function destroyBrowserSession(sessionId) {
   if (session.graceTimer) clearTimeout(session.graceTimer);
   try { await stopScreencast(session); } catch {}
   if (session._profileMode === 'cdp' && !session._chromeProcess) {
-    // CDP mode connected to already-running Chrome — just disconnect, don't kill Chrome
-    try { await session.browser.close(); } catch {}
-    console.log(`[browser] Disconnected from running Chrome (session ${sessionId})`);
+    // Connected to user's running Chrome via CDP — just disconnect, don't kill Chrome
+    try { await session.browser.disconnect(); } catch {}
   } else if (session._chromeProcess) {
-    // CDP mode where WE launched Chrome — disconnect Playwright, then kill Chrome
+    // Spawned Chrome process: disconnect Playwright, then kill Chrome
     try { await session.browser.close(); } catch {}
     try {
       if (!session._chromeProcess.killed) {
@@ -13834,48 +14158,49 @@ async function destroyBrowserSession(sessionId) {
         }, 3000);
       }
     } catch {}
-    // Mark profile as cleanly exited
-    const _cfg = loadBrowserConfig();
-    if (_cfg.userDataDir) {
-      const normalized = _cfg.userDataDir.replace(/[\\/]+$/, '').replace(/\\/g, '/');
-      const parts = normalized.split('/');
-      const lastPart = parts[parts.length - 1];
-      const isProfileSubdir = /^(default|profile \d+)$/i.test(lastPart);
-      const userDataRoot = isProfileSubdir ? parts.slice(0, -1).join('/') : normalized;
-      const profileDir = isProfileSubdir ? lastPart : 'Default';
-      const pp = resolve(userDataRoot, profileDir, 'Preferences');
-      if (existsSync(pp)) {
-        try {
-          const prefs = JSON.parse(readFileSync(pp, 'utf-8'));
-          if (prefs.profile) {
-            prefs.profile.exit_type = 'Normal';
-            prefs.profile.exited_cleanly = true;
-          }
-          writeFileSync(pp, JSON.stringify(prefs));
-        } catch {}
-      }
-    }
   } else if (session._isPersistent) {
-    // Persistent context (non-Chrome profiles): close context kills browser
+    // Persistent context: close context kills browser
     try { await session.context.close(); } catch {}
-    const _cfg = loadBrowserConfig();
-    if (_cfg.userDataDir) {
-      const pp = resolve(_cfg.userDataDir, 'Default', 'Preferences');
-      if (existsSync(pp)) {
-        try {
-          const prefs = JSON.parse(readFileSync(pp, 'utf-8'));
-          if (prefs.profile) {
-            prefs.profile.exit_type = 'Normal';
-            prefs.profile.exited_cleanly = true;
-          }
-          writeFileSync(pp, JSON.stringify(prefs));
-        } catch {}
-      }
-    }
   } else {
     try { await session.browser.close(); } catch {}
   }
+  if (session._isPersistent && session._launchUserDataDir) {
+    const pp = resolve(session._launchUserDataDir, session._launchProfileDirectory || 'Default', 'Preferences');
+    if (existsSync(pp)) {
+      try {
+        const prefs = JSON.parse(readFileSync(pp, 'utf-8'));
+        if (prefs.profile) {
+          prefs.profile.exit_type = 'Normal';
+          prefs.profile.exited_cleanly = true;
+        }
+        writeFileSync(pp, JSON.stringify(prefs));
+      } catch {}
+    }
+  }
   broadcastSync({ type: 'browser:session-deleted', sessionId });
+}
+
+// ── Tab-level page routing (concurrent loop isolation) ──
+
+/**
+ * Resolve the Playwright page for an API request.
+ * If tabId is provided (body or query), targets that specific tab's page directly.
+ * Otherwise falls back to session.page (the active tab) for backward compat.
+ */
+function getTargetPage(session, req) {
+  const tabId = req.body?.tabId || req.query?.tabId;
+  if (!tabId) return { page: session.page, cdpSession: session.cdpSession, tabId: session.activeTabId };
+  const tab = session.tabs?.get(tabId);
+  if (!tab) return null;
+  return { page: tab.page, cdpSession: tab.cdpSession, tabId };
+}
+
+/** Update session-level URL/title only when operating on the active tab. */
+async function syncPageState(session, routed) {
+  const url = routed.page.url();
+  const title = await routed.page.title().catch(() => '');
+  if (routed.tabId === session.activeTabId) { session.currentUrl = url; session.title = title; }
+  return { url, title };
 }
 
 // ── Browser REST endpoints ──
@@ -13979,12 +14304,13 @@ app.delete('/api/browser/sessions/:id/tabs/:tabId', async (req, res) => {
 app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { url } = req.body;
   try {
-    await session.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    await routed.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -13993,11 +14319,12 @@ app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
 app.post('/api/browser/sessions/:id/back', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   try {
-    await session.page.goBack({ timeout: 10000 });
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    await routed.page.goBack({ timeout: 10000 });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.json({ ok: false, error: err.message });
   }
@@ -14006,11 +14333,12 @@ app.post('/api/browser/sessions/:id/back', async (req, res) => {
 app.post('/api/browser/sessions/:id/forward', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   try {
-    await session.page.goForward({ timeout: 10000 });
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    await routed.page.goForward({ timeout: 10000 });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.json({ ok: false, error: err.message });
   }
@@ -14019,11 +14347,12 @@ app.post('/api/browser/sessions/:id/forward', async (req, res) => {
 app.post('/api/browser/sessions/:id/reload', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   try {
-    await session.page.reload({ timeout: 15000 });
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    await routed.page.reload({ timeout: 15000 });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.json({ ok: false, error: err.message });
   }
@@ -14033,8 +14362,10 @@ app.post('/api/browser/sessions/:id/reload', async (req, res) => {
 app.get('/api/browser/sessions/:id/screenshot', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.query?.tabId} not found in session` });
   try {
-    const buf = await session.page.screenshot({ type: 'jpeg', quality: 80 });
+    const buf = await routed.page.screenshot({ type: 'jpeg', quality: 80 });
     res.set('Content-Type', 'image/jpeg');
     res.send(buf);
   } catch (err) {
@@ -14113,15 +14444,17 @@ async function getInteractiveHints(page) {
 app.post('/api/browser/sessions/:id/click', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { selector: rawSelector, timeout, nthMatch } = req.body;
   if (!rawSelector) return res.status(400).json({ error: 'selector required' });
   const selector = normalizeSelector(rawSelector);
   try {
-    const loc = session.page.locator(selector);
+    const loc = routed.page.locator(selector);
     // Pre-check element count for better error messages
     const count = await loc.count().catch(() => -1);
     if (count === 0) {
-      const hints = await getInteractiveHints(session.page);
+      const hints = await getInteractiveHints(routed.page);
       return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
     }
     if (count > 1 && nthMatch === undefined) {
@@ -14129,9 +14462,8 @@ app.post('/api/browser/sessions/:id/click', async (req, res) => {
     }
     const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
     await target.click({ timeout: timeout || 5000 });
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14140,14 +14472,16 @@ app.post('/api/browser/sessions/:id/click', async (req, res) => {
 app.post('/api/browser/sessions/:id/fill', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { selector: rawFillSel, value, timeout, nthMatch } = req.body;
   if (!rawFillSel) return res.status(400).json({ error: 'selector required' });
   const selector = normalizeSelector(rawFillSel);
   try {
-    const loc = session.page.locator(selector);
+    const loc = routed.page.locator(selector);
     const count = await loc.count().catch(() => -1);
     if (count === 0) {
-      const hints = await getInteractiveHints(session.page);
+      const hints = await getInteractiveHints(routed.page);
       return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
     }
     if (count > 1 && nthMatch === undefined) {
@@ -14155,9 +14489,8 @@ app.post('/api/browser/sessions/:id/fill', async (req, res) => {
     }
     const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
     await target.fill(value ?? '', { timeout: timeout || 5000 });
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14166,14 +14499,16 @@ app.post('/api/browser/sessions/:id/fill', async (req, res) => {
 app.post('/api/browser/sessions/:id/type', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { selector: rawTypeSel, text, timeout, nthMatch } = req.body;
   try {
     if (rawTypeSel) {
       const selector = normalizeSelector(rawTypeSel);
-      const loc = session.page.locator(selector);
+      const loc = routed.page.locator(selector);
       const count = await loc.count().catch(() => -1);
       if (count === 0) {
-        const hints = await getInteractiveHints(session.page);
+        const hints = await getInteractiveHints(routed.page);
         return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
       }
       if (count > 1 && nthMatch === undefined) {
@@ -14183,11 +14518,10 @@ app.post('/api/browser/sessions/:id/type', async (req, res) => {
       await target.pressSequentially(text ?? '', { timeout: timeout || 5000 });
     } else {
       // No selector: type into the currently focused element via keyboard
-      await session.page.keyboard.type(text ?? '');
+      await routed.page.keyboard.type(text ?? '');
     }
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14196,14 +14530,16 @@ app.post('/api/browser/sessions/:id/type', async (req, res) => {
 app.post('/api/browser/sessions/:id/hover', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { selector: rawHoverSel, timeout, nthMatch } = req.body;
   if (!rawHoverSel) return res.status(400).json({ error: 'selector required' });
   const selector = normalizeSelector(rawHoverSel);
   try {
-    const loc = session.page.locator(selector);
+    const loc = routed.page.locator(selector);
     const count = await loc.count().catch(() => -1);
     if (count === 0) {
-      const hints = await getInteractiveHints(session.page);
+      const hints = await getInteractiveHints(routed.page);
       return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
     }
     if (count > 1 && nthMatch === undefined) {
@@ -14211,9 +14547,8 @@ app.post('/api/browser/sessions/:id/hover', async (req, res) => {
     }
     const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
     await target.hover({ timeout: timeout || 5000 });
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14222,14 +14557,16 @@ app.post('/api/browser/sessions/:id/hover', async (req, res) => {
 app.post('/api/browser/sessions/:id/select', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { selector: rawSelSel, value, timeout, nthMatch } = req.body;
   if (!rawSelSel) return res.status(400).json({ error: 'selector required' });
   const selector = normalizeSelector(rawSelSel);
   try {
-    const loc = session.page.locator(selector);
+    const loc = routed.page.locator(selector);
     const count = await loc.count().catch(() => -1);
     if (count === 0) {
-      const hints = await getInteractiveHints(session.page);
+      const hints = await getInteractiveHints(routed.page);
       return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
     }
     if (count > 1 && nthMatch === undefined) {
@@ -14237,9 +14574,8 @@ app.post('/api/browser/sessions/:id/select', async (req, res) => {
     }
     const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
     await target.selectOption(value ?? '', { timeout: timeout || 5000 });
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14248,13 +14584,14 @@ app.post('/api/browser/sessions/:id/select', async (req, res) => {
 app.post('/api/browser/sessions/:id/press', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { key } = req.body;
   if (!key) return res.status(400).json({ error: 'key required' });
   try {
-    await session.page.keyboard.press(key);
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    await routed.page.keyboard.press(key);
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14263,10 +14600,12 @@ app.post('/api/browser/sessions/:id/press', async (req, res) => {
 app.post('/api/browser/sessions/:id/evaluate', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { script } = req.body;
   if (!script) return res.status(400).json({ error: 'script required' });
   try {
-    const result = await session.page.evaluate(script);
+    const result = await routed.page.evaluate(script);
     // Ensure result is JSON-serializable (undefined becomes null)
     res.json({ ok: true, result: result === undefined ? null : result });
   } catch (err) {
@@ -14277,21 +14616,22 @@ app.post('/api/browser/sessions/:id/evaluate', async (req, res) => {
 app.get('/api/browser/sessions/:id/snapshot', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.query?.tabId} not found in session` });
   try {
     // page.accessibility was removed in Playwright 1.50+
     let tree = null;
-    if (session.page.accessibility && typeof session.page.accessibility.snapshot === 'function') {
-      tree = await session.page.accessibility.snapshot();
+    if (routed.page.accessibility && typeof routed.page.accessibility.snapshot === 'function') {
+      tree = await routed.page.accessibility.snapshot();
     } else {
       // Fallback: build a tree from ariaSnapshot text
-      const ariaText = await session.page.locator('body').ariaSnapshot({ timeout: 5000 }).catch(() => null);
+      const ariaText = await routed.page.locator('body').ariaSnapshot({ timeout: 5000 }).catch(() => null);
       if (ariaText) {
         tree = parseAriaSnapshotText(ariaText);
       }
     }
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title, snapshot: tree });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title, snapshot: tree });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14300,24 +14640,25 @@ app.get('/api/browser/sessions/:id/snapshot', async (req, res) => {
 app.post('/api/browser/sessions/:id/snapshot', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { selector: rawSel } = req.body;
   const scopeSel = rawSel ? normalizeSelector(rawSel) : null;
   try {
     let tree = null;
     if (scopeSel) {
-      const ariaText = await session.page.locator(scopeSel).ariaSnapshot({ timeout: 8000 }).catch(() => null);
+      const ariaText = await routed.page.locator(scopeSel).ariaSnapshot({ timeout: 8000 }).catch(() => null);
       if (ariaText) tree = parseAriaSnapshotText(ariaText);
     } else {
-      if (session.page.accessibility && typeof session.page.accessibility.snapshot === 'function') {
-        tree = await session.page.accessibility.snapshot();
+      if (routed.page.accessibility && typeof routed.page.accessibility.snapshot === 'function') {
+        tree = await routed.page.accessibility.snapshot();
       } else {
-        const ariaText = await session.page.locator('body').ariaSnapshot({ timeout: 5000 }).catch(() => null);
+        const ariaText = await routed.page.locator('body').ariaSnapshot({ timeout: 5000 }).catch(() => null);
         if (ariaText) tree = parseAriaSnapshotText(ariaText);
       }
     }
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title, snapshot: tree });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title, snapshot: tree });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14360,26 +14701,26 @@ function parseAriaSnapshotText(text) {
 app.post('/api/browser/sessions/:id/wait', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { selector, state, loadState, timeout } = req.body;
   try {
     if (loadState) {
       const valid = ['load', 'domcontentloaded', 'networkidle'];
       if (!valid.includes(loadState)) return res.status(400).json({ error: `Invalid loadState. Use: ${valid.join(', ')}` });
-      await session.page.waitForLoadState(loadState, { timeout: timeout || 15000 });
-      session.currentUrl = session.page.url();
-      session.title = await session.page.title().catch(() => '');
-      res.json({ ok: true, loadState, url: session.currentUrl, title: session.title });
+      await routed.page.waitForLoadState(loadState, { timeout: timeout || 15000 });
+      const ps = await syncPageState(session, routed);
+      res.json({ ok: true, loadState, url: ps.url, title: ps.title });
     } else if (selector) {
-      await session.page.locator(selector).waitFor({
+      await routed.page.locator(selector).waitFor({
         state: state || 'visible',
         timeout: timeout || 10000,
       });
       res.json({ ok: true, selector, state: state || 'visible' });
     } else {
-      await session.page.waitForTimeout(timeout || 1000);
-      session.currentUrl = session.page.url();
-      session.title = await session.page.title().catch(() => '');
-      res.json({ ok: true, url: session.currentUrl, title: session.title });
+      await routed.page.waitForTimeout(timeout || 1000);
+      const ps = await syncPageState(session, routed);
+      res.json({ ok: true, url: ps.url, title: ps.title });
     }
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -14389,15 +14730,16 @@ app.post('/api/browser/sessions/:id/wait', async (req, res) => {
 app.get('/api/browser/sessions/:id/content', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.query?.tabId} not found in session` });
   try {
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
+    const state = await syncPageState(session, routed);
     let text = '';
     try {
-      text = await session.page.innerText('body');
+      text = await routed.page.innerText('body');
       if (text.length > 50000) text = text.slice(0, 50000) + '\n... (truncated)';
     } catch { text = ''; }
-    res.json({ ok: true, url: session.currentUrl, title: session.title, text });
+    res.json({ ok: true, url: state.url, title: state.title, text });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14417,14 +14759,15 @@ const nhm = new NodeHtmlMarkdown({
 app.get('/api/browser/sessions/:id/markdown', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.query?.tabId} not found in session` });
   try {
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
+    const state = await syncPageState(session, routed);
 
     // Extract main content HTML — strip nav, header, footer, sidebar, ads
     let html = '';
     try {
-      html = await session.page.evaluate(() => {
+      html = await routed.page.evaluate(() => {
         // Remove noise elements before extraction
         const removeSelectors = [
           'nav', 'header', 'footer', 'aside',
@@ -14445,7 +14788,7 @@ app.get('/api/browser/sessions/:id/markdown', async (req, res) => {
     } catch { html = ''; }
 
     if (!html) {
-      return res.json({ ok: true, url: session.currentUrl, title: session.title, markdown: '', tokens: 0 });
+      return res.json({ ok: true, url: state.url, title: state.title, markdown: '', tokens: 0 });
     }
 
     let markdown = nhm.translate(html);
@@ -14455,7 +14798,7 @@ app.get('/api/browser/sessions/:id/markdown', async (req, res) => {
       markdown = markdown.slice(0, 80000) + '\n\n... (truncated at 80K chars)';
     }
 
-    res.json({ ok: true, url: session.currentUrl, title: session.title, markdown, tokens: estimatedTokens });
+    res.json({ ok: true, url: state.url, title: state.title, markdown, tokens: estimatedTokens });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14517,11 +14860,12 @@ app.post('/api/fetch-markdown', async (req, res) => {
 app.get('/api/browser/sessions/:id/screenshot-base64', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.query?.tabId} not found in session` });
   try {
-    const buf = await session.page.screenshot({ type: 'jpeg', quality: 70 });
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title, data: buf.toString('base64') });
+    const buf = await routed.page.screenshot({ type: 'jpeg', quality: 70 });
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title, data: buf.toString('base64') });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14530,21 +14874,22 @@ app.get('/api/browser/sessions/:id/screenshot-base64', async (req, res) => {
 app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { direction = 'down', distance = 500, selector: rawSel } = req.body;
   const deltaX = direction === 'right' ? distance : direction === 'left' ? -distance : 0;
   const deltaY = direction === 'down' ? distance : direction === 'up' ? -distance : 0;
   try {
     if (rawSel) {
-      await session.page.locator(normalizeSelector(rawSel)).evaluate(
+      await routed.page.locator(normalizeSelector(rawSel)).evaluate(
         (el, { dx, dy }) => el.scrollBy(dx, dy), { dx: deltaX, dy: deltaY }
       );
     } else {
-      await session.page.evaluate(({ dx, dy }) => window.scrollBy(dx, dy), { dx: deltaX, dy: deltaY });
+      await routed.page.evaluate(({ dx, dy }) => window.scrollBy(dx, dy), { dx: deltaX, dy: deltaY });
     }
-    await session.page.waitForTimeout(300);
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    await routed.page.waitForTimeout(300);
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14553,15 +14898,17 @@ app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
 app.post('/api/browser/sessions/:id/upload', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const routed = getTargetPage(session, req);
+  if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { selector: rawSel, filePaths, nthMatch } = req.body;
   if (!rawSel) return res.status(400).json({ error: 'selector required' });
   if (!Array.isArray(filePaths) || !filePaths.length) return res.status(400).json({ error: 'filePaths must be a non-empty array' });
   const selector = normalizeSelector(rawSel);
   try {
-    const loc = session.page.locator(selector);
+    const loc = routed.page.locator(selector);
     const count = await loc.count().catch(() => -1);
     if (count === 0) {
-      const hints = await getInteractiveHints(session.page);
+      const hints = await getInteractiveHints(routed.page);
       return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
     }
     if (count > 1 && nthMatch === undefined) {
@@ -14569,10 +14916,9 @@ app.post('/api/browser/sessions/:id/upload', async (req, res) => {
     }
     const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
     await target.setInputFiles(filePaths);
-    await session.page.waitForTimeout(500);
-    session.currentUrl = session.page.url();
-    session.title = await session.page.title().catch(() => '');
-    res.json({ ok: true, url: session.currentUrl, title: session.title });
+    await routed.page.waitForTimeout(500);
+    const state = await syncPageState(session, routed);
+    res.json({ ok: true, url: state.url, title: state.title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

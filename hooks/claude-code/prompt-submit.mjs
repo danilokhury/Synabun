@@ -236,14 +236,14 @@ function buildBrowserNote(state) {
     '=== BROWSER ENFORCEMENT (MANDATORY) ===',
     'This automation REQUIRES the SynaBun internal browser. You MUST:',
   ];
-  // Pin to shared browser session (system Chrome via CDP)
+  // Session and tab are auto-routed via SYNABUN_BROWSER_SESSION / SYNABUN_BROWSER_TAB env vars.
+  // Display IDs for debugging visibility but no manual pass-through needed.
   if (state.browserSessionId) {
-    lines.push(`YOUR BROWSER SESSION ID: ${state.browserSessionId}`);
-    lines.push('Pass sessionId: "' + state.browserSessionId + '" to ALL browser tool calls (browser_navigate, browser_click, etc.).');
+    lines.push(`YOUR BROWSER SESSION: ${state.browserSessionId}`);
     if (state.browserTabId) {
-      lines.push(`YOUR BROWSER TAB ID: ${state.browserTabId}`);
-      lines.push('This is your dedicated tab in the shared system browser. Other tabs belong to the user or other automations.');
+      lines.push(`YOUR BROWSER TAB: ${state.browserTabId}`);
     }
+    lines.push('Your session and tab are auto-configured via environment. All browser tool calls will target your dedicated tab automatically — no need to pass sessionId or tabId manually.');
   }
   lines.push(
     '1. Call `browser_navigate` with your target URL to create or reuse a browser session',
@@ -251,7 +251,7 @@ function buildBrowserNote(state) {
     '3. NEVER use Playwright plugin tools (mcp__plugin_playwright_*) — they launch a separate browser that the user cannot see',
     '4. NEVER use WebFetch or WebSearch tools for tasks that require visual browsing — use the SynaBun browser instead',
     '5. If the browser shows a login page, CAPTCHA, or any wall requiring human action: STOP immediately. Report the blocker to the user and WAIT. Do NOT abandon the browser and fall back to web search. The user can interact with the browser panel to resolve it.',
-    'A persistent Chrome profile is active with saved logins and cookies. The user can see and interact with the SynaBun browser panel.',
+    'SynaBun launches a headful browser using the profile selected in Browser Settings. The user can see and interact with that browser session.',
     '=== END BROWSER ENFORCEMENT ===',
   );
   return lines.join('\n');

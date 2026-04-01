@@ -2218,8 +2218,10 @@ async function openBrowserSession(url, fresh, _unused, force) {
   let tabLabel = 'Browser';
   if (profileMode === 'mirror' && profileSource) {
     tabLabel = `Browser (${profileSource})`;
-    showTermToast(`Synced copy of ${profileSource} — Chrome is running`);
+    showTermToast(`Mirrored copy of ${profileSource}`);
   } else if (profileMode === 'direct' && profileSource) {
+    tabLabel = `Browser (${profileSource})`;
+  } else if (profileMode === 'managed' && profileSource) {
     tabLabel = `Browser (${profileSource})`;
   }
 

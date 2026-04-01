@@ -3,12 +3,14 @@ export declare const browserClickSchema: {
     selector: z.ZodString;
     nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
+    tabId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserClickDescription: string;
 export declare function handleBrowserClick(args: {
     selector: string;
     nthMatch?: number;
     sessionId?: string;
+    tabId?: string;
 }): Promise<{
     content: {
         type: "text";
@@ -20,6 +22,7 @@ export declare const browserFillSchema: {
     value: z.ZodString;
     nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
+    tabId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserFillDescription: string;
 export declare function handleBrowserFill(args: {
@@ -27,6 +30,7 @@ export declare function handleBrowserFill(args: {
     value: string;
     nthMatch?: number;
     sessionId?: string;
+    tabId?: string;
 }): Promise<{
     content: {
         type: "text";
@@ -38,6 +42,7 @@ export declare const browserTypeSchema: {
     text: z.ZodString;
     nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
+    tabId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserTypeDescription: string;
 export declare function handleBrowserType(args: {
@@ -45,6 +50,7 @@ export declare function handleBrowserType(args: {
     text: string;
     nthMatch?: number;
     sessionId?: string;
+    tabId?: string;
 }): Promise<{
     content: {
         type: "text";
@@ -55,12 +61,14 @@ export declare const browserHoverSchema: {
     selector: z.ZodString;
     nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
+    tabId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserHoverDescription = "Hover over an element. Useful for revealing dropdowns, tooltips, or hover-triggered content. Accepts Playwright selectors.";
 export declare function handleBrowserHover(args: {
     selector: string;
     nthMatch?: number;
     sessionId?: string;
+    tabId?: string;
 }): Promise<{
     content: {
         type: "text";
@@ -72,6 +80,7 @@ export declare const browserSelectSchema: {
     value: z.ZodString;
     nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
+    tabId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserSelectDescription = "Select an option from a <select> dropdown by CSS selector and option value.";
 export declare function handleBrowserSelect(args: {
@@ -79,6 +88,7 @@ export declare function handleBrowserSelect(args: {
     value: string;
     nthMatch?: number;
     sessionId?: string;
+    tabId?: string;
 }): Promise<{
     content: {
         type: "text";
@@ -88,11 +98,13 @@ export declare function handleBrowserSelect(args: {
 export declare const browserPressSchema: {
     key: z.ZodString;
     sessionId: z.ZodOptional<z.ZodString>;
+    tabId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserPressDescription = "Press a keyboard key or key combination. Supports modifiers like Control+A, Shift+Enter, etc.";
 export declare function handleBrowserPress(args: {
     key: string;
     sessionId?: string;
+    tabId?: string;
 }): Promise<{
     content: {
         type: "text";
@@ -104,6 +116,7 @@ export declare const browserScrollSchema: {
     distance: z.ZodOptional<z.ZodNumber>;
     selector: z.ZodOptional<z.ZodString>;
     sessionId: z.ZodOptional<z.ZodString>;
+    tabId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserScrollDescription: string;
 export declare function handleBrowserScroll(args: {
@@ -111,6 +124,7 @@ export declare function handleBrowserScroll(args: {
     distance?: number;
     selector?: string;
     sessionId?: string;
+    tabId?: string;
 }): Promise<{
     content: {
         type: "text";
@@ -122,6 +136,7 @@ export declare const browserUploadSchema: {
     filePaths: z.ZodArray<z.ZodString, "many">;
     nthMatch: z.ZodOptional<z.ZodNumber>;
     sessionId: z.ZodOptional<z.ZodString>;
+    tabId: z.ZodOptional<z.ZodString>;
 };
 export declare const browserUploadDescription: string;
 export declare function handleBrowserUpload(args: {
@@ -129,6 +144,7 @@ export declare function handleBrowserUpload(args: {
     filePaths: string[];
     nthMatch?: number;
     sessionId?: string;
+    tabId?: string;
 }): Promise<{
     content: {
         type: "text";
