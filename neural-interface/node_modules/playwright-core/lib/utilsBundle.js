@@ -27,11 +27,11 @@ __export(utilsBundle_exports, {
   diff: () => diff,
   dotenv: () => dotenv,
   getProxyForUrl: () => getProxyForUrl,
+  ini: () => ini,
   jpegjs: () => jpegjs,
   lockfile: () => lockfile,
   mime: () => mime,
   minimatch: () => minimatch,
-  ms: () => ms,
   open: () => open,
   program: () => program,
   progress: () => progress,
@@ -46,6 +46,7 @@ const colors = require("./utilsBundleImpl").colors;
 const debug = require("./utilsBundleImpl").debug;
 const diff = require("./utilsBundleImpl").diff;
 const dotenv = require("./utilsBundleImpl").dotenv;
+const ini = require("./utilsBundleImpl").ini;
 const getProxyForUrl = require("./utilsBundleImpl").getProxyForUrl;
 const HttpsProxyAgent = require("./utilsBundleImpl").HttpsProxyAgent;
 const jpegjs = require("./utilsBundleImpl").jpegjs;
@@ -63,25 +64,6 @@ const wsServer = require("./utilsBundleImpl").wsServer;
 const wsReceiver = require("./utilsBundleImpl").wsReceiver;
 const wsSender = require("./utilsBundleImpl").wsSender;
 const yaml = require("./utilsBundleImpl").yaml;
-function ms(ms2) {
-  if (!isFinite(ms2))
-    return "-";
-  if (ms2 === 0)
-    return "0ms";
-  if (ms2 < 1e3)
-    return ms2.toFixed(0) + "ms";
-  const seconds = ms2 / 1e3;
-  if (seconds < 60)
-    return seconds.toFixed(1) + "s";
-  const minutes = seconds / 60;
-  if (minutes < 60)
-    return minutes.toFixed(1) + "m";
-  const hours = minutes / 60;
-  if (hours < 24)
-    return hours.toFixed(1) + "h";
-  const days = hours / 24;
-  return days.toFixed(1) + "d";
-}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   HttpsProxyAgent,
@@ -93,11 +75,11 @@ function ms(ms2) {
   diff,
   dotenv,
   getProxyForUrl,
+  ini,
   jpegjs,
   lockfile,
   mime,
   minimatch,
-  ms,
   open,
   program,
   progress,

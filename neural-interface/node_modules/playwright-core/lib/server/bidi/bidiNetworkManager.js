@@ -36,6 +36,7 @@ var import_eventsHelper = require("../utils/eventsHelper");
 var import_cookieStore = require("../cookieStore");
 var network = __toESM(require("../network"));
 var bidi = __toESM(require("./third_party/bidiProtocol"));
+const REQUEST_BODY_HEADERS = /* @__PURE__ */ new Set(["content-encoding", "content-language", "content-location", "content-type"]);
 class BidiNetworkManager {
   constructor(bidiSession, page) {
     this._userRequestInterceptionEnabled = false;
@@ -64,12 +65,38 @@ class BidiNetworkManager {
       return;
     if (redirectedFrom)
       this._deleteRequest(redirectedFrom._id);
+    if (param.request.method === "OPTIONS") {
+      const requestHeaders = Object.fromEntries(param.request.headers.map((h) => [h.name.toLowerCase(), bidiBytesValueToString(h.value)]));
+      if (param.initiator?.type === "preflight" || requestHeaders["access-control-request-method"]) {
+        if (param.intercepts) {
+          const responseHeaders = [
+            { name: "Access-Control-Allow-Origin", value: requestHeaders["origin"] || "*" },
+            { name: "Access-Control-Allow-Methods", value: requestHeaders["access-control-request-method"] },
+            { name: "Access-Control-Allow-Credentials", value: "true" }
+          ];
+          if (requestHeaders["access-control-request-headers"])
+            responseHeaders.push({ name: "Access-Control-Allow-Headers", value: requestHeaders["access-control-request-headers"] });
+          this._session.sendMayFail("network.provideResponse", {
+            request: param.request.request,
+            statusCode: 204,
+            headers: toBidiHeaders(responseHeaders)
+          });
+        }
+        return;
+      }
+    }
     let route;
+    let headersOverride;
     if (param.intercepts) {
       if (redirectedFrom) {
         let params = {};
-        if (redirectedFrom._originalRequestRoute?._alreadyContinuedHeaders)
-          params = toBidiRequestHeaders(redirectedFrom._originalRequestRoute._alreadyContinuedHeaders ?? []);
+        if (redirectedFrom._originalRequestRoute?._alreadyContinuedHeaders) {
+          const originalHeaders = fromBidiHeaders(param.request.headers);
+          headersOverride = network.applyHeadersOverrides(originalHeaders, redirectedFrom._originalRequestRoute._alreadyContinuedHeaders);
+          if (redirectedFrom.request.method() === "POST" && param.request.method === "GET")
+            headersOverride = headersOverride.filter(({ name }) => !REQUEST_BODY_HEADERS.has(name.toLowerCase()));
+          params = toBidiRequestHeaders(headersOverride);
+        }
         this._session.sendMayFail("network.continueRequest", {
           request: param.request.request,
           ...params
@@ -78,7 +105,7 @@ class BidiNetworkManager {
         route = new BidiRouteImpl(this._session, param.request.request);
       }
     }
-    const request = new BidiRequest(frame, redirectedFrom, param, route);
+    const request = new BidiRequest(frame, redirectedFrom, param, route, headersOverride);
     this._requests.set(request._id, request);
     this._page.frameManager.requestStarted(request.request, route);
   }
@@ -111,6 +138,7 @@ class BidiNetworkManager {
     const response = new network.Response(request.request, params.response.status, params.response.statusText, fromBidiHeaders(params.response.headers), timing, getResponseBody, false);
     response._serverAddrFinished();
     response._securityDetailsFinished();
+    response._setHttpVersion(params.response.protocol);
     response.setRawResponseHeaders(null);
     response.setResponseHeadersSize(params.response.headersSize);
     this._page.frameManager.requestReceivedResponse(response);
@@ -130,7 +158,6 @@ class BidiNetworkManager {
       this._deleteRequest(request._id);
       response._requestFinished(responseEndTime);
     }
-    response._setHttpVersion(params.response.protocol);
     this._page.frameManager.reportRequestFinished(request.request, response);
   }
   _onFetchError(params) {
@@ -194,13 +221,13 @@ class BidiNetworkManager {
     this._protocolRequestInterceptionEnabled = enabled;
     if (initial && !enabled)
       return;
-    const cachePromise = this._session.send("network.setCacheBehavior", { cacheBehavior: enabled ? "bypass" : "default" });
+    const contexts = [this._page.delegate._session.sessionId];
+    const cachePromise = this._session.send("network.setCacheBehavior", { cacheBehavior: enabled ? "bypass" : "default", contexts });
     let interceptPromise = Promise.resolve(void 0);
     if (enabled) {
       interceptPromise = this._session.send("network.addIntercept", {
-        phases: [bidi.Network.InterceptPhase.AuthRequired, bidi.Network.InterceptPhase.BeforeRequestSent],
-        urlPatterns: [{ type: "pattern" }]
-        // urlPatterns: [{ type: 'string', pattern: '*' }],
+        phases: [bidi.Network.InterceptPhase.BeforeRequestSent],
+        contexts
       }).then((r) => {
         this._intercepId = r.intercept;
       });
@@ -212,7 +239,7 @@ class BidiNetworkManager {
   }
 }
 class BidiRequest {
-  constructor(frame, redirectedFrom, payload, route) {
+  constructor(frame, redirectedFrom, payload, route, headersOverride) {
     this._id = payload.request.request;
     if (redirectedFrom)
       redirectedFrom._redirectedTo = this;
@@ -227,7 +254,7 @@ class BidiRequest {
       resourceTypeFromBidi(payload.request.destination, payload.request.initiatorType, payload.initiator?.type),
       payload.request.method,
       postDataBuffer,
-      fromBidiHeaders(payload.request.headers)
+      headersOverride || fromBidiHeaders(payload.request.headers)
     );
     this.request.setRawRequestHeaders(null);
     this.request._setBodySize(payload.request.bodySize || 0);
@@ -269,11 +296,12 @@ class BidiRouteImpl {
   }
   async fulfill(response) {
     const base64body = response.isBase64 ? response.body : Buffer.from(response.body).toString("base64");
+    const headers = response.headers.filter((h) => h.name.toLowerCase() !== "content-encoding");
     await this._session.sendMayFail("network.provideResponse", {
       request: this._requestId,
       statusCode: response.status,
       reasonPhrase: network.statusText(response.status),
-      ...toBidiResponseHeaders(response.headers),
+      ...toBidiResponseHeaders(headers),
       body: { type: "base64", value: base64body }
     });
   }

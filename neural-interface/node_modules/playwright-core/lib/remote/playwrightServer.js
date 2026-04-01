@@ -22,6 +22,7 @@ __export(playwrightServer_exports, {
 });
 module.exports = __toCommonJS(playwrightServer_exports);
 var import_playwrightConnection = require("./playwrightConnection");
+var import_serverTransport = require("./serverTransport");
 var import_playwright = require("../server/playwright");
 var import_semaphore = require("../utils/isomorphic/semaphore");
 var import_time = require("../utils/isomorphic/time");
@@ -86,6 +87,8 @@ ${uaError}` };
         const isExtension = this._options.mode === "extension";
         const allowFSPaths = isExtension;
         launchOptions = filterLaunchOptions(launchOptions, allowFSPaths);
+        if (this._options.artifactsDir)
+          launchOptions.artifactsDir = this._options.artifactsDir;
         if (isExtension) {
           const connectFilter = url.searchParams.get("connect");
           if (connectFilter) {
@@ -93,7 +96,7 @@ ${uaError}` };
               throw new Error(`Unknown connect filter: ${connectFilter}`);
             return new import_playwrightConnection.PlaywrightConnection(
               browserSemaphore,
-              ws,
+              new import_serverTransport.WebSocketServerTransport(ws),
               false,
               this._playwright,
               () => this._initConnectMode(id, connectFilter, browserName, launchOptions),
@@ -103,7 +106,7 @@ ${uaError}` };
           if (url.searchParams.has("debug-controller")) {
             return new import_playwrightConnection.PlaywrightConnection(
               controllerSemaphore,
-              ws,
+              new import_serverTransport.WebSocketServerTransport(ws),
               true,
               this._playwright,
               async () => {
@@ -114,7 +117,7 @@ ${uaError}` };
           }
           return new import_playwrightConnection.PlaywrightConnection(
             reuseBrowserSemaphore,
-            ws,
+            new import_serverTransport.WebSocketServerTransport(ws),
             false,
             this._playwright,
             () => this._initReuseBrowsersMode(browserName, launchOptions, id),
@@ -125,7 +128,7 @@ ${uaError}` };
           if (this._options.preLaunchedBrowser) {
             return new import_playwrightConnection.PlaywrightConnection(
               browserSemaphore,
-              ws,
+              new import_serverTransport.WebSocketServerTransport(ws),
               false,
               this._playwright,
               () => this._initPreLaunchedBrowserMode(id),
@@ -134,7 +137,7 @@ ${uaError}` };
           }
           return new import_playwrightConnection.PlaywrightConnection(
             browserSemaphore,
-            ws,
+            new import_serverTransport.WebSocketServerTransport(ws),
             false,
             this._playwright,
             () => this._initPreLaunchedAndroidMode(id),
@@ -143,7 +146,7 @@ ${uaError}` };
         }
         return new import_playwrightConnection.PlaywrightConnection(
           browserSemaphore,
-          ws,
+          new import_serverTransport.WebSocketServerTransport(ws),
           false,
           this._playwright,
           () => this._initLaunchBrowserMode(browserName, proxyValue, launchOptions, id),
@@ -313,7 +316,8 @@ function filterLaunchOptions(options, allowFSPaths) {
     firefoxUserPrefs: options.firefoxUserPrefs,
     slowMo: options.slowMo,
     executablePath: (0, import_utils.isUnderTest)() || allowFSPaths ? options.executablePath : void 0,
-    downloadsPath: allowFSPaths ? options.downloadsPath : void 0
+    downloadsPath: allowFSPaths ? options.downloadsPath : void 0,
+    artifactsDir: (0, import_utils.isUnderTest)() || allowFSPaths ? options.artifactsDir : void 0
   };
 }
 const defaultLaunchOptions = {
@@ -326,7 +330,8 @@ const defaultLaunchOptions = {
 const optionsThatAllowBrowserReuse = [
   "headless",
   "timeout",
-  "tracesDir"
+  "tracesDir",
+  "artifactsDir"
 ];
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

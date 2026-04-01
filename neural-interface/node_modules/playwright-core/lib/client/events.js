@@ -36,6 +36,9 @@ const Events = {
   Browser: {
     Disconnected: "disconnected"
   },
+  Debugger: {
+    PausedStateChanged: "pausedstatechanged"
+  },
   BrowserContext: {
     Console: "console",
     Close: "close",
@@ -77,9 +80,6 @@ const Events = {
     Popup: "popup",
     WebSocket: "websocket",
     Worker: "worker"
-  },
-  PageAgent: {
-    Turn: "turn"
   },
   WebSocket: {
     Close: "close",

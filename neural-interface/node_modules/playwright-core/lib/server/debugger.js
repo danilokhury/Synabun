@@ -21,22 +21,20 @@ __export(debugger_exports, {
   Debugger: () => Debugger
 });
 module.exports = __toCommonJS(debugger_exports);
-var import_events = require("events");
+var import_instrumentation = require("./instrumentation");
 var import_utils = require("../utils");
 var import_browserContext = require("./browserContext");
 var import_protocolMetainfo = require("../utils/isomorphic/protocolMetainfo");
 const symbol = Symbol("Debugger");
-class Debugger extends import_events.EventEmitter {
+class Debugger extends import_instrumentation.SdkObject {
   constructor(context) {
-    super();
-    this._pauseOnNextStatement = false;
-    this._pausedCallsMetadata = /* @__PURE__ */ new Map();
+    super(context, "debugger");
+    this._pauseAt = {};
+    this._enabled = false;
+    this._pauseBeforeWaitingActions = false;
     this._muted = false;
     this._context = context;
     this._context[symbol] = this;
-    this._enabled = (0, import_utils.debugMode)() === "inspector";
-    if (this._enabled)
-      this.pauseOnNextStatement();
     context.instrumentation.addListener(this, context);
     this._context.once(import_browserContext.BrowserContext.Events.Close, () => {
       this._context.instrumentation.removeListener(this);
@@ -51,67 +49,62 @@ class Debugger extends import_events.EventEmitter {
     this._muted = muted;
   }
   async onBeforeCall(sdkObject, metadata) {
-    if (this._muted)
+    if (this._muted || metadata.internal)
       return;
-    if (shouldPauseOnCall(sdkObject, metadata) || this._pauseOnNextStatement && shouldPauseBeforeStep(metadata))
-      await this.pause(sdkObject, metadata);
+    const metainfo = (0, import_protocolMetainfo.getMetainfo)(metadata);
+    const pauseOnPauseCall = this._enabled && metadata.type === "BrowserContext" && metadata.method === "pause";
+    const pauseBeforeAction = !!this._pauseAt.next && !!metainfo?.pause && (this._pauseBeforeWaitingActions || !metainfo?.isAutoWaiting);
+    const pauseOnLocation = !!this._pauseAt.location && matchesLocation(metadata, this._pauseAt.location);
+    if (pauseOnPauseCall || pauseBeforeAction || pauseOnLocation)
+      await this._pause(sdkObject, metadata);
   }
   async onBeforeInputAction(sdkObject, metadata) {
-    if (this._muted)
+    if (this._muted || metadata.internal)
       return;
-    if (this._enabled && this._pauseOnNextStatement)
-      await this.pause(sdkObject, metadata);
+    const metainfo = (0, import_protocolMetainfo.getMetainfo)(metadata);
+    const pauseBeforeInput = !!this._pauseAt.next && !!metainfo?.pause && !!metainfo?.isAutoWaiting && !this._pauseBeforeWaitingActions;
+    if (pauseBeforeInput)
+      await this._pause(sdkObject, metadata);
   }
-  async pause(sdkObject, metadata) {
-    if (this._muted)
+  async _pause(sdkObject, metadata) {
+    if (this._muted || metadata.internal)
       return;
-    this._enabled = true;
+    if (this._pausedCall)
+      return;
+    this._pauseAt = {};
     metadata.pauseStartTime = (0, import_utils.monotonicTime)();
     const result = new Promise((resolve) => {
-      this._pausedCallsMetadata.set(metadata, { resolve, sdkObject });
+      this._pausedCall = { metadata, sdkObject, resolve };
     });
     this.emit(Debugger.Events.PausedStateChanged);
     return result;
   }
-  resume(step) {
-    if (!this.isPaused())
+  resume() {
+    if (!this._pausedCall)
       return;
-    this._pauseOnNextStatement = step;
-    const endTime = (0, import_utils.monotonicTime)();
-    for (const [metadata, { resolve }] of this._pausedCallsMetadata) {
-      metadata.pauseEndTime = endTime;
-      resolve();
-    }
-    this._pausedCallsMetadata.clear();
+    this._pausedCall.metadata.pauseEndTime = (0, import_utils.monotonicTime)();
+    this._pausedCall.resolve();
+    this._pausedCall = void 0;
     this.emit(Debugger.Events.PausedStateChanged);
   }
-  pauseOnNextStatement() {
-    this._pauseOnNextStatement = true;
+  setPauseBeforeWaitingActions() {
+    this._pauseBeforeWaitingActions = true;
+  }
+  setPauseAt(at = {}) {
+    this._enabled = true;
+    this._pauseAt = at;
   }
   isPaused(metadata) {
     if (metadata)
-      return this._pausedCallsMetadata.has(metadata);
-    return !!this._pausedCallsMetadata.size;
+      return this._pausedCall?.metadata === metadata;
+    return !!this._pausedCall;
   }
   pausedDetails() {
-    const result = [];
-    for (const [metadata, { sdkObject }] of this._pausedCallsMetadata)
-      result.push({ metadata, sdkObject });
-    return result;
+    return this._pausedCall;
   }
 }
-function shouldPauseOnCall(sdkObject, metadata) {
-  if (sdkObject.attribution.playwright.options.isServer)
-    return false;
-  if (!sdkObject.attribution.browser?.options.headful && !(0, import_utils.isUnderTest)())
-    return false;
-  return metadata.method === "pause";
-}
-function shouldPauseBeforeStep(metadata) {
-  if (metadata.internal)
-    return false;
-  const metainfo = import_protocolMetainfo.methodMetainfo.get(metadata.type + "." + metadata.method);
-  return !!metainfo?.pausesBeforeAction;
+function matchesLocation(metadata, location) {
+  return !!metadata.location?.file.includes(location.file) && (location.line === void 0 || metadata.location.line === location.line) && (location.column === void 0 || metadata.location.column === location.column);
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

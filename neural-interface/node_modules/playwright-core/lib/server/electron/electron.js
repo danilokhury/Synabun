@@ -76,7 +76,6 @@ class ElectronApplication extends import_instrumentation.SdkObject {
     this._nodeSession.on("Runtime.consoleAPICalled", (event) => this._onConsoleAPI(event));
     const appClosePromise = new Promise((f) => this.once(ElectronApplication.Events.Close, f));
     this._browserContext.setCustomCloseHandler(async () => {
-      await this._browserContext.stopVideoRecording();
       const electronHandle = await this._nodeElectronHandlePromise;
       await electronHandle.evaluate(({ app }) => app.quit()).catch(() => {
       });
@@ -97,7 +96,7 @@ class ElectronApplication extends import_instrumentation.SdkObject {
     if (!this._nodeExecutionContext)
       return;
     const args = event.args.map((arg) => (0, import_crExecutionContext.createHandle)(this._nodeExecutionContext, arg));
-    const message = new import_console.ConsoleMessage(null, null, event.type, void 0, args, (0, import_crProtocolHelper.toConsoleMessageLocation)(event.stackTrace));
+    const message = new import_console.ConsoleMessage(null, null, event.type, void 0, args, (0, import_crProtocolHelper.toConsoleMessageLocation)(event.stackTrace), event.timestamp);
     this.emit(ElectronApplication.Events.Console, message);
   }
   async initialize() {
@@ -131,11 +130,17 @@ class Electron extends import_instrumentation.SdkObject {
     let app = void 0;
     let electronArguments = ["--inspect=0", "--remote-debugging-port=0", ...options.args || []];
     if (import_os.default.platform() === "linux") {
-      const runningAsRoot = process.geteuid && process.geteuid() === 0;
-      if (runningAsRoot && electronArguments.indexOf("--no-sandbox") === -1)
+      if (!options.chromiumSandbox && electronArguments.indexOf("--no-sandbox") === -1)
         electronArguments.unshift("--no-sandbox");
     }
-    const artifactsDir = await progress.race(import_fs.default.promises.mkdtemp(ARTIFACTS_FOLDER));
+    let artifactsDir;
+    const tempDirectories = [];
+    if (options.artifactsDir) {
+      artifactsDir = options.artifactsDir;
+    } else {
+      artifactsDir = await progress.race(import_fs.default.promises.mkdtemp(ARTIFACTS_FOLDER));
+      tempDirectories.push(artifactsDir);
+    }
     const browserLogsCollector = new import_debugLogger.RecentLogsCollector();
     const env = options.env ? (0, import_processLauncher.envArrayToObject)(options.env) : process.env;
     let command;
@@ -173,7 +178,7 @@ class Electron extends import_instrumentation.SdkObject {
       shell,
       stdio: "pipe",
       cwd: options.cwd,
-      tempDirectories: [artifactsDir],
+      tempDirectories,
       attemptToGracefullyClose: () => app.close(),
       handleSIGINT: true,
       handleSIGTERM: true,
@@ -219,7 +224,7 @@ class Electron extends import_instrumentation.SdkObject {
       };
       const browserOptions = {
         name: "electron",
-        isChromium: true,
+        browserType: "chromium",
         headful: true,
         persistent: contextOptions,
         browserProcess,

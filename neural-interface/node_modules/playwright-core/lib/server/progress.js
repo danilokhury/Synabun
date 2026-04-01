@@ -39,9 +39,15 @@ class ProgressController {
   static createForSdkObject(sdkObject, callMetadata) {
     const logName = sdkObject.logName || "api";
     return new ProgressController(callMetadata, (message) => {
+      if (logName === "api" && sdkObject.attribution.playwright?.options.isInternalPlaywright)
+        return;
       import_utils.debugLogger.log(logName, message);
       sdkObject.instrumentation.onCallLog(sdkObject, callMetadata, logName, message);
     });
+  }
+  static runInternalTask(task, timeout) {
+    const progress = new ProgressController();
+    return progress.run(task, timeout);
   }
   async abort(error) {
     if (this._state === "running") {

@@ -202,17 +202,17 @@ class ElementHandle extends js.JSHandle {
     );
   }
   async _clickablePoint() {
-    const intersectQuadWithViewport = (quad) => {
-      return quad.map((point) => ({
+    const intersectQuadWithViewport = (quad2) => {
+      return quad2.map((point) => ({
         x: Math.min(Math.max(point.x, 0), metrics.width),
         y: Math.min(Math.max(point.y, 0), metrics.height)
       }));
     };
-    const computeQuadArea = (quad) => {
+    const computeQuadArea = (quad2) => {
       let area = 0;
-      for (let i = 0; i < quad.length; ++i) {
-        const p1 = quad[i];
-        const p2 = quad[(i + 1) % quad.length];
+      for (let i = 0; i < quad2.length; ++i) {
+        const p1 = quad2[i];
+        const p2 = quad2[(i + 1) % quad2.length];
         area += (p1.x * p2.y - p2.x * p1.y) / 2;
       }
       return Math.abs(area);
@@ -225,17 +225,19 @@ class ElementHandle extends js.JSHandle {
       return quads;
     if (!quads || !quads.length)
       return "error:notvisible";
-    const filtered = quads.map((quad) => intersectQuadWithViewport(quad)).filter((quad) => computeQuadArea(quad) > 0.99);
+    const filtered = quads.map((quad2) => intersectQuadWithViewport(quad2)).filter((quad2) => computeQuadArea(quad2) > 0.99);
     if (!filtered.length)
       return "error:notinviewport";
+    const quad = filtered[0];
+    const box = quadToRect(quad);
     if (this._page.browserContext._browser.options.name === "firefox") {
-      for (const quad of filtered) {
-        const integerPoint = findIntegerPointInsideQuad(quad);
+      for (const q of filtered) {
+        const integerPoint = findIntegerPointInsideQuad(q);
         if (integerPoint)
-          return integerPoint;
+          return { point: integerPoint, box };
       }
     }
-    return quadMiddlePoint(filtered[0]);
+    return { point: quadMiddlePoint(quad), box };
   }
   async _offsetPoint(offset) {
     const [box, border] = await Promise.all([
@@ -248,8 +250,11 @@ class ElementHandle extends js.JSHandle {
     if (border === "error:notconnected")
       return border;
     return {
-      x: box.x + border.left + offset.x,
-      y: box.y + border.top + offset.y
+      point: {
+        x: box.x + border.left + offset.x,
+        y: box.y + border.top + offset.y
+      },
+      box
     };
   }
   async _retryAction(progress, actionName, action, options) {
@@ -360,11 +365,12 @@ class ElementHandle extends js.JSHandle {
     if (scrolled !== "done")
       return scrolled;
     progress.log("  done scrolling");
-    const maybePoint = position ? await progress.race(this._offsetPoint(position)) : await progress.race(this._clickablePoint());
-    if (typeof maybePoint === "string")
-      return maybePoint;
-    const point = roundPoint(maybePoint);
+    const maybeResult = position ? await progress.race(this._offsetPoint(position)) : await progress.race(this._clickablePoint());
+    if (typeof maybeResult === "string")
+      return maybeResult;
+    const point = roundPoint(maybeResult.point);
     progress.metadata.point = point;
+    progress.metadata.box = maybeResult.box;
     await progress.race(this.instrumentation.onBeforeInputAction(this, progress.metadata));
     let hitTargetInterceptionHandle;
     if (force) {
@@ -470,10 +476,15 @@ class ElementHandle extends js.JSHandle {
     const result = await this._selectOption(progress, elements, values, options);
     return throwRetargetableDOMError(result);
   }
+  async _beforeNonPointerAction(progress) {
+    if (progress.metadata.annotate)
+      progress.metadata.box = await this.boundingBox() || void 0;
+    await progress.race(this.instrumentation.onBeforeInputAction(this, progress.metadata));
+  }
   async _selectOption(progress, elements, values, options) {
     let resultingOptions = [];
     const result = await this._retryAction(progress, "select option", async () => {
-      await progress.race(this.instrumentation.onBeforeInputAction(this, progress.metadata));
+      await this._beforeNonPointerAction(progress);
       if (!options.force)
         progress.log(`  waiting for element to be visible and enabled`);
       const optionsToSelect = [...elements, ...values];
@@ -504,7 +515,7 @@ class ElementHandle extends js.JSHandle {
   async _fill(progress, value, options) {
     progress.log(`  fill("${value}")`);
     return await this._retryAction(progress, "fill", async () => {
-      await progress.race(this.instrumentation.onBeforeInputAction(this, progress.metadata));
+      await this._beforeNonPointerAction(progress);
       if (!options.force)
         progress.log("  waiting for element to be visible, enabled and editable");
       const result = await progress.race(this.evaluateInUtility(async ([injected, node, { value: value2, force }]) => {
@@ -517,7 +528,7 @@ class ElementHandle extends js.JSHandle {
       }, { value, force: options.force }));
       if (result === "needsinput") {
         if (value)
-          await this._page.keyboard.insertText(progress, value);
+          await this._page.keyboard._insertText(progress, value);
         else
           await this._page.keyboard.press(progress, "Delete");
         return "done";
@@ -568,7 +579,7 @@ class ElementHandle extends js.JSHandle {
     if (result === "error:notconnected" || !result.asElement())
       return "error:notconnected";
     const retargeted = result.asElement();
-    await progress.race(this.instrumentation.onBeforeInputAction(this, progress.metadata));
+    await this._beforeNonPointerAction(progress);
     if (localPaths || localDirectory) {
       const localPathsOrDirectory = localDirectory ? [localDirectory] : localPaths;
       await progress.race(Promise.all(localPathsOrDirectory.map((localPath) => import_fs.default.promises.access(localPath, import_fs.default.constants.F_OK))));
@@ -601,7 +612,7 @@ class ElementHandle extends js.JSHandle {
   }
   async _type(progress, text, options) {
     progress.log(`elementHandle.type("${text}")`);
-    await progress.race(this.instrumentation.onBeforeInputAction(this, progress.metadata));
+    await this._beforeNonPointerAction(progress);
     const result = await this._focus(
       progress,
       true
@@ -619,7 +630,7 @@ class ElementHandle extends js.JSHandle {
   }
   async _press(progress, key, options) {
     progress.log(`elementHandle.press("${key}")`);
-    await progress.race(this.instrumentation.onBeforeInputAction(this, progress.metadata));
+    await this._beforeNonPointerAction(progress);
     return this._page.frameManager.waitForSignalsCreatedBy(progress, !options.noWaitAfter, async () => {
       const result = await this._focus(
         progress,
@@ -665,9 +676,6 @@ class ElementHandle extends js.JSHandle {
   }
   async boundingBox() {
     return this._page.delegate.getBoundingBox(this);
-  }
-  async ariaSnapshot() {
-    return await this.evaluateInUtility(([injected, element]) => injected.ariaSnapshot(element, { mode: "expect" }), {});
   }
   async screenshot(progress, options) {
     return await this._page.screenshotter.screenshotElement(progress, this, options);
@@ -766,6 +774,16 @@ function roundPoint(point) {
     x: (point.x * 100 | 0) / 100,
     y: (point.y * 100 | 0) / 100
   };
+}
+function quadToRect(quad) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const point of quad) {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 function quadMiddlePoint(quad) {
   const result = { x: 0, y: 0 };

@@ -4,15 +4,14 @@ THIRD-PARTY SOFTWARE NOTICES AND INFORMATION
 
 This project incorporates components from the projects listed below. The original copyright notices and the licenses under which Microsoft received such components are set forth below. Microsoft reserves all rights not expressly granted herein, whether by implication, estoppel or otherwise.
 
--	@hono/node-server@1.19.8 (https://github.com/honojs/node-server)
--	@lowire/loop@0.0.25 (https://github.com/pavelfeldman/lowire)
--	@modelcontextprotocol/sdk@1.25.2 (https://github.com/modelcontextprotocol/typescript-sdk)
+-	@hono/node-server@1.19.11 (https://github.com/honojs/node-server)
+-	@modelcontextprotocol/sdk@1.28.0 (https://github.com/modelcontextprotocol/typescript-sdk)
 -	accepts@2.0.0 (https://github.com/jshttp/accepts)
 -	agent-base@7.1.4 (https://github.com/TooTallNate/proxy-agents)
 -	ajv-formats@3.0.1 (https://github.com/ajv-validator/ajv-formats)
--	ajv@8.17.1 (https://github.com/ajv-validator/ajv)
+-	ajv@8.18.0 (https://github.com/ajv-validator/ajv)
 -	balanced-match@1.0.2 (https://github.com/juliangruber/balanced-match)
--	body-parser@2.2.1 (https://github.com/expressjs/body-parser)
+-	body-parser@2.2.2 (https://github.com/expressjs/body-parser)
 -	brace-expansion@1.1.12 (https://github.com/juliangruber/brace-expansion)
 -	buffer-crc32@0.2.13 (https://github.com/brianloveswords/buffer-crc32)
 -	bytes@3.1.2 (https://github.com/visionmedia/bytes.js)
@@ -22,7 +21,7 @@ This project incorporates components from the projects listed below. The origina
 -	colors@1.4.0 (https://github.com/Marak/colors.js)
 -	commander@13.1.0 (https://github.com/tj/commander.js)
 -	concat-map@0.0.1 (https://github.com/substack/node-concat-map)
--	content-disposition@1.0.0 (https://github.com/jshttp/content-disposition)
+-	content-disposition@1.0.1 (https://github.com/jshttp/content-disposition)
 -	content-type@1.0.5 (https://github.com/jshttp/content-type)
 -	cookie-signature@1.2.2 (https://github.com/visionmedia/node-cookie-signature)
 -	cookie@0.7.2 (https://github.com/jshttp/cookie)
@@ -33,7 +32,7 @@ This project incorporates components from the projects listed below. The origina
 -	debug@4.4.3 (https://github.com/debug-js/debug)
 -	define-lazy-prop@2.0.0 (https://github.com/sindresorhus/define-lazy-prop)
 -	depd@2.0.0 (https://github.com/dougwilson/nodejs-depd)
--	diff@7.0.0 (https://github.com/kpdecker/jsdiff)
+-	diff@8.0.4 (https://github.com/kpdecker/jsdiff)
 -	dotenv@16.4.5 (https://github.com/motdotla/dotenv)
 -	dunder-proto@1.0.1 (https://github.com/es-shims/dunder-proto)
 -	ee-first@1.1.1 (https://github.com/jonathanong/ee-first)
@@ -46,11 +45,11 @@ This project incorporates components from the projects listed below. The origina
 -	etag@1.8.1 (https://github.com/jshttp/etag)
 -	eventsource-parser@3.0.3 (https://github.com/rexxars/eventsource-parser)
 -	eventsource@3.0.7 (git://git@github.com/EventSource/eventsource)
--	express-rate-limit@7.5.1 (https://github.com/express-rate-limit/express-rate-limit)
--	express@5.1.0 (https://github.com/expressjs/express)
+-	express-rate-limit@8.3.1 (https://github.com/express-rate-limit/express-rate-limit)
+-	express@5.2.1 (https://github.com/expressjs/express)
 -	fast-deep-equal@3.1.3 (https://github.com/epoberezkin/fast-deep-equal)
 -	fast-uri@3.1.0 (https://github.com/fastify/fast-uri)
--	finalhandler@2.1.0 (https://github.com/pillarjs/finalhandler)
+-	finalhandler@2.1.1 (https://github.com/pillarjs/finalhandler)
 -	forwarded@0.2.0 (https://github.com/jshttp/forwarded)
 -	fresh@2.0.0 (https://github.com/jshttp/fresh)
 -	function-bind@1.1.2 (https://github.com/Raynos/function-bind)
@@ -61,11 +60,13 @@ This project incorporates components from the projects listed below. The origina
 -	graceful-fs@4.2.10 (https://github.com/isaacs/node-graceful-fs)
 -	has-symbols@1.1.0 (https://github.com/inspect-js/has-symbols)
 -	hasown@2.0.2 (https://github.com/inspect-js/hasOwn)
--	hono@4.11.3 (https://github.com/honojs/hono)
+-	hono@4.12.7 (https://github.com/honojs/hono)
 -	http-errors@2.0.1 (https://github.com/jshttp/http-errors)
 -	https-proxy-agent@7.0.6 (https://github.com/TooTallNate/proxy-agents)
--	iconv-lite@0.7.0 (https://github.com/pillarjs/iconv-lite)
+-	iconv-lite@0.7.2 (https://github.com/pillarjs/iconv-lite)
 -	inherits@2.0.4 (https://github.com/isaacs/inherits)
+-	ini@6.0.0 (https://github.com/npm/ini)
+-	ip-address@10.1.0 (https://github.com/beaugunderson/ip-address)
 -	ip-address@9.0.5 (https://github.com/beaugunderson/ip-address)
 -	ipaddr.js@1.9.1 (https://github.com/whitequark/ipaddr.js)
 -	is-docker@2.2.1 (https://github.com/sindresorhus/is-docker)
@@ -81,9 +82,9 @@ This project incorporates components from the projects listed below. The origina
 -	media-typer@1.1.0 (https://github.com/jshttp/media-typer)
 -	merge-descriptors@2.0.0 (https://github.com/sindresorhus/merge-descriptors)
 -	mime-db@1.54.0 (https://github.com/jshttp/mime-db)
--	mime-types@3.0.1 (https://github.com/jshttp/mime-types)
+-	mime-types@3.0.2 (https://github.com/jshttp/mime-types)
 -	mime@3.0.0 (https://github.com/broofa/mime)
--	minimatch@3.1.2 (https://github.com/isaacs/minimatch)
+-	minimatch@3.1.4 (https://github.com/isaacs/minimatch)
 -	ms@2.1.2 (https://github.com/zeit/ms)
 -	ms@2.1.3 (https://github.com/vercel/ms)
 -	negotiator@1.0.0 (https://github.com/jshttp/negotiator)
@@ -94,24 +95,23 @@ This project incorporates components from the projects listed below. The origina
 -	open@8.4.0 (https://github.com/sindresorhus/open)
 -	parseurl@1.3.3 (https://github.com/pillarjs/parseurl)
 -	path-key@3.1.1 (https://github.com/sindresorhus/path-key)
--	path-to-regexp@8.2.0 (https://github.com/pillarjs/path-to-regexp)
+-	path-to-regexp@8.3.0 (https://github.com/pillarjs/path-to-regexp)
 -	pend@1.2.0 (https://github.com/andrewrk/node-pend)
 -	pkce-challenge@5.0.0 (https://github.com/crouchcd/pkce-challenge)
 -	pngjs@6.0.0 (https://github.com/lukeapage/pngjs)
 -	progress@2.0.3 (https://github.com/visionmedia/node-progress)
 -	proxy-addr@2.0.7 (https://github.com/jshttp/proxy-addr)
--	proxy-from-env@1.1.0 (https://github.com/Rob--W/proxy-from-env)
+-	proxy-from-env@2.0.0 (https://github.com/Rob--W/proxy-from-env)
 -	pump@3.0.2 (https://github.com/mafintosh/pump)
--	qs@6.14.1 (https://github.com/ljharb/qs)
+-	qs@6.15.0 (https://github.com/ljharb/qs)
 -	range-parser@1.2.1 (https://github.com/jshttp/range-parser)
 -	raw-body@3.0.2 (https://github.com/stream-utils/raw-body)
 -	require-from-string@2.0.2 (https://github.com/floatdrop/require-from-string)
 -	retry@0.12.0 (https://github.com/tim-kos/node-retry)
 -	router@2.2.0 (https://github.com/pillarjs/router)
--	safe-buffer@5.2.1 (https://github.com/feross/safe-buffer)
 -	safer-buffer@2.1.2 (https://github.com/ChALkeR/safer-buffer)
--	send@1.2.0 (https://github.com/pillarjs/send)
--	serve-static@2.2.0 (https://github.com/expressjs/serve-static)
+-	send@1.2.1 (https://github.com/pillarjs/send)
+-	serve-static@2.2.1 (https://github.com/expressjs/serve-static)
 -	setprototypeof@1.2.0 (https://github.com/wesleytodd/setprototypeof)
 -	shebang-command@2.0.0 (https://github.com/kevva/shebang-command)
 -	shebang-regex@3.0.0 (https://github.com/sindresorhus/shebang-regex)
@@ -132,581 +132,39 @@ This project incorporates components from the projects listed below. The origina
 -	which@2.0.2 (https://github.com/isaacs/node-which)
 -	wrappy@1.0.2 (https://github.com/npm/wrappy)
 -	ws@8.17.1 (https://github.com/websockets/ws)
--	yaml@2.6.0 (https://github.com/eemeli/yaml)
--	yauzl@3.2.0 (https://github.com/thejoshwolfe/yauzl)
+-	yaml@2.8.3 (https://github.com/eemeli/yaml)
+-	yauzl@3.2.1 (https://github.com/thejoshwolfe/yauzl)
 -	yazl@2.5.1 (https://github.com/thejoshwolfe/yazl)
 -	zod-to-json-schema@3.25.1 (https://github.com/StefanTerdell/zod-to-json-schema)
--	zod@4.3.5 (https://github.com/colinhacks/zod)
+-	zod@4.3.6 (https://github.com/colinhacks/zod)
 
-%% @hono/node-server@1.19.8 NOTICES AND INFORMATION BEGIN HERE
+%% @hono/node-server@1.19.11 NOTICES AND INFORMATION BEGIN HERE
 =========================================
-# Node.js Adapter for Hono
-
-This adapter `@hono/node-server` allows you to run your Hono application on Node.js.
-Initially, Hono wasn't designed for Node.js, but with this adapter, you can now use Hono on Node.js.
-It utilizes web standard APIs implemented in Node.js version 18 or higher.
-
-## Benchmarks
-
-Hono is 3.5 times faster than Express.
-
-Express:
-
-```txt
-$ bombardier -d 10s --fasthttp http://localhost:3000/
-
-Statistics        Avg      Stdev        Max
-  Reqs/sec     16438.94    1603.39   19155.47
-  Latency        7.60ms     7.51ms   559.89ms
-  HTTP codes:
-    1xx - 0, 2xx - 164494, 3xx - 0, 4xx - 0, 5xx - 0
-    others - 0
-  Throughput:     4.55MB/s
-```
-
-Hono + `@hono/node-server`:
-
-```txt
-$ bombardier -d 10s --fasthttp http://localhost:3000/
-
-Statistics        Avg      Stdev        Max
-  Reqs/sec     58296.56    5512.74   74403.56
-  Latency        2.14ms     1.46ms   190.92ms
-  HTTP codes:
-    1xx - 0, 2xx - 583059, 3xx - 0, 4xx - 0, 5xx - 0
-    others - 0
-  Throughput:    12.56MB/s
-```
-
-## Requirements
-
-It works on Node.js versions greater than 18.x. The specific required Node.js versions are as follows:
-
-- 18.x => 18.14.1+
-- 19.x => 19.7.0+
-- 20.x => 20.0.0+
-
-Essentially, you can simply use the latest version of each major release.
-
-## Installation
-
-You can install it from the npm registry with `npm` command:
-
-```sh
-npm install @hono/node-server
-```
-
-Or use `yarn`:
-
-```sh
-yarn add @hono/node-server
-```
-
-## Usage
-
-Just import `@hono/node-server` at the top and write the code as usual.
-The same code that runs on Cloudflare Workers, Deno, and Bun will work.
-
-```ts
-import { serve } from '@hono/node-server'
-import { Hono } from 'hono'
-
-const app = new Hono()
-app.get('/', (c) => c.text('Hono meets Node.js'))
-
-serve(app, (info) => {
-  console.log(`Listening on http://localhost:${info.port}`) // Listening on http://localhost:3000
-})
-```
-
-For example, run it using `ts-node`. Then an HTTP server will be launched. The default port is `3000`.
-
-```sh
-ts-node ./index.ts
-```
-
-Open `http://localhost:3000` with your browser.
-
-## Options
-
-### `port`
-
-```ts
-serve({
-  fetch: app.fetch,
-  port: 8787, // Port number, default is 3000
-})
-```
-
-### `createServer`
-
-```ts
-import { createServer } from 'node:https'
-import fs from 'node:fs'
-
-//...
-
-serve({
-  fetch: app.fetch,
-  createServer: createServer,
-  serverOptions: {
-    key: fs.readFileSync('test/fixtures/keys/agent1-key.pem'),
-    cert: fs.readFileSync('test/fixtures/keys/agent1-cert.pem'),
-  },
-})
-```
-
-### `overrideGlobalObjects`
-
-The default value is `true`. The Node.js Adapter rewrites the global Request/Response and uses a lightweight Request/Response to improve performance. If you don't want to do that, set `false`.
-
-```ts
-serve({
-  fetch: app.fetch,
-  overrideGlobalObjects: false,
-})
-```
-
-### `autoCleanupIncoming`
-
-The default value is `true`. The Node.js Adapter automatically cleans up (explicitly call `destroy()` method) if application is not finished to consume the incoming request. If you don't want to do that, set `false`.
-
-If the application accepts connections from arbitrary clients, this cleanup must be done otherwise incomplete requests from clients may cause the application to stop responding. If your application only accepts connections from trusted clients, such as in a reverse proxy environment and there is no process that returns a response without reading the body of the POST request all the way through, you can improve performance by setting it to `false`.
-
-```ts
-serve({
-  fetch: app.fetch,
-  autoCleanupIncoming: false,
-})
-```
-
-## Middleware
-
-Most built-in middleware also works with Node.js.
-Read [the documentation](https://hono.dev/middleware/builtin/basic-auth) and use the Middleware of your liking.
-
-```ts
-import { serve } from '@hono/node-server'
-import { Hono } from 'hono'
-import { prettyJSON } from 'hono/pretty-json'
-
-const app = new Hono()
-
-app.get('*', prettyJSON())
-app.get('/', (c) => c.json({ 'Hono meets': 'Node.js' }))
-
-serve(app)
-```
-
-## Serve Static Middleware
-
-Use Serve Static Middleware that has been created for Node.js.
-
-```ts
-import { serveStatic } from '@hono/node-server/serve-static'
-
-//...
-
-app.use('/static/*', serveStatic({ root: './' }))
-```
-
-If using a relative path, `root` will be relative to the current working directory from which the app was started.
-
-This can cause confusion when running your application locally.
-
-Imagine your project structure is:
-
-```
-my-hono-project/
-  src/
-    index.ts
-  static/
-    index.html
-```
-
-Typically, you would run your app from the project's root directory (`my-hono-project`),
-so you would need the following code to serve the `static` folder:
-
-```ts
-app.use('/static/*', serveStatic({ root: './static' }))
-```
-
-Notice that `root` here is not relative to `src/index.ts`, rather to `my-hono-project`.
-
-### Options
-
-#### `rewriteRequestPath`
-
-If you want to serve files in `./.foojs` with the request path `/__foo/*`, you can write like the following.
-
-```ts
-app.use(
-  '/__foo/*',
-  serveStatic({
-    root: './.foojs/',
-    rewriteRequestPath: (path: string) => path.replace(/^\/__foo/, ''),
-  })
-)
-```
-
-#### `onFound`
-
-You can specify handling when the requested file is found with `onFound`.
-
-```ts
-app.use(
-  '/static/*',
-  serveStatic({
-    // ...
-    onFound: (_path, c) => {
-      c.header('Cache-Control', `public, immutable, max-age=31536000`)
-    },
-  })
-)
-```
-
-#### `onNotFound`
-
-The `onNotFound` is useful for debugging. You can write a handle for when a file is not found.
-
-```ts
-app.use(
-  '/static/*',
-  serveStatic({
-    root: './non-existent-dir',
-    onNotFound: (path, c) => {
-      console.log(`${path} is not found, request to ${c.req.path}`)
-    },
-  })
-)
-```
-
-#### `precompressed`
-
-The `precompressed` option checks if files with extensions like `.br` or `.gz` are available and serves them based on the `Accept-Encoding` header. It prioritizes Brotli, then Zstd, and Gzip. If none are available, it serves the original file.
-
-```ts
-app.use(
-  '/static/*',
-  serveStatic({
-    precompressed: true,
-  })
-)
-```
-
-## ConnInfo Helper
-
-You can use the [ConnInfo Helper](https://hono.dev/docs/helpers/conninfo) by importing `getConnInfo` from `@hono/node-server/conninfo`.
-
-```ts
-import { getConnInfo } from '@hono/node-server/conninfo'
-
-app.get('/', (c) => {
-  const info = getConnInfo(c) // info is `ConnInfo`
-  return c.text(`Your remote address is ${info.remote.address}`)
-})
-```
-
-## Accessing Node.js API
-
-You can access the Node.js API from `c.env` in Node.js. For example, if you want to specify a type, you can write the following.
-
-```ts
-import { serve } from '@hono/node-server'
-import type { HttpBindings } from '@hono/node-server'
-import { Hono } from 'hono'
-
-const app = new Hono<{ Bindings: HttpBindings }>()
-
-app.get('/', (c) => {
-  return c.json({
-    remoteAddress: c.env.incoming.socket.remoteAddress,
-  })
-})
-
-serve(app)
-```
-
-The APIs that you can get from `c.env` are as follows.
-
-```ts
-type HttpBindings = {
-  incoming: IncomingMessage
-  outgoing: ServerResponse
-}
-
-type Http2Bindings = {
-  incoming: Http2ServerRequest
-  outgoing: Http2ServerResponse
-}
-```
-
-## Direct response from Node.js API
-
-You can directly respond to the client from the Node.js API.
-In that case, the response from Hono should be ignored, so return `RESPONSE_ALREADY_SENT`.
-
-> [!NOTE]
-> This feature can be used when migrating existing Node.js applications to Hono, but we recommend using Hono's API for new applications.
-
-```ts
-import { serve } from '@hono/node-server'
-import type { HttpBindings } from '@hono/node-server'
-import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response'
-import { Hono } from 'hono'
-
-const app = new Hono<{ Bindings: HttpBindings }>()
-
-app.get('/', (c) => {
-  const { outgoing } = c.env
-  outgoing.writeHead(200, { 'Content-Type': 'text/plain' })
-  outgoing.end('Hello World\n')
-
-  return RESPONSE_ALREADY_SENT
-})
-
-serve(app)
-```
-
-## Listen to a UNIX domain socket
-
-You can configure the HTTP server to listen to a UNIX domain socket instead of a TCP port.
-
-```ts
-import { createAdaptorServer } from '@hono/node-server'
-
-// ...
-
-const socketPath ='/tmp/example.sock'
-
-const server = createAdaptorServer(app)
-server.listen(socketPath, () => {
-  console.log(`Listening on ${socketPath}`)
-})
-```
-
-## Related projects
-
-- Hono - <https://hono.dev>
-- Hono GitHub repository - <https://github.com/honojs/hono>
-
-## Author
-
-Yusuke Wada <https://github.com/yusukebe>
-
-## License
-
-MIT
+MIT License
+
+Copyright (c) 2022 - present, Yusuke Wada and Hono contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 =========================================
-END OF @hono/node-server@1.19.8 AND INFORMATION
+END OF @hono/node-server@1.19.11 AND INFORMATION
 
-%% @lowire/loop@0.0.25 NOTICES AND INFORMATION BEGIN HERE
-=========================================
-Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
-
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
-
-   1. Definitions.
-
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
-
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
-
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity. For the purposes of this definition,
-      "control" means (i) the power, direct or indirect, to cause the
-      direction or management of such entity, whether by contract or
-      otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or (iii) beneficial ownership of such entity.
-
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
-
-      "Source" form shall mean the preferred form for making modifications,
-      including but not limited to software source code, documentation
-      source, and configuration files.
-
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but
-      not limited to compiled object code, generated documentation,
-      and conversions to other media types.
-
-      "Work" shall mean the work of authorship, whether in Source or
-      Object form, made available under the License, as indicated by a
-      copyright notice that is included in or attached to the work
-      (an example is provided in the Appendix below).
-
-      "Derivative Works" shall mean any work, whether in Source or Object
-      form, that is based on (or derived from) the Work and for which the
-      editorial revisions, annotations, elaborations, or other modifications
-      represent, as a whole, an original work of authorship. For the purposes
-      of this License, Derivative Works shall not include works that remain
-      separable from, or merely link (or bind by name) to the interfaces of,
-      the Work and Derivative Works thereof.
-
-      "Contribution" shall mean any work of authorship, including
-      the original version of the Work and any modifications or additions
-      to that Work or Derivative Works thereof, that is intentionally
-      submitted to Licensor for inclusion in the Work by the copyright owner
-      or by an individual or Legal Entity authorized to submit on behalf of
-      the copyright owner. For the purposes of this definition, "submitted"
-      means any form of electronic, verbal, or written communication sent
-      to the Licensor or its representatives, including but not limited to
-      communication on electronic mailing lists, source code control systems,
-      and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of discussing and improving the Work, but
-      excluding communication that is conspicuously marked or otherwise
-      designated in writing by the copyright owner as "Not a Contribution."
-
-      "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by Licensor and
-      subsequently incorporated within the Work.
-
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
-
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      (except as stated in this section) patent license to make, have made,
-      use, offer to sell, sell, import, and otherwise transfer the Work,
-      where such license applies only to those patent claims licensable
-      by such Contributor that are necessarily infringed by their
-      Contribution(s) alone or by combination of their Contribution(s)
-      with the Work to which such Contribution(s) was submitted. If You
-      institute patent litigation against any entity (including a
-      cross-claim or counterclaim in a lawsuit) alleging that the Work
-      or a Contribution incorporated within the Work constitutes direct
-      or contributory patent infringement, then any patent licenses
-      granted to You under this License for that Work shall terminate
-      as of the date such litigation is filed.
-
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
-
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
-
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
-
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work,
-          excluding those notices that do not pertain to any part of
-          the Derivative Works; and
-
-      (d) If the Work includes a "NOTICE" text file as part of its
-          distribution, then any Derivative Works that You distribute must
-          include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding those notices that do not
-          pertain to any part of the Derivative Works, in at least one
-          of the following places: within a NOTICE text file distributed
-          as part of the Derivative Works; within the Source form or
-          documentation, if provided along with the Derivative Works; or,
-          within a display generated by the Derivative Works, if and
-          wherever such third-party notices normally appear. The contents
-          of the NOTICE file are for informational purposes only and
-          do not modify the License. You may add Your own attribution
-          notices within Derivative Works that You distribute, alongside
-          or as an addendum to the NOTICE text from the Work, provided
-          that such additional attribution notices cannot be construed
-          as modifying the License.
-
-      You may add Your own copyright statement to Your modifications and
-      may provide additional or different license terms and conditions
-      for use, reproduction, or distribution of Your modifications, or
-      for any such Derivative Works as a whole, provided Your use,
-      reproduction, and distribution of the Work otherwise complies with
-      the conditions stated in this License.
-
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
-      Notwithstanding the above, nothing herein shall supersede or modify
-      the terms of any separate license agreement you may have executed
-      with Licensor regarding such Contributions.
-
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor,
-      except as required for reasonable and customary use in describing the
-      origin of the Work and reproducing the content of the NOTICE file.
-
-   7. Disclaimer of Warranty. Unless required by applicable law or
-      agreed to in writing, Licensor provides the Work (and each
-      Contributor provides its Contributions) on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-      implied, including, without limitation, any warranties or conditions
-      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-      PARTICULAR PURPOSE. You are solely responsible for determining the
-      appropriateness of using or redistributing the Work and assume any
-      risks associated with Your exercise of permissions under this License.
-
-   8. Limitation of Liability. In no event and under no legal theory,
-      whether in tort (including negligence), contract, or otherwise,
-      unless required by applicable law (such as deliberate and grossly
-      negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, special,
-      incidental, or consequential damages of any character arising as a
-      result of this License or out of the use or inability to use the
-      Work (including but not limited to damages for loss of goodwill,
-      work stoppage, computer failure or malfunction, or any and all
-      other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damages.
-
-   9. Accepting Warranty or Additional Liability. While redistributing
-      the Work or Derivative Works thereof, You may choose to offer,
-      and charge a fee for, acceptance of support, warranty, indemnity,
-      or other liability obligations and/or rights consistent with this
-      License. However, in accepting such obligations, You may act only
-      on Your own behalf and on Your sole responsibility, not on behalf
-      of any other Contributor, and only if You agree to indemnify,
-      defend, and hold each Contributor harmless for any liability
-      incurred by, or claims asserted against, such Contributor by reason
-      of your accepting any such warranty or additional liability.
-
-   END OF TERMS AND CONDITIONS
-
-   APPENDIX: How to apply the Apache License to your work.
-
-      To apply the Apache License to your work, attach the following
-      boilerplate notice, with the fields enclosed by brackets "[]"
-      replaced with your own identifying information. (Don't include
-      the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. We also recommend that a
-      file or class name and description of purpose be included on the
-      same "printed page" as the copyright notice for easier
-      identification within third-party archives.
-
-   Copyright (c) Microsoft Corporation.
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-=========================================
-END OF @lowire/loop@0.0.25 AND INFORMATION
-
-%% @modelcontextprotocol/sdk@1.25.2 NOTICES AND INFORMATION BEGIN HERE
+%% @modelcontextprotocol/sdk@1.28.0 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 MIT License
 
@@ -730,7 +188,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 =========================================
-END OF @modelcontextprotocol/sdk@1.25.2 AND INFORMATION
+END OF @modelcontextprotocol/sdk@1.28.0 AND INFORMATION
 
 %% accepts@2.0.0 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -813,7 +271,7 @@ SOFTWARE.
 =========================================
 END OF ajv-formats@3.0.1 AND INFORMATION
 
-%% ajv@8.17.1 NOTICES AND INFORMATION BEGIN HERE
+%% ajv@8.18.0 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 The MIT License (MIT)
 
@@ -837,7 +295,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 =========================================
-END OF ajv@8.17.1 AND INFORMATION
+END OF ajv@8.18.0 AND INFORMATION
 
 %% balanced-match@1.0.2 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -865,7 +323,7 @@ SOFTWARE.
 =========================================
 END OF balanced-match@1.0.2 AND INFORMATION
 
-%% body-parser@2.2.1 NOTICES AND INFORMATION BEGIN HERE
+%% body-parser@2.2.2 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 (The MIT License)
 
@@ -891,7 +349,7 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
-END OF body-parser@2.2.1 AND INFORMATION
+END OF body-parser@2.2.2 AND INFORMATION
 
 %% brace-expansion@1.1.12 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -1129,7 +587,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
 END OF concat-map@0.0.1 AND INFORMATION
 
-%% content-disposition@1.0.0 NOTICES AND INFORMATION BEGIN HERE
+%% content-disposition@1.0.1 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 (The MIT License)
 
@@ -1154,7 +612,7 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
-END OF content-disposition@1.0.0 AND INFORMATION
+END OF content-disposition@1.0.1 AND INFORMATION
 
 %% content-type@1.0.5 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -1404,7 +862,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
 END OF depd@2.0.0 AND INFORMATION
 
-%% diff@7.0.0 NOTICES AND INFORMATION BEGIN HERE
+%% diff@8.0.4 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 BSD 3-Clause License
 
@@ -1436,7 +894,7 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 =========================================
-END OF diff@7.0.0 AND INFORMATION
+END OF diff@8.0.4 AND INFORMATION
 
 %% dotenv@16.4.5 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -1758,7 +1216,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
 END OF eventsource@3.0.7 AND INFORMATION
 
-%% express-rate-limit@7.5.1 NOTICES AND INFORMATION BEGIN HERE
+%% express-rate-limit@8.3.1 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 # MIT License
 
@@ -1781,9 +1239,9 @@ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
-END OF express-rate-limit@7.5.1 AND INFORMATION
+END OF express-rate-limit@8.3.1 AND INFORMATION
 
-%% express@5.1.0 NOTICES AND INFORMATION BEGIN HERE
+%% express@5.2.1 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 (The MIT License)
 
@@ -1810,7 +1268,7 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
-END OF express@5.1.0 AND INFORMATION
+END OF express@5.2.1 AND INFORMATION
 
 %% fast-deep-equal@3.1.3 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -1875,7 +1333,7 @@ The complete list of contributors can be found at:
 =========================================
 END OF fast-uri@3.1.0 AND INFORMATION
 
-%% finalhandler@2.1.0 NOTICES AND INFORMATION BEGIN HERE
+%% finalhandler@2.1.1 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 (The MIT License)
 
@@ -1900,7 +1358,7 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
-END OF finalhandler@2.1.0 AND INFORMATION
+END OF finalhandler@2.1.1 AND INFORMATION
 
 %% forwarded@0.2.0 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -2145,7 +1603,7 @@ SOFTWARE.
 =========================================
 END OF hasown@2.0.2 AND INFORMATION
 
-%% hono@4.11.3 NOTICES AND INFORMATION BEGIN HERE
+%% hono@4.12.7 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 MIT License
 
@@ -2169,7 +1627,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 =========================================
-END OF hono@4.11.3 AND INFORMATION
+END OF hono@4.12.7 AND INFORMATION
 
 %% http-errors@2.0.1 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -2225,7 +1683,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
 END OF https-proxy-agent@7.0.6 AND INFORMATION
 
-%% iconv-lite@0.7.0 NOTICES AND INFORMATION BEGIN HERE
+%% iconv-lite@0.7.2 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 Copyright (c) 2011 Alexander Shtuchkin
 
@@ -2248,7 +1706,7 @@ LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
-END OF iconv-lite@0.7.0 AND INFORMATION
+END OF iconv-lite@0.7.2 AND INFORMATION
 
 %% inherits@2.0.4 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -2269,6 +1727,50 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 =========================================
 END OF inherits@2.0.4 AND INFORMATION
+
+%% ini@6.0.0 NOTICES AND INFORMATION BEGIN HERE
+=========================================
+The ISC License
+
+Copyright (c) Isaac Z. Schlueter and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
+IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+=========================================
+END OF ini@6.0.0 AND INFORMATION
+
+%% ip-address@10.1.0 NOTICES AND INFORMATION BEGIN HERE
+=========================================
+Copyright (C) 2011 by Beau Gunderson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+=========================================
+END OF ip-address@10.1.0 AND INFORMATION
 
 %% ip-address@9.0.5 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -2676,7 +2178,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
 END OF mime-db@1.54.0 AND INFORMATION
 
-%% mime-types@3.0.1 NOTICES AND INFORMATION BEGIN HERE
+%% mime-types@3.0.2 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 (The MIT License)
 
@@ -2702,7 +2204,7 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
-END OF mime-types@3.0.1 AND INFORMATION
+END OF mime-types@3.0.2 AND INFORMATION
 
 %% mime@3.0.0 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -2730,7 +2232,7 @@ THE SOFTWARE.
 =========================================
 END OF mime@3.0.0 AND INFORMATION
 
-%% minimatch@3.1.2 NOTICES AND INFORMATION BEGIN HERE
+%% minimatch@3.1.4 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 The ISC License
 
@@ -2748,7 +2250,7 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
 IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 =========================================
-END OF minimatch@3.1.2 AND INFORMATION
+END OF minimatch@3.1.4 AND INFORMATION
 
 %% ms@2.1.2 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -2987,7 +2489,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 =========================================
 END OF path-key@3.1.1 AND INFORMATION
 
-%% path-to-regexp@8.2.0 NOTICES AND INFORMATION BEGIN HERE
+%% path-to-regexp@8.3.0 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 The MIT License (MIT)
 
@@ -3011,7 +2513,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 =========================================
-END OF path-to-regexp@8.2.0 AND INFORMATION
+END OF path-to-regexp@8.3.0 AND INFORMATION
 
 %% pend@1.2.0 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -3146,7 +2648,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
 END OF proxy-addr@2.0.7 AND INFORMATION
 
-%% proxy-from-env@1.1.0 NOTICES AND INFORMATION BEGIN HERE
+%% proxy-from-env@2.0.0 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 The MIT License
 
@@ -3169,7 +2671,7 @@ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
-END OF proxy-from-env@1.1.0 AND INFORMATION
+END OF proxy-from-env@2.0.0 AND INFORMATION
 
 %% pump@3.0.2 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -3197,7 +2699,7 @@ THE SOFTWARE.
 =========================================
 END OF pump@3.0.2 AND INFORMATION
 
-%% qs@6.14.1 NOTICES AND INFORMATION BEGIN HERE
+%% qs@6.15.0 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 BSD 3-Clause License
 
@@ -3229,7 +2731,7 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 =========================================
-END OF qs@6.14.1 AND INFORMATION
+END OF qs@6.15.0 AND INFORMATION
 
 %% range-parser@1.2.1 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -3366,32 +2868,6 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
 END OF router@2.2.0 AND INFORMATION
 
-%% safe-buffer@5.2.1 NOTICES AND INFORMATION BEGIN HERE
-=========================================
-The MIT License (MIT)
-
-Copyright (c) Feross Aboukhadijeh
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-=========================================
-END OF safe-buffer@5.2.1 AND INFORMATION
-
 %% safer-buffer@2.1.2 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 MIT License
@@ -3418,7 +2894,7 @@ SOFTWARE.
 =========================================
 END OF safer-buffer@2.1.2 AND INFORMATION
 
-%% send@1.2.0 NOTICES AND INFORMATION BEGIN HERE
+%% send@1.2.1 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 (The MIT License)
 
@@ -3444,9 +2920,9 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
-END OF send@1.2.0 AND INFORMATION
+END OF send@1.2.1 AND INFORMATION
 
-%% serve-static@2.2.0 NOTICES AND INFORMATION BEGIN HERE
+%% serve-static@2.2.1 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 (The MIT License)
 
@@ -3474,7 +2950,7 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
-END OF serve-static@2.2.0 AND INFORMATION
+END OF serve-static@2.2.1 AND INFORMATION
 
 %% setprototypeof@1.2.0 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -3953,7 +3429,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 =========================================
 END OF ws@8.17.1 AND INFORMATION
 
-%% yaml@2.6.0 NOTICES AND INFORMATION BEGIN HERE
+%% yaml@2.8.3 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 Copyright Eemeli Aro <eemeli@gmail.com>
 
@@ -3969,9 +3445,9 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 =========================================
-END OF yaml@2.6.0 AND INFORMATION
+END OF yaml@2.8.3 AND INFORMATION
 
-%% yauzl@3.2.0 NOTICES AND INFORMATION BEGIN HERE
+%% yauzl@3.2.1 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 The MIT License (MIT)
 
@@ -3995,7 +3471,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 =========================================
-END OF yauzl@3.2.0 AND INFORMATION
+END OF yauzl@3.2.1 AND INFORMATION
 
 %% yazl@2.5.1 NOTICES AND INFORMATION BEGIN HERE
 =========================================
@@ -4043,7 +3519,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 =========================================
 END OF zod-to-json-schema@3.25.1 AND INFORMATION
 
-%% zod@4.3.5 NOTICES AND INFORMATION BEGIN HERE
+%% zod@4.3.6 NOTICES AND INFORMATION BEGIN HERE
 =========================================
 MIT License
 
@@ -4067,7 +3543,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 =========================================
-END OF zod@4.3.5 AND INFORMATION
+END OF zod@4.3.6 AND INFORMATION
 
 SUMMARY BEGIN HERE
 =========================================

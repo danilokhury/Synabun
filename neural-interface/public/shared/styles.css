@@ -17316,6 +17316,7 @@
     position: relative;
     inset: 0;
     padding: 20px 18px 20px 24px;
+    box-sizing: content-box;
     background: #0a0a0c;
     border-radius: 12px;
     overflow: hidden;
@@ -17601,6 +17602,9 @@
     position: absolute;
     inset: 6px 8px 8px 8px;
     padding: 20px 18px 20px 24px;
+    box-sizing: content-box; /* FitAddon uses getComputedStyle(parent).height which returns
+                                border-box with border-box sizing — overcounts by padding,
+                                calculating extra rows that get clipped at the bottom */
     border-radius: 12px;
     overflow: hidden;
     background: #0a0a0c;

@@ -59,7 +59,7 @@ class BrowserType extends import_instrumentation.SdkObject {
     this.logName = "browser";
   }
   executablePath() {
-    return import_registry.registry.findExecutable(this._name).executablePath(this.attribution.playwright.options.sdkLanguage) || "";
+    return import_registry.registry.findExecutable(this._name).executablePath() || "";
   }
   name() {
     return this._name;
@@ -115,7 +115,7 @@ class BrowserType extends import_instrumentation.SdkObject {
         await progress.race(options.__testHookBeforeCreateBrowser());
       const browserOptions = {
         name: this._name,
-        isChromium: this._name === "chromium",
+        browserType: this._name,
         channel: options.channel,
         slowMo: options.slowMo,
         persistent,
@@ -129,7 +129,8 @@ class BrowserType extends import_instrumentation.SdkObject {
         protocolLogger,
         browserLogsCollector,
         wsEndpoint: transport instanceof import_transport.WebSocketTransport ? transport.wsEndpoint : void 0,
-        originalLaunchOptions: options
+        originalLaunchOptions: options,
+        userDataDir: persistent ? userDataDir : void 0
       };
       if (persistent)
         (0, import_browserContext.validateBrowserContextOptions)(persistent, browserOptions);
@@ -152,10 +153,14 @@ class BrowserType extends import_instrumentation.SdkObject {
       args = [],
       executablePath = null
     } = options;
-    await this._createArtifactDirs(options);
     const tempDirectories = [];
-    const artifactsDir = await import_fs.default.promises.mkdtemp(import_path.default.join(import_os.default.tmpdir(), "playwright-artifacts-"));
-    tempDirectories.push(artifactsDir);
+    let artifactsDir;
+    if (options.artifactsDir) {
+      artifactsDir = options.artifactsDir;
+    } else {
+      artifactsDir = await import_fs.default.promises.mkdtemp(import_path.default.join(import_os.default.tmpdir(), "playwright-artifacts-"));
+      tempDirectories.push(artifactsDir);
+    }
     if (userDataDir) {
       (0, import_assert.assert)(import_path.default.isAbsolute(userDataDir), "userDataDir must be an absolute path");
       if (!await (0, import_fileUtils.existsAsync)(userDataDir))
@@ -270,13 +275,10 @@ ${updatedLog}`);
       throw error;
     }
   }
-  async _createArtifactDirs(options) {
-    if (options.downloadsPath)
-      await import_fs.default.promises.mkdir(options.downloadsPath, { recursive: true });
-    if (options.tracesDir)
-      await import_fs.default.promises.mkdir(options.tracesDir, { recursive: true });
-  }
   async connectOverCDP(progress, endpointURL, options) {
+    throw new Error("CDP connections are only supported by Chromium");
+  }
+  async connectOverCDPTransport(progress, transport) {
     throw new Error("CDP connections are only supported by Chromium");
   }
   async _launchWithSeleniumHub(progress, hubUrl, options) {

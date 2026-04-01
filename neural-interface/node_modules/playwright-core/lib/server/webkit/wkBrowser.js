@@ -38,9 +38,8 @@ var import_browserContext = require("../browserContext");
 var network = __toESM(require("../network"));
 var import_wkConnection = require("./wkConnection");
 var import_wkPage = require("./wkPage");
-var import_errors = require("../errors");
 var import_webkit = require("./webkit");
-const BROWSER_VERSION = "26.0";
+const BROWSER_VERSION = "26.4";
 const DEFAULT_USER_AGENT = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${BROWSER_VERSION} Safari/605.1.15`;
 class WKBrowser extends import_browser.Browser {
   constructor(parent, transport, options) {
@@ -77,9 +76,6 @@ class WKBrowser extends import_browser.Browser {
     for (const wkPage of this._wkPages.values())
       wkPage.didClose();
     this._wkPages.clear();
-    for (const video of this._idToVideo.values())
-      video.artifact.reportFinished(new import_errors.TargetClosedError(this.closeReason()));
-    this._idToVideo.clear();
     this._didClose();
   }
   async doCreateNewContext(options) {
@@ -311,7 +307,6 @@ class WKBrowserContext extends import_browserContext.BrowserContext {
   }
   async doClose(reason) {
     if (!this._browserContextId) {
-      await Promise.all(this._wkPages().map((wkPage) => wkPage._page.screencast.stopVideoRecording()));
       await this._browser.close({ reason });
     } else {
       await this._browser._browserSession.send("Playwright.deleteContext", { browserContextId: this._browserContextId });

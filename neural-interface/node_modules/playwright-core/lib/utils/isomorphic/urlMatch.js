@@ -19,8 +19,12 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var urlMatch_exports = {};
 __export(urlMatch_exports, {
   constructURLBasedOnBaseURL: () => constructURLBasedOnBaseURL,
+  deserializeURLMatch: () => deserializeURLMatch,
   globToRegexPattern: () => globToRegexPattern,
+  isURLPattern: () => isURLPattern,
   resolveGlobToRegexPattern: () => resolveGlobToRegexPattern,
+  serializeURLMatch: () => serializeURLMatch,
+  serializeURLPattern: () => serializeURLPattern,
   urlMatches: () => urlMatches,
   urlMatchesEqual: () => urlMatchesEqual
 });
@@ -86,6 +90,49 @@ function globToRegexPattern(glob) {
 function isRegExp(obj) {
   return obj instanceof RegExp || Object.prototype.toString.call(obj) === "[object RegExp]";
 }
+const isURLPattern = (v) => typeof globalThis.URLPattern === "function" && v instanceof globalThis.URLPattern;
+function serializeURLPattern(v) {
+  return {
+    hash: v.hash,
+    hostname: v.hostname,
+    password: v.password,
+    pathname: v.pathname,
+    port: v.port,
+    protocol: v.protocol,
+    search: v.search,
+    username: v.username
+  };
+}
+function serializeURLMatch(match) {
+  if ((0, import_stringUtils.isString)(match))
+    return { glob: match };
+  if (isRegExp(match))
+    return { regexSource: match.source, regexFlags: match.flags };
+  if (isURLPattern(match))
+    return { urlPattern: serializeURLPattern(match) };
+  return void 0;
+}
+function deserializeURLPattern(v) {
+  if (typeof globalThis.URLPattern !== "function")
+    return () => true;
+  return new globalThis.URLPattern({
+    hash: v.hash,
+    hostname: v.hostname,
+    password: v.password,
+    pathname: v.pathname,
+    port: v.port,
+    protocol: v.protocol,
+    search: v.search,
+    username: v.username
+  });
+}
+function deserializeURLMatch(match) {
+  if (match.regexSource)
+    return new RegExp(match.regexSource, match.regexFlags);
+  if (match.urlPattern)
+    return deserializeURLPattern(match.urlPattern);
+  return match.glob;
+}
 function urlMatchesEqual(match1, match2) {
   if (isRegExp(match1) && isRegExp(match2))
     return match1.source === match2.source && match1.flags === match2.flags;
@@ -103,8 +150,10 @@ function urlMatches(baseURL, urlString, match, webSocketUrl) {
   const url = parseURL(urlString);
   if (!url)
     return false;
+  if (isURLPattern(match))
+    return match.test(url.href);
   if (typeof match !== "function")
-    throw new Error("url parameter should be string, RegExp or function");
+    throw new Error("url parameter should be string, RegExp, URLPattern or function");
   return match(url);
 }
 function resolveGlobToRegexPattern(baseURL, glob, webSocketUrl) {
@@ -183,8 +232,12 @@ function resolveBaseURL(baseURL, givenURL) {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   constructURLBasedOnBaseURL,
+  deserializeURLMatch,
   globToRegexPattern,
+  isURLPattern,
   resolveGlobToRegexPattern,
+  serializeURLMatch,
+  serializeURLPattern,
   urlMatches,
   urlMatchesEqual
 });

@@ -1,7 +1,9 @@
 "use strict";
+var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __export = (target, all) => {
   for (var name in all)
@@ -15,17 +17,75 @@ var __copyProps = (to, from, except, desc) => {
   }
   return to;
 };
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var videoRecorder_exports = {};
 __export(videoRecorder_exports, {
-  VideoRecorder: () => VideoRecorder
+  VideoRecorder: () => VideoRecorder,
+  startAutomaticVideoRecording: () => startAutomaticVideoRecording
 });
 module.exports = __toCommonJS(videoRecorder_exports);
+var import_path = __toESM(require("path"));
 var import_utils = require("../utils");
 var import_processLauncher = require("./utils/processLauncher");
+var import_utilsBundle = require("../utilsBundle");
+var import_artifact = require("./artifact");
+var import__ = require(".");
 const fps = 25;
 class VideoRecorder {
-  constructor(ffmpegPath, options) {
+  constructor(screencast) {
+    this._screencast = screencast;
+  }
+  start(options) {
+    (0, import_utils.assert)(!this._artifact);
+    const ffmpegPath = import__.registry.findExecutable("ffmpeg").executablePathOrDie(this._screencast.page.browserContext._browser.sdkLanguage());
+    const outputFile = options.fileName ?? import_path.default.join(this._screencast.page.browserContext._browser.options.artifactsDir, (0, import_utils.createGuid)() + ".webm");
+    this._client = {
+      onFrame: (frame) => this._videoRecorder.writeFrame(frame.buffer, frame.frameSwapWallTime / 1e3),
+      gracefulClose: () => this.stop(),
+      dispose: () => this.stop().catch((e) => import_utils.debugLogger.log("error", `Failed to stop video recorder: ${String(e)}`)),
+      size: options.size
+    };
+    const { size } = this._screencast.addClient(this._client);
+    const videoSize = options.size ?? size;
+    this._videoRecorder = new FfmpegVideoRecorder(ffmpegPath, videoSize, outputFile);
+    this._artifact = new import_artifact.Artifact(this._screencast.page.browserContext, outputFile);
+    return this._artifact;
+  }
+  async stop() {
+    if (!this._artifact)
+      return;
+    const artifact = this._artifact;
+    this._artifact = void 0;
+    const client = this._client;
+    this._client = void 0;
+    const videoRecorder = this._videoRecorder;
+    this._videoRecorder = void 0;
+    this._screencast.removeClient(client);
+    await videoRecorder.stop();
+    await artifact.reportFinished();
+  }
+}
+function startAutomaticVideoRecording(page) {
+  const recordVideo = page.browserContext._options.recordVideo;
+  if (!recordVideo)
+    return;
+  const recorder = new VideoRecorder(page.screencast);
+  if (page.browserContext._options.recordVideo?.showActions)
+    page.screencast.showActions(page.browserContext._options.recordVideo?.showActions);
+  const dir = recordVideo.dir ?? page.browserContext._browser.options.artifactsDir;
+  const artifact = recorder.start({ size: recordVideo.size, fileName: import_path.default.join(dir, page.guid + ".webm") });
+  page.video = artifact;
+}
+class FfmpegVideoRecorder {
+  constructor(ffmpegPath, size, outputFile) {
     this._process = null;
     this._gracefullyClose = null;
     this._lastWritePromise = Promise.resolve();
@@ -34,17 +94,19 @@ class VideoRecorder {
     this._lastWriteNodeTime = 0;
     this._frameQueue = [];
     this._isStopped = false;
-    this._ffmpegPath = ffmpegPath;
-    if (!options.outputFile.endsWith(".webm"))
+    if (!outputFile.endsWith(".webm"))
       throw new Error("File must have .webm extension");
-    this._launchPromise = this._launch(options).catch((e) => e);
+    this._outputFile = outputFile;
+    this._ffmpegPath = ffmpegPath;
+    this._size = size;
+    this._launchPromise = this._launch().catch((e) => e);
   }
-  async _launch(options) {
-    await (0, import_utils.mkdirIfNeeded)(options.outputFile);
-    const w = options.width;
-    const h = options.height;
+  async _launch() {
+    await (0, import_utils.mkdirIfNeeded)(this._outputFile);
+    const w = this._size.width;
+    const h = this._size.height;
     const args = `-loglevel error -f image2pipe -avioflags direct -fpsprobesize 0 -probesize 32 -analyzeduration 0 -c:v mjpeg -i pipe:0 -y -an -r ${fps} -c:v vp8 -qmin 0 -qmax 50 -crf 8 -deadline realtime -speed 8 -b:v 1M -threads 1 -vf pad=${w}:${h}:0:0:gray,crop=${w}:${h}:0:0`.split(" ");
-    args.push(options.outputFile);
+    args.push(this._outputFile);
     const { launchedProcess, gracefullyClose } = await (0, import_processLauncher.launchProcess)({
       command: this._ffmpegPath,
       args,
@@ -105,8 +167,11 @@ class VideoRecorder {
     const error = await this._launchPromise;
     if (error)
       throw error;
-    if (this._isStopped || !this._lastFrame)
+    if (this._isStopped)
       return;
+    if (!this._lastFrame) {
+      this._writeFrame(createWhiteImage(this._size.width, this._size.height), (0, import_utils.monotonicTime)());
+    }
     const addTime = Math.max(((0, import_utils.monotonicTime)() - this._lastWriteNodeTime) / 1e3, 1);
     this._writeFrame(Buffer.from([]), this._lastFrame.timestamp + addTime);
     this._isStopped = true;
@@ -118,7 +183,12 @@ class VideoRecorder {
     }
   }
 }
+function createWhiteImage(width, height) {
+  const data = Buffer.alloc(width * height * 4, 255);
+  return import_utilsBundle.jpegjs.encode({ data, width, height }, 80).data;
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
-  VideoRecorder
+  VideoRecorder,
+  startAutomaticVideoRecording
 });

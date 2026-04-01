@@ -112,6 +112,9 @@ class FrameDispatcher extends import_dispatcher.Dispatcher {
   async addStyleTag(params, progress) {
     return { element: import_elementHandlerDispatcher.ElementHandleDispatcher.from(this, await progress.race(this._frame.addStyleTag(params))) };
   }
+  async ariaSnapshot(params, progress) {
+    return await this._frame.ariaSnapshot(progress, params);
+  }
   async click(params, progress) {
     progress.metadata.potentiallyClosesScope = true;
     return await this._frame.click(progress, params.selector, params);
@@ -216,9 +219,6 @@ class FrameDispatcher extends import_dispatcher.Dispatcher {
     if (result.received !== void 0)
       result.received = (0, import_jsHandleDispatcher.serializeResult)(result.received);
     return result;
-  }
-  async ariaSnapshot(params, progress) {
-    return { snapshot: await this._frame.ariaSnapshot(progress, params.selector) };
   }
 }
 // Annotate the CommonJS export names for ESM import in node:

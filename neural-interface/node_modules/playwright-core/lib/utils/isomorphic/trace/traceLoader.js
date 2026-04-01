@@ -21,7 +21,7 @@ __export(traceLoader_exports, {
   TraceLoader: () => TraceLoader
 });
 module.exports = __toCommonJS(traceLoader_exports);
-var import_traceUtils = require("@isomorphic/traceUtils");
+var import_traceUtils = require("./traceUtils");
 var import_snapshotStorage = require("./snapshotStorage");
 var import_traceModernizer = require("./traceModernizer");
 class TraceLoader {
@@ -29,32 +29,33 @@ class TraceLoader {
     this.contextEntries = [];
     this._resourceToContentType = /* @__PURE__ */ new Map();
   }
-  async load(backend, unzipProgress) {
+  async load(backend, traceFile, unzipProgress) {
     this._backend = backend;
-    const ordinals = [];
+    const prefix = traceFile?.match(/(.+)\.trace$/)?.[1];
+    const prefixes = [];
     let hasSource = false;
     for (const entryName of await this._backend.entryNames()) {
       const match = entryName.match(/(.+)\.trace$/);
-      if (match)
-        ordinals.push(match[1] || "");
+      if (match && (!prefix || prefix === match[1]))
+        prefixes.push(match[1] || "");
       if (entryName.includes("src@"))
         hasSource = true;
     }
-    if (!ordinals.length)
+    if (!prefixes.length)
       throw new Error("Cannot find .trace file");
     this._snapshotStorage = new import_snapshotStorage.SnapshotStorage();
-    const total = ordinals.length * 3;
+    const total = prefixes.length * 3;
     let done = 0;
-    for (const ordinal of ordinals) {
+    for (const prefix2 of prefixes) {
       const contextEntry = createEmptyContext();
       contextEntry.hasSource = hasSource;
       const modernizer = new import_traceModernizer.TraceModernizer(contextEntry, this._snapshotStorage);
-      const trace = await this._backend.readText(ordinal + ".trace") || "";
+      const trace = await this._backend.readText(prefix2 + ".trace") || "";
       modernizer.appendTrace(trace);
-      unzipProgress(++done, total);
-      const network = await this._backend.readText(ordinal + ".network") || "";
+      unzipProgress?.(++done, total);
+      const network = await this._backend.readText(prefix2 + ".network") || "";
       modernizer.appendTrace(network);
-      unzipProgress(++done, total);
+      unzipProgress?.(++done, total);
       contextEntry.actions = modernizer.actions().sort((a1, a2) => a1.startTime - a2.startTime);
       if (!backend.isLive()) {
         for (const action of contextEntry.actions.slice().reverse()) {
@@ -66,13 +67,13 @@ class TraceLoader {
           }
         }
       }
-      const stacks = await this._backend.readText(ordinal + ".stacks");
+      const stacks = await this._backend.readText(prefix2 + ".stacks");
       if (stacks) {
         const callMetadata = (0, import_traceUtils.parseClientSideCallMetadata)(JSON.parse(stacks));
         for (const action of contextEntry.actions)
           action.stack = action.stack || callMetadata.get(action.callId);
       }
-      unzipProgress(++done, total);
+      unzipProgress?.(++done, total);
       for (const resource of contextEntry.resources) {
         if (resource.request.postData?._sha1)
           this._resourceToContentType.set(resource.request.postData._sha1, stripEncodingFromContentType(resource.request.postData.mimeType));

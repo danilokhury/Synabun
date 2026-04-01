@@ -45,13 +45,14 @@ class CRServiceWorker extends import_page.Worker {
     this.browserContext = browserContext;
     if (!process.env.PLAYWRIGHT_DISABLE_SERVICE_WORKER_NETWORK)
       this._networkManager = new import_crNetworkManager.CRNetworkManager(null, this);
-    session.once("Runtime.executionContextCreated", (event) => {
+    session.on("Inspector.targetCrashed", () => this._prepareContextForRestart());
+    session.on("Runtime.executionContextCreated", (event) => {
       this.createExecutionContext(new import_crExecutionContext.CRExecutionContext(session, event.context));
+      if (this.browserContext._browser.majorVersion() < 143)
+        this.workerScriptLoaded();
     });
     if (this.browserContext._browser.majorVersion() >= 143)
       session.on("Inspector.workerScriptLoaded", () => this.workerScriptLoaded());
-    else
-      this.workerScriptLoaded();
     if (this._networkManager && this._isNetworkInspectionEnabled()) {
       this.updateRequestInterception();
       this.updateExtraHTTPHeaders();
@@ -69,7 +70,7 @@ class CRServiceWorker extends import_page.Worker {
       if (!this.existingExecutionContext || process.env.PLAYWRIGHT_DISABLE_SERVICE_WORKER_CONSOLE)
         return;
       const args = event.args.map((o) => (0, import_crExecutionContext.createHandle)(this.existingExecutionContext, o));
-      const message = new import_console.ConsoleMessage(null, this, event.type, void 0, args, (0, import_crProtocolHelper.toConsoleMessageLocation)(event.stackTrace));
+      const message = new import_console.ConsoleMessage(null, this, event.type, void 0, args, (0, import_crProtocolHelper.toConsoleMessageLocation)(event.stackTrace), event.timestamp);
       this.browserContext.emit(import_browserContext.BrowserContext.Events.Console, message);
     });
     session.send("Runtime.enable", {}).catch((e) => {

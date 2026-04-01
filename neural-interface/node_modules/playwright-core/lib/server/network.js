@@ -373,7 +373,7 @@ class Route extends import_instrumentation.SdkObject {
   }
 }
 class Response extends import_instrumentation.SdkObject {
-  constructor(request, status, statusText2, headers, timing, getResponseBodyCallback, fromServiceWorker, httpVersion) {
+  constructor(request, status, statusText2, headers, timing, getResponseBodyCallback, fromServiceWorker) {
     super(request.frame() || request._context, "response");
     this._contentPromise = null;
     this._finishedPromise = new import_manualPromise.ManualPromise();
@@ -381,6 +381,7 @@ class Response extends import_instrumentation.SdkObject {
     this._serverAddrPromise = new import_manualPromise.ManualPromise();
     this._securityDetailsPromise = new import_manualPromise.ManualPromise();
     this._rawResponseHeadersPromise = new import_manualPromise.ManualPromise();
+    this._httpVersionPromise = new import_manualPromise.ManualPromise();
     this._encodedBodySizePromise = new import_manualPromise.ManualPromise();
     this._transferSizePromise = new import_manualPromise.ManualPromise();
     this._responseHeadersSizePromise = new import_manualPromise.ManualPromise();
@@ -394,7 +395,6 @@ class Response extends import_instrumentation.SdkObject {
       this._headersMap.set(name.toLowerCase(), value);
     this._getResponseBodyCallback = getResponseBodyCallback;
     this._request._setResponse(this);
-    this._httpVersion = httpVersion;
     this._fromServiceWorker = fromServiceWorker;
   }
   _serverAddrFinished(addr) {
@@ -410,7 +410,7 @@ class Response extends import_instrumentation.SdkObject {
     this._finishedPromise.resolve();
   }
   _setHttpVersion(httpVersion) {
-    this._httpVersion = httpVersion;
+    this._httpVersionPromise.resolve(httpVersion);
   }
   url() {
     return this._url;
@@ -476,14 +476,15 @@ class Response extends import_instrumentation.SdkObject {
   frame() {
     return this._request.frame();
   }
-  httpVersion() {
-    if (!this._httpVersion)
+  async httpVersion() {
+    const httpVersion = await this._httpVersionPromise || null;
+    if (!httpVersion)
       return "HTTP/1.1";
-    if (this._httpVersion === "http/1.1")
+    if (httpVersion === "http/1.1")
       return "HTTP/1.1";
-    if (this._httpVersion === "h2")
+    if (httpVersion === "h2")
       return "HTTP/2.0";
-    return this._httpVersion;
+    return httpVersion;
   }
   fromServiceWorker() {
     return this._fromServiceWorker;

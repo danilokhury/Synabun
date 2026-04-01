@@ -57,6 +57,13 @@ class BrowserTypeDispatcher extends import_dispatcher.Dispatcher {
       defaultContext: browser._defaultContext ? import_browserContextDispatcher.BrowserContextDispatcher.from(browserDispatcher, browser._defaultContext) : void 0
     };
   }
+  async connectOverCDPTransport(params, progress) {
+    if (this._denyLaunch)
+      throw new Error(`Launching more browsers is not allowed.`);
+    const browser = await this._object.connectOverCDPTransport(progress, params.transport);
+    const browserDispatcher = new import_browserDispatcher.BrowserDispatcher(this, browser);
+    return { browser: browserDispatcher, defaultContext: browser._defaultContext ? import_browserContextDispatcher.BrowserContextDispatcher.from(browserDispatcher, browser._defaultContext) : void 0 };
+  }
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

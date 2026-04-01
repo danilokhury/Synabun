@@ -30,7 +30,6 @@ var import_dispatcher = require("./dispatcher");
 var import_frameDispatcher = require("./frameDispatcher");
 var import_pageDispatcher = require("./pageDispatcher");
 var import_tracingDispatcher = require("./tracingDispatcher");
-var import_network2 = require("../network");
 class RequestDispatcher extends import_dispatcher.Dispatcher {
   static from(scope, request) {
     const result = scope.connection.existingDispatcher(request);
@@ -54,12 +53,11 @@ class RequestDispatcher extends import_dispatcher.Dispatcher {
       postData: postData === null ? void 0 : postData,
       headers: request.headers(),
       isNavigationRequest: request.isNavigationRequest(),
-      redirectedFrom: RequestDispatcher.fromNullable(scope, request.redirectedFrom()),
-      hasResponse: !!request._existingResponse()
+      redirectedFrom: RequestDispatcher.fromNullable(scope, request.redirectedFrom())
     });
     this._type_Request = true;
     this._browserContextDispatcher = scope;
-    this.addObjectListener(import_network2.Request.Events.Response, () => this._dispatchEvent("response", {}));
+    ResponseDispatcher.fromNullable(scope, request._existingResponse());
   }
   async rawRequestHeaders(params, progress) {
     return { headers: await progress.race(this._object.rawRequestHeaders()) };
@@ -83,8 +81,8 @@ class ResponseDispatcher extends import_dispatcher.Dispatcher {
     this._type_Response = true;
   }
   static from(scope, response) {
-    const result = scope.connection.existingDispatcher(response);
     const requestDispatcher = RequestDispatcher.from(scope, response.request());
+    const result = scope.connection.existingDispatcher(response);
     return result || new ResponseDispatcher(requestDispatcher, response);
   }
   static fromNullable(scope, response) {
@@ -101,6 +99,9 @@ class ResponseDispatcher extends import_dispatcher.Dispatcher {
   }
   async rawResponseHeaders(params, progress) {
     return { headers: await progress.race(this._object.rawResponseHeaders()) };
+  }
+  async httpVersion(params, progress) {
+    return { value: await progress.race(this._object.httpVersion()) };
   }
   async sizes(params, progress) {
     return { sizes: await progress.race(this._object.sizes()) };

@@ -33,6 +33,7 @@ __export(api_exports, {
   Clock: () => import_clock.Clock,
   ConsoleMessage: () => import_consoleMessage.ConsoleMessage,
   Coverage: () => import_coverage.Coverage,
+  Debugger: () => import_debugger.Debugger,
   Dialog: () => import_dialog.Dialog,
   Download: () => import_download.Download,
   Electron: () => import_electron.Electron,
@@ -46,7 +47,6 @@ __export(api_exports, {
   Locator: () => import_locator.Locator,
   Mouse: () => import_input.Mouse,
   Page: () => import_page.Page,
-  PageAgent: () => import_pageAgent.PageAgent,
   Playwright: () => import_playwright.Playwright,
   Request: () => import_network.Request,
   Response: () => import_network.Response,
@@ -69,6 +69,7 @@ var import_browserType = require("./browserType");
 var import_clock = require("./clock");
 var import_consoleMessage = require("./consoleMessage");
 var import_coverage = require("./coverage");
+var import_debugger = require("./debugger");
 var import_dialog = require("./dialog");
 var import_download = require("./download");
 var import_electron = require("./electron");
@@ -82,7 +83,6 @@ var import_jsHandle = require("./jsHandle");
 var import_network = require("./network");
 var import_fetch = require("./fetch");
 var import_page = require("./page");
-var import_pageAgent = require("./pageAgent");
 var import_selectors = require("./selectors");
 var import_tracing = require("./tracing");
 var import_video = require("./video");
@@ -107,6 +107,7 @@ var import_webError = require("./webError");
   Clock,
   ConsoleMessage,
   Coverage,
+  Debugger,
   Dialog,
   Download,
   Electron,
@@ -120,7 +121,6 @@ var import_webError = require("./webError");
   Locator,
   Mouse,
   Page,
-  PageAgent,
   Playwright,
   Request,
   Response,

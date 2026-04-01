@@ -269,7 +269,7 @@ class DispatcherConnection {
       this.onmessage({ id, error: (0, import_errors.serializeError)(e) });
       return;
     }
-    const metainfo = import_protocolMetainfo.methodMetainfo.get(dispatcher._type + "." + method);
+    const metainfo = (0, import_protocolMetainfo.getMetainfo)({ type: dispatcher._type, method });
     if (metainfo?.internal) {
       validMetadata.internal = true;
     }

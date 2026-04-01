@@ -70,10 +70,12 @@ class DebugController extends import_instrumentation.SdkObject {
     await progress.race(this._closeBrowsersWithoutPages());
     this._generateAutoExpect = !!params.generateAutoExpect;
     if (params.mode === "none") {
+      const promises = [];
       for (const recorder of await progress.race(this._allRecorders())) {
-        recorder.hideHighlightedSelector();
-        recorder.setMode("none");
+        promises.push(recorder.hideHighlightedSelector());
+        promises.push(recorder.setMode("none"));
       }
+      await Promise.all(promises);
       return;
     }
     if (!this._playwright.allBrowsers().length)
@@ -97,18 +99,22 @@ class DebugController extends import_instrumentation.SdkObject {
     if (params.selector)
       (0, import_locatorParser.unsafeLocatorOrSelectorAsSelector)(this._sdkLanguage, params.selector, "data-testid");
     const ariaTemplate = params.ariaTemplate ? (0, import_ariaSnapshot.parseAriaSnapshotUnsafe)(import_utilsBundle.yaml, params.ariaTemplate) : void 0;
+    const promises = [];
     for (const recorder of await progress.race(this._allRecorders())) {
       if (ariaTemplate)
-        recorder.setHighlightedAriaTemplate(ariaTemplate);
+        promises.push(recorder.setHighlightedAriaTemplate(ariaTemplate));
       else if (params.selector)
-        recorder.setHighlightedSelector(params.selector);
+        promises.push(recorder.setHighlightedSelector(params.selector));
     }
+    await Promise.all(promises);
   }
   async hideHighlight(progress) {
+    const promises = [];
     for (const recorder of await progress.race(this._allRecorders()))
-      recorder.hideHighlightedSelector();
-    await Promise.all(this._playwright.allPages().map((p) => p.hideHighlight().catch(() => {
+      promises.push(recorder.hideHighlightedSelector());
+    promises.push(...this._playwright.allPages().map((p) => p.hideHighlight().catch(() => {
     })));
+    await Promise.all(promises);
   }
   async resume(progress) {
     for (const recorder of await progress.race(this._allRecorders()))

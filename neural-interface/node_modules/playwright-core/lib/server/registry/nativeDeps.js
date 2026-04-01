@@ -496,6 +496,7 @@ const deps = {
     firefox: [
       "libasound2t64",
       "libatk1.0-0t64",
+      "libavcodec60",
       "libcairo-gobject2",
       "libcairo2",
       "libdbus-1-3",

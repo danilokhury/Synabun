@@ -26,6 +26,7 @@ var import_artifact = require("./artifact");
 var import_channelOwner = require("./channelOwner");
 var import_clientHelper = require("./clientHelper");
 var import_coverage = require("./coverage");
+var import_disposable = require("./disposable");
 var import_download = require("./download");
 var import_elementHandle = require("./elementHandle");
 var import_errors = require("./errors");
@@ -37,6 +38,7 @@ var import_input = require("./input");
 var import_jsHandle = require("./jsHandle");
 var import_network = require("./network");
 var import_video = require("./video");
+var import_screencast = require("./screencast");
 var import_waiter = require("./waiter");
 var import_worker = require("./worker");
 var import_timeoutSettings = require("./timeoutSettings");
@@ -48,7 +50,6 @@ var import_urlMatch = require("../utils/isomorphic/urlMatch");
 var import_manualPromise = require("../utils/isomorphic/manualPromise");
 var import_rtti = require("../utils/isomorphic/rtti");
 var import_consoleMessage = require("./consoleMessage");
-var import_pageAgent = require("./pageAgent");
 class Page extends import_channelOwner.ChannelOwner {
   constructor(parent, type, guid, initializer) {
     super(parent, type, guid, initializer);
@@ -59,7 +60,6 @@ class Page extends import_channelOwner.ChannelOwner {
     this._routes = [];
     this._webSocketRoutes = [];
     this._bindings = /* @__PURE__ */ new Map();
-    this._video = null;
     this._closeWasCalled = false;
     this._harRouters = [];
     this._locatorHandlers = /* @__PURE__ */ new Map();
@@ -77,6 +77,8 @@ class Page extends import_channelOwner.ChannelOwner {
     this._viewportSize = initializer.viewportSize;
     this._closed = initializer.isClosed;
     this._opener = Page.fromNullable(initializer.opener);
+    this._video = new import_video.Video(this, this._connection, initializer.video ? import_artifact.Artifact.from(initializer.video) : void 0);
+    this.screencast = new import_screencast.Screencast(this);
     this._channel.on("bindingCall", ({ binding }) => this._onBinding(BindingCall.from(binding)));
     this._channel.on("close", () => this._onClose());
     this._channel.on("crash", () => this._onCrash());
@@ -90,10 +92,6 @@ class Page extends import_channelOwner.ChannelOwner {
     this._channel.on("locatorHandlerTriggered", ({ uid }) => this._onLocatorHandlerTriggered(uid));
     this._channel.on("route", ({ route }) => this._onRoute(import_network.Route.from(route)));
     this._channel.on("webSocketRoute", ({ webSocketRoute }) => this._onWebSocketRoute(import_network.WebSocketRoute.from(webSocketRoute)));
-    this._channel.on("video", ({ artifact }) => {
-      const artifactObject = import_artifact.Artifact.from(artifact);
-      this._forceVideo()._artifactReady(artifactObject);
-    });
     this._channel.on("viewportSizeChanged", ({ viewportSize }) => this._viewportSize = viewportSize);
     this._channel.on("webSocket", ({ webSocket }) => this.emit(import_events.Events.Page.WebSocket, import_network.WebSocket.from(webSocket)));
     this._channel.on("worker", ({ worker }) => this._onWorker(import_worker.Worker.from(worker)));
@@ -134,7 +132,7 @@ class Page extends import_channelOwner.ChannelOwner {
     route._context = this.context();
     const routeHandlers = this._routes.slice();
     for (const routeHandler of routeHandlers) {
-      if (this._closeWasCalled || this._browserContext._closingStatus !== "none")
+      if (this._closeWasCalled || this._browserContext.isClosed())
         return;
       if (!routeHandler.matches(route.request().url()))
         continue;
@@ -211,15 +209,17 @@ class Page extends import_channelOwner.ChannelOwner {
   setDefaultTimeout(timeout) {
     this._timeoutSettings.setDefaultTimeout(timeout);
   }
-  _forceVideo() {
-    if (!this._video)
-      this._video = new import_video.Video(this, this._connection);
-    return this._video;
-  }
   video() {
     if (!this._browserContext._options.recordVideo)
       return null;
-    return this._forceVideo();
+    return this._video;
+  }
+  async pickLocator() {
+    const { selector } = await this._channel.pickLocator({});
+    return this.locator(selector);
+  }
+  async cancelPickLocator() {
+    await this._channel.cancelPickLocator({});
   }
   async $(selector, options) {
     return await this._mainFrame.$(selector, options);
@@ -252,13 +252,15 @@ class Page extends import_channelOwner.ChannelOwner {
     return await this._mainFrame.addStyleTag(options);
   }
   async exposeFunction(name, callback) {
-    await this._channel.exposeBinding({ name });
+    const result = await this._channel.exposeBinding({ name });
     const binding = (source, ...args) => callback(...args);
     this._bindings.set(name, binding);
+    return import_disposable.DisposableObject.from(result.disposable);
   }
   async exposeBinding(name, callback, options = {}) {
-    await this._channel.exposeBinding({ name, needsHandle: options.handle });
+    const result = await this._channel.exposeBinding({ name, needsHandle: options.handle });
     this._bindings.set(name, callback);
+    return import_disposable.DisposableObject.from(result.disposable);
   }
   async setExtraHTTPHeaders(headers) {
     (0, import_network.validateHeaders)(headers);
@@ -397,16 +399,14 @@ class Page extends import_channelOwner.ChannelOwner {
     (0, import_jsHandle.assertMaxArguments)(arguments.length, 2);
     return await this._mainFrame.evaluate(pageFunction, arg);
   }
-  async _evaluateFunction(functionDeclaration) {
-    return this._mainFrame._evaluateFunction(functionDeclaration);
-  }
   async addInitScript(script, arg) {
     const source = await (0, import_clientHelper.evaluationScript)(this._platform, script, arg);
-    await this._channel.addInitScript({ source });
+    return import_disposable.DisposableObject.from((await this._channel.addInitScript({ source })).disposable);
   }
   async route(url, handler, options = {}) {
     this._routes.unshift(new import_network.RouteHandler(this._platform, this._browserContext._options.baseURL, url, handler, options.times));
     await this._updateInterceptionPatterns({ title: "Route requests" });
+    return new import_disposable.DisposableStub(() => this.unroute(url, handler));
   }
   async routeFromHAR(har, options = {}) {
     const localUtils = this._connection.localUtils();
@@ -535,12 +535,18 @@ class Page extends import_channelOwner.ChannelOwner {
   async fill(selector, value, options) {
     return await this._mainFrame.fill(selector, value, options);
   }
-  async consoleMessages() {
-    const { messages } = await this._channel.consoleMessages();
+  async clearConsoleMessages() {
+    await this._channel.clearConsoleMessages();
+  }
+  async consoleMessages(options) {
+    const { messages } = await this._channel.consoleMessages({ filter: options?.filter });
     return messages.map((message) => new import_consoleMessage.ConsoleMessage(this._platform, message, this, null));
   }
-  async pageErrors() {
-    const { errors } = await this._channel.pageErrors();
+  async clearPageErrors() {
+    await this._channel.clearPageErrors();
+  }
+  async pageErrors(options) {
+    const { errors } = await this._channel.pageErrors({ filter: options?.filter });
     return errors.map((error) => (0, import_errors.parseError)(error));
   }
   locator(selector, options) {
@@ -676,32 +682,12 @@ class Page extends import_channelOwner.ChannelOwner {
     }
     return result.pdf;
   }
-  // @ts-expect-error agents are hidden
-  async agent(options = {}) {
-    const params = {
-      api: options.provider?.api,
-      apiEndpoint: options.provider?.apiEndpoint,
-      apiKey: options.provider?.apiKey,
-      apiTimeout: options.provider?.apiTimeout,
-      apiCacheFile: options.provider?._apiCacheFile,
-      doNotRenderActive: options._doNotRenderActive,
-      model: options.provider?.model,
-      cacheFile: options.cache?.cacheFile,
-      cacheOutFile: options.cache?.cacheOutFile,
-      maxTokens: options.limits?.maxTokens,
-      maxActions: options.limits?.maxActions,
-      maxActionRetries: options.limits?.maxActionRetries,
-      // @ts-expect-error runAgents is hidden
-      secrets: options.secrets ? Object.entries(options.secrets).map(([name, value]) => ({ name, value })) : void 0,
-      systemPrompt: options.systemPrompt
-    };
-    const { agent } = await this._channel.agent(params);
-    const pageAgent = import_pageAgent.PageAgent.from(agent);
-    pageAgent._expectTimeout = options?.expect?.timeout;
-    return pageAgent;
+  async ariaSnapshot(options = {}) {
+    const result = await this.mainFrame()._channel.ariaSnapshot({ timeout: this._timeoutSettings.timeout(options), track: options._track, mode: options.mode, depth: options.depth });
+    return result.snapshot;
   }
-  async _snapshotForAI(options = {}) {
-    return await this._channel.snapshotForAI({ timeout: this._timeoutSettings.timeout(options), track: options.track });
+  async _setDockTile(image) {
+    await this._channel.setDockTile({ image });
   }
 }
 class BindingCall extends import_channelOwner.ChannelOwner {

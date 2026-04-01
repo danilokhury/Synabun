@@ -101,7 +101,6 @@ class Frame extends import_channelOwner.ChannelOwner {
   }
   async goto(url, options = {}) {
     const waitUntil = verifyLoadState("waitUntil", options.waitUntil === void 0 ? "load" : options.waitUntil);
-    this.page().context()._checkUrlAllowed(url);
     return network.Response.fromNullable((await this._channel.goto({ url, ...options, waitUntil, timeout: this._navigationTimeout(options) })).response);
   }
   _setupNavigationWaiter(options) {
@@ -175,10 +174,6 @@ class Frame extends import_channelOwner.ChannelOwner {
   async evaluate(pageFunction, arg) {
     (0, import_jsHandle.assertMaxArguments)(arguments.length, 2);
     const result = await this._channel.evaluateExpression({ expression: String(pageFunction), isFunction: typeof pageFunction === "function", arg: (0, import_jsHandle.serializeArgument)(arg) });
-    return (0, import_jsHandle.parseResult)(result.value);
-  }
-  async _evaluateFunction(functionDeclaration) {
-    const result = await this._channel.evaluateExpression({ expression: functionDeclaration, isFunction: true, arg: (0, import_jsHandle.serializeArgument)(void 0) });
     return (0, import_jsHandle.parseResult)(result.value);
   }
   async _evaluateExposeUtilityScript(pageFunction, arg) {

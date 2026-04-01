@@ -40,10 +40,6 @@ class JSHandle extends import_channelOwner.ChannelOwner {
     const result = await this._channel.evaluateExpression({ expression: String(pageFunction), isFunction: typeof pageFunction === "function", arg: serializeArgument(arg) });
     return parseResult(result.value);
   }
-  async _evaluateFunction(functionDeclaration) {
-    const result = await this._channel.evaluateExpression({ expression: functionDeclaration, isFunction: true, arg: serializeArgument(void 0) });
-    return parseResult(result.value);
-  }
   async evaluateHandle(pageFunction, arg) {
     const result = await this._channel.evaluateExpressionHandle({ expression: String(pageFunction), isFunction: typeof pageFunction === "function", arg: serializeArgument(arg) });
     return JSHandle.from(result.handle);

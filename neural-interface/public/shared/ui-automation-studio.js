@@ -979,17 +979,17 @@ async function confirmLaunch() {
 
   // Loop mode — route based on destination
   try {
-    // Each automation gets its own DEDICATED browser session for isolation.
-    // Always create a new floating browser window — never embed in side panel.
+    // Browser: loops reuse the shared system browser session (CDP).
+    // Server opens a new tab per loop. If screencast is enabled, UI pre-creates the session.
     let dedicatedBrowserSessionId = null;
     if (params.usesBrowser) {
       // Check if screencast stream is disabled — if so, skip the client-side floating
       // browser window and let the server create a headful browser via Strategy 3.
-      let streamDisabled = false;
+      let streamDisabled = true;
       try {
         const cfgRes = await fetch('/api/browser/config');
         const cfgData = await cfgRes.json();
-        streamDisabled = !!cfgData.config?.screencast?.disabled;
+        streamDisabled = cfgData.config?.screencast?.disabled !== false;
       } catch {}
 
       if (!streamDisabled) {

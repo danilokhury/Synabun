@@ -29,6 +29,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadCategories, buildCategoryReference, detectProject, DATA_DIR } from './shared.mjs';
 
+// Cross-platform safety: catch uncaught errors and output valid hook JSON
+process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
+process.on('unhandledRejection', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PENDING_COMPACT_DIR = join(DATA_DIR, 'pending-compact');
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');

@@ -45,13 +45,13 @@ var import_crypto = require("./utils/crypto");
 var import_harBackend = require("./harBackend");
 var import_manualPromise = require("../utils/isomorphic/manualPromise");
 var import_zipFile = require("./utils/zipFile");
-var import_zipBundle = require("../zipBundle");
-var import_traceUtils = require("../utils/isomorphic/traceUtils");
+var import_traceUtils = require("../utils/isomorphic/trace/traceUtils");
 var import_assert = require("../utils/isomorphic/assert");
 var import_fileUtils = require("./utils/fileUtils");
 async function zip(progress, stackSessions, params) {
   const promise = new import_manualPromise.ManualPromise();
-  const zipFile = new import_zipBundle.yazl.ZipFile();
+  const { yauzl, yazl } = require("../zipBundle");
+  const zipFile = new yazl.ZipFile();
   zipFile.on("error", (error) => promise.reject(error));
   const addFile = (file, name) => {
     try {
@@ -69,7 +69,7 @@ async function zip(progress, stackSessions, params) {
     zipFile.addBuffer(buffer, "trace.stacks");
   }
   if (params.includeSources) {
-    const sourceFiles = /* @__PURE__ */ new Set();
+    const sourceFiles = new Set(params.additionalSources);
     for (const { stack } of stackSession?.callStacks || []) {
       if (!stack)
         continue;
@@ -77,7 +77,7 @@ async function zip(progress, stackSessions, params) {
         sourceFiles.add(file);
     }
     for (const sourceFile of sourceFiles)
-      addFile(sourceFile, "resources/src@" + await (0, import_crypto.calculateSha1)(sourceFile) + ".txt");
+      addFile(sourceFile, "resources/src@" + (0, import_crypto.calculateSha1)(sourceFile) + ".txt");
   }
   if (params.mode === "write") {
     await progress.race(import_fs.default.promises.mkdir(import_path.default.dirname(params.zipFile), { recursive: true }));
@@ -90,7 +90,7 @@ async function zip(progress, stackSessions, params) {
   }
   const tempFile = params.zipFile + ".tmp";
   await progress.race(import_fs.default.promises.rename(params.zipFile, tempFile));
-  import_zipBundle.yauzl.open(tempFile, (err, inZipFile) => {
+  yauzl.open(tempFile, (err, inZipFile) => {
     if (err) {
       promise.reject(err);
       return;

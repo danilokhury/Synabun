@@ -29,7 +29,7 @@ var import_browserContext = require("../browserContext");
 var import_artifactDispatcher = require("./artifactDispatcher");
 class BrowserDispatcher extends import_dispatcher.Dispatcher {
   constructor(scope, browser, options = {}) {
-    super(scope, browser, "Browser", { version: browser.version(), name: browser.options.name });
+    super(scope, browser, "Browser", { version: browser.version(), name: browser.options.name, browserName: browser.options.browserType });
     this._type_Browser = true;
     this._isolatedContexts = /* @__PURE__ */ new Set();
     this._options = options;
@@ -48,7 +48,7 @@ class BrowserDispatcher extends import_dispatcher.Dispatcher {
   }
   async newContext(params, progress) {
     if (params.recordVideo && this._object.attribution.playwright.options.isServer)
-      params.recordVideo.dir = this._object.options.artifactsDir;
+      params.recordVideo.dir = void 0;
     if (!this._options.isolateContexts) {
       const context2 = await this._object.newContext(progress, params);
       const contextDispatcher2 = import_browserContextDispatcher.BrowserContextDispatcher.from(this, context2);
@@ -91,22 +91,28 @@ class BrowserDispatcher extends import_dispatcher.Dispatcher {
     return { userAgent: this._object.userAgent() };
   }
   async newBrowserCDPSession(params, progress) {
-    if (!this._object.options.isChromium)
+    if (this._object.options.browserType !== "chromium")
       throw new Error(`CDP session is only available in Chromium`);
     const crBrowser = this._object;
     return { session: new import_cdpSessionDispatcher.CDPSessionDispatcher(this, await crBrowser.newBrowserCDPSession()) };
   }
   async startTracing(params, progress) {
-    if (!this._object.options.isChromium)
+    if (this._object.options.browserType !== "chromium")
       throw new Error(`Tracing is only available in Chromium`);
     const crBrowser = this._object;
     await crBrowser.startTracing(params.page ? params.page._object : void 0, params);
   }
   async stopTracing(params, progress) {
-    if (!this._object.options.isChromium)
+    if (this._object.options.browserType !== "chromium")
       throw new Error(`Tracing is only available in Chromium`);
     const crBrowser = this._object;
     return { artifact: import_artifactDispatcher.ArtifactDispatcher.from(this, await crBrowser.stopTracing()) };
+  }
+  async startServer(params, progress) {
+    return await this._object.startServer(params.title, params);
+  }
+  async stopServer(params, progress) {
+    await this._object.stopServer();
   }
   async cleanupContexts() {
     await Promise.all(Array.from(this._isolatedContexts).map((context) => context.close({ reason: "Global context cleanup (connection terminated)" })));

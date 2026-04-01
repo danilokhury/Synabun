@@ -40,6 +40,7 @@ var frames = __toESM(require("../frames"));
 var import_helper = require("../helper");
 var network = __toESM(require("../network"));
 var import_page = require("../page");
+var import_browserContext = require("../browserContext");
 var import_crCoverage = require("./crCoverage");
 var import_crDragDrop = require("./crDragDrop");
 var import_crExecutionContext = require("./crExecutionContext");
@@ -50,6 +51,7 @@ var import_crProtocolHelper = require("./crProtocolHelper");
 var import_defaultFontFamilies = require("./defaultFontFamilies");
 var import_errors = require("../errors");
 var import_protocolError = require("../protocolError");
+var import_videoRecorder = require("../videoRecorder");
 class CRPage {
   constructor(client, targetId, browserContext, opener, bits) {
     this._sessions = /* @__PURE__ */ new Map();
@@ -201,7 +203,7 @@ class CRPage {
     await this._mainFrameSession._client.send("Emulation.setDefaultBackgroundColorOverride", { color });
   }
   async takeScreenshot(progress, format, documentRect, viewportRect, quality, fitsViewport, scale) {
-    const { visualViewport } = await progress.race(this._mainFrameSession._client.send("Page.getLayoutMetrics"));
+    const { visualViewport, contentSize, cssContentSize } = await progress.race(this._mainFrameSession._client.send("Page.getLayoutMetrics"));
     if (!documentRect) {
       documentRect = {
         x: visualViewport.pageX + viewportRect.x,
@@ -214,7 +216,7 @@ class CRPage {
     }
     const clip = { ...documentRect, scale: viewportRect ? visualViewport.scale : 1 };
     if (scale === "css") {
-      const deviceScaleFactor = this._browserContext._options.deviceScaleFactor || 1;
+      const deviceScaleFactor = this._mainFrameSession._metricsOverride?.deviceScaleFactor || contentSize.width / cssContentSize.width || 1;
       clip.scale /= deviceScaleFactor;
     }
     const result = await progress.race(this._mainFrameSession._client.send("Page.captureScreenshot", { format, quality, clip, captureBeyondViewport: !fitsViewport }));
@@ -232,16 +234,18 @@ class CRPage {
   async scrollRectIntoViewIfNeeded(handle, rect) {
     return this._sessionForHandle(handle)._scrollRectIntoViewIfNeeded(handle, rect);
   }
-  async startScreencast(options) {
-    await this._mainFrameSession._client.send("Page.startScreencast", {
+  startScreencast(options) {
+    this._mainFrameSession._client.send("Page.startScreencast", {
       format: "jpeg",
       quality: options.quality,
       maxWidth: options.width,
       maxHeight: options.height
+    }).catch(() => {
     });
   }
-  async stopScreencast() {
-    await this._mainFrameSession._client._sendMayFail("Page.stopScreencast");
+  stopScreencast() {
+    this._mainFrameSession._client._sendMayFail("Page.stopScreencast").catch(() => {
+    });
   }
   rafCountForStablePosition() {
     return 1;
@@ -292,6 +296,9 @@ class CRPage {
   }
   shouldToggleStyleSheetToSyncAnimations() {
     return false;
+  }
+  async setDockTile(image) {
+    await this._mainFrameSession._client.send("Browser.setDockTile", { image: image.toString("base64") });
   }
 }
 class FrameSession {
@@ -357,9 +364,8 @@ class FrameSession {
       const { windowId } = await this._client.send("Browser.getWindowForTarget");
       this._windowId = windowId;
     }
-    let videoOptions;
-    if (!this._page.isStorageStatePage && this._isMainFrame() && hasUIWindow)
-      videoOptions = this._crPage._page.screencast.launchVideoRecorder();
+    if (this._isMainFrame() && hasUIWindow && !this._page.isStorageStatePage)
+      (0, import_videoRecorder.startAutomaticVideoRecording)(this._crPage._page);
     let lifecycleEventsEnabled;
     if (!this._isMainFrame())
       this._addRendererListeners();
@@ -439,8 +445,6 @@ class FrameSession {
           true
           /* runImmediately */
         ));
-      if (videoOptions)
-        promises.push(this._crPage._page.screencast.startVideoRecording(videoOptions));
     }
     promises.push(this._client.send("Runtime.runIfWaitingForDebugger"));
     promises.push(this._firstNonInitialNavigationCommittedPromise);
@@ -607,7 +611,7 @@ class FrameSession {
     session.on("Target.detachedFromTarget", (event2) => this._onDetachedFromTarget(event2));
     session.on("Runtime.consoleAPICalled", (event2) => {
       const args = event2.args.map((o) => (0, import_crExecutionContext.createHandle)(worker.existingExecutionContext, o));
-      this._page.addConsoleMessage(worker, event2.type, args, (0, import_crProtocolHelper.toConsoleMessageLocation)(event2.stackTrace));
+      this._page.addConsoleMessage(worker, event2.type, args, (0, import_crProtocolHelper.toConsoleMessageLocation)(event2.stackTrace), void 0, event2.timestamp);
     });
     session.on("Runtime.exceptionThrown", (exception) => this._page.addPageError((0, import_crProtocolHelper.exceptionToError)(exception.exceptionDetails)));
   }
@@ -642,7 +646,7 @@ class FrameSession {
     if (!context)
       return;
     const values = event.args.map((arg) => (0, import_crExecutionContext.createHandle)(context, arg));
-    this._page.addConsoleMessage(null, event.type, values, (0, import_crProtocolHelper.toConsoleMessageLocation)(event.stackTrace));
+    this._page.addConsoleMessage(null, event.type, values, (0, import_crProtocolHelper.toConsoleMessageLocation)(event.stackTrace), void 0, event.timestamp);
   }
   async _onBindingCalled(event) {
     const pageOrError = await this._crPage._page.waitForInitializedOrError();
@@ -684,7 +688,7 @@ class FrameSession {
         lineNumber: lineNumber || 0,
         columnNumber: 0
       };
-      this._page.addConsoleMessage(null, level, [], location, text);
+      this._page.addConsoleMessage(null, level, [], location, text, event.entry.timestamp);
     }
   }
   async _onFileChooserOpened(event) {
@@ -708,15 +712,14 @@ class FrameSession {
     }
   }
   _onScreencastFrame(payload) {
-    this._page.screencast.throttleFrameAck(() => {
-      this._client._sendMayFail("Page.screencastFrameAck", { sessionId: payload.sessionId });
-    });
     const buffer = Buffer.from(payload.data, "base64");
-    this._page.emit(import_page.Page.Events.ScreencastFrame, {
+    this._page.screencast.onScreencastFrame({
       buffer,
       frameSwapWallTime: payload.metadata.timestamp ? payload.metadata.timestamp * 1e3 : Date.now(),
-      width: payload.metadata.deviceWidth,
-      height: payload.metadata.deviceHeight
+      viewportWidth: payload.metadata.deviceWidth,
+      viewportHeight: payload.metadata.deviceHeight
+    }, () => {
+      this._client._sendMayFail("Page.screencastFrameAck", { sessionId: payload.sessionId });
     });
   }
   async _updateGeolocation(initial) {
@@ -800,10 +803,12 @@ class FrameSession {
   }
   async _updateUserAgent() {
     const options = this._crPage._browserContext._options;
+    const { navigatorPlatform, userAgentMetadata } = (0, import_browserContext.calculateUserAgentEmulation)(options);
     await this._client.send("Emulation.setUserAgentOverride", {
       userAgent: options.userAgent || "",
       acceptLanguage: options.locale,
-      userAgentMetadata: calculateUserAgentMetadata(options)
+      platform: navigatorPlatform,
+      userAgentMetadata
     });
   }
   async _setDefaultFontFamilies(session) {
@@ -951,49 +956,6 @@ async function emulateTimezone(session, timezoneId) {
       throw new Error(`Invalid timezone ID: ${timezoneId}`);
     throw exception;
   }
-}
-function calculateUserAgentMetadata(options) {
-  const ua = options.userAgent;
-  if (!ua)
-    return void 0;
-  const metadata = {
-    mobile: !!options.isMobile,
-    model: "",
-    architecture: "x86",
-    platform: "Windows",
-    platformVersion: ""
-  };
-  const androidMatch = ua.match(/Android (\d+(\.\d+)?(\.\d+)?)/);
-  const iPhoneMatch = ua.match(/iPhone OS (\d+(_\d+)?)/);
-  const iPadMatch = ua.match(/iPad; CPU OS (\d+(_\d+)?)/);
-  const macOSMatch = ua.match(/Mac OS X (\d+(_\d+)?(_\d+)?)/);
-  const windowsMatch = ua.match(/Windows\D+(\d+(\.\d+)?(\.\d+)?)/);
-  if (androidMatch) {
-    metadata.platform = "Android";
-    metadata.platformVersion = androidMatch[1];
-    metadata.architecture = "arm";
-  } else if (iPhoneMatch) {
-    metadata.platform = "iOS";
-    metadata.platformVersion = iPhoneMatch[1];
-    metadata.architecture = "arm";
-  } else if (iPadMatch) {
-    metadata.platform = "iOS";
-    metadata.platformVersion = iPadMatch[1];
-    metadata.architecture = "arm";
-  } else if (macOSMatch) {
-    metadata.platform = "macOS";
-    metadata.platformVersion = macOSMatch[1];
-    if (!ua.includes("Intel"))
-      metadata.architecture = "arm";
-  } else if (windowsMatch) {
-    metadata.platform = "Windows";
-    metadata.platformVersion = windowsMatch[1];
-  } else if (ua.toLowerCase().includes("linux")) {
-    metadata.platform = "Linux";
-  }
-  if (ua.includes("ARM"))
-    metadata.architecture = "arm";
-  return metadata;
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

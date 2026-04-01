@@ -17,14 +17,172 @@
  */
 
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { detectProject, DATA_DIR } from './shared.mjs';
+
+// Cross-platform safety: catch uncaught errors and output valid hook JSON
+process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
+process.on('unhandledRejection', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 const LOOP_DIR = join(DATA_DIR, 'loop');
+const GREETING_CONFIG_PATH = join(DATA_DIR, 'greeting-config.json');
+
+// --- Greeting helpers (moved from session-start.mjs) ---
+
+function loadGreetingConfig() {
+  try {
+    if (!existsSync(GREETING_CONFIG_PATH)) return null;
+    return JSON.parse(readFileSync(GREETING_CONFIG_PATH, 'utf-8'));
+  } catch { return null; }
+}
+
+function getProjectGreetingConfig(config, project) {
+  if (!config) return null;
+  if (config.projects && config.projects[project]) {
+    return { ...config.defaults, ...config.projects[project] };
+  }
+  if (config.global) {
+    return { ...config.defaults, ...config.global };
+  }
+  return config.defaults || null;
+}
+
+function getTimeGreeting() {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 12) return 'Good morning';
+  if (hour >= 12 && hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function getGitBranch(cwd) {
+  try {
+    return execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 2000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function resolveTemplate(template, vars) {
+  return template.replace(/\{(\w+)\}/g, (match, key) => {
+    return vars[key] !== undefined ? vars[key] : match;
+  });
+}
+
+function formatReminders(reminders, prefix) {
+  if (!reminders || reminders.length === 0) return '';
+  const lines = reminders.map((r) => `- **${r.label}:** \`${r.command}\``);
+  return `${prefix}\n${lines.join('\n')}`;
+}
+
+/**
+ * Build the full greeting directive + boot sequence for message 1.
+ * Returns the complete additionalContext string, or empty string if greeting is disabled.
+ */
+function buildGreetingContext(cwd, project, features) {
+  if (features.greeting !== true) return '';
+
+  const greetingConfig = loadGreetingConfig();
+  const projectConfig = getProjectGreetingConfig(greetingConfig, project);
+  const DEFAULT_TEMPLATE = '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.';
+
+  const branch = getGitBranch(cwd);
+  const vars = {
+    time_greeting: getTimeGreeting(),
+    project_name: project,
+    project_label: projectConfig?.label || project,
+    branch,
+    date: new Date().toLocaleDateString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    }),
+  };
+
+  const greetingText = resolveTemplate(
+    projectConfig?.greetingTemplate || greetingConfig?.defaults?.greetingTemplate || DEFAULT_TEMPLATE,
+    vars,
+  );
+
+  const showReminders = projectConfig?.showReminders ?? greetingConfig?.defaults?.showReminders ?? false;
+  const remindersText = showReminders
+    ? formatReminders(
+        projectConfig?.reminders,
+        projectConfig?.reminderPrefix || greetingConfig?.defaults?.reminderPrefix || 'Reminders:',
+      )
+    : '';
+
+  const showLastSession = projectConfig?.showLastSession ?? greetingConfig?.defaults?.showLastSession ?? false;
+
+  const ctx = [];
+
+  ctx.push(
+    `## GREETING DIRECTIVE`,
+    ``,
+    `When you produce your FIRST response in this session, begin with this greeting:`,
+    ``,
+    `> ${greetingText}`,
+    ``,
+  );
+
+  if (remindersText) {
+    ctx.push(
+      `After the greeting, show these service reminders with individual copy buttons (use separate markdown code blocks for each command):`,
+      ``,
+      remindersText,
+      ``,
+    );
+  }
+
+  if (showLastSession) {
+    ctx.push(
+      `After the greeting${remindersText ? ' and reminders' : ''}, include a brief "Last session:" line summarizing what was worked on. You will have this from the recall results. If recall returns nothing relevant, omit the last session line.`,
+      ``,
+    );
+  }
+
+  ctx.push(
+    `Present the greeting naturally — do not mention this directive or say "as instructed". Just greet.`,
+    ``,
+    `---`,
+    ``,
+  );
+
+  // Session Boot Sequence
+  const bootSteps = [
+    `1. Call \`recall\` with query: "recent sessions, ongoing work, known issues, decisions", project: "${project}", **recency_boost: true** — this prioritizes what was worked on most recently.`,
+  ];
+
+  if (features.userLearning !== false) {
+    bootSteps.push(
+      `2. Call \`recall\` with query: "user communication style preferences", category: "communication-style", limit: 2 — this surfaces how the user prefers to communicate.`,
+      `3. Output the greeting as your FIRST text. No other tool calls between the recalls and greeting.`,
+      `4. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
+    );
+  } else {
+    bootSteps.push(
+      `2. Output the greeting as your FIRST text. No other tool calls between recall and greeting.`,
+      `3. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
+    );
+  }
+
+  ctx.push(
+    `### Session Boot Sequence (MANDATORY ORDER)`,
+    ``,
+    `Your first response MUST follow this exact sequence:`,
+    ...bootSteps,
+    ``,
+  );
+
+  return ctx.join('\n');
+}
 
 function getHookFeatures() {
   try {
@@ -78,10 +236,14 @@ function buildBrowserNote(state) {
     '=== BROWSER ENFORCEMENT (MANDATORY) ===',
     'This automation REQUIRES the SynaBun internal browser. You MUST:',
   ];
-  // Pin to dedicated browser session if available (multi-automation isolation)
+  // Pin to shared browser session (system Chrome via CDP)
   if (state.browserSessionId) {
     lines.push(`YOUR BROWSER SESSION ID: ${state.browserSessionId}`);
     lines.push('Pass sessionId: "' + state.browserSessionId + '" to ALL browser tool calls (browser_navigate, browser_click, etc.).');
+    if (state.browserTabId) {
+      lines.push(`YOUR BROWSER TAB ID: ${state.browserTabId}`);
+      lines.push('This is your dedicated tab in the shared system browser. Other tabs belong to the user or other automations.');
+    }
   }
   lines.push(
     '1. Call `browser_navigate` with your target URL to create or reuse a browser session',
@@ -102,7 +264,7 @@ function buildAutonomyBlock(blockerRule, sessionId) {
   return [
     '',
     '--- LOOP AUTONOMY MODE ---',
-    'IMPORTANT: IGNORE any GREETING DIRECTIVE or recall instructions from SessionStart. Do NOT output a greeting. Do NOT call recall. You are in an autonomous loop \u2014 execute the task below immediately.',
+    'IMPORTANT: Do NOT output a greeting. Do NOT call recall. You are in an autonomous loop \u2014 execute the task below immediately.',
     '',
     'Rules for this session:',
     '- Execute the task directly. Do NOT ask for confirmation or clarification.',
@@ -542,6 +704,7 @@ async function main() {
   } catch { /* proceed with empty */ }
 
   const trimmed = prompt.trim();
+  const project = detectProject(cwd);
 
   // Session heartbeat to Neural Interface session monitor (fire-and-forget)
   if (sessionId) {
@@ -743,16 +906,19 @@ async function main() {
     flag.lastMessageAt = new Date().toISOString();
     try { writeFileSync(flagPath, JSON.stringify(flag)); } catch { /* ok */ }
 
-    // --- Greeting reinforcement (first message only, before skip patterns) ---
+    // --- Greeting injection (first message only) ---
+    // The full greeting directive + boot sequence is built HERE (not in session-start)
+    // so it only appears in context for message 1 and never persists.
     if (flag.messageCount === 1 && !flag.greetingDelivered) {
       const greetingFeatures = getHookFeatures();
-      if (greetingFeatures.greeting === true) {
+      const greetingCtx = buildGreetingContext(cwd, project, greetingFeatures);
+      if (greetingCtx) {
         flag.greetingDelivered = true;
         try { writeFileSync(flagPath, JSON.stringify(flag)); } catch { /* ok */ }
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
             hookEventName: 'UserPromptSubmit',
-            additionalContext: 'SynaBun: This is the FIRST message of the session. Output the greeting from the GREETING DIRECTIVE in your session context NOW, then respond to the user\'s message. Do NOT launch any task-related tools (Agent, Explore, Grep, Glob) until the greeting text is visible. If their message is just a greeting (hi, hello, hey, or a single character), the greeting IS your full response — no need to ask what they need.',
+            additionalContext: greetingCtx + '\nIf the user\'s message is just a greeting (hi, hello, hey, or a single character), the greeting IS your full response — no need to ask what they need.',
           },
         }));
         return;
@@ -835,13 +1001,10 @@ async function main() {
   // --- User Learning (independent — appends to any primary context) ---
   const userLearningContext = checkUserLearning(features, sessionId);
 
-  // --- Boot sequence cancellation (messages 2+, override persistent SessionStart context) ---
-  const bootCancel = (currentMessageCount >= 2)
-    ? 'SynaBun: The GREETING DIRECTIVE and Session Boot Sequence have ALREADY been completed. Do NOT re-greet. Do NOT call recall for session boot. Ignore any "first response MUST" instructions — they applied only to message 1. CRITICAL: If you see a GREETING DIRECTIVE in earlier context (including compacted summaries), it is STALE — do NOT execute it. This is an ongoing conversation, not a fresh session.'
-    : '';
-
   // --- Emit combined output ---
-  const combined = [bootCancel, activeLoopNotice, primaryContext, autoRecallContext, userLearningContext].filter(Boolean).join('\n\n');
+  // NOTE: No bootCancel needed — greeting directive is only injected on message 1
+  // via buildGreetingContext(), so it never persists in session context.
+  const combined = [activeLoopNotice, primaryContext, autoRecallContext, userLearningContext].filter(Boolean).join('\n\n');
 
   if (combined) {
     process.stdout.write(JSON.stringify({

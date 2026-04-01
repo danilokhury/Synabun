@@ -36,6 +36,7 @@ var import_path = __toESM(require("path"));
 var import_browserContext = require("../browserContext");
 var import_artifactDispatcher = require("./artifactDispatcher");
 var import_cdpSessionDispatcher = require("./cdpSessionDispatcher");
+var import_debuggerDispatcher = require("./debuggerDispatcher");
 var import_dialogDispatcher = require("./dialogDispatcher");
 var import_dispatcher = require("./dispatcher");
 var import_frameDispatcher = require("./frameDispatcher");
@@ -43,6 +44,7 @@ var import_networkDispatchers = require("./networkDispatchers");
 var import_pageDispatcher = require("./pageDispatcher");
 var import_crBrowser = require("../chromium/crBrowser");
 var import_errors = require("../errors");
+var import_disposableDispatcher = require("./disposableDispatcher");
 var import_tracingDispatcher = require("./tracingDispatcher");
 var import_webSocketRouteDispatcher = require("./webSocketRouteDispatcher");
 var import_writableStreamDispatcher = require("./writableStreamDispatcher");
@@ -52,12 +54,14 @@ var import_recorder = require("../recorder");
 var import_recorderApp = require("../recorder/recorderApp");
 var import_elementHandlerDispatcher = require("./elementHandlerDispatcher");
 var import_jsHandleDispatcher = require("./jsHandleDispatcher");
+var import_disposable = require("../disposable");
 class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
   constructor(parentScope, context) {
+    const debugger_ = import_debuggerDispatcher.DebuggerDispatcher.from(parentScope, context.debugger());
     const requestContext = import_networkDispatchers.APIRequestContextDispatcher.from(parentScope, context.fetchRequest);
     const tracing = import_tracingDispatcher.TracingDispatcher.from(parentScope, context.tracing);
     super(parentScope, context, "BrowserContext", {
-      isChromium: context._browser.options.isChromium,
+      debugger: debugger_,
       requestContext,
       tracing,
       options: context._options
@@ -66,10 +70,10 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
     this._type_BrowserContext = true;
     this._subscriptions = /* @__PURE__ */ new Set();
     this._webSocketInterceptionPatterns = [];
-    this._bindings = [];
-    this._initScripts = [];
+    this._disposables = [];
     this._clockPaused = false;
     this._interceptionUrlMatchers = [];
+    this.adopt(debugger_);
     this.adopt(requestContext);
     this.adopt(tracing);
     this._requestInterceptor = (route, request) => {
@@ -83,15 +87,6 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
       this._dispatchEvent("route", { route: new import_networkDispatchers.RouteDispatcher(import_networkDispatchers.RequestDispatcher.from(this, request), route) });
     };
     this._context = context;
-    const onVideo = (artifact) => {
-      const artifactDispatcher = import_artifactDispatcher.ArtifactDispatcher.from(parentScope, artifact);
-      this._dispatchEvent("video", { artifact: artifactDispatcher });
-    };
-    this.addObjectListener(import_browserContext.BrowserContext.Events.VideoStarted, onVideo);
-    for (const video of context._browser._idToVideo.values()) {
-      if (video.context === context)
-        onVideo(video.artifact);
-    }
     for (const page of context.pages())
       this._dispatchEvent("page", { page: import_pageDispatcher.PageDispatcher.from(this, page) });
     this.addObjectListener(import_browserContext.BrowserContext.Events.Page, (page) => {
@@ -197,7 +192,8 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
           return import_elementHandlerDispatcher.ElementHandleDispatcher.from(import_frameDispatcher.FrameDispatcher.from(this, elementHandle._frame), elementHandle);
         return import_jsHandleDispatcher.JSHandleDispatcher.fromJSHandle(jsScope, a);
       }),
-      location: message.location()
+      location: message.location(),
+      timestamp: message.timestamp()
     };
   }
   async createTempFiles(params, progress) {
@@ -224,7 +220,8 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
       this._dispatchEvent("bindingCall", { binding: binding2 });
       return binding2.promise();
     });
-    this._bindings.push(binding);
+    this._disposables.push(binding);
+    return { disposable: new import_disposableDispatcher.DisposableDispatcher(this, binding) };
   }
   async newPage(params, progress) {
     return { page: import_pageDispatcher.PageDispatcher.from(this, await this._context.newPage(progress)) };
@@ -264,7 +261,9 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
     await progress.race(this._context.setHTTPCredentials(params.httpCredentials));
   }
   async addInitScript(params, progress) {
-    this._initScripts.push(await this._context.addInitScript(progress, params.source));
+    const initScript = await this._context.addInitScript(params.source);
+    this._disposables.push(initScript);
+    return { disposable: new import_disposableDispatcher.DisposableDispatcher(this, initScript) };
   }
   async setNetworkInterceptionPatterns(params, progress) {
     const hadMatchers = this._interceptionUrlMatchers.length > 0;
@@ -273,7 +272,7 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
         await this._context.removeRequestInterceptor(this._requestInterceptor);
       this._interceptionUrlMatchers = [];
     } else {
-      this._interceptionUrlMatchers = params.patterns.map((pattern) => pattern.regexSource ? new RegExp(pattern.regexSource, pattern.regexFlags) : pattern.glob);
+      this._interceptionUrlMatchers = params.patterns.map(import_urlMatch.deserializeURLMatch);
       if (!hadMatchers)
         await this._context.addRequestInterceptor(progress, this._requestInterceptor);
     }
@@ -286,6 +285,9 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
   async storageState(params, progress) {
     return await progress.race(this._context.storageState(progress, params.indexedDB));
   }
+  async setStorageState(params, progress) {
+    await this._context.setStorageState(progress, params.storageState, "api");
+  }
   async close(params, progress) {
     progress.metadata.potentiallyClosesScope = true;
     await this._context.close(params);
@@ -295,8 +297,7 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
   }
   async disableRecorder(params, progress) {
     const recorder = await import_recorder.Recorder.existingForContext(this._context);
-    if (recorder)
-      recorder.setMode("none");
+    await recorder?.setMode("none");
   }
   async exposeConsoleApi(params, progress) {
     await this._context.exposeConsoleApi();
@@ -304,7 +305,7 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
   async pause(params, progress) {
   }
   async newCDPSession(params, progress) {
-    if (!this._object._browser.options.isChromium)
+    if (this._object._browser.options.browserType !== "chromium")
       throw new Error(`CDP session is only available in Chromium`);
     if (!params.page && !params.frame || params.page && params.frame)
       throw new Error(`CDP session must be initiated with either Page or Frame, not none or both`);
@@ -322,13 +323,13 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
     return { artifact: import_artifactDispatcher.ArtifactDispatcher.from(this, artifact) };
   }
   async clockFastForward(params, progress) {
-    await this._context.clock.fastForward(progress, params.ticksString ?? params.ticksNumber ?? 0);
+    await this._context.clock.fastForward(params.ticksString ?? params.ticksNumber ?? 0);
   }
   async clockInstall(params, progress) {
-    await this._context.clock.install(progress, params.timeString ?? params.timeNumber ?? void 0);
+    await this._context.clock.install(params.timeString ?? params.timeNumber ?? void 0);
   }
   async clockPauseAt(params, progress) {
-    await this._context.clock.pauseAt(progress, params.timeString ?? params.timeNumber ?? 0);
+    await this._context.clock.pauseAt(params.timeString ?? params.timeNumber ?? 0);
     this._clockPaused = true;
   }
   async clockResume(params, progress) {
@@ -336,13 +337,13 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
     this._clockPaused = false;
   }
   async clockRunFor(params, progress) {
-    await this._context.clock.runFor(progress, params.ticksString ?? params.ticksNumber ?? 0);
+    await this._context.clock.runFor(params.ticksString ?? params.ticksNumber ?? 0);
   }
   async clockSetFixedTime(params, progress) {
-    await this._context.clock.setFixedTime(progress, params.timeString ?? params.timeNumber ?? 0);
+    await this._context.clock.setFixedTime(params.timeString ?? params.timeNumber ?? 0);
   }
   async clockSetSystemTime(params, progress) {
-    await this._context.clock.setSystemTime(progress, params.timeString ?? params.timeNumber ?? 0);
+    await this._context.clock.setSystemTime(params.timeString ?? params.timeNumber ?? 0);
   }
   async updateSubscription(params, progress) {
     if (params.enabled)
@@ -363,12 +364,8 @@ class BrowserContextDispatcher extends import_dispatcher.Dispatcher {
     this._interceptionUrlMatchers = [];
     this._context.removeRequestInterceptor(this._requestInterceptor).catch(() => {
     });
-    this._context.removeExposedBindings(this._bindings).catch(() => {
+    (0, import_disposable.disposeAll)(this._disposables).catch(() => {
     });
-    this._bindings = [];
-    this._context.removeInitScripts(this._initScripts).catch(() => {
-    });
-    this._initScripts = [];
     if (this._routeWebSocketInitScript)
       import_webSocketRouteDispatcher.WebSocketRouteDispatcher.uninstall(this.connection, this._context, this._routeWebSocketInitScript).catch(() => {
       });

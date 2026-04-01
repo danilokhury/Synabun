@@ -261,7 +261,7 @@ class AndroidDevice extends import_instrumentation.SdkObject {
       const proxyBypassRules = [];
       if (proxy.bypass)
         proxyBypassRules.push(...proxy.bypass.split(",").map((t) => t.trim()).map((t) => t.startsWith(".") ? "*" + t : t));
-      if (!process.env.PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK && !proxyBypassRules.includes("<-loopback>"))
+      if ((0, import_crBrowser.shouldProxyLoopback)(proxy.bypass))
         proxyBypassRules.push("<-loopback>");
       if (proxyBypassRules.length > 0)
         chromeArguments.push(`--proxy-bypass-list=${proxyBypassRules.join(";")}`);
@@ -294,7 +294,7 @@ class AndroidDevice extends import_instrumentation.SdkObject {
       });
       const browserOptions = {
         name: "clank",
-        isChromium: true,
+        browserType: "chromium",
         slowMo: 0,
         persistent: { ...options, noDefaultViewport: true },
         artifactsDir,

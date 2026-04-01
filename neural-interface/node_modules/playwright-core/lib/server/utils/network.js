@@ -33,6 +33,7 @@ __export(network_exports, {
   createHttpServer: () => createHttpServer,
   createHttpsServer: () => createHttpsServer,
   createProxyAgent: () => createProxyAgent,
+  decorateServer: () => decorateServer,
   fetchData: () => fetchData,
   httpRequest: () => httpRequest,
   isURLAvailable: () => isURLAvailable,
@@ -62,7 +63,6 @@ function httpRequest(params, onResponse, onError) {
       url = parsedProxyURL;
     } else {
       options.agent = new import_utilsBundle.HttpsProxyAgent(parsedProxyURL);
-      options.rejectUnauthorized = false;
     }
   }
   options.agent ??= url.protocol === "https:" ? import_happyEyeballs.httpsHappyEyeballsAgent : import_happyEyeballs.httpHappyEyeballsAgent;
@@ -235,6 +235,7 @@ function decorateServer(server) {
   createHttpServer,
   createHttpsServer,
   createProxyAgent,
+  decorateServer,
   fetchData,
   httpRequest,
   isURLAvailable,

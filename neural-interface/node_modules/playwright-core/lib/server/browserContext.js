@@ -29,6 +29,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var browserContext_exports = {};
 __export(browserContext_exports, {
   BrowserContext: () => BrowserContext,
+  calculateUserAgentEmulation: () => calculateUserAgentEmulation,
   normalizeProxySettings: () => normalizeProxySettings,
   validateBrowserContextOptions: () => validateBrowserContextOptions,
   verifyClientCertificates: () => verifyClientCertificates,
@@ -36,14 +37,12 @@ __export(browserContext_exports, {
 });
 module.exports = __toCommonJS(browserContext_exports);
 var import_fs = __toESM(require("fs"));
-var import_path = __toESM(require("path"));
 var import_crypto = require("./utils/crypto");
 var import_debug = require("./utils/debug");
 var import_clock = require("./clock");
 var import_debugger = require("./debugger");
 var import_dialog = require("./dialog");
 var import_fetch = require("./fetch");
-var import_fileUtils = require("./utils/fileUtils");
 var import_stackTrace = require("../utils/isomorphic/stackTrace");
 var import_harRecorder = require("./har/harRecorder");
 var import_helper = require("./helper");
@@ -70,8 +69,9 @@ const BrowserContextEvent = {
   RequestFulfilled: "requestfulfilled",
   RequestContinued: "requestcontinued",
   BeforeClose: "beforeclose",
-  VideoStarted: "videostarted",
-  RecorderEvent: "recorderevent"
+  RecorderEvent: "recorderevent",
+  PageClosed: "pageclosed",
+  InternalFrameNavigatedToNewDocument: "internalframenavigatedtonewdocument"
 };
 class BrowserContext extends import_instrumentation.SdkObject {
   constructor(browser, options, browserContextId) {
@@ -113,18 +113,22 @@ class BrowserContext extends import_instrumentation.SdkObject {
     if (this.attribution.playwright.options.isInternalPlaywright)
       return;
     this._debugger = new import_debugger.Debugger(this);
-    if ((0, import_debug.debugMode)() === "inspector")
+    const shouldEnableDebugger = !this.attribution.playwright.options.isServer && ((0, import_debug.isUnderTest)() || !!this._browser.options.headful);
+    if (shouldEnableDebugger) {
+      this._debugger.setPauseAt();
+      this._debugger.on(import_debugger.Debugger.Events.PausedStateChanged, () => {
+        if (this._debugger.isPaused())
+          import_recorderApp.RecorderApp.showInspectorNoReply(this);
+      });
+    }
+    if ((0, import_debug.debugMode)() === "inspector") {
+      this._debugger.setPauseAt({ next: true });
       await import_recorderApp.RecorderApp.show(this, { pauseOnNextStatement: true });
-    if (this._debugger.isPaused())
-      import_recorderApp.RecorderApp.showInspectorNoReply(this);
-    this._debugger.on(import_debugger.Debugger.Events.PausedStateChanged, () => {
-      if (this._debugger.isPaused())
-        import_recorderApp.RecorderApp.showInspectorNoReply(this);
-    });
+    }
     if ((0, import_debug.debugMode)() === "console")
       await this.exposeConsoleApi();
     if (this._options.serviceWorkers === "block")
-      await this.addInitScript(void 0, `
+      await this.addInitScript(`
 if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { console.warn('Service Worker registration blocked by Playwright'); };
 `);
     if (this._options.permissions)
@@ -141,10 +145,6 @@ if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { co
       function installConsoleApi(injectedScript) { injectedScript.consoleApi.install(); }
       module.exports = { default: () => installConsoleApi };
     `);
-  }
-  async _ensureVideosPath() {
-    if (this._options.recordVideo)
-      await (0, import_fileUtils.mkdirIfNeeded)(import_path.default.join(this._options.recordVideo.dir, "dummy"));
   }
   canResetForReuse() {
     if (this._closedStatus !== "open")
@@ -239,7 +239,7 @@ if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { co
   async exposePlaywrightBindingIfNeeded() {
     this._playwrightBindingExposed ??= (async () => {
       await this.doExposePlaywrightBinding();
-      this.bindingsInitScript = import_page2.PageBinding.createInitScript();
+      this.bindingsInitScript = import_page2.PageBinding.createInitScript(this);
       this.initScripts.push(this.bindingsInitScript);
       await this.doAddInitScript(this.bindingsInitScript);
       await this.safeNonStallingEvaluateInAllFrames(this.bindingsInitScript.source, "main");
@@ -257,7 +257,7 @@ if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { co
         throw new Error(`Function "${name}" has been already registered in one of the pages`);
     }
     await progress.race(this.exposePlaywrightBindingIfNeeded());
-    const binding = new import_page2.PageBinding(name, playwrightBinding, needsHandle);
+    const binding = new import_page2.PageBinding(this, name, playwrightBinding, needsHandle);
     binding.forClient = forClient;
     this._pageBindings.set(name, binding);
     try {
@@ -269,13 +269,12 @@ if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { co
       throw error;
     }
   }
-  async removeExposedBindings(bindings) {
-    bindings = bindings.filter((binding) => this._pageBindings.get(binding.name) === binding);
-    for (const binding of bindings)
-      this._pageBindings.delete(binding.name);
-    await this.doRemoveInitScripts(bindings.map((binding) => binding.initScript));
-    const cleanup = bindings.map((binding) => `{ ${binding.cleanupScript} };
-`).join("");
+  async removeExposedBinding(binding) {
+    if (this._pageBindings.get(binding.name) !== binding)
+      return;
+    this._pageBindings.delete(binding.name);
+    await this.doRemoveInitScripts([binding.initScript]);
+    const cleanup = `{ ${binding.cleanupScript} };`;
     await this.safeNonStallingEvaluateInAllFrames(cleanup, "main");
   }
   async grantPermissions(permissions, origin) {
@@ -362,26 +361,21 @@ if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { co
     if (username)
       this._options.httpCredentials = { username, password: password || "" };
   }
-  async addInitScript(progress, source) {
-    const initScript = new import_page.InitScript(source);
+  async addInitScript(source) {
+    const initScript = new import_page.InitScript(this, source);
     this.initScripts.push(initScript);
     try {
-      const promise = this.doAddInitScript(initScript);
-      if (progress)
-        await progress.race(promise);
-      else
-        await promise;
+      await this.doAddInitScript(initScript);
       return initScript;
     } catch (error) {
-      this.removeInitScripts([initScript]).catch(() => {
+      initScript.dispose().catch(() => {
       });
       throw error;
     }
   }
-  async removeInitScripts(initScripts) {
-    const set = new Set(initScripts);
-    this.initScripts = this.initScripts.filter((script) => !set.has(script));
-    await this.doRemoveInitScripts(initScripts);
+  async removeInitScript(initScript) {
+    this.initScripts = this.initScripts.filter((script) => initScript !== script);
+    await this.doRemoveInitScripts([initScript]);
   }
   async addRequestInterceptor(progress, handler) {
     this.requestInterceptors.push(handler);
@@ -417,16 +411,13 @@ if (navigator.serviceWorker) navigator.serviceWorker.register = async () => { co
       for (const harRecorder of this._harRecorders.values())
         await harRecorder.flush();
       await this.tracing.flush();
-      const promises = [];
-      for (const { context, artifact } of this._browser._idToVideo.values()) {
-        if (context === this)
-          promises.push(artifact.finishedPromise());
-      }
+      await Promise.all(this.pages().map((page) => page.screencast.handlePageOrContextClose()));
       if (this._customCloseHandler) {
         await this._customCloseHandler();
       } else {
         await this.doClose(options.reason);
       }
+      const promises = [];
       promises.push(this._deleteAllDownloads());
       promises.push(this._deleteAllTempDirs());
       await Promise.all(promises);
@@ -602,22 +593,6 @@ function validateBrowserContextOptions(options, browserOptions) {
     options.acceptDownloads = "internal-browser-default";
   if (!options.viewport && !options.noDefaultViewport)
     options.viewport = { width: 1280, height: 720 };
-  if (options.recordVideo) {
-    if (!options.recordVideo.size) {
-      if (options.noDefaultViewport) {
-        options.recordVideo.size = { width: 800, height: 600 };
-      } else {
-        const size = options.viewport;
-        const scale = Math.min(1, 800 / Math.max(size.width, size.height));
-        options.recordVideo.size = {
-          width: Math.floor(size.width * scale),
-          height: Math.floor(size.height * scale)
-        };
-      }
-    }
-    options.recordVideo.size.width &= ~1;
-    options.recordVideo.size.height &= ~1;
-  }
   if (options.proxy)
     options.proxy = normalizeProxySettings(options.proxy);
   verifyGeolocation(options.geolocation);
@@ -669,6 +644,69 @@ function normalizeProxySettings(proxy) {
     bypass = bypass.split(",").map((t) => t.trim()).join(",");
   return { ...proxy, server, bypass };
 }
+function calculateUserAgentEmulation(options) {
+  const ua = options.userAgent;
+  if (!ua)
+    return { navigatorPlatform: void 0, userAgentMetadata: void 0 };
+  const userAgentMetadata = {
+    mobile: !!options.isMobile,
+    model: "",
+    architecture: "x86",
+    platform: "Windows",
+    platformVersion: ""
+  };
+  const androidMatch = ua.match(/Android (\d+(\.\d+)?(\.\d+)?)/);
+  const iPhoneMatch = ua.match(/iPhone OS (\d+(_\d+)?)/);
+  const iPadMatch = ua.match(/iPad; CPU OS (\d+(_\d+)?)/);
+  const macOSMatch = ua.match(/Mac OS X (\d+(_\d+)?(_\d+)?)/);
+  const windowsMatch = ua.match(/Windows\D+(\d+(\.\d+)?(\.\d+)?)/);
+  if (androidMatch) {
+    userAgentMetadata.platform = "Android";
+    userAgentMetadata.platformVersion = androidMatch[1];
+    userAgentMetadata.architecture = "arm";
+  } else if (iPhoneMatch) {
+    userAgentMetadata.platform = "iOS";
+    userAgentMetadata.platformVersion = iPhoneMatch[1].replace(/_/g, ".");
+    userAgentMetadata.architecture = "arm";
+  } else if (iPadMatch) {
+    userAgentMetadata.platform = "iOS";
+    userAgentMetadata.platformVersion = iPadMatch[1].replace(/_/g, ".");
+    userAgentMetadata.architecture = "arm";
+  } else if (macOSMatch) {
+    userAgentMetadata.platform = "macOS";
+    userAgentMetadata.platformVersion = macOSMatch[1].replace(/_/g, ".");
+    if (!ua.includes("Intel"))
+      userAgentMetadata.architecture = "arm";
+  } else if (windowsMatch) {
+    userAgentMetadata.platform = "Windows";
+    userAgentMetadata.platformVersion = windowsMatch[1];
+  } else if (ua.toLowerCase().includes("linux")) {
+    userAgentMetadata.platform = "Linux";
+  }
+  if (ua.includes("ARM") || ua.includes("aarch64"))
+    userAgentMetadata.architecture = "arm";
+  let navigatorPlatform;
+  if (!process.env.PLAYWRIGHT_NO_UA_PLATFORM) {
+    switch (userAgentMetadata.platform) {
+      case "Android":
+        navigatorPlatform = userAgentMetadata.architecture === "arm" ? "Linux armv8l" : "Linux x86_64";
+        break;
+      case "iOS":
+        navigatorPlatform = ua.includes("iPad") ? "iPad" : "iPhone";
+        break;
+      case "macOS":
+        navigatorPlatform = "MacIntel";
+        break;
+      case "Linux":
+        navigatorPlatform = userAgentMetadata.architecture === "arm" ? "Linux aarch64" : "Linux x86_64";
+        break;
+      case "Windows":
+        navigatorPlatform = "Win32";
+        break;
+    }
+  }
+  return { navigatorPlatform, userAgentMetadata };
+}
 const paramsThatAllowContextReuse = [
   "colorScheme",
   "forcedColors",
@@ -695,6 +733,7 @@ const defaultNewContextParamValues = {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   BrowserContext,
+  calculateUserAgentEmulation,
   normalizeProxySettings,
   validateBrowserContextOptions,
   verifyClientCertificates,

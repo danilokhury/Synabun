@@ -21,36 +21,29 @@ __export(video_exports, {
   Video: () => Video
 });
 module.exports = __toCommonJS(video_exports);
-var import_manualPromise = require("../utils/isomorphic/manualPromise");
-class Video {
-  constructor(page, connection) {
-    this._artifact = null;
-    this._artifactReadyPromise = new import_manualPromise.ManualPromise();
+var import_eventEmitter = require("./eventEmitter");
+class Video extends import_eventEmitter.EventEmitter {
+  constructor(page, connection, artifact) {
+    super(page._platform);
     this._isRemote = false;
     this._isRemote = connection.isRemote();
-    this._artifact = page._closedOrCrashedScope.safeRace(this._artifactReadyPromise);
-  }
-  _artifactReady(artifact) {
-    this._artifactReadyPromise.resolve(artifact);
+    this._artifact = artifact;
   }
   async path() {
     if (this._isRemote)
       throw new Error(`Path is not available when connecting remotely. Use saveAs() to save a local copy.`);
-    const artifact = await this._artifact;
-    if (!artifact)
-      throw new Error("Page did not produce any video frames");
-    return artifact._initializer.absolutePath;
+    if (!this._artifact)
+      throw new Error("Video recording has not been started.");
+    return this._artifact._initializer.absolutePath;
   }
   async saveAs(path) {
-    const artifact = await this._artifact;
-    if (!artifact)
-      throw new Error("Page did not produce any video frames");
-    return await artifact.saveAs(path);
+    if (!this._artifact)
+      throw new Error("Video recording has not been started.");
+    return await this._artifact.saveAs(path);
   }
   async delete() {
-    const artifact = await this._artifact;
-    if (artifact)
-      await artifact.delete();
+    if (this._artifact)
+      await this._artifact.delete();
   }
 }
 // Annotate the CommonJS export names for ESM import in node:

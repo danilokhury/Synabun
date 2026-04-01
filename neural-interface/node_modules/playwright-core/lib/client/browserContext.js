@@ -39,7 +39,9 @@ var import_channelOwner = require("./channelOwner");
 var import_clientHelper = require("./clientHelper");
 var import_clock = require("./clock");
 var import_consoleMessage = require("./consoleMessage");
+var import_debugger = require("./debugger");
 var import_dialog = require("./dialog");
+var import_disposable = require("./disposable");
 var import_errors = require("./errors");
 var import_events = require("./events");
 var import_fetch = require("./fetch");
@@ -73,10 +75,10 @@ class BrowserContext extends import_channelOwner.ChannelOwner {
     this._harRouters = [];
     this._options = initializer.options;
     this._timeoutSettings = new import_timeoutSettings.TimeoutSettings(this._platform);
+    this.debugger = import_debugger.Debugger.from(initializer.debugger);
     this.tracing = import_tracing.Tracing.from(initializer.tracing);
     this.request = import_fetch.APIRequestContext.from(initializer.requestContext);
     this.request._timeoutSettings = this._timeoutSettings;
-    this.request._checkUrlAllowed = (url) => this._checkUrlAllowed(url);
     this.clock = new import_clock.Clock(this);
     this._channel.on("bindingCall", ({ binding }) => this._onBinding(import_page.BindingCall.from(binding)));
     this._channel.on("close", () => this._onClose());
@@ -204,7 +206,7 @@ class BrowserContext extends import_channelOwner.ChannelOwner {
     const page = route.request()._safePage();
     const routeHandlers = this._routes.slice();
     for (const routeHandler of routeHandlers) {
-      if (page?._closeWasCalled || this._closingStatus !== "none")
+      if (page?._closeWasCalled || this.isClosed())
         return;
       if (!routeHandler.matches(route.request().url()))
         continue;
@@ -261,6 +263,9 @@ class BrowserContext extends import_channelOwner.ChannelOwner {
   pages() {
     return [...this._pages];
   }
+  isClosed() {
+    return this._closingStatus !== "none";
+  }
   async newPage() {
     if (this._ownerPage)
       throw new Error("Please use browser.newContext()");
@@ -310,20 +315,23 @@ class BrowserContext extends import_channelOwner.ChannelOwner {
   }
   async addInitScript(script, arg) {
     const source = await (0, import_clientHelper.evaluationScript)(this._platform, script, arg);
-    await this._channel.addInitScript({ source });
+    return import_disposable.DisposableObject.from((await this._channel.addInitScript({ source })).disposable);
   }
   async exposeBinding(name, callback, options = {}) {
-    await this._channel.exposeBinding({ name, needsHandle: options.handle });
+    const result = await this._channel.exposeBinding({ name, needsHandle: options.handle });
     this._bindings.set(name, callback);
+    return import_disposable.DisposableObject.from(result.disposable);
   }
   async exposeFunction(name, callback) {
-    await this._channel.exposeBinding({ name });
+    const result = await this._channel.exposeBinding({ name });
     const binding = (source, ...args) => callback(...args);
     this._bindings.set(name, binding);
+    return import_disposable.DisposableObject.from(result.disposable);
   }
   async route(url, handler, options = {}) {
     this._routes.unshift(new network.RouteHandler(this._platform, this._options.baseURL, url, handler, options.times));
     await this._updateInterceptionPatterns({ title: "Route requests" });
+    return new import_disposable.DisposableStub(() => this.unroute(url, handler));
   }
   async routeWebSocket(url, handler) {
     this._webSocketRoutes.unshift(new network.WebSocketRouteHandler(this._options.baseURL, url, handler));
@@ -414,6 +422,10 @@ class BrowserContext extends import_channelOwner.ChannelOwner {
     }
     return state;
   }
+  async setStorageState(storageState) {
+    const state = await prepareStorageState(this._platform, storageState);
+    await this._channel.setStorageState({ storageState: state });
+  }
   backgroundPages() {
     return [];
   }
@@ -439,7 +451,7 @@ class BrowserContext extends import_channelOwner.ChannelOwner {
     await this.close();
   }
   async close(options = {}) {
-    if (this._closingStatus !== "none")
+    if (this.isClosed())
       return;
     this._closeReason = options.reason;
     this._closingStatus = "closing";
@@ -477,37 +489,6 @@ class BrowserContext extends import_channelOwner.ChannelOwner {
   }
   async _exposeConsoleApi() {
     await this._channel.exposeConsoleApi();
-  }
-  _setAllowedProtocols(protocols) {
-    this._allowedProtocols = protocols;
-  }
-  _checkUrlAllowed(url) {
-    if (!this._allowedProtocols)
-      return;
-    let parsedURL;
-    try {
-      parsedURL = new URL(url);
-    } catch (e) {
-      throw new Error(`Access to ${url} is blocked. Invalid URL: ${e.message}`);
-    }
-    if (!this._allowedProtocols.includes(parsedURL.protocol))
-      throw new Error(`Access to "${parsedURL.protocol}" URL is blocked. Allowed protocols: ${this._allowedProtocols.join(", ")}. Attempted URL: ${url}`);
-  }
-  _setAllowedDirectories(rootDirectories) {
-    this._allowedDirectories = rootDirectories;
-  }
-  _checkFileAccess(filePath) {
-    if (!this._allowedDirectories)
-      return;
-    const path = this._platform.path().resolve(filePath);
-    const isInsideDir = (container, child) => {
-      const path2 = this._platform.path();
-      const rel = path2.relative(container, child);
-      return !!rel && !rel.startsWith("..") && !path2.isAbsolute(rel);
-    };
-    if (this._allowedDirectories.some((root) => isInsideDir(root, path)))
-      return;
-    throw new Error(`File access denied: ${filePath} is outside allowed roots. Allowed roots: ${this._allowedDirectories.length ? this._allowedDirectories.join(", ") : "none"}`);
   }
 }
 async function prepareStorageState(platform, storageState) {

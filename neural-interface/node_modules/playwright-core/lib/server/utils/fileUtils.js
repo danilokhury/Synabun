@@ -32,6 +32,7 @@ __export(fileUtils_exports, {
   canAccessFile: () => canAccessFile,
   copyFileAndMakeWritable: () => copyFileAndMakeWritable,
   existsAsync: () => existsAsync,
+  makeSocketPath: () => makeSocketPath,
   mkdirIfNeeded: () => mkdirIfNeeded,
   removeFolders: () => removeFolders,
   sanitizeForFilePath: () => sanitizeForFilePath,
@@ -39,9 +40,10 @@ __export(fileUtils_exports, {
 });
 module.exports = __toCommonJS(fileUtils_exports);
 var import_fs = __toESM(require("fs"));
+var import_os = __toESM(require("os"));
 var import_path = __toESM(require("path"));
+var import_crypto = require("./crypto");
 var import_manualPromise = require("../../utils/isomorphic/manualPromise");
-var import_zipBundle = require("../../zipBundle");
 const existsAsync = (path2) => new Promise((resolve) => import_fs.default.stat(path2, (err) => resolve(!err)));
 async function mkdirIfNeeded(filePath) {
   await import_fs.default.promises.mkdir(import_path.default.dirname(filePath), { recursive: true }).catch(() => {
@@ -71,6 +73,16 @@ function sanitizeForFilePath(s) {
 }
 function toPosixPath(aPath) {
   return aPath.split(import_path.default.sep).join(import_path.default.posix.sep);
+}
+function makeSocketPath(domain, name) {
+  const userNameHash = (0, import_crypto.calculateSha1)(process.env.USERNAME || process.env.USER || "default").slice(0, 8);
+  if (process.platform === "win32")
+    return `\\\\.\\pipe\\pw-${userNameHash}-${domain}-${name}`;
+  const baseDir = process.env.PLAYWRIGHT_SOCKETS_DIR || import_path.default.join(import_os.default.tmpdir(), `pw-${userNameHash}`);
+  const dir = import_path.default.join(baseDir, domain);
+  const result = import_path.default.join(dir, `${name}.sock`);
+  import_fs.default.mkdirSync(dir, { recursive: true });
+  return result;
 }
 class SerializedFS {
   constructor() {
@@ -165,7 +177,8 @@ class SerializedFS {
         return;
       }
       case "zip": {
-        const zipFile = new import_zipBundle.yazl.ZipFile();
+        const { yazl } = await import("playwright-core/lib/zipBundle");
+        const zipFile = new yazl.ZipFile();
         const result = new import_manualPromise.ManualPromise();
         zipFile.on("error", (error) => result.reject(error));
         for (const entry of op.entries)
@@ -184,6 +197,7 @@ class SerializedFS {
   canAccessFile,
   copyFileAndMakeWritable,
   existsAsync,
+  makeSocketPath,
   mkdirIfNeeded,
   removeFolders,
   sanitizeForFilePath,

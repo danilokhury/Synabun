@@ -37,7 +37,16 @@ const BLOCK_REASON = (toolName) =>
 let input = '';
 process.stdin.setEncoding('utf-8');
 process.stdin.on('data', chunk => { input += chunk; });
-process.stdin.on('end', async () => {
+// Timeout: if stdin never closes (PowerShell edge case), proceed with what we have
+const stdinTimeout = setTimeout(() => {
+  process.stdin.removeAllListeners('end');
+  handleInput();
+}, 2000);
+process.stdin.on('end', () => {
+  clearTimeout(stdinTimeout);
+  handleInput();
+});
+async function handleInput() {
   try {
     const { session_id, tool_name } = JSON.parse(input);
 
@@ -89,4 +98,4 @@ process.stdin.on('end', async () => {
   } catch {
     process.stdout.write(JSON.stringify({}));
   }
-});
+}

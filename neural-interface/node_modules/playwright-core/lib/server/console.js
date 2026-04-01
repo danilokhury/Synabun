@@ -22,13 +22,14 @@ __export(console_exports, {
 });
 module.exports = __toCommonJS(console_exports);
 class ConsoleMessage {
-  constructor(page, worker, type, text, args, location) {
+  constructor(page, worker, type, text, args, location, timestamp) {
     this._page = page;
     this._worker = worker;
     this._type = type;
     this._text = text;
     this._args = args;
     this._location = location || { url: "", lineNumber: 0, columnNumber: 0 };
+    this._timestamp = timestamp;
   }
   page() {
     return this._page;
@@ -49,6 +50,9 @@ class ConsoleMessage {
   }
   location() {
     return this._location;
+  }
+  timestamp() {
+    return this._timestamp;
   }
 }
 // Annotate the CommonJS export names for ESM import in node:
