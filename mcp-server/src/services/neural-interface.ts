@@ -8,6 +8,7 @@ const BASE_URL = process.env.NEURAL_INTERFACE_URL
   || `http://localhost:${process.env.NEURAL_PORT || '3344'}`;
 const DEFAULT_TIMEOUT = 10_000;
 const LONG_TIMEOUT = 30_000;
+const SESSION_CREATE_TIMEOUT = 70_000;
 
 export interface BrowserSessionInfo {
   id: string;
@@ -67,8 +68,12 @@ async function request(
  */
 export async function resolveSession(
   sessionId?: string,
-  autoCreate?: { url?: string }
-): Promise<{ sessionId: string } | { error: string }> {
+  autoCreate?: { url?: string },
+  tabId?: string
+): Promise<{ sessionId: string; tabId?: string } | { error: string }> {
+  // Resolve tab ID from explicit param or environment variable
+  const resolvedTabId = tabId || process.env.SYNABUN_BROWSER_TAB || undefined;
+
   // Agent-scoped browser session — set by the agent orchestrator to pin
   // this MCP instance to a specific browser session (multi-agent isolation).
   // Verify the pinned session still exists; fall through to auto-select if gone.
@@ -76,14 +81,14 @@ export async function resolveSession(
   if (pinnedSession && !sessionId) {
     const check = await request('GET', '/api/browser/sessions');
     const active = ((check.sessions || []) as BrowserSessionInfo[]).find(s => s.id === pinnedSession);
-    if (active) return { sessionId: pinnedSession };
-    // Pinned session is gone — fall through to auto-select/create below
+    if (active) return { sessionId: pinnedSession, tabId: resolvedTabId };
+    return { error: `Pinned browser session ${pinnedSession} is no longer available. Launch the automation again so SynaBun can open the selected browser profile.` };
   }
 
   if (sessionId) {
     // Trust the server — it will 404 if the session doesn't exist.
     // Skipping the extra GET /api/browser/sessions verification call saves a full round-trip.
-    return { sessionId };
+    return { sessionId, tabId: resolvedTabId };
   }
 
   // List sessions
@@ -92,16 +97,16 @@ export async function resolveSession(
   const sessions = (data.sessions || []) as BrowserSessionInfo[];
 
   if (sessions.length === 1) {
-    return { sessionId: sessions[0].id };
+    return { sessionId: sessions[0].id, tabId: resolvedTabId };
   }
 
   if (sessions.length === 0) {
     if (autoCreate) {
       const created = await request('POST', '/api/browser/sessions', {
         url: autoCreate.url || 'about:blank',
-      }, LONG_TIMEOUT);
+      }, SESSION_CREATE_TIMEOUT);
       if (created.error) return { error: `Failed to auto-create session: ${created.error}` };
-      return { sessionId: created.sessionId as string };
+      return { sessionId: created.sessionId as string, tabId: resolvedTabId };
     }
     return { error: 'No browser sessions open. Use browser_session to create one first, or use browser_navigate with a URL to auto-create.' };
   }
@@ -130,7 +135,7 @@ export async function listSessions(): Promise<NiResponse> {
 export async function createSession(url?: string): Promise<NiResponse> {
   return request('POST', '/api/browser/sessions', {
     url: url || 'about:blank',
-  }, LONG_TIMEOUT);
+  }, SESSION_CREATE_TIMEOUT);
 }
 
 export async function closeSession(sessionId: string): Promise<NiResponse> {
@@ -139,98 +144,105 @@ export async function closeSession(sessionId: string): Promise<NiResponse> {
 
 // ── Navigation ──
 
-export async function navigate(sessionId: string, url: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/navigate`, { url }, LONG_TIMEOUT);
+export async function navigate(sessionId: string, url: string, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/navigate`, { url, ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 
-export async function goBack(sessionId: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/back`);
+export async function goBack(sessionId: string, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/back`, { ...(tabId && { tabId }) });
 }
 
-export async function goForward(sessionId: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/forward`);
+export async function goForward(sessionId: string, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/forward`, { ...(tabId && { tabId }) });
 }
 
-export async function reload(sessionId: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/reload`, undefined, LONG_TIMEOUT);
+export async function reload(sessionId: string, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/reload`, { ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 
 // ── Interaction (selector-based) ──
 
-export async function click(sessionId: string, selector: string, nthMatch?: number): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/click`, { selector, ...(nthMatch !== undefined && { nthMatch }) });
+export async function click(sessionId: string, selector: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/click`, { selector, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
 }
 
-export async function fill(sessionId: string, selector: string, value: string, nthMatch?: number): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value, ...(nthMatch !== undefined && { nthMatch }) });
+export async function fill(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
 }
 
-export async function type(sessionId: string, selector: string | null, text: string, nthMatch?: number): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text, ...(nthMatch !== undefined && { nthMatch }) });
+export async function type(sessionId: string, selector: string | null, text: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
 }
 
-export async function hover(sessionId: string, selector: string, nthMatch?: number): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector, ...(nthMatch !== undefined && { nthMatch }) });
+export async function hover(sessionId: string, selector: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
 }
 
-export async function selectOption(sessionId: string, selector: string, value: string, nthMatch?: number): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/select`, { selector, value, ...(nthMatch !== undefined && { nthMatch }) });
+export async function selectOption(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/select`, { selector, value, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
 }
 
-export async function pressKey(sessionId: string, key: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/press`, { key });
+export async function pressKey(sessionId: string, key: string, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/press`, { key, ...(tabId && { tabId }) });
 }
 
 export async function scroll(
   sessionId: string,
-  opts: { direction: string; distance?: number; selector?: string }
+  opts: { direction: string; distance?: number; selector?: string },
+  tabId?: string
 ): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/scroll`, opts as Record<string, unknown>);
+  return request('POST', `/api/browser/sessions/${sessionId}/scroll`, { ...opts, ...(tabId && { tabId }) } as Record<string, unknown>);
 }
 
 export async function upload(
   sessionId: string,
   selector: string,
   filePaths: string[],
-  nthMatch?: number
+  nthMatch?: number,
+  tabId?: string
 ): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths, ...(nthMatch !== undefined && { nthMatch }) }, LONG_TIMEOUT);
+  return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 
 // ── Observation ──
 
-export async function snapshot(sessionId: string, selector?: string): Promise<NiResponse> {
-  if (selector) return request('POST', `/api/browser/sessions/${sessionId}/snapshot`, { selector });
-  return request('GET', `/api/browser/sessions/${sessionId}/snapshot`);
+export async function snapshot(sessionId: string, selector?: string, tabId?: string): Promise<NiResponse> {
+  if (selector) return request('POST', `/api/browser/sessions/${sessionId}/snapshot`, { selector, ...(tabId && { tabId }) });
+  const qs = tabId ? `?tabId=${tabId}` : '';
+  return request('GET', `/api/browser/sessions/${sessionId}/snapshot${qs}`);
 }
 
-export async function getContent(sessionId: string): Promise<NiResponse> {
-  return request('GET', `/api/browser/sessions/${sessionId}/content`);
+export async function getContent(sessionId: string, tabId?: string): Promise<NiResponse> {
+  const qs = tabId ? `?tabId=${tabId}` : '';
+  return request('GET', `/api/browser/sessions/${sessionId}/content${qs}`);
 }
 
-export async function getMarkdown(sessionId: string): Promise<NiResponse> {
-  return request('GET', `/api/browser/sessions/${sessionId}/markdown`, undefined, LONG_TIMEOUT);
+export async function getMarkdown(sessionId: string, tabId?: string): Promise<NiResponse> {
+  const qs = tabId ? `?tabId=${tabId}` : '';
+  return request('GET', `/api/browser/sessions/${sessionId}/markdown${qs}`, undefined, LONG_TIMEOUT);
 }
 
 export async function fetchMarkdown(url: string, timeout?: number): Promise<NiResponse> {
   return request('POST', '/api/fetch-markdown', { url, timeout }, LONG_TIMEOUT);
 }
 
-export async function screenshot(sessionId: string): Promise<NiResponse> {
-  return request('GET', `/api/browser/sessions/${sessionId}/screenshot-base64`);
+export async function screenshot(sessionId: string, tabId?: string): Promise<NiResponse> {
+  const qs = tabId ? `?tabId=${tabId}` : '';
+  return request('GET', `/api/browser/sessions/${sessionId}/screenshot-base64${qs}`);
 }
 
 // ── Advanced ──
 
-export async function evaluate(sessionId: string, script: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/evaluate`, { script }, LONG_TIMEOUT);
+export async function evaluate(sessionId: string, script: string, tabId?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/evaluate`, { script, ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 
 export async function waitFor(
   sessionId: string,
-  opts: { selector?: string; state?: string; loadState?: string; timeout?: number }
+  opts: { selector?: string; state?: string; loadState?: string; timeout?: number },
+  tabId?: string
 ): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/wait`, opts, LONG_TIMEOUT);
+  return request('POST', `/api/browser/sessions/${sessionId}/wait`, { ...opts, ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 
 // ── Whiteboard ──

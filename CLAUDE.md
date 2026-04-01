@@ -1,5 +1,108 @@
 # CLAUDE.md
 
+## Memory Ruleset
+
+> Portable ruleset — copy into any project's `CLAUDE.md`. Copy button in Neural Interface: Settings > Connections > Claude Code > Copy Ruleset.
+
+### Tools
+
+| Tool | Purpose |
+|------|---------|
+| `remember` | Store memory (content, category, project, tags, importance, related_files) |
+| `recall` | Semantic search across memories |
+| `forget` / `restore` | Trash / restore a memory by ID |
+| `reflect` | Update existing memory (importance, tags, content, category) |
+| `memories` | List recent or stats (recent, by-category, by-project) |
+| `sync` | Detect stale memories (file content changed) |
+| `category_create/update/delete/list` | Manage category hierarchy |
+
+### Auto-Recall
+
+- Session start: `recall` current project context
+- Topic mentioned: `recall` what you know
+- Before decisions: `recall` past decisions
+- Debugging: `recall` similar bugs
+
+### Auto-Remember (MANDATORY)
+
+After ANY task (bug fix, feature, refactor, config change, investigation, architecture decision), MUST `remember` BEFORE responding.
+
+**Steps:**
+1. `remember` — what + why + how, appropriate category, set project, related_files, importance (5=routine, 6-7=significant, 8+=critical), and 3-5 tags
+
+`remember` now returns the full UUID and accepts all fields (tags, importance) directly. No need to recall+reflect afterward.
+
+**NOT triggered by:** Simple Q&A, file reads with no findings, trivial typos.
+
+**Importance:** 1-2=trivial, 3-4=low, 5=normal, 6-7=significant, 8-9=critical, 10=foundational. User says "remember this" → 8+. Architecture decisions → 8+. API quirks → 6+.
+
+### Response Ordering (IMPORTANT)
+
+When finishing a task, structure your response as:
+1. Call `remember` (and any other memory tools) **FIRST**
+2. Write your completion summary / final message **LAST**
+
+Tool call results appear above text within a single response, so the summary naturally ends up at the bottom where the user sees it. This prevents memory tool calls from burying your completion message under noise.
+
+**Never** write your summary first and then call memory tools — the stop hook will block you, forcing a new response of memory tool calls that pushes your summary off-screen.
+
+### Category Selection
+
+1. Match existing child → use it
+2. Parent fits but no child → `category_create` child → use it
+3. Nothing fits → `category_create` parent + child → use it
+
+Never store directly in parent categories.
+
+### Tool Quirks
+
+- `remember` returns the full UUID and accepts tags + importance directly.
+- `reflect` requires FULL UUID — use the one returned by `remember`, or `recall` to find existing memories.
+- Sequential MCP calls only — never parallel.
+
+### Plan Mode (MANDATORY)
+
+**CRITICAL**: Plan mode = research and planning ONLY. Do NOT use Edit, Write, or NotebookEdit. Read files, search code, investigate — then present the plan. Do NOT implement until the user approves and you exit plan mode.
+
+When you need clarification or have questions:
+- **ALWAYS** use `AskUserQuestion` to present options — never write questions as plain text
+- Load the tool via `ToolSearch` first if its schema is not yet available
+- Structure as distinct choices (2-4 options per question, max 4 questions)
+- Use for approach clarification BEFORE finalizing the plan
+- Use `ExitPlanMode` (not AskUserQuestion) for final plan approval
+
+### Multi-Select Questions
+
+When using `AskUserQuestion`, set `multiSelect: true` when options are NOT mutually exclusive — i.e., the user could reasonably want more than one. Examples: selecting multiple features, tags, effects, or follow-up actions. Keep single-select (default) for inherently exclusive choices (one model, one style, one dimension).
+
+---
+
+## Coexistence with Other Tools
+
+When running SynaBun alongside other memory or code intelligence tools (CogniLayer, mem0, etc.):
+
+**SynaBun owns ALL memory operations:**
+- Storing information: `remember`
+- Searching past context: `recall`
+- Updating memories: `reflect`
+- Deleting/restoring: `forget` / `restore`
+- Browsing: `memories`
+- Stale detection: `sync`
+- Categories: `category` (create/update/delete/list)
+
+**Other tools** should be restricted to their non-memory capabilities only (e.g., AST-based code search, code impact analysis).
+
+**Enforcement rule for CLAUDE.md / project instructions:**
+```
+For ALL memory operations (store, search, recall, update, delete), use SynaBun tools exclusively.
+[OtherTool] is restricted to [specific use case, e.g., code_search, code_context, code_impact].
+Never use [OtherTool] for remembering, recalling, or reflecting on past work.
+```
+
+If you notice the AI defaulting to another tool's memory features, add the enforcement rule above to your project's `CLAUDE.md`.
+
+---
+
 ====================================END SYNBUN
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.

@@ -2,25 +2,28 @@ import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
 
+const tabIdField = z.string().optional().describe('Target a specific tab within the session. Auto-resolved from environment if omitted.');
+
 // ── browser_evaluate ──
 
 export const browserEvaluateSchema = {
   script: z.string().optional().describe('JavaScript code to execute in the browser page context. The return value will be serialized to JSON.'),
   expression: z.string().optional().describe('Alias for "script" — accepted for compatibility with Playwright conventions.'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserEvaluateDescription =
   'Execute JavaScript in the browser page context and return the result. Useful for reading DOM state, extracting data, or performing actions not covered by other tools.';
 
-export async function handleBrowserEvaluate(args: { script?: string; expression?: string; sessionId?: string }) {
+export async function handleBrowserEvaluate(args: { script?: string; expression?: string; sessionId?: string; tabId?: string }) {
   const code = args.script || args.expression;
   if (!code) return text('Either "script" or "expression" is required.');
 
-  const resolved = await ni.resolveSession(args.sessionId);
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, code);
+  const result = await ni.evaluate(resolved.sessionId, code, resolved.tabId);
   if (result.error) return text(`Evaluate failed: ${result.error}`);
 
   let msg: string;
@@ -45,6 +48,7 @@ export const browserWaitSchema = {
   ),
   timeout: z.coerce.number().optional().describe('Timeout in ms (default: 10000 for element waits, 15000 for loadState).'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserWaitDescription =
@@ -56,8 +60,9 @@ export async function handleBrowserWait(args: {
   loadState?: string;
   timeout?: number;
   sessionId?: string;
+  tabId?: string;
 }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.waitFor(resolved.sessionId, {
@@ -65,7 +70,7 @@ export async function handleBrowserWait(args: {
     state: args.state,
     loadState: args.loadState,
     timeout: args.timeout,
-  });
+  }, resolved.tabId);
   if (result.error) return text(`Wait failed: ${result.error}`);
 
   if (args.loadState) {

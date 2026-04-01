@@ -1,0 +1,137 @@
+# Plan: Tab-Level Browser Routing for Concurrent Loop Isolation
+
+## Problem
+When multiple automation loops share a browser session, all HTTP endpoints operate on `session.page` — a single mutable pointer to the "active" tab. Two loops race over this pointer: whoever called `_switchSessionTab` last wins, and the other loop operates on the wrong tab. Additionally, `findReusableBrowserSession()` actively reuses another loop's session (Strategy 1).
+
+The `SYNABUN_BROWSER_SESSION` env var pins each loop to a **session**, not a **tab**. And even though `browserTabId` is injected into the prompt, the MCP browser tools have **no `tabId` parameter** — they can't target a specific tab.
+
+## Solution
+Add `tabId` routing to all browser endpoints. Each loop gets a dedicated tab, and operations target that tab's `page` object directly — bypassing the shared `session.page` pointer entirely. Tab ID is auto-resolved via `SYNABUN_BROWSER_TAB` env var (same pattern as `SYNABUN_BROWSER_SESSION`). No mutex needed — each tab's Playwright `page` is an independent object.
+
+---
+
+## Changes by Layer
+
+### Layer 1: Neural Interface — `server.js`
+
+**A. Add `getTargetPage()` helper** (~line 14170, before first browser endpoint)
+
+```javascript
+function getTargetPage(session, req) {
+  const tabId = req.body?.tabId || req.query?.tabId;
+  if (!tabId) return { page: session.page, cdpSession: session.cdpSession, tabId: session.activeTabId };
+  const tab = session.tabs?.get(tabId);
+  if (!tab) return null;
+  return { page: tab.page, cdpSession: tab.cdpSession, tabId };
+}
+```
+
+**B. Modify all 21 browser endpoints that use `session.page`:**
+
+Each endpoint gets 3 mechanical changes:
+1. Add `const target = getTargetPage(session, req);` after session lookup
+2. Add `if (!target) return res.status(404).json({ error: 'Tab not found in session' });`
+3. Replace all `session.page` → `target.page` and `session.cdpSession` → `target.cdpSession`
+
+Only update `session.currentUrl`/`session.title` when operating on active tab:
+```javascript
+if (target.tabId === session.activeTabId) {
+  session.currentUrl = target.page.url();
+  session.title = await target.page.title().catch(() => '');
+}
+```
+
+**Affected endpoints (21):**
+- POST: navigate (14277), back (14291), forward (14304), reload (14317)
+- POST: click (14411), fill (14438), type (14464), hover (14494), select (14520), press (14546)
+- POST: evaluate (14561), scroll (14828), upload (14851), wait (14658)
+- POST: snapshot (14598)
+- GET: screenshot (14331), screenshot-base64 (14815), snapshot (14575), content (14687), markdown (14715)
+
+### Layer 2: MCP Service — `mcp-server/src/services/neural-interface.ts`
+
+**A. Update `resolveSession()` (line 69) to also resolve tabId:**
+
+Add optional 3rd param `tabId?: string`. After resolving sessionId, resolve tab:
+```typescript
+const resolvedTabId = tabId || process.env.SYNABUN_BROWSER_TAB || undefined;
+return { sessionId: resolvedSessionId, tabId: resolvedTabId };
+```
+
+**B. Add optional `tabId` param to all 21 browser functions:**
+
+POST functions — add `tabId` to request body:
+```typescript
+export async function navigate(sessionId: string, url: string, tabId?: string) {
+  return request('POST', `.../navigate`, { url, ...(tabId && { tabId }) }, LONG_TIMEOUT);
+}
+```
+
+GET functions — append as query param:
+```typescript
+export async function screenshot(sessionId: string, tabId?: string) {
+  const qs = tabId ? `?tabId=${tabId}` : '';
+  return request('GET', `.../screenshot-base64${qs}`);
+}
+```
+
+### Layer 3: MCP Tool Handlers — `browser-*.ts` (4 files + leonardo)
+
+Each tool handler:
+1. Add `tabId` (optional string) to input schema
+2. Pass `args.tabId` to `resolveSession()` as 3rd param
+3. Pass `resolved.tabId` to the NI function call
+
+Files and tool counts:
+- `browser-navigate.ts` — 4 tools (navigate, back, forward, reload)
+- `browser-interact.ts` — 8 tools (click, fill, type, hover, select, press, scroll, upload)
+- `browser-observe.ts` — 25 tools (snapshot, content, screenshot, all extractors)
+- `browser-advanced.ts` — 2 tools (evaluate, wait; browser_session excluded)
+- `leonardo-browser-tools.ts` — 5 tools
+
+### Layer 4: Loop & Agent Launch — `server.js`
+
+**A. `/api/loop/launch` (line 4667):**
+```javascript
+if (browserTabId) loopExtraEnv.SYNABUN_BROWSER_TAB = browserTabId;
+```
+
+**B. `launchScheduledLoop` (~line 5008):**
+Same — add `SYNABUN_BROWSER_TAB` to scheduled loop env.
+
+**C. `buildAgentMcpConfig()` (~line 5475):**
+Accept `browserTabId` param, add to env:
+```javascript
+if (browserTabId) env.SYNABUN_BROWSER_TAB = browserTabId;
+```
+
+**D. `launchAgentController()` (~line 5620):**
+Pass `browserTabId` through to `buildAgentMcpConfig()`.
+
+### Layer 5: Prompt Injection — `hooks/claude-code/prompt-submit.mjs`
+
+Update `buildBrowserNote()` to reflect that tab routing is now automatic:
+- Keep session/tab ID display for debugging visibility
+- Replace manual "pass sessionId to ALL browser tools" instruction with: "Your browser session and tab are auto-configured. All browser tools target your dedicated tab automatically."
+
+---
+
+## File Summary
+
+| File | Changes |
+|------|---------|
+| `neural-interface/server.js` | `getTargetPage()` helper + 21 endpoints + env vars in 3 launch paths |
+| `mcp-server/src/services/neural-interface.ts` | `resolveSession()` tabId + tabId param on 21 functions |
+| `mcp-server/src/tools/browser-navigate.ts` | tabId in 4 tool schemas + pass-through |
+| `mcp-server/src/tools/browser-interact.ts` | tabId in 8 tool schemas + pass-through |
+| `mcp-server/src/tools/browser-observe.ts` | tabId in 25 tool schemas + pass-through |
+| `mcp-server/src/tools/browser-advanced.ts` | tabId in 2 tool schemas + pass-through |
+| `mcp-server/src/tools/leonardo-browser-tools.ts` | tabId in 5 tool schemas + pass-through |
+| `hooks/claude-code/prompt-submit.mjs` | Simplify `buildBrowserNote()` |
+
+**Total: 8 files, ~44 tool schemas, ~21 endpoints, 3 launch paths.**
+
+## Backward Compatibility
+- No `tabId` → falls back to `session.page` (current behavior)
+- Single-loop, manual browser, UI interactions all unchanged
+- `findReusableBrowserSession()` reusing sessions is now safe — each loop has its own tab
