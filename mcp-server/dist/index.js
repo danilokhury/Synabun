@@ -179,7 +179,8 @@ async function main() {
 }
 // Only start stdio transport when run directly (not when imported by http.ts)
 const isMain = process.argv[1]?.replace(/\\/g, '/').endsWith('/index.js')
-    || process.argv[1]?.replace(/\\/g, '/').endsWith('/preload.js');
+    || process.argv[1]?.replace(/\\/g, '/').endsWith('/preload.js')
+    || process.argv[1]?.replace(/\\/g, '/').endsWith('/run.mjs');
 if (isMain) {
     main().catch((err) => {
         console.error('Fatal error starting memory server:', err);
