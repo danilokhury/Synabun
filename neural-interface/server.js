@@ -176,6 +176,11 @@ const PORT = process.env.NEURAL_PORT || 3344;
 const EMBEDDING_DIMS = getEmbeddingDims();
 const PACKAGE_ROOT = resolve(__dirname, '..');
 const DATA_HOME = process.env.SYNABUN_DATA_HOME || PACKAGE_ROOT;
+if (!process.env.SYNABUN_DATA_HOME && PACKAGE_ROOT.includes('node_modules')) {
+  console.warn('[WARN] SYNABUN_DATA_HOME is not set and PACKAGE_ROOT is inside node_modules (' + PACKAGE_ROOT + ').');
+  console.warn('[WARN] On global npm installs, DATA_HOME should point to a user-writable directory (e.g. %APPDATA%/synabun on Windows).');
+  console.warn('[WARN] MCP registration paths may be incorrect. Set SYNABUN_DATA_HOME or re-run via setup.js.');
+}
 const IMAGES_DIR = resolve(DATA_HOME, 'data', 'images');
 if (!existsSync(IMAGES_DIR)) mkdirSync(IMAGES_DIR, { recursive: true });
 
@@ -7329,6 +7334,7 @@ app.get('/api/setup/onboarding', async (req, res) => {
       embedding: 'local',
       mcpBuilt,
       projectDir: DATA_HOME,
+      packageRoot: PACKAGE_ROOT,
       platform: process.platform,
       defaultDbDir: dirname(getDbPath()),
     });
