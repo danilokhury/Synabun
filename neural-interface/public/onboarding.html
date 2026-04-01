@@ -1196,6 +1196,7 @@ const wizardState = {
   dbLocationPath: null,
   selectedTool: null,
   projectRoot: '',
+  packageRoot: '',
   buildReady: false,
   mcpWritten: false,
   projects: [],
@@ -2146,19 +2147,22 @@ TOOLS.forEach(t => {
 });
 
 function getMcpSetup(id) {
-  const root = (wizardState.projectRoot || '').replace(/\\/g, '/');
-  const mcpPath = root + '/mcp-server/run.mjs';
-  const envPath = root + '/.env';
+  const dataHome = (wizardState.projectRoot || '').replace(/\\/g, '/');
+  const pkgRoot = (wizardState.packageRoot || dataHome).replace(/\\/g, '/');
+  const mcpPath = pkgRoot + '/mcp-server/run.mjs';
+  const envPath = dataHome + '/.env';
+  const env = { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: dataHome, MEMORY_DATA_DIR: dataHome + '/mcp-data' };
 
   if (id === 'claude') {
+    const envFlags = Object.entries(env).map(([k, v]) => `-e ${k}="${v}"`).join(' ');
     return {
       label: 'Run this in your terminal to register SynaBun globally:',
-      code: `claude mcp add SynaBun -s user -e DOTENV_PATH="${envPath}" -- node "${mcpPath}"`,
+      code: `claude mcp add SynaBun -s user ${envFlags} -- node "${mcpPath}"`,
       hint: 'Registers SynaBun globally. Restart Claude Code after running.',
     };
   }
   if (id === 'cursor') {
-    const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env: { DOTENV_PATH: envPath } } } }, null, 2);
+    const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env } } }, null, 2);
     return {
       label: 'Add to Cursor Settings > MCP Servers, or paste into .cursor/mcp.json:',
       code: json,
@@ -2166,7 +2170,7 @@ function getMcpSetup(id) {
     };
   }
   if (id === 'windsurf') {
-    const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env: { DOTENV_PATH: envPath } } } }, null, 2);
+    const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env } } }, null, 2);
     return {
       label: 'Add to ~/.codeium/windsurf/mcp_config.json:',
       code: json,
@@ -2174,7 +2178,7 @@ function getMcpSetup(id) {
     };
   }
   // codex, other
-  const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env: { DOTENV_PATH: envPath } } } }, null, 2);
+  const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env } } }, null, 2);
   return {
     label: 'Add to your project\'s .mcp.json:',
     code: json,
@@ -2319,6 +2323,9 @@ async function init() {
     }
     if (data.projectDir) {
       wizardState.projectRoot = data.projectDir;
+    }
+    if (data.packageRoot) {
+      wizardState.packageRoot = data.packageRoot;
     }
   } catch {}
 
