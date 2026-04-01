@@ -4870,7 +4870,7 @@ export async function openSettingsModal() {
       // Only warn if Chrome is running AND a real Chrome profile is selected (not sandbox, not SynaBun)
       const isChrome = userDataDir && userDataDir !== '' && !userDataDir.includes('data/chrome-profile') && !userDataDir.includes('data/browser-profiles');
       if (chromeRunning && isChrome) {
-        warn.textContent = 'Chrome is running — your profile will be mirrored (synced copy). Cookies and auth stay fresh. Close Chrome to use the real profile directly.';
+        warn.textContent = 'Chrome is running — SynaBun will open an isolated mirrored copy of the selected profile. Mirror sessions keep their own cookies and auth. Close Chrome to use the real profile directly.';
         warn.style.display = '';
       } else {
         warn.style.display = 'none';

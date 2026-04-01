@@ -2,6 +2,8 @@ import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
 import { text, image } from './response.js';
 
+const tabIdField = z.string().optional().describe('Target a specific tab within the session. Auto-resolved from environment if omitted.');
+
 // ── browser_snapshot ──
 
 export const browserSnapshotSchema = {
@@ -9,6 +11,7 @@ export const browserSnapshotSchema = {
     'Scope snapshot to a specific element\'s subtree. Dramatically reduces output on complex pages. Twitter: [data-testid="primaryColumn"] for main feed, [data-testid="tweet"] for a single tweet card.'
   ),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserSnapshotDescription =
@@ -59,11 +62,11 @@ function formatSnapshotNode(node: Record<string, unknown>, indent = 0): string {
   return line;
 }
 
-export async function handleBrowserSnapshot(args: { selector?: string; sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserSnapshot(args: { selector?: string; sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.snapshot(resolved.sessionId, args.selector);
+  const result = await ni.snapshot(resolved.sessionId, args.selector, resolved.tabId);
   if (result.error) return text(`Snapshot failed: ${result.error}`);
 
   const tree = result.snapshot as Record<string, unknown> | null;
@@ -88,17 +91,18 @@ export const browserContentSchema = {
     'Output format. "text" returns raw innerText (fast, no structure). "markdown" returns clean markdown with headings, links, and lists preserved — strips nav/header/footer/ads automatically. Markdown is better for LLM consumption.'
   ),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserContentDescription =
   'Get the content of the current page. Set format="markdown" for clean markdown with structure preserved (headings, links, lists) — nav/header/footer/ads stripped automatically. Default format="text" returns raw visible text. Markdown is preferred for LLM consumption — up to 80% more token-efficient than raw HTML.';
 
-export async function handleBrowserContent(args: { format?: string; sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserContent(args: { format?: string; sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
   if (args.format === 'markdown') {
-    const result = await ni.getMarkdown(resolved.sessionId);
+    const result = await ni.getMarkdown(resolved.sessionId, resolved.tabId);
     if (result.error) return text(`Markdown extraction failed: ${result.error}`);
 
     let msg = `URL: ${result.url}\nTitle: "${result.title}"\nTokens: ~${result.tokens}\n\n`;
@@ -107,7 +111,7 @@ export async function handleBrowserContent(args: { format?: string; sessionId?: 
   }
 
   // Default: plain text
-  const result = await ni.getContent(resolved.sessionId);
+  const result = await ni.getContent(resolved.sessionId, resolved.tabId);
   if (result.error) return text(`Content failed: ${result.error}`);
 
   let msg = `URL: ${result.url}\nTitle: "${result.title}"\n\n`;
@@ -120,16 +124,17 @@ export async function handleBrowserContent(args: { format?: string; sessionId?: 
 
 export const browserScreenshotSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserScreenshotDescription =
   'Take a screenshot of the current page. Returns a base64-encoded JPEG image. Use sparingly — prefer browser_snapshot for most tasks as it is far more token-efficient.';
 
-export async function handleBrowserScreenshot(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserScreenshot(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.screenshot(resolved.sessionId);
+  const result = await ni.screenshot(resolved.sessionId, resolved.tabId);
   if (result.error) return text(`Screenshot failed: ${result.error}`);
 
   return {
@@ -163,16 +168,17 @@ Array.from(document.querySelectorAll('[data-testid="tweet"]')).map(el => {
 
 export const browserExtractTweetsSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractTweetsDescription =
   'Extract all currently visible tweets as structured JSON (author, handle, text, time, url, replies, reposts, likes, views). Much faster than browser_snapshot for data harvesting — use this in scraping/loop flows instead of reading the ARIA tree. Navigate to x.com/search?q=%23hashtag&f=live first for latest-first hashtag results.';
 
-export async function handleBrowserExtractTweets(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractTweets(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, TWEET_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, TWEET_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const tweets = result.result as Array<Record<string, unknown>>;
@@ -206,6 +212,7 @@ Array.from(document.querySelectorAll('[role="article"]')).map(el => {
 
 export const browserExtractFbPostsSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractFbPostsDescription =
@@ -213,11 +220,11 @@ export const browserExtractFbPostsDescription =
   'Works on group feeds and Pages. Scroll down first with browser_scroll to load more posts. ' +
   'Much faster than browser_snapshot for data harvesting from Facebook.';
 
-export async function handleBrowserExtractFbPosts(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractFbPosts(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, FB_POST_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, FB_POST_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const posts = result.result as Array<Record<string, unknown>>;
@@ -258,6 +265,7 @@ const TIKTOK_FEED_EXTRACTOR_SCRIPT = `
 
 export const browserExtractTiktokVideosSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractTiktokVideosDescription =
@@ -266,11 +274,11 @@ export const browserExtractTiktokVideosDescription =
   'Navigate to tiktok.com/ or tiktok.com/following first. Scroll with browser_scroll to load more videos. ' +
   'Much faster than browser_snapshot for data harvesting from TikTok feeds.';
 
-export async function handleBrowserExtractTiktokVideos(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractTiktokVideos(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, TIKTOK_FEED_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, TIKTOK_FEED_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const videos = result.result as Array<Record<string, unknown>>;
@@ -302,6 +310,7 @@ Array.from(document.querySelectorAll('[data-e2e="search_top-item"]')).map(el => 
 
 export const browserExtractTiktokSearchSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractTiktokSearchDescription =
@@ -310,11 +319,11 @@ export const browserExtractTiktokSearchDescription =
   'Navigate to tiktok.com/search?q=<query> first. Scroll to load more results. ' +
   'Much faster than browser_snapshot for harvesting TikTok search results.';
 
-export async function handleBrowserExtractTiktokSearch(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractTiktokSearch(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, TIKTOK_SEARCH_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, TIKTOK_SEARCH_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const videos = result.result as Array<Record<string, unknown>>;
@@ -348,6 +357,7 @@ Array.from(document.querySelectorAll('[data-tt="components_PostInfoCell_a"]')).m
 
 export const browserExtractTiktokStudioSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractTiktokStudioDescription =
@@ -356,11 +366,11 @@ export const browserExtractTiktokStudioDescription =
   'Navigate to tiktok.com/tiktokstudio/content first. Scroll to load more posts. ' +
   'Use this to audit, manage, or bulk-read your published TikTok content.';
 
-export async function handleBrowserExtractTiktokStudio(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractTiktokStudio(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, TIKTOK_STUDIO_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, TIKTOK_STUDIO_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const posts = result.result as Array<Record<string, unknown>>;
@@ -395,6 +405,7 @@ const TIKTOK_PROFILE_EXTRACTOR_SCRIPT = `
 
 export const browserExtractTiktokProfileSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractTiktokProfileDescription =
@@ -403,11 +414,11 @@ export const browserExtractTiktokProfileDescription =
   'Navigate to tiktok.com/@username first. Scroll down to load more videos in the grid. ' +
   'Use this to audit a creator profile or collect video URLs for further processing.';
 
-export async function handleBrowserExtractTiktokProfile(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractTiktokProfile(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, TIKTOK_PROFILE_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, TIKTOK_PROFILE_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const profile = result.result as Record<string, unknown>;
@@ -443,6 +454,7 @@ Array.from(document.querySelectorAll('[aria-label="Lista de conversas"] [role="r
 
 export const browserExtractWaChatsSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractWaChatsDescription =
@@ -451,11 +463,11 @@ export const browserExtractWaChatsDescription =
   'Must be on web.whatsapp.com with the chat list visible. Scroll the sidebar with browser_scroll to load more chats. ' +
   'Use browser_click on span[title="Chat Name"] to open a specific chat.';
 
-export async function handleBrowserExtractWaChats(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractWaChats(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, WA_CHATS_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, WA_CHATS_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const chats = result.result as Array<Record<string, unknown>>;
@@ -489,6 +501,7 @@ Array.from(document.querySelectorAll('div.copyable-text[data-pre-plain-text]')).
 
 export const browserExtractWaMessagesSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractWaMessagesDescription =
@@ -497,11 +510,11 @@ export const browserExtractWaMessagesDescription =
   'Open a chat first by clicking span[title="Chat Name"]. Scroll up with browser_scroll to load older messages. ' +
   'direction is "in" for received and "out" for sent messages.';
 
-export async function handleBrowserExtractWaMessages(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractWaMessages(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, WA_MESSAGES_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, WA_MESSAGES_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const messages = result.result as Array<Record<string, unknown>>;
@@ -537,6 +550,7 @@ Array.from(document.querySelectorAll('article')).map(el => {
 
 export const browserExtractIgFeedSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractIgFeedDescription =
@@ -544,11 +558,11 @@ export const browserExtractIgFeedDescription =
   '(username, profileUrl, postUrl, caption, likes, comments, time, datetime, isSponsored, hasFollow). ' +
   'Navigate to instagram.com/ first. Scroll down with browser_scroll to load more posts.';
 
-export async function handleBrowserExtractIgFeed(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractIgFeed(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, IG_FEED_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, IG_FEED_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const posts = result.result as Array<Record<string, unknown>>;
@@ -599,6 +613,7 @@ const IG_PROFILE_EXTRACTOR_SCRIPT = `
 
 export const browserExtractIgProfileSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractIgProfileDescription =
@@ -606,11 +621,11 @@ export const browserExtractIgProfileDescription =
   '(username, displayName, bio, posts, followers, followerExact, following, isVerified, website, gridPosts, highlights). ' +
   'Navigate to instagram.com/username/ first. Returns bio, stats, post grid (up to 12), and story highlights.';
 
-export async function handleBrowserExtractIgProfile(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractIgProfile(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, IG_PROFILE_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, IG_PROFILE_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const profile = result.result as Record<string, unknown>;
@@ -674,6 +689,7 @@ const IG_POST_EXTRACTOR_SCRIPT = `
 
 export const browserExtractIgPostSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractIgPostDescription =
@@ -682,11 +698,11 @@ export const browserExtractIgPostDescription =
   'Navigate to instagram.com/p/POST_ID/ or instagram.com/reel/REEL_ID/ first. ' +
   'Scroll the comment area to load more comments before extracting.';
 
-export async function handleBrowserExtractIgPost(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractIgPost(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, IG_POST_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, IG_POST_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const post = result.result as Record<string, unknown>;
@@ -740,6 +756,7 @@ const IG_REELS_EXTRACTOR_SCRIPT = `
 
 export const browserExtractIgReelsSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractIgReelsDescription =
@@ -747,11 +764,11 @@ export const browserExtractIgReelsDescription =
   '(username, profileUrl, caption, likes, comments, audioName, audioUrl, hasFollow). ' +
   'Navigate to instagram.com/reels/ first. Scroll down to load more reels.';
 
-export async function handleBrowserExtractIgReels(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractIgReels(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, IG_REELS_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, IG_REELS_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const reels = result.result as Array<Record<string, unknown>>;
@@ -774,6 +791,7 @@ Array.from(document.querySelectorAll('main a[href*="/p/"], main a[href*="/reel/"
 
 export const browserExtractIgSearchSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractIgSearchDescription =
@@ -781,11 +799,11 @@ export const browserExtractIgSearchDescription =
   'Navigate to instagram.com/explore/ first. Scroll to load more content. ' +
   'For hashtag search, navigate to instagram.com/explore/tags/HASHTAG/.';
 
-export async function handleBrowserExtractIgSearch(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractIgSearch(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, IG_SEARCH_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, IG_SEARCH_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const posts = result.result as Array<Record<string, unknown>>;
@@ -835,6 +853,7 @@ Array.from(document.querySelectorAll('.feed-shared-update-v2[data-urn*="urn:li:a
 
 export const browserExtractLiFeedSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractLiFeedDescription =
@@ -843,11 +862,11 @@ export const browserExtractLiFeedDescription =
   'Navigate to linkedin.com/feed/ first. Scroll down with browser_scroll to load more posts. ' +
   'Much faster than browser_snapshot for data harvesting from the LinkedIn feed.';
 
-export async function handleBrowserExtractLiFeed(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractLiFeed(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_FEED_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, LI_FEED_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const posts = result.result as Array<Record<string, unknown>>;
@@ -890,6 +909,7 @@ const LI_PROFILE_EXTRACTOR_SCRIPT = `
 
 export const browserExtractLiProfileSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractLiProfileDescription =
@@ -898,11 +918,11 @@ export const browserExtractLiProfileDescription =
   'Navigate to linkedin.com/in/USERNAME/ first. Sections include Experience, Education, Skills, etc. ' +
   'Use linkedin.com/in/me/ for the logged-in user\'s own profile.';
 
-export async function handleBrowserExtractLiProfile(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractLiProfile(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_PROFILE_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, LI_PROFILE_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const profile = result.result as Record<string, unknown>;
@@ -946,6 +966,7 @@ const LI_POST_EXTRACTOR_SCRIPT = `
 
 export const browserExtractLiPostSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractLiPostDescription =
@@ -954,11 +975,11 @@ export const browserExtractLiPostDescription =
   'Navigate to linkedin.com/feed/update/urn:li:activity:ID/ first. ' +
   'Click "Comentar" button to expand comment section, then scroll to load more comments before extracting.';
 
-export async function handleBrowserExtractLiPost(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractLiPost(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_POST_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, LI_POST_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const post = result.result as Record<string, unknown>;
@@ -987,6 +1008,7 @@ Array.from(document.querySelectorAll('article.nt-card')).map(card => {
 
 export const browserExtractLiNotificationsSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractLiNotificationsDescription =
@@ -994,11 +1016,11 @@ export const browserExtractLiNotificationsDescription =
   'Navigate to linkedin.com/notifications/ first. Scroll down to load older notifications. ' +
   'Useful for monitoring engagement, connection requests, and mentions.';
 
-export async function handleBrowserExtractLiNotifications(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractLiNotifications(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_NOTIFICATIONS_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, LI_NOTIFICATIONS_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const notifs = result.result as Array<Record<string, unknown>>;
@@ -1035,6 +1057,7 @@ const LI_MESSAGES_EXTRACTOR_SCRIPT = `
 
 export const browserExtractLiMessagesSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractLiMessagesDescription =
@@ -1044,11 +1067,11 @@ export const browserExtractLiMessagesDescription =
   'Navigate to linkedin.com/messaging/ first. Click a conversation to load its messages. ' +
   'To send a message: browser_fill on .msg-form__contenteditable then browser_click on .msg-form__send-button.';
 
-export async function handleBrowserExtractLiMessages(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractLiMessages(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_MESSAGES_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, LI_MESSAGES_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const data = result.result as Record<string, unknown>;
@@ -1104,6 +1127,7 @@ const LI_SEARCH_PEOPLE_EXTRACTOR_SCRIPT = `
 
 export const browserExtractLiSearchPeopleSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractLiSearchPeopleDescription =
@@ -1112,11 +1136,11 @@ export const browserExtractLiSearchPeopleDescription =
   'Navigate to linkedin.com/search/results/people/?keywords=QUERY first. ' +
   'Scroll down to load more results. Also works on linkedin.com/search/results/all/.';
 
-export async function handleBrowserExtractLiSearchPeople(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractLiSearchPeople(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_SEARCH_PEOPLE_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, LI_SEARCH_PEOPLE_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const people = result.result as Array<Record<string, unknown>>;
@@ -1175,6 +1199,7 @@ const LI_NETWORK_EXTRACTOR_SCRIPT = `
 
 export const browserExtractLiNetworkSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractLiNetworkDescription =
@@ -1185,11 +1210,11 @@ export const browserExtractLiNetworkDescription =
   'To accept an invitation: browser_click on button with the acceptLabel. ' +
   'To connect: browser_click on the respective Conectar/Connect button.';
 
-export async function handleBrowserExtractLiNetwork(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractLiNetwork(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_NETWORK_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, LI_NETWORK_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const data = result.result as Record<string, unknown>;
@@ -1304,6 +1329,7 @@ const LI_JOBS_EXTRACTOR_SCRIPT = `
 
 export const browserExtractLiJobsSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserExtractLiJobsDescription =
@@ -1314,11 +1340,11 @@ export const browserExtractLiJobsDescription =
   'For search: use linkedin.com/jobs/search/?keywords=QUERY&location=LOCATION. ' +
   'Returns an array of job objects.';
 
-export async function handleBrowserExtractLiJobs(args: { sessionId?: string }) {
-  const resolved = await ni.resolveSession(args.sessionId);
+export async function handleBrowserExtractLiJobs(args: { sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_JOBS_EXTRACTOR_SCRIPT);
+  const result = await ni.evaluate(resolved.sessionId, LI_JOBS_EXTRACTOR_SCRIPT, resolved.tabId);
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const jobs = result.result as Array<Record<string, unknown>>;

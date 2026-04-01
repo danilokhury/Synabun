@@ -10,15 +10,11 @@ import { z } from 'zod';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
 
+const tabIdField = z.string().optional().describe('Target a specific tab within the session. Auto-resolved from environment if omitted.');
+
 const LEO_BASE = 'https://app.leonardo.ai';
 
-// ── Helper: resolve or create session ─────────────────────────
-
-async function getSession(): Promise<string | null> {
-  const resolved = await ni.resolveSession(undefined, { url: LEO_BASE });
-  if ('error' in resolved) return null;
-  return resolved.sessionId;
-}
+// ── Helper ────────────────────────────────────────────────────
 
 async function wait(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -31,14 +27,16 @@ export const browserNavigateSchema = {
     'home', 'library', 'image', 'video', 'upscaler',
     'blueprints', 'flow-state', 'models',
   ] as const).describe('Leonardo.ai page to navigate to.'),
+  sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserNavigateDescription =
   'Navigate the browser to a specific Leonardo.ai page. Always use this as the first step before any browser-based generation.';
 
-export async function handleBrowserNavigate(args: { page: string }) {
-  const sessionId = await getSession();
-  if (!sessionId) return text('No browser session available. Open Leonardo.ai in the browser first using browser_navigate or the Apps menu.');
+export async function handleBrowserNavigate(args: { page: string; sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId);
+  if ('error' in resolved) return text('No browser session available. Open Leonardo.ai in the browser first using browser_navigate or the Apps menu.');
 
   const paths: Record<string, string> = {
     'home': '/',
@@ -52,7 +50,7 @@ export async function handleBrowserNavigate(args: { page: string }) {
   };
 
   const path = paths[args.page] || '/';
-  const res = await ni.navigate(sessionId, `${LEO_BASE}${path}`);
+  const res = await ni.navigate(resolved.sessionId, `${LEO_BASE}${path}`, resolved.tabId);
   if (res.error) return text(`Navigation failed: ${res.error}`);
 
   // Wait for page to settle
@@ -66,6 +64,8 @@ export async function handleBrowserNavigate(args: { page: string }) {
 export const browserGenerateSchema = {
   prompt: z.string().describe('The generation prompt to type into Leonardo.ai.'),
   type: z.enum(['image', 'video'] as const).optional().describe('Generation type. Default: image.'),
+  sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserGenerateDescription =
@@ -74,31 +74,33 @@ export const browserGenerateDescription =
 export async function handleBrowserGenerate(args: {
   prompt: string;
   type?: string;
+  sessionId?: string;
+  tabId?: string;
 }) {
-  const sessionId = await getSession();
-  if (!sessionId) return text('No browser session available. Open Leonardo.ai first.');
+  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId);
+  if ('error' in resolved) return text('No browser session available. Open Leonardo.ai first.');
 
   const genType = args.type || 'image';
 
   // Check current URL — navigate only if not already on the right page
-  const snapshot = await ni.snapshot(sessionId);
+  const snapshot = await ni.snapshot(resolved.sessionId, resolved.tabId);
   const currentUrl = (snapshot as any)?.url || '';
   const targetPath = genType === 'video' ? '/image-generation/video' : '/image-generation';
 
   if (!currentUrl.includes(targetPath)) {
-    const navRes = await ni.navigate(sessionId, `${LEO_BASE}${targetPath}`);
+    const navRes = await ni.navigate(resolved.sessionId, `${LEO_BASE}${targetPath}`, resolved.tabId);
     if (navRes.error) return text(`Navigation failed: ${navRes.error}`);
     await wait(3000);
   }
 
   // Clear and fill the prompt textbox
-  const fillRes = await ni.fill(sessionId, '[aria-label="Prompt"], textbox[name="Prompt"], textarea', args.prompt);
+  const fillRes = await ni.fill(resolved.sessionId, '[aria-label="Prompt"], textbox[name="Prompt"], textarea', args.prompt, undefined, resolved.tabId);
   if (fillRes.error) return text(`Failed to fill prompt: ${fillRes.error}`);
 
   await wait(500);
 
   // Click the Generate button
-  const clickRes = await ni.click(sessionId, 'button[aria-label="Generate"], button:has-text("Generate")');
+  const clickRes = await ni.click(resolved.sessionId, 'button[aria-label="Generate"], button:has-text("Generate")', undefined, resolved.tabId);
   if (clickRes.error) return text(`Failed to click Generate: ${clickRes.error}`);
 
   return text(`Generation started (${genType}).\n\nPrompt: "${args.prompt.substring(0, 120)}${args.prompt.length > 120 ? '...' : ''}"\n\nThe generation is processing in Leonardo.ai. Use browser_snapshot or browser_screenshot to check progress and see results. Results also appear in the library.`);
@@ -109,24 +111,26 @@ export async function handleBrowserGenerate(args: {
 export const browserLibrarySchema = {
   action: z.enum(['view', 'search'] as const).describe('Action: view (open library) or search (search for a term).'),
   query: z.string().optional().describe('Search query (for search action).'),
+  sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserLibraryDescription =
   'Open or search Leonardo.ai\'s library to view past generations. Use browser_snapshot after to see results.';
 
-export async function handleBrowserLibrary(args: { action: string; query?: string }) {
-  const sessionId = await getSession();
-  if (!sessionId) return text('No browser session available.');
+export async function handleBrowserLibrary(args: { action: string; query?: string; sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId);
+  if ('error' in resolved) return text('No browser session available.');
 
-  const navRes = await ni.navigate(sessionId, `${LEO_BASE}/library`);
+  const navRes = await ni.navigate(resolved.sessionId, `${LEO_BASE}/library`, resolved.tabId);
   if (navRes.error) return text(`Navigation failed: ${navRes.error}`);
 
   await wait(2000);
 
   if (args.action === 'search' && args.query) {
-    const fillRes = await ni.fill(sessionId, 'input[placeholder*="Search" i]', args.query);
+    const fillRes = await ni.fill(resolved.sessionId, 'input[placeholder*="Search" i]', args.query, undefined, resolved.tabId);
     if (fillRes.error) return text(`Failed to search: ${fillRes.error}`);
-    await ni.pressKey(sessionId, 'Enter');
+    await ni.pressKey(resolved.sessionId, 'Enter', resolved.tabId);
     return text(`Searched Leonardo.ai library for: "${args.query}". Use browser_snapshot to see results.`);
   }
 
@@ -137,17 +141,19 @@ export async function handleBrowserLibrary(args: { action: string; query?: strin
 
 export const browserDownloadSchema = {
   action: z.enum(['screenshot'] as const).describe('Action: screenshot (capture current Leonardo.ai page state).'),
+  sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserDownloadDescription =
   'Capture a screenshot of the current Leonardo.ai page. Use to verify generation results or UI state.';
 
-export async function handleBrowserDownload(args: { action: string }) {
-  const sessionId = await getSession();
-  if (!sessionId) return text('No browser session available.');
+export async function handleBrowserDownload(args: { action: string; sessionId?: string; tabId?: string }) {
+  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId);
+  if ('error' in resolved) return text('No browser session available.');
 
   if (args.action === 'screenshot') {
-    const res = await ni.screenshot(sessionId);
+    const res = await ni.screenshot(resolved.sessionId, resolved.tabId);
     if (res.error) return text(`Screenshot failed: ${res.error}`);
     return text('Screenshot captured of the current Leonardo.ai page.');
   }
@@ -171,6 +177,8 @@ export const browserReferenceSchema = {
   autoClear: z.boolean().optional().describe(
     'Auto-delete the source images from data/images/ after successful upload. Default: true.',
   ),
+  sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
+  tabId: tabIdField,
 };
 
 export const browserReferenceDescription =
@@ -183,9 +191,11 @@ export async function handleBrowserReference(args: {
   type: string;
   filePaths: string[];
   autoClear?: boolean;
+  sessionId?: string;
+  tabId?: string;
 }) {
-  const sessionId = await getSession();
-  if (!sessionId) return text('No browser session available. Open Leonardo.ai first.');
+  const resolved = await ni.resolveSession(args.sessionId, { url: LEO_BASE }, args.tabId);
+  if ('error' in resolved) return text('No browser session available. Open Leonardo.ai first.');
 
   const { type, filePaths, autoClear = true } = args;
   const isVideo = type === 'start_frame' || type === 'end_frame';
@@ -195,7 +205,7 @@ export async function handleBrowserReference(args: {
 
   if (isVideo) {
     // Video: click "Add Image Guidance to generation" button
-    openResult = await ni.evaluate(sessionId, `(() => {
+    openResult = await ni.evaluate(resolved.sessionId, `(() => {
       const btns = document.querySelectorAll('button');
       for (const b of btns) {
         if (b.textContent.includes('Image Guidance') || b.textContent.includes('Add Image')) {
@@ -203,10 +213,10 @@ export async function handleBrowserReference(args: {
         }
       }
       return 'not found';
-    })()`);
+    })()`, resolved.tabId);
   } else {
     // Image: click "Add elements" button
-    openResult = await ni.evaluate(sessionId, `(() => {
+    openResult = await ni.evaluate(resolved.sessionId, `(() => {
       const btns = document.querySelectorAll('button');
       for (const b of btns) {
         if (b.textContent.includes('Add elements') || b.textContent.includes('Add Elements')) {
@@ -214,7 +224,7 @@ export async function handleBrowserReference(args: {
         }
       }
       return 'not found';
-    })()`);
+    })()`, resolved.tabId);
   }
 
   if (openResult.error) return text(`Failed to open reference panel: ${openResult.error}`);
@@ -233,23 +243,23 @@ export async function handleBrowserReference(args: {
     const labels = typeLabels[type] || [type];
     const labelSearch = labels.map(l => `b.textContent.includes('${l}')`).join(' || ');
 
-    const selectResult = await ni.evaluate(sessionId, `(() => {
+    const selectResult = await ni.evaluate(resolved.sessionId, `(() => {
       const btns = document.querySelectorAll('button, [role="tab"], [role="menuitem"]');
       for (const b of btns) {
         if (${labelSearch}) { b.click(); return 'selected'; }
       }
       return 'not found — use browser_snapshot to see available options';
-    })()`);
+    })()`, resolved.tabId);
 
     if (selectResult.error) return text(`Failed to select reference type: ${selectResult.error}. Use browser_snapshot to see the panel.`);
     await wait(1000);
   }
 
   // Step 3: Find file input and upload
-  const uploadResult = await ni.upload(sessionId, 'input[type="file"]', filePaths);
+  const uploadResult = await ni.upload(resolved.sessionId, 'input[type="file"]', filePaths, undefined, resolved.tabId);
   if (uploadResult.error) {
     // Fallback: try broader selector
-    const fallback = await ni.upload(sessionId, 'input[accept*="image"]', filePaths);
+    const fallback = await ni.upload(resolved.sessionId, 'input[accept*="image"]', filePaths, undefined, resolved.tabId);
     if (fallback.error) {
       return text(
         `Failed to upload reference image(s): ${uploadResult.error}. ` +
