@@ -23,6 +23,7 @@ __export(dialog_exports, {
 module.exports = __toCommonJS(dialog_exports);
 var import_channelOwner = require("./channelOwner");
 var import_page = require("./page");
+var import_errors = require("./errors");
 class Dialog extends import_channelOwner.ChannelOwner {
   static from(dialog) {
     return dialog._object;
@@ -47,7 +48,13 @@ class Dialog extends import_channelOwner.ChannelOwner {
     await this._channel.accept({ promptText });
   }
   async dismiss() {
-    await this._channel.dismiss();
+    try {
+      await this._channel.dismiss();
+    } catch (e) {
+      if ((0, import_errors.isTargetClosedError)(e))
+        return;
+      throw e;
+    }
   }
 }
 // Annotate the CommonJS export names for ESM import in node:

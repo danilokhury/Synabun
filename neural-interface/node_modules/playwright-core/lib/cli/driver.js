@@ -72,9 +72,10 @@ async function runServer(options) {
     host,
     path = "/",
     maxConnections = Infinity,
-    extension
+    extension,
+    artifactsDir
   } = options;
-  const server = new import_playwrightServer.PlaywrightServer({ mode: extension ? "extension" : "default", path, maxConnections });
+  const server = new import_playwrightServer.PlaywrightServer({ mode: extension ? "extension" : "default", path, maxConnections, artifactsDir });
   const wsEndpoint = await server.listen(port, host);
   process.on("exit", () => server.close().catch(console.error));
   console.log("Listening on " + wsEndpoint);

@@ -83,6 +83,7 @@ class TraceModernizer {
         contextEntry.options = event.options;
         contextEntry.testIdAttributeName = event.testIdAttributeName;
         contextEntry.contextId = event.contextId ?? "";
+        contextEntry.testTimeout = event.testTimeout;
         break;
       }
       case "screencast-frame": {

@@ -58,7 +58,8 @@ class ElectronApplicationDispatcher extends import_dispatcher.Dispatcher {
         type: message.type(),
         text: message.text(),
         args: message.args().map((a) => import_jsHandleDispatcher.JSHandleDispatcher.fromJSHandle(this, a)),
-        location: message.location()
+        location: message.location(),
+        timestamp: message.timestamp()
       });
     });
   }

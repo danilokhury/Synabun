@@ -41,9 +41,11 @@ class Selectors {
   setTestIdAttribute(attributeName) {
     this._testIdAttributeName = attributeName;
     (0, import_locator.setTestIdAttribute)(attributeName);
-    for (const context of this._contextsForSelectors)
+    for (const context of this._contextsForSelectors) {
+      context._options.testIdAttributeName = attributeName;
       context._channel.setTestIdAttributeName({ testIdAttributeName: attributeName }).catch(() => {
       });
+    }
   }
   _withSelectorOptions(options) {
     return { ...options, selectorEngines: this._selectorEngines, testIdAttributeName: this._testIdAttributeName };

@@ -20,11 +20,15 @@ var mimeType_exports = {};
 __export(mimeType_exports, {
   getMimeTypeForPath: () => getMimeTypeForPath,
   isJsonMimeType: () => isJsonMimeType,
-  isTextualMimeType: () => isTextualMimeType
+  isTextualMimeType: () => isTextualMimeType,
+  isXmlMimeType: () => isXmlMimeType
 });
 module.exports = __toCommonJS(mimeType_exports);
 function isJsonMimeType(mimeType) {
   return !!mimeType.match(/^(application\/json|application\/.*?\+json|text\/(x-)?json)(;\s*charset=.*)?$/);
+}
+function isXmlMimeType(mimeType) {
+  return !!mimeType.match(/^(application\/xml|application\/.*?\+xml|text\/xml)(;\s*charset=.*)?$/);
 }
 function isTextualMimeType(mimeType) {
   return !!mimeType.match(/^(text\/.*?|application\/(json|(x-)?javascript|xml.*?|ecmascript|graphql|x-www-form-urlencoded)|image\/svg(\+xml)?|application\/.*?(\+json|\+xml))(;\s*charset=.*)?$/);
@@ -455,5 +459,6 @@ const types = /* @__PURE__ */ new Map([
 0 && (module.exports = {
   getMimeTypeForPath,
   isJsonMimeType,
-  isTextualMimeType
+  isTextualMimeType,
+  isXmlMimeType
 });

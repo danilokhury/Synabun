@@ -35,7 +35,6 @@ module.exports = __toCommonJS(ffBrowser_exports);
 var import_utils = require("../../utils");
 var import_browser = require("../browser");
 var import_browserContext = require("../browserContext");
-var import_errors = require("../errors");
 var network = __toESM(require("../network"));
 var import_ffConnection = require("./ffConnection");
 var import_ffPage = require("./ffPage");
@@ -128,7 +127,7 @@ class FFBrowser extends import_browser.Browser {
     ffPage._page.frameManager.frameAbortedNavigation(payload.frameId, "Download is starting");
     let originPage = ffPage._page.initializedOrUndefined();
     if (!originPage) {
-      ffPage._markAsError(new Error("Starting new page download"));
+      ffPage._reportAsNew(new Error("Starting new page download"));
       if (ffPage._opener)
         originPage = ffPage._opener._page.initializedOrUndefined();
     }
@@ -141,9 +140,6 @@ class FFBrowser extends import_browser.Browser {
     this._downloadFinished(payload.uuid, error);
   }
   _onDisconnect() {
-    for (const video of this._idToVideo.values())
-      video.artifact.reportFinished(new import_errors.TargetClosedError(this.closeReason()));
-    this._idToVideo.clear();
     for (const ffPage of this._ffPages.values())
       ffPage.didClose();
     this._ffPages.clear();
@@ -173,8 +169,11 @@ class FFBrowserContext extends import_browserContext.BrowserContext {
     promises.push(this.doUpdateDefaultViewport());
     if (this._options.hasTouch)
       promises.push(this._browser.session.send("Browser.setTouchOverride", { browserContextId, hasTouch: true }));
-    if (this._options.userAgent)
+    if (this._options.userAgent) {
       promises.push(this._browser.session.send("Browser.setUserAgentOverride", { browserContextId, userAgent: this._options.userAgent }));
+      const { navigatorPlatform } = (0, import_browserContext.calculateUserAgentEmulation)(this._options);
+      promises.push(this._browser.session.send("Browser.setPlatformOverride", { browserContextId, platform: navigatorPlatform || null }));
+    }
     if (this._options.bypassCSP)
       promises.push(this._browser.session.send("Browser.setBypassCSP", { browserContextId, bypassCSP: true }));
     if (this._options.ignoreHTTPSErrors || this._options.internalIgnoreHTTPSErrors)
@@ -194,16 +193,6 @@ class FFBrowserContext extends import_browserContext.BrowserContext {
     if (this._options.offline)
       promises.push(this.doUpdateOffline());
     promises.push(this.doUpdateDefaultEmulatedMedia());
-    if (this._options.recordVideo) {
-      promises.push(this._browser.session.send("Browser.setScreencastOptions", {
-        // validateBrowserContextOptions ensures correct video size.
-        options: {
-          ...this._options.recordVideo.size,
-          quality: 90
-        },
-        browserContextId: this._browserContextId
-      }));
-    }
     const proxy = this._options.proxyOverride || this._options.proxy;
     if (proxy) {
       promises.push(this._browser.session.send("Browser.setContextProxy", {
@@ -270,7 +259,8 @@ class FFBrowserContext extends import_browserContext.BrowserContext {
       ["geolocation", "geo"],
       ["persistent-storage", "persistent-storage"],
       ["push", "push"],
-      ["notifications", "desktop-notification"]
+      ["notifications", "desktop-notification"],
+      ["screen-wake-lock", "screen-wake-lock"]
     ]);
     const filtered = permissions.map((permission) => {
       const protocolPermission = webPermissionToProtocol.get(permission);
@@ -296,6 +286,8 @@ class FFBrowserContext extends import_browserContext.BrowserContext {
   }
   async setUserAgent(userAgent) {
     await this._browser.session.send("Browser.setUserAgentOverride", { browserContextId: this._browserContextId, userAgent: userAgent || null });
+    const { navigatorPlatform } = (0, import_browserContext.calculateUserAgentEmulation)({ userAgent });
+    await this._browser.session.send("Browser.setPlatformOverride", { browserContextId: this._browserContextId, platform: navigatorPlatform || null });
   }
   async doUpdateOffline() {
     await this._browser.session.send("Browser.setOnlineOverride", { browserContextId: this._browserContextId, override: this._options.offline ? "offline" : "online" });
@@ -373,8 +365,6 @@ class FFBrowserContext extends import_browserContext.BrowserContext {
   }
   async doClose(reason) {
     if (!this._browserContextId) {
-      if (this._options.recordVideo)
-        await Promise.all(this._ffPages().map((ffPage) => ffPage._page.screencast.stopVideoRecording()));
       await this._browser.close({ reason });
     } else {
       await this._browser.session.send("Browser.removeBrowserContext", { browserContextId: this._browserContextId });

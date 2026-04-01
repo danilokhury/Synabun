@@ -38,6 +38,7 @@ var import_snapshotter = require("./snapshotter");
 var import_protocolMetainfo = require("../../../utils/isomorphic/protocolMetainfo");
 var import_assert = require("../../../utils/isomorphic/assert");
 var import_time = require("../../../utils/isomorphic/time");
+var import_manualPromise = require("../../../utils/isomorphic/manualPromise");
 var import_eventsHelper = require("../../utils/eventsHelper");
 var import_crypto = require("../../utils/crypto");
 var import_userAgent = require("../../utils/userAgent");
@@ -48,15 +49,14 @@ var import_errors = require("../../errors");
 var import_fileUtils = require("../../utils/fileUtils");
 var import_harTracer = require("../../har/harTracer");
 var import_instrumentation = require("../../instrumentation");
-var import_page = require("../../page");
 var import_progress = require("../../progress");
 const version = 8;
-const kScreencastOptions = { width: 800, height: 600, quality: 90 };
 class Tracing extends import_instrumentation.SdkObject {
   constructor(context, tracesDir) {
     super(context, "tracing");
     this._fs = new import_fileUtils.SerializedFS();
     this._screencastListeners = [];
+    this._pageTracingRecorders = /* @__PURE__ */ new Map();
     this._eventListeners = [];
     this._isStopping = false;
     this._allResources = /* @__PURE__ */ new Set();
@@ -219,10 +219,9 @@ class Tracing extends import_instrumentation.SdkObject {
   }
   _stopScreencast() {
     import_eventsHelper.eventsHelper.removeEventListeners(this._screencastListeners);
-    if (!(this._context instanceof import_browserContext.BrowserContext))
-      return;
-    for (const page of this._context.pages())
-      page.screencast.setOptions(null);
+    for (const recorder of this._pageTracingRecorders.values())
+      recorder.dispose();
+    this._pageTracingRecorders.clear();
   }
   _allocateNewTraceFile(state) {
     const suffix = state.chunkOrdinal ? `-chunk${state.chunkOrdinal}` : ``;
@@ -331,15 +330,27 @@ class Tracing extends import_instrumentation.SdkObject {
     await this._snapshotter?.captureSnapshot(sdkObject.attribution.page, metadata.id, snapshotName).catch(() => {
     });
   }
-  _shouldCaptureSnapshot(sdkObject, metadata) {
-    return !!this._snapshotter?.started() && shouldCaptureSnapshot(metadata) && !!sdkObject.attribution.page;
+  _shouldCaptureSnapshot(sdkObject, metadata, phase) {
+    if (!sdkObject.attribution.page || !this._snapshotter?.started())
+      return;
+    const metainfo = (0, import_protocolMetainfo.getMetainfo)(metadata);
+    if (!metainfo?.snapshot)
+      return false;
+    switch (phase) {
+      case "before":
+        return !metainfo.input || !!metainfo.isAutoWaiting;
+      case "input":
+        return !!metainfo.input;
+      case "after":
+        return true;
+    }
   }
   onBeforeCall(sdkObject, metadata, parentId) {
     const event = createBeforeActionTraceEvent(metadata, parentId ?? this._currentGroupId());
     if (!event)
       return Promise.resolve();
-    sdkObject.attribution.page?.screencast.temporarilyDisableThrottling();
-    if (this._shouldCaptureSnapshot(sdkObject, metadata))
+    this._temporarilyDisableThrottling(sdkObject.attribution.page);
+    if (this._shouldCaptureSnapshot(sdkObject, metadata, "before"))
       event.beforeSnapshot = `before@${metadata.id}`;
     this._state?.callIds.add(metadata.id);
     this._appendTraceEvent(event);
@@ -351,8 +362,8 @@ class Tracing extends import_instrumentation.SdkObject {
     const event = createInputActionTraceEvent(metadata);
     if (!event)
       return Promise.resolve();
-    sdkObject.attribution.page?.screencast.temporarilyDisableThrottling();
-    if (this._shouldCaptureSnapshot(sdkObject, metadata))
+    this._temporarilyDisableThrottling(sdkObject.attribution.page);
+    if (this._shouldCaptureSnapshot(sdkObject, metadata, "input"))
       event.inputSnapshot = `input@${metadata.id}`;
     this._appendTraceEvent(event);
     return this._captureSnapshot(event.inputSnapshot, sdkObject, metadata);
@@ -375,8 +386,8 @@ class Tracing extends import_instrumentation.SdkObject {
     const event = createAfterActionTraceEvent(metadata);
     if (!event)
       return Promise.resolve();
-    sdkObject.attribution.page?.screencast.temporarilyDisableThrottling();
-    if (this._shouldCaptureSnapshot(sdkObject, metadata))
+    this._temporarilyDisableThrottling(sdkObject.attribution.page);
+    if (this._shouldCaptureSnapshot(sdkObject, metadata, "after"))
       event.afterSnapshot = `after@${metadata.id}`;
     this._appendTraceEvent(event);
     return this._captureSnapshot(event.afterSnapshot, sdkObject, metadata);
@@ -483,26 +494,28 @@ class Tracing extends import_instrumentation.SdkObject {
     };
     this._appendTraceEvent(event);
   }
+  _temporarilyDisableThrottling(page) {
+    if (page)
+      this._pageTracingRecorders.get(page)?.temporarilyDisableThrottling();
+  }
   _startScreencastInPage(page) {
-    page.screencast.setOptions(kScreencastOptions);
     const prefix = page.guid;
-    this._screencastListeners.push(
-      import_eventsHelper.eventsHelper.addEventListener(page, import_page.Page.Events.ScreencastFrame, (params) => {
-        const suffix = params.timestamp || Date.now();
-        const sha1 = `${prefix}-${suffix}.jpeg`;
-        const event = {
-          type: "screencast-frame",
-          pageId: page.guid,
-          sha1,
-          width: params.width,
-          height: params.height,
-          timestamp: (0, import_time.monotonicTime)(),
-          frameSwapWallTime: params.frameSwapWallTime
-        };
-        this._appendResource(sha1, params.buffer);
-        this._appendTraceEvent(event);
-      })
-    );
+    const onFrame = (params) => {
+      const suffix = Date.now();
+      const sha1 = `${prefix}-${suffix}.jpeg`;
+      const event = {
+        type: "screencast-frame",
+        pageId: page.guid,
+        sha1,
+        width: params.viewportWidth,
+        height: params.viewportHeight,
+        timestamp: (0, import_time.monotonicTime)(),
+        frameSwapWallTime: params.frameSwapWallTime
+      };
+      this._appendResource(sha1, params.buffer);
+      this._appendTraceEvent(event);
+    };
+    this._pageTracingRecorders.set(page, new ScreencastTracingRecorder(page.screencast, onFrame));
   }
   _appendTraceEvent(event) {
     const visited = visitTraceEvent(event, this._state.traceSha1s);
@@ -544,10 +557,6 @@ function visitTraceEvent(object, sha1s) {
     return result;
   }
   return object;
-}
-function shouldCaptureSnapshot(metadata) {
-  const metainfo = import_protocolMetainfo.methodMetainfo.get(metadata.type + "." + metadata.method);
-  return !!metainfo?.snapshot;
 }
 function createBeforeActionTraceEvent(metadata, parentId) {
   if (metadata.internal || metadata.method.startsWith("tracing"))
@@ -597,6 +606,48 @@ function createAfterActionTraceEvent(metadata) {
     result: metadata.result,
     point: metadata.point
   };
+}
+const throttledRate = 200;
+const unthrottleDuration = 500;
+class ScreencastTracingRecorder {
+  constructor(screencast, onFrame) {
+    this._unthrottledUntil = 0;
+    this._screencast = screencast;
+    this._client = {
+      onFrame: (frame) => {
+        const time = (0, import_time.monotonicTime)();
+        if (time < this._unthrottledUntil) {
+          onFrame(frame);
+          return;
+        }
+        if (this._pendingAck)
+          return;
+        onFrame(frame);
+        this._pendingAck = new import_manualPromise.ManualPromise();
+        this._timer = setTimeout(() => this._clearPendingAck(), throttledRate);
+        return this._pendingAck;
+      },
+      gracefulClose: () => this.dispose(),
+      dispose: () => this.dispose()
+    };
+    this._screencast.addClient(this._client);
+  }
+  dispose() {
+    this._screencast.removeClient(this._client);
+    this._clearPendingAck();
+  }
+  temporarilyDisableThrottling() {
+    this._unthrottledUntil = (0, import_time.monotonicTime)() + unthrottleDuration;
+    this._clearPendingAck();
+  }
+  _clearPendingAck() {
+    this._pendingAck?.resolve();
+    this._pendingAck = void 0;
+    if (this._timer) {
+      clearTimeout(this._timer);
+      this._timer = void 0;
+    }
+  }
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

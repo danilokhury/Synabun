@@ -30,7 +30,9 @@ var import_browserType = require("./browserType");
 var import_cdpSession = require("./cdpSession");
 var import_channelOwner = require("./channelOwner");
 var import_clientInstrumentation = require("./clientInstrumentation");
+var import_debugger = require("./debugger");
 var import_dialog = require("./dialog");
+var import_disposable = require("./disposable");
 var import_electron = require("./electron");
 var import_elementHandle = require("./elementHandle");
 var import_errors = require("./errors");
@@ -48,7 +50,6 @@ var import_worker = require("./worker");
 var import_writableStream = require("./writableStream");
 var import_validator = require("../protocol/validator");
 var import_stackTrace = require("../utils/isomorphic/stackTrace");
-var import_pageAgent = require("./pageAgent");
 class Root extends import_channelOwner.ChannelOwner {
   constructor(connection) {
     super(connection, "Root", "", {});
@@ -233,8 +234,14 @@ class Connection extends import_eventEmitter.EventEmitter {
       case "CDPSession":
         result = new import_cdpSession.CDPSession(parent, type, guid, initializer);
         break;
+      case "Debugger":
+        result = new import_debugger.Debugger(parent, type, guid, initializer);
+        break;
       case "Dialog":
         result = new import_dialog.Dialog(parent, type, guid, initializer);
+        break;
+      case "Disposable":
+        result = new import_disposable.DisposableObject(parent, type, guid, initializer);
         break;
       case "Electron":
         result = new import_electron.Electron(parent, type, guid, initializer);
@@ -261,9 +268,6 @@ class Connection extends import_eventEmitter.EventEmitter {
         break;
       case "Page":
         result = new import_page.Page(parent, type, guid, initializer);
-        break;
-      case "PageAgent":
-        result = new import_pageAgent.PageAgent(parent, type, guid, initializer);
         break;
       case "Playwright":
         result = new import_playwright.Playwright(parent, type, guid, initializer);

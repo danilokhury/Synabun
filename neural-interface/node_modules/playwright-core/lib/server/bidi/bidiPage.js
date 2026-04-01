@@ -51,12 +51,13 @@ class BidiPage {
     this._realmToWorkerContext = /* @__PURE__ */ new Map();
     this._sessionListeners = [];
     this._initScriptIds = /* @__PURE__ */ new Map();
+    this._fragmentNavigations = /* @__PURE__ */ new Set();
     this._session = bidiSession;
     this._opener = opener;
     this.rawKeyboard = new import_bidiInput.RawKeyboardImpl(bidiSession);
     this.rawMouse = new import_bidiInput.RawMouseImpl(bidiSession);
     this.rawTouchscreen = new import_bidiInput.RawTouchscreenImpl(bidiSession);
-    this._realmToContext = /* @__PURE__ */ new Map();
+    this._contextIdToContext = /* @__PURE__ */ new Map();
     this._page = new import_page.Page(this, browserContext);
     this._browserContext = browserContext;
     this._networkManager = new import_bidiNetworkManager.BidiNetworkManager(this._session, this._page);
@@ -102,9 +103,9 @@ class BidiPage {
     return this._page.frameManager.frameAttached(frameId, parentFrameId);
   }
   _removeContextsForFrame(frame, notifyFrame) {
-    for (const [contextId, context] of this._realmToContext) {
+    for (const [contextId, context] of this._contextIdToContext) {
       if (context.frame === frame) {
-        this._realmToContext.delete(contextId);
+        this._contextIdToContext.delete(contextId);
         if (notifyFrame)
           frame._contextDestroyed(context);
       }
@@ -119,7 +120,7 @@ class BidiPage {
       this._page.addWorker(realmInfo.realm, worker);
       return;
     }
-    if (this._realmToContext.has(realmInfo.realm))
+    if (this._contextIdToContext.has(realmInfo.realm))
       return;
     if (realmInfo.type !== "window")
       return;
@@ -138,7 +139,7 @@ class BidiPage {
     const delegate = new import_bidiExecutionContext.BidiExecutionContext(this._session, realmInfo);
     const context = new dom.FrameExecutionContext(delegate, frame, worldName);
     frame._contextCreated(worldName, context);
-    this._realmToContext.set(realmInfo.realm, context);
+    this._contextIdToContext.set(realmInfo.realm, context);
   }
   async _touchUtilityWorld(context) {
     await this._session.sendMayFail("script.evaluate", {
@@ -156,9 +157,9 @@ class BidiPage {
     });
   }
   _onRealmDestroyed(params) {
-    const context = this._realmToContext.get(params.realm);
+    const context = this._contextIdToContext.get(params.realm);
     if (context) {
-      this._realmToContext.delete(params.realm);
+      this._contextIdToContext.delete(params.realm);
       context.frame._contextDestroyed(context);
       return true;
     }
@@ -204,6 +205,8 @@ class BidiPage {
     this._page.frameManager.frameAbortedNavigation(params.context, "Navigation failed", params.navigation || void 0);
   }
   _onFragmentNavigated(params) {
+    if (params.navigation)
+      this._fragmentNavigations.add(params.navigation);
     this._page.frameManager.frameCommittedSameDocumentNavigation(params.context, params.url);
   }
   _onHistoryUpdated(params) {
@@ -229,7 +232,7 @@ class BidiPage {
       originPage = this._opener._page.initializedOrUndefined();
     if (!originPage)
       return;
-    this._browserContext._browser._downloadCreated(originPage, event.navigation, event.url, event.suggestedFilename);
+    this._browserContext._browser._downloadCreated(originPage, event.navigation, event.url, event.suggestedFilename, event.suggestedFilename);
   }
   _onDownloadEnded(event) {
     if (!event.navigation)
@@ -260,12 +263,13 @@ ${params.stackTrace?.callFrames.map((f) => {
     if (params.type !== "console")
       return;
     const entry = params;
-    const context = this._realmToContext.get(params.source.realm) ?? this._realmToWorkerContext.get(params.source.realm);
+    const context = this._contextIdToContext.get(params.source.realm) ?? this._realmToWorkerContext.get(params.source.realm);
     if (!context)
       return;
     const callFrame = params.stackTrace?.callFrames[0];
     const location = callFrame ?? { url: "", lineNumber: 1, columnNumber: 1 };
-    this._page.addConsoleMessage(null, entry.method, entry.args.map((arg) => (0, import_bidiExecutionContext.createHandle)(context, arg)), location);
+    const type = entry.method === "warn" ? "warning" : entry.method;
+    this._page.addConsoleMessage(null, type, entry.args.map((arg) => (0, import_bidiExecutionContext.createHandle)(context, arg)), location, void 0, params.timestamp);
   }
   async _onFileDialogOpened(params) {
     if (!params.element)
@@ -285,6 +289,10 @@ ${params.stackTrace?.callFrames.map((f) => {
       context: frame._id,
       url
     });
+    if (navigation && this._fragmentNavigations.has(navigation)) {
+      this._fragmentNavigations.delete(navigation);
+      return {};
+    }
     return { newDocumentId: navigation || void 0 };
   }
   async updateExtraHTTPHeaders() {
@@ -365,7 +373,13 @@ ${params.stackTrace?.callFrames.map((f) => {
     }).then(() => true).catch(() => false);
   }
   async requestGC() {
-    throw new Error("Method not implemented.");
+    const result = await this._session.send("script.evaluate", {
+      expression: "TestUtils.gc()",
+      target: { context: this._session.sessionId },
+      awaitPromise: true
+    });
+    if (result.type === "exception")
+      throw new Error("Method not implemented.");
   }
   async _onScriptMessage(event) {
     if (event.channel !== kPlaywrightBindingChannel)
@@ -373,7 +387,7 @@ ${params.stackTrace?.callFrames.map((f) => {
     const pageOrError = await this._page.waitForInitializedOrError();
     if (pageOrError instanceof Error)
       return;
-    const context = this._realmToContext.get(event.source.realm);
+    const context = this._contextIdToContext.get(event.source.realm);
     if (!context)
       return;
     if (event.data.type !== "string")
@@ -422,7 +436,7 @@ ${params.stackTrace?.callFrames.map((f) => {
       context: this._session.sessionId,
       format: {
         type: `image/${format === "png" ? "png" : "jpeg"}`,
-        quality: quality ? quality / 100 : 0.8
+        quality: quality !== void 0 ? quality / 100 : void 0
       },
       origin: documentRect ? "document" : "viewport",
       clip: {
@@ -495,9 +509,9 @@ ${params.stackTrace?.callFrames.map((f) => {
       throw e;
     });
   }
-  async startScreencast(options) {
+  startScreencast(options) {
   }
-  async stopScreencast() {
+  stopScreencast() {
   }
   rafCountForStablePosition() {
     return 1;
@@ -571,6 +585,8 @@ ${params.stackTrace?.callFrames.map((f) => {
   }
   shouldToggleStyleSheetToSyncAnimations() {
     return true;
+  }
+  async setDockTile(image) {
   }
 }
 function toBidiExecutionContext(executionContext) {

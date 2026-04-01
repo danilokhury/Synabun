@@ -32,10 +32,12 @@ __export(page_exports, {
   Page: () => Page,
   PageBinding: () => PageBinding,
   Worker: () => Worker,
-  WorkerEvent: () => WorkerEvent
+  WorkerEvent: () => WorkerEvent,
+  ariaSnapshotForFrame: () => ariaSnapshotForFrame
 });
 module.exports = __toCommonJS(page_exports);
 var import_browserContext = require("./browserContext");
+var import_disposable = require("./disposable");
 var import_console = require("./console");
 var import_errors = require("./errors");
 var import_fileChooser = require("./fileChooser");
@@ -54,6 +56,8 @@ var import_manualPromise = require("../utils/isomorphic/manualPromise");
 var import_utilityScriptSerializers = require("../utils/isomorphic/utilityScriptSerializers");
 var import_callLog = require("./callLog");
 var rawBindingsControllerSource = __toESM(require("../generated/bindingsControllerSource"));
+var import_overlay = require("./overlay");
+var import_dom = require("./dom");
 var import_screencast = require("./screencast");
 const PageEvent = {
   Close: "close",
@@ -65,16 +69,15 @@ const PageEvent = {
   FrameDetached: "framedetached",
   InternalFrameNavigatedToNewDocument: "internalframenavigatedtonewdocument",
   LocatorHandlerTriggered: "locatorhandlertriggered",
-  ScreencastFrame: "screencastframe",
-  Video: "video",
   WebSocket: "websocket",
   Worker: "worker"
 };
+const navigationMarkSymbol = Symbol("navigationMark");
 class Page extends import_instrumentation.SdkObject {
   constructor(delegate, browserContext) {
     super(browserContext, "page");
     this._closedState = "open";
-    this._closedPromise = new import_manualPromise.ManualPromise();
+    this.closedPromise = new import_manualPromise.ManualPromise();
     this._initializedPromise = new import_manualPromise.ManualPromise();
     this._consoleMessages = [];
     this._pageErrors = [];
@@ -86,7 +89,6 @@ class Page extends import_instrumentation.SdkObject {
     this.initScripts = [];
     this._workers = /* @__PURE__ */ new Map();
     this.requestInterceptors = [];
-    this.video = null;
     this._locatorHandlers = /* @__PURE__ */ new Map();
     this._lastLocatorHandlerUid = 0;
     this._locatorHandlerRunningCounter = 0;
@@ -99,6 +101,7 @@ class Page extends import_instrumentation.SdkObject {
     this.touchscreen = new input.Touchscreen(delegate.rawTouchscreen, this);
     this.screenshotter = new import_screenshotter.Screenshotter(this);
     this.frameManager = new frames.FrameManager(this);
+    this.overlay = new import_overlay.Overlay(this);
     this.screencast = new import_screencast.Screencast(this);
     if (delegate.pdf)
       this.pdf = delegate.pdf.bind(delegate);
@@ -159,17 +162,20 @@ class Page extends import_instrumentation.SdkObject {
   }
   _didClose() {
     this.frameManager.dispose();
-    this.screencast.stopFrameThrottler();
+    this.screencast.dispose();
+    this.overlay.dispose();
     (0, import_utils.assert)(this._closedState !== "closed", "Page closed twice");
     this._closedState = "closed";
     this.emit(Page.Events.Close);
-    this._closedPromise.resolve();
+    this.browserContext.emit(import_browserContext.BrowserContext.Events.PageClosed, this);
+    this.closedPromise.resolve();
     this.instrumentation.onPageClose(this);
     this.openScope.close(new import_errors.TargetClosedError(this.closeReason()));
   }
   _didCrash() {
     this.frameManager.dispose();
-    this.screencast.stopFrameThrottler();
+    this.screencast.dispose();
+    this.overlay.dispose();
     this.emit(Page.Events.Crash);
     this._crashed = true;
     this.instrumentation.onPageClose(this);
@@ -204,7 +210,7 @@ class Page extends import_instrumentation.SdkObject {
     if (this.browserContext._pageBindings.has(name))
       throw new Error(`Function "${name}" has been already registered in the browser context`);
     await progress.race(this.browserContext.exposePlaywrightBindingIfNeeded());
-    const binding = new PageBinding(name, playwrightBinding, needsHandle);
+    const binding = new PageBinding(this, name, playwrightBinding, needsHandle);
     this._pageBindings.set(name, binding);
     try {
       await progress.race(this.delegate.addInitScript(binding.initScript));
@@ -215,13 +221,12 @@ class Page extends import_instrumentation.SdkObject {
       throw error;
     }
   }
-  async removeExposedBindings(bindings) {
-    bindings = bindings.filter((binding) => this._pageBindings.get(binding.name) === binding);
-    for (const binding of bindings)
-      this._pageBindings.delete(binding.name);
-    await this.delegate.removeInitScripts(bindings.map((binding) => binding.initScript));
-    const cleanup = bindings.map((binding) => `{ ${binding.cleanupScript} };
-`).join("");
+  async removeExposedBinding(binding) {
+    if (this._pageBindings.get(binding.name) !== binding)
+      return;
+    this._pageBindings.delete(binding.name);
+    await this.delegate.removeInitScripts([binding.initScript]);
+    const cleanup = `{ ${binding.cleanupScript} };`;
     await this.safeNonStallingEvaluateInAllFrames(cleanup, "main");
   }
   async setExtraHTTPHeaders(progress, headers) {
@@ -251,8 +256,8 @@ class Page extends import_instrumentation.SdkObject {
       return;
     await PageBinding.dispatch(this, payload, context);
   }
-  addConsoleMessage(worker, type, args, location, text) {
-    const message = new import_console.ConsoleMessage(this, worker, type, text, args, location);
+  addConsoleMessage(worker, type, args, location, text, timestamp) {
+    const message = new import_console.ConsoleMessage(this, worker, type, text, args, location, timestamp);
     const intercepted = this.frameManager.interceptConsoleMessage(message);
     if (intercepted) {
       args.forEach((arg) => arg.dispose());
@@ -263,8 +268,14 @@ class Page extends import_instrumentation.SdkObject {
     if (this._initialized)
       this.emitOnContext(import_browserContext.BrowserContext.Events.Console, message);
   }
-  consoleMessages() {
-    return this._consoleMessages;
+  clearConsoleMessages() {
+    this._consoleMessages.length = 0;
+  }
+  consoleMessages(filter) {
+    if (filter === "all")
+      return this._consoleMessages;
+    const marked = this._consoleMessages.findLastIndex((m) => m[navigationMarkSymbol]);
+    return marked === -1 ? this._consoleMessages : this._consoleMessages.slice(marked + 1);
   }
   addPageError(pageError) {
     this._pageErrors.push(pageError);
@@ -272,8 +283,14 @@ class Page extends import_instrumentation.SdkObject {
     if (this._initialized)
       this.emitOnContext(import_browserContext.BrowserContext.Events.PageError, pageError, this);
   }
-  pageErrors() {
-    return this._pageErrors;
+  clearPageErrors() {
+    this._pageErrors.length = 0;
+  }
+  pageErrors(filter) {
+    if (filter === "all")
+      return this._pageErrors;
+    const marked = this._pageErrors.findLastIndex((e) => e[navigationMarkSymbol]);
+    return marked === -1 ? this._pageErrors : this._pageErrors.slice(marked + 1);
   }
   async reload(progress, options) {
     return this.mainFrame().raceNavigationAction(progress, async () => {
@@ -450,22 +467,21 @@ class Page extends import_instrumentation.SdkObject {
   async bringToFront() {
     await this.delegate.bringToFront();
   }
-  async addInitScript(progress, source) {
-    const initScript = new InitScript(source);
+  async addInitScript(source) {
+    const initScript = new InitScript(this, source);
     this.initScripts.push(initScript);
     try {
-      await progress.race(this.delegate.addInitScript(initScript));
+      await this.delegate.addInitScript(initScript);
     } catch (error) {
-      this.removeInitScripts([initScript]).catch(() => {
+      initScript.dispose().catch(() => {
       });
       throw error;
     }
     return initScript;
   }
-  async removeInitScripts(initScripts) {
-    const set = new Set(initScripts);
-    this.initScripts = this.initScripts.filter((script) => !set.has(script));
-    await this.delegate.removeInitScripts(initScripts);
+  async removeInitScript(initScript) {
+    this.initScripts = this.initScripts.filter((script) => initScript !== script);
+    await this.delegate.removeInitScripts([initScript]);
   }
   needsRequestInterception() {
     return this.requestInterceptors.length > 0 || this.browserContext.requestInterceptors.length > 0;
@@ -581,13 +597,15 @@ class Page extends import_instrumentation.SdkObject {
     if (options.reason)
       this._closeReason = options.reason;
     const runBeforeUnload = !!options.runBeforeUnload;
+    if (!runBeforeUnload)
+      await this.screencast.handlePageOrContextClose();
     if (this._closedState !== "closing") {
       if (!runBeforeUnload)
         this._closedState = "closing";
       await this.delegate.closePage(runBeforeUnload).catch((e) => import_debugLogger.debugLogger.log("error", e));
     }
     if (!runBeforeUnload)
-      await this._closedPromise;
+      await this.closedPromise;
   }
   isClosed() {
     return this._closedState === "closed";
@@ -629,9 +647,16 @@ class Page extends import_instrumentation.SdkObject {
   }
   frameNavigatedToNewDocument(frame) {
     this.emit(Page.Events.InternalFrameNavigatedToNewDocument, frame);
+    this.browserContext.emit(import_browserContext.BrowserContext.Events.InternalFrameNavigatedToNewDocument, frame, this);
     const origin = frame.origin();
     if (origin)
       this.browserContext.addVisitedOrigin(origin);
+    if (frame === this.mainFrame()) {
+      if (this._consoleMessages.length > 0)
+        this._consoleMessages[this._consoleMessages.length - 1][navigationMarkSymbol] = true;
+      if (this._pageErrors.length > 0)
+        this._pageErrors[this._pageErrors.length - 1][navigationMarkSymbol] = true;
+    }
   }
   allInitScripts() {
     const bindings = [...this.browserContext._pageBindings.values(), ...this._pageBindings.values()].map((binding) => binding.initScript);
@@ -656,9 +681,8 @@ class Page extends import_instrumentation.SdkObject {
     await Promise.all(this.frames().map((frame) => frame.hideHighlight().catch(() => {
     })));
   }
-  async snapshotForAI(progress, options = {}) {
-    const snapshot = await snapshotFrameForAI(progress, this.mainFrame(), options);
-    return { full: snapshot.full.join("\n"), incremental: snapshot.incremental?.join("\n") };
+  async setDockTile(image) {
+    await this.delegate.setDockTile(image);
   }
 }
 const WorkerEvent = {
@@ -687,6 +711,13 @@ class Worker extends import_instrumentation.SdkObject {
     if (this.existingExecutionContext)
       this._executionContextPromise.resolve(this.existingExecutionContext);
   }
+  _prepareContextForRestart() {
+    if (this.existingExecutionContext)
+      this.existingExecutionContext.contextDestroyed("Service worker restarted");
+    this.existingExecutionContext = null;
+    this._workerScriptLoaded = false;
+    this._executionContextPromise = new import_manualPromise.ManualPromise();
+  }
   didClose() {
     if (this.existingExecutionContext)
       this.existingExecutionContext.contextDestroyed("Worker was closed");
@@ -700,15 +731,15 @@ class Worker extends import_instrumentation.SdkObject {
     return js.evaluateExpression(await this._executionContextPromise, expression, { returnByValue: false, isFunction }, arg);
   }
 }
-class PageBinding {
+class PageBinding extends import_disposable.DisposableObject {
   static {
     this.kController = "__playwright__binding__controller__";
   }
   static {
     this.kBindingName = "__playwright__binding__";
   }
-  static createInitScript() {
-    return new InitScript(`
+  static createInitScript(browserContext) {
+    return new InitScript(browserContext, `
       (() => {
         const module = {};
         ${rawBindingsControllerSource.source}
@@ -718,10 +749,11 @@ class PageBinding {
       })();
     `);
   }
-  constructor(name, playwrightFunction, needsHandle) {
+  constructor(parent, name, playwrightFunction, needsHandle) {
+    super(parent);
     this.name = name;
     this.playwrightFunction = playwrightFunction;
-    this.initScript = new InitScript(`globalThis['${PageBinding.kController}'].addBinding(${JSON.stringify(name)}, ${needsHandle})`);
+    this.initScript = new InitScript(parent, `globalThis['${PageBinding.kController}'].addBinding(${JSON.stringify(name)}, ${needsHandle})`);
     this.needsHandle = needsHandle;
     this.cleanupScript = `globalThis['${PageBinding.kController}'].removeBinding(${JSON.stringify(name)})`;
   }
@@ -747,27 +779,49 @@ class PageBinding {
       context.evaluateExpressionHandle(`arg => globalThis['${PageBinding.kController}'].deliverBindingResult(arg)`, { isFunction: true }, { name, seq, error }).catch((e) => import_debugLogger.debugLogger.log("error", e));
     }
   }
+  async dispose() {
+    await this.parent.removeExposedBinding(this);
+  }
 }
-class InitScript {
-  constructor(source) {
+class InitScript extends import_disposable.DisposableObject {
+  constructor(owner, source) {
+    super(owner);
     this.source = `(() => {
       ${source}
     })();`;
   }
+  async dispose() {
+    await this.parent.removeInitScript(this);
+  }
 }
-async function snapshotFrameForAI(progress, frame, options = {}) {
+async function ariaSnapshotForFrame(progress, frame, options = {}) {
   const snapshot = await frame.retryWithProgressAndTimeouts(progress, [1e3, 2e3, 4e3, 8e3], async (continuePolling) => {
     try {
       const context = await progress.race(frame._utilityContext());
       const injectedScript = await progress.race(context.injectedScript());
       const snapshotOrRetry = await progress.race(injectedScript.evaluate((injected, options2) => {
+        if (options2.info) {
+          const element = injected.querySelector(options2.info.parsed, injected.document, options2.info.strict);
+          if (!element)
+            return false;
+          return injected.incrementalAriaSnapshot(element, options2);
+        }
         const node = injected.document.body;
         if (!node)
           return true;
-        return injected.incrementalAriaSnapshot(node, { mode: "ai", ...options2 });
-      }, { refPrefix: frame.seq ? "f" + frame.seq : "", track: options.track, doNotRenderActive: options.doNotRenderActive }));
+        return injected.incrementalAriaSnapshot(node, options2);
+      }, {
+        mode: options.mode ?? "default",
+        refPrefix: frame.seq ? "f" + frame.seq : "",
+        track: options.track,
+        doNotRenderActive: options.doNotRenderActive,
+        info: options.info,
+        depth: options.depth
+      }));
       if (snapshotOrRetry === true)
         return continuePolling;
+      if (snapshotOrRetry === false)
+        throw new import_dom.NonRecoverableDOMError(`Selector "${(0, import_selectorParser.stringifySelector)(options.info.parsed)}" does not match any element`);
       return snapshotOrRetry;
     } catch (e) {
       if (frame.isNonRetriableError(e))
@@ -775,18 +829,23 @@ async function snapshotFrameForAI(progress, frame, options = {}) {
       return continuePolling;
     }
   });
-  const childSnapshotPromises = snapshot.iframeRefs.map((ref) => snapshotFrameRefForAI(progress, frame, ref, options));
+  const renderedIframeRefs = snapshot.iframeRefs.filter((ref) => ref in snapshot.iframeDepths);
+  const childSnapshotPromises = renderedIframeRefs.map((ref) => {
+    const iframeDepth = snapshot.iframeDepths[ref];
+    const childDepth = options.depth ? options.depth - iframeDepth - 1 : void 0;
+    return ariaSnapshotFrameRef(progress, frame, ref, { ...options, depth: childDepth });
+  });
   const childSnapshots = await Promise.all(childSnapshotPromises);
   const full = [];
   let incremental;
   if (snapshot.incremental !== void 0) {
     incremental = snapshot.incremental.split("\n");
-    for (let i = 0; i < snapshot.iframeRefs.length; i++) {
+    for (let i = 0; i < renderedIframeRefs.length; i++) {
       const childSnapshot = childSnapshots[i];
       if (childSnapshot.incremental)
         incremental.push(...childSnapshot.incremental);
       else if (childSnapshot.full.length)
-        incremental.push("- <changed> iframe [ref=" + snapshot.iframeRefs[i] + "]:", ...childSnapshot.full.map((l) => "  " + l));
+        incremental.push("- <changed> iframe [ref=" + renderedIframeRefs[i] + "]:", ...childSnapshot.full.map((l) => "  " + l));
     }
   }
   for (const line of snapshot.full.split("\n")) {
@@ -797,20 +856,20 @@ async function snapshotFrameForAI(progress, frame, options = {}) {
     }
     const leadingSpace = match[1];
     const ref = match[2];
-    const childSnapshot = childSnapshots[snapshot.iframeRefs.indexOf(ref)] ?? { full: [] };
+    const childSnapshot = childSnapshots[renderedIframeRefs.indexOf(ref)] ?? { full: [] };
     full.push(childSnapshot.full.length ? line + ":" : line);
     full.push(...childSnapshot.full.map((l) => leadingSpace + "  " + l));
   }
   return { full, incremental };
 }
-async function snapshotFrameRefForAI(progress, parentFrame, frameRef, options) {
+async function ariaSnapshotFrameRef(progress, parentFrame, frameRef, options) {
   const frameSelector = `aria-ref=${frameRef} >> internal:control=enter-frame`;
   const frameBodySelector = `${frameSelector} >> body`;
   const child = await progress.race(parentFrame.selectors.resolveFrameForSelector(frameBodySelector, { strict: true }));
   if (!child)
     return { full: [] };
   try {
-    return await snapshotFrameForAI(progress, child.frame, options);
+    return await ariaSnapshotForFrame(progress, child.frame, { ...options, info: void 0 });
   } catch {
     return { full: [] };
   }
@@ -826,5 +885,6 @@ function ensureArrayLimit(array, limit) {
   Page,
   PageBinding,
   Worker,
-  WorkerEvent
+  WorkerEvent,
+  ariaSnapshotForFrame
 });

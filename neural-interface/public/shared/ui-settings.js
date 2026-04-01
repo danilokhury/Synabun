@@ -5334,7 +5334,7 @@ export async function openSettingsModal() {
       }
 
       // Screencast
-      setToggle('bc-screencastEnabled', !cfg.screencast?.disabled);
+      setToggle('bc-screencastEnabled', cfg.screencast?.disabled === false);
       if (cfg.screencast) {
         setVal('bc-screencastFormat', cfg.screencast.format || 'jpeg');
         setVal('bc-screencastQuality', cfg.screencast.quality ?? 60);

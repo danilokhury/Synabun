@@ -23,10 +23,12 @@ __export(tracing_exports, {
 module.exports = __toCommonJS(tracing_exports);
 var import_artifact = require("./artifact");
 var import_channelOwner = require("./channelOwner");
+var import_disposable = require("./disposable");
 class Tracing extends import_channelOwner.ChannelOwner {
   constructor(parent, type, guid, initializer) {
     super(parent, type, guid, initializer);
     this._includeSources = false;
+    this._additionalSources = /* @__PURE__ */ new Set();
     this._isLive = false;
     this._isTracing = false;
   }
@@ -36,12 +38,12 @@ class Tracing extends import_channelOwner.ChannelOwner {
   async start(options = {}) {
     await this._wrapApiCall(async () => {
       this._includeSources = !!options.sources;
-      this._isLive = !!options._live;
+      this._isLive = !!options.live;
       await this._channel.tracingStart({
         name: options.name,
         snapshots: options.snapshots,
         screenshots: options.screenshots,
-        live: options._live
+        live: options.live
       });
       const { traceName } = await this._channel.tracingStartChunk({ name: options.name, title: options.title });
       await this._startCollectingStacks(traceName, this._isLive);
@@ -54,7 +56,10 @@ class Tracing extends import_channelOwner.ChannelOwner {
     });
   }
   async group(name, options = {}) {
+    if (options.location)
+      this._additionalSources.add(options.location.file);
     await this._channel.tracingGroup({ name, location: options.location });
+    return new import_disposable.DisposableStub(() => this.groupEnd());
   }
   async groupEnd() {
     await this._channel.tracingGroupEnd();
@@ -80,6 +85,8 @@ class Tracing extends import_channelOwner.ChannelOwner {
   }
   async _doStopChunk(filePath) {
     this._resetStackCounter();
+    const additionalSources = [...this._additionalSources];
+    this._additionalSources.clear();
     if (!filePath) {
       await this._channel.tracingStopChunk({ mode: "discard" });
       if (this._stacksId)
@@ -92,7 +99,7 @@ class Tracing extends import_channelOwner.ChannelOwner {
     const isLocal = !this._connection.isRemote();
     if (isLocal) {
       const result2 = await this._channel.tracingStopChunk({ mode: "entries" });
-      await localUtils.zip({ zipFile: filePath, entries: result2.entries, mode: "write", stacksId: this._stacksId, includeSources: this._includeSources });
+      await localUtils.zip({ zipFile: filePath, entries: result2.entries, mode: "write", stacksId: this._stacksId, includeSources: this._includeSources, additionalSources });
       return;
     }
     const result = await this._channel.tracingStopChunk({ mode: "archive" });
@@ -104,7 +111,7 @@ class Tracing extends import_channelOwner.ChannelOwner {
     const artifact = import_artifact.Artifact.from(result.artifact);
     await artifact.saveAs(filePath);
     await artifact.delete();
-    await localUtils.zip({ zipFile: filePath, entries: [], mode: "append", stacksId: this._stacksId, includeSources: this._includeSources });
+    await localUtils.zip({ zipFile: filePath, entries: [], mode: "append", stacksId: this._stacksId, includeSources: this._includeSources, additionalSources });
   }
   _resetStackCounter() {
     if (this._isTracing) {

@@ -31,12 +31,14 @@ __export(localUtilsDispatcher_exports, {
   LocalUtilsDispatcher: () => LocalUtilsDispatcher
 });
 module.exports = __toCommonJS(localUtilsDispatcher_exports);
+var import_net = __toESM(require("net"));
 var import_dispatcher = require("./dispatcher");
 var import_instrumentation = require("../../server/instrumentation");
 var localUtils = __toESM(require("../localUtils"));
 var import_userAgent = require("../utils/userAgent");
 var import_deviceDescriptors = require("../deviceDescriptors");
 var import_jsonPipeDispatcher = require("../dispatchers/jsonPipeDispatcher");
+var import_pipeTransport = require("../pipeTransport");
 var import_socksInterceptor = require("../socksInterceptor");
 var import_transport = require("../transport");
 var import_network = require("../utils/network");
@@ -78,12 +80,17 @@ class LocalUtilsDispatcher extends import_dispatcher.Dispatcher {
     localUtils.addStackToTracingNoReply(this._stackSessions, params);
   }
   async connect(params, progress) {
+    if (URL.canParse(params.endpoint))
+      return await this._connectOverWebSocket(params, progress);
+    return await this._connectOverPipe(params, progress);
+  }
+  async _connectOverWebSocket(params, progress) {
     const wsHeaders = {
       "User-Agent": (0, import_userAgent.getUserAgent)(),
       "x-playwright-proxy": params.exposeNetwork ?? "",
       ...params.headers
     };
-    const wsEndpoint = await urlToWSEndpoint(progress, params.wsEndpoint);
+    const wsEndpoint = await urlToWSEndpoint(progress, params.endpoint);
     const transport = await import_transport.WebSocketTransport.connect(progress, wsEndpoint, { headers: wsHeaders, followRedirects: true, debugLogHeader: "x-playwright-debug-log" });
     const socksInterceptor = new import_socksInterceptor.SocksInterceptor(transport, params.exposeNetwork, params.socksProxyRedirectPortForTest);
     const pipe = new import_jsonPipeDispatcher.JsonPipeDispatcher(this);
@@ -111,6 +118,35 @@ class LocalUtilsDispatcher extends import_dispatcher.Dispatcher {
     };
     pipe.on("close", () => transport.close());
     return { pipe, headers: transport.headers };
+  }
+  async _connectOverPipe(params, progress) {
+    const socket = await new Promise((resolve, reject) => {
+      const conn = import_net.default.connect(params.endpoint, () => resolve(conn));
+      conn.on("error", reject);
+    });
+    const transport = new import_pipeTransport.PipeTransport(socket, socket);
+    const pipe = new import_jsonPipeDispatcher.JsonPipeDispatcher(this);
+    transport.onmessage = (json) => {
+      const cb = () => {
+        try {
+          pipe.dispatch(json);
+        } catch (e) {
+          transport.close();
+        }
+      };
+      if (params.slowMo)
+        setTimeout(cb, params.slowMo);
+      else
+        cb();
+    };
+    pipe.on("message", (message) => {
+      transport.send(message);
+    });
+    transport.onclose = (reason) => {
+      pipe.wasClosed(reason);
+    };
+    pipe.on("close", () => socket.end());
+    return { pipe, headers: [] };
   }
   async globToRegex(params, progress) {
     const regex = (0, import_urlMatch.resolveGlobToRegexPattern)(params.baseURL, params.glob, params.webSocketUrl);

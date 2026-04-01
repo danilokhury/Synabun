@@ -47,7 +47,6 @@ var import_progress = require("./progress");
 var types = __toESM(require("./types"));
 var import_utils = require("../utils");
 var import_protocolError = require("./protocolError");
-var import_debugLogger = require("./utils/debugLogger");
 var import_eventsHelper = require("./utils/eventsHelper");
 var import_selectorParser = require("../utils/isomorphic/selectorParser");
 var import_manualPromise = require("../utils/isomorphic/manualPromise");
@@ -179,7 +178,7 @@ class FrameManager {
     const navigationEvent = { url, name, newDocument: frame._currentDocument, isPublic: true };
     this._fireInternalFrameNavigation(frame, navigationEvent);
     if (!initial) {
-      import_debugLogger.debugLogger.log("api", `  navigated to "${url}"`);
+      frame.apiLog(`  navigated to "${url}"`);
       this._page.frameNavigatedToNewDocument(frame);
     }
     frame.setPendingDocument(keepPending);
@@ -195,7 +194,7 @@ class FrameManager {
     frame._url = url;
     const navigationEvent = { url, name: frame._name, isPublic: true };
     this._fireInternalFrameNavigation(frame, navigationEvent);
-    import_debugLogger.debugLogger.log("api", `  navigated to "${url}"`);
+    frame.apiLog(`  navigated to "${url}"`);
   }
   frameAbortedNavigation(frameId, errorText, documentId) {
     const frame = this._frames.get(frameId);
@@ -398,7 +397,7 @@ class Frame extends import_instrumentation.SdkObject {
     this._firedLifecycleEvents.add(event);
     this.emit(Frame.Events.AddLifecycle, event);
     if (this === this._page.mainFrame() && this._url !== "about:blank")
-      import_debugLogger.debugLogger.log("api", `  "${event}" event fired`);
+      this.apiLog(`  "${event}" event fired`);
     this._page.mainFrame()._recalculateNetworkIdle();
   }
   _onClearLifecycle() {
@@ -470,7 +469,7 @@ class Frame extends import_instrumentation.SdkObject {
       this._firedLifecycleEvents.add("networkidle");
       this.emit(Frame.Events.AddLifecycle, "networkidle");
       if (this === this._page.mainFrame() && this._url !== "about:blank")
-        import_debugLogger.debugLogger.log("api", `  "networkidle" event fired`);
+        this.apiLog(`  "networkidle" event fired`);
     }
     if (frameThatAllowsRemovingNetworkIdle !== this && this._firedLifecycleEvents.has("networkidle") && !isNetworkIdle) {
       this._firedLifecycleEvents.delete("networkidle");
@@ -605,7 +604,7 @@ class Frame extends import_instrumentation.SdkObject {
     return value;
   }
   async querySelector(selector, options) {
-    import_debugLogger.debugLogger.log("api", `    finding element using the selector "${selector}"`);
+    this.apiLog(`    finding element using the selector "${selector}"`);
     return this.selectors.query(selector, options);
   }
   async waitForSelector(progress, selector, performActionPreChecksAndLog, options, scope) {
@@ -1145,9 +1144,6 @@ class Frame extends import_instrumentation.SdkObject {
   async waitForTimeout(progress, timeout) {
     return progress.wait(timeout);
   }
-  async ariaSnapshot(progress, selector) {
-    return await this._retryWithProgressIfNotConnected(progress, selector, { strict: true, performActionPreChecks: true }, (handle) => progress.race(handle.ariaSnapshot()));
-  }
   async expect(progress, selector, options) {
     progress.log(`${(0, import_utils.renderTitleForCall)(progress.metadata)}${options.timeoutForLogs ? ` with timeout ${options.timeoutForLogs}ms` : ""}`);
     const lastIntermediateResult = { isSet: false };
@@ -1306,8 +1302,17 @@ class Frame extends import_instrumentation.SdkObject {
     return JSON.parse(handle.rawValue());
   }
   async title() {
-    const context = await this._utilityContext();
-    return context.evaluate(() => document.title);
+    try {
+      return await this.raceAgainstEvaluationStallingEvents(async () => {
+        const context = await this._utilityContext();
+        return await context.evaluate(() => document.title);
+      });
+    } catch {
+      const url = this.pendingDocument()?.request?.url();
+      if (url)
+        return `Loading ${url}`;
+      return "";
+    }
   }
   async rafrafTimeout(progress, timeout) {
     if (timeout === 0)
@@ -1406,6 +1411,30 @@ class Frame extends import_instrumentation.SdkObject {
     await injectedScriptHandle.evaluate((injectedScript, { source: source2, arg: arg2 }) => {
       injectedScript.extend(source2, arg2);
     }, { source, arg });
+  }
+  async ariaSnapshot(progress, options = {}) {
+    if (options.selector && options.track)
+      throw new Error("Cannot specify both selector and track options");
+    if (options.selector && options.mode !== "ai") {
+      const snapshot2 = await this._retryWithProgressIfNotConnected(progress, options.selector, { strict: true, performActionPreChecks: true }, async (handle) => {
+        return await progress.race(handle.evaluateInUtility(([injected, element, opts]) => injected.ariaSnapshot(element, opts), { mode: "default", depth: options.depth }));
+      });
+      return { snapshot: snapshot2 };
+    }
+    let targetFrame;
+    let info;
+    if (options.selector) {
+      const resolved = await this.selectors.resolveInjectedForSelector(options.selector, { strict: true });
+      if (!resolved)
+        throw new Error(`Selector "${options.selector}" did not resolve to any element`);
+      targetFrame = resolved.frame;
+      info = resolved.info;
+    } else {
+      targetFrame = this;
+    }
+    const result = await (0, import_page.ariaSnapshotForFrame)(progress, targetFrame, { ...options, info });
+    const snapshot = options.track && result.incremental ? result.incremental.join("\n") : result.full.join("\n");
+    return { snapshot };
   }
   _asLocator(selector) {
     return (0, import_utils.asLocator)(this._page.browserContext._browser.sdkLanguage(), selector);

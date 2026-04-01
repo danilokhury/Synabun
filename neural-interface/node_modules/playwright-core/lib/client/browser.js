@@ -36,6 +36,7 @@ class Browser extends import_channelOwner.ChannelOwner {
     this._shouldCloseConnectionOnClose = false;
     this._options = {};
     this._name = initializer.name;
+    this._browserName = initializer.browserName;
     this._channel.on("context", ({ context }) => this._didCreateContext(import_browserContext.BrowserContext.from(context)));
     this._channel.on("close", () => this._didClose());
     this._closedPromise = new Promise((f) => this.once(import_events.Events.Browser.Disconnected, f));
@@ -102,6 +103,13 @@ class Browser extends import_channelOwner.ChannelOwner {
   }
   version() {
     return this._initializer.version;
+  }
+  async bind(title, options = {}) {
+    const { endpoint } = await this._channel.startServer({ title, ...options });
+    return { endpoint };
+  }
+  async unbind() {
+    await this._channel.stopServer();
   }
   async newPage(options = {}) {
     return await this._wrapApiCall(async () => {

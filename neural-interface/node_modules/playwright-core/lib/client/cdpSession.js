@@ -28,8 +28,12 @@ class CDPSession extends import_channelOwner.ChannelOwner {
   }
   constructor(parent, type, guid, initializer) {
     super(parent, type, guid, initializer);
-    this._channel.on("event", ({ method, params }) => {
-      this.emit(method, params);
+    this._channel.on("event", (event) => {
+      this.emit(event.method, event.params);
+      this.emit("event", event);
+    });
+    this._channel.on("close", () => {
+      this.emit("close", this);
     });
     this.on = super.on;
     this.addListener = super.addListener;

@@ -106,7 +106,6 @@ async function syncLocalStorageWithSettings(page, appName) {
     });
     const settings = await import_fs.default.promises.readFile(settingsFile, "utf-8").catch(() => "{}");
     await page.addInitScript(
-      progress,
       `(${String((settings2) => {
         if (location && location.protocol === "data:")
           return;

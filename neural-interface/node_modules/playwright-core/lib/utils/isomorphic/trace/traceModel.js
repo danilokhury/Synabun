@@ -27,7 +27,7 @@ __export(traceModel_exports, {
   stats: () => stats
 });
 module.exports = __toCommonJS(traceModel_exports);
-var import_protocolFormatter = require("@isomorphic/protocolFormatter");
+var import_protocolFormatter = require("../protocolFormatter");
 const contextSymbol = Symbol("context");
 const nextInContextSymbol = Symbol("nextInContext");
 const prevByEndTimeSymbol = Symbol("prevByEndTime");
@@ -46,6 +46,7 @@ class TraceModel {
     this.playwrightVersion = contexts.find((c) => c.playwrightVersion)?.playwrightVersion;
     this.title = libraryContext?.title || "";
     this.options = libraryContext?.options || {};
+    this.testTimeout = contexts.find((c) => c.origin === "testRunner")?.testTimeout;
     this.actions = mergeActionsAndUpdateTiming(contexts);
     this.pages = [].concat(...contexts.map((c) => c.pages));
     this.wallTime = contexts.map((c) => c.wallTime).reduce((prev, cur) => Math.min(prev || Number.MAX_VALUE, cur), Number.MAX_VALUE);
@@ -56,7 +57,7 @@ class TraceModel {
     this.errors = [].concat(...contexts.map((c) => c.errors));
     this.hasSource = contexts.some((c) => c.hasSource);
     this.hasStepData = contexts.some((context2) => context2.origin === "testRunner");
-    this.resources = [...contexts.map((c) => c.resources)].flat();
+    this.resources = [...contexts.map((c) => c.resources)].flat().map((entry) => ({ ...entry, id: `${entry.pageref}-${entry.time}-${entry.request.url}` }));
     this.attachments = this.actions.flatMap((action) => action.attachments?.map((attachment) => ({ ...attachment, callId: action.callId, traceUri })) ?? []);
     this.visibleAttachments = this.attachments.filter((attachment) => !attachment.name.startsWith("_"));
     this.events.sort((a1, a2) => a1.time - a2.time);

@@ -101,7 +101,7 @@ const tBinary = (arg, path, context) => {
     return arg.toString("base64");
   }
   if (context.binary === "buffer") {
-    if (!(arg instanceof Buffer))
+    if (!(arg instanceof Buffer) && !(arg instanceof Object))
       throw new ValidationError(`${path}: expected Buffer, got ${typeof arg}`);
     return arg;
   }

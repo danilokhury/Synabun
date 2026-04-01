@@ -239,7 +239,7 @@ class CRNetworkManager {
       this._requestIdToRequestWillBeSentEvent.delete(requestId);
     } else {
       const existingRequest = this._requestIdToRequest.get(requestId);
-      const alreadyContinuedParams = existingRequest?._route?._alreadyContinuedParams;
+      const alreadyContinuedParams = existingRequest?._originalRequestRoute?._alreadyContinuedParams;
       if (alreadyContinuedParams && !event.redirectedRequestId) {
         sessionInfo.session._sendMayFail("Fetch.continueRequest", {
           ...alreadyContinuedParams,
@@ -333,7 +333,7 @@ class CRNetworkManager {
       const response2 = await session.send("Network.getResponseBody", { requestId: request._requestId });
       if (response2.body || !expectedLength)
         return Buffer.from(response2.body, response2.base64Encoded ? "base64" : "utf8");
-      if (request._route?._fulfilled)
+      if (request._originalRequestRoute?._fulfilled)
         return Buffer.from("");
       const resource = await session.send("Network.loadNetworkResource", { url: request.request.url(), frameId: this._serviceWorker ? void 0 : request.request.frame()._id, options: { disableCache: false, includeCredentials: true } });
       const chunks = [];
@@ -372,7 +372,8 @@ class CRNetworkManager {
         responseStart: -1
       };
     }
-    const response = new network.Response(request.request, responsePayload.status, responsePayload.statusText, (0, import_utils.headersObjectToArray)(responsePayload.headers), timing, getResponseBody, !!responsePayload.fromServiceWorker, responsePayload.protocol);
+    const response = new network.Response(request.request, responsePayload.status, responsePayload.statusText, (0, import_utils.headersObjectToArray)(responsePayload.headers), timing, getResponseBody, !!responsePayload.fromServiceWorker);
+    response._setHttpVersion(responsePayload?.protocol ?? null);
     if (responsePayload?.remoteIPAddress && typeof responsePayload?.remotePort === "number") {
       response._serverAddrFinished({
         ipAddress: responsePayload.remoteIPAddress,
@@ -478,7 +479,6 @@ class InterceptableRequest {
     this._requestId = requestWillBeSentEvent.requestId;
     this._interceptionId = requestPausedEvent && requestPausedEvent.requestId;
     this._documentId = documentId;
-    this._route = route;
     this._originalRequestRoute = route ?? redirectedFrom?._originalRequestRoute;
     const {
       headers,

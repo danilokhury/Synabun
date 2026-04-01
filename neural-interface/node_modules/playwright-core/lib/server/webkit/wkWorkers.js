@@ -96,7 +96,8 @@ class WKWorkers {
       lineNumber: (lineNumber || 1) - 1,
       columnNumber: (columnNumber || 1) - 1
     };
-    this._page.addConsoleMessage(worker, derivedType, handles, location, handles.length ? void 0 : text);
+    const timestamp = event.message.timestamp ? event.message.timestamp * 1e3 : Date.now();
+    this._page.addConsoleMessage(worker, derivedType, handles, location, handles.length ? void 0 : text, timestamp);
   }
 }
 // Annotate the CommonJS export names for ESM import in node:

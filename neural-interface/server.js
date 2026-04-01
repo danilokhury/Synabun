@@ -15,9 +15,10 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, dirname, extname, join, resolve, sep } from 'path';
 import { config as dotenvConfig } from 'dotenv';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, copyFileSync, appendFileSync, openSync, readSync, closeSync, chmodSync, watch as fsWatch, createWriteStream } from 'fs';
-import { randomBytes, randomUUID, createHash } from 'crypto';
+import { randomBytes, randomUUID, createHash, pbkdf2Sync, createDecipheriv } from 'crypto';
 import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
+import { createRequire } from 'module';
 import { Readable } from 'stream';
 import { createConnection as netConnect } from 'net';
 import { WebSocketServer } from 'ws';
@@ -4576,60 +4577,32 @@ app.post('/api/loop/launch', async (req, res) => {
       } catch { /* skip corrupt */ }
     }
 
-    // 1c. Acquire a DEDICATED browser session for this loop.
-    // Each automation gets its own browser session for isolation — no sharing.
-    // The UI may pre-create one (passing browserSessionId), or we create server-side.
+    // 1c. Acquire browser for this loop — reuse existing system browser session.
+    // Opens a new TAB in the shared CDP session instead of creating isolated sessions.
     let browserSessionId = null;
     let browserTabId = null;
     if (usesBrowser) {
-      // Strategy 1: UI pre-created a dedicated session — claim it
-      if (requestedBrowserSessionId && browserSessions.has(requestedBrowserSessionId)) {
-        const candidate = browserSessions.get(requestedBrowserSessionId);
-        try {
-          await candidate.page.evaluate('1');
-          browserSessionId = requestedBrowserSessionId;
-          console.log(`[loop] Claimed UI-created browser session ${browserSessionId}`);
-        } catch {
-          console.warn(`[loop] UI-provided session ${requestedBrowserSessionId} is a zombie — destroying`);
-          await destroyBrowserSession(requestedBrowserSessionId).catch(() => {});
-        }
-      }
-
-      // Strategy 2: No session from UI — wait briefly for one the UI is opening
-      if (!browserSessionId && !requestedBrowserSessionId) {
-        const maxWait = 15000;
-        const pollInterval = 500;
-        let waited = 0;
-        // Look for the NEWEST session (not existingIds[0]) to avoid stealing another loop's session.
-        // Track which sessions existed before we started waiting.
-        const preExistingIds = new Set(browserSessions.keys());
-        while (waited < maxWait) {
-          for (const [id, session] of browserSessions) {
-            if (preExistingIds.has(id)) continue; // skip sessions that existed before launch
-            try {
-              await session.page.evaluate('1');
-              browserSessionId = id;
-              break;
-            } catch {
-              console.warn(`[loop] New browser session ${id} is a zombie — destroying`);
-              await destroyBrowserSession(id).catch(() => {});
-            }
+      // Strategy 1: Reuse an existing CDP browser session (shared system browser)
+      for (const [id, session] of browserSessions) {
+        if (session._profileMode === 'cdp') {
+          try {
+            await session.page.evaluate('1');
+            browserSessionId = id;
+            console.log(`[loop] Reusing existing CDP browser session ${browserSessionId}`);
+            break;
+          } catch {
+            console.warn(`[loop] Existing CDP session ${id} is a zombie — destroying`);
+            await destroyBrowserSession(id).catch(() => {});
           }
-          if (browserSessionId) break;
-          await new Promise(r => setTimeout(r, pollInterval));
-          waited += pollInterval;
-        }
-        if (browserSessionId) {
-          console.log(`[loop] Found new browser session ${browserSessionId} (waited ${waited}ms)`);
         }
       }
 
-      // Strategy 3: Still nothing — create a dedicated session server-side
+      // Strategy 2: No existing session — ensure Chrome is debuggable, then create one
       if (!browserSessionId) {
         try {
           const result = await createBrowserSession({ url: 'about:blank' });
           browserSessionId = result.sessionId;
-          console.log(`[loop] Created dedicated browser session ${browserSessionId}`);
+          console.log(`[loop] Created shared browser session ${browserSessionId}`);
           broadcastSync({
             type: 'browser:session-created',
             sessionId: browserSessionId, url: 'about:blank',
@@ -4640,13 +4613,12 @@ app.post('/api/loop/launch', async (req, res) => {
         }
       }
 
-      // Claim the session: clear grace timer, create a dedicated tab
+      // Open a new tab in the shared session for this loop
       if (browserSessionId) {
         const claimedSession = browserSessions.get(browserSessionId);
         if (claimedSession?.graceTimer) {
           clearTimeout(claimedSession.graceTimer);
           claimedSession.graceTimer = null;
-          console.log(`[loop] Cleared grace timer on session ${browserSessionId}`);
         }
         if (claimedSession?.tabs && claimedSession.tabs.size > 0) {
           try {
@@ -4712,7 +4684,7 @@ app.post('/api/loop/launch', async (req, res) => {
 });
 
 // POST /api/loop/stop — force-stop active/pending loops and clean up PTY sessions
-app.post('/api/loop/stop', (req, res) => {
+app.post('/api/loop/stop', async (req, res) => {
   try {
     if (!existsSync(LOOP_DIR)) return res.json({ ok: true, stopped: 0 });
     const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
@@ -4728,11 +4700,26 @@ app.post('/api/loop/stop', (req, res) => {
             try { session.pty.kill(); } catch {}
             terminalSessions.delete(data.terminalSessionId);
           }
-          // Destroy the loop's dedicated browser session
-          if (data.browserSessionId && browserSessions.has(data.browserSessionId)) {
-            destroyBrowserSession(data.browserSessionId).catch(err => {
-              console.warn(`[loop/stop] Failed to destroy browser session ${data.browserSessionId}:`, err.message);
-            });
+          // Close the loop's browser tab but keep the shared session alive.
+          // The system browser persists for the next loop or manual use.
+          if (data.browserSessionId && data.browserTabId && browserSessions.has(data.browserSessionId)) {
+            const bSession = browserSessions.get(data.browserSessionId);
+            if (bSession?.tabs?.has(data.browserTabId) && bSession.tabs.size > 1) {
+              // Only close the tab if there's more than one (don't close the last tab)
+              try {
+                const tab = bSession.tabs.get(data.browserTabId);
+                if (tab?.page) await tab.page.close().catch(() => {});
+                bSession.tabs.delete(data.browserTabId);
+                // Switch to another tab if we closed the active one
+                if (bSession.activeTabId === data.browserTabId) {
+                  const nextTabId = bSession.tabs.keys().next().value;
+                  if (nextTabId) _switchSessionTab(bSession, data.browserSessionId, nextTabId).catch(() => {});
+                }
+                console.log(`[loop/stop] Closed tab ${data.browserTabId} in session ${data.browserSessionId}`);
+              } catch (err) {
+                console.warn(`[loop/stop] Failed to close tab: ${err.message}`);
+              }
+            }
           }
           // Delete the loop file — no history keeping
           try { unlinkSync(filePath); } catch { /* ok */ }
@@ -4956,22 +4943,44 @@ async function launchScheduledLoop(schedule) {
     const cliModel = schedule.model || null;
     const scheduledUsesBrowser = schedule.usesBrowser !== undefined ? !!schedule.usesBrowser : !!template.usesBrowser;
 
-    // Create dedicated browser session for scheduled loops that need one
+    // Reuse existing CDP browser session or create shared one
     let scheduledBrowserSessionId = null;
+    let scheduledBrowserTabId = null;
     const schedExtraEnv = {};
     if (scheduledUsesBrowser) {
-      try {
-        const result = await createBrowserSession({ url: 'about:blank' });
-        scheduledBrowserSessionId = result.sessionId;
+      // Try to reuse existing CDP session
+      for (const [id, session] of browserSessions) {
+        if (session._profileMode === 'cdp') {
+          try { await session.page.evaluate('1'); scheduledBrowserSessionId = id; break; } catch {}
+        }
+      }
+      // Create if none exists
+      if (!scheduledBrowserSessionId) {
+        try {
+          const result = await createBrowserSession({ url: 'about:blank' });
+          scheduledBrowserSessionId = result.sessionId;
+          console.log(`[schedule] Created shared browser session ${scheduledBrowserSessionId}`);
+          broadcastSync({
+            type: 'browser:session-created',
+            sessionId: scheduledBrowserSessionId, url: 'about:blank',
+            profileMode: result.profileMode, profileSource: result.profileSource,
+          });
+        } catch (err) {
+          console.warn(`[schedule] Failed to create browser session: ${err.message}`);
+        }
+      }
+      // Open a new tab for this scheduled loop
+      if (scheduledBrowserSessionId) {
         schedExtraEnv.SYNABUN_BROWSER_SESSION = scheduledBrowserSessionId;
-        console.log(`[schedule] Created dedicated browser session ${scheduledBrowserSessionId}`);
-        broadcastSync({
-          type: 'browser:session-created',
-          sessionId: scheduledBrowserSessionId, url: 'about:blank',
-          profileMode: result.profileMode, profileSource: result.profileSource,
-        });
-      } catch (err) {
-        console.warn(`[schedule] Failed to create browser session: ${err.message}`);
+        const bSession = browserSessions.get(scheduledBrowserSessionId);
+        if (bSession?.graceTimer) { clearTimeout(bSession.graceTimer); bSession.graceTimer = null; }
+        if (bSession?.tabs && bSession.tabs.size > 0) {
+          try {
+            const newTab = await createSessionTab(bSession, scheduledBrowserSessionId, 'about:blank');
+            scheduledBrowserTabId = newTab.tabId;
+            await _switchSessionTab(bSession, scheduledBrowserSessionId, scheduledBrowserTabId);
+          } catch { scheduledBrowserTabId = bSession.activeTabId; }
+        }
       }
     }
 
@@ -4992,6 +5001,7 @@ async function launchScheduledLoop(schedule) {
       terminalSessionId,
       usesBrowser: scheduledUsesBrowser,
       browserSessionId: scheduledBrowserSessionId,
+      browserTabId: scheduledBrowserTabId || null,
       profile: cliProfile,
       model: cliModel,
       scheduledBy: schedule.id,
@@ -7549,27 +7559,35 @@ function writeClaudeSettings(filePath, data) {
   writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
-function hookCommandString(scriptName) {
+function hookCommandString(scriptName, targetProjectPath) {
+  // When installing hooks into SynaBun's own project directory, use relative paths
+  // so the settings.json is cross-platform (works on macOS, Windows, Linux).
+  // For global settings or other projects, absolute paths are required because
+  // the hooks live in SynaBun's directory, not the target project.
+  if (targetProjectPath && resolve(targetProjectPath) === resolve(PACKAGE_ROOT)) {
+    const relPath = join('hooks', 'claude-code', scriptName).replace(/\\/g, '/');
+    return `node ${relPath}`;
+  }
   const scriptPath = resolve(PACKAGE_ROOT, 'hooks', 'claude-code', scriptName).replace(/\\/g, '/');
   return `node "${scriptPath}"`;
 }
 
-function isHookInstalled(settings) {
+function isHookInstalled(settings, targetProjectPath) {
   // Installed if at least the SessionStart hook is present
   if (!settings?.hooks?.SessionStart) return false;
-  const cmd = hookCommandString('session-start.mjs');
+  const cmd = hookCommandString('session-start.mjs', targetProjectPath);
   return settings.hooks.SessionStart.some(entry =>
     entry.hooks?.some(h => h.command === cmd)
   );
 }
 
-function isSpecificHookInstalled(settings, hookEvent) {
+function isSpecificHookInstalled(settings, hookEvent, targetProjectPath) {
   if (!settings?.hooks?.[hookEvent]) return false;
   const defs = HOOK_SCRIPTS.filter(d => d.event === hookEvent);
   if (defs.length === 0) return false;
   // All scripts for this event must be installed
   return defs.every(def => {
-    const cmd = hookCommandString(def.script);
+    const cmd = hookCommandString(def.script, targetProjectPath);
     return settings.hooks[hookEvent].some(entry =>
       entry.hooks?.some(h => h.command === cmd)
     );
@@ -7788,7 +7806,7 @@ const SYNABUN_TOOL_CATEGORIES = [
   },
 ];
 
-function addHookToSettings(settings, onlyEvent) {
+function addHookToSettings(settings, onlyEvent, targetProjectPath) {
   if (!settings) settings = {};
   if (!settings.hooks) settings.hooks = {};
 
@@ -7799,7 +7817,7 @@ function addHookToSettings(settings, onlyEvent) {
   const defs = onlyEvent ? HOOK_SCRIPTS.filter(d => d.event === onlyEvent) : HOOK_SCRIPTS;
   for (const def of defs) {
     if (!settings.hooks[def.event]) settings.hooks[def.event] = [];
-    const cmd = hookCommandString(def.script);
+    const cmd = hookCommandString(def.script, targetProjectPath);
     const alreadyExists = settings.hooks[def.event].some(entry =>
       entry.hooks?.some(h => h.command === cmd)
     );
@@ -7813,15 +7831,17 @@ function addHookToSettings(settings, onlyEvent) {
   return settings;
 }
 
-function removeHookFromSettings(settings, onlyEvent) {
+function removeHookFromSettings(settings, onlyEvent, targetProjectPath) {
   if (!settings?.hooks) return settings;
 
   const defs = onlyEvent ? HOOK_SCRIPTS.filter(d => d.event === onlyEvent) : HOOK_SCRIPTS;
   for (const def of defs) {
     if (!settings.hooks[def.event]) continue;
-    const cmd = hookCommandString(def.script);
+    const cmd = hookCommandString(def.script, targetProjectPath);
+    // Also match absolute-path variants so we can clean up old installs
+    const absCmd = hookCommandString(def.script);
     settings.hooks[def.event] = settings.hooks[def.event].filter(entry =>
-      !entry.hooks?.some(h => h.command === cmd)
+      !entry.hooks?.some(h => h.command === cmd || h.command === absCmd)
     );
     if (settings.hooks[def.event].length === 0) delete settings.hooks[def.event];
   }
@@ -8355,8 +8375,8 @@ app.get('/api/claude-code/integrations', (req, res) => {
       let projSettings = readClaudeSettings(projFile);
       let needsWrite = false;
       for (const ev of globallyEnabled) {
-        if (!isSpecificHookInstalled(projSettings, ev)) {
-          projSettings = addHookToSettings(projSettings || {}, ev);
+        if (!isSpecificHookInstalled(projSettings, ev, p.path)) {
+          projSettings = addHookToSettings(projSettings || {}, ev, p.path);
           needsWrite = true;
         }
       }
@@ -8371,12 +8391,12 @@ app.get('/api/claude-code/integrations', (req, res) => {
       const settings = readClaudeSettings(settingsPath);
       const hookStatus = {};
       for (const def of HOOK_SCRIPTS) {
-        hookStatus[def.event] = isSpecificHookInstalled(settings, def.event);
+        hookStatus[def.event] = isSpecificHookInstalled(settings, def.event, p.path);
       }
       return {
         path: p.path,
         label: p.label || basename(p.path),
-        installed: isHookInstalled(settings),
+        installed: isHookInstalled(settings, p.path),
         hooks: hookStatus,
         settingsExists: settings !== null,
       };
@@ -8426,7 +8446,7 @@ app.post('/api/claude-code/integrations', (req, res) => {
       for (const p of projects) {
         const projFile = getClaudeSettingsPath(p.path);
         let projSettings = readClaudeSettings(projFile) || {};
-        projSettings = addHookToSettings(projSettings, hook || undefined);
+        projSettings = addHookToSettings(projSettings, hook || undefined, p.path);
         writeClaudeSettings(projFile, projSettings);
       }
 
@@ -8440,7 +8460,7 @@ app.post('/api/claude-code/integrations', (req, res) => {
 
       const filePath = getClaudeSettingsPath(normalized);
       let settings = readClaudeSettings(filePath) || {};
-      settings = addHookToSettings(settings, hook || undefined);
+      settings = addHookToSettings(settings, hook || undefined, normalized);
       writeClaudeSettings(filePath, settings);
 
       // Save to registered projects list
@@ -8501,7 +8521,7 @@ app.delete('/api/claude-code/integrations', (req, res) => {
         const projFile = getClaudeSettingsPath(p.path);
         let projSettings = readClaudeSettings(projFile);
         if (projSettings) {
-          projSettings = removeHookFromSettings(projSettings, hook || undefined);
+          projSettings = removeHookFromSettings(projSettings, hook || undefined, p.path);
           writeClaudeSettings(projFile, projSettings);
         }
       }
@@ -8515,7 +8535,7 @@ app.delete('/api/claude-code/integrations', (req, res) => {
       const filePath = getClaudeSettingsPath(normalized);
       let settings = readClaudeSettings(filePath);
       if (!settings) return res.json({ ok: true, message: 'No settings file found.' });
-      settings = removeHookFromSettings(settings, hook || undefined);
+      settings = removeHookFromSettings(settings, hook || undefined, normalized);
       writeClaudeSettings(filePath, settings);
       return res.json({ ok: true, message: `Hook removed from ${basename(normalized)}.` });
     }
@@ -8871,17 +8891,41 @@ function tomlHasSection(content, section) {
   return new RegExp(`^\\[${section.replace(/\./g, '\\.')}\\]`, 'm').test(content);
 }
 
+function tomlSerializeValue(v) {
+  if (typeof v === 'string') return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(tomlSerializeValue).join(', ')}]`;
+  if (v && typeof v === 'object') {
+    const pairs = Object.entries(v).map(([k, val]) => `${k} = ${tomlSerializeValue(val)}`);
+    return `{${pairs.join(', ')}}`;
+  }
+  return String(v);
+}
+
+function tomlSectionRange(content, section) {
+  const header = `[${section}]`;
+  const idx = content.indexOf(header);
+  if (idx === -1) return null;
+  // Start includes the preceding newline if present
+  const start = idx > 0 && content[idx - 1] === '\n' ? idx - 1 : idx;
+  // End is the next section header (\n[) or end of string
+  const next = content.indexOf('\n[', idx + header.length);
+  const end = next === -1 ? content.length : next;
+  return { start, end };
+}
+
 function tomlUpsertSection(content, section, kvPairs) {
-  const lines = Object.entries(kvPairs).map(([k, v]) => `${k} = ${JSON.stringify(v)}`);
+  const lines = Object.entries(kvPairs).map(([k, v]) => `${k} = ${tomlSerializeValue(v)}`);
   const block = `[${section}]\n${lines.join('\n')}`;
-  const re = new RegExp(`^\\[${section.replace(/\./g, '\\.')}\\][\\s\\S]*?(?=\\n\\[|$)`, 'm');
-  if (re.test(content)) return content.replace(re, block);
+  const range = tomlSectionRange(content, section);
+  if (range) return content.slice(0, range.start) + (range.start > 0 ? '\n' : '') + block + content.slice(range.end);
   return (content.trim() ? content.trim() + '\n\n' : '') + block + '\n';
 }
 
 function tomlRemoveSection(content, section) {
-  const re = new RegExp(`\\n?^\\[${section.replace(/\./g, '\\.')}\\][\\s\\S]*?(?=\\n\\[|$)`, 'm');
-  return content.replace(re, '').trim() + (content.trim() ? '\n' : '');
+  const range = tomlSectionRange(content, section);
+  if (!range) return content;
+  const result = content.slice(0, range.start) + content.slice(range.end);
+  return result.trim() + (result.trim() ? '\n' : '');
 }
 
 // ── Shared MCP path helpers ──
@@ -12699,6 +12743,108 @@ function findBrowserExecutable(preferredChannel) {
 }
 
 /**
+ * Decrypt cookies from a Chrome/Edge/Chromium profile's Cookies SQLite database.
+ * macOS only — Chrome encrypts cookie values with a key stored in the system Keychain.
+ * Returns an array of cookies in Playwright's addCookies() format.
+ * @param {string} profileDir - Path to the Chrome profile directory (e.g., mirror/Default/)
+ * @param {string} browserType - 'chrome' | 'msedge' | 'chromium'
+ * @returns {Array} Decrypted cookies in Playwright format, or empty array on failure
+ */
+function decryptChromeCookies(profileDir, browserType = 'chrome') {
+  if (process.platform !== 'darwin') return []; // macOS-only encryption
+
+  const cookiesDbPath = resolve(profileDir, 'Cookies');
+  if (!existsSync(cookiesDbPath)) return [];
+
+  // Get encryption password from macOS Keychain
+  const serviceNames = { chrome: 'Chrome Safe Storage', msedge: 'Microsoft Edge Safe Storage', chromium: 'Chromium Safe Storage' };
+  const accountNames = { chrome: 'Chrome', msedge: 'Microsoft Edge', chromium: 'Chromium' };
+  const serviceName = serviceNames[browserType] || serviceNames.chrome;
+  const accountName = accountNames[browserType] || accountNames.chrome;
+
+  let keychainPassword;
+  try {
+    keychainPassword = execSync(
+      `security find-generic-password -w -s "${serviceName}" -a "${accountName}"`,
+      { encoding: 'utf-8', timeout: 5000 }
+    ).trim();
+  } catch (e) {
+    console.warn(`[browser] Could not read Keychain (${serviceName}): ${e.message}`);
+    return [];
+  }
+
+  // Derive AES-128-CBC key: PBKDF2-SHA1, salt "saltysalt", 1003 iterations, 16-byte key
+  const key = pbkdf2Sync(keychainPassword, 'saltysalt', 1003, 16, 'sha1');
+  const iv = Buffer.alloc(16, ' '); // 16 space characters
+
+  // Read cookies from SQLite
+  let db;
+  try {
+    const _require = createRequire(import.meta.url);
+    const { DatabaseSync } = _require('node:sqlite');
+    db = new DatabaseSync(cookiesDbPath, { readOnly: true });
+  } catch (e) {
+    console.warn(`[browser] Could not open Cookies DB: ${e.message}`);
+    return [];
+  }
+
+  const sameSiteMap = { 0: 'None', 1: 'Lax', 2: 'Strict' };
+  // Chrome epoch: microseconds since 1601-01-01. Unix epoch offset = 11644473600 seconds.
+  const CHROME_EPOCH_OFFSET = 11644473600;
+  const cookies = [];
+
+  try {
+    const rows = db.prepare(
+      'SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, samesite FROM cookies'
+    ).all();
+
+    for (const row of rows) {
+      let cookieValue = row.value || '';
+
+      // Decrypt v10-prefixed encrypted values (macOS Chrome encryption)
+      if (row.encrypted_value && row.encrypted_value.length > 3) {
+        const encBuf = Buffer.from(row.encrypted_value);
+        if (encBuf.length > 3 && encBuf.slice(0, 3).toString('ascii') === 'v10') {
+          try {
+            const decipher = createDecipheriv('aes-128-cbc', key, iv);
+            cookieValue = Buffer.concat([decipher.update(encBuf.slice(3)), decipher.final()]).toString('utf-8');
+          } catch {
+            continue; // Skip cookies that fail to decrypt
+          }
+        }
+      }
+
+      if (!cookieValue) continue;
+
+      // Convert Chrome expires_utc (microseconds since 1601) to Unix epoch seconds
+      const expiresUtc = Number(row.expires_utc || 0);
+      const expires = expiresUtc > 0 ? (expiresUtc / 1000000) - CHROME_EPOCH_OFFSET : -1;
+
+      // Skip already-expired cookies
+      if (expires > 0 && expires < Date.now() / 1000) continue;
+
+      cookies.push({
+        name: row.name,
+        value: cookieValue,
+        domain: row.host_key,
+        path: row.path || '/',
+        expires,
+        httpOnly: !!row.is_httponly,
+        secure: !!row.is_secure,
+        sameSite: sameSiteMap[row.samesite] || 'None',
+      });
+    }
+  } catch (e) {
+    console.warn(`[browser] Failed to read/decrypt cookies: ${e.message}`);
+  } finally {
+    try { db.close(); } catch {}
+  }
+
+  console.log(`[browser] Decrypted ${cookies.length} cookies from ${browserType} profile`);
+  return cookies;
+}
+
+/**
  * Detect Chrome/Edge/Chromium profile directories on the system.
  * Scans common User Data locations and reads Preferences files to get
  * human-readable profile names.
@@ -12773,6 +12919,133 @@ function detectChromeProfiles() {
   }
 
   return profiles;
+}
+
+// ── Shared system browser: one-time CDP setup ──
+// Ensures Chrome is running with --remote-debugging-port=9222.
+// Called ONCE on first browser need; cached for subsequent calls.
+// Self-heals if Chrome was quit externally (re-probes port 9222).
+const CDP_PORT = 9222;
+let _chromeDebuggableReady = false;
+
+async function ensureChromeDebuggable() {
+  const http = await import('node:http');
+
+  const probeCDP = (port) => new Promise((resolveP) => {
+    const req = http.get(`http://127.0.0.1:${port}/json/version`, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolveP(true));
+    });
+    req.on('error', () => resolveP(false));
+    req.setTimeout(2000, () => { req.destroy(); resolveP(false); });
+  });
+
+  // Fast path: already set up and port still alive
+  if (_chromeDebuggableReady && await probeCDP(CDP_PORT)) {
+    return CDP_PORT;
+  }
+
+  // Step 1: Chrome already has debugging enabled
+  if (await probeCDP(CDP_PORT)) {
+    console.log(`[browser] Chrome already debuggable on port ${CDP_PORT}`);
+    _chromeDebuggableReady = true;
+    return CDP_PORT;
+  }
+
+  // Step 2: Chrome running without debugging — graceful restart
+  console.log(`[browser] Chrome not debuggable on port ${CDP_PORT} — restarting with debugging`);
+  broadcastSync({ type: 'notification', level: 'info', message: `Restarting Chrome with remote debugging on port ${CDP_PORT}...` });
+
+  const { execSync: execSyncCmd } = await import('node:child_process');
+
+  if (process.platform === 'darwin') {
+    try { execSyncCmd('osascript -e \'tell application "Google Chrome" to quit\'', { timeout: 3000 }); } catch {}
+    const quitStart = Date.now();
+    while (Date.now() - quitStart < 8000) {
+      try {
+        execSyncCmd('pgrep -x "Google Chrome"', { timeout: 1000 });
+        await new Promise(r => setTimeout(r, 500));
+      } catch { break; }
+    }
+    for (const procName of ['Google Chrome', 'Google Chrome Helper', 'Google Chrome Helper (GPU)', 'Google Chrome Helper (Renderer)', 'Google Chrome Helper (Plugin)']) {
+      try { execSyncCmd(`killall -9 "${procName}"`, { timeout: 3000 }); } catch {}
+    }
+  } else {
+    try { execSyncCmd('pkill -9 -f "google-chrome|chromium"', { timeout: 3000 }); } catch {}
+  }
+
+  await new Promise(r => setTimeout(r, 1500));
+
+  const savedCfg = loadBrowserConfig();
+  let _uddEnsure = savedCfg.userDataDir || null;
+  if (_uddEnsure && !_uddEnsure.startsWith('/') && !(/^[A-Z]:/i.test(_uddEnsure))) {
+    _uddEnsure = resolve(DATA_HOME, _uddEnsure);
+  }
+
+  let _pdEnsure = null;
+  if (_uddEnsure) {
+    const _normParts = _uddEnsure.replace(/[\\/]+$/, '').replace(/\\/g, '/').split('/');
+    const _lastPart = _normParts[_normParts.length - 1];
+    if (/^(default|profile \d+)$/i.test(_lastPart)) {
+      _pdEnsure = _normParts.pop();
+      _uddEnsure = _normParts.join('/');
+    }
+  }
+
+  if (_uddEnsure) {
+    for (const f of ['SingletonLock', 'DevToolsActivePort']) {
+      try { const p = resolve(_uddEnsure, f); if (existsSync(p)) unlinkSync(p); } catch {}
+    }
+    const _pf = resolve(_uddEnsure, _pdEnsure || 'Default', 'Preferences');
+    if (existsSync(_pf)) {
+      try {
+        const _pr = JSON.parse(readFileSync(_pf, 'utf-8'));
+        if (_pr.profile) { _pr.profile.exit_type = 'Normal'; _pr.profile.exited_cleanly = true; writeFileSync(_pf, JSON.stringify(_pr)); }
+      } catch {}
+    }
+  }
+
+  const _chromeBin = savedCfg.executablePath || findBrowserExecutable(savedCfg.channel)
+    || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
+  if (!_chromeBin || !existsSync(_chromeBin)) {
+    throw new Error(`Cannot find Chrome executable. Got: ${_chromeBin}`);
+  }
+
+  const _vpW = savedCfg.viewport?.width || 1280;
+  const _vpH = savedCfg.viewport?.height || 800;
+  const _chromeArgs = [
+    `--remote-debugging-port=${CDP_PORT}`,
+    '--no-first-run', '--no-default-browser-check', '--disable-popup-blocking',
+    `--window-size=${_vpW},${_vpH}`,
+    '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
+    '--restore-last-session',
+  ];
+  if (_uddEnsure) _chromeArgs.push(`--user-data-dir=${_uddEnsure}`);
+  if (_pdEnsure) _chromeArgs.push(`--profile-directory=${_pdEnsure}`);
+
+  const { spawn: spawnChild } = await import('node:child_process');
+  console.log(`[browser] Spawning: ${_chromeBin} ${_chromeArgs.join(' ')}`);
+  const _cp = spawnChild(_chromeBin, _chromeArgs, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+  _cp.stderr.on('data', () => {});
+  _cp.unref();
+
+  const _CDP_TIMEOUT = 20000;
+  const _launchStart = Date.now();
+  let _portReady = false;
+  while (Date.now() - _launchStart < _CDP_TIMEOUT) {
+    if (await probeCDP(CDP_PORT)) { _portReady = true; break; }
+    await new Promise(r => setTimeout(r, 300));
+  }
+
+  if (!_portReady) {
+    throw new Error(`Chrome did not expose debugging on port ${CDP_PORT} within ${_CDP_TIMEOUT / 1000}s`);
+  }
+
+  _chromeDebuggableReady = true;
+  console.log(`[browser] Chrome is debuggable on port ${CDP_PORT}`);
+  broadcastSync({ type: 'notification', level: 'info', message: `Chrome ready with debugging on port ${CDP_PORT}` });
+  return CDP_PORT;
 }
 
 /**
@@ -12939,12 +13212,17 @@ async function createBrowserSession(options = {}) {
 
   // Build context options from saved config
   const contextOpts = {
-    viewport: { width: vpW, height: vpH },
+    // Headed mode: viewport null lets the page render at the actual window size,
+    // exactly like a real browser. --window-size controls initial dimensions.
+    // Forcing a fixed viewport causes layout bugs on complex SPAs (Twitter, etc.)
+    // because the page CSS is constrained to an emulated box, not the real window.
+    viewport: null,
     ...(userAgent ? { userAgent } : {}), // omit entirely to let Chrome use its own default
     locale,
     timezoneId: savedCfg.timezoneId || options.timezone || undefined,
     screen: savedCfg.screen || { width: options.screenWidth || 1920, height: options.screenHeight || 1080 },
-    deviceScaleFactor: savedCfg.deviceScaleFactor || options.deviceScaleFactor || 1,
+    // Don't force deviceScaleFactor — let Chrome use its native DPR (2x on Retina).
+    // Forcing DPR 1 on a Retina display causes rendering differences vs real Chrome.
     isMobile: savedCfg.isMobile || false,
     hasTouch: savedCfg.hasTouch || false,
     javaScriptEnabled: savedCfg.javaScriptEnabled !== false,
@@ -12985,8 +13263,12 @@ async function createBrowserSession(options = {}) {
   // Recording: HAR
   if (savedCfg.recordHar?.path) contextOpts.recordHar = savedCfg.recordHar;
 
-  // Storage state: restore for clean contexts via contextOpts (persistent contexts restored post-launch)
-  const STORAGE_STATE_PATH = resolve(DATA_HOME, savedCfg.storageStatePath || 'data/browser-storage.json');
+  // Storage state: per-profile scoping to prevent cookie cross-contamination between profiles
+  const _baseStorageName = savedCfg.storageStatePath || 'data/browser-storage.json';
+  const _profileKey = _sourceProfilePath || savedCfg.userDataDir || null;
+  const STORAGE_STATE_PATH = _profileKey
+    ? resolve(DATA_HOME, _baseStorageName.replace('.json', `-${createHash('md5').update(_profileKey).digest('hex').slice(0, 12)}.json`))
+    : resolve(DATA_HOME, _baseStorageName);
   if (!userDataDir && savedCfg.persistStorage !== false && !savedCfg.clearStorageOnStart && existsSync(STORAGE_STATE_PATH)) {
     try {
       contextOpts.storageState = STORAGE_STATE_PATH;
@@ -12997,6 +13279,7 @@ async function createBrowserSession(options = {}) {
 
   let browser, context, page;
   let _isPersistent = false;
+  let _chromeProcess = null; // CDP mode: ref to spawned Chrome process
   let _profileMode = userDataDir ? 'direct' : 'clean';
   let _profileSourceName = _profileDirectory || (userDataDir ? 'Default' : null);
 
@@ -13005,193 +13288,97 @@ async function createBrowserSession(options = {}) {
     // launchPersistentContext returns a BrowserContext directly — no separate browser.newContext()
     _isPersistent = true;
 
-    // ── Profile mirror system ──
-    // When userDataDir points inside a real Chrome/Edge/Chromium User Data directory:
-    //   - If the source browser is NOT running: use the real profile directly with the
-    //     system browser binary. Full cookies, extensions, sessions — best experience.
-    //   - If the source browser IS running: mirror auth-critical files to an isolated dir
-    //     and launch with Playwright Chromium (avoids singleton/lock conflicts).
-    //     Cookies are encrypted on macOS and won't transfer, but Local Storage/IndexedDB will.
     const _browserLabel = _sourceBrowser === 'msedge' ? 'Edge' : _sourceBrowser === 'chromium' ? 'Chromium' : 'Chrome';
+
     if (_isInsideChromeDir) {
-      // ── Always mirror: Chrome refuses remote debugging on its own User Data dir ──
-      // Direct mode causes "DevTools remote debugging requires a non-default data directory"
-      // and a 30s timeout. Mirror mode works reliably regardless of whether Chrome is running.
-      _profileMode = 'mirror';
-      console.log(`[browser] ${_browserLabel} profile detected — using mirror mode`);
+      // ── CDP mode: connect to real Chrome via remote debugging ──
+      // Uses ensureChromeDebuggable() for one-time Chrome restart (cached).
+      // Subsequent sessions just connect — no kill/relaunch per session.
+      _profileMode = 'cdp';
+      console.log(`[browser] ${_browserLabel} profile detected — using CDP mode (port ${CDP_PORT})`);
 
-      const profileHash = createHash('md5').update(_sourceProfilePath || userDataDir).digest('hex').slice(0, 12);
-      const mirrorRoot = resolve(DATA_HOME, 'data', 'browser-profiles', profileHash);
-      // Wipe mirror dir completely on every launch. Stale GPU/shader caches from a
-      // different Chromium version (e.g., Playwright Chromium vs system Chrome) crash
-      // the browser. Auth files are re-synced below, so nothing is lost.
-      for (let _cleanAttempt = 1; _cleanAttempt <= 3; _cleanAttempt++) {
-        try {
-          if (existsSync(mirrorRoot)) { rmSync(mirrorRoot, { recursive: true, force: true }); }
-          break; // success
-        } catch (e) {
-          if (_cleanAttempt < 3) {
-            console.warn(`[browser] Mirror cleanup attempt ${_cleanAttempt}/3 failed (${e.code}), retrying...`);
-            await new Promise(r => setTimeout(r, 500 * _cleanAttempt));
-          } else {
-            console.warn(`[browser] Could not clean mirror dir after 3 attempts: ${e.message}`);
-          }
-        }
-      }
-      const mirrorDefault = resolve(mirrorRoot, 'Default');
-      mkdirSync(mirrorDefault, { recursive: true });
-      console.log(`[browser] Mirroring ${_profileSourceName} → ${mirrorRoot} (clean)`);
+      await ensureChromeDebuggable();
+      const cdpEndpoint = `http://127.0.0.1:${CDP_PORT}`;
 
-      // Sync root-level files from Chrome User Data dir to mirror root.
-      // Chrome CRASHES without Local State (GPU config, encryption keys, profile metadata).
-      // userDataDir here is still the Chrome User Data root (before reassignment to mirrorRoot).
-      const chromeRoot = userDataDir; // e.g., ~/Library/Application Support/Google/Chrome
-      const rootFilesToSync = ['Local State', 'First Run', 'Last Version'];
-      for (const file of rootFilesToSync) {
-        const src = resolve(chromeRoot, file);
-        const dst = resolve(mirrorRoot, file);
-        try {
-          if (existsSync(src)) copyFileSync(src, dst);
-        } catch (e) {
-          if (file === 'Local State') console.warn(`[browser] Could not copy ${file}: ${e.message}`);
-        }
-      }
-      // Create First Run marker if it doesn't exist (prevents first-run wizard)
-      const firstRunPath = resolve(mirrorRoot, 'First Run');
-      if (!existsSync(firstRunPath)) {
-        try { writeFileSync(firstRunPath, ''); } catch {}
-      }
+      // ── Connect via CDP ──
+      console.log(`[browser] Connecting via CDP: ${cdpEndpoint}`);
+      browser = await chromium.connectOverCDP(cdpEndpoint);
+      const contexts = browser.contexts();
+      context = contexts[0] || await browser.newContext(contextOpts);
 
-      // Full recursive copy of the source profile into mirror's Default/
-      // Using the same Chrome binary means GPU/shader caches are compatible.
-      if (_sourceProfilePath && existsSync(_sourceProfilePath)) {
-        try {
-          cpSync(_sourceProfilePath, mirrorDefault, { recursive: true, force: true });
-          console.log(`[browser] Full profile copy: ${_profileSourceName} → mirror Default/`);
-        } catch (e) {
-          console.warn(`[browser] Full profile copy failed, falling back to partial: ${e.message}`);
-        }
-        // Remove ALL SQLite journals and LevelDB locks recursively.
-        // Chrome profiles have 20+ SQLite databases — a hardcoded list misses many
-        // (History, DIPS, Network Action Predictor, etc.) causing "error opening
-        // your profile" when databases are copied mid-transaction while Chrome runs.
-        const junkPatterns = /(-wal|-shm|-journal)$/;
-        const junkExact = new Set(['LOCK', 'lockfile', 'LOG', 'LOG.old']);
-        let cleanedCount = 0;
-        try {
-          const entries = readdirSync(mirrorDefault, { recursive: true });
-          for (const rel of entries) {
-            const name = (typeof rel === 'string' ? rel : String(rel)).split('/').pop();
-            if (junkPatterns.test(name) || junkExact.has(name)) {
-              const full = resolve(mirrorDefault, typeof rel === 'string' ? rel : String(rel));
-              try { unlinkSync(full); cleanedCount++; } catch {}
-            }
-          }
-        } catch {}
-        if (cleanedCount) console.log(`[browser] Cleaned ${cleanedCount} lock/journal files from mirror profile`);
-      }
-      userDataDir = mirrorRoot;
-      _profileDirectory = null; // mirror uses "Default" subfolder directly
+      // Open a fresh page for the automation (don't disturb existing tabs)
+      page = await context.newPage();
 
-      // Clean singleton lock files from the mirror dir
+      broadcastSync({ type: 'notification', level: 'info', message: `Connected to ${_browserLabel} profile "${_profileSourceName || 'Default'}" via CDP on port ${CDP_PORT}.` });
+
+    } else {
+      // ── Non-Chrome persistent profile: use Playwright's launchPersistentContext ──
+
+      // Clean singleton lock files
       for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
         const lf = resolve(userDataDir, lockFile);
         try { if (existsSync(lf)) { unlinkSync(lf); console.log(`[browser] Removed stale ${lockFile}`); } } catch {}
       }
 
-      // Mirror mode: use the system browser binary for full compatibility.
-      // The full profile was copied recursively, so GPU/shader caches are compatible
-      // with the same Chrome version. Add GPU-safety flags to prevent crashes from
-      // stale caches that may have been mid-write when copied.
-      stealthArgs.push('--disable-gpu-shader-disk-cache', '--disable-gpu-program-cache');
-      // Keep the system executable already set in launchOpts — do NOT override with Playwright Chromium.
-      // If no system executable was found, fall back to Playwright Chromium as last resort.
-      if (!launchOpts.executablePath && !launchOpts.channel) {
+      if (_profileDirectory) {
+        stealthArgs.push(`--profile-directory=${_profileDirectory}`);
+        console.log(`[browser] Using --profile-directory=${_profileDirectory}`);
+      }
+
+      // Pre-launch: clean crash markers
+      const _prefsFile = resolve(userDataDir, _profileDirectory || 'Default', 'Preferences');
+      if (existsSync(_prefsFile)) {
         try {
-          const pwPath = chromium.executablePath();
-          if (existsSync(pwPath)) {
-            launchOpts.executablePath = pwPath;
-            console.log(`[browser] Mirror: no system browser found, falling back to Playwright Chromium`);
+          const _prefs = JSON.parse(readFileSync(_prefsFile, 'utf-8'));
+          if (_prefs.profile) {
+            _prefs.profile.exit_type = 'Normal';
+            _prefs.profile.exited_cleanly = true;
+            writeFileSync(_prefsFile, JSON.stringify(_prefs));
           }
         } catch {}
-      } else {
-        console.log(`[browser] Mirror: using system ${_browserLabel} binary (full profile copy)`);
       }
 
-      broadcastSync({ type: 'notification', level: 'info', message: `Using profile copy of ${_profileSourceName} for browser automation.` });
-    }
+      const _persistentLaunchOpts = {
+        ...launchOpts,
+        ...contextOpts,
+        ignoreDefaultArgs: [
+          '--disable-extensions',
+          '--disable-component-extensions-with-background-pages',
+          '--disable-default-apps',
+          '--enable-automation',
+          '--disable-sync',
+        ],
+      };
 
-    // Clean singleton lock files for ALL persistent profiles (not just mirrors)
-    // Stale locks from previous crashed sessions prevent browser launch
-    for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
-      const lf = resolve(userDataDir, lockFile);
-      try { if (existsSync(lf)) { unlinkSync(lf); console.log(`[browser] Removed stale ${lockFile}`); } } catch {}
-    }
-
-    // Add --profile-directory if targeting a specific profile subfolder (e.g., "Profile 1")
-    // Mirror mode clears _profileDirectory (uses "Default" directly), so this only applies to non-Chrome profiles
-    if (_profileDirectory) {
-      stealthArgs.push(`--profile-directory=${_profileDirectory}`);
-      console.log(`[browser] Using --profile-directory=${_profileDirectory}`);
-    }
-
-    // Pre-launch: clean crash markers to prevent "didn't shut down correctly" dialog
-    const _prefsFile = resolve(userDataDir, _profileDirectory || 'Default', 'Preferences');
-    if (existsSync(_prefsFile)) {
+      console.log(`[browser] Launching persistent context at: ${userDataDir}${_profileDirectory ? ` (profile: ${_profileDirectory})` : ''}`);
       try {
-        const _prefs = JSON.parse(readFileSync(_prefsFile, 'utf-8'));
-        if (_prefs.profile) {
-          _prefs.profile.exit_type = 'Normal';
-          _prefs.profile.exited_cleanly = true;
-          writeFileSync(_prefsFile, JSON.stringify(_prefs));
+        context = await chromium.launchPersistentContext(userDataDir, _persistentLaunchOpts);
+      } catch (err) {
+        const msg = err.message || '';
+        if (msg.includes('ProcessSingleton') || msg.includes('already in use') || msg.includes('lock') || msg.includes('SingletonLock')) {
+          throw new Error(`Browser profile is locked — close all ${_browserLabel || 'Chrome'} windows using this profile and try again. Original error: ${msg}`);
         }
-      } catch {}
-    }
-
-    const _persistentLaunchOpts = {
-      ...launchOpts,
-      ...contextOpts,
-      ignoreDefaultArgs: [
-        '--disable-extensions',
-        '--disable-component-extensions-with-background-pages',
-        '--disable-default-apps',
-        '--enable-automation',
-        '--disable-sync',
-        // Keep --password-store=basic and --use-mock-keychain (Playwright defaults).
-        // These ensure cookies are stored in portable basic format, not encrypted
-        // via system keychain — prevents cookie loss when browser executable changes.
-      ],
-    };
-
-    console.log(`[browser] Launching persistent context at: ${userDataDir}${_profileDirectory ? ` (profile: ${_profileDirectory})` : ''}`);
-    try {
-      context = await chromium.launchPersistentContext(userDataDir, _persistentLaunchOpts);
-    } catch (err) {
-      const msg = err.message || '';
-      if (msg.includes('ProcessSingleton') || msg.includes('already in use') || msg.includes('lock') || msg.includes('SingletonLock')) {
-        throw new Error(`Browser profile is locked — close all ${_browserLabel || 'Chrome'} windows using this profile and try again. Original error: ${msg}`);
+        throw err;
       }
-      throw err;
-    }
 
-    // Verify the browser is still alive — singleton may cause immediate exit
-    await new Promise(r => setTimeout(r, 500));
-    let contextAlive = true;
-    try {
-      const testPages = context.pages();
-      if (testPages.length === 0) contextAlive = false;
-    } catch { contextAlive = false; }
+      // Verify alive
+      await new Promise(r => setTimeout(r, 500));
+      let contextAlive = true;
+      try {
+        const testPages = context.pages();
+        if (testPages.length === 0) contextAlive = false;
+      } catch { contextAlive = false; }
 
-    if (!contextAlive) {
-      throw new Error(`Browser closed immediately after launch — ${_browserLabel || 'Chrome'} is likely already running with this profile. Close ALL ${_browserLabel || 'Chrome'} windows and background processes (check system tray), then try again.`);
-    }
-    browser = context; // persistent context IS the top-level object (no parent browser)
+      if (!contextAlive) {
+        throw new Error(`Browser closed immediately after launch — profile may be locked. Close ALL browser windows and try again.`);
+      }
+      browser = context;
 
-    // Close any restored tabs from previous Chrome session, then open a fresh page
-    const existingPages = context.pages();
-    page = await context.newPage();
-    for (const p of existingPages) {
-      await p.close().catch(() => {});
+      const existingPages = context.pages();
+      page = await context.newPage();
+      for (const p of existingPages) {
+        await p.close().catch(() => {});
+      }
     }
   } else {
     // ── Standard: clean sandboxed browser ──
@@ -13201,16 +13388,15 @@ async function createBrowserSession(options = {}) {
   }
 
   // ── Restore saved cookies/localStorage from storageState ──
-  // For persistent/mirror contexts, Playwright doesn't support storageState as a launch option,
-  // so we inject cookies after launch. For clean contexts, storageState was already set via contextOpts.
-  if (_isPersistent && savedCfg.persistStorage !== false && !savedCfg.clearStorageOnStart) {
-    const _storageStatePath = resolve(DATA_HOME, savedCfg.storageStatePath || 'data/browser-storage.json');
-    if (existsSync(_storageStatePath)) {
+  // Skip for CDP mode — real Chrome already has all cookies natively.
+  // For non-Chrome persistent contexts, inject cookies after launch.
+  if (_isPersistent && _profileMode !== 'cdp' && savedCfg.persistStorage !== false && !savedCfg.clearStorageOnStart) {
+    if (existsSync(STORAGE_STATE_PATH)) {
       try {
-        const savedState = JSON.parse(readFileSync(_storageStatePath, 'utf-8'));
+        const savedState = JSON.parse(readFileSync(STORAGE_STATE_PATH, 'utf-8'));
         if (savedState.cookies && savedState.cookies.length > 0) {
           await context.addCookies(savedState.cookies);
-          console.log(`[browser] Restored ${savedState.cookies.length} cookies from ${_storageStatePath}`);
+          console.log(`[browser] Restored ${savedState.cookies.length} cookies from ${STORAGE_STATE_PATH}`);
         }
         // Restore localStorage lazily via addInitScript — injects stored items
         // on first visit to each origin, before page scripts run. Avoids creating
@@ -13243,8 +13429,26 @@ async function createBrowserSession(options = {}) {
     }
   }
 
+  // ── Decrypt and inject cookies from Chrome profile (macOS) ──
+  // Mirror mode copies the Cookies DB, but values are encrypted with the system Keychain.
+  // Decrypt them and inject via addCookies() so the user's Chrome logins carry over.
+  if (_isPersistent && _profileMode === 'mirror' && !savedCfg.clearStorageOnStart) {
+    const mirrorProfileDir = resolve(userDataDir, _profileDirectory || 'Default');
+    const decryptedCookies = decryptChromeCookies(mirrorProfileDir, _sourceBrowser || 'chrome');
+    if (decryptedCookies.length > 0) {
+      try {
+        await context.addCookies(decryptedCookies);
+        console.log(`[browser] Injected ${decryptedCookies.length} decrypted ${_sourceBrowser || 'chrome'} cookies`);
+      } catch (e) {
+        console.warn(`[browser] Failed to inject decrypted cookies: ${e.message}`);
+      }
+    }
+  }
+
   // ── CDP stealth injections (if enabled) ──
-  const doStealth = savedCfg.stealthFingerprint !== false;
+  // Skip for CDP mode — real Chrome doesn't need automation-hiding and overwriting
+  // window.chrome.runtime crashes Chrome's internal extension messaging (SIGSEGV).
+  const doStealth = savedCfg.stealthFingerprint !== false && _profileMode !== 'cdp';
   if (doStealth) {
     const cdpStealth = await page.context().newCDPSession(page);
     try {
@@ -13311,6 +13515,8 @@ async function createBrowserSession(options = {}) {
     _isPersistent,
     _profileMode: _profileMode || 'clean',
     _profileSourceName: _profileSourceName || null,
+    _storageStatePath: STORAGE_STATE_PATH,
+    _chromeProcess: _chromeProcess || null, // CDP mode: spawned Chrome process
     clients: new Set(),       // WebSocket connections for screencast
     screencastActive: false,
     createdAt: Date.now(),
@@ -13390,6 +13596,8 @@ async function createBrowserSession(options = {}) {
   // Handle context close (browser quit / crash)
   context.on('close', () => {
     console.log(`Browser context closed for session ${sessionId}${session._agentOwned ? ` (agent-owned: ${session._agentOwned})` : ''}`);
+    // Stop autosave interval
+    if (session._autosaveInterval) { clearInterval(session._autosaveInterval); session._autosaveInterval = null; }
     session.clients.forEach(ws => {
       if (ws.readyState === 1) ws.close(1000, 'Browser closed');
     });
@@ -13401,6 +13609,25 @@ async function createBrowserSession(options = {}) {
   });
 
   browserSessions.set(sessionId, session);
+
+  // ── Periodic cookie autosave (every 30s) ──
+  // Protects against cookie loss when the user closes the Chrome window directly.
+  // Skip for CDP mode — real Chrome persists its own cookies natively.
+  if (savedCfg.persistStorage !== false && _profileMode !== 'cdp') {
+    session._autosaveInterval = setInterval(async () => {
+      if (!session.context) { clearInterval(session._autosaveInterval); return; }
+      try {
+        const dir = dirname(STORAGE_STATE_PATH);
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        await session.context.storageState({ path: STORAGE_STATE_PATH });
+        session._lastStorageSave = Date.now();
+      } catch {
+        // Context is dead — stop autosaving
+        clearInterval(session._autosaveInterval);
+        session._autosaveInterval = null;
+      }
+    }, 30000);
+  }
   return {
     sessionId,
     wsEndpoint: _isPersistent ? null : (browser.wsEndpoint?.() || null),
@@ -13416,7 +13643,7 @@ async function startScreencast(session) {
   if (session.screencastActive) return;
 
   const scCfg = loadBrowserConfig().screencast || {};
-  if (scCfg.disabled) {
+  if (scCfg.disabled !== false) {
     console.log('[screencast] Stream disabled in browser config — skipping');
     return;
   }
@@ -13567,45 +13794,67 @@ async function destroyBrowserSession(sessionId) {
   // Remove from Map immediately to prevent races (new sessions seeing zombie entries)
   browserSessions.delete(sessionId);
 
-  // Save storage state (cookies, localStorage) for ALL context types.
-  // Mirror dirs get wiped on next launch, so storageState is the only way
-  // to preserve sessions (Twitter logins, etc.) across browser restarts.
+  // Save storage state (cookies, localStorage) — skip for CDP mode (Chrome persists its own).
   const savedCfg = loadBrowserConfig();
-  if (savedCfg.persistStorage !== false && session.context) {
-    const storagePath = resolve(DATA_HOME, savedCfg.storageStatePath || 'data/browser-storage.json');
+  if (savedCfg.persistStorage !== false && session.context && !session._chromeProcess) {
+    // Use per-profile storage path from session (set at creation), fall back to config default
+    const storagePath = session._storageStatePath || resolve(DATA_HOME, savedCfg.storageStatePath || 'data/browser-storage.json');
     try {
       const dir = dirname(storagePath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       await session.context.storageState({ path: storagePath });
+      session._lastStorageSave = Date.now();
       console.log(`  Storage state saved to ${storagePath}`);
     } catch (err) {
       console.warn('Failed to save storage state:', err.message);
     }
   }
 
+  if (session._autosaveInterval) { clearInterval(session._autosaveInterval); session._autosaveInterval = null; }
   if (session.graceTimer) clearTimeout(session.graceTimer);
   try { await stopScreencast(session); } catch {}
-  if (session._isPersistent) {
-    // Persistent context: close the context which also kills the browser process
-    try { await session.context.close(); } catch {}
-    // Mark profile as cleanly exited so next launch doesn't show crash dialog
-    // Check both the config's userDataDir and any mirror profile directories
+  if (session._profileMode === 'cdp' && !session._chromeProcess) {
+    // CDP mode connected to already-running Chrome — just disconnect, don't kill Chrome
+    try { await session.browser.close(); } catch {}
+    console.log(`[browser] Disconnected from running Chrome (session ${sessionId})`);
+  } else if (session._chromeProcess) {
+    // CDP mode where WE launched Chrome — disconnect Playwright, then kill Chrome
+    try { await session.browser.close(); } catch {}
+    try {
+      if (!session._chromeProcess.killed) {
+        session._chromeProcess.kill('SIGTERM');
+        setTimeout(() => {
+          try { if (!session._chromeProcess.killed) session._chromeProcess.kill('SIGKILL'); } catch {}
+        }, 3000);
+      }
+    } catch {}
+    // Mark profile as cleanly exited
     const _cfg = loadBrowserConfig();
-    const dirsToClean = [];
     if (_cfg.userDataDir) {
-      dirsToClean.push(_cfg.userDataDir, resolve(DATA_HOME, _cfg.userDataDir));
+      const normalized = _cfg.userDataDir.replace(/[\\/]+$/, '').replace(/\\/g, '/');
+      const parts = normalized.split('/');
+      const lastPart = parts[parts.length - 1];
+      const isProfileSubdir = /^(default|profile \d+)$/i.test(lastPart);
+      const userDataRoot = isProfileSubdir ? parts.slice(0, -1).join('/') : normalized;
+      const profileDir = isProfileSubdir ? lastPart : 'Default';
+      const pp = resolve(userDataRoot, profileDir, 'Preferences');
+      if (existsSync(pp)) {
+        try {
+          const prefs = JSON.parse(readFileSync(pp, 'utf-8'));
+          if (prefs.profile) {
+            prefs.profile.exit_type = 'Normal';
+            prefs.profile.exited_cleanly = true;
+          }
+          writeFileSync(pp, JSON.stringify(prefs));
+        } catch {}
+      }
     }
-    // Also clean mirror profile dirs
-    const mirrorsDir = resolve(DATA_HOME, 'data', 'browser-profiles');
-    if (existsSync(mirrorsDir)) {
-      try {
-        for (const entry of readdirSync(mirrorsDir, { withFileTypes: true })) {
-          if (entry.isDirectory()) dirsToClean.push(resolve(mirrorsDir, entry.name));
-        }
-      } catch {}
-    }
-    for (const base of dirsToClean) {
-      const pp = resolve(base, 'Default', 'Preferences');
+  } else if (session._isPersistent) {
+    // Persistent context (non-Chrome profiles): close context kills browser
+    try { await session.context.close(); } catch {}
+    const _cfg = loadBrowserConfig();
+    if (_cfg.userDataDir) {
+      const pp = resolve(_cfg.userDataDir, 'Default', 'Preferences');
       if (existsSync(pp)) {
         try {
           const prefs = JSON.parse(readFileSync(pp, 'utf-8'));

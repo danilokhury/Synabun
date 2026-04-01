@@ -65,13 +65,13 @@ function deepParam(params, name) {
   return String(current);
 }
 function renderTitleForCall(metadata) {
-  const titleFormat = metadata.title ?? import_protocolMetainfo.methodMetainfo.get(metadata.type + "." + metadata.method)?.title ?? metadata.method;
+  const titleFormat = metadata.title ?? (0, import_protocolMetainfo.getMetainfo)(metadata)?.title ?? metadata.method;
   return titleFormat.replace(/\{([^}]+)\}/g, (fullMatch, p1) => {
     return formatProtocolParam(metadata.params, p1) ?? fullMatch;
   });
 }
 function getActionGroup(metadata) {
-  return import_protocolMetainfo.methodMetainfo.get(metadata.type + "." + metadata.method)?.group;
+  return (0, import_protocolMetainfo.getMetainfo)(metadata)?.group;
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

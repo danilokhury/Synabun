@@ -48,6 +48,9 @@ class ConsoleMessage {
   location() {
     return this._event.location;
   }
+  timestamp() {
+    return this._event.timestamp;
+  }
   _inspect() {
     return this.text();
   }

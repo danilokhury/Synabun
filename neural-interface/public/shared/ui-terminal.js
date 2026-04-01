@@ -1941,41 +1941,41 @@ async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
  */
 async function openBrowserSession(url, fresh, _unused, force) {
   if (isGuest() && !hasPermission('browser')) return;
-  // Block floating browser window when stream is disabled
+  // Check if screencast streaming is disabled
+  let _streamOff = false;
   try {
     const cfgRes = await fetch('/api/browser/config');
     const cfgData = await cfgRes.json();
-    if (cfgData.config?.screencast?.disabled) {
-      console.log('[browser] Stream disabled — skipping openBrowserSession');
-      return;
-    }
+    _streamOff = cfgData.config?.screencast?.disabled !== false;
   } catch {}
   // Auto-unstick _opening if it's been true for over 10 seconds (previous attempt crashed/hung)
-  if (_opening && _openingAt && (Date.now() - _openingAt > 10000)) {
+  if (!_streamOff && _opening && _openingAt && (Date.now() - _openingAt > 10000)) {
     console.warn('[browser] _opening guard stuck for >10s, resetting');
     _opening = false;
   }
-  // fresh or force bypass the _opening guard
-  if (_opening && !fresh && !force) return;
+  // fresh or force bypass the _opening guard (only relevant when stream is on)
+  if (!_streamOff && _opening && !fresh && !force) return;
 
   // If a browser tab already exists and not requesting fresh/force, just switch to it
   // BUT only if the underlying session is still alive (WebSocket open)
-  const existingBrowserTab = document.querySelector('.term-tab[data-profile="browser"]');
-  if (existingBrowserTab && !url && !fresh && !force) {
-    const liveSession = _sessions.find(s => s._isBrowser && !s.dead && s.ws && s.ws.readyState === WebSocket.OPEN);
-    if (liveSession) {
-      existingBrowserTab.click();
-      return;
+  if (!_streamOff) {
+    const existingBrowserTab = document.querySelector('.term-tab[data-profile="browser"]');
+    if (existingBrowserTab && !url && !fresh && !force) {
+      const liveSession = _sessions.find(s => s._isBrowser && !s.dead && s.ws && s.ws.readyState === WebSocket.OPEN);
+      if (liveSession) {
+        existingBrowserTab.click();
+        return;
+      }
+      // Session is dead/stale — clean up before creating a fresh one
+      const deadIdx = _sessions.findIndex(s => s._isBrowser && (!s.ws || s.ws.readyState !== WebSocket.OPEN));
+      if (deadIdx >= 0) closeSession(deadIdx);
     }
-    // Session is dead/stale — clean up before creating a fresh one
-    const deadIdx = _sessions.findIndex(s => s._isBrowser && (!s.ws || s.ws.readyState !== WebSocket.OPEN));
-    if (deadIdx >= 0) closeSession(deadIdx);
   }
 
   _opening = true;
   _openingAt = Date.now();
   try {
-  ensurePanel();
+  if (!_streamOff) ensurePanel();
 
   // fresh=true: close ALL existing browser sessions so MCP tools auto-select ours
   if (fresh) {
@@ -1986,10 +1986,12 @@ async function openBrowserSession(url, fresh, _unused, force) {
         await deleteBrowserSession(s.id).catch(() => {});
       }
       // Also close any existing browser tabs in the UI
-      document.querySelectorAll('.term-tab[data-profile="browser"]').forEach(tab => {
-        const idx = Array.from(document.querySelectorAll('.term-tab')).indexOf(tab);
-        if (idx >= 0 && _sessions[idx]) closeTab(idx);
-      });
+      if (!_streamOff) {
+        document.querySelectorAll('.term-tab[data-profile="browser"]').forEach(tab => {
+          const idx = Array.from(document.querySelectorAll('.term-tab')).indexOf(tab);
+          if (idx >= 0 && _sessions[idx]) closeTab(idx);
+        });
+      }
     } catch (e) { /* ignore cleanup errors */ }
   }
 
@@ -2003,6 +2005,14 @@ async function openBrowserSession(url, fresh, _unused, force) {
   };
   const browserOpts = {};
   const { sessionId, profileMode, profileSource } = await createBrowserSession(startUrl, null, null, fingerprint, browserOpts);
+
+  // Screencast disabled — browser launched headfully on desktop, no floating window needed
+  if (_streamOff) {
+    console.log('[browser] Headful browser launched:', sessionId, '→', startUrl);
+    notify('cli', NOTIF_TYPE.DONE, `Browser opened → ${new URL(startUrl).hostname}`);
+    _opening = false;
+    return;
+  }
 
   // Build browser viewport: address bar + canvas
   const viewport = document.createElement('div');
@@ -2264,7 +2274,7 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
   try {
     const cfgRes = await fetch('/api/browser/config');
     const cfgData = await cfgRes.json();
-    if (cfgData.config?.screencast?.disabled) {
+    if (cfgData.config?.screencast?.disabled !== false) {
       console.log('[browser] Stream disabled — suppressing floating browser window for', sessionId);
       return;
     }
@@ -4737,7 +4747,7 @@ export async function initTerminal() {
     try {
       const cfgRes = await fetch('/api/browser/config');
       const cfgData = await cfgRes.json();
-      if (cfgData.config?.screencast?.disabled) {
+      if (cfgData.config?.screencast?.disabled !== false) {
         console.log('[browser] Stream disabled — skipping floating browser window');
         return;
       }
@@ -4797,7 +4807,7 @@ export async function initTerminal() {
     try {
       const cfgRes = await fetch('/api/browser/config');
       const cfgData = await cfgRes.json();
-      _streamDisabled = !!cfgData.config?.screencast?.disabled;
+      _streamDisabled = cfgData.config?.screencast?.disabled !== false;
     } catch {}
     const liveBrowserMap = _streamDisabled ? new Map() : new Map(liveBrowserSessions.map(s => [s.id, s]));
 

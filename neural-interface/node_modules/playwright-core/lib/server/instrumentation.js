@@ -25,6 +25,7 @@ __export(instrumentation_exports, {
 module.exports = __toCommonJS(instrumentation_exports);
 var import_events = require("events");
 var import_crypto = require("./utils/crypto");
+var import_debugLogger = require("./utils/debugLogger");
 class SdkObject extends import_events.EventEmitter {
   constructor(parent, guidPrefix, guid) {
     super();
@@ -32,6 +33,10 @@ class SdkObject extends import_events.EventEmitter {
     this.setMaxListeners(0);
     this.attribution = { ...parent.attribution };
     this.instrumentation = parent.instrumentation;
+  }
+  apiLog(message) {
+    if (!this.attribution.playwright.options.isInternalPlaywright)
+      import_debugLogger.debugLogger.log("api", message);
   }
   closeReason() {
     return this.attribution.page?._closeReason || this.attribution.context?._closeReason || this.attribution.browser?._closeReason;

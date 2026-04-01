@@ -42,7 +42,6 @@ var import_utilsBundle = require("../../utilsBundle");
 var import_debugLogger = require("./debugLogger");
 var import_zones = require("./zones");
 var import_debug = require("./debug");
-var import_mcpBundle = require("../../mcpBundle");
 const pipelineAsync = util.promisify(import_stream.pipeline);
 class NodeZone {
   constructor(zone) {
@@ -105,11 +104,6 @@ const nodePlatform = {
   },
   streamWritable: (channel) => {
     return new WritableStreamImpl(channel);
-  },
-  zodToJsonSchema: (schema) => {
-    if ("_zod" in schema)
-      return import_mcpBundle.z.toJSONSchema(schema);
-    return (0, import_mcpBundle.zodToJsonSchema)(schema);
   },
   zones: {
     current: () => new NodeZone((0, import_zones.currentZone)()),

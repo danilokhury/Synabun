@@ -26,6 +26,8 @@ __reExport(utils_exports, require("./utils/isomorphic/ariaSnapshot"), module.exp
 __reExport(utils_exports, require("./utils/isomorphic/assert"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/colors"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/headers"), module.exports);
+__reExport(utils_exports, require("./utils/isomorphic/imageUtils"), module.exports);
+__reExport(utils_exports, require("./utils/isomorphic/jsonSchema"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/locatorGenerators"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/manualPromise"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/mimeType"), module.exports);
@@ -36,6 +38,7 @@ __reExport(utils_exports, require("./utils/isomorphic/rtti"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/semaphore"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/stackTrace"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/stringUtils"), module.exports);
+__reExport(utils_exports, require("./utils/isomorphic/formatUtils"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/time"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/timeoutRunner"), module.exports);
 __reExport(utils_exports, require("./utils/isomorphic/urlMatch"), module.exports);
@@ -51,7 +54,6 @@ __reExport(utils_exports, require("./server/utils/expectUtils"), module.exports)
 __reExport(utils_exports, require("./server/utils/fileUtils"), module.exports);
 __reExport(utils_exports, require("./server/utils/hostPlatform"), module.exports);
 __reExport(utils_exports, require("./server/utils/httpServer"), module.exports);
-__reExport(utils_exports, require("./server/utils/imageUtils"), module.exports);
 __reExport(utils_exports, require("./server/utils/network"), module.exports);
 __reExport(utils_exports, require("./server/utils/nodePlatform"), module.exports);
 __reExport(utils_exports, require("./server/utils/processLauncher"), module.exports);
@@ -71,6 +73,8 @@ var import_utilsBundle = require("./utilsBundle");
   ...require("./utils/isomorphic/assert"),
   ...require("./utils/isomorphic/colors"),
   ...require("./utils/isomorphic/headers"),
+  ...require("./utils/isomorphic/imageUtils"),
+  ...require("./utils/isomorphic/jsonSchema"),
   ...require("./utils/isomorphic/locatorGenerators"),
   ...require("./utils/isomorphic/manualPromise"),
   ...require("./utils/isomorphic/mimeType"),
@@ -81,6 +85,7 @@ var import_utilsBundle = require("./utilsBundle");
   ...require("./utils/isomorphic/semaphore"),
   ...require("./utils/isomorphic/stackTrace"),
   ...require("./utils/isomorphic/stringUtils"),
+  ...require("./utils/isomorphic/formatUtils"),
   ...require("./utils/isomorphic/time"),
   ...require("./utils/isomorphic/timeoutRunner"),
   ...require("./utils/isomorphic/urlMatch"),
@@ -96,7 +101,6 @@ var import_utilsBundle = require("./utilsBundle");
   ...require("./server/utils/fileUtils"),
   ...require("./server/utils/hostPlatform"),
   ...require("./server/utils/httpServer"),
-  ...require("./server/utils/imageUtils"),
   ...require("./server/utils/network"),
   ...require("./server/utils/nodePlatform"),
   ...require("./server/utils/processLauncher"),

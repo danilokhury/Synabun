@@ -43,7 +43,7 @@ var import_ffInput = require("./ffInput");
 var import_ffNetworkManager = require("./ffNetworkManager");
 var import_stackTrace = require("../../utils/isomorphic/stackTrace");
 var import_errors = require("../errors");
-var import_debugLogger = require("../utils/debugLogger");
+var import_videoRecorder = require("../videoRecorder");
 const UTILITY_WORLD_NAME = "__playwright_utility_world__";
 class FFPage {
   constructor(session, browserContext, opener) {
@@ -89,19 +89,14 @@ class FFPage {
       import_eventsHelper.eventsHelper.addEventListener(this._session, "Page.webSocketFrameSent", this._onWebSocketFrameSent.bind(this)),
       import_eventsHelper.eventsHelper.addEventListener(this._session, "Page.screencastFrame", this._onScreencastFrame.bind(this))
     ];
-    const screencast = this._page.screencast;
-    const videoOptions = screencast.launchVideoRecorder();
-    if (videoOptions)
-      screencast.startVideoRecording(videoOptions).catch((e) => import_debugLogger.debugLogger.log("error", e));
-    this._session.once("Page.ready", () => {
-      if (this._reportedAsNew)
-        return;
-      this._reportedAsNew = true;
-      this._page.reportAsNew(this._opener?._page);
-    });
-    this.addInitScript(new import_page.InitScript(""), UTILITY_WORLD_NAME).catch((e) => this._markAsError(e));
+    const promises = [];
+    if (!this._page.isStorageStatePage)
+      (0, import_videoRecorder.startAutomaticVideoRecording)(this._page);
+    promises.push(new Promise((f) => this._session.once("Page.ready", f)));
+    Promise.all(promises).then(() => this._reportAsNew(), (error) => this._reportAsNew(error));
+    this.addInitScript(new import_page.InitScript(this._page, ""), UTILITY_WORLD_NAME).catch((e) => this._reportAsNew(e));
   }
-  async _markAsError(error) {
+  _reportAsNew(error) {
     if (this._reportedAsNew)
       return;
     this._reportedAsNew = true;
@@ -203,7 +198,8 @@ class FFPage {
     const context = this._contextIdToContext.get(executionContextId);
     if (!context)
       return;
-    this._page.addConsoleMessage(null, type === "warn" ? "warning" : type, args.map((arg) => (0, import_ffExecutionContext.createHandle)(context, arg)), location);
+    const timestamp = Date.now();
+    this._page.addConsoleMessage(null, type === "warn" ? "warning" : type, args.map((arg) => (0, import_ffExecutionContext.createHandle)(context, arg)), location, void 0, timestamp);
   }
   _onDialogOpened(params) {
     this._page.browserContext.dialogManager.dialogDidOpen(new dialog.Dialog(
@@ -253,7 +249,7 @@ class FFPage {
     workerSession.on("Runtime.console", (event2) => {
       const { type, args, location } = event2;
       const context = worker.existingExecutionContext;
-      this._page.addConsoleMessage(worker, type, args.map((arg) => (0, import_ffExecutionContext.createHandle)(context, arg)), location);
+      this._page.addConsoleMessage(worker, type, args.map((arg) => (0, import_ffExecutionContext.createHandle)(context, arg)), location, void 0, Date.now());
     });
   }
   _onWorkerDestroyed(event) {
@@ -276,7 +272,7 @@ class FFPage {
     this._page._didCrash();
   }
   didClose() {
-    this._markAsError(new import_errors.TargetClosedError(this._page.closeReason()));
+    this._reportAsNew(new import_errors.TargetClosedError(this._page.closeReason()));
     this._session.dispose();
     import_eventsHelper.eventsHelper.removeEventListeners(this._eventListeners);
     this._networkManager.dispose();
@@ -417,23 +413,22 @@ class FFPage {
       throw e;
     });
   }
-  async startScreencast(options) {
-    await this._session.send("Page.startScreencast", options);
+  startScreencast(options) {
+    this._session.sendMayFail("Page.startScreencast", { width: options.width, height: options.height, quality: options.quality });
   }
-  async stopScreencast() {
-    await this._session.sendMayFail("Page.stopScreencast");
+  stopScreencast() {
+    this._session.sendMayFail("Page.stopScreencast");
   }
   _onScreencastFrame(event) {
-    this._page.screencast.throttleFrameAck(() => {
-      this._session.sendMayFail("Page.screencastFrameAck");
-    });
     const buffer = Buffer.from(event.data, "base64");
-    this._page.emit(import_page2.Page.Events.ScreencastFrame, {
+    this._page.screencast.onScreencastFrame({
       buffer,
       frameSwapWallTime: event.timestamp * 1e3,
       // timestamp is in seconds, we need to convert to milliseconds.
-      width: event.deviceWidth,
-      height: event.deviceHeight
+      viewportWidth: event.deviceWidth,
+      viewportHeight: event.deviceHeight
+    }, () => {
+      this._session.sendMayFail("Page.screencastFrameAck");
     });
   }
   rafCountForStablePosition() {
@@ -485,6 +480,8 @@ class FFPage {
   }
   shouldToggleStyleSheetToSyncAnimations() {
     return false;
+  }
+  async setDockTile(image) {
   }
 }
 function webSocketId(frameId, wsid) {

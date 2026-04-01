@@ -31,6 +31,8 @@ __export(registry_exports, {
   Registry: () => Registry,
   browserDirectoryToMarkerFilePath: () => browserDirectoryToMarkerFilePath,
   buildPlaywrightCLICommand: () => buildPlaywrightCLICommand,
+  defaultCacheDirectory: () => defaultCacheDirectory,
+  defaultRegistryDirectory: () => defaultRegistryDirectory,
   findChromiumChannelBestEffort: () => findChromiumChannelBestEffort,
   installBrowsersForNpmInstall: () => installBrowsersForNpmInstall,
   registry: () => registry,
@@ -467,25 +469,25 @@ const DOWNLOAD_PATHS = {
     "win64": "builds/android/%s/android.zip"
   }
 };
+const defaultCacheDirectory = (() => {
+  if (process.platform === "linux")
+    return process.env.XDG_CACHE_HOME || import_path.default.join(import_os.default.homedir(), ".cache");
+  if (process.platform === "darwin")
+    return import_path.default.join(import_os.default.homedir(), "Library", "Caches");
+  if (process.platform === "win32")
+    return process.env.LOCALAPPDATA || import_path.default.join(import_os.default.homedir(), "AppData", "Local");
+  throw new Error("Unsupported platform: " + process.platform);
+})();
+const defaultRegistryDirectory = import_path.default.join(defaultCacheDirectory, "ms-playwright");
 const registryDirectory = (() => {
   let result;
   const envDefined = (0, import_utils.getFromENV)("PLAYWRIGHT_BROWSERS_PATH");
-  if (envDefined === "0") {
+  if (envDefined === "0")
     result = import_path.default.join(__dirname, "..", "..", "..", ".local-browsers");
-  } else if (envDefined) {
+  else if (envDefined)
     result = envDefined;
-  } else {
-    let cacheDirectory;
-    if (process.platform === "linux")
-      cacheDirectory = process.env.XDG_CACHE_HOME || import_path.default.join(import_os.default.homedir(), ".cache");
-    else if (process.platform === "darwin")
-      cacheDirectory = import_path.default.join(import_os.default.homedir(), "Library", "Caches");
-    else if (process.platform === "win32")
-      cacheDirectory = process.env.LOCALAPPDATA || import_path.default.join(import_os.default.homedir(), "AppData", "Local");
-    else
-      throw new Error("Unsupported platform: " + process.platform);
-    result = import_path.default.join(cacheDirectory, "ms-playwright");
-  }
+  else
+    result = defaultRegistryDirectory;
   if (!import_path.default.isAbsolute(result)) {
     result = import_path.default.resolve((0, import_utils.getFromENV)("INIT_CWD") || process.cwd(), result);
   }
@@ -524,7 +526,7 @@ function readDescriptors(browsersJSON) {
   });
 }
 const allDownloadableDirectoriesThatEverExisted = ["android", "chromium", "firefox", "webkit", "ffmpeg", "firefox-beta", "chromium-tip-of-tree", "chromium-headless-shell", "chromium-tip-of-tree-headless-shell", "winldd"];
-const chromiumAliases = ["bidi-chromium", "chrome-for-testing"];
+const chromiumAliases = ["chrome-for-testing"];
 class Registry {
   constructor(browsersJSON) {
     const descriptors = readDescriptors(browsersJSON);
@@ -540,21 +542,37 @@ class Registry {
         const currentDockerVersion = (0, import_dependencies.readDockerVersionSync)();
         const preferredDockerVersion = currentDockerVersion ? (0, import_dependencies.dockerVersion)(currentDockerVersion.dockerImageNameTemplate) : null;
         const isOutdatedDockerImage = currentDockerVersion && preferredDockerVersion && currentDockerVersion.dockerImageName !== preferredDockerVersion.dockerImageName;
-        const prettyMessage = isOutdatedDockerImage ? [
-          `Looks like ${sdkLanguage === "javascript" ? "Playwright Test or " : ""}Playwright was just updated to ${preferredDockerVersion.driverVersion}.`,
-          `Please update docker image as well.`,
-          `-  current: ${currentDockerVersion.dockerImageName}`,
-          `- required: ${preferredDockerVersion.dockerImageName}`,
-          ``,
-          `<3 Playwright Team`
-        ].join("\n") : [
-          `Looks like ${sdkLanguage === "javascript" ? "Playwright Test or " : ""}Playwright was just installed or updated.`,
-          `Please run the following command to download new browser${installByDefault ? "s" : ""}:`,
-          ``,
-          `    ${installCommand}`,
-          ``,
-          `<3 Playwright Team`
-        ].join("\n");
+        const isFfmpeg = name === "ffmpeg";
+        let prettyMessage;
+        if (isOutdatedDockerImage) {
+          prettyMessage = [
+            `Looks like Playwright was just updated to ${preferredDockerVersion.driverVersion}.`,
+            `Please update docker image as well.`,
+            `-  current: ${currentDockerVersion.dockerImageName}`,
+            `- required: ${preferredDockerVersion.dockerImageName}`,
+            ``,
+            `<3 Playwright Team`
+          ].join("\n");
+        } else if (isFfmpeg) {
+          prettyMessage = [
+            `Video rendering requires ffmpeg binary.`,
+            `Downloading it will not affect any of the system-wide settings.`,
+            `Please run the following command:`,
+            ``,
+            `    ${buildPlaywrightCLICommand(sdkLanguage, "install ffmpeg")}`,
+            ``,
+            `<3 Playwright Team`
+          ].join("\n");
+        } else {
+          prettyMessage = [
+            `Looks like Playwright was just installed or updated.`,
+            `Please run the following command to download new browser${installByDefault ? "s" : ""}:`,
+            ``,
+            `    ${installCommand}`,
+            ``,
+            `<3 Playwright Team`
+          ].join("\n");
+        }
         throw new Error(`Executable doesn't exist at ${e}
 ${(0, import_ascii.wrapInASCIIBox)(prettyMessage, 1)}`);
       }
@@ -707,16 +725,6 @@ ${(0, import_ascii.wrapInASCIIBox)(prettyMessage, 1)}`);
       "linux": "/opt/firefox-nightly/firefox",
       "darwin": "/Applications/Firefox Nightly.app/Contents/MacOS/firefox",
       "win32": "\\Mozilla Firefox\\firefox.exe"
-    }));
-    this._executables.push(this._createBidiChromiumChannel("bidi-chrome-stable", {
-      "linux": "/opt/google/chrome/chrome",
-      "darwin": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-      "win32": `\\Google\\Chrome\\Application\\chrome.exe`
-    }));
-    this._executables.push(this._createBidiChromiumChannel("bidi-chrome-canary", {
-      "linux": "/opt/google/chrome-canary/chrome",
-      "darwin": "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-      "win32": `\\Google\\Chrome SxS\\Application\\chrome.exe`
     }));
     const firefox = descriptors.find((d) => d.name === "firefox");
     const firefoxExecutable = findExecutablePath(firefox.dir, "firefox");
@@ -891,7 +899,7 @@ Run "${buildPlaywrightCLICommand(sdkLanguage, "install " + name)}"` : "";
       name,
       browserName: "chromium",
       directory: void 0,
-      executablePath: (sdkLanguage) => executablePath(sdkLanguage, false),
+      executablePath: () => executablePath("", false),
       executablePathOrDie: (sdkLanguage) => executablePath(sdkLanguage, true),
       installType: install ? "install-script" : "none",
       _validateHostRequirements: () => Promise.resolve(),
@@ -929,49 +937,12 @@ Run "${buildPlaywrightCLICommand(sdkLanguage, "install " + name)}"` : "";
       name,
       browserName: "firefox",
       directory: void 0,
-      executablePath: (sdkLanguage) => executablePath(sdkLanguage, false),
+      executablePath: () => executablePath("", false),
       executablePathOrDie: (sdkLanguage) => executablePath(sdkLanguage, true),
       installType: "none",
       _validateHostRequirements: () => Promise.resolve(),
       _isHermeticInstallation: true,
       _install: install
-    };
-  }
-  _createBidiChromiumChannel(name, lookAt) {
-    const executablePath = (sdkLanguage, shouldThrow) => {
-      const suffix = lookAt[process.platform];
-      if (!suffix) {
-        if (shouldThrow)
-          throw new Error(`Chromium distribution '${name}' is not supported on ${process.platform}`);
-        return void 0;
-      }
-      const prefixes = process.platform === "win32" ? [
-        process.env.LOCALAPPDATA,
-        process.env.PROGRAMFILES,
-        process.env["PROGRAMFILES(X86)"],
-        // In some cases there is no PROGRAMFILES/(86) env var set but HOMEDRIVE is set.
-        process.env.HOMEDRIVE + "\\Program Files",
-        process.env.HOMEDRIVE + "\\Program Files (x86)"
-      ].filter(Boolean) : [""];
-      for (const prefix of prefixes) {
-        const executablePath2 = import_path.default.join(prefix, suffix);
-        if ((0, import_fileUtils.canAccessFile)(executablePath2))
-          return executablePath2;
-      }
-      if (!shouldThrow)
-        return void 0;
-      const location = prefixes.length ? ` at ${import_path.default.join(prefixes[0], suffix)}` : ``;
-      throw new Error(`Chromium distribution '${name}' is not found${location}`);
-    };
-    return {
-      name,
-      browserName: "chromium",
-      directory: void 0,
-      executablePath: (sdkLanguage) => executablePath(sdkLanguage, false),
-      executablePathOrDie: (sdkLanguage) => executablePath(sdkLanguage, true),
-      installType: "none",
-      _validateHostRequirements: () => Promise.resolve(),
-      _isHermeticInstallation: false
     };
   }
   executables() {
@@ -1032,8 +1003,8 @@ Run "${buildPlaywrightCLICommand(sdkLanguage, "install " + name)}"` : "";
       for (const executable of executables) {
         if (!executable._install)
           throw new Error(`ERROR: Playwright does not support installing ${executable.name}`);
-        const { embedderName } = (0, import_userAgent.getEmbedderName)();
-        if (!(0, import_utils.getAsBooleanFromENV)("CI") && !executable._isHermeticInstallation && !options?.force && executable.executablePath(embedderName)) {
+        if (!(0, import_utils.getAsBooleanFromENV)("CI") && !executable._isHermeticInstallation && !options?.force && executable.executablePath()) {
+          const { embedderName } = (0, import_userAgent.getEmbedderName)();
           const command = buildPlaywrightCLICommand(embedderName, "install --force " + executable.name);
           process.stderr.write("\n" + (0, import_ascii.wrapInASCIIBox)([
             `ATTENTION: "${executable.name}" is already installed on the system!`,
@@ -1414,6 +1385,8 @@ const registry = new Registry(require("../../../browsers.json"));
   Registry,
   browserDirectoryToMarkerFilePath,
   buildPlaywrightCLICommand,
+  defaultCacheDirectory,
+  defaultRegistryDirectory,
   findChromiumChannelBestEffort,
   installBrowsersForNpmInstall,
   registry,

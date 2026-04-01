@@ -47,9 +47,14 @@ async function request(method, path, body, timeout = DEFAULT_TIMEOUT) {
 export async function resolveSession(sessionId, autoCreate) {
     // Agent-scoped browser session — set by the agent orchestrator to pin
     // this MCP instance to a specific browser session (multi-agent isolation).
+    // Verify the pinned session still exists; fall through to auto-select if gone.
     const pinnedSession = process.env.SYNABUN_BROWSER_SESSION;
     if (pinnedSession && !sessionId) {
-        return { sessionId: pinnedSession };
+        const check = await request('GET', '/api/browser/sessions');
+        const active = (check.sessions || []).find(s => s.id === pinnedSession);
+        if (active)
+            return { sessionId: pinnedSession };
+        // Pinned session is gone — fall through to auto-select/create below
     }
     if (sessionId) {
         // Trust the server — it will 404 if the session doesn't exist.
@@ -68,7 +73,7 @@ export async function resolveSession(sessionId, autoCreate) {
         if (autoCreate) {
             const created = await request('POST', '/api/browser/sessions', {
                 url: autoCreate.url || 'about:blank',
-            });
+            }, LONG_TIMEOUT);
             if (created.error)
                 return { error: `Failed to auto-create session: ${created.error}` };
             return { sessionId: created.sessionId };
@@ -95,7 +100,7 @@ export async function listSessions() {
 export async function createSession(url) {
     return request('POST', '/api/browser/sessions', {
         url: url || 'about:blank',
-    });
+    }, LONG_TIMEOUT);
 }
 export async function closeSession(sessionId) {
     return request('DELETE', `/api/browser/sessions/${sessionId}`);

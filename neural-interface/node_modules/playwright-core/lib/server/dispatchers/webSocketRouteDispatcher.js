@@ -101,7 +101,7 @@ class WebSocketRouteDispatcher extends import_dispatcher.Dispatcher {
       }, data);
     }
     ++data.counter;
-    return await target.addInitScript(progress, `
+    return await target.addInitScript(`
       (() => {
         const module = {};
         ${rawWebSocketMockSource.source}
@@ -115,8 +115,8 @@ class WebSocketRouteDispatcher extends import_dispatcher.Dispatcher {
     if (!data || data.connection !== connection)
       return;
     if (--data.counter <= 0)
-      await context.removeExposedBindings([data.binding]);
-    await target.removeInitScripts([initScript]);
+      await data.binding.dispose();
+    await initScript.dispose();
   }
   async connect(params, progress) {
     await this._evaluateAPIRequest(progress, { id: this._id, type: "connect" });
@@ -152,8 +152,7 @@ class WebSocketRouteDispatcher extends import_dispatcher.Dispatcher {
 }
 function matchesPattern(dispatcher, baseURL, url) {
   for (const pattern of dispatcher._webSocketInterceptionPatterns || []) {
-    const urlMatch = pattern.regexSource ? new RegExp(pattern.regexSource, pattern.regexFlags) : pattern.glob;
-    if ((0, import_urlMatch.urlMatches)(baseURL, url, urlMatch, true))
+    if ((0, import_urlMatch.urlMatches)(baseURL, url, (0, import_urlMatch.deserializeURLMatch)(pattern), true))
       return true;
   }
   return false;

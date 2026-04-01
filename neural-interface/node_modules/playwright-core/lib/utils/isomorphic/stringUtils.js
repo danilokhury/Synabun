@@ -71,7 +71,7 @@ function formatObject(value, indent = "  ", mode = "multiline") {
   if (Array.isArray(value))
     return `[${value.map((o) => formatObject(o)).join(", ")}]`;
   if (typeof value === "object") {
-    const keys = Object.keys(value).filter((key) => value[key] !== void 0).sort();
+    const keys = Object.keys(value).filter((key) => key !== "timeout" && value[key] !== void 0).sort();
     if (!keys.length)
       return "{}";
     const tokens = [];
@@ -79,8 +79,8 @@ function formatObject(value, indent = "  ", mode = "multiline") {
       tokens.push(`${key}: ${formatObject(value[key])}`);
     if (mode === "multiline")
       return `{
-${tokens.join(`,
-${indent}`)}
+${tokens.map((t) => indent + t).join(`,
+`)}
 }`;
     return `{ ${tokens.join(", ")} }`;
   }

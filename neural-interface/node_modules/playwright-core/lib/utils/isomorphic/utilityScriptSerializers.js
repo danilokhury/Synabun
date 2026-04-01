@@ -57,6 +57,13 @@ function isTypedArray(obj, constructor) {
     return false;
   }
 }
+function isArrayBuffer(obj) {
+  try {
+    return obj instanceof ArrayBuffer || Object.prototype.toString.call(obj) === "[object ArrayBuffer]";
+  } catch (error) {
+    return false;
+  }
+}
 const typedArrayConstructors = {
   i8: Int8Array,
   ui8: Uint8Array,
@@ -141,6 +148,8 @@ function parseEvaluationResultValue(value, handles = [], refs = /* @__PURE__ */ 
       return handles[value.h];
     if ("ta" in value)
       return base64ToTypedArray(value.ta.b, typedArrayConstructors[value.ta.k]);
+    if ("ab" in value)
+      return base64ToTypedArray(value.ab.b, Uint8Array).buffer;
   }
   return value;
 }
@@ -206,6 +215,8 @@ ${value.stack}`;
     if (isTypedArray(value, ctor))
       return { ta: { b: typedArrayToBase64(value), k } };
   }
+  if (isArrayBuffer(value))
+    return { ab: { b: typedArrayToBase64(new Uint8Array(value)) } };
   const id = visitorInfo.visited.get(value);
   if (id)
     return { ref: id };

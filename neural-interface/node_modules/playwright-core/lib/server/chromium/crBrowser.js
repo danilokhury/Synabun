@@ -29,7 +29,8 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var crBrowser_exports = {};
 __export(crBrowser_exports, {
   CRBrowser: () => CRBrowser,
-  CRBrowserContext: () => CRBrowserContext
+  CRBrowserContext: () => CRBrowserContext,
+  shouldProxyLoopback: () => shouldProxyLoopback
 });
 module.exports = __toCommonJS(crBrowser_exports);
 var import_path = __toESM(require("path"));
@@ -54,6 +55,7 @@ class CRBrowser extends import_browser.Browser {
     this._serviceWorkers = /* @__PURE__ */ new Map();
     this._version = "";
     this._majorVersion = 0;
+    this._revision = "";
     this._tracingRecording = false;
     this._userAgent = "";
     this._connection = connection;
@@ -75,6 +77,7 @@ class CRBrowser extends import_browser.Browser {
     if (options.__testHookOnConnectToBrowser)
       await options.__testHookOnConnectToBrowser();
     const version = await session.send("Browser.getVersion");
+    browser._revision = version.revision;
     browser._version = version.product.substring(version.product.indexOf("/") + 1);
     try {
       browser._majorVersion = +browser._version.split(".")[0];
@@ -100,10 +103,10 @@ class CRBrowser extends import_browser.Browser {
     const proxy = options.proxyOverride || options.proxy;
     let proxyBypassList = void 0;
     if (proxy) {
-      if (process.env.PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK)
-        proxyBypassList = proxy.bypass;
-      else
+      if (shouldProxyLoopback(proxy.bypass))
         proxyBypassList = "<-loopback>" + (proxy.bypass ? `,${proxy.bypass}` : "");
+      else
+        proxyBypassList = proxy.bypass;
     }
     const { browserContextId } = await this._session.send("Target.createBrowserContext", {
       disposeOnDetach: true,
@@ -389,7 +392,8 @@ class CRBrowserContext extends import_browserContext.BrowserContext {
       ["midi-sysex", "midiSysex"],
       ["storage-access", "storageAccess"],
       ["local-fonts", "localFonts"],
-      ["local-network-access", ["localNetworkAccess", "localNetwork", "loopbackNetwork"]]
+      ["local-network-access", ["localNetworkAccess", "localNetwork", "loopbackNetwork"]],
+      ["screen-wake-lock", "wakeLockScreen"]
     ]);
     const grantPermissions = async (mapping) => {
       const filtered = permissions.flatMap((permission) => {
@@ -466,7 +470,6 @@ class CRBrowserContext extends import_browserContext.BrowserContext {
   async doClose(reason) {
     await this.dialogManager.closeBeforeUnloadDialogs();
     if (!this._browserContextId) {
-      await this.stopVideoRecording();
       await this._browser.close({ reason });
       return;
     }
@@ -478,9 +481,6 @@ class CRBrowserContext extends import_browserContext.BrowserContext {
       serviceWorker.didClose();
       this._browser._serviceWorkers.delete(targetId);
     }
-  }
-  async stopVideoRecording() {
-    await Promise.all(this._crPages().map((crPage) => crPage._page.screencast.stopVideoRecording()));
   }
   onClosePersistent() {
   }
@@ -513,8 +513,16 @@ class CRBrowserContext extends import_browserContext.BrowserContext {
     return rootSession.attachToTarget(targetId);
   }
 }
+function shouldProxyLoopback(bypass) {
+  if (process.env.PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK)
+    return false;
+  const hosts = (bypass || "").split(",").map((s) => s.trim());
+  const shouldBypassSomeLoopback = ["localhost", "127.0.0.1", "::1", "[::]", "[::1]", "<loopback>", "<-loopback>"].some((host) => hosts.includes(host));
+  return !shouldBypassSomeLoopback;
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   CRBrowser,
-  CRBrowserContext
+  CRBrowserContext,
+  shouldProxyLoopback
 });

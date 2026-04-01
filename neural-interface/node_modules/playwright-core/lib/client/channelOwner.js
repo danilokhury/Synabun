@@ -118,7 +118,7 @@ class ChannelOwner extends import_eventEmitter.EventEmitter {
       get: (obj, prop) => {
         if (typeof prop === "string") {
           const validator = (0, import_validator.maybeFindValidator)(this._type, prop, "Params");
-          const { internal } = import_protocolMetainfo.methodMetainfo.get(this._type + "." + prop) || {};
+          const { internal } = (0, import_protocolMetainfo.getMetainfo)({ type: this._type, method: prop }) || {};
           if (validator) {
             return async (params) => {
               return await this._wrapApiCall(async (apiZone) => {

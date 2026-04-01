@@ -30,38 +30,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getHookFeatures, detectProject, ensureProjectCategories, cleanupStaleLoops, DATA_DIR } from './shared.mjs';
 
+// Cross-platform safety: catch uncaught errors and output valid hook JSON
+const _fallback = () => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'SynaBun hook error. Follow CLAUDE.md memory rules manually.' } });
+process.on('uncaughtException', () => { try { process.stdout.write(_fallback()); } catch {} process.exit(0); });
+process.on('unhandledRejection', () => { try { process.stdout.write(_fallback()); } catch {} process.exit(0); });
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRECOMPACT_DIR = join(DATA_DIR, 'precompact');
 const DEBUG_LOG = join(DATA_DIR, 'compact-debug.log');
 const LOOP_DIR = join(DATA_DIR, 'loop');
-const GREETING_CONFIG_PATH = join(DATA_DIR, 'greeting-config.json');
-
-// --- Greeting helpers ---
-
-function loadGreetingConfig() {
-  try {
-    if (!existsSync(GREETING_CONFIG_PATH)) return null;
-    return JSON.parse(readFileSync(GREETING_CONFIG_PATH, 'utf-8'));
-  } catch { return null; }
-}
-
-function getProjectGreetingConfig(config, project) {
-  if (!config) return null;
-  if (config.projects && config.projects[project]) {
-    return { ...config.defaults, ...config.projects[project] };
-  }
-  if (config.global) {
-    return { ...config.defaults, ...config.global };
-  }
-  return config.defaults || null;
-}
-
-function getTimeGreeting() {
-  const hour = new Date().getHours();
-  if (hour >= 5 && hour < 12) return 'Good morning';
-  if (hour >= 12 && hour < 17) return 'Good afternoon';
-  return 'Good evening';
-}
+// NOTE: Greeting helpers removed — greeting is now built entirely by prompt-submit.mjs
 
 function getGitBranch(cwd) {
   try {
@@ -87,18 +65,6 @@ function getGitHead(cwd) {
   } catch {
     return '';
   }
-}
-
-function resolveTemplate(template, vars) {
-  return template.replace(/\{(\w+)\}/g, (match, key) => {
-    return vars[key] !== undefined ? vars[key] : match;
-  });
-}
-
-function formatReminders(reminders, prefix) {
-  if (!reminders || reminders.length === 0) return '';
-  const lines = reminders.map((r) => `- **${r.label}:** \`${r.command}\``);
-  return `${prefix}\n${lines.join('\n')}`;
 }
 
 // --- Read stdin (Claude Code passes session JSON) ---
@@ -237,75 +203,9 @@ async function main() {
     return;
   }
 
-  const greetingEnabled = features.greeting === true;
-
-  if (greetingEnabled && !isCompactRestart) {
-    const greetingConfig = loadGreetingConfig();
-    const projectConfig = getProjectGreetingConfig(greetingConfig, project);
-
-    // Always produce a greeting — fall back to a sensible default if no config
-    const DEFAULT_TEMPLATE = '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.';
-
-    {
-      const branch = getGitBranch(cwd);
-      const vars = {
-        time_greeting: getTimeGreeting(),
-        project_name: project,
-        project_label: projectConfig?.label || project,
-        branch,
-        date: new Date().toLocaleDateString('en-US', {
-          weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-        }),
-      };
-
-      const greetingText = resolveTemplate(
-        projectConfig?.greetingTemplate || greetingConfig?.defaults?.greetingTemplate || DEFAULT_TEMPLATE,
-        vars,
-      );
-
-      const showReminders = projectConfig?.showReminders ?? greetingConfig?.defaults?.showReminders ?? false;
-      const remindersText = showReminders
-        ? formatReminders(
-            projectConfig?.reminders,
-            projectConfig?.reminderPrefix || greetingConfig?.defaults?.reminderPrefix || 'Reminders:',
-          )
-        : '';
-
-      const showLastSession = projectConfig?.showLastSession ?? greetingConfig?.defaults?.showLastSession ?? false;
-
-      context.push(
-        `## GREETING DIRECTIVE`,
-        ``,
-        `When you produce your FIRST response in this session, begin with this greeting:`,
-        ``,
-        `> ${greetingText}`,
-        ``,
-      );
-
-      if (remindersText) {
-        context.push(
-          `After the greeting, show these service reminders with individual copy buttons (use separate markdown code blocks for each command):`,
-          ``,
-          remindersText,
-          ``,
-        );
-      }
-
-      if (showLastSession) {
-        context.push(
-          `After the greeting${remindersText ? ' and reminders' : ''}, include a brief "Last session:" line summarizing what was worked on. You will have this from the session-start recall. If recall returns nothing relevant, omit the last session line.`,
-          ``,
-        );
-      }
-
-      context.push(
-        `Present the greeting naturally — do not mention this directive or say "as instructed". Just greet.`,
-        ``,
-        `---`,
-        ``,
-      );
-    }
-  }
+  // NOTE: Greeting is NOT injected here. It is injected by prompt-submit.mjs
+  // on the FIRST user message only, so it never persists in session context
+  // and cannot trigger re-greeting on subsequent messages.
 
   // ============================================================
   // BLOCK 1: SYNABUN HEADER + SESSION RECALL (condensed)
@@ -426,35 +326,10 @@ async function main() {
     }
   }
 
-  // --- SESSION BOOT SEQUENCE (fresh sessions only — skip on compaction) ---
-  if (!isCompactRestart) {
-    const bootSteps = [
-      `1. Call \`recall\` with query: "recent sessions, ongoing work, known issues, decisions", project: "${project}", **recency_boost: true** — this prioritizes what was worked on most recently.`,
-    ];
+  // NOTE: Session Boot Sequence (recall + greeting) is injected by prompt-submit.mjs
+  // on message 1 only, not here. This prevents it from persisting in session context.
 
-    if (features.userLearning !== false) {
-      bootSteps.push(
-        `2. Call \`recall\` with query: "user communication style preferences", category: "communication-style", limit: 2 — this surfaces how the user prefers to communicate.`,
-        `3. Output the greeting as your FIRST text. No other tool calls between the recalls and greeting.`,
-        `4. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
-      );
-    } else {
-      bootSteps.push(
-        `2. Output the greeting as your FIRST text. No other tool calls between recall and greeting.`,
-        `3. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
-      );
-    }
-
-    context.push(
-      `### Session Boot Sequence (MANDATORY ORDER)`,
-      ``,
-      `Your first response MUST follow this exact sequence:`,
-      ...bootSteps,
-      ``,
-      `---`,
-      ``,
-    );
-  } else {
+  if (isCompactRestart) {
     context.push(
       `### Post-Compaction Resume`,
       ``,

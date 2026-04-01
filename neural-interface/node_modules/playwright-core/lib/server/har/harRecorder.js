@@ -37,7 +37,6 @@ var import_artifact = require("../artifact");
 var import_harTracer = require("./harTracer");
 var import_crypto = require("../utils/crypto");
 var import_manualPromise = require("../../utils/isomorphic/manualPromise");
-var import_zipBundle = require("../../zipBundle");
 class HarRecorder {
   constructor(context, page, options) {
     this._isFlushed = false;
@@ -56,7 +55,8 @@ class HarRecorder {
       waitForContentOnStop: true,
       urlFilter: urlFilterRe ?? options.urlGlob
     });
-    this._zipFile = content === "attach" || expectsZip ? new import_zipBundle.yazl.ZipFile() : null;
+    const { yazl } = require("../../zipBundle");
+    this._zipFile = content === "attach" || expectsZip ? new yazl.ZipFile() : null;
     this._tracer.start({ omitScripts: false });
   }
   onEntryStarted(entry) {

@@ -29,10 +29,10 @@ var import_profiler = require("../server/utils/profiler");
 var import_utils = require("../utils");
 var import_debugLogger = require("../server/utils/debugLogger");
 class PlaywrightConnection {
-  constructor(semaphore, ws, controller, playwright, initialize, id) {
+  constructor(semaphore, transport, controller, playwright, initialize, id) {
     this._cleanups = [];
     this._disconnected = false;
-    this._ws = ws;
+    this._transport = transport;
     this._semaphore = semaphore;
     this._id = id;
     this._profileName = (/* @__PURE__ */ new Date()).toISOString();
@@ -40,16 +40,16 @@ class PlaywrightConnection {
     this._dispatcherConnection = new import_server.DispatcherConnection();
     this._dispatcherConnection.onmessage = async (message) => {
       await lock;
-      if (ws.readyState !== ws.CLOSING) {
+      if (!transport.isClosed()) {
         const messageString = JSON.stringify(message);
         if (import_debugLogger.debugLogger.isEnabled("server:channel"))
           import_debugLogger.debugLogger.log("server:channel", `[${this._id}] ${(0, import_utils.monotonicTime)() * 1e3} SEND \u25BA ${messageString}`);
         if (import_debugLogger.debugLogger.isEnabled("server:metadata"))
           this.logServerMetadata(message, messageString, "SEND");
-        ws.send(messageString);
+        transport.send(messageString);
       }
     };
-    ws.on("message", async (message) => {
+    transport.on("message", async (message) => {
       await lock;
       const messageString = Buffer.from(message).toString();
       const jsonMessage = JSON.parse(messageString);
@@ -59,8 +59,8 @@ class PlaywrightConnection {
         this.logServerMetadata(jsonMessage, messageString, "RECV");
       this._dispatcherConnection.dispatch(jsonMessage);
     });
-    ws.on("close", () => this._onDisconnect());
-    ws.on("error", (error) => this._onDisconnect(error));
+    transport.on("close", () => this._onDisconnect());
+    transport.on("error", (error) => this._onDisconnect(error));
     if (controller) {
       import_debugLogger.debugLogger.log("server", `[${this._id}] engaged reuse controller mode`);
       this._root = new import_debugControllerDispatcher.DebugControllerDispatcher(this._dispatcherConnection, playwright.debugController);
@@ -90,6 +90,8 @@ class PlaywrightConnection {
     });
   }
   async _onDisconnect(error) {
+    if (this._disconnected)
+      return;
     this._disconnected = true;
     import_debugLogger.debugLogger.log("server", `[${this._id}] disconnected. error: ${error}`);
     await this._root.stopPendingOperations(new Error("Disconnected")).catch(() => {
@@ -118,7 +120,7 @@ class PlaywrightConnection {
       return;
     import_debugLogger.debugLogger.log("server", `[${this._id}] force closing connection: ${reason?.reason || ""} (${reason?.code || 0})`);
     try {
-      this._ws.close(reason?.code, reason?.reason);
+      this._transport.close(reason);
     } catch (e) {
     }
   }

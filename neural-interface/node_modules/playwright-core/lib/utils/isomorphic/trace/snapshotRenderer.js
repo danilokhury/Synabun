@@ -19,6 +19,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var snapshotRenderer_exports = {};
 __export(snapshotRenderer_exports, {
   SnapshotRenderer: () => SnapshotRenderer,
+  blankSnapshotUrl: () => blankSnapshotUrl,
   rewriteURLForCustomProtocol: () => rewriteURLForCustomProtocol
 });
 module.exports = __toCommonJS(snapshotRenderer_exports);
@@ -188,7 +189,7 @@ function snapshotNodes(snapshot) {
   return snapshot._nodes;
 }
 function snapshotScript(viewport, ...targetIds) {
-  function applyPlaywrightAttributes(viewport2, ...targetIds2) {
+  function applyPlaywrightAttributes(blankSnapshotUrl2, viewport2, ...targetIds2) {
     const win = window;
     const searchParams = new URLSearchParams(win.location.search);
     const shouldPopulateCanvasFromScreenshot = searchParams.has("shouldPopulateCanvasFromScreenshot");
@@ -198,7 +199,7 @@ function snapshotScript(viewport, ...targetIds) {
       frames: /* @__PURE__ */ new WeakMap()
     };
     win["__playwright_frame_bounding_rects__"] = frameBoundingRectsInfo;
-    const kPointerWarningTitle = "Recorded click position in absolute coordinates did not match the center of the clicked element. This is likely due to a difference between the test runner and the trace viewer operating systems.";
+    const kPointerWarningTitle = "Recorded click position in absolute coordinates did not match the center of the clicked element. This is either due to the use of provided offset, or due to a difference between the test runner and the trace viewer operating systems.";
     const scrollTops = [];
     const scrollLefts = [];
     const targetElements = [];
@@ -258,7 +259,7 @@ function snapshotScript(viewport, ...targetIds) {
           frameBoundingRectsInfo.frames.set(iframe, { boundingRect, scrollLeft: 0, scrollTop: 0 });
         const src = iframe.getAttribute("__playwright_src__");
         if (!src) {
-          iframe.setAttribute("src", 'data:text/html,<body style="background: #ddd"></body>');
+          iframe.setAttribute("src", blankSnapshotUrl2);
         } else {
           const url = new URL(win.location.href);
           const index = url.pathname.lastIndexOf("/snapshot/");
@@ -317,47 +318,37 @@ function snapshotScript(viewport, ...targetIds) {
       win.document.styleSheets[0].disabled = true;
       const search = new URL(win.location.href).searchParams;
       const isTopFrame = win === topSnapshotWindow;
-      if (search.get("pointX") && search.get("pointY")) {
+      if (isTopFrame && search.get("pointX") && search.get("pointY")) {
         const pointX = +search.get("pointX");
         const pointY = +search.get("pointY");
-        const hasInputTarget = search.has("hasInputTarget");
-        const hasTargetElements = targetElements.length > 0;
-        const roots = win.document.documentElement ? [win.document.documentElement] : [];
-        for (const target of hasTargetElements ? targetElements : roots) {
-          const pointElement = win.document.createElement("x-pw-pointer");
-          pointElement.style.position = "fixed";
-          pointElement.style.backgroundColor = "#f44336";
-          pointElement.style.width = "20px";
-          pointElement.style.height = "20px";
-          pointElement.style.borderRadius = "10px";
-          pointElement.style.margin = "-10px 0 0 -10px";
-          pointElement.style.zIndex = "2147483646";
-          pointElement.style.display = "flex";
-          pointElement.style.alignItems = "center";
-          pointElement.style.justifyContent = "center";
-          if (hasTargetElements) {
-            const box = target.getBoundingClientRect();
-            const centerX = box.left + box.width / 2;
-            const centerY = box.top + box.height / 2;
-            pointElement.style.left = centerX + "px";
-            pointElement.style.top = centerY + "px";
-            if (isTopFrame && (Math.abs(centerX - pointX) >= 10 || Math.abs(centerY - pointY) >= 10)) {
-              const warningElement = win.document.createElement("x-pw-pointer-warning");
-              warningElement.textContent = "\u26A0";
-              warningElement.style.fontSize = "19px";
-              warningElement.style.color = "white";
-              warningElement.style.marginTop = "-3.5px";
-              warningElement.style.userSelect = "none";
-              pointElement.appendChild(warningElement);
-              pointElement.setAttribute("title", kPointerWarningTitle);
-            }
-            win.document.documentElement.appendChild(pointElement);
-          } else if (isTopFrame && !hasInputTarget) {
-            pointElement.style.left = pointX + "px";
-            pointElement.style.top = pointY + "px";
-            win.document.documentElement.appendChild(pointElement);
-          }
+        const pointElement = win.document.createElement("x-pw-pointer");
+        pointElement.style.position = "fixed";
+        pointElement.style.backgroundColor = "#f44336";
+        pointElement.style.width = "20px";
+        pointElement.style.height = "20px";
+        pointElement.style.borderRadius = "10px";
+        pointElement.style.margin = "-10px 0 0 -10px";
+        pointElement.style.zIndex = "2147483646";
+        pointElement.style.display = "flex";
+        pointElement.style.alignItems = "center";
+        pointElement.style.justifyContent = "center";
+        const target = targetElements[0];
+        const targetBox = target?.getBoundingClientRect();
+        const targetCenter = target ? { x: targetBox.left + targetBox.width / 2, y: targetBox.top + targetBox.height / 2 } : null;
+        pointElement.style.left = (targetCenter?.x ?? pointX) + "px";
+        pointElement.style.top = (targetCenter?.y ?? pointY) + "px";
+        const isAligned = !targetCenter || Math.abs(targetCenter.x - pointX) <= 10 && Math.abs(targetCenter.y - pointY) <= 10;
+        if (!isAligned) {
+          const warningElement = win.document.createElement("x-pw-pointer-warning");
+          warningElement.textContent = "\u26A0";
+          warningElement.style.fontSize = "19px";
+          warningElement.style.color = "white";
+          warningElement.style.marginTop = "-3.5px";
+          warningElement.style.userSelect = "none";
+          pointElement.appendChild(warningElement);
+          pointElement.setAttribute("title", kPointerWarningTitle);
         }
+        win.document.documentElement.appendChild(pointElement);
       }
       if (canvasElements.length > 0) {
         let drawCheckerboard2 = function(context, canvas) {
@@ -445,7 +436,7 @@ function snapshotScript(viewport, ...targetIds) {
     win.addEventListener("DOMContentLoaded", onDOMContentLoaded);
   }
   return `
-(${applyPlaywrightAttributes.toString()})(${JSON.stringify(viewport)}${targetIds.map((id) => `, "${id}"`).join("")})`;
+(${applyPlaywrightAttributes.toString()})(${JSON.stringify(blankSnapshotUrl)},${JSON.stringify(viewport)}${targetIds.map((id) => `, "${id}"`).join("")})`;
 }
 const schemas = ["about:", "blob:", "data:", "file:", "ftp:", "http:", "https:", "mailto:", "sftp:", "ws:", "wss:"];
 const kLegacyBlobPrefix = "http://playwright.bloburl/#";
@@ -492,8 +483,10 @@ function escapeURLsInStyleSheet(text) {
   };
   return text.replace(urlToEscapeRegex1, replacer).replace(urlToEscapeRegex2, replacer);
 }
+const blankSnapshotUrl = "data:text/html;base64," + btoa(`<body></body><style>body { color-scheme: light dark; background: light-dark(white, #333) }</style>`);
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   SnapshotRenderer,
+  blankSnapshotUrl,
   rewriteURLForCustomProtocol
 });

@@ -166,20 +166,23 @@ async function createConnectionAsync(options, oncreate, useTLS) {
   }
 }
 async function lookupAddresses(hostname) {
-  const addresses = await import_dns.default.promises.lookup(hostname, { all: true, family: 0, verbatim: true });
-  let firstFamily = addresses.filter(({ family }) => family === 6);
-  let secondFamily = addresses.filter(({ family }) => family === 4);
-  if (firstFamily.length && firstFamily[0] !== addresses[0]) {
-    const tmp = firstFamily;
-    firstFamily = secondFamily;
-    secondFamily = tmp;
+  const [v4Result, v6Result] = await Promise.allSettled([
+    import_dns.default.promises.lookup(hostname, { all: true, family: 4 }),
+    import_dns.default.promises.lookup(hostname, { all: true, family: 6 })
+  ]);
+  const v4Addresses = v4Result.status === "fulfilled" ? v4Result.value : [];
+  const v6Addresses = v6Result.status === "fulfilled" ? v6Result.value : [];
+  if (!v4Addresses.length && !v6Addresses.length) {
+    if (v4Result.status === "rejected")
+      throw v4Result.reason;
+    throw v6Result.reason;
   }
   const result = [];
-  for (let i = 0; i < Math.max(firstFamily.length, secondFamily.length); i++) {
-    if (firstFamily[i])
-      result.push(firstFamily[i]);
-    if (secondFamily[i])
-      result.push(secondFamily[i]);
+  for (let i = 0; i < Math.max(v4Addresses.length, v6Addresses.length); i++) {
+    if (v6Addresses[i])
+      result.push(v6Addresses[i]);
+    if (v4Addresses[i])
+      result.push(v4Addresses[i]);
   }
   return result;
 }

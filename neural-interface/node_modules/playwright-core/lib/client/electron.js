@@ -44,6 +44,7 @@ class Electron extends import_channelOwner.ChannelOwner {
       ...await (0, import_browserContext.prepareBrowserContextParams)(this._platform, options),
       env: (0, import_clientHelper.envObjectToArray)(options.env ? options.env : this._platform.env),
       tracesDir: options.tracesDir,
+      artifactsDir: options.artifactsDir,
       timeout: new import_timeoutSettings.TimeoutSettings(this._platform).launchTimeout(options)
     };
     const app = ElectronApplication.from((await this._channel.launch(params)).electronApplication);

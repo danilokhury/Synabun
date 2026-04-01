@@ -35,7 +35,7 @@ var import_timeoutSettings = require("./timeoutSettings");
 var import_rtti = require("../utils/isomorphic/rtti");
 var import_time = require("../utils/isomorphic/time");
 var import_timeoutRunner = require("../utils/isomorphic/timeoutRunner");
-var import_webSocket = require("./webSocket");
+var import_connect = require("./connect");
 class Android extends import_channelOwner.ChannelOwner {
   static from(android) {
     return android._object;
@@ -56,12 +56,12 @@ class Android extends import_channelOwner.ChannelOwner {
       throw new Error("Launching server is not supported");
     return await this._serverLauncher.launchServer(options);
   }
-  async connect(wsEndpoint, options = {}) {
+  async connect(endpoint, options = {}) {
     return await this._wrapApiCall(async () => {
       const deadline = options.timeout ? (0, import_time.monotonicTime)() + options.timeout : 0;
       const headers = { "x-playwright-browser": "android", ...options.headers };
-      const connectParams = { wsEndpoint, headers, slowMo: options.slowMo, timeout: options.timeout || 0 };
-      const connection = await (0, import_webSocket.connectOverWebSocket)(this._connection, connectParams);
+      const connectParams = { endpoint, headers, slowMo: options.slowMo, timeout: options.timeout || 0 };
+      const connection = await (0, import_connect.connectToEndpoint)(this._connection, connectParams);
       let device;
       connection.on("close", () => {
         device?._didClose();

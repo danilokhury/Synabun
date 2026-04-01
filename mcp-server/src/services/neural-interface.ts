@@ -71,9 +71,13 @@ export async function resolveSession(
 ): Promise<{ sessionId: string } | { error: string }> {
   // Agent-scoped browser session — set by the agent orchestrator to pin
   // this MCP instance to a specific browser session (multi-agent isolation).
+  // Verify the pinned session still exists; fall through to auto-select if gone.
   const pinnedSession = process.env.SYNABUN_BROWSER_SESSION;
   if (pinnedSession && !sessionId) {
-    return { sessionId: pinnedSession };
+    const check = await request('GET', '/api/browser/sessions');
+    const active = ((check.sessions || []) as BrowserSessionInfo[]).find(s => s.id === pinnedSession);
+    if (active) return { sessionId: pinnedSession };
+    // Pinned session is gone — fall through to auto-select/create below
   }
 
   if (sessionId) {
@@ -95,7 +99,7 @@ export async function resolveSession(
     if (autoCreate) {
       const created = await request('POST', '/api/browser/sessions', {
         url: autoCreate.url || 'about:blank',
-      });
+      }, LONG_TIMEOUT);
       if (created.error) return { error: `Failed to auto-create session: ${created.error}` };
       return { sessionId: created.sessionId as string };
     }
@@ -126,7 +130,7 @@ export async function listSessions(): Promise<NiResponse> {
 export async function createSession(url?: string): Promise<NiResponse> {
   return request('POST', '/api/browser/sessions', {
     url: url || 'about:blank',
-  });
+  }, LONG_TIMEOUT);
 }
 
 export async function closeSession(sessionId: string): Promise<NiResponse> {

@@ -37,7 +37,7 @@ var import_pixelmatch = __toESM(require("../../third_party/pixelmatch"));
 var import_utilsBundle = require("../../utilsBundle");
 var import_utilsBundle2 = require("../../utilsBundle");
 var import_utilsBundle3 = require("../../utilsBundle");
-var import_imageUtils = require("./imageUtils");
+var import_imageUtils = require("../../utils/isomorphic/imageUtils");
 function getComparator(mimeType) {
   if (mimeType === "image/png")
     return compareImages.bind(null, "image/png");

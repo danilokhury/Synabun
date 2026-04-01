@@ -50,8 +50,8 @@ class Request extends import_channelOwner.ChannelOwner {
     this._redirectedFrom = null;
     this._redirectedTo = null;
     this._failureText = null;
+    this._response = null;
     this._fallbackOverrides = {};
-    this._hasResponse = false;
     this._redirectedFrom = Request.fromNullable(initializer.redirectedFrom);
     if (this._redirectedFrom)
       this._redirectedFrom._redirectedTo = this;
@@ -67,8 +67,6 @@ class Request extends import_channelOwner.ChannelOwner {
       responseStart: -1,
       responseEnd: -1
     };
-    this._hasResponse = this._initializer.hasResponse;
-    this._channel.on("response", () => this._hasResponse = true);
   }
   static from(request) {
     return request._object;
@@ -141,6 +139,9 @@ class Request extends import_channelOwner.ChannelOwner {
   }
   async _internalResponse() {
     return Response.fromNullable((await this._channel.response()).response);
+  }
+  existingResponse() {
+    return this._response;
   }
   frame() {
     if (!this._initializer.frame) {
@@ -465,10 +466,9 @@ class WebSocketRouteHandler {
     const patterns = [];
     let all = false;
     for (const handler of handlers) {
-      if ((0, import_rtti.isString)(handler.url))
-        patterns.push({ glob: handler.url });
-      else if ((0, import_rtti.isRegExp)(handler.url))
-        patterns.push({ regexSource: handler.url.source, regexFlags: handler.url.flags });
+      const serialized = (0, import_urlMatch.serializeURLMatch)(handler.url);
+      if (serialized)
+        patterns.push(serialized);
       else
         all = true;
     }
@@ -491,6 +491,7 @@ class Response extends import_channelOwner.ChannelOwner {
     this._finishedPromise = new import_manualPromise.ManualPromise();
     this._provisionalHeaders = new RawHeaders(initializer.headers);
     this._request = Request.from(this._initializer.request);
+    this._request._response = this;
     Object.assign(this._request._timing, this._initializer.timing);
   }
   static from(response) {
@@ -566,6 +567,9 @@ class Response extends import_channelOwner.ChannelOwner {
   async securityDetails() {
     return (await this._channel.securityDetails()).value || null;
   }
+  async httpVersion() {
+    return (await this._channel.httpVersion()).value;
+  }
 }
 class WebSocket extends import_channelOwner.ChannelOwner {
   static from(webSocket) {
@@ -638,10 +642,9 @@ class RouteHandler {
     const patterns = [];
     let all = false;
     for (const handler of handlers) {
-      if ((0, import_rtti.isString)(handler.url))
-        patterns.push({ glob: handler.url });
-      else if ((0, import_rtti.isRegExp)(handler.url))
-        patterns.push({ regexSource: handler.url.source, regexFlags: handler.url.flags });
+      const serialized = (0, import_urlMatch.serializeURLMatch)(handler.url);
+      if (serialized)
+        patterns.push(serialized);
       else
         all = true;
     }

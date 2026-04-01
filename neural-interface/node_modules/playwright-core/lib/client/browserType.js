@@ -25,12 +25,9 @@ var import_browser = require("./browser");
 var import_browserContext = require("./browserContext");
 var import_channelOwner = require("./channelOwner");
 var import_clientHelper = require("./clientHelper");
-var import_events = require("./events");
 var import_assert = require("../utils/isomorphic/assert");
 var import_headers = require("../utils/isomorphic/headers");
-var import_time = require("../utils/isomorphic/time");
-var import_timeoutRunner = require("../utils/isomorphic/timeoutRunner");
-var import_webSocket = require("./webSocket");
+var import_connect = require("./connect");
 var import_timeoutSettings = require("./timeoutSettings");
 class BrowserType extends import_channelOwner.ChannelOwner {
   constructor() {
@@ -101,57 +98,18 @@ class BrowserType extends import_channelOwner.ChannelOwner {
     await this._instrumentation.runAfterCreateBrowserContext(context);
     return context;
   }
-  async connect(optionsOrWsEndpoint, options) {
-    if (typeof optionsOrWsEndpoint === "string")
-      return await this._connect({ ...options, wsEndpoint: optionsOrWsEndpoint });
-    (0, import_assert.assert)(optionsOrWsEndpoint.wsEndpoint, "options.wsEndpoint is required");
-    return await this._connect(optionsOrWsEndpoint);
+  async connect(optionsOrEndpoint, options) {
+    if (typeof optionsOrEndpoint === "string")
+      return await this._connect({ ...options, endpoint: optionsOrEndpoint });
+    (0, import_assert.assert)(optionsOrEndpoint.wsEndpoint, "options.wsEndpoint is required");
+    return await this._connect({ ...options, endpoint: optionsOrEndpoint.wsEndpoint });
   }
   async _connect(params) {
     const logger = params.logger;
     return await this._wrapApiCall(async () => {
-      const deadline = params.timeout ? (0, import_time.monotonicTime)() + params.timeout : 0;
-      const headers = { "x-playwright-browser": this.name(), ...params.headers };
-      const connectParams = {
-        wsEndpoint: params.wsEndpoint,
-        headers,
-        exposeNetwork: params.exposeNetwork ?? params._exposeNetwork,
-        slowMo: params.slowMo,
-        timeout: params.timeout || 0
-      };
-      if (params.__testHookRedirectPortForwarding)
-        connectParams.socksProxyRedirectPortForTest = params.__testHookRedirectPortForwarding;
-      const connection = await (0, import_webSocket.connectOverWebSocket)(this._connection, connectParams);
-      let browser;
-      connection.on("close", () => {
-        for (const context of browser?.contexts() || []) {
-          for (const page of context.pages())
-            page._onClose();
-          context._onClose();
-        }
-        setTimeout(() => browser?._didClose(), 0);
-      });
-      const result = await (0, import_timeoutRunner.raceAgainstDeadline)(async () => {
-        if (params.__testHookBeforeCreateBrowser)
-          await params.__testHookBeforeCreateBrowser();
-        const playwright = await connection.initializePlaywright();
-        if (!playwright._initializer.preLaunchedBrowser) {
-          connection.close();
-          throw new Error("Malformed endpoint. Did you use BrowserType.launchServer method?");
-        }
-        playwright.selectors = this._playwright.selectors;
-        browser = import_browser.Browser.from(playwright._initializer.preLaunchedBrowser);
-        browser._connectToBrowserType(this, {}, logger);
-        browser._shouldCloseConnectionOnClose = true;
-        browser.on(import_events.Events.Browser.Disconnected, () => connection.close());
-        return browser;
-      }, deadline);
-      if (!result.timedOut) {
-        return result.result;
-      } else {
-        connection.close();
-        throw new Error(`Timeout ${params.timeout}ms exceeded`);
-      }
+      const browser = await (0, import_connect.connectToBrowser)(this._playwright, { browserName: this.name(), ...params });
+      browser._connectToBrowserType(this, {}, logger);
+      return browser;
     });
   }
   async connectOverCDP(endpointURLOrOptions, options) {
@@ -174,6 +132,16 @@ class BrowserType extends import_channelOwner.ChannelOwner {
     });
     const browser = import_browser.Browser.from(result.browser);
     browser._connectToBrowserType(this, {}, params.logger);
+    if (result.defaultContext)
+      await this._instrumentation.runAfterCreateBrowserContext(import_browserContext.BrowserContext.from(result.defaultContext));
+    return browser;
+  }
+  async _connectOverCDPTransport(transport) {
+    if (this.name() !== "chromium")
+      throw new Error("Connecting over CDP is only supported in Chromium.");
+    const result = await this._channel.connectOverCDPTransport({ transport });
+    const browser = import_browser.Browser.from(result.browser);
+    browser._connectToBrowserType(this, {}, void 0);
     if (result.defaultContext)
       await this._instrumentation.runAfterCreateBrowserContext(import_browserContext.BrowserContext.from(result.defaultContext));
     return browser;

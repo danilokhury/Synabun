@@ -23,6 +23,20 @@ __export(ffInput_exports, {
   RawTouchscreenImpl: () => RawTouchscreenImpl
 });
 module.exports = __toCommonJS(ffInput_exports);
+const kFirefoxKeyOverrides = /* @__PURE__ */ new Map([
+  ["AudioVolumeMute", { code: "VolumeMute", keyCodeWithoutLocation: 181 }],
+  ["AudioVolumeDown", { code: "VolumeDown", keyCodeWithoutLocation: 182 }],
+  ["AudioVolumeUp", { code: "VolumeUp", keyCodeWithoutLocation: 183 }]
+]);
+function toFirefoxKeyDescription(description) {
+  const override = kFirefoxKeyOverrides.get(description.key);
+  if (!override)
+    return description;
+  return {
+    ...description,
+    ...override
+  };
+}
 function toModifiersMask(modifiers) {
   let mask = 0;
   if (modifiers.has("Alt"))
@@ -59,13 +73,14 @@ class RawKeyboardImpl {
     this._client = client;
   }
   async keydown(progress, modifiers, keyName, description, autoRepeat) {
-    let text = description.text;
+    const keyDescription = toFirefoxKeyDescription(description);
+    let text = keyDescription.text;
     if (text === "\r")
       text = "";
-    const { code, key, location } = description;
+    const { code, key, location } = keyDescription;
     await progress.race(this._client.send("Page.dispatchKeyEvent", {
       type: "keydown",
-      keyCode: description.keyCodeWithoutLocation,
+      keyCode: keyDescription.keyCodeWithoutLocation,
       code,
       key,
       repeat: autoRepeat,
@@ -74,11 +89,12 @@ class RawKeyboardImpl {
     }));
   }
   async keyup(progress, modifiers, keyName, description) {
-    const { code, key, location } = description;
+    const keyDescription = toFirefoxKeyDescription(description);
+    const { code, key, location } = keyDescription;
     await progress.race(this._client.send("Page.dispatchKeyEvent", {
       type: "keyup",
       key,
-      keyCode: description.keyCodeWithoutLocation,
+      keyCode: keyDescription.keyCodeWithoutLocation,
       code,
       location,
       repeat: false

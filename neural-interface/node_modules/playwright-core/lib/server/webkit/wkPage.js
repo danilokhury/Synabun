@@ -37,6 +37,7 @@ var import_eventsHelper = require("../utils/eventsHelper");
 var import_hostPlatform = require("../utils/hostPlatform");
 var import_stackTrace = require("../../utils/isomorphic/stackTrace");
 var import_utilsBundle = require("../../utilsBundle");
+var import_browserContext = require("../browserContext");
 var dialog = __toESM(require("../dialog"));
 var dom = __toESM(require("../dom"));
 var import_errors = require("../errors");
@@ -51,8 +52,9 @@ var import_wkProvisionalPage = require("./wkProvisionalPage");
 var import_wkWorkers = require("./wkWorkers");
 var import_webkit = require("./webkit");
 var import_registry = require("../registry");
+var import_videoRecorder = require("../videoRecorder");
 const UTILITY_WORLD_NAME = "__playwright_utility_world__";
-const enableFrameSessions = !process.env.WK_DISABLE_FRAME_SESSIONS && parseInt(import_registry.registry.findExecutable("webkit").revision, 10) >= 2245;
+const enableFrameSessions = !process.env.WK_DISABLE_FRAME_SESSIONS && parseInt(import_registry.registry.findExecutable("webkit").revision, 10) >= 2245 && parseInt(import_registry.registry.findExecutable("webkit").revision, 10) <= 2255;
 class WKPage {
   constructor(browserContext, pageProxySession, opener) {
     this._provisionalPage = null;
@@ -115,7 +117,7 @@ class WKPage {
       for (const [key, value] of this._browserContext._permissions)
         promises.push(this._grantPermissions(key, value));
     }
-    promises.push(this._initializeVideoRecording());
+    (0, import_videoRecorder.startAutomaticVideoRecording)(this._page);
     await Promise.all(promises);
   }
   _setSession(session) {
@@ -518,7 +520,7 @@ class WKPage {
         columnNumber: (columnNumber || 1) - 1
       }
     };
-    this._onConsoleRepeatCountUpdated({ count: 1 });
+    this._onConsoleRepeatCountUpdated({ count: 1, timestamp: event.message.timestamp });
   }
   _onConsoleRepeatCountUpdated(event) {
     if (this._lastConsoleMessage) {
@@ -529,8 +531,9 @@ class WKPage {
         count,
         location
       } = this._lastConsoleMessage;
+      const timestamp = event.timestamp ? event.timestamp * 1e3 : Date.now();
       for (let i = count; i < event.count; ++i)
-        this._page.addConsoleMessage(null, derivedType, handles, location, handles.length ? void 0 : text);
+        this._page.addConsoleMessage(null, derivedType, handles, location, handles.length ? void 0 : text, timestamp);
       this._lastConsoleMessage.count = event.count;
     }
   }
@@ -645,9 +648,11 @@ class WKPage {
   async updateUserAgent() {
     const contextOptions = this._browserContext._options;
     this._updateState("Page.overrideUserAgent", { value: contextOptions.userAgent });
+    const { navigatorPlatform } = (0, import_browserContext.calculateUserAgentEmulation)(contextOptions);
+    this._updateState("Page.overridePlatform", navigatorPlatform ? { value: navigatorPlatform } : {});
   }
   async bringToFront() {
-    this._pageProxySession.send("Target.activate", {
+    await this._pageProxySession.send("Target.activate", {
       targetId: this._session.sessionId
     });
   }
@@ -773,12 +778,6 @@ class WKPage {
       return import_hostPlatform.hostPlatform === "mac10.15" ? 55 : 59;
     return 0;
   }
-  async _initializeVideoRecording() {
-    const screencast = this._page.screencast;
-    const videoOptions = screencast.launchVideoRecorder();
-    if (videoOptions)
-      await screencast.startVideoRecording(videoOptions);
-  }
   validateScreenshotDimension(side, omitDeviceScaleFactor) {
     if (process.platform === "darwin")
       return;
@@ -845,29 +844,28 @@ class WKPage {
       throw e;
     });
   }
-  async startScreencast(options) {
-    const { generation } = await this._pageProxySession.send("Screencast.startScreencast", {
+  startScreencast(options) {
+    this._pageProxySession.send("Screencast.startScreencast", {
       quality: options.quality,
       width: options.width,
       height: options.height,
       toolbarHeight: this._toolbarHeight()
+    }).then(({ generation }) => this._screencastGeneration = generation).catch(() => {
     });
-    this._screencastGeneration = generation;
   }
-  async stopScreencast() {
-    await this._pageProxySession.sendMayFail("Screencast.stopScreencast");
+  stopScreencast() {
+    this._pageProxySession.sendMayFail("Screencast.stopScreencast");
   }
   _onScreencastFrame(event) {
     const generation = this._screencastGeneration;
-    this._page.screencast.throttleFrameAck(() => {
-      this._pageProxySession.sendMayFail("Screencast.screencastFrameAck", { generation });
-    });
     const buffer = Buffer.from(event.data, "base64");
-    this._page.emit(import_page.Page.Events.ScreencastFrame, {
+    this._page.screencast.onScreencastFrame({
       buffer,
       frameSwapWallTime: event.timestamp ? event.timestamp * 1e3 : Date.now(),
-      width: event.deviceWidth,
-      height: event.deviceHeight
+      viewportWidth: event.deviceWidth,
+      viewportHeight: event.deviceHeight
+    }, () => {
+      this._pageProxySession.sendMayFail("Screencast.screencastFrameAck", { generation });
     });
   }
   rafCountForStablePosition() {
@@ -981,6 +979,7 @@ class WKPage {
   }
   _handleRequestRedirect(request, requestId, responsePayload, timestamp) {
     const response = request.createResponse(responsePayload);
+    response._setHttpVersion(null);
     response._securityDetailsFinished();
     response._serverAddrFinished();
     response.setResponseHeadersSize(null);
@@ -1033,8 +1032,7 @@ class WKPage {
         validFrom: responseReceivedPayload?.response.security?.certificate?.validFrom,
         validTo: responseReceivedPayload?.response.security?.certificate?.validUntil
       });
-      if (event.metrics?.protocol)
-        response._setHttpVersion(event.metrics.protocol);
+      response._setHttpVersion(event.metrics?.protocol ?? null);
       response.setEncodedBodySize(event.metrics?.responseBodyBytesReceived ?? null);
       response.setResponseHeadersSize(event.metrics?.responseHeaderBytesReceived ?? null);
       response._requestFinished(import_helper.helper.secondsToRoundishMillis(event.timestamp - request._timestamp));
@@ -1058,6 +1056,7 @@ class WKPage {
     if (response) {
       response._serverAddrFinished();
       response._securityDetailsFinished();
+      response._setHttpVersion(null);
       response.setResponseHeadersSize(null);
       response.setEncodedBodySize(null);
       response._requestFinished(import_helper.helper.secondsToRoundishMillis(event.timestamp - request._timestamp));
@@ -1072,7 +1071,8 @@ class WKPage {
     const webPermissionToProtocol = /* @__PURE__ */ new Map([
       ["geolocation", "geolocation"],
       ["notifications", "notifications"],
-      ["clipboard-read", "clipboard-read"]
+      ["clipboard-read", "clipboard-read"],
+      ["screen-wake-lock", "screen-wake-lock"]
     ]);
     const filtered = permissions.map((permission) => {
       const protocolPermission = webPermissionToProtocol.get(permission);
@@ -1087,6 +1087,8 @@ class WKPage {
   }
   shouldToggleStyleSheetToSyncAnimations() {
     return true;
+  }
+  async setDockTile(image) {
   }
 }
 class WKFrame {

@@ -48,6 +48,7 @@ class BidiBrowser extends import_browser.Browser {
     super(parent, options);
     this._contexts = /* @__PURE__ */ new Map();
     this._bidiPages = /* @__PURE__ */ new Map();
+    this._cacheBehavior = "default";
     this._connection = new import_bidiConnection.BidiConnection(transport, this._onDisconnect.bind(this), options.protocolLogger, options.browserLogsCollector);
     this._browserSession = this._connection.browserSession;
     this._eventListeners = [
@@ -84,6 +85,7 @@ class BidiBrowser extends import_browser.Browser {
         "input"
       ]
     });
+    await browser._browserSession.send("network.addIntercept", { phases: [bidi.Network.InterceptPhase.AuthRequired] });
     await browser._browserSession.send("network.addDataCollector", {
       dataTypes: [bidi.Network.DataType.Response],
       maxEncodedDataSize: 2e7
@@ -124,6 +126,13 @@ class BidiBrowser extends import_browser.Browser {
   isConnected() {
     return !this._connection.isClosed();
   }
+  async updateCacheBehavior() {
+    const cacheBehavior = [...this._contexts.values()].some((context) => context.requestInterceptors.length > 0) ? "bypass" : "default";
+    if (this._cacheBehavior !== cacheBehavior) {
+      await this._browserSession.send("network.setCacheBehavior", { cacheBehavior });
+      this._cacheBehavior = cacheBehavior;
+    }
+  }
   _onBrowsingContextCreated(event) {
     if (event.parent) {
       const parentFrameId = event.parent;
@@ -135,6 +144,7 @@ class BidiBrowser extends import_browser.Browser {
         page2._getFrameNode(frame).then((node) => {
           const attributes = node?.value?.attributes;
           frame._name = attributes?.name ?? attributes?.id ?? "";
+        }, () => {
         });
         return;
       }
@@ -198,6 +208,11 @@ class BidiBrowserContext extends import_browserContext.BrowserContext {
     const promises = [
       super._initialize()
     ];
+    const downloadBehavior = this._options.acceptDownloads === "accept" ? { type: "allowed", destinationFolder: this._browser.options.downloadsPath } : { type: "denied" };
+    promises.push(this._browser._browserSession.send("browser.setDownloadBehavior", {
+      downloadBehavior,
+      userContexts: [this._userContextId()]
+    }));
     promises.push(this.doUpdateDefaultViewport());
     if (this._options.geolocation)
       promises.push(this.setGeolocation(this._options.geolocation));
@@ -223,6 +238,8 @@ class BidiBrowserContext extends import_browserContext.BrowserContext {
       promises.push(this.doUpdateExtraHTTPHeaders());
     if (this._options.permissions)
       promises.push(this.doGrantPermissions("*", this._options.permissions));
+    if (this._options.offline)
+      promises.push(this.doUpdateOffline());
     await Promise.all(promises);
   }
   possiblyUninitializedPages() {
@@ -269,7 +286,7 @@ class BidiBrowserContext extends import_browserContext.BrowserContext {
       };
       return this._browser._browserSession.send(
         "storage.setCookie",
-        { cookie, partition: { type: "storageKey", userContext: this._browserContextId } }
+        { cookie, partition: { type: "storageKey", userContext: this._browserContextId, sourceOrigin: c.partitionKey } }
       );
     });
     await Promise.all(promises);
@@ -347,6 +364,10 @@ class BidiBrowserContext extends import_browserContext.BrowserContext {
     });
   }
   async doUpdateOffline() {
+    await this._browser._browserSession.send("emulation.setNetworkConditions", {
+      networkConditions: this._options.offline ? { type: "offline" } : null,
+      userContexts: [this._userContextId()]
+    });
   }
   async doSetHTTPCredentials(httpCredentials) {
     this._options.httpCredentials = httpCredentials;
@@ -372,18 +393,18 @@ class BidiBrowserContext extends import_browserContext.BrowserContext {
     await Promise.all(ids.map((script) => this._browser._browserSession.send("script.removePreloadScript", { script })));
   }
   async doUpdateRequestInterception() {
+    let interceptPromise = Promise.resolve(void 0);
     if (this.requestInterceptors.length > 0 && !this._interceptId) {
-      const { intercept } = await this._browser._browserSession.send("network.addIntercept", {
-        phases: [bidi.Network.InterceptPhase.BeforeRequestSent],
-        urlPatterns: [{ type: "pattern" }]
-      });
-      this._interceptId = intercept;
+      interceptPromise = this._browser._browserSession.send("network.addIntercept", {
+        phases: [bidi.Network.InterceptPhase.BeforeRequestSent]
+      }).then(({ intercept }) => this._interceptId = intercept);
     }
     if (this.requestInterceptors.length === 0 && this._interceptId) {
       const intercept = this._interceptId;
       this._interceptId = void 0;
-      await this._browser._browserSession.send("network.removeIntercept", { intercept });
+      interceptPromise = this._browser._browserSession.send("network.removeIntercept", { intercept });
     }
+    await Promise.all([this._browser.updateCacheBehavior(), interceptPromise]);
   }
   async doUpdateDefaultViewport() {
     if (!this._options.viewport && !this._options.screen)
@@ -430,7 +451,7 @@ class BidiBrowserContext extends import_browserContext.BrowserContext {
       userContexts: [this._userContextId()]
     }));
     promises.push(...this._bidiPages().map((page) => {
-      const realms = [...page._realmToContext].filter(([realm, context]) => context.world === "main").map(([realm, context]) => realm);
+      const realms = [...page._contextIdToContext].filter(([realm, context]) => context.world === "main").map(([realm, context]) => realm);
       return Promise.all(realms.map((realm) => {
         return page._session.send("script.callFunction", {
           functionDeclaration,
@@ -455,6 +476,7 @@ class BidiBrowserContext extends import_browserContext.BrowserContext {
     await this._browser._browserSession.send("browser.removeUserContext", {
       userContext: this._browserContextId
     });
+    await Promise.all(this._bidiPages().map((bidiPage) => bidiPage._page.closedPromise));
     this._browser._contexts.delete(this._browserContextId);
   }
   async cancelDownload(uuid) {

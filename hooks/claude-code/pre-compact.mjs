@@ -34,6 +34,10 @@ import { fileURLToPath } from 'node:url';
 
 import { getDataHome } from '../../lib/paths.js';
 
+// Cross-platform safety: catch uncaught errors and exit cleanly
+process.on('uncaughtException', () => { process.exit(0); });
+process.on('unhandledRejection', () => { process.exit(0); });
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_HOME = getDataHome();
 const CACHE_DIR = join(DATA_HOME, 'data', 'precompact');

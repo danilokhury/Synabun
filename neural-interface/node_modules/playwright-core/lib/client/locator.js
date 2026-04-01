@@ -100,9 +100,6 @@ class Locator {
   async evaluate(pageFunction, arg, options) {
     return await this._withElement((h) => h.evaluate(pageFunction, arg), { title: "Evaluate", timeout: options?.timeout });
   }
-  async _evaluateFunction(functionDeclaration, options) {
-    return await this._withElement((h) => h._evaluateFunction(functionDeclaration), { title: "Evaluate", timeout: options?.timeout });
-  }
   async evaluateAll(pageFunction, arg) {
     return await this._frame.$$eval(this._selector, pageFunction, arg);
   }
@@ -199,8 +196,9 @@ class Locator {
   async count(_options) {
     return await this._frame._queryCount(this._selector, _options);
   }
-  async _resolveSelector() {
-    return await this._frame._channel.resolveSelector({ selector: this._selector });
+  async normalize() {
+    const { resolvedSelector } = await this._frame._channel.resolveSelector({ selector: this._selector });
+    return new Locator(this._frame, resolvedSelector);
   }
   async getAttribute(name, options) {
     return await this._frame.getAttribute(this._selector, name, { strict: true, ...options });
@@ -242,8 +240,8 @@ class Locator {
     const mask = options.mask;
     return await this._withElement((h, timeout) => h.screenshot({ ...options, mask, timeout }), { title: "Screenshot", timeout: options.timeout });
   }
-  async ariaSnapshot(options) {
-    const result = await this._frame._channel.ariaSnapshot({ ...options, selector: this._selector, timeout: this._frame._timeout(options) });
+  async ariaSnapshot(options = {}) {
+    const result = await this._frame._channel.ariaSnapshot({ timeout: this._frame._timeout(options), mode: options.mode, selector: this._selector, depth: options.depth });
     return result.snapshot;
   }
   async scrollIntoViewIfNeeded(options = {}) {

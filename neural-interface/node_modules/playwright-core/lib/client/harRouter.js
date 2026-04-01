@@ -52,9 +52,21 @@ class HarRouter {
     if (response.action === "fulfill") {
       if (response.status === -1)
         return;
+      const transformedHeaders = response.headers.reduce((headersMap, { name, value }) => {
+        if (name.toLowerCase() !== "set-cookie") {
+          headersMap[name] = value;
+        } else {
+          if (!headersMap["set-cookie"])
+            headersMap["set-cookie"] = value;
+          else
+            headersMap["set-cookie"] += `
+${value}`;
+        }
+        return headersMap;
+      }, {});
       await route.fulfill({
         status: response.status,
-        headers: Object.fromEntries(response.headers.map((h) => [h.name, h.value])),
+        headers: transformedHeaders,
         body: response.body
       });
       return;

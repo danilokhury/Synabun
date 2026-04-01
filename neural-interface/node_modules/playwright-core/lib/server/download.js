@@ -36,9 +36,10 @@ var import_page = require("./page");
 var import_utils = require("../utils");
 var import_artifact = require("./artifact");
 class Download {
-  constructor(page, downloadsPath, uuid, url, suggestedFilename) {
+  constructor(page, downloadsPath, uuid, url, suggestedFilename, downloadFilename) {
     const unaccessibleErrorMessage = page.browserContext._options.acceptDownloads === "deny" ? "Pass { acceptDownloads: true } when you are creating your browser context." : void 0;
-    this.artifact = new import_artifact.Artifact(page, import_path.default.join(downloadsPath, uuid), unaccessibleErrorMessage, () => {
+    const downloadPath = import_path.default.join(downloadsPath, downloadFilename ?? uuid);
+    this.artifact = new import_artifact.Artifact(page, downloadPath, unaccessibleErrorMessage, () => {
       return this._page.browserContext.cancelDownload(uuid);
     });
     this._page = page;

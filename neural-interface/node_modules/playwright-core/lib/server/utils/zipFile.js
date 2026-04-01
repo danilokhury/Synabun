@@ -21,7 +21,6 @@ __export(zipFile_exports, {
   ZipFile: () => ZipFile
 });
 module.exports = __toCommonJS(zipFile_exports);
-var import_zipBundle = require("../../zipBundle");
 class ZipFile {
   constructor(fileName) {
     this._entries = /* @__PURE__ */ new Map();
@@ -29,8 +28,9 @@ class ZipFile {
     this._openedPromise = this._open();
   }
   async _open() {
+    const { yauzl } = require("../../zipBundle");
     await new Promise((fulfill, reject) => {
-      import_zipBundle.yauzl.open(this._fileName, { autoClose: false }, (e, z) => {
+      yauzl.open(this._fileName, { autoClose: false }, (e, z) => {
         if (e) {
           reject(e);
           return;

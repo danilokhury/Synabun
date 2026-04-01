@@ -24,7 +24,9 @@ module.exports = __toCommonJS(eventsHelper_exports);
 class EventsHelper {
   static addEventListener(emitter, eventName, handler) {
     emitter.on(eventName, handler);
-    return { emitter, eventName, handler };
+    return { emitter, eventName, handler, dispose: async () => {
+      emitter.removeListener(eventName, handler);
+    } };
   }
   static removeEventListeners(listeners) {
     for (const listener of listeners)

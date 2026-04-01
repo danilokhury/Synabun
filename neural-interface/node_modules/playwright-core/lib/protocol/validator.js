@@ -103,6 +103,16 @@ import_validatorPrimitives.scheme.SelectorEngine = (0, import_validatorPrimitive
   source: import_validatorPrimitives.tString,
   contentScript: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean)
 });
+import_validatorPrimitives.scheme.URLPattern = (0, import_validatorPrimitives.tObject)({
+  hash: import_validatorPrimitives.tString,
+  hostname: import_validatorPrimitives.tString,
+  password: import_validatorPrimitives.tString,
+  pathname: import_validatorPrimitives.tString,
+  port: import_validatorPrimitives.tString,
+  protocol: import_validatorPrimitives.tString,
+  search: import_validatorPrimitives.tString,
+  username: import_validatorPrimitives.tString
+});
 import_validatorPrimitives.scheme.SetNetworkCookie = (0, import_validatorPrimitives.tObject)({
   name: import_validatorPrimitives.tString,
   value: import_validatorPrimitives.tString,
@@ -248,6 +258,7 @@ import_validatorPrimitives.scheme.APIResponse = (0, import_validatorPrimitives.t
   headers: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("NameValue"))
 });
 import_validatorPrimitives.scheme.LifecycleEvent = (0, import_validatorPrimitives.tEnum)(["load", "domcontentloaded", "networkidle", "commit"]);
+import_validatorPrimitives.scheme.ConsoleMessagesFilter = (0, import_validatorPrimitives.tEnum)(["all", "since-navigation"]);
 import_validatorPrimitives.scheme.LocalUtilsInitializer = (0, import_validatorPrimitives.tObject)({
   deviceDescriptors: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tObject)({
     name: import_validatorPrimitives.tString,
@@ -273,7 +284,8 @@ import_validatorPrimitives.scheme.LocalUtilsZipParams = (0, import_validatorPrim
   entries: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("NameValue")),
   stacksId: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   mode: (0, import_validatorPrimitives.tEnum)(["write", "append"]),
-  includeSources: import_validatorPrimitives.tBoolean
+  includeSources: import_validatorPrimitives.tBoolean,
+  additionalSources: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tArray)(import_validatorPrimitives.tString))
 });
 import_validatorPrimitives.scheme.LocalUtilsZipResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.LocalUtilsHarOpenParams = (0, import_validatorPrimitives.tObject)({
@@ -309,7 +321,7 @@ import_validatorPrimitives.scheme.LocalUtilsHarUnzipParams = (0, import_validato
 });
 import_validatorPrimitives.scheme.LocalUtilsHarUnzipResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.LocalUtilsConnectParams = (0, import_validatorPrimitives.tObject)({
-  wsEndpoint: import_validatorPrimitives.tString,
+  endpoint: import_validatorPrimitives.tString,
   headers: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tAny),
   exposeNetwork: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   slowMo: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tFloat),
@@ -520,6 +532,7 @@ import_validatorPrimitives.scheme.BrowserTypeLaunchParams = (0, import_validator
   })),
   downloadsPath: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   tracesDir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+  artifactsDir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   chromiumSandbox: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
   firefoxUserPrefs: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tAny),
   cdpPort: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
@@ -549,6 +562,7 @@ import_validatorPrimitives.scheme.BrowserTypeLaunchPersistentContextParams = (0,
   })),
   downloadsPath: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   tracesDir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+  artifactsDir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   chromiumSandbox: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
   firefoxUserPrefs: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tAny),
   cdpPort: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
@@ -598,10 +612,15 @@ import_validatorPrimitives.scheme.BrowserTypeLaunchPersistentContextParams = (0,
   contrast: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["no-preference", "more", "no-override"])),
   baseURL: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   recordVideo: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
-    dir: import_validatorPrimitives.tString,
+    dir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
     size: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
       width: import_validatorPrimitives.tInt,
       height: import_validatorPrimitives.tInt
+    })),
+    showActions: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
+      duration: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tFloat),
+      position: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"])),
+      fontSize: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
     }))
   })),
   strictSelectors: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
@@ -626,14 +645,34 @@ import_validatorPrimitives.scheme.BrowserTypeConnectOverCDPResult = (0, import_v
   browser: (0, import_validatorPrimitives.tChannel)(["Browser"]),
   defaultContext: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["BrowserContext"]))
 });
+import_validatorPrimitives.scheme.BrowserTypeConnectOverCDPTransportParams = (0, import_validatorPrimitives.tObject)({
+  transport: import_validatorPrimitives.tBinary
+});
+import_validatorPrimitives.scheme.BrowserTypeConnectOverCDPTransportResult = (0, import_validatorPrimitives.tObject)({
+  browser: (0, import_validatorPrimitives.tChannel)(["Browser"]),
+  defaultContext: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["BrowserContext"]))
+});
 import_validatorPrimitives.scheme.BrowserInitializer = (0, import_validatorPrimitives.tObject)({
   version: import_validatorPrimitives.tString,
-  name: import_validatorPrimitives.tString
+  name: import_validatorPrimitives.tString,
+  browserName: (0, import_validatorPrimitives.tEnum)(["chromium", "firefox", "webkit"])
 });
 import_validatorPrimitives.scheme.BrowserContextEvent = (0, import_validatorPrimitives.tObject)({
   context: (0, import_validatorPrimitives.tChannel)(["BrowserContext"])
 });
 import_validatorPrimitives.scheme.BrowserCloseEvent = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.BrowserStartServerParams = (0, import_validatorPrimitives.tObject)({
+  title: import_validatorPrimitives.tString,
+  workspaceDir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+  metadata: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tAny),
+  host: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+  port: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
+});
+import_validatorPrimitives.scheme.BrowserStartServerResult = (0, import_validatorPrimitives.tObject)({
+  endpoint: import_validatorPrimitives.tString
+});
+import_validatorPrimitives.scheme.BrowserStopServerParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.BrowserStopServerResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.BrowserCloseParams = (0, import_validatorPrimitives.tObject)({
   reason: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
 });
@@ -691,10 +730,15 @@ import_validatorPrimitives.scheme.BrowserNewContextParams = (0, import_validator
   contrast: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["no-preference", "more", "no-override"])),
   baseURL: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   recordVideo: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
-    dir: import_validatorPrimitives.tString,
+    dir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
     size: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
       width: import_validatorPrimitives.tInt,
       height: import_validatorPrimitives.tInt
+    })),
+    showActions: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
+      duration: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tFloat),
+      position: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"])),
+      fontSize: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
     }))
   })),
   strictSelectors: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
@@ -762,10 +806,15 @@ import_validatorPrimitives.scheme.BrowserNewContextForReuseParams = (0, import_v
   contrast: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["no-preference", "more", "no-override"])),
   baseURL: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   recordVideo: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
-    dir: import_validatorPrimitives.tString,
+    dir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
     size: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
       width: import_validatorPrimitives.tInt,
       height: import_validatorPrimitives.tInt
+    })),
+    showActions: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
+      duration: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tFloat),
+      position: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"])),
+      fontSize: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
     }))
   })),
   strictSelectors: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
@@ -818,19 +867,19 @@ import_validatorPrimitives.scheme.BrowserContextWaitForEventInfoParams = (0, imp
 import_validatorPrimitives.scheme.PageWaitForEventInfoParams = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoParams");
 import_validatorPrimitives.scheme.WorkerWaitForEventInfoParams = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoParams");
 import_validatorPrimitives.scheme.WebSocketWaitForEventInfoParams = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoParams");
+import_validatorPrimitives.scheme.DebuggerWaitForEventInfoParams = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoParams");
 import_validatorPrimitives.scheme.ElectronApplicationWaitForEventInfoParams = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoParams");
 import_validatorPrimitives.scheme.AndroidDeviceWaitForEventInfoParams = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoParams");
-import_validatorPrimitives.scheme.PageAgentWaitForEventInfoParams = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoParams");
 import_validatorPrimitives.scheme.EventTargetWaitForEventInfoResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.BrowserContextWaitForEventInfoResult = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoResult");
 import_validatorPrimitives.scheme.PageWaitForEventInfoResult = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoResult");
 import_validatorPrimitives.scheme.WorkerWaitForEventInfoResult = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoResult");
 import_validatorPrimitives.scheme.WebSocketWaitForEventInfoResult = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoResult");
+import_validatorPrimitives.scheme.DebuggerWaitForEventInfoResult = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoResult");
 import_validatorPrimitives.scheme.ElectronApplicationWaitForEventInfoResult = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoResult");
 import_validatorPrimitives.scheme.AndroidDeviceWaitForEventInfoResult = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoResult");
-import_validatorPrimitives.scheme.PageAgentWaitForEventInfoResult = (0, import_validatorPrimitives.tType)("EventTargetWaitForEventInfoResult");
 import_validatorPrimitives.scheme.BrowserContextInitializer = (0, import_validatorPrimitives.tObject)({
-  isChromium: import_validatorPrimitives.tBoolean,
+  debugger: (0, import_validatorPrimitives.tChannel)(["Debugger"]),
   requestContext: (0, import_validatorPrimitives.tChannel)(["APIRequestContext"]),
   tracing: (0, import_validatorPrimitives.tChannel)(["Tracing"]),
   options: (0, import_validatorPrimitives.tObject)({
@@ -880,10 +929,15 @@ import_validatorPrimitives.scheme.BrowserContextInitializer = (0, import_validat
     contrast: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["no-preference", "more", "no-override"])),
     baseURL: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
     recordVideo: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
-      dir: import_validatorPrimitives.tString,
+      dir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
       size: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
         width: import_validatorPrimitives.tInt,
         height: import_validatorPrimitives.tInt
+      })),
+      showActions: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
+        duration: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tFloat),
+        position: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"])),
+        fontSize: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
       }))
     })),
     strictSelectors: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
@@ -904,6 +958,7 @@ import_validatorPrimitives.scheme.BrowserContextConsoleEvent = (0, import_valida
     lineNumber: import_validatorPrimitives.tInt,
     columnNumber: import_validatorPrimitives.tInt
   }),
+  timestamp: import_validatorPrimitives.tFloat,
   page: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["Page"])),
   worker: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["Worker"]))
 });
@@ -923,9 +978,6 @@ import_validatorPrimitives.scheme.BrowserContextRouteEvent = (0, import_validato
 });
 import_validatorPrimitives.scheme.BrowserContextWebSocketRouteEvent = (0, import_validatorPrimitives.tObject)({
   webSocketRoute: (0, import_validatorPrimitives.tChannel)(["WebSocketRoute"])
-});
-import_validatorPrimitives.scheme.BrowserContextVideoEvent = (0, import_validatorPrimitives.tObject)({
-  artifact: (0, import_validatorPrimitives.tChannel)(["Artifact"])
 });
 import_validatorPrimitives.scheme.BrowserContextServiceWorkerEvent = (0, import_validatorPrimitives.tObject)({
   worker: (0, import_validatorPrimitives.tChannel)(["Worker"])
@@ -963,7 +1015,9 @@ import_validatorPrimitives.scheme.BrowserContextAddCookiesResult = (0, import_va
 import_validatorPrimitives.scheme.BrowserContextAddInitScriptParams = (0, import_validatorPrimitives.tObject)({
   source: import_validatorPrimitives.tString
 });
-import_validatorPrimitives.scheme.BrowserContextAddInitScriptResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.BrowserContextAddInitScriptResult = (0, import_validatorPrimitives.tObject)({
+  disposable: (0, import_validatorPrimitives.tChannel)(["Disposable"])
+});
 import_validatorPrimitives.scheme.BrowserContextClearCookiesParams = (0, import_validatorPrimitives.tObject)({
   name: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   nameRegexSource: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
@@ -992,7 +1046,9 @@ import_validatorPrimitives.scheme.BrowserContextExposeBindingParams = (0, import
   name: import_validatorPrimitives.tString,
   needsHandle: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean)
 });
-import_validatorPrimitives.scheme.BrowserContextExposeBindingResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.BrowserContextExposeBindingResult = (0, import_validatorPrimitives.tObject)({
+  disposable: (0, import_validatorPrimitives.tChannel)(["Disposable"])
+});
 import_validatorPrimitives.scheme.BrowserContextGrantPermissionsParams = (0, import_validatorPrimitives.tObject)({
   permissions: (0, import_validatorPrimitives.tArray)(import_validatorPrimitives.tString),
   origin: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
@@ -1034,7 +1090,8 @@ import_validatorPrimitives.scheme.BrowserContextSetNetworkInterceptionPatternsPa
   patterns: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tObject)({
     glob: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
     regexSource: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-    regexFlags: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
+    regexFlags: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+    urlPattern: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tType)("URLPattern"))
   }))
 });
 import_validatorPrimitives.scheme.BrowserContextSetNetworkInterceptionPatternsResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
@@ -1042,7 +1099,8 @@ import_validatorPrimitives.scheme.BrowserContextSetWebSocketInterceptionPatterns
   patterns: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tObject)({
     glob: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
     regexSource: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-    regexFlags: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
+    regexFlags: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+    urlPattern: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tType)("URLPattern"))
   }))
 });
 import_validatorPrimitives.scheme.BrowserContextSetWebSocketInterceptionPatternsResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
@@ -1057,6 +1115,13 @@ import_validatorPrimitives.scheme.BrowserContextStorageStateResult = (0, import_
   cookies: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("NetworkCookie")),
   origins: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("OriginStorage"))
 });
+import_validatorPrimitives.scheme.BrowserContextSetStorageStateParams = (0, import_validatorPrimitives.tObject)({
+  storageState: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
+    cookies: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("SetNetworkCookie"))),
+    origins: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("SetOriginStorage")))
+  }))
+});
+import_validatorPrimitives.scheme.BrowserContextSetStorageStateResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.BrowserContextPauseParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.BrowserContextPauseResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.BrowserContextEnableRecorderParams = (0, import_validatorPrimitives.tObject)({
@@ -1153,7 +1218,8 @@ import_validatorPrimitives.scheme.PageInitializer = (0, import_validatorPrimitiv
     height: import_validatorPrimitives.tInt
   })),
   isClosed: import_validatorPrimitives.tBoolean,
-  opener: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["Page"]))
+  opener: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["Page"])),
+  video: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["Artifact"]))
 });
 import_validatorPrimitives.scheme.PageBindingCallEvent = (0, import_validatorPrimitives.tObject)({
   binding: (0, import_validatorPrimitives.tChannel)(["BindingCall"])
@@ -1187,11 +1253,11 @@ import_validatorPrimitives.scheme.PageLocatorHandlerTriggeredEvent = (0, import_
 import_validatorPrimitives.scheme.PageRouteEvent = (0, import_validatorPrimitives.tObject)({
   route: (0, import_validatorPrimitives.tChannel)(["Route"])
 });
+import_validatorPrimitives.scheme.PageScreencastFrameEvent = (0, import_validatorPrimitives.tObject)({
+  data: import_validatorPrimitives.tBinary
+});
 import_validatorPrimitives.scheme.PageWebSocketRouteEvent = (0, import_validatorPrimitives.tObject)({
   webSocketRoute: (0, import_validatorPrimitives.tChannel)(["WebSocketRoute"])
-});
-import_validatorPrimitives.scheme.PageVideoEvent = (0, import_validatorPrimitives.tObject)({
-  artifact: (0, import_validatorPrimitives.tChannel)(["Artifact"])
 });
 import_validatorPrimitives.scheme.PageWebSocketEvent = (0, import_validatorPrimitives.tObject)({
   webSocket: (0, import_validatorPrimitives.tChannel)(["WebSocket"])
@@ -1202,13 +1268,19 @@ import_validatorPrimitives.scheme.PageWorkerEvent = (0, import_validatorPrimitiv
 import_validatorPrimitives.scheme.PageAddInitScriptParams = (0, import_validatorPrimitives.tObject)({
   source: import_validatorPrimitives.tString
 });
-import_validatorPrimitives.scheme.PageAddInitScriptResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageAddInitScriptResult = (0, import_validatorPrimitives.tObject)({
+  disposable: (0, import_validatorPrimitives.tChannel)(["Disposable"])
+});
 import_validatorPrimitives.scheme.PageCloseParams = (0, import_validatorPrimitives.tObject)({
   runBeforeUnload: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
   reason: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
 });
 import_validatorPrimitives.scheme.PageCloseResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
-import_validatorPrimitives.scheme.PageConsoleMessagesParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageClearConsoleMessagesParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageClearConsoleMessagesResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageConsoleMessagesParams = (0, import_validatorPrimitives.tObject)({
+  filter: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tType)("ConsoleMessagesFilter"))
+});
 import_validatorPrimitives.scheme.PageConsoleMessagesResult = (0, import_validatorPrimitives.tObject)({
   messages: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tObject)({
     type: import_validatorPrimitives.tString,
@@ -1218,7 +1290,8 @@ import_validatorPrimitives.scheme.PageConsoleMessagesResult = (0, import_validat
       url: import_validatorPrimitives.tString,
       lineNumber: import_validatorPrimitives.tInt,
       columnNumber: import_validatorPrimitives.tInt
-    })
+    }),
+    timestamp: import_validatorPrimitives.tFloat
   }))
 });
 import_validatorPrimitives.scheme.PageEmulateMediaParams = (0, import_validatorPrimitives.tObject)({
@@ -1233,7 +1306,9 @@ import_validatorPrimitives.scheme.PageExposeBindingParams = (0, import_validator
   name: import_validatorPrimitives.tString,
   needsHandle: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean)
 });
-import_validatorPrimitives.scheme.PageExposeBindingResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageExposeBindingResult = (0, import_validatorPrimitives.tObject)({
+  disposable: (0, import_validatorPrimitives.tChannel)(["Disposable"])
+});
 import_validatorPrimitives.scheme.PageGoBackParams = (0, import_validatorPrimitives.tObject)({
   timeout: import_validatorPrimitives.tFloat,
   waitUntil: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tType)("LifecycleEvent"))
@@ -1334,7 +1409,8 @@ import_validatorPrimitives.scheme.PageSetNetworkInterceptionPatternsParams = (0,
   patterns: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tObject)({
     glob: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
     regexSource: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-    regexFlags: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
+    regexFlags: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+    urlPattern: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tType)("URLPattern"))
   }))
 });
 import_validatorPrimitives.scheme.PageSetNetworkInterceptionPatternsResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
@@ -1342,7 +1418,8 @@ import_validatorPrimitives.scheme.PageSetWebSocketInterceptionPatternsParams = (
   patterns: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tObject)({
     glob: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
     regexSource: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-    regexFlags: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
+    regexFlags: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+    urlPattern: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tType)("URLPattern"))
   }))
 });
 import_validatorPrimitives.scheme.PageSetWebSocketInterceptionPatternsResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
@@ -1409,7 +1486,11 @@ import_validatorPrimitives.scheme.PageTouchscreenTapParams = (0, import_validato
   y: import_validatorPrimitives.tFloat
 });
 import_validatorPrimitives.scheme.PageTouchscreenTapResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
-import_validatorPrimitives.scheme.PagePageErrorsParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageClearPageErrorsParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageClearPageErrorsResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PagePageErrorsParams = (0, import_validatorPrimitives.tObject)({
+  filter: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tType)("ConsoleMessagesFilter"))
+});
 import_validatorPrimitives.scheme.PagePageErrorsResult = (0, import_validatorPrimitives.tObject)({
   errors: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("SerializedError"))
 });
@@ -1440,14 +1521,6 @@ import_validatorPrimitives.scheme.PagePdfResult = (0, import_validatorPrimitives
 import_validatorPrimitives.scheme.PageRequestsParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.PageRequestsResult = (0, import_validatorPrimitives.tObject)({
   requests: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tChannel)(["Request"]))
-});
-import_validatorPrimitives.scheme.PageSnapshotForAIParams = (0, import_validatorPrimitives.tObject)({
-  track: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  timeout: import_validatorPrimitives.tFloat
-});
-import_validatorPrimitives.scheme.PageSnapshotForAIResult = (0, import_validatorPrimitives.tObject)({
-  full: import_validatorPrimitives.tString,
-  incremental: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
 });
 import_validatorPrimitives.scheme.PageStartJSCoverageParams = (0, import_validatorPrimitives.tObject)({
   resetOnNavigation: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
@@ -1488,30 +1561,64 @@ import_validatorPrimitives.scheme.PageStopCSSCoverageResult = (0, import_validat
 });
 import_validatorPrimitives.scheme.PageBringToFrontParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.PageBringToFrontResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PagePickLocatorParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PagePickLocatorResult = (0, import_validatorPrimitives.tObject)({
+  selector: import_validatorPrimitives.tString
+});
+import_validatorPrimitives.scheme.PageCancelPickLocatorParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageCancelPickLocatorResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageScreencastShowOverlayParams = (0, import_validatorPrimitives.tObject)({
+  html: import_validatorPrimitives.tString,
+  duration: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tFloat)
+});
+import_validatorPrimitives.scheme.PageScreencastShowOverlayResult = (0, import_validatorPrimitives.tObject)({
+  id: import_validatorPrimitives.tString
+});
+import_validatorPrimitives.scheme.PageScreencastRemoveOverlayParams = (0, import_validatorPrimitives.tObject)({
+  id: import_validatorPrimitives.tString
+});
+import_validatorPrimitives.scheme.PageScreencastRemoveOverlayResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageScreencastChapterParams = (0, import_validatorPrimitives.tObject)({
+  title: import_validatorPrimitives.tString,
+  description: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+  duration: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tFloat)
+});
+import_validatorPrimitives.scheme.PageScreencastChapterResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageScreencastSetOverlayVisibleParams = (0, import_validatorPrimitives.tObject)({
+  visible: import_validatorPrimitives.tBoolean
+});
+import_validatorPrimitives.scheme.PageScreencastSetOverlayVisibleResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageScreencastShowActionsParams = (0, import_validatorPrimitives.tObject)({
+  duration: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tFloat),
+  position: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"])),
+  fontSize: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
+});
+import_validatorPrimitives.scheme.PageScreencastShowActionsResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageScreencastHideActionsParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageScreencastHideActionsResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageScreencastStartParams = (0, import_validatorPrimitives.tObject)({
+  size: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
+    width: import_validatorPrimitives.tInt,
+    height: import_validatorPrimitives.tInt
+  })),
+  quality: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
+  sendFrames: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
+  record: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean)
+});
+import_validatorPrimitives.scheme.PageScreencastStartResult = (0, import_validatorPrimitives.tObject)({
+  artifact: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["Artifact"]))
+});
+import_validatorPrimitives.scheme.PageScreencastStopParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.PageScreencastStopResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.PageUpdateSubscriptionParams = (0, import_validatorPrimitives.tObject)({
   event: (0, import_validatorPrimitives.tEnum)(["console", "dialog", "fileChooser", "request", "response", "requestFinished", "requestFailed"]),
   enabled: import_validatorPrimitives.tBoolean
 });
 import_validatorPrimitives.scheme.PageUpdateSubscriptionResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
-import_validatorPrimitives.scheme.PageAgentParams = (0, import_validatorPrimitives.tObject)({
-  api: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  apiKey: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  apiEndpoint: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  apiTimeout: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  apiCacheFile: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  cacheFile: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  cacheOutFile: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  doNotRenderActive: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
-  maxActions: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  maxActionRetries: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  maxTokens: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  model: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  secrets: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("NameValue"))),
-  systemPrompt: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
+import_validatorPrimitives.scheme.PageSetDockTileParams = (0, import_validatorPrimitives.tObject)({
+  image: import_validatorPrimitives.tBinary
 });
-import_validatorPrimitives.scheme.PageAgentResult = (0, import_validatorPrimitives.tObject)({
-  agent: (0, import_validatorPrimitives.tChannel)(["PageAgent"])
-});
+import_validatorPrimitives.scheme.PageSetDockTileResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.FrameInitializer = (0, import_validatorPrimitives.tObject)({
   url: import_validatorPrimitives.tString,
   name: import_validatorPrimitives.tString,
@@ -1565,7 +1672,10 @@ import_validatorPrimitives.scheme.FrameAddStyleTagResult = (0, import_validatorP
   element: (0, import_validatorPrimitives.tChannel)(["ElementHandle"])
 });
 import_validatorPrimitives.scheme.FrameAriaSnapshotParams = (0, import_validatorPrimitives.tObject)({
-  selector: import_validatorPrimitives.tString,
+  mode: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["ai", "default"])),
+  track: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+  selector: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+  depth: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
   timeout: import_validatorPrimitives.tFloat
 });
 import_validatorPrimitives.scheme.FrameAriaSnapshotResult = (0, import_validatorPrimitives.tObject)({
@@ -1951,6 +2061,9 @@ import_validatorPrimitives.scheme.WorkerUpdateSubscriptionParams = (0, import_va
   enabled: import_validatorPrimitives.tBoolean
 });
 import_validatorPrimitives.scheme.WorkerUpdateSubscriptionResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DisposableInitializer = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DisposableDisposeParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DisposableDisposeResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.JSHandleInitializer = (0, import_validatorPrimitives.tObject)({
   preview: import_validatorPrimitives.tString
 });
@@ -2255,10 +2368,8 @@ import_validatorPrimitives.scheme.RequestInitializer = (0, import_validatorPrimi
   postData: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBinary),
   headers: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("NameValue")),
   isNavigationRequest: import_validatorPrimitives.tBoolean,
-  redirectedFrom: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["Request"])),
-  hasResponse: import_validatorPrimitives.tBoolean
+  redirectedFrom: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["Request"]))
 });
-import_validatorPrimitives.scheme.RequestResponseEvent = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.RequestResponseParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.RequestResponseResult = (0, import_validatorPrimitives.tObject)({
   response: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["Response"]))
@@ -2376,6 +2487,10 @@ import_validatorPrimitives.scheme.ResponseRawResponseHeadersParams = (0, import_
 import_validatorPrimitives.scheme.ResponseRawResponseHeadersResult = (0, import_validatorPrimitives.tObject)({
   headers: (0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("NameValue"))
 });
+import_validatorPrimitives.scheme.ResponseHttpVersionParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.ResponseHttpVersionResult = (0, import_validatorPrimitives.tObject)({
+  value: import_validatorPrimitives.tString
+});
 import_validatorPrimitives.scheme.ResponseSizesParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.ResponseSizesResult = (0, import_validatorPrimitives.tObject)({
   sizes: (0, import_validatorPrimitives.tType)("RequestSizes")
@@ -2427,6 +2542,32 @@ import_validatorPrimitives.scheme.BindingCallResolveParams = (0, import_validato
   result: (0, import_validatorPrimitives.tType)("SerializedArgument")
 });
 import_validatorPrimitives.scheme.BindingCallResolveResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DebuggerInitializer = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DebuggerPausedStateChangedEvent = (0, import_validatorPrimitives.tObject)({
+  pausedDetails: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
+    location: (0, import_validatorPrimitives.tObject)({
+      file: import_validatorPrimitives.tString,
+      line: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
+      column: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
+    }),
+    title: import_validatorPrimitives.tString,
+    stack: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
+  }))
+});
+import_validatorPrimitives.scheme.DebuggerRequestPauseParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DebuggerRequestPauseResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DebuggerResumeParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DebuggerResumeResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DebuggerNextParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DebuggerNextResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
+import_validatorPrimitives.scheme.DebuggerRunToParams = (0, import_validatorPrimitives.tObject)({
+  location: (0, import_validatorPrimitives.tObject)({
+    file: import_validatorPrimitives.tString,
+    line: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
+    column: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
+  })
+});
+import_validatorPrimitives.scheme.DebuggerRunToResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.DialogInitializer = (0, import_validatorPrimitives.tObject)({
   page: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tChannel)(["Page"])),
   type: import_validatorPrimitives.tString,
@@ -2522,6 +2663,7 @@ import_validatorPrimitives.scheme.CDPSessionEventEvent = (0, import_validatorPri
   method: import_validatorPrimitives.tString,
   params: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tAny)
 });
+import_validatorPrimitives.scheme.CDPSessionCloseEvent = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.CDPSessionSendParams = (0, import_validatorPrimitives.tObject)({
   method: import_validatorPrimitives.tString,
   params: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tAny)
@@ -2535,6 +2677,7 @@ import_validatorPrimitives.scheme.ElectronInitializer = (0, import_validatorPrim
 import_validatorPrimitives.scheme.ElectronLaunchParams = (0, import_validatorPrimitives.tObject)({
   executablePath: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   args: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tArray)(import_validatorPrimitives.tString)),
+  chromiumSandbox: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
   cwd: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   env: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("NameValue"))),
   timeout: import_validatorPrimitives.tFloat,
@@ -2556,15 +2699,21 @@ import_validatorPrimitives.scheme.ElectronLaunchParams = (0, import_validatorPri
   locale: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   offline: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
   recordVideo: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
-    dir: import_validatorPrimitives.tString,
+    dir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
     size: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
       width: import_validatorPrimitives.tInt,
       height: import_validatorPrimitives.tInt
+    })),
+    showActions: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
+      duration: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tFloat),
+      position: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"])),
+      fontSize: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
     }))
   })),
   strictSelectors: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
   timezoneId: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   tracesDir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
+  artifactsDir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   selectorEngines: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tArray)((0, import_validatorPrimitives.tType)("SelectorEngine"))),
   testIdAttributeName: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString)
 });
@@ -2583,7 +2732,8 @@ import_validatorPrimitives.scheme.ElectronApplicationConsoleEvent = (0, import_v
     url: import_validatorPrimitives.tString,
     lineNumber: import_validatorPrimitives.tInt,
     columnNumber: import_validatorPrimitives.tInt
-  })
+  }),
+  timestamp: import_validatorPrimitives.tFloat
 });
 import_validatorPrimitives.scheme.ElectronApplicationBrowserWindowParams = (0, import_validatorPrimitives.tObject)({
   page: (0, import_validatorPrimitives.tChannel)(["Page"])
@@ -2790,10 +2940,15 @@ import_validatorPrimitives.scheme.AndroidDeviceLaunchBrowserParams = (0, import_
   contrast: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["no-preference", "more", "no-override"])),
   baseURL: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
   recordVideo: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
-    dir: import_validatorPrimitives.tString,
+    dir: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
     size: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
       width: import_validatorPrimitives.tInt,
       height: import_validatorPrimitives.tInt
+    })),
+    showActions: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
+      duration: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tFloat),
+      position: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tEnum)(["top-left", "top", "top-right", "bottom-left", "bottom", "bottom-right"])),
+      fontSize: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
     }))
   })),
   strictSelectors: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tBoolean),
@@ -2903,63 +3058,6 @@ import_validatorPrimitives.scheme.JsonPipeSendParams = (0, import_validatorPrimi
 import_validatorPrimitives.scheme.JsonPipeSendResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.JsonPipeCloseParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
 import_validatorPrimitives.scheme.JsonPipeCloseResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
-import_validatorPrimitives.scheme.PageAgentInitializer = (0, import_validatorPrimitives.tObject)({
-  page: (0, import_validatorPrimitives.tChannel)(["Page"])
-});
-import_validatorPrimitives.scheme.PageAgentTurnEvent = (0, import_validatorPrimitives.tObject)({
-  role: import_validatorPrimitives.tString,
-  message: import_validatorPrimitives.tString,
-  usage: (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({
-    inputTokens: import_validatorPrimitives.tInt,
-    outputTokens: import_validatorPrimitives.tInt
-  }))
-});
-import_validatorPrimitives.scheme.PageAgentPerformParams = (0, import_validatorPrimitives.tObject)({
-  task: import_validatorPrimitives.tString,
-  maxActions: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  maxActionRetries: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  maxTokens: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  cacheKey: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  timeout: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
-});
-import_validatorPrimitives.scheme.PageAgentPerformResult = (0, import_validatorPrimitives.tObject)({
-  usage: (0, import_validatorPrimitives.tType)("AgentUsage")
-});
-import_validatorPrimitives.scheme.PageAgentExpectParams = (0, import_validatorPrimitives.tObject)({
-  expectation: import_validatorPrimitives.tString,
-  maxActions: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  maxActionRetries: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  maxTokens: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  cacheKey: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  timeout: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
-});
-import_validatorPrimitives.scheme.PageAgentExpectResult = (0, import_validatorPrimitives.tObject)({
-  usage: (0, import_validatorPrimitives.tType)("AgentUsage")
-});
-import_validatorPrimitives.scheme.PageAgentExtractParams = (0, import_validatorPrimitives.tObject)({
-  query: import_validatorPrimitives.tString,
-  schema: import_validatorPrimitives.tAny,
-  maxActions: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  maxActionRetries: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  maxTokens: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt),
-  cacheKey: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tString),
-  timeout: (0, import_validatorPrimitives.tOptional)(import_validatorPrimitives.tInt)
-});
-import_validatorPrimitives.scheme.PageAgentExtractResult = (0, import_validatorPrimitives.tObject)({
-  result: import_validatorPrimitives.tAny,
-  usage: (0, import_validatorPrimitives.tType)("AgentUsage")
-});
-import_validatorPrimitives.scheme.PageAgentDisposeParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
-import_validatorPrimitives.scheme.PageAgentDisposeResult = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
-import_validatorPrimitives.scheme.PageAgentUsageParams = (0, import_validatorPrimitives.tOptional)((0, import_validatorPrimitives.tObject)({}));
-import_validatorPrimitives.scheme.PageAgentUsageResult = (0, import_validatorPrimitives.tObject)({
-  usage: (0, import_validatorPrimitives.tType)("AgentUsage")
-});
-import_validatorPrimitives.scheme.AgentUsage = (0, import_validatorPrimitives.tObject)({
-  turns: import_validatorPrimitives.tInt,
-  inputTokens: import_validatorPrimitives.tInt,
-  outputTokens: import_validatorPrimitives.tInt
-});
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   ValidationError,

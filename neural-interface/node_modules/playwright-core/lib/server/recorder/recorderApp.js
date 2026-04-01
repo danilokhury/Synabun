@@ -125,7 +125,7 @@ class RecorderApp {
         if (source) {
           if (source.isRecorded)
             this._selectedGeneratorId = source.id;
-          this._recorder.setLanguage(source.language);
+          await this._recorder.setLanguage(source.language);
         }
       },
       setAutoExpect: async (params) => {
@@ -133,7 +133,7 @@ class RecorderApp {
         this._updateActions();
       },
       setMode: async (params) => {
-        this._recorder.setMode(params.mode);
+        await this._recorder.setMode(params.mode);
       },
       resume: async () => {
         this._recorder.resume();
@@ -146,9 +146,9 @@ class RecorderApp {
       },
       highlightRequested: async (params) => {
         if (params.selector)
-          this._recorder.setHighlightedSelector(params.selector);
+          await this._recorder.setHighlightedSelector(params.selector);
         if (params.ariaTemplate)
-          this._recorder.setHighlightedAriaTemplate(params.ariaTemplate);
+          await this._recorder.setHighlightedAriaTemplate(params.ariaTemplate);
       }
     };
     await this._page.exposeBinding(progress, "sendCommand", false, async (_, data) => {
@@ -181,6 +181,7 @@ class RecorderApp {
       return;
     inspectedContext[recorderAppSymbol] = true;
     const sdkLanguage = inspectedContext._browser.sdkLanguage();
+    const isChromium = inspectedContext._browser.options.browserType === "chromium";
     const headed = !!inspectedContext._browser.options.headful;
     const recorderPlaywright = require("../playwright").createPlaywright({ sdkLanguage: "javascript", isInternalPlaywright: true });
     const { context: appContext, page } = await (0, import_launchApp2.launchApp)(recorderPlaywright.chromium, {
@@ -192,9 +193,9 @@ class RecorderApp {
         headless: !!process.env.PWTEST_CLI_HEADLESS || (0, import_debug.isUnderTest)() && !headed,
         cdpPort: (0, import_debug.isUnderTest)() ? 0 : void 0,
         handleSIGINT: params.handleSIGINT,
-        executablePath: inspectedContext._browser.options.isChromium ? inspectedContext._browser.options.customExecutablePath : void 0,
+        executablePath: isChromium ? inspectedContext._browser.options.customExecutablePath : void 0,
         // Use the same channel as the inspected context to guarantee that the browser is installed.
-        channel: inspectedContext._browser.options.isChromium ? inspectedContext._browser.options.channel : void 0
+        channel: isChromium ? inspectedContext._browser.options.channel : void 0
       }
     });
     const controller = new import_progress.ProgressController();
@@ -206,8 +207,8 @@ class RecorderApp {
       sdkLanguage: inspectedContext._browser.sdkLanguage(),
       wsEndpointForTest: inspectedContext._browser.options.wsEndpoint,
       headed: !!inspectedContext._browser.options.headful,
-      executablePath: inspectedContext._browser.options.isChromium ? inspectedContext._browser.options.customExecutablePath : void 0,
-      channel: inspectedContext._browser.options.isChromium ? inspectedContext._browser.options.channel : void 0,
+      executablePath: isChromium ? inspectedContext._browser.options.customExecutablePath : void 0,
+      channel: isChromium ? inspectedContext._browser.options.channel : void 0,
       ...params
     };
     const recorderApp = new RecorderApp(recorder, appParams, page, appContext._browser.options.wsEndpoint);

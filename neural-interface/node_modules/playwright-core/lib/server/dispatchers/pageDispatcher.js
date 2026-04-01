@@ -34,9 +34,12 @@ var import_networkDispatchers = require("./networkDispatchers");
 var import_networkDispatchers2 = require("./networkDispatchers");
 var import_networkDispatchers3 = require("./networkDispatchers");
 var import_webSocketRouteDispatcher = require("./webSocketRouteDispatcher");
+var import_disposableDispatcher = require("./disposableDispatcher");
 var import_instrumentation = require("../instrumentation");
 var import_urlMatch = require("../../utils/isomorphic/urlMatch");
-var import_pageAgentDispatcher = require("./pageAgentDispatcher");
+var import_recorder = require("../recorder");
+var import_disposable = require("../disposable");
+var import_videoRecorder = require("../videoRecorder");
 class PageDispatcher extends import_dispatcher.Dispatcher {
   constructor(parentScope, page) {
     const mainFrame = import_frameDispatcher.FrameDispatcher.from(parentScope, page.mainFrame());
@@ -44,14 +47,14 @@ class PageDispatcher extends import_dispatcher.Dispatcher {
       mainFrame,
       viewportSize: page.emulatedSize()?.viewport,
       isClosed: page.isClosed(),
-      opener: PageDispatcher.fromNullable(parentScope, page.opener())
+      opener: PageDispatcher.fromNullable(parentScope, page.opener()),
+      video: page.video ? createVideoDispatcher(parentScope, page.video) : void 0
     });
     this._type_EventTarget = true;
     this._type_Page = true;
     this._subscriptions = /* @__PURE__ */ new Set();
     this._webSocketInterceptionPatterns = [];
-    this._bindings = [];
-    this._initScripts = [];
+    this._disposables = [];
     this._interceptionUrlMatchers = [];
     this._locatorHandlers = /* @__PURE__ */ new Set();
     this._jsCoverageActive = false;
@@ -85,9 +88,6 @@ class PageDispatcher extends import_dispatcher.Dispatcher {
     this.addObjectListener(import_page.Page.Events.LocatorHandlerTriggered, (uid) => this._dispatchEvent("locatorHandlerTriggered", { uid }));
     this.addObjectListener(import_page.Page.Events.WebSocket, (webSocket) => this._dispatchEvent("webSocket", { webSocket: new import_networkDispatchers3.WebSocketDispatcher(this, webSocket) }));
     this.addObjectListener(import_page.Page.Events.Worker, (worker) => this._dispatchEvent("worker", { worker: new WorkerDispatcher(this, worker) }));
-    this.addObjectListener(import_page.Page.Events.Video, (artifact) => this._dispatchEvent("video", { artifact: import_artifactDispatcher.ArtifactDispatcher.from(parentScope, artifact) }));
-    if (page.video)
-      this._dispatchEvent("video", { artifact: import_artifactDispatcher.ArtifactDispatcher.from(this.parentScope(), page.video) });
     const frames = page.frameManager.frames();
     for (let i = 1; i < frames.length; i++)
       this._onFrameAttached(frames[i]);
@@ -112,7 +112,8 @@ class PageDispatcher extends import_dispatcher.Dispatcher {
       this._dispatchEvent("bindingCall", { binding: binding2 });
       return binding2.promise();
     });
-    this._bindings.push(binding);
+    this._disposables.push(binding);
+    return { disposable: new import_disposableDispatcher.DisposableDispatcher(this, binding) };
   }
   async setExtraHTTPHeaders(params, progress) {
     await this._page.setExtraHTTPHeaders(progress, params.headers);
@@ -154,7 +155,9 @@ class PageDispatcher extends import_dispatcher.Dispatcher {
     await this._page.setViewportSize(progress, params.viewportSize);
   }
   async addInitScript(params, progress) {
-    this._initScripts.push(await this._page.addInitScript(progress, params.source));
+    const initScript = await this._page.addInitScript(params.source);
+    this._disposables.push(initScript);
+    return { disposable: new import_disposableDispatcher.DisposableDispatcher(this, initScript) };
   }
   async setNetworkInterceptionPatterns(params, progress) {
     const hadMatchers = this._interceptionUrlMatchers.length > 0;
@@ -163,7 +166,7 @@ class PageDispatcher extends import_dispatcher.Dispatcher {
         await this._page.removeRequestInterceptor(this._requestInterceptor);
       this._interceptionUrlMatchers = [];
     } else {
-      this._interceptionUrlMatchers = params.patterns.map((pattern) => pattern.regexSource ? new RegExp(pattern.regexSource, pattern.regexFlags) : pattern.glob);
+      this._interceptionUrlMatchers = params.patterns.map(import_urlMatch.deserializeURLMatch);
       if (!hadMatchers)
         await this._page.addRequestInterceptor(progress, this._requestInterceptor);
     }
@@ -209,49 +212,51 @@ class PageDispatcher extends import_dispatcher.Dispatcher {
       this._subscriptions.delete(params.event);
   }
   async keyboardDown(params, progress) {
-    await this._page.keyboard.down(progress, params.key);
+    await this._page.keyboard.apiDown(progress, params.key);
   }
   async keyboardUp(params, progress) {
-    await this._page.keyboard.up(progress, params.key);
+    await this._page.keyboard.apiUp(progress, params.key);
   }
   async keyboardInsertText(params, progress) {
-    await this._page.keyboard.insertText(progress, params.text);
+    await this._page.keyboard.apiInsertText(progress, params.text);
   }
   async keyboardType(params, progress) {
-    await this._page.keyboard.type(progress, params.text, params);
+    await this._page.keyboard.apiType(progress, params.text, params);
   }
   async keyboardPress(params, progress) {
-    await this._page.keyboard.press(progress, params.key, params);
+    await this._page.keyboard.apiPress(progress, params.key, params);
+  }
+  async clearConsoleMessages(params, progress) {
+    this._page.clearConsoleMessages();
   }
   async consoleMessages(params, progress) {
     this._subscriptions.add("console");
-    return { messages: this._page.consoleMessages().map((message) => this.parentScope().serializeConsoleMessage(message, this)) };
+    return { messages: this._page.consoleMessages(params.filter).map((message) => this.parentScope().serializeConsoleMessage(message, this)) };
+  }
+  async clearPageErrors(params, progress) {
+    this._page.clearPageErrors();
   }
   async pageErrors(params, progress) {
-    return { errors: this._page.pageErrors().map((error) => (0, import_errors.serializeError)(error)) };
+    return { errors: this._page.pageErrors(params.filter).map((error) => (0, import_errors.serializeError)(error)) };
   }
   async mouseMove(params, progress) {
-    progress.metadata.point = { x: params.x, y: params.y };
-    await this._page.mouse.move(progress, params.x, params.y, params);
+    await this._page.mouse.apiMove(progress, params.x, params.y, params);
   }
   async mouseDown(params, progress) {
-    progress.metadata.point = this._page.mouse.currentPoint();
-    await this._page.mouse.down(progress, params);
+    await this._page.mouse.apiDown(progress, params);
   }
   async mouseUp(params, progress) {
-    progress.metadata.point = this._page.mouse.currentPoint();
-    await this._page.mouse.up(progress, params);
+    await this._page.mouse.apiUp(progress, params);
   }
   async mouseClick(params, progress) {
-    progress.metadata.point = { x: params.x, y: params.y };
-    await this._page.mouse.click(progress, params.x, params.y, params);
+    await this._page.mouse.apiClick(progress, params.x, params.y, params);
   }
   async mouseWheel(params, progress) {
-    await this._page.mouse.wheel(progress, params.deltaX, params.deltaY);
+    await this._page.mouse.apiWheel(progress, params.deltaX, params.deltaY);
   }
   async touchscreenTap(params, progress) {
     progress.metadata.point = { x: params.x, y: params.y };
-    await this._page.touchscreen.tap(progress, params.x, params.y);
+    await this._page.touchscreen.apiTap(progress, params.x, params.y);
   }
   async pdf(params, progress) {
     if (!this._page.pdf)
@@ -263,11 +268,68 @@ class PageDispatcher extends import_dispatcher.Dispatcher {
     this._subscriptions.add("request");
     return { requests: this._page.networkRequests().map((request) => import_networkDispatchers.RequestDispatcher.from(this.parentScope(), request)) };
   }
-  async snapshotForAI(params, progress) {
-    return await this._page.snapshotForAI(progress, params);
-  }
   async bringToFront(params, progress) {
     await progress.race(this._page.bringToFront());
+  }
+  async pickLocator(params, progress) {
+    const recorder = await import_recorder.Recorder.forContext(this._page.browserContext, { omitCallTracking: true, hideToolbar: true });
+    const selector = await recorder.pickLocator(progress, this._page);
+    return { selector };
+  }
+  async cancelPickLocator(params, progress) {
+    const recorder = await import_recorder.Recorder.existingForContext(this._page.browserContext);
+    await recorder?.setMode("none");
+  }
+  async screencastShowOverlay(params) {
+    const id = await this._page.overlay.show(params.html, params.duration);
+    return { id };
+  }
+  async screencastRemoveOverlay(params) {
+    await this._page.overlay.remove(params.id);
+  }
+  async screencastChapter(params) {
+    await this._page.overlay.chapter(params);
+  }
+  async screencastSetOverlayVisible(params) {
+    await this._page.overlay.setVisible(params.visible);
+  }
+  async screencastShowActions(params) {
+    this._page.screencast.showActions({ duration: params.duration, position: params.position, fontSize: params.fontSize });
+  }
+  async screencastHideActions() {
+    this._page.screencast.hideActions();
+  }
+  async screencastStart(params, progress) {
+    if (this._screencastClient || this._videoRecorder)
+      throw new Error("Screencast is already running");
+    if (params.sendFrames) {
+      this._screencastClient = {
+        onFrame: (frame) => {
+          this._dispatchEvent("screencastFrame", { data: frame.buffer });
+        },
+        dispose: () => {
+        },
+        size: params.size,
+        quality: params.quality
+      };
+      this._page.screencast.addClient(this._screencastClient);
+    }
+    let artifact;
+    if (params.record) {
+      this._videoRecorder = new import_videoRecorder.VideoRecorder(this._page.screencast);
+      artifact = this._videoRecorder.start(params);
+    }
+    return { artifact: artifact ? createVideoDispatcher(this.parentScope(), artifact) : void 0 };
+  }
+  async screencastStop(params, progress) {
+    if (this._videoRecorder) {
+      await this._videoRecorder.stop();
+      this._videoRecorder = void 0;
+    }
+    const client = this._screencastClient;
+    this._screencastClient = void 0;
+    if (client)
+      this._page.screencast.removeClient(client);
   }
   async startJSCoverage(params, progress) {
     const coverage = this._page.coverage;
@@ -289,9 +351,6 @@ class PageDispatcher extends import_dispatcher.Dispatcher {
     const coverage = this._page.coverage;
     return await coverage.stopCSSCoverage();
   }
-  async agent(params, progress) {
-    return { agent: new import_pageAgentDispatcher.PageAgentDispatcher(this, params) };
-  }
   _onFrameAttached(frame) {
     this._dispatchEvent("frameAttached", { frame: import_frameDispatcher.FrameDispatcher.from(this.parentScope(), frame) });
   }
@@ -304,12 +363,8 @@ class PageDispatcher extends import_dispatcher.Dispatcher {
     this._interceptionUrlMatchers = [];
     this._page.removeRequestInterceptor(this._requestInterceptor).catch(() => {
     });
-    this._page.removeExposedBindings(this._bindings).catch(() => {
+    (0, import_disposable.disposeAll)(this._disposables).catch(() => {
     });
-    this._bindings = [];
-    this._page.removeInitScripts(this._initScripts).catch(() => {
-    });
-    this._initScripts = [];
     if (this._routeWebSocketInitScript)
       import_webSocketRouteDispatcher.WebSocketRouteDispatcher.uninstall(this.connection, this._page, this._routeWebSocketInitScript).catch(() => {
       });
@@ -327,6 +382,11 @@ class PageDispatcher extends import_dispatcher.Dispatcher {
       this._page.coverage.stopCSSCoverage().catch(() => {
       });
     this._cssCoverageActive = false;
+    this.screencastStop({}, void 0).catch(() => {
+    });
+  }
+  async setDockTile(params) {
+    await this._page.setDockTile(params.image);
   }
 }
 class WorkerDispatcher extends import_dispatcher.Dispatcher {
@@ -384,6 +444,9 @@ class BindingCallDispatcher extends import_dispatcher.Dispatcher {
     this._reject((0, import_errors.parseError)(params.error));
     this._dispose();
   }
+}
+function createVideoDispatcher(parentScope, video) {
+  return import_artifactDispatcher.ArtifactDispatcher.from(parentScope.parentScope(), video);
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
