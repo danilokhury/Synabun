@@ -16013,6 +16013,55 @@
     padding: 4px 0;
   }
 
+  /* ── Effort row — think level chips ── */
+  .as-launch-efforts { display: flex; gap: 4px; }
+  .as-launch-effort {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 6px 4px 5px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    cursor: pointer; transition: all 0.18s ease;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  .as-launch-effort:hover {
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.10);
+  }
+  .as-launch-effort.active {
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.14);
+    box-shadow: var(--shadow-xs), var(--shadow-highlight);
+  }
+  .as-launch-effort.active .as-launch-effort-name {
+    color: var(--t-bright);
+  }
+  .as-launch-effort-name {
+    font-size: 10px; font-weight: 600;
+    color: var(--t-secondary);
+    transition: color 0.15s;
+  }
+  .as-launch-effort-desc {
+    font-size: 8px; font-weight: 400;
+    color: var(--t-faint);
+    transition: color 0.15s;
+  }
+  /* Max effort — warm accent like Opus */
+  .as-launch-effort--top.active .as-launch-effort-name {
+    color: hsla(40, 55%, 78%, 0.95);
+  }
+  .as-launch-effort--top.active .as-launch-effort-desc {
+    color: var(--t-secondary);
+  }
+  /* Default effort (medium) — cool accent */
+  .as-launch-effort--default.active .as-launch-effort-name {
+    color: hsla(210, 45%, 80%, 0.95);
+  }
+  .as-launch-effort--default.active .as-launch-effort-desc {
+    color: var(--t-secondary);
+  }
+
   /* ── Browser mode ── */
   .as-launch-browser-mode { margin-top: 2px; }
   .as-launch-browser-modes { display: flex; gap: 4px; }

@@ -3546,33 +3546,25 @@ function renderPostPlanActions(tab, headerText) {
         }
       } else if (a.action === 'plan') {
         // Open plan file in SynaBun code editor for direct editing
-        // If tab doesn't have planFilePath (plan was text-only, no Write to ~/.claude/plans/),
-        // fall back to scanning plans dir for the most recently modified file
         const openPlan = (path) => emit('open-plan-editor', { filePath: path, tabId: tab.id });
         const noFile = () => { appendStatus(tab, 'No plan file found — send your edits in chat instead.'); card.style.opacity = '1'; card.style.pointerEvents = 'auto'; };
         if (tab.planFilePath) {
           openPlan(tab.planFilePath);
         } else {
-          // Fallback chain: scan disk → materialize from DOM → error
-          fetch('/api/latest-plan').then(r => r.json()).then(data => {
-            if (data.found) {
-              tab.planFilePath = data.path;
-              openPlan(data.path);
-            } else {
-              // No file on disk — try to extract plan text from conversation and create one
-              const planText = extractPlanText(tab);
-              if (!planText) { noFile(); return; }
-              fetch('/api/create-plan', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: planText }),
-              }).then(r => r.json()).then(result => {
-                if (result.ok) {
-                  tab.planFilePath = result.path;
-                  openPlan(result.path);
-                } else { noFile(); }
-              }).catch(noFile);
-            }
+          // Use eagerly captured plan content (captured at ExitPlanMode time before post-plan
+          // messages pollute the DOM), or extract from DOM as last resort
+          const planText = tab._planContent || extractPlanText(tab);
+          if (!planText) { noFile(); return; }
+          fetch('/api/create-plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: planText }),
+          }).then(r => r.json()).then(result => {
+            if (result.ok) {
+              tab.planFilePath = result.path;
+              saveTabs();
+              openPlan(result.path);
+            } else { noFile(); }
           }).catch(noFile);
           return; // async — don't fall through
         }
@@ -3732,6 +3724,16 @@ function renderAssistant(tab, msg) {
   pruneMessages($msgs);
 
   if (msgId) { tab.currentMsgId = msgId; tab.currentMsgEl = el; }
+
+  // Eagerly capture plan content the moment ExitPlanMode is detected.
+  // At this point the plan text is the last substantial .msg-body in the DOM —
+  // post-plan messages (remember, recall, stop hook) haven't been added yet.
+  if (tab._exitPlanPending && !tab._planContentCaptured) {
+    tab._planContentCaptured = true;
+    const captured = extractPlanText(tab);
+    if (captured) tab._planContent = captured;
+  }
+
   if (tab === activeTab()) scrollEnd();
 }
 
@@ -4887,7 +4889,7 @@ function _updateSendIcon($send, $input, forceShift) {
 
 function finishTab(tab, skipNotif) {
   const wasRunning = tab.running;
-  hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.askRenderedViaControl = false; tab.sendStartedAt = null; tab._exitPlanMsgId = null; tab._exitPlanPending = false; tab._exitPlanHandled = false; tab._exitPlanWasPlanMode = false; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs();
+  hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.askRenderedViaControl = false; tab.sendStartedAt = null; tab._exitPlanMsgId = null; tab._exitPlanPending = false; tab._exitPlanHandled = false; tab._exitPlanWasPlanMode = false; tab._planContentCaptured = false; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs();
   if (wasRunning && !skipNotif) notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code', { tabId: tab.id });
 }
 
@@ -4947,6 +4949,7 @@ function send({ shift = false } = {}) {
   if (text === '/plan') {
     $input.value = ''; hideSlashHints();
     tab.planMode = !tab.planMode;
+    if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; }
     const $plan = _panel?.querySelector('#cp-plan-toggle');
     if ($plan) $plan.classList.toggle('active', tab.planMode);
     appendStatus(tab, tab.planMode ? 'Plan mode ON — Claude will plan without making changes' : 'Plan mode OFF');
@@ -5830,6 +5833,7 @@ function wireEvents() {
       const tab = activeTab();
       if (!tab) return;
       tab.planMode = !tab.planMode;
+      if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; }
       const $plan = _panel?.querySelector('#cp-plan-toggle');
       if ($plan) $plan.classList.toggle('active', tab.planMode);
       appendStatus(tab, tab.planMode ? 'Plan mode ON — Claude will plan without making changes' : 'Plan mode OFF');
@@ -6004,6 +6008,7 @@ function wireEvents() {
       const tab = activeTab();
       if (!tab) return;
       tab.planMode = !tab.planMode;
+      if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; }
       $plan.classList.toggle('active', tab.planMode);
     });
   }
@@ -6244,6 +6249,7 @@ function wireEvents() {
 
     // Store edited content for when user clicks "Continue with implementation"
     tab._editedPlanContent = content;
+    tab._planContent = content;
     if (filePath) tab.planFilePath = filePath;
 
     // Render synthetic assistant message showing the updated plan
