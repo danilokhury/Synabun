@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-04-01
+
+### Fixed — MCP Registration Path Wrong on Windows Global Install (Onboarding Wizard)
+- **`getMcpSetup()` in `onboarding.html` used `DATA_HOME` for the MCP entry file path** — On Windows global npm installs, `DATA_HOME` resolves to `%APPDATA%/synabun` (user data dir) while the actual `run.mjs` lives in `PACKAGE_ROOT` (`%APPDATA%/npm/node_modules/synabun`). The generated `~/.claude.json` pointed to a non-existent file, silently breaking MCP startup
+  - `GET /api/setup/onboarding` now returns `packageRoot: PACKAGE_ROOT` alongside `projectDir: DATA_HOME`
+  - `getMcpSetup()` rewritten: uses `packageRoot` for MCP entry path (`run.mjs`), `projectRoot` (data home) for env/data paths
+  - All tool configs (Claude CLI, Cursor, Windsurf, `.mcp.json`) now include full env block: `DOTENV_PATH`, `SYNABUN_DATA_HOME`, `MEMORY_DATA_DIR` — previously only had `DOTENV_PATH`
+  - Added startup warning in `server.js` when `SYNABUN_DATA_HOME` is unset and `PACKAGE_ROOT` contains `node_modules` — catches misconfigured global installs early
+
 ## 2026-03-31
 
 ### Fixed — Browser Rendering Parity with Real Chrome
