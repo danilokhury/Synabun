@@ -28,6 +28,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { detectProject, getMcpCategoriesPath, MCP_DATA_DIR, DATA_DIR } from './shared.mjs';
 
+// Cross-platform safety: catch uncaught errors and output valid hook JSON
+process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
+process.on('unhandledRejection', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Debug log (append-only, survives across invocations)
