@@ -492,11 +492,22 @@ function injectStyles() {
     .cp-messages .msg-body pre {
       background: rgba(0,0,0,0.3); border: 1px solid var(--b-subtle);
       border-radius: 8px; padding: 10px; overflow-x: auto; margin: 0.5em 0;
+      position: relative;
     }
     .cp-messages .msg-body pre code {
       font-family: 'JetBrains Mono', monospace; font-size: 11px;
       color: var(--t-primary); background: none; border: none; padding: 0;
     }
+    .cp-copy-btn {
+      position: absolute; top: 6px; right: 8px;
+      background: none; border: none; cursor: pointer;
+      font-family: 'JetBrains Mono', monospace; font-size: 9px;
+      color: var(--t-faint); text-transform: uppercase; letter-spacing: 0.04em;
+      padding: 2px 6px; border-radius: 4px; opacity: 0.6;
+      transition: opacity 0.15s, color 0.15s, background 0.15s;
+    }
+    .cp-copy-btn:hover { opacity: 1; color: var(--t-bright); background: rgba(255,255,255,0.06); }
+    .cp-copy-btn.copied { color: #6ec96e; opacity: 1; }
     .cp-messages .msg-body a { color: var(--t-bright); text-decoration: none; }
     .cp-messages .msg-body a:hover { text-decoration: underline; }
     .cp-messages .msg-body strong { color: var(--t-bright); }
@@ -2788,6 +2799,7 @@ async function loadSessionHistory(sid, $msgs) {
           body._rawMd = m.text;
           body.innerHTML = md(m.text);
           linkifyFilePaths(body);
+          addCopyButtons(body);
           wrap.appendChild(body);
         }
         if (m.tools?.length) {
@@ -2847,6 +2859,25 @@ async function loadSessionHistory(sid, $msgs) {
   } catch {
     $msgs.innerHTML = '<div class="msg-status">Failed to load history</div>';
   }
+}
+
+// ── Copy buttons on pre blocks ──
+function addCopyButtons(el) {
+  el.querySelectorAll('pre').forEach(pre => {
+    if (pre.querySelector('.cp-copy-btn')) return;
+    const btn = document.createElement('button');
+    btn.className = 'cp-copy-btn';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', () => {
+      const text = pre.querySelector('code')?.textContent || pre.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+      });
+    });
+    pre.appendChild(btn);
+  });
 }
 
 // ── File path linking ──
@@ -3398,6 +3429,7 @@ function handleStreamDelta(tab, apiEvent) {
       tab._stream.bodyEl._rawMd = tab._stream.textBuf;
       tab._stream.bodyEl.innerHTML = md(tab._stream.textBuf);
       linkifyFilePaths(tab._stream.bodyEl);
+      addCopyButtons(tab._stream.bodyEl);
     }
     tab._stream = null;
     return;
@@ -3486,6 +3518,7 @@ function handleStreamDelta(tab, apiEvent) {
       tab._stream.bodyEl._rawMd = tab._stream.textBuf;
       tab._stream.bodyEl.innerHTML = md(tab._stream.textBuf);
       linkifyFilePaths(tab._stream.bodyEl);
+      addCopyButtons(tab._stream.bodyEl);
     }
     tab._stream.blockType = null;
     if (tab === activeTab()) scrollEnd();
@@ -3664,11 +3697,13 @@ function renderAssistant(tab, msg) {
         if (existingBody) {
           existingBody.innerHTML = html;
           linkifyFilePaths(existingBody);
+          addCopyButtons(existingBody);
         } else {
           const body = document.createElement('div');
           body.className = 'msg-body';
           body.innerHTML = html;
           linkifyFilePaths(body);
+          addCopyButtons(body);
           const afterThink = wrap.querySelector('.msg-thinking');
           if (afterThink) afterThink.after(body);
           else wrap.insertBefore(body, wrap.firstChild);
@@ -3684,6 +3719,14 @@ function renderAssistant(tab, msg) {
           wrap.appendChild(buildAskFromToolUse(tab, t));
         }
       }
+    }
+    // Eager capture plan content in dedup path — streaming creates the element via
+    // handleStreamDelta, so renderAssistant always takes this dedup branch.
+    // The new-message capture at ~3767 is never reached during streaming.
+    if (tab._exitPlanPending && !tab._planContentCaptured) {
+      tab._planContentCaptured = true;
+      const captured = extractPlanText(tab);
+      if (captured) tab._planContent = captured;
     }
     if (tab === activeTab()) scrollEnd();
     return;
@@ -3715,6 +3758,7 @@ function renderAssistant(tab, msg) {
     body._rawMd = rawMd;
     body.innerHTML = md(rawMd);
     linkifyFilePaths(body);
+    addCopyButtons(body);
     wrap.appendChild(body);
   }
   for (const t of regularTools) wrap.appendChild(buildTool(t, tab));
@@ -4004,6 +4048,7 @@ function buildPlanCard(block) {
   body.className = 'plan-body msg-body';
   body.innerHTML = md(i.content || '');
   linkifyFilePaths(body);
+  addCopyButtons(body);
   card.appendChild(body);
   return card;
 }

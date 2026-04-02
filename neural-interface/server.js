@@ -13898,6 +13898,14 @@ async function createBrowserSession(options = {}) {
       }
     });
 
+    tabPage.on('dialog', async (dialog) => {
+      try {
+        await dialog.accept();
+      } catch {
+        // Dialog already dismissed — race between page navigation and auto-accept
+      }
+    });
+
     tabPage.on('close', () => {
       console.log(`Browser tab ${tabId} page closed for session ${sessionId}`);
       session.tabs.delete(tabId);
