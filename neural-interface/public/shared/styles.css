@@ -93,6 +93,8 @@
     --file-explorer-width: 0px;
     --sidebar-total-width: calc(var(--explorer-width, 0px) + var(--file-explorer-width, 0px));
     --terminal-height: 0px;
+    --right-panel-width: 0px;
+    --right-panel-gap: 0px;
     --claude-panel-width: 0px;
     --claude-panel-gap: 0px;
   }
@@ -324,7 +326,7 @@
   }
   .static-bg-logo {
     position: absolute;
-    left: calc(var(--sidebar-total-width, 0px) + (100% - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
+    left: calc(var(--sidebar-total-width, 0px) + (100% - var(--sidebar-total-width, 0px) - var(--right-panel-width, var(--claude-panel-width, 0px))) / 2);
     top: 50%;
     transform: translate(-50%, -50%);
     height: 80px;
@@ -4499,6 +4501,7 @@
   /* Collapsible iface-sections in Connections tab */
   .iface-section[data-collapsible] {
     cursor: pointer;
+    overflow: visible;
   }
   .iface-section[data-collapsible] .cc-section-body {
     cursor: default;
@@ -5481,7 +5484,7 @@
   #topright-controls {
     position: fixed;
     top: calc(var(--navbar-height, 48px) + 20px);
-    right: calc(20px + var(--claude-panel-width, 0px));
+    right: calc(20px + var(--right-panel-width, var(--claude-panel-width, 0px)));
     transition: right 0.3s cubic-bezier(0.22, 1, 0.36, 1);
     z-index: 400;
     display: flex;
@@ -5719,6 +5722,10 @@
   .topright-icon-btn:hover svg {
     filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.2));
   }
+  #topright-codex-panel-btn svg {
+    fill: currentColor;
+    stroke: none;
+  }
 
   .topright-icon-btn .count-badge {
     position: absolute;
@@ -5734,8 +5741,9 @@
     font-weight: 600;
   }
 
-  /* ── Standalone buttons outside the unified bar (claude panel) ── */
-  #topright-claude-panel-btn {
+  /* ── Standalone buttons outside the unified bar (side panels) ── */
+  #topright-claude-panel-btn,
+  #topright-codex-panel-btn {
     background: rgba(18, 18, 22, 0.65);
     backdrop-filter: blur(24px) saturate(1.3);
     -webkit-backdrop-filter: blur(24px) saturate(1.3);
@@ -5745,7 +5753,8 @@
     width: 32px;
     height: 32px;
   }
-  #topright-claude-panel-btn:hover {
+  #topright-claude-panel-btn:hover,
+  #topright-codex-panel-btn:hover {
     background: rgba(24, 24, 30, 0.8);
     border-color: rgba(255, 255, 255, 0.1);
   }
@@ -12027,8 +12036,8 @@
     position: fixed;
     top: var(--navbar-height, 48px);
     left: calc(var(--sidebar-total-width, 0px));
-    right: var(--claude-panel-width, 0px);
-    margin-right: var(--claude-panel-gap, 0px);
+    right: var(--right-panel-width, var(--claude-panel-width, 0px));
+    margin-right: var(--right-panel-gap, var(--claude-panel-gap, 0px));
     height: calc(100dvh - var(--navbar-height, 48px));
     z-index: 198;
     display: flex;
@@ -12528,7 +12537,7 @@
   #multi-select-bar {
     position: fixed;
     top: 62px;
-    left: calc(var(--sidebar-total-width, 0px) + (100% - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
+    left: calc(var(--sidebar-total-width, 0px) + (100% - var(--sidebar-total-width, 0px) - var(--right-panel-width, var(--claude-panel-width, 0px))) / 2);
     transform: translateX(-50%);
     transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1);
     z-index: 95;
@@ -12564,7 +12573,7 @@
   #stats-bar {
     position: fixed;
     bottom: calc(20px + var(--terminal-height, 0px) + var(--peek-dock-height, 0px));
-    left: calc(var(--sidebar-total-width, 0px) + (100% - var(--sidebar-total-width, 0px) - var(--claude-panel-width, 0px)) / 2);
+    left: calc(var(--sidebar-total-width, 0px) + (100% - var(--sidebar-total-width, 0px) - var(--right-panel-width, var(--claude-panel-width, 0px))) / 2);
     transform: translateX(-50%);
     transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1),
                 bottom 0.3s cubic-bezier(0.22, 1, 0.36, 1);
@@ -16802,7 +16811,7 @@
     position: fixed;
     bottom: 20px;
     left: calc(var(--sidebar-total-width, 0px) + 16px);
-    right: calc(var(--claude-panel-width, 0px) + 20px);
+    right: calc(var(--right-panel-width, var(--claude-panel-width, 0px)) + 20px);
     height: var(--terminal-height, 0px);
     z-index: 150;
     display: flex;

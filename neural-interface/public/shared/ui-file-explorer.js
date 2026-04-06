@@ -1645,7 +1645,31 @@ function editorRedo(ta) {
   updateHighlight();
 }
 
-async function openFileEditor(filePath) {
+function getEditorSelectionOffset(text, lineNum, columnNum = 1) {
+  const content = String(text || '');
+  const lines = content.split('\n');
+  const targetLine = Math.min(Math.max(1, Number(lineNum) || 1), lines.length || 1);
+  const targetColumn = Math.max(1, Number(columnNum) || 1);
+  let pos = 0;
+  for (let i = 0; i < targetLine - 1; i++) pos += lines[i].length + 1;
+  pos += Math.min(targetColumn - 1, (lines[targetLine - 1] || '').length);
+  return { pos, line: targetLine };
+}
+
+function focusEditorLocation(lineNum, columnNum = 1) {
+  const textarea = $('fe-editor-textarea');
+  if (!textarea || !lineNum || lineNum < 1) return;
+  const { pos, line } = getEditorSelectionOffset(textarea.value, lineNum, columnNum);
+  textarea.focus();
+  textarea.setSelectionRange(pos, pos);
+  const lineHeight = 20;
+  textarea.scrollTop = Math.max(0, (line - 5) * lineHeight);
+  updateCursorPos();
+  updateLineHighlight();
+  syncGutterScroll();
+}
+
+async function openFileEditor(filePath, opts = {}) {
   try {
     const res = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`);
     const data = await res.json();
@@ -1727,7 +1751,12 @@ async function openFileEditor(filePath) {
     updateCursorPos();
     updateEditorDirtyState();
     // Defer so the textarea has rendered its scroll dimensions
-    requestAnimationFrame(() => { updateLineHighlight(); updateScrollmap(); syncHighlightScroll(); });
+    requestAnimationFrame(() => {
+      if (opts?.line) focusEditorLocation(opts.line, opts.column || 1);
+      updateLineHighlight();
+      updateScrollmap();
+      syncHighlightScroll();
+    });
   } catch (err) {
     showToast('Failed to open file');
   }
@@ -2070,19 +2099,7 @@ function closeGoToLine() {
 }
 
 function goToLine(lineNum) {
-  const textarea = $('fe-editor-textarea');
-  if (!textarea || !lineNum || lineNum < 1) return;
-  const lines = textarea.value.split('\n');
-  const target = Math.min(lineNum, lines.length);
-  let pos = 0;
-  for (let i = 0; i < target - 1; i++) pos += lines[i].length + 1;
-  textarea.focus();
-  textarea.setSelectionRange(pos, pos);
-  const lineHeight = 20;
-  textarea.scrollTop = Math.max(0, (target - 5) * lineHeight);
-  updateCursorPos();
-  updateLineHighlight();
-  syncGutterScroll();
+  focusEditorLocation(lineNum, 1);
   closeGoToLine();
 }
 
@@ -2347,6 +2364,15 @@ export function initFileExplorer() {
     _changelogEditMode = true;
     _changelogEditFilePath = filePath;
     openFileEditor(filePath);
+  });
+
+  on('open-file-editor', ({ filePath, line, column } = {}) => {
+    if (!filePath) return;
+    _planEditMode = false;
+    _planEditFilePath = null;
+    _changelogEditMode = false;
+    _changelogEditFilePath = null;
+    openFileEditor(filePath, { line, column });
   });
 
   const panel = $('file-explorer-panel');

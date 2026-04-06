@@ -225,7 +225,13 @@
       "mcp__SynaBun__discord_member",
       "mcp__SynaBun__discord_onboarding",
       "mcp__SynaBun__discord_webhook",
-      "mcp__SynaBun__discord_thread"
+      "mcp__SynaBun__discord_thread",
+      "mcp__SynaBun__leonardo_browser_navigate",
+      "mcp__SynaBun__leonardo_browser_generate",
+      "mcp__SynaBun__leonardo_browser_library",
+      "mcp__SynaBun__leonardo_browser_download",
+      "mcp__SynaBun__leonardo_browser_reference",
+      "mcp__SynaBun__image_staged"
     ]
   }
 }

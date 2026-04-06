@@ -16,6 +16,8 @@ export interface BrowserSessionInfo {
   title: string;
   createdAt: number;
   clients: number;
+  loopOwned?: boolean;
+  agentOwned?: boolean;
 }
 
 interface NiResponse {
@@ -59,6 +61,10 @@ async function request(
   }
 }
 
+// Recovery cache: when a pinned session dies, auto-create a replacement and cache its ID
+// so subsequent tool calls in the same MCP process reuse the recovered session.
+let _recoveredSessionId: string | null = null;
+
 /**
  * Resolve which session ID to use.
  * - If sessionId provided, return it immediately (server returns 404 if invalid).
@@ -74,15 +80,33 @@ export async function resolveSession(
   // Resolve tab ID from explicit param or environment variable
   const resolvedTabId = tabId || process.env.SYNABUN_BROWSER_TAB || undefined;
 
-  // Agent-scoped browser session — set by the agent orchestrator to pin
-  // this MCP instance to a specific browser session (multi-agent isolation).
-  // Verify the pinned session still exists; fall through to auto-select if gone.
+  // Agent/loop-scoped browser session — set by the orchestrator to pin
+  // this MCP instance to a specific browser session (multi-session isolation).
+  // If pinned session died, check recovery cache first, then auto-create.
   const pinnedSession = process.env.SYNABUN_BROWSER_SESSION;
   if (pinnedSession && !sessionId) {
+    // Check recovery cache first — avoids re-creating on every call after recovery
+    if (_recoveredSessionId) {
+      const recheck = await request('GET', '/api/browser/sessions');
+      const alive = ((recheck.sessions || []) as BrowserSessionInfo[]).find(s => s.id === _recoveredSessionId);
+      if (alive) return { sessionId: _recoveredSessionId, tabId: resolvedTabId };
+      _recoveredSessionId = null; // recovered session also died — try fresh recovery
+    }
+
     const check = await request('GET', '/api/browser/sessions');
     const active = ((check.sessions || []) as BrowserSessionInfo[]).find(s => s.id === pinnedSession);
     if (active) return { sessionId: pinnedSession, tabId: resolvedTabId };
-    return { error: `Pinned browser session ${pinnedSession} is no longer available. Launch the automation again so SynaBun can open the selected browser profile.` };
+
+    // Pinned session is gone — auto-recover by creating a new one
+    console.error(`[MCP] Pinned browser session ${pinnedSession} is gone — recovering with new session`);
+    const recovered = await request('POST', '/api/browser/sessions', {
+      url: 'about:blank',
+    }, SESSION_CREATE_TIMEOUT);
+    if (recovered.error) {
+      return { error: `Pinned browser session ${pinnedSession} is no longer available and recovery failed: ${recovered.error}` };
+    }
+    _recoveredSessionId = recovered.sessionId as string;
+    return { sessionId: _recoveredSessionId, tabId: resolvedTabId };
   }
 
   if (sessionId) {
@@ -94,7 +118,11 @@ export async function resolveSession(
   // List sessions
   const data = await request('GET', '/api/browser/sessions');
   if (data.error) return { error: data.error };
-  const sessions = (data.sessions || []) as BrowserSessionInfo[];
+  const allSessions = (data.sessions || []) as BrowserSessionInfo[];
+
+  // Interactive sessions (no pinned env var) must not grab loop/agent-owned sessions.
+  // Pinned sessions already returned above; explicit sessionId trusted above.
+  const sessions = allSessions.filter(s => !s.loopOwned && !s.agentOwned);
 
   if (sessions.length === 1) {
     return { sessionId: sessions[0].id, tabId: resolvedTabId };
@@ -108,10 +136,14 @@ export async function resolveSession(
       if (created.error) return { error: `Failed to auto-create session: ${created.error}` };
       return { sessionId: created.sessionId as string, tabId: resolvedTabId };
     }
+    const ownedCount = allSessions.length - sessions.length;
+    if (ownedCount > 0) {
+      return { error: `${ownedCount} browser session(s) exist but are owned by active automations. Use browser_navigate with a URL to open your own session.` };
+    }
     return { error: 'No browser sessions open. Use browser_session to create one first, or use browser_navigate with a URL to auto-create.' };
   }
 
-  // Multiple sessions — require explicit ID
+  // Multiple available sessions — require explicit ID
   const list = sessions.map(s => `  ${s.id} — ${s.title || s.url}`).join('\n');
   return { error: `Multiple browser sessions open. Specify sessionId:\n${list}` };
 }

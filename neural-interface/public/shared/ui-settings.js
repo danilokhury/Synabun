@@ -50,6 +50,7 @@ const CHEVRON_ICON = '<svg class="cc-section-chevron" viewBox="0 0 24 24"><polyl
 const ANTHROPIC_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z" fill="currentColor"/></svg>';
 const GEMINI_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="currentColor"/></svg>';
 const OPENAI_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z" fill="currentColor"/></svg>';
+const OPENCODE_ICON = '<svg viewBox="0 0 240 300" class="cc-provider-icon"><path fill-rule="evenodd" d="M0 0h240v300H0V0zm60 60v180h120V60H60z" fill="currentColor"/><rect x="60" y="120" width="120" height="120" fill="currentColor" opacity=".45"/></svg>';
 const BROWSER_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><ellipse cx="12" cy="12" rx="4" ry="10" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="2" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 7h15M4.5 17h15" fill="none" stroke="currentColor" stroke-width="1"/></svg>';
 
 // ── Toast helper ──
@@ -1205,6 +1206,7 @@ function buildTerminalTab(cliConfig) {
     { id: 'claude-code', label: 'Claude Code', icon: ANTHROPIC_ICON, color: '#D4A27F', default: 'claude' },
     { id: 'codex',       label: 'Codex CLI',   icon: OPENAI_ICON,   color: '#74c7a5', default: 'codex' },
     { id: 'gemini',      label: 'Gemini CLI',  icon: GEMINI_ICON,   color: '#669DF6', default: 'gemini' },
+    { id: 'opencode',    label: 'OpenCode',    icon: OPENCODE_ICON, color: '#E8E0DC', default: 'opencode' },
   ];
 
   return `
@@ -1671,7 +1673,7 @@ function buildPermissionsTab(toolCategories, toolPermissions) {
       </div>`;
 }
 
-function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, toolPermissions, toolCategories) {
+function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, codexGreetingConfig, toolPermissions, toolCategories) {
   const gh = ccIntegrations.global.hooks || {};
   const projs = ccIntegrations.projects || [];
   const ssOn = !!gh.SessionStart;
@@ -1698,31 +1700,6 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
     { key: 'PostToolUse', on: ptOn, label: 'Action Tracking', desc: 'Track file changes, enforce rules, and save plans on approval' },
   ];
 
-  // Build greeting project options
-  const gc = greetingConfig || { defaults: {}, projects: {}, global: {} };
-  const greetingProjects = Object.keys(gc.projects || {});
-  const firstKey = greetingProjects[0] || 'global';
-  const projectKeys = [...greetingProjects, 'global'];
-  const projectOptions = projectKeys.map(k => {
-    const label = k === 'global' ? 'Global (Default)' : (gc.projects[k]?.label || k);
-    return `<option value="${k}"${k === firstKey ? ' selected' : ''}>${escapeHtml(label)}</option>`;
-  }).join('');
-
-  // Get first project config for initial display
-  const firstCfg = firstKey === 'global'
-    ? { ...gc.defaults, ...gc.global }
-    : { ...gc.defaults, ...(gc.projects[firstKey] || {}) };
-
-  const buildReminderRow = (r) => `
-    <div class="cc-greeting-reminder-row">
-      <span class="cc-greeting-drag-handle" title="Drag to reorder">&#8942;&#8942;</span>
-      <input class="cc-greeting-reminder-input label" placeholder="Label" value="${escapeHtml(r.label || '')}">
-      <input class="cc-greeting-reminder-input cmd" placeholder="Command" value="${escapeHtml(r.command || '')}">
-      <button class="cc-greeting-reminder-remove" title="Remove">&times;</button>
-    </div>`;
-
-  const remindersHTML = (firstCfg.reminders || []).map(buildReminderRow).join('');
-
   const copyIcon = COPY_ICON;
   const chevron = CHEVRON_ICON;
   const anthropicIcon = ANTHROPIC_ICON;
@@ -1743,7 +1720,7 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
       { label: 'Gemini Web', on: false },
     ];
     const openaiItems = [
-      { label: 'Codex CLI', on: false },
+      { label: 'Codex CLI', on: true },
       { label: 'Cursor', on: false },
       { label: 'ChatGPT Web', on: false },
     ];
@@ -1783,87 +1760,133 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
     </div>`;
   };
 
-  return `
-      <div class="settings-tab-body" data-tab="hooks">
-
-        <!-- 1. GREETING (combined toggle + config) -->
-        <div class="iface-section collapsed" data-collapsible id="cc-greeting-config">
+  function buildGreetingSection({
+    title,
+    enabled,
+    config,
+    prefix,
+    bodyId,
+    toggleAttrs,
+    badgeHtml = '',
+    hint = '',
+  }) {
+    const gc = config || { defaults: {}, projects: {}, global: {} };
+    const greetingProjects = Object.keys(gc.projects || {});
+    const firstKey = greetingProjects[0] || 'global';
+    const projectKeys = [...greetingProjects, 'global'];
+    const firstCfg = firstKey === 'global'
+      ? { ...gc.defaults, ...gc.global }
+      : { ...gc.defaults, ...(gc.projects[firstKey] || {}) };
+    const buildReminderRow = (reminder) => `
+      <div class="cc-greeting-reminder-row">
+        <span class="cc-greeting-drag-handle" title="Drag to reorder">&#8942;&#8942;</span>
+        <input class="cc-greeting-reminder-input label" placeholder="Label" value="${escapeHtml(reminder.label || '')}">
+        <input class="cc-greeting-reminder-input cmd" placeholder="Command" value="${escapeHtml(reminder.command || '')}">
+        <button class="cc-greeting-reminder-remove" title="Remove">&times;</button>
+      </div>`;
+    const remindersHTML = (firstCfg.reminders || []).map(buildReminderRow).join('');
+    return `
+        <div class="iface-section collapsed" data-collapsible id="${prefix}-greeting-config">
           <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Greeting</span>
+            <span style="display:flex;align-items:center;gap:6px">${chevron} ${title}</span>
             <div style="display:flex;align-items:center;gap:8px">
-              ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
-              <button class="cc-toggle${grOn ? ' on' : ''}" data-cc-feature="greeting"></button>
+              ${badgeHtml}
+              <button class="cc-toggle${enabled ? ' on' : ''}" ${toggleAttrs}></button>
             </div>
           </div>
-          <div class="cc-section-body" id="cc-greeting-body" style="display:${grOn ? 'block' : 'none'}">
+          <div class="cc-section-body" id="${bodyId}" style="display:${enabled ? 'block' : 'none'}">
+            ${hint ? `<div class="settings-hint" style="margin-bottom:10px">${hint}</div>` : ''}
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-              <div class="cc-dropdown" id="cc-greeting-project-dropdown">
+              <div class="cc-dropdown" id="${prefix}-greeting-project-dropdown">
                 <button class="cc-dropdown-trigger" type="button">
-                  <span class="cc-dropdown-value" id="cc-greeting-project-label">${firstKey === 'global' ? 'Global (Default)' : escapeHtml((gc.projects[firstKey] || {}).label || firstKey)}</span>
+                  <span class="cc-dropdown-value" id="${prefix}-greeting-project-label">${firstKey === 'global' ? 'Global (Default)' : escapeHtml((gc.projects[firstKey] || {}).label || firstKey)}</span>
                   <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
-                <div class="cc-dropdown-menu" id="cc-greeting-project-menu">
-                  ${projectKeys.map(k => {
-                    const label = k === 'global' ? 'Global (Default)' : (gc.projects[k]?.label || k);
-                    return `<div class="cc-dropdown-item${k === firstKey ? ' active' : ''}" data-value="${k}">${escapeHtml(label)}</div>`;
+                <div class="cc-dropdown-menu" id="${prefix}-greeting-project-menu">
+                  ${projectKeys.map((key) => {
+                    const label = key === 'global' ? 'Global (Default)' : (gc.projects[key]?.label || key);
+                    return `<div class="cc-dropdown-item${key === firstKey ? ' active' : ''}" data-value="${key}">${escapeHtml(label)}</div>`;
                   }).join('')}
                 </div>
-                <input type="hidden" id="cc-greeting-project" value="${firstKey}">
+                <input type="hidden" id="${prefix}-greeting-project" value="${firstKey}">
               </div>
               <span style="font-size:10px;color:var(--t-faint);margin-left:8px">Per-project or global</span>
             </div>
             <div class="cc-greeting-field">
               <label class="cc-greeting-label">Template</label>
-              <textarea class="cc-greeting-textarea" id="cc-greeting-template" placeholder="{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.">${escapeHtml(firstCfg.greetingTemplate || '')}</textarea>
-              <div class="cc-greeting-cheatsheet-toggle" id="cc-greeting-cheatsheet-toggle">
+              <textarea class="cc-greeting-textarea" id="${prefix}-greeting-template" placeholder="{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.">${escapeHtml(firstCfg.greetingTemplate || '')}</textarea>
+              <div class="cc-greeting-cheatsheet-toggle" id="${prefix}-greeting-cheatsheet-toggle">
                 <svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:2;vertical-align:-1px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                 Variable Reference
               </div>
-              <div class="cc-greeting-cheatsheet" id="cc-greeting-cheatsheet" style="display:none">
+              <div class="cc-greeting-cheatsheet" id="${prefix}-greeting-cheatsheet" style="display:none">
                 <table class="cc-cheatsheet-table">
                   <thead><tr><th>Variable</th><th>Preview</th></tr></thead>
                   <tbody>
-                    <tr><td><code>{time_greeting}</code></td><td id="cc-cs-time"></td></tr>
-                    <tr><td><code>{project_label}</code></td><td id="cc-cs-label"></td></tr>
-                    <tr><td><code>{project_name}</code></td><td id="cc-cs-name"></td></tr>
-                    <tr><td><code>{branch}</code></td><td id="cc-cs-branch"></td></tr>
-                    <tr><td><code>{date}</code></td><td id="cc-cs-date"></td></tr>
+                    <tr><td><code>{time_greeting}</code></td><td id="${prefix}-cs-time"></td></tr>
+                    <tr><td><code>{project_label}</code></td><td id="${prefix}-cs-label"></td></tr>
+                    <tr><td><code>{project_name}</code></td><td id="${prefix}-cs-name"></td></tr>
+                    <tr><td><code>{branch}</code></td><td id="${prefix}-cs-branch"></td></tr>
+                    <tr><td><code>{date}</code></td><td id="${prefix}-cs-date"></td></tr>
                   </tbody>
                 </table>
                 <div class="cc-cheatsheet-example">
                   <div class="cc-greeting-label" style="margin-bottom:3px;font-size:9px">Example output</div>
-                  <div class="cc-cheatsheet-preview" id="cc-cs-preview"></div>
+                  <div class="cc-cheatsheet-preview" id="${prefix}-cs-preview"></div>
                 </div>
               </div>
             </div>
-
             <div class="cc-greeting-checkboxes">
               <label class="iface-toggle-row">
-                <input type="checkbox" id="cc-greeting-show-reminders" ${firstCfg.showReminders ? 'checked' : ''}>
+                <input type="checkbox" id="${prefix}-greeting-show-reminders" ${firstCfg.showReminders ? 'checked' : ''}>
                 Show reminders
               </label>
               <label class="iface-toggle-row">
-                <input type="checkbox" id="cc-greeting-show-last-session" ${firstCfg.showLastSession ? 'checked' : ''}>
+                <input type="checkbox" id="${prefix}-greeting-show-last-session" ${firstCfg.showLastSession ? 'checked' : ''}>
                 Show last session
               </label>
             </div>
-
             <div class="cc-greeting-field">
               <label class="cc-greeting-label">Reminders</label>
-              <div class="cc-greeting-reminder-list" id="cc-greeting-reminders">${remindersHTML}</div>
-              <button class="conn-add-btn" id="cc-greeting-add-reminder" style="margin-top:6px;font-size:11px;padding:5px 10px">
+              <div class="cc-greeting-reminder-list" id="${prefix}-greeting-reminders">${remindersHTML}</div>
+              <button class="conn-add-btn" id="${prefix}-greeting-add-reminder" style="margin-top:6px;font-size:11px;padding:5px 10px">
                 <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                 Add Reminder
               </button>
             </div>
-
-            <button class="conn-add-btn" id="cc-greeting-save" style="width:100%;margin-top:4px;font-size:12px;padding:7px 10px;border-style:solid;background:rgba(79,195,247,0.08);border-color:rgba(79,195,247,0.25);color:rgba(79,195,247,0.9)">
+            <button class="conn-add-btn" id="${prefix}-greeting-save" style="width:100%;margin-top:4px;font-size:12px;padding:7px 10px;border-style:solid;background:rgba(79,195,247,0.08);border-color:rgba(79,195,247,0.25);color:rgba(79,195,247,0.9)">
               Save Greeting Config
             </button>
           </div>
-        </div>
+        </div>`;
+  }
 
-        <!-- 2. HOOKS -->
+  return `
+      <div class="settings-tab-body" data-tab="hooks">
+
+        <!-- 1. CLAUDE GREETING -->
+        ${buildGreetingSection({
+          title: 'Greeting',
+          enabled: grOn,
+          config: greetingConfig,
+          prefix: 'cc',
+          bodyId: 'cc-greeting-body',
+          toggleAttrs: 'data-cc-feature="greeting"',
+          badgeHtml: providerBadge({ cli: true, vscode: true, web: true, cowork: true }),
+        })}
+
+        <!-- 2. CODEX GREETING -->
+        ${buildGreetingSection({
+          title: 'Codex Panel Greeting',
+          enabled: codexGreetingConfig?.enabled === true,
+          config: codexGreetingConfig,
+          prefix: 'codex',
+          bodyId: 'codex-greeting-body',
+          toggleAttrs: 'data-codex-greeting-toggle="enabled"',
+          hint: 'Codex panel only. This configuration is isolated from Claude and stored separately.',
+        })}
+
+        <!-- 3. HOOKS -->
         <div class="iface-section collapsed" data-collapsible data-cc-target="global">
           <div class="gfx-group-title" style="justify-content:space-between">
             <span style="display:flex;align-items:center;gap:6px">${chevron} Hooks <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/6</span></span>
@@ -1883,7 +1906,7 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
           </div>
         </div>
 
-        <!-- 3. KNOWLEDGE -->
+        <!-- 4. KNOWLEDGE -->
         <div class="iface-section collapsed" data-collapsible>
           <div class="gfx-group-title" style="justify-content:space-between">
             <span style="display:flex;align-items:center;gap:6px">${chevron} Knowledge</span>
@@ -2625,6 +2648,7 @@ export async function openSettingsModal() {
   let mcpKeyInfo = { hasKey: false };
   let _bridgeResult = null;
   let greetingConfig = { defaults: {}, projects: {}, global: {} };
+  let codexGreetingConfig = { enabled: true, defaults: {}, projects: {}, global: {} };
   let setupStatus = { claude: {}, gemini: {}, codex: {}, paths: {} };
   let cliConfig = {};
   let toolPermissions = {};
@@ -2634,7 +2658,7 @@ export async function openSettingsModal() {
   let customIconsData = { extensions: {}, filenames: {} };
 
   try {
-    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes, iconsRes] = await Promise.allSettled([
+    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, codexGreetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes, iconsRes] = await Promise.allSettled([
       fetch('/api/settings').then(r => r.json()),
       fetch('/api/connections').then(r => r.json()),
       fetch('/api/claude-code/integrations').then(r => r.json()),
@@ -2643,6 +2667,7 @@ export async function openSettingsModal() {
       fetch('/api/mcp-key').then(r => r.json()),
       fetch('/api/bridges/openclaw').then(r => r.json()),
       fetch('/api/greeting/config').then(r => r.json()),
+      fetch('/api/codex-panel/greeting/config').then(r => r.json()),
       fetch('/api/setup/status').then(r => r.json()),
       fetch('/api/cli/config').then(r => r.json()),
       fetch('/api/claude-code/tool-permissions').then(r => r.json()),
@@ -2659,6 +2684,7 @@ export async function openSettingsModal() {
     if (keyRes.status === 'fulfilled' && keyRes.value.ok) mcpKeyInfo = keyRes.value;
     if (bridgeRes.status === 'fulfilled' && bridgeRes.value.ok) _bridgeResult = bridgeRes.value;
     if (greetRes.status === 'fulfilled' && greetRes.value.ok) greetingConfig = greetRes.value.config;
+    if (codexGreetRes.status === 'fulfilled' && codexGreetRes.value.ok) codexGreetingConfig = codexGreetRes.value.config;
     if (setupRes.status === 'fulfilled' && setupRes.value.ok) setupStatus = setupRes.value;
     if (cliRes.status === 'fulfilled' && cliRes.value.ok) cliConfig = cliRes.value.config;
     if (toolPermsRes.status === 'fulfilled' && toolPermsRes.value.ok) toolPermissions = toolPermsRes.value.tools;
@@ -2716,7 +2742,7 @@ export async function openSettingsModal() {
       </nav>
       <div class="settings-content">
         ${buildServerTab(settings)}
-        ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, toolPermissions, toolCategories)}
+        ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, codexGreetingConfig, toolPermissions, toolCategories)}
         ${buildTerminalTab(cliConfig)}
         ${buildNotificationsTab()}
         ${buildBrowserTab()}
@@ -4159,6 +4185,35 @@ export async function openSettingsModal() {
     });
   });
 
+  overlay.querySelectorAll('.cc-toggle[data-codex-greeting-toggle]').forEach(toggle => {
+    toggle.addEventListener('click', async () => {
+      const isOn = toggle.classList.contains('on');
+      try {
+        toggle.style.opacity = '0.4';
+        toggle.style.pointerEvents = 'none';
+        const res = await fetch('/api/codex-panel/greeting/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !isOn }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          alert(data.error || 'Failed to toggle Codex greeting');
+          return;
+        }
+        codexGreetingConfig.enabled = !isOn;
+        toggle.classList.toggle('on', !isOn);
+        const body = overlay.querySelector('#codex-greeting-body');
+        if (body) body.style.display = !isOn ? 'block' : 'none';
+      } catch (err) {
+        alert('Failed: ' + err.message);
+      } finally {
+        toggle.style.opacity = '';
+        toggle.style.pointerEvents = '';
+      }
+    });
+  });
+
   // ── Tool Permission toggles ──
   function updateToolBadges() {
     // Update per-category counts across all tabs (Automations + Social)
@@ -4266,68 +4321,55 @@ export async function openSettingsModal() {
   }
 
   // ── Greeting editor handlers ──
-  {
-    const gcSelect = overlay.querySelector('#cc-greeting-project');
-    const gcTemplate = overlay.querySelector('#cc-greeting-template');
-    const gcShowReminders = overlay.querySelector('#cc-greeting-show-reminders');
-    const gcShowLastSession = overlay.querySelector('#cc-greeting-show-last-session');
-    const gcReminderList = overlay.querySelector('#cc-greeting-reminders');
-    const gcAddReminder = overlay.querySelector('#cc-greeting-add-reminder');
-    const gcSave = overlay.querySelector('#cc-greeting-save');
+  function wireGreetingEditor({ prefix, configRef, saveBaseUrl, onSave }) {
+    const gcSelect = overlay.querySelector(`#${prefix}-greeting-project`);
+    const gcTemplate = overlay.querySelector(`#${prefix}-greeting-template`);
+    const gcShowReminders = overlay.querySelector(`#${prefix}-greeting-show-reminders`);
+    const gcShowLastSession = overlay.querySelector(`#${prefix}-greeting-show-last-session`);
+    const gcReminderList = overlay.querySelector(`#${prefix}-greeting-reminders`);
+    const gcAddReminder = overlay.querySelector(`#${prefix}-greeting-add-reminder`);
+    const gcSave = overlay.querySelector(`#${prefix}-greeting-save`);
+    if (!gcSelect || !gcTemplate || !gcReminderList || !gcSave) return;
 
-    // Helper: get config for a project key
     function getGreetingCfg(key) {
-      const gc = greetingConfig || { defaults: {}, projects: {}, global: {} };
+      const gc = configRef() || { defaults: {}, projects: {}, global: {} };
       if (key === 'global') return { ...gc.defaults, ...gc.global };
       return { ...gc.defaults, ...(gc.projects[key] || {}) };
     }
 
-    // Helper: build reminder row HTML
-    function reminderRowHTML(r) {
+    function reminderRowHTML(reminder) {
       return `<div class="cc-greeting-reminder-row">
         <span class="cc-greeting-drag-handle" title="Drag to reorder">&#8942;&#8942;</span>
-        <input class="cc-greeting-reminder-input label" placeholder="Label" value="${escapeHtml(r.label || '')}">
-        <input class="cc-greeting-reminder-input cmd" placeholder="Command" value="${escapeHtml(r.command || '')}">
+        <input class="cc-greeting-reminder-input label" placeholder="Label" value="${escapeHtml(reminder.label || '')}">
+        <input class="cc-greeting-reminder-input cmd" placeholder="Command" value="${escapeHtml(reminder.command || '')}">
         <button class="cc-greeting-reminder-remove" title="Remove">&times;</button>
       </div>`;
     }
 
-    // Populate fields from a project key
-    function populateGreetingFields(key) {
-      const cfg = getGreetingCfg(key);
-      if (gcTemplate) gcTemplate.value = cfg.greetingTemplate || '';
-      if (gcShowReminders) gcShowReminders.checked = !!cfg.showReminders;
-      if (gcShowLastSession) gcShowLastSession.checked = !!cfg.showLastSession;
-      if (gcReminderList) gcReminderList.innerHTML = (cfg.reminders || []).map(r => reminderRowHTML(r)).join('');
-      wireReminderRemoveButtons();
-      wireReminderDragHandles();
-    }
-
-    // Wire remove buttons
     function wireReminderRemoveButtons() {
-      if (!gcReminderList) return;
-      gcReminderList.querySelectorAll('.cc-greeting-reminder-remove').forEach(btn => {
+      gcReminderList.querySelectorAll('.cc-greeting-reminder-remove').forEach((btn) => {
         btn.onclick = () => {
           const row = btn.closest('.cc-greeting-reminder-row');
-          if (row) { row.style.opacity = '0'; row.style.transition = 'opacity 0.15s'; setTimeout(() => row.remove(), 150); }
+          if (!row) return;
+          row.style.opacity = '0';
+          row.style.transition = 'opacity 0.15s';
+          setTimeout(() => row.remove(), 150);
         };
       });
     }
 
-    // Wire drag handles for reorder
     function wireReminderDragHandles() {
-      if (!gcReminderList) return;
-      gcReminderList.querySelectorAll('.cc-greeting-drag-handle').forEach(handle => {
-        handle.onmousedown = (e) => {
-          e.preventDefault();
+      gcReminderList.querySelectorAll('.cc-greeting-drag-handle').forEach((handle) => {
+        handle.onmousedown = (event) => {
+          event.preventDefault();
           const row = handle.closest('.cc-greeting-reminder-row');
           if (!row) return;
           row.style.opacity = '0.5';
           const rows = [...gcReminderList.querySelectorAll('.cc-greeting-reminder-row')];
-          const startY = e.clientY;
+          const startY = event.clientY;
           const startIdx = rows.indexOf(row);
-          const onMove = (me) => {
-            const dy = me.clientY - startY;
+          const onMove = (moveEvent) => {
+            const dy = moveEvent.clientY - startY;
             const rowH = row.offsetHeight + 4;
             const shift = Math.round(dy / rowH);
             const newIdx = Math.max(0, Math.min(rows.length - 1, startIdx + shift));
@@ -4348,112 +4390,110 @@ export async function openSettingsModal() {
       });
     }
 
-    // Custom dropdown behavior
-    const gcDropdown = overlay.querySelector('#cc-greeting-project-dropdown');
-    const gcDropdownLabel = overlay.querySelector('#cc-greeting-project-label');
-    const gcDropdownMenu = overlay.querySelector('#cc-greeting-project-menu');
+    function populateGreetingFields(key) {
+      const cfg = getGreetingCfg(key);
+      gcTemplate.value = cfg.greetingTemplate || '';
+      if (gcShowReminders) gcShowReminders.checked = !!cfg.showReminders;
+      if (gcShowLastSession) gcShowLastSession.checked = !!cfg.showLastSession;
+      gcReminderList.innerHTML = (cfg.reminders || []).map((reminder) => reminderRowHTML(reminder)).join('');
+      wireReminderRemoveButtons();
+      wireReminderDragHandles();
+    }
+
+    const gcDropdown = overlay.querySelector(`#${prefix}-greeting-project-dropdown`);
+    const gcDropdownLabel = overlay.querySelector(`#${prefix}-greeting-project-label`);
+    const gcDropdownMenu = overlay.querySelector(`#${prefix}-greeting-project-menu`);
     if (gcDropdown && gcDropdownMenu) {
-      gcDropdown.querySelector('.cc-dropdown-trigger').addEventListener('click', () => {
+      gcDropdown.querySelector('.cc-dropdown-trigger')?.addEventListener('click', () => {
         gcDropdown.classList.toggle('open');
       });
-      gcDropdownMenu.querySelectorAll('.cc-dropdown-item').forEach(item => {
+      gcDropdownMenu.querySelectorAll('.cc-dropdown-item').forEach((item) => {
         item.addEventListener('click', () => {
           const val = item.dataset.value;
-          if (gcSelect) { gcSelect.value = val; gcSelect.dispatchEvent(new Event('change')); }
+          gcSelect.value = val;
+          gcSelect.dispatchEvent(new Event('change'));
           if (gcDropdownLabel) gcDropdownLabel.textContent = item.textContent;
-          gcDropdownMenu.querySelectorAll('.cc-dropdown-item').forEach(i => i.classList.remove('active'));
+          gcDropdownMenu.querySelectorAll('.cc-dropdown-item').forEach((entry) => entry.classList.remove('active'));
           item.classList.add('active');
           gcDropdown.classList.remove('open');
           populateGreetingFields(val);
         });
       });
-      // Close on click outside
-      document.addEventListener('click', (e) => {
-        if (!gcDropdown.contains(e.target)) gcDropdown.classList.remove('open');
+      document.addEventListener('click', (event) => {
+        if (!gcDropdown.contains(event.target)) gcDropdown.classList.remove('open');
       });
     }
 
-    // Add reminder
-    if (gcAddReminder && gcReminderList) {
-      gcAddReminder.addEventListener('click', () => {
-        const tmp = document.createElement('div');
-        tmp.innerHTML = reminderRowHTML({ label: '', command: '' });
-        const newRow = tmp.firstElementChild;
-        gcReminderList.appendChild(newRow);
-        wireReminderRemoveButtons();
-        wireReminderDragHandles();
-        newRow.querySelector('.label')?.focus();
-      });
-    }
+    gcAddReminder?.addEventListener('click', () => {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = reminderRowHTML({ label: '', command: '' });
+      const newRow = tmp.firstElementChild;
+      gcReminderList.appendChild(newRow);
+      wireReminderRemoveButtons();
+      wireReminderDragHandles();
+      newRow.querySelector('.label')?.focus();
+    });
 
-    // Save greeting config
-    if (gcSave) {
-      gcSave.addEventListener('click', async () => {
-        const project = gcSelect?.value || 'global';
-        const reminders = [];
-        if (gcReminderList) {
-          gcReminderList.querySelectorAll('.cc-greeting-reminder-row').forEach(row => {
-            const label = row.querySelector('.label')?.value?.trim() || '';
-            const command = row.querySelector('.cmd')?.value?.trim() || '';
-            if (label || command) reminders.push({ label, command });
-          });
+    gcSave.addEventListener('click', async () => {
+      const project = gcSelect.value || 'global';
+      const reminders = [];
+      gcReminderList.querySelectorAll('.cc-greeting-reminder-row').forEach((row) => {
+        const label = row.querySelector('.label')?.value?.trim() || '';
+        const command = row.querySelector('.cmd')?.value?.trim() || '';
+        if (label || command) reminders.push({ label, command });
+      });
+      const body = {
+        greetingTemplate: gcTemplate.value || '',
+        showReminders: gcShowReminders?.checked ?? false,
+        showLastSession: gcShowLastSession?.checked ?? false,
+        reminders,
+      };
+      gcSave.style.opacity = '0.5';
+      gcSave.style.pointerEvents = 'none';
+      try {
+        const res = await fetch(`${saveBaseUrl}/${encodeURIComponent(project)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          alert(data.error || 'Failed to save');
+          return;
         }
-        const body = {
-          greetingTemplate: gcTemplate?.value || '',
-          showReminders: gcShowReminders?.checked ?? false,
-          showLastSession: gcShowLastSession?.checked ?? false,
-          reminders,
-        };
-        gcSave.style.opacity = '0.5'; gcSave.style.pointerEvents = 'none';
-        try {
-          const res = await fetch(`/api/greeting/config/${encodeURIComponent(project)}`, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-          });
-          const data = await res.json();
-          if (data.ok) {
-            // Update local cache
-            const gc = greetingConfig;
-            const target = project === 'global' ? (gc.global || (gc.global = {})) : (gc.projects[project] || (gc.projects[project] = {}));
-            Object.assign(target, body);
-            showCCToast('Greeting config saved');
-          } else { alert(data.error || 'Failed to save'); }
-        } catch (err) { alert('Failed: ' + err.message); }
-        finally { gcSave.style.opacity = ''; gcSave.style.pointerEvents = ''; }
-      });
-    }
+        onSave(project, body);
+        showCCToast('Greeting config saved');
+      } catch (err) {
+        alert('Failed: ' + err.message);
+      } finally {
+        gcSave.style.opacity = '';
+        gcSave.style.pointerEvents = '';
+      }
+    });
 
-    // Initial wiring
     wireReminderRemoveButtons();
     wireReminderDragHandles();
 
-    // Cheatsheet toggle + preview
-    const csToggle = overlay.querySelector('#cc-greeting-cheatsheet-toggle');
-    const csPanel = overlay.querySelector('#cc-greeting-cheatsheet');
+    const csToggle = overlay.querySelector(`#${prefix}-greeting-cheatsheet-toggle`);
+    const csPanel = overlay.querySelector(`#${prefix}-greeting-cheatsheet`);
     if (csToggle && csPanel) {
-      csToggle.addEventListener('click', () => {
-        const open = csPanel.style.display !== 'none';
-        csPanel.style.display = open ? 'none' : 'block';
-        csToggle.classList.toggle('open', !open);
-      });
-
-      function updateCheatsheetPreview() {
+      const updateCheatsheetPreview = () => {
         const hour = new Date().getHours();
         const timeGreeting = hour >= 5 && hour < 12 ? 'Good morning' : hour >= 12 && hour < 17 ? 'Good afternoon' : 'Good evening';
         const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-        const key = gcSelect?.value || 'global';
-        const gc = greetingConfig || {};
+        const key = gcSelect.value || 'global';
+        const gc = configRef() || {};
         const projCfg = key === 'global' ? gc.global : gc.projects?.[key];
         const label = projCfg?.label || key;
         const name = key === 'global' ? 'global' : key;
 
-        overlay.querySelector('#cc-cs-time').textContent = timeGreeting;
-        overlay.querySelector('#cc-cs-label').textContent = label;
-        overlay.querySelector('#cc-cs-name').textContent = name;
-        overlay.querySelector('#cc-cs-branch').textContent = 'dev';
-        overlay.querySelector('#cc-cs-date').textContent = dateStr;
+        overlay.querySelector(`#${prefix}-cs-time`).textContent = timeGreeting;
+        overlay.querySelector(`#${prefix}-cs-label`).textContent = label;
+        overlay.querySelector(`#${prefix}-cs-name`).textContent = name;
+        overlay.querySelector(`#${prefix}-cs-branch`).textContent = 'dev';
+        overlay.querySelector(`#${prefix}-cs-date`).textContent = dateStr;
 
-        // Render the template with resolved values as example
-        const tpl = gcTemplate?.value || '{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.';
+        const tpl = gcTemplate.value || '{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.';
         const resolved = tpl
           .replace(/\{time_greeting\}/g, timeGreeting)
           .replace(/\{project_label\}/g, label)
@@ -4462,15 +4502,47 @@ export async function openSettingsModal() {
           .replace(/\{date\}/g, dateStr)
           .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
           .replace(/`(.+?)`/g, '<code>$1</code>');
-        overlay.querySelector('#cc-cs-preview').innerHTML = resolved;
-      }
+        overlay.querySelector(`#${prefix}-cs-preview`).innerHTML = resolved;
+      };
 
-      // Update on toggle open and on project/template change
-      csToggle.addEventListener('click', updateCheatsheetPreview);
-      if (gcSelect) gcSelect.addEventListener('change', () => { if (csPanel.style.display !== 'none') updateCheatsheetPreview(); });
-      if (gcTemplate) gcTemplate.addEventListener('input', () => { if (csPanel.style.display !== 'none') updateCheatsheetPreview(); });
+      csToggle.addEventListener('click', () => {
+        const open = csPanel.style.display !== 'none';
+        csPanel.style.display = open ? 'none' : 'block';
+        csToggle.classList.toggle('open', !open);
+        if (!open) updateCheatsheetPreview();
+      });
+      gcSelect.addEventListener('change', () => {
+        if (csPanel.style.display !== 'none') updateCheatsheetPreview();
+      });
+      gcTemplate.addEventListener('input', () => {
+        if (csPanel.style.display !== 'none') updateCheatsheetPreview();
+      });
     }
   }
+
+  wireGreetingEditor({
+    prefix: 'cc',
+    configRef: () => greetingConfig,
+    saveBaseUrl: '/api/greeting/config',
+    onSave: (project, body) => {
+      const target = project === 'global'
+        ? (greetingConfig.global || (greetingConfig.global = {}))
+        : (greetingConfig.projects[project] || (greetingConfig.projects[project] = {}));
+      Object.assign(target, body);
+    },
+  });
+
+  wireGreetingEditor({
+    prefix: 'codex',
+    configRef: () => codexGreetingConfig,
+    saveBaseUrl: '/api/codex-panel/greeting/config',
+    onSave: (project, body) => {
+      const target = project === 'global'
+        ? (codexGreetingConfig.global || (codexGreetingConfig.global = {}))
+        : (codexGreetingConfig.projects[project] || (codexGreetingConfig.projects[project] = {}));
+      Object.assign(target, body);
+    },
+  });
 
   // Per-project toggles
   overlay.querySelectorAll('.cc-enable-btn[data-cc-project-toggle]').forEach(btn => {

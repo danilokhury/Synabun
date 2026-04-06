@@ -589,6 +589,10 @@ export async function createTerminalSession(profile, cols, rows, cwd, opts = {})
   });
 }
 
+export async function fetchProjects() {
+  return jsonFetch('/api/projects');
+}
+
 // ─── Claude Code Sessions (Resume) ─────
 
 export async function fetchClaudeSessions({ project, limit, offset, search, refresh } = {}) {
@@ -895,8 +899,11 @@ export async function launchLoop(params) {
   });
 }
 
-export async function stopLoop() {
-  return jsonFetch('/api/loop/stop', { method: 'POST' });
+export async function stopLoop(terminalSessionId) {
+  return jsonFetch('/api/loop/stop', {
+    method: 'POST',
+    ...jsonBody(terminalSessionId ? { terminalSessionId } : {}),
+  });
 }
 
 export async function fetchLoopHistory(limit = 50) {

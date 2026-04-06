@@ -1380,6 +1380,9 @@ function updateSidebarFooter() {
     const detailEl = $('as-loop-indicator-detail');
     if (nameEl) nameEl.textContent = (_activeLoop.task || 'Loop Active').slice(0, 40);
     if (detailEl) detailEl.textContent = `${_activeLoop.currentIteration || 0}/${_activeLoop.totalIterations} iterations`;
+    // Sync mini stop button with the active loop's terminal session ID for per-loop stop
+    const miniStop = footer.querySelector('[data-action="force-stop"]');
+    if (miniStop && _activeLoop.terminalSessionId) miniStop.dataset.id = _activeLoop.terminalSessionId;
   }
 }
 
@@ -2328,7 +2331,7 @@ function renderRunningMain() {
           <span>${loop.elapsedMinutes ?? '?'}min elapsed</span>
         </div>
         <div class="as-running-controls">
-          <button class="as-btn-stop" data-action="force-stop">Stop</button>
+          <button class="as-btn-stop" data-action="force-stop" data-id="${loop.terminalSessionId || ''}">Stop</button>
         </div>
       </div>`;
   }
@@ -2713,7 +2716,8 @@ async function handlePanelClick(e) {
 
     case 'force-stop': {
       try {
-        const result = await stopLoop();
+        // Per-loop stop: pass terminalSessionId if available (from data-id), otherwise stop all
+        const result = await stopLoop(id || undefined);
         if (result?.ok) {
           showToast(result.stopped > 0 ? 'Loop stopped' : 'No active loops');
           _activeLoop = null;

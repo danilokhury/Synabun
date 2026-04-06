@@ -4,10 +4,11 @@
 // ═══════════════════════════════════════════
 
 import { storage } from './storage.js';
-import { emit, on } from './state.js';
+import { state, emit, on } from './state.js';
 import { fetchClaudeSessions, fetchBrowserSessions } from './api.js';
 import { createFrameRenderer } from './utils.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
+import { reserveRightPanelLayout, clearRightPanelLayout } from './ui-sidepanel-layout.js';
 
 const CLAUDE_ICON = '<svg fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
 
@@ -97,6 +98,8 @@ function toolIconSvg(name) {
   return TOOL_ICON_DEFAULT;
 }
 
+const SYNABUN_LOGO_ICON = '<img src="logoHD.png" alt="" style="width:14px;height:14px;object-fit:contain;">';
+
 let _panel = null;
 let _visible = false;
 let _totalCost = 0;
@@ -158,6 +161,7 @@ const EFFORT_TITLES = {
   high: 'Thinking: high — deep reasoning',
   max: 'Thinking: max — EXPERIMENTAL. Extended thinking can take 3-5 min with no visible output. May cause API timeouts.',
 };
+const PANEL_OWNER = 'claude-sidepanel';
 
 // ── Build panel DOM ──
 function buildPanel() {
@@ -249,7 +253,7 @@ function buildPanel() {
       </div>
       <div class="cp-toolbar">
         <div class="cp-toolbar-left">
-          <img class="cp-brand" src="favicon-32x32.png" alt="S">
+          <svg class="cp-brand" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>
           <button class="cp-attach" id="cp-attach" title="Attach file">
             <svg viewBox="0 0 24 24" width="13" height="13"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.49" fill="none" stroke="currentColor" stroke-width="2"/></svg>
             <span class="cp-attach-badge" hidden></span>
@@ -1000,11 +1004,11 @@ function injectStyles() {
       pointer-events: none;
       background: conic-gradient(
         from var(--cp-border-angle, 0deg),
-        rgba(255,255,255,0.0) 0%,
-        rgba(255,255,255,0.22) 25%,
-        rgba(255,255,255,0.06) 50%,
-        rgba(255,255,255,0.22) 75%,
-        rgba(255,255,255,0.0) 100%
+        rgba(212,162,127,0.0) 0%,
+        rgba(212,162,127,0.35) 25%,
+        rgba(212,162,127,0.10) 50%,
+        rgba(212,162,127,0.35) 75%,
+        rgba(212,162,127,0.0) 100%
       );
       -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
       -webkit-mask-composite: xor;
@@ -1018,8 +1022,8 @@ function injectStyles() {
       animation: cp-border-spin 3s linear infinite;
     }
     .cp-input-wrap:focus-within {
-      background: rgba(255,255,255,0.03);
-      box-shadow: 0 0 20px rgba(255,255,255,0.03), 0 0 60px rgba(255,255,255,0.01);
+      background: rgba(212,162,127,0.03);
+      box-shadow: 0 0 20px rgba(212,162,127,0.04), 0 0 60px rgba(212,162,127,0.015);
     }
     @keyframes cp-border-spin {
       to { --cp-border-angle: 360deg; }
@@ -1071,6 +1075,7 @@ function injectStyles() {
       -webkit-mask-image: linear-gradient(to bottom, transparent 0px, black 6px, black calc(100% - 10px), transparent 100%);
       mask-image: linear-gradient(to bottom, transparent 0px, black 6px, black calc(100% - 10px), transparent 100%);
     }
+    .cp-input::selection { background: rgba(212,162,127,0.3); color: inherit; }
     .cp-input::placeholder { color: rgba(255,255,255,0.16); transition: color 0.3s; }
     .cp-input:focus::placeholder { color: rgba(255,255,255,0.22); }
 
@@ -1089,7 +1094,7 @@ function injectStyles() {
     .cp-send::before {
       content: '';
       position: absolute; inset: 0;
-      background: linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04));
+      background: linear-gradient(135deg, rgba(212,162,127,0.14), rgba(212,162,127,0.04));
       border-radius: 7px;
       transform: scaleX(0);
       transform-origin: left;
@@ -1099,17 +1104,17 @@ function injectStyles() {
       transform: scaleX(1);
     }
     .cp-send:not(:disabled) {
-      color: rgba(255,255,255,0.7);
-      border-color: rgba(255,255,255,0.1);
+      color: rgba(235,210,190,0.9);
+      border-color: rgba(212,162,127,0.2);
     }
     .cp-send:hover:not(:disabled) {
-      border-color: rgba(255,255,255,0.2);
-      color: rgba(255,255,255,0.95);
-      box-shadow: 0 0 12px rgba(255,255,255,0.06);
+      border-color: rgba(212,162,127,0.35);
+      color: rgba(245,225,210,0.98);
+      box-shadow: 0 0 12px rgba(212,162,127,0.1);
       transform: translateY(-1px);
     }
     .cp-send:hover:not(:disabled)::before {
-      background: linear-gradient(135deg, rgba(255,255,255,0.18), rgba(255,255,255,0.06));
+      background: linear-gradient(135deg, rgba(212,162,127,0.24), rgba(212,162,127,0.08));
     }
     .cp-send:active:not(:disabled) {
       transform: translateY(0px) scale(0.95);
@@ -1232,7 +1237,11 @@ function injectStyles() {
 
     .cp-brand {
       height: 16px; width: auto; opacity: 0.6; flex-shrink: 0;
+      color: #D4A27F;
+      cursor: pointer;
+      transition: opacity 0.15s;
     }
+    .cp-brand:hover { opacity: 1; }
 
     .cp-dropdown {
       position: relative;
@@ -1584,8 +1593,143 @@ function injectStyles() {
       font-family: 'JetBrains Mono', monospace;
     }
 
+    /* ── Session menu search & filters ── */
+    .cp-sess-search {
+      position: sticky; top: 0; z-index: 2;
+      background: rgba(12, 12, 14, 0.98);
+      padding: 6px 6px 0; display: flex; flex-direction: column; gap: 4px;
+    }
+    .cp-sess-search-row {
+      display: flex; align-items: center; gap: 4px;
+    }
+    .cp-sess-search-input {
+      flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px; color: rgba(255,255,255,0.8); font-size: 10px;
+      font-family: 'JetBrains Mono', monospace; padding: 5px 8px 5px 26px;
+      outline: none; transition: border-color 0.15s;
+    }
+    .cp-sess-search-input::placeholder { color: rgba(255,255,255,0.2); }
+    .cp-sess-search-input:focus { border-color: rgba(100,160,255,0.35); }
+    .cp-sess-search-icon {
+      position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+      width: 12px; height: 12px; color: rgba(255,255,255,0.2); pointer-events: none;
+    }
+    .cp-sess-search-wrap { position: relative; flex: 1; display: flex; align-items: center; }
+    .cp-sess-refresh-btn {
+      background: none; border: none; cursor: pointer; padding: 4px;
+      color: rgba(255,255,255,0.2); transition: color 0.15s, transform 0.3s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .cp-sess-refresh-btn:hover { color: rgba(255,255,255,0.5); }
+    .cp-sess-refresh-btn.spinning { animation: cp-sess-spin 0.6s linear; }
+    @keyframes cp-sess-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .cp-sess-filters {
+      display: flex; align-items: center; gap: 4px; padding: 0 2px 4px;
+      flex-wrap: wrap;
+    }
+    .cp-sess-filter-pill {
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 4px; color: rgba(255,255,255,0.3); font-size: 9px;
+      font-family: 'JetBrains Mono', monospace; padding: 2px 6px;
+      cursor: pointer; transition: all 0.12s; user-select: none;
+      white-space: nowrap;
+    }
+    .cp-sess-filter-pill:hover { color: rgba(255,255,255,0.5); border-color: rgba(255,255,255,0.1); }
+    .cp-sess-filter-pill.active {
+      background: rgba(100,160,255,0.12); border-color: rgba(100,160,255,0.25);
+      color: rgba(100,160,255,0.8);
+    }
+    .cp-sess-branch-select {
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 4px; color: rgba(255,255,255,0.3); font-size: 9px;
+      font-family: 'JetBrains Mono', monospace; padding: 2px 4px;
+      cursor: pointer; outline: none; max-width: 120px;
+    }
+    .cp-sess-branch-select:focus { border-color: rgba(100,160,255,0.3); }
+    .cp-sess-branch-select option { background: #1a1a1e; color: rgba(255,255,255,0.7); }
+
+    /* ── Archive button on session items ── */
+    .cp-sess-archive-btn {
+      display: none; position: absolute; right: 24px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; cursor: pointer; padding: 2px 4px;
+      color: rgba(255,255,255,0.15); font-size: 10px; transition: color 0.15s;
+    }
+    .cp-sess-item:hover .cp-sess-archive-btn { display: block; }
+    .cp-sess-archive-btn:hover { color: rgba(255,180,50,0.7); }
+    .cp-sess-item--archived {
+      opacity: 0.35;
+    }
+    .cp-sess-item--archived .cp-sess-prompt { font-style: italic; }
+    .cp-sess-unarchive-btn {
+      display: none; position: absolute; right: 24px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; cursor: pointer; padding: 2px 4px;
+      color: rgba(100,200,120,0.4); font-size: 10px; transition: color 0.15s;
+    }
+    .cp-sess-item--archived:hover .cp-sess-unarchive-btn { display: block; }
+    .cp-sess-unarchive-btn:hover { color: rgba(100,200,120,0.8); }
+
+    /* ── Infinite scroll sentinel ── */
+    .cp-sess-sentinel {
+      display: flex; align-items: center; justify-content: center;
+      padding: 8px; min-height: 24px;
+    }
+    .cp-sess-sentinel-spinner {
+      width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.06);
+      border-top-color: rgba(100,160,255,0.4); border-radius: 50%;
+      animation: cp-sess-spin 0.6s linear infinite;
+    }
+    .cp-sess-no-more {
+      font-size: 9px; color: rgba(255,255,255,0.12);
+      font-family: 'JetBrains Mono', monospace;
+      text-align: center; padding: 6px;
+    }
+
     /* ── Claude session pills in shared tray ── */
-    .cp-session-pill .term-minimized-pill-icon { color: rgba(100, 160, 255, 0.6); }
+    @property --cp-pill-angle {
+      syntax: '<angle>';
+      initial-value: 0deg;
+      inherits: false;
+    }
+    .cp-session-pill {
+      position: relative;
+      overflow: hidden;
+      border-color: transparent;
+    }
+    .cp-session-pill::before {
+      content: '';
+      position: absolute; inset: 0;
+      border-radius: 8px;
+      padding: 1px;
+      pointer-events: none;
+      background: conic-gradient(
+        from var(--cp-pill-angle, 0deg),
+        rgba(212,162,127,0.0) 0%,
+        rgba(212,162,127,0.30) 25%,
+        rgba(212,162,127,0.06) 50%,
+        rgba(212,162,127,0.30) 75%,
+        rgba(212,162,127,0.0) 100%
+      );
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask-composite: exclude;
+      animation: cp-pill-border-spin 3s linear infinite;
+    }
+    @keyframes cp-pill-border-spin {
+      to { --cp-pill-angle: 360deg; }
+    }
+    .cp-session-pill:hover { border-color: transparent; }
+    .cp-session-pill:hover::before {
+      background: conic-gradient(
+        from var(--cp-pill-angle, 0deg),
+        rgba(212,162,127,0.0) 0%,
+        rgba(212,162,127,0.45) 25%,
+        rgba(212,162,127,0.10) 50%,
+        rgba(212,162,127,0.45) 75%,
+        rgba(212,162,127,0.0) 100%
+      );
+    }
+    .cp-session-pill .term-minimized-pill-icon { color: rgba(212, 162, 127, 0.7); }
     .cp-session-pill .term-minimized-pill-icon svg { width: 12px; height: 12px; }
     .cp-session-pill.cp-pill-enter {
       animation: cp-pill-pop-in 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
@@ -1596,7 +1740,8 @@ function injectStyles() {
     }
     .cp-session-pill.cp-pill-running .term-minimized-pill-label::before {
       content: ''; display: inline-block; width: 6px; height: 6px;
-      border-radius: 50%; background: rgba(100, 200, 120, 0.7);
+      border-radius: 50%; background: rgba(212, 162, 127, 0.95);
+      box-shadow: 0 0 10px rgba(212, 162, 127, 0.55);
       margin-right: 5px; vertical-align: middle;
       animation: cp-pill-pulse 1.5s ease-in-out infinite;
     }
@@ -2275,7 +2420,9 @@ function closeTab(idx) {
   _tabs.splice(idx, 1);
   if (_tabs.length === 0) {
     _activeTabIdx = -1;
-    createTab(null, 'New chat');
+    saveTabs();
+    renderPills();
+    toggleClaudePanel();
     return;
   }
   if (_activeTabIdx === idx) {
@@ -2288,7 +2435,7 @@ function closeTab(idx) {
   saveTabs();
 }
 
-const _CP_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+const _CP_ICON_SVG = CLAUDE_ICON;
 
 function _createTrayPill(tab) {
   const tray = document.getElementById('term-minimized-tray');
@@ -2533,7 +2680,10 @@ window.addEventListener('focus', () => {
 
 // ── Session selector helpers ──
 const LABEL_PREFIX = 'synabun-session-label:';
+const ARCHIVE_PREFIX = 'synabun-session-archived:';
 function getLabel(id) { try { return storage.getItem(LABEL_PREFIX + id) || ''; } catch { return ''; } }
+function isArchived(id) { try { return storage.getItem(ARCHIVE_PREFIX + id) === '1'; } catch { return false; } }
+function setArchived(id, val) { try { if (val) storage.setItem(ARCHIVE_PREFIX + id, '1'); else storage.removeItem(ARCHIVE_PREFIX + id); } catch {} }
 function cleanPrompt(raw) { return (raw || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim(); }
 function relDate(d) {
   const ms = Date.now() - new Date(d).getTime();
@@ -2551,117 +2701,345 @@ function timeGroup(d) {
 function trunc(s, n) { return s.length > n ? s.slice(0, n) + '...' : s; }
 function escH(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// ── Session menu state ──
+let _cpSessSearch = '';
+let _cpSessDebounce = null;
+let _cpSessOffset = 0;
+let _cpSessSessions = [];   // accumulated sessions (flat, with projectPath)
+let _cpSessTotal = 0;
+let _cpSessLoading = false;
+let _cpSessBranch = '';      // '' = all
+let _cpSessHideEmpty = false;
+let _cpSessShowArchived = false;
+let _cpSessObserver = null;
+let _cpSessProject = '';     // current project filter
+const CP_SESS_PAGE = 20;
+
+function cpSessApplyFilters(sessions) {
+  return sessions.filter(s => {
+    if (s.deleted) return false;
+    if (!_cpSessShowArchived && isArchived(s.sessionId)) return false;
+    if (_cpSessHideEmpty && s.messageCount === 0 && !getLabel(s.sessionId)) return false;
+    if (_cpSessBranch && (s.gitBranch || '') !== _cpSessBranch) return false;
+    // Client-side label search (server already filtered firstPrompt/branch/sessionId)
+    if (_cpSessSearch) {
+      const q = _cpSessSearch.toLowerCase();
+      const label = getLabel(s.sessionId).toLowerCase();
+      if (label && label.includes(q)) return true;
+      // Server already matched on firstPrompt/branch/sessionId, so keep it
+    }
+    return true;
+  });
+}
+
+function cpSessCollectBranches(sessions) {
+  const set = new Set();
+  for (const s of sessions) { if (s.gitBranch) set.add(s.gitBranch); }
+  return [...set].sort();
+}
+
+function cpSessRenderItem(s, projectPath, menu) {
+  const label = getLabel(s.sessionId) || cleanPrompt(s.firstPrompt) || 'Empty session';
+  const active = s.sessionId === activeTab()?.sessionId ? ' active' : '';
+  const archived = isArchived(s.sessionId);
+  const archivedClass = archived ? ' cp-sess-item--archived' : '';
+
+  const item = document.createElement('div');
+  item.className = `cp-sess-item${active}${archivedClass}`;
+  item.dataset.sid = s.sessionId;
+  item.dataset.cwd = projectPath;
+
+  let metaHtml = `<span>${relDate(s.modified || s.created)}</span>`;
+  if (s.gitBranch) metaHtml += `<span class="cp-sess-branch">${escH(s.gitBranch)}</span>`;
+  if (s.messageCount) metaHtml += `<span>${s.messageCount} msgs</span>`;
+
+  const archiveBtn = archived
+    ? `<button class="cp-sess-unarchive-btn" data-sid="${escH(s.sessionId)}" title="Unarchive">&#x21A9;</button>`
+    : `<button class="cp-sess-archive-btn" data-sid="${escH(s.sessionId)}" title="Archive">&#x2716;</button>`;
+
+  item.innerHTML = `
+    <div class="cp-sess-prompt">${escH(trunc(label, 60))}</div>
+    ${archiveBtn}
+    <button class="cp-sess-rename" data-sid="${escH(s.sessionId)}" title="Rename">&#x270E;</button>
+    <div class="cp-sess-meta">${metaHtml}</div>
+  `;
+
+  // Click to resume
+  item.addEventListener('click', () => {
+    if (item.querySelector('.cp-rename-input')) return;
+    if (s.deleted) return;
+    const sid = item.dataset.sid;
+    const clickLabel = item.querySelector('.cp-sess-prompt')?.textContent || 'Resumed';
+    selectSession(sid, clickLabel);
+    const $project = _panel?.querySelector('#cp-project');
+    if ($project && item.dataset.cwd) {
+      ddPopulate($project, _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() })), item.dataset.cwd);
+      storage.setItem(STOR.project, item.dataset.cwd);
+      const tab = activeTab();
+      if (tab) { tab.project = item.dataset.cwd; saveTabs(); }
+    }
+    menu.classList.remove('open');
+  });
+
+  // Archive / unarchive
+  const archBtn = item.querySelector('.cp-sess-archive-btn, .cp-sess-unarchive-btn');
+  archBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setArchived(s.sessionId, !archived);
+    item.remove();
+  });
+
+  // Rename
+  const renBtn = item.querySelector('.cp-sess-rename');
+  renBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const sid = renBtn.dataset.sid;
+    const promptEl = item.querySelector('.cp-sess-prompt');
+    if (!promptEl) return;
+    const currentName = getLabel(sid) || promptEl.textContent;
+    const input = document.createElement('input');
+    input.type = 'text'; input.value = currentName;
+    input.className = 'cp-rename-input';
+    input.placeholder = 'Session name...';
+    input.addEventListener('click', (e) => e.stopPropagation());
+    input.addEventListener('mousedown', (e) => e.stopPropagation());
+    input.addEventListener('dblclick', (e) => e.stopPropagation());
+    promptEl.textContent = '';
+    promptEl.appendChild(input);
+    renBtn.style.display = 'none';
+    input.focus(); input.select();
+
+    let committed = false;
+    function commit() {
+      if (committed) return;
+      committed = true;
+      const val = input.value.trim();
+      input.remove();
+      if (val) {
+        storage.setItem(LABEL_PREFIX + sid, val);
+        promptEl.textContent = trunc(val, 60);
+      } else {
+        storage.removeItem(LABEL_PREFIX + sid);
+        promptEl.textContent = currentName;
+      }
+      renBtn.style.display = '';
+      const curTab = activeTab();
+      if (curTab && sid === curTab.sessionId) {
+        const headerLabel = _panel?.querySelector('.cp-session-label');
+        if (headerLabel) headerLabel.textContent = val || currentName;
+        curTab.label = val || currentName;
+        updatePillLabel(curTab);
+        saveTabs();
+      }
+    }
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { input.value = currentName; input.blur(); }
+    });
+  });
+
+  return item;
+}
+
+function cpSessRenderItems(sessions, listEl, menu) {
+  let lastGroup = '';
+  for (const s of sessions) {
+    const group = timeGroup(s.modified || s.created);
+    if (group !== lastGroup) {
+      lastGroup = group;
+      const groupEl = document.createElement('div');
+      groupEl.className = 'cp-sess-group';
+      groupEl.textContent = group;
+      listEl.appendChild(groupEl);
+    }
+    listEl.appendChild(cpSessRenderItem(s, s._projectPath, menu));
+  }
+}
+
+async function cpSessLoadBatch(menu, listEl, refresh = false) {
+  if (_cpSessLoading) return;
+  _cpSessLoading = true;
+  const sentinel = menu.querySelector('.cp-sess-sentinel');
+  if (sentinel) sentinel.innerHTML = '<div class="cp-sess-sentinel-spinner"></div>';
+
+  try {
+    const opts = { limit: CP_SESS_PAGE, offset: _cpSessOffset, project: _cpSessProject || undefined };
+    if (_cpSessSearch) opts.search = _cpSessSearch;
+    if (refresh) opts.refresh = true;
+    const data = await fetchClaudeSessions(opts);
+    const proj = data?.projects?.[0];
+    if (!proj) {
+      if (_cpSessOffset === 0 && listEl) listEl.innerHTML = '<div class="cp-sess-loading">no sessions found</div>';
+      if (sentinel) sentinel.remove();
+      _cpSessLoading = false;
+      return;
+    }
+
+    _cpSessTotal = proj.total || 0;
+    const newSessions = (proj.sessions || []).map(s => ({ ...s, _projectPath: proj.path }));
+    _cpSessSessions.push(...newSessions);
+    _cpSessOffset += newSessions.length;
+
+    // Collect branches for filter (from all loaded sessions)
+    const branches = cpSessCollectBranches(_cpSessSessions);
+    const branchSelect = menu.querySelector('.cp-sess-branch-select');
+    if (branchSelect) {
+      const prevVal = branchSelect.value;
+      branchSelect.innerHTML = '<option value="">All branches</option>';
+      for (const b of branches) {
+        branchSelect.innerHTML += `<option value="${escH(b)}">${escH(b)}</option>`;
+      }
+      branchSelect.value = prevVal;
+      branchSelect.style.display = branches.length ? '' : 'none';
+    }
+
+    const filtered = cpSessApplyFilters(newSessions);
+    cpSessRenderItems(filtered, listEl, menu);
+
+    // Update sentinel
+    if (_cpSessOffset >= _cpSessTotal) {
+      if (sentinel) sentinel.innerHTML = _cpSessSessions.length > CP_SESS_PAGE
+        ? '<div class="cp-sess-no-more">all sessions loaded</div>' : '';
+    } else if (sentinel) {
+      sentinel.innerHTML = '';
+    }
+  } catch (err) {
+    console.error('[cp-sess] Load failed:', err);
+    if (sentinel) sentinel.innerHTML = '<div class="cp-sess-no-more">failed to load</div>';
+  }
+  _cpSessLoading = false;
+}
+
 async function renderSessionMenu() {
   const menu = _panel?.querySelector('#cp-session-menu');
   if (!menu) return;
-  menu.innerHTML = '<div class="cp-sess-loading">loading sessions...</div>';
-  try {
-    const $project = _panel?.querySelector('#cp-project');
-    const currentProject = ddGetValue($project) || undefined;
-    const data = await fetchClaudeSessions({ limit: 30, project: currentProject });
-    if (!data?.projects?.length) { menu.innerHTML = '<div class="cp-sess-loading">no sessions found</div>'; return; }
-    let html = '<div class="cp-sess-new">+ New chat</div>';
-    for (const proj of data.projects) {
-      const groups = {};
-      for (const s of (proj.sessions || [])) {
-        if (s.deleted) continue;
-        const g = timeGroup(s.modified || s.created);
-        (groups[g] = groups[g] || []).push(s);
+
+  // Determine current project
+  const $project = _panel?.querySelector('#cp-project');
+  _cpSessProject = ddGetValue($project) || '';
+
+  // Reset pagination state
+  _cpSessOffset = 0;
+  _cpSessSessions = [];
+  _cpSessTotal = 0;
+
+  // Disconnect old observer
+  if (_cpSessObserver) { _cpSessObserver.disconnect(); _cpSessObserver = null; }
+
+  // Build skeleton: search + filters + new chat + list + sentinel
+  menu.innerHTML = '';
+
+  // ── Search bar ──
+  const searchEl = document.createElement('div');
+  searchEl.className = 'cp-sess-search';
+  searchEl.innerHTML = `
+    <div class="cp-sess-search-row">
+      <div class="cp-sess-search-wrap">
+        <svg class="cp-sess-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" class="cp-sess-search-input" placeholder="Search sessions..." value="${escH(_cpSessSearch)}" autocomplete="off" spellcheck="false">
+      </div>
+      <button class="cp-sess-refresh-btn" title="Refresh">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+      </button>
+    </div>
+    <div class="cp-sess-filters">
+      <select class="cp-sess-branch-select" style="display:none"><option value="">All branches</option></select>
+      <div class="cp-sess-filter-pill${_cpSessHideEmpty ? ' active' : ''}" data-filter="empty">Hide empty</div>
+      <div class="cp-sess-filter-pill${_cpSessShowArchived ? ' active' : ''}" data-filter="archived">Archived</div>
+    </div>
+  `;
+  menu.appendChild(searchEl);
+
+  // ── New chat button ──
+  const newBtn = document.createElement('div');
+  newBtn.className = 'cp-sess-new';
+  newBtn.textContent = '+ New chat';
+  newBtn.addEventListener('click', () => { selectSession(null, 'New chat'); menu.classList.remove('open'); });
+  menu.appendChild(newBtn);
+
+  // ── Session list ──
+  const listEl = document.createElement('div');
+  listEl.className = 'cp-sess-list';
+  menu.appendChild(listEl);
+
+  // ── Sentinel for infinite scroll ──
+  const sentinel = document.createElement('div');
+  sentinel.className = 'cp-sess-sentinel';
+  sentinel.innerHTML = '<div class="cp-sess-sentinel-spinner"></div>';
+  menu.appendChild(sentinel);
+
+  // ── Wire search ──
+  const searchInput = searchEl.querySelector('.cp-sess-search-input');
+  searchInput.addEventListener('input', () => {
+    clearTimeout(_cpSessDebounce);
+    _cpSessDebounce = setTimeout(() => {
+      _cpSessSearch = searchInput.value.trim();
+      _cpSessOffset = 0;
+      _cpSessSessions = [];
+      listEl.innerHTML = '';
+      sentinel.innerHTML = '<div class="cp-sess-sentinel-spinner"></div>';
+      cpSessLoadBatch(menu, listEl);
+    }, 300);
+  });
+  searchInput.addEventListener('click', (e) => e.stopPropagation());
+  searchInput.addEventListener('keydown', (e) => e.stopPropagation());
+  requestAnimationFrame(() => searchInput.focus());
+
+  // ── Wire refresh ──
+  const refreshBtn = searchEl.querySelector('.cp-sess-refresh-btn');
+  refreshBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    refreshBtn.classList.add('spinning');
+    _cpSessOffset = 0;
+    _cpSessSessions = [];
+    listEl.innerHTML = '';
+    sentinel.innerHTML = '<div class="cp-sess-sentinel-spinner"></div>';
+    await cpSessLoadBatch(menu, listEl, true);
+    refreshBtn.classList.remove('spinning');
+  });
+
+  // ── Wire filters ──
+  const branchSelect = searchEl.querySelector('.cp-sess-branch-select');
+  branchSelect.addEventListener('change', () => {
+    _cpSessBranch = branchSelect.value;
+    // Re-render from accumulated sessions (client-side filter)
+    listEl.innerHTML = '';
+    const filtered = cpSessApplyFilters(_cpSessSessions);
+    cpSessRenderItems(filtered, listEl, menu);
+  });
+  branchSelect.addEventListener('click', (e) => e.stopPropagation());
+
+  searchEl.querySelectorAll('.cp-sess-filter-pill').forEach(pill => {
+    pill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const filter = pill.dataset.filter;
+      if (filter === 'empty') {
+        _cpSessHideEmpty = !_cpSessHideEmpty;
+        pill.classList.toggle('active', _cpSessHideEmpty);
+      } else if (filter === 'archived') {
+        _cpSessShowArchived = !_cpSessShowArchived;
+        pill.classList.toggle('active', _cpSessShowArchived);
       }
-      for (const g of ['Today', 'Yesterday', 'This Week', 'Older']) {
-        if (!groups[g]?.length) continue;
-        html += `<div class="cp-sess-group">${escH(g)}</div>`;
-        for (const s of groups[g]) {
-          const label = getLabel(s.sessionId) || cleanPrompt(s.firstPrompt) || 'Empty session';
-          const active = s.sessionId === activeTab()?.sessionId ? ' active' : '';
-          html += `<div class="cp-sess-item${active}" data-sid="${escH(s.sessionId)}" data-cwd="${escH(proj.path)}">`;
-          html += `<div class="cp-sess-prompt">${escH(trunc(label, 60))}</div>`;
-          html += `<button class="cp-sess-rename" data-sid="${escH(s.sessionId)}" title="Rename">&#x270E;</button>`;
-          html += `<div class="cp-sess-meta"><span>${relDate(s.modified || s.created)}</span>`;
-          if (s.gitBranch) html += `<span class="cp-sess-branch">${escH(s.gitBranch)}</span>`;
-          if (s.messageCount) html += `<span>${s.messageCount} msgs</span>`;
-          html += `</div></div>`;
-        }
+      // Re-render from accumulated sessions
+      listEl.innerHTML = '';
+      const filtered = cpSessApplyFilters(_cpSessSessions);
+      cpSessRenderItems(filtered, listEl, menu);
+    });
+  });
+
+  // ── Load first batch ──
+  await cpSessLoadBatch(menu, listEl);
+
+  // ── Setup IntersectionObserver for infinite scroll ──
+  _cpSessObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting && !_cpSessLoading && _cpSessOffset < _cpSessTotal) {
+        cpSessLoadBatch(menu, listEl);
       }
     }
-    menu.innerHTML = html;
-    // Wire clicks
-    menu.querySelector('.cp-sess-new')?.addEventListener('click', () => {
-      selectSession(null, 'New chat');
-      menu.classList.remove('open');
-    });
-    menu.querySelectorAll('.cp-sess-item').forEach(el => {
-      el.addEventListener('click', () => {
-        const sid = el.dataset.sid;
-        const label = el.querySelector('.cp-sess-prompt')?.textContent || 'Resumed';
-        selectSession(sid, label);
-        // Update cwd to match the session's project (per-tab)
-        const $project = _panel?.querySelector('#cp-project');
-        if ($project && el.dataset.cwd) {
-          ddPopulate($project, _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() })), el.dataset.cwd);
-          storage.setItem(STOR.project, el.dataset.cwd);
-          const tab = activeTab();
-          if (tab) { tab.project = el.dataset.cwd; saveTabs(); }
-        }
-        menu.classList.remove('open');
-      });
-    });
-    // Wire rename buttons
-    menu.querySelectorAll('.cp-sess-rename').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const sid = btn.dataset.sid;
-        const item = btn.closest('.cp-sess-item');
-        const promptEl = item?.querySelector('.cp-sess-prompt');
-        if (!promptEl) return;
-        const currentName = getLabel(sid) || promptEl.textContent;
-        const input = document.createElement('input');
-        input.type = 'text'; input.value = currentName;
-        input.className = 'cp-rename-input';
-        input.placeholder = 'Session name...';
-        // Prevent clicks on input from bubbling to session item (which selects session)
-        input.addEventListener('click', (e) => e.stopPropagation());
-        input.addEventListener('mousedown', (e) => e.stopPropagation());
-        input.addEventListener('dblclick', (e) => e.stopPropagation());
-        promptEl.textContent = '';
-        promptEl.appendChild(input);
-        btn.style.display = 'none';
-        input.focus(); input.select();
-
-        let committed = false;
-        function commit() {
-          if (committed) return;
-          committed = true;
-          const val = input.value.trim();
-          input.remove();
-          if (val) {
-            storage.setItem(LABEL_PREFIX + sid, val);
-            promptEl.textContent = trunc(val, 60);
-          } else {
-            storage.removeItem(LABEL_PREFIX + sid);
-            promptEl.textContent = currentName;
-          }
-          btn.style.display = '';
-          // Update header + pill if this is the active session
-          const curTab = activeTab();
-          if (curTab && sid === curTab.sessionId) {
-            const headerLabel = _panel?.querySelector('.cp-session-label');
-            if (headerLabel) headerLabel.textContent = val || currentName;
-            curTab.label = val || currentName;
-            updatePillLabel(curTab);
-            saveTabs();
-          }
-        }
-        input.addEventListener('blur', commit);
-        input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-          if (e.key === 'Escape') { input.value = currentName; input.blur(); }
-        });
-      });
-    });
-  } catch (err) {
-    menu.innerHTML = '<div class="cp-sess-loading">failed to load</div>';
-  }
+  }, { root: menu, threshold: 0.1 });
+  _cpSessObserver.observe(sentinel);
 }
 
 async function selectSession(sid, label) {
@@ -3693,8 +4071,10 @@ function renderAssistant(tab, msg) {
       }
       const existingBody = wrap.querySelector('.msg-body');
       if (texts.length) {
-        const html = md(texts.map(b => b.text).join('\n'));
+        const rawMd = texts.map(b => b.text).join('\n');
+        const html = md(rawMd);
         if (existingBody) {
+          existingBody._rawMd = rawMd;
           existingBody.innerHTML = html;
           linkifyFilePaths(existingBody);
           addCopyButtons(existingBody);
@@ -3726,7 +4106,12 @@ function renderAssistant(tab, msg) {
     if (tab._exitPlanPending && !tab._planContentCaptured) {
       tab._planContentCaptured = true;
       const captured = extractPlanText(tab);
-      if (captured) tab._planContent = captured;
+      if (captured) {
+        tab._planContent = captured;
+        // Eagerly materialize the plan file so Edit button always has a file to open
+        fetch('/api/create-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: captured }) })
+          .then(r => r.json()).then(result => { if (result.ok && !tab.planFilePath) { tab.planFilePath = result.path; saveTabs(); } }).catch(() => {});
+      }
     }
     if (tab === activeTab()) scrollEnd();
     return;
@@ -3775,7 +4160,12 @@ function renderAssistant(tab, msg) {
   if (tab._exitPlanPending && !tab._planContentCaptured) {
     tab._planContentCaptured = true;
     const captured = extractPlanText(tab);
-    if (captured) tab._planContent = captured;
+    if (captured) {
+      tab._planContent = captured;
+      // Eagerly materialize the plan file so Edit button always has a file to open
+      fetch('/api/create-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: captured }) })
+        .then(r => r.json()).then(result => { if (result.ok && !tab.planFilePath) { tab.planFilePath = result.path; saveTabs(); } }).catch(() => {});
+    }
   }
 
   if (tab === activeTab()) scrollEnd();
@@ -4084,7 +4474,7 @@ function buildSynaBunTool(block) {
   const hdr = document.createElement('div');
   hdr.className = 'tool-hdr synabun-hdr';
   const icon = document.createElement('span'); icon.className = 'tool-icon synabun-icon';
-  icon.innerHTML = meta.icon;
+  icon.innerHTML = SYNABUN_LOGO_ICON;
   const name = document.createElement('span'); name.className = 'tool-name synabun-name';
   name.textContent = meta.label;
   const detail = document.createElement('span'); detail.className = 'tool-detail';
@@ -4976,8 +5366,11 @@ function send({ shift = false } = {}) {
   }
   if (!text && !tab.attachedImages.length && !tab.attachedFiles.length) return;
 
-  // Clear post-plan action cards on new message
+  // Clear post-plan action cards and stale exit-plan flags on new message
   tab.messagesEl?.querySelectorAll('.post-plan-card').forEach(el => { const msg = el.closest('.msg'); if (msg) msg.remove(); else el.remove(); });
+  tab._exitPlanPending = false;
+  tab._exitPlanHandled = false;
+  tab._exitPlanWasPlanMode = false;
 
   if (text === '/clear') { $input.value = ''; tab.messagesEl.innerHTML = ''; hideSlashHints(); return; }
   if (text === '/compact') {
@@ -5199,6 +5592,10 @@ function advanceQueue(tab) {
 
 function _sendQueued(tab, item) {
   if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return;
+  // Clear stale exit-plan flags before starting queued turn
+  tab._exitPlanPending = false;
+  tab._exitPlanHandled = false;
+  tab._exitPlanWasPlanMode = false;
   const $project = _panel?.querySelector('#cp-project');
   appendUser(tab, item.text, item.images, item.files);
   tab.sendStartedAt = Date.now();
@@ -5544,6 +5941,15 @@ async function loadBranches(path) {
   } catch {}
 }
 
+function syncReservedWidth() {
+  if (_visible && _panel) {
+    reserveRightPanelLayout(PANEL_OWNER, _panel, 20);
+    document.querySelector('.fe-editor-panel')?.classList.add('panel-adjacent');
+  } else if (clearRightPanelLayout(PANEL_OWNER)) {
+    document.querySelector('.fe-editor-panel')?.classList.remove('panel-adjacent');
+  }
+}
+
 // ── Public API ──
 export async function toggleClaudePanel() {
   if (!_panel) {
@@ -5561,17 +5967,17 @@ export async function toggleClaudePanel() {
   }
   _visible = !_visible;
   if (_visible) {
+    if (_tabs.length === 0) createTab(null, 'New chat');
+    state.lastActivePanel = 'claude';
     _panel.classList.add('open');
-    const pw = _panel.style.width || '22%';
-    document.documentElement.style.setProperty('--claude-panel-width', pw.endsWith('px') ? (parseFloat(pw) + 20) + 'px' : 'calc(' + pw + ' + 20px)');
-    document.documentElement.style.setProperty('--claude-panel-gap', '20px');
-    document.querySelector('.fe-editor-panel')?.classList.add('panel-adjacent');
+    syncReservedWidth();
     _panel.querySelector('#cp-input')?.focus();
   } else {
+    const tab = activeTab();
+    const $input = _panel?.querySelector('#cp-input');
+    if (tab && $input) tab.draft = $input.value;
     _panel.classList.remove('open');
-    document.documentElement.style.setProperty('--claude-panel-width', '0px');
-    document.documentElement.style.setProperty('--claude-panel-gap', '0px');
-    document.querySelector('.fe-editor-panel')?.classList.remove('panel-adjacent');
+    syncReservedWidth();
   }
   renderPills(); // Sync pill visibility with panel open/close state
   window.dispatchEvent(new Event('resize'));
@@ -5844,6 +6250,9 @@ function wireEvents() {
   const $slide = _panel.querySelector('.cp-slide-btn');
   const $new = _panel.querySelector('.cp-new-btn');
 
+  const $brand = _panel.querySelector('.cp-brand');
+  if ($brand) $brand.addEventListener('click', () => window.open('https://claude.ai/settings/usage', '_blank'));
+
   $input.addEventListener('input', () => {
     autoResize();
     const tab = activeTab();
@@ -6022,7 +6431,7 @@ function wireEvents() {
     });
   }
   $new.addEventListener('click', () => {
-    if (_tabs.length >= MAX_TABS) return;
+    if (_tabs.length >= MAX_TABS) { appendStatus(activeTab(), 'Max sessions reached — close one first.'); return; }
     createTab(null, 'New chat');
   });
 
@@ -6251,7 +6660,7 @@ function wireEvents() {
       if (!dragging) return;
       const w = Math.min(700, Math.max(320, window.innerWidth - e.clientX - 20));
       _panel.style.width = w + 'px';
-      document.documentElement.style.setProperty('--claude-panel-width', (w + 20) + 'px');
+      syncReservedWidth();
     });
     window.addEventListener('mouseup', () => {
       if (!dragging) return;
@@ -6263,9 +6672,12 @@ function wireEvents() {
     });
   }
 
+  window.addEventListener('resize', syncReservedWidth);
+
   // ── Whiteboard "Send to Panel" — receive image via event bus ──
   on('wb:send-to-panel', ({ dataUrl }) => {
     if (!dataUrl) return;
+    if (!_visible && state.lastActivePanel !== 'claude') return;
     if (!_visible) toggleClaudePanel();
     const tab = activeTab();
     if (!tab) return;

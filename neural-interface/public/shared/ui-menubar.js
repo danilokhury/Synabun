@@ -132,6 +132,7 @@ export function initMenubar() {
     'menu-terminal-claude': 'terminal',
     'menu-terminal-codex': 'terminal',
     'menu-terminal-gemini': 'terminal',
+    'menu-terminal-opencode': 'terminal',
     'menu-terminal-shell': 'terminal',
     'menu-terminal-browser': 'browser',
     'menu-terminal-youtube': 'browser',
@@ -342,7 +343,8 @@ function wireTerminalMenu() {
   const items = {
     'menu-terminal-claude':  () => emit('terminal:open', { profile: 'claude-code' }),
     'menu-terminal-codex':   () => emit('terminal:open', { profile: 'codex' }),
-    'menu-terminal-gemini':  () => emit('terminal:open', { profile: 'gemini' }),
+    'menu-terminal-gemini':   () => emit('terminal:open', { profile: 'gemini' }),
+    'menu-terminal-opencode': () => emit('terminal:open', { profile: 'opencode' }),
     'menu-terminal-shell':   () => emit('terminal:open', { profile: 'shell' }),
     'menu-terminal-browser': () => emit('browser:open'),
     'menu-terminal-youtube': () => emit('browser:open', { url: 'https://www.youtube.com' }),

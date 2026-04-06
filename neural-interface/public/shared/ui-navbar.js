@@ -10,7 +10,9 @@ import { KEYS } from './constants.js';
 import { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig } from './ui-settings.js';
 import { registerAction } from './ui-keybinds.js';
 import { startTutorial } from './ui-tutorial.js';
-import { toggleClaudePanel } from './ui-claude-panel.js';
+import { toggleClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
+import { toggleCodexPanel, isCodexPanelOpen } from './ui-codex-panel.js';
+import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel.js';
 import { toggleSessionMonitor } from './ui-sessions.js';
 import { toggleImageGallery } from './ui-image-gallery.js';
 import { initUpdate } from './ui-update.js';
@@ -42,13 +44,39 @@ export function initNavbar() {
 
   // ── Claude panel toggle (topright workspace toolbar) ──
   const claudePanelBtn = $('topright-claude-panel-btn');
+  const codexPanelBtn = $('topright-codex-panel-btn');
+  const opencodePanelBtn = $('topright-opencode-panel-btn');
   if (claudePanelBtn) {
     claudePanelBtn.addEventListener('click', (e) => {
       e.preventDefault();
+      if (isCodexPanelOpen()) { toggleCodexPanel(); codexPanelBtn?.classList.remove('active'); }
+      if (isOpencodePanelOpen()) { toggleOpencodePanel(); opencodePanelBtn?.classList.remove('active'); }
       toggleClaudePanel();
       claudePanelBtn.classList.toggle('active');
     });
     registerAction('toggle-claude-panel', () => claudePanelBtn.click());
+  }
+  if (codexPanelBtn) {
+    codexPanelBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (isClaudePanelOpen()) { toggleClaudePanel(); claudePanelBtn.classList.remove('active'); }
+      if (isOpencodePanelOpen()) { toggleOpencodePanel(); opencodePanelBtn?.classList.remove('active'); }
+      await toggleCodexPanel();
+    });
+    on('codex-panel:visibility', (visible) => {
+      codexPanelBtn.classList.toggle('active', !!visible);
+    });
+  }
+  if (opencodePanelBtn) {
+    opencodePanelBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (isClaudePanelOpen()) { toggleClaudePanel(); claudePanelBtn?.classList.remove('active'); }
+      if (isCodexPanelOpen()) { toggleCodexPanel(); codexPanelBtn?.classList.remove('active'); }
+      await toggleOpencodePanel();
+    });
+    on('opencode-panel:visibility', (visible) => {
+      opencodePanelBtn.classList.toggle('active', !!visible);
+    });
   }
 
   // ── Sidebar close button ──
