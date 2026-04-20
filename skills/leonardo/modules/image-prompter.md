@@ -1,8 +1,10 @@
 # Image Prompter — Guided Questionnaire
 
-Guide the user through creating the perfect image on Leonardo.ai. Ask questions using `AskUserQuestion`, then engineer the optimal prompt and configure all browser settings.
+Guide the user through creating the perfect image on Leonardo.ai. Ask questions using an interactive choice prompt, then engineer the optimal prompt and configure all browser settings.
 
 **Important:** This is a browser-based workflow. After the questionnaire, you'll set all parameters in the Leonardo.ai UI using browser tools, then fill the prompt and click Generate.
+
+**Runtime compatibility:** An **interactive choice prompt** means: use `AskUserQuestion` in Claude Code, `request_user_input` in Codex when that tool is available, otherwise ask a concise plain-text multiple-choice question and wait for the user's reply.
 
 ---
 
@@ -10,7 +12,7 @@ Guide the user through creating the perfect image on Leonardo.ai. Ask questions 
 
 Ask the user to describe their image concept. If `$TOPIC` was set by the router, use it as the starting point and skip asking — but still categorize it.
 
-**Do NOT use AskUserQuestion here** — this requires free-text input. Output a natural chat message:
+**Do NOT use an interactive choice prompt here** — this requires free-text input. Output a natural chat message:
 
 > **What kind of image do you want to create?**
 > Describe your vision — subject, scene, mood, purpose. You can also paste or drag reference images for inspiration.
@@ -32,7 +34,7 @@ Store as `$CATEGORY`.
 
 ## Phase 2 — Model Selection
 
-Present model options based on `$CATEGORY`. Use `AskUserQuestion`:
+Present model options based on `$CATEGORY`. Use an interactive choice prompt:
 
 > **Which image model should we use?**
 
@@ -69,7 +71,7 @@ Store as `$MODEL`.
 
 Check if the user attached images with their **current message** (file paths appear at the top of the prompt). Do NOT check `image_staged` here — old staged images are not reference candidates.
 
-**If images are attached to the current message**, present options based on the selected model's capabilities. Use `AskUserQuestion`:
+**If images are attached to the current message**, present options based on the selected model's capabilities. Use an interactive choice prompt:
 
 > **You have N reference image(s) available. How should Leonardo use them?**
 
@@ -90,7 +92,7 @@ Store as `$REFERENCE_TYPE` and `$REFERENCE_PATHS`.
 
 **If no images are attached**, ask the user if they'd like to use reference images. First check if `$MODEL` supports any reference types from the table above — if it supports NONE, skip this phase silently.
 
-If the model supports at least one reference type, use `AskUserQuestion`:
+If the model supports at least one reference type, use an interactive choice prompt:
 
 > **Would you like to use reference images?**
 > Reference images let Leonardo match a style, composition, or visual from an existing image.
@@ -98,7 +100,7 @@ If the model supports at least one reference type, use `AskUserQuestion`:
 - **Yes** — "I have images I'd like to use as reference"
 - **No** — "Continue without reference images"
 
-If **Yes**, respond with this message (plain text, not AskUserQuestion):
+If **Yes**, respond with this message (plain text, not an interactive choice prompt):
 
 > **Attach your reference image(s) to the chat.**
 > Copy the message below, paste it in the input box, attach your images, and send:
@@ -114,7 +116,7 @@ If **No**, continue to Phase 3.
 
 ## Phase 3 — Style Preset
 
-Use `AskUserQuestion`:
+Use an interactive choice prompt:
 
 > **What visual style do you want?**
 
@@ -148,7 +150,7 @@ Store as `$STYLE`.
 
 ## Phase 4 — Dimensions & Composition
 
-Use `AskUserQuestion`:
+Use an interactive choice prompt:
 
 > **What dimensions/aspect ratio?**
 
@@ -169,7 +171,7 @@ Store as `$DIMENSIONS`.
 
 ## Phase 5 — Quantity & Details
 
-Use `AskUserQuestion`:
+Use an interactive choice prompt:
 
 > **How many images do you want?**
 
@@ -186,7 +188,7 @@ Store as `$NUM_IMAGES`.
 
 You've gathered all the technical settings. Now get the user's **detailed creative vision** before engineering the prompt.
 
-**Do NOT use AskUserQuestion here** — this requires free-text input. Output a natural chat message summarizing the config and asking for the detailed description:
+**Do NOT use an interactive choice prompt here** — this requires free-text input. Output a natural chat message summarizing the config and asking for the detailed description:
 
 > **Here's your setup:**
 > - **Model:** $MODEL
@@ -243,13 +245,13 @@ Using `$CREATIVE_BRIEF` from Phase 5.5 and all style context, craft the perfect 
 > ```
 > [If negative prompt: **Negative:** `[negative prompt]`]
 
-Then use `AskUserQuestion` for review:
+Then use an interactive choice prompt for review:
 > **How does this prompt look?**
 - **Looks good — generate** — "Use this prompt as-is and proceed to generation"
 - **Tweak it** — "I want to adjust the prompt before generating"
 - **Rewrite it** — "Start the prompt from scratch with different direction"
 
-If **Tweak it**: ask what they want changed (plain text, not AskUserQuestion), apply changes, show the updated prompt, and ask again.
+If **Tweak it**: ask what they want changed (plain text, not an interactive choice prompt), apply changes, show the updated prompt, and ask again.
 If **Rewrite it**: ask for new direction (plain text), re-engineer from scratch, show the new prompt, and ask again.
 
 ### Build negative prompt (if applicable)

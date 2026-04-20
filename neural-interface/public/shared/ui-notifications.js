@@ -6,6 +6,7 @@
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
 import { emit } from './state.js';
+import { getProviderMeta } from './provider-icons.js';
 
 // ── Sound presets ──
 // Each preset defines tones for 'action' and 'done' events
@@ -44,8 +45,22 @@ export const NOTIF_TYPE = {
   ERROR:  'error',
 };
 
+const PANEL_SHOW_EVENTS = {
+  claude: 'claude-panel:show',
+  codex: 'codex-panel:show',
+  opencode: 'opencode-panel:show',
+};
+
 // ── Audio context (lazy-init) ──
 let _audioCtx = null;
+
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
 function _playTone(freq, duration = 0.15, vol = 0.3) {
   try {
@@ -81,7 +96,7 @@ export function getNotifSettings() {
     triggerError:  storage.getItem(KEYS.NOTIF_TRIGGER_ERROR) !== 'off',
     toast:         storage.getItem(KEYS.NOTIF_TOAST) !== 'off',
     toastDuration: parseInt(storage.getItem(KEYS.NOTIF_TOAST_DURATION) || '5', 10),
-    toastPosition: storage.getItem(KEYS.NOTIF_TOAST_POSITION) || 'top-right',
+    toastPosition: storage.getItem(KEYS.NOTIF_TOAST_POSITION) || 'bottom-center',
     // Legacy compat
     actionOnly:    storage.getItem(KEYS.NOTIF_ACTION_ONLY) === 'on',
   };
@@ -155,13 +170,30 @@ const _TOAST_TITLES = {
   error:  'Error',
 };
 
+function _getNotifMeta(source, opts = {}) {
+  const provider = opts.provider || (source === 'panel' ? 'claude-code' : 'shell');
+  const providerMeta = getProviderMeta(provider);
+  const panel = opts.panel || 'claude';
+  const surfaceLabel = source === 'panel' ? 'Side Panel' : 'CLI Terminal';
+  const event = source === 'panel'
+    ? (PANEL_SHOW_EVENTS[panel] || PANEL_SHOW_EVENTS.claude)
+    : 'terminal:show';
+  return {
+    provider,
+    providerMeta,
+    panel,
+    surfaceLabel,
+    event,
+  };
+}
+
 let _toastContainer = null;
 const MAX_TOASTS = 3;
 
 function _ensureToastContainer(position) {
   if (_toastContainer && document.body.contains(_toastContainer)) {
     // Update position class if changed
-    const posClass = `pos-${position || 'top-right'}`;
+    const posClass = `pos-${position || 'bottom-center'}`;
     if (!_toastContainer.classList.contains(posClass)) {
       _toastContainer.className = '';
       _toastContainer.id = 'notif-toast-container';
@@ -171,7 +203,7 @@ function _ensureToastContainer(position) {
   }
   _toastContainer = document.createElement('div');
   _toastContainer.id = 'notif-toast-container';
-  _toastContainer.classList.add(`pos-${position || 'top-right'}`);
+  _toastContainer.classList.add(`pos-${position || 'bottom-center'}`);
   document.body.appendChild(_toastContainer);
   return _toastContainer;
 }
@@ -181,18 +213,26 @@ function _showToast(type, title, body, source, opts) {
   if (!s.toast) return;
   const container = _ensureToastContainer(s.toastPosition);
   const accent = _TOAST_ACCENTS[type] || _TOAST_ACCENTS.done;
-  const icon = _TOAST_ICONS[type] || _TOAST_ICONS.done;
+  const statusIcon = _TOAST_ICONS[type] || _TOAST_ICONS.done;
+  const meta = _getNotifMeta(source, opts);
 
   const toast = document.createElement('div');
   toast.className = 'notif-toast';
   toast.style.setProperty('--notif-accent', accent);
+  toast.style.setProperty('--notif-provider-color', meta.providerMeta.color);
   toast.innerHTML = `
     <div class="notif-toast-accent"></div>
-    <div class="notif-toast-icon">${icon}</div>
+    <div class="notif-toast-brand" aria-hidden="true">${meta.providerMeta.icon}</div>
     <div class="notif-toast-body">
-      <div class="notif-toast-title">${title}</div>
-      <div class="notif-toast-msg">${body}</div>
-      <div class="notif-toast-source">${source === 'panel' ? 'Side Panel' : 'CLI Terminal'}</div>
+      <div class="notif-toast-topline">
+        <div class="notif-toast-provider">${esc(meta.providerMeta.label)}</div>
+        <div class="notif-toast-kind">
+          <span class="notif-toast-icon">${statusIcon}</span>
+          <span>${esc(title)}</span>
+        </div>
+      </div>
+      <div class="notif-toast-msg">${esc(body)}</div>
+      <div class="notif-toast-source">${esc(meta.surfaceLabel)}</div>
     </div>
     <button class="notif-toast-close">&times;</button>
   `;
@@ -200,8 +240,7 @@ function _showToast(type, title, body, source, opts) {
   // Click toast body → show the source panel/terminal (with session/tab specificity)
   toast.addEventListener('click', (e) => {
     if (e.target.closest('.notif-toast-close')) return;
-    const event = source === 'panel' ? 'claude-panel:show' : 'terminal:show';
-    emit(event, { sessionId: opts?.sessionId, tabId: opts?.tabId });
+    emit(meta.event, { sessionId: opts?.sessionId, tabId: opts?.tabId });
     _dismissToast(toast);
   });
 
@@ -256,7 +295,8 @@ export function notify(source, type, label, opts) {
   if (s.actionOnly && type !== NOTIF_TYPE.ACTION) return;
 
   const title = _TOAST_TITLES[type] || 'Notification';
-  const body = label || 'Claude Code';
+  const meta = _getNotifMeta(source, opts);
+  const body = label || meta.providerMeta.label;
 
   // Sound
   if (s.sound) playNotifSound(type);
@@ -278,7 +318,8 @@ if (navigator.serviceWorker) {
   navigator.serviceWorker.addEventListener('message', (e) => {
     if (e.data?.type !== 'NOTIFICATION_CLICK') return;
     const { source, sessionId, tabId } = e.data;
-    const event = source === 'panel' ? 'claude-panel:show' : 'terminal:show';
+    const meta = _getNotifMeta(source, e.data);
+    const event = meta.event;
     emit(event, { sessionId, tabId });
   });
 }

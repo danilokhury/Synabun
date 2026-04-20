@@ -14,27 +14,14 @@ import { discordThreadSchema, discordThreadDescription, handleDiscordThread } fr
  * Discord tools are static (no dynamic schema refresh needed).
  */
 export function registerDiscordTools(server: McpServer) {
-  // Server overview
-  server.tool('discord_guild', discordGuildDescription, discordGuildSchema, handleDiscordGuild);
-
-  // Channel management (text, voice, categories, forums, stages)
-  server.tool('discord_channel', discordChannelDescription, discordChannelSchema, handleDiscordChannel);
-
-  // Role management + assignment
-  server.tool('discord_role', discordRoleDescription, discordRoleSchema, handleDiscordRole);
-
-  // Message operations
-  server.tool('discord_message', discordMessageDescription, discordMessageSchema, handleDiscordMessage);
-
-  // Member moderation
-  server.tool('discord_member', discordMemberDescription, discordMemberSchema, handleDiscordMember);
-
-  // Server onboarding & setup
-  server.tool('discord_onboarding', discordOnboardingDescription, discordOnboardingSchema, handleDiscordOnboarding);
-
-  // Webhook management
-  server.tool('discord_webhook', discordWebhookDescription, discordWebhookSchema, handleDiscordWebhook);
-
-  // Thread management
-  server.tool('discord_thread', discordThreadDescription, discordThreadSchema, handleDiscordThread);
+  return [
+    server.tool('discord_guild', discordGuildDescription, discordGuildSchema, handleDiscordGuild),
+    server.tool('discord_channel', discordChannelDescription, discordChannelSchema, handleDiscordChannel),
+    server.tool('discord_role', discordRoleDescription, discordRoleSchema, handleDiscordRole),
+    server.tool('discord_message', discordMessageDescription, discordMessageSchema, handleDiscordMessage),
+    server.tool('discord_member', discordMemberDescription, discordMemberSchema, handleDiscordMember),
+    server.tool('discord_onboarding', discordOnboardingDescription, discordOnboardingSchema, handleDiscordOnboarding),
+    server.tool('discord_webhook', discordWebhookDescription, discordWebhookSchema, handleDiscordWebhook),
+    server.tool('discord_thread', discordThreadDescription, discordThreadSchema, handleDiscordThread),
+  ];
 }

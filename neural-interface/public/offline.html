@@ -85,7 +85,17 @@
     margin-bottom: 28px;
   }
 
+  /* --- Command labels --- */
+  .cmd-label {
+    font-size: 10px;
+    color: rgba(255,255,255,0.2);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
   /* --- Command block --- */
+
   .cmd-block {
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(255,255,255,0.06);
@@ -95,7 +105,7 @@
     align-items: center;
     justify-content: center;
     gap: 12px;
-    margin-bottom: 24px;
+    margin-bottom: 8px;
   }
 
   .cmd-text {
@@ -111,6 +121,13 @@
 
   .cmd-text span {
     color: rgba(110,200,255,0.6);
+  }
+
+  .cmd-or {
+    font-size: 10px;
+    color: rgba(255,255,255,0.15);
+    text-align: center;
+    margin-bottom: 8px;
   }
 
   .copy-btn {
@@ -224,11 +241,18 @@
   <div class="heading">Server is sleeping</div>
   <div class="subtext">The Neural Interface server isn't running.</div>
 
-  <div class="cmd-block">
-    <div class="cmd-text" id="cmdText">
-      <span>npm</span> start
+  <div>
+    <div class="cmd-label">npm install</div>
+    <div class="cmd-block">
+      <div class="cmd-text" id="cmdText"><span>synabun</span></div>
+      <button class="copy-btn" id="copyBtn">Copy</button>
     </div>
-    <button class="copy-btn" id="copyBtn">Copy</button>
+    <div class="cmd-or" id="cmdOr" style="display:none">or</div>
+    <div class="cmd-label" id="cmdFallbackLabel" style="display:none">git / local install</div>
+    <div class="cmd-block" id="cmdFallback" style="display:none">
+      <div class="cmd-text" id="cmdFallbackText"></div>
+      <button class="copy-btn" id="copyFallbackBtn">Copy</button>
+    </div>
   </div>
 
   <div class="retry" id="retry">
@@ -238,35 +262,47 @@
 </div>
 
 <script>
-  // --- Build restart command ---
-  // Use the global `synabun` command (works from any directory)
-  // Fallback: cd + npm start with `;` separator (works in both PowerShell and bash)
-  const projectDir = localStorage.getItem('synabun-project-dir');
-  const cmd = 'synabun';
-  const cmdText = document.getElementById('cmdText');
-  cmdText.innerHTML = `<span>synabun</span>`;
-  const copyBtn = document.getElementById('copyBtn');
+  // --- Platform detection ---
+  const ua = navigator.userAgent;
+  const isWin = /Win/.test(navigator.platform) || /Windows/.test(ua);
+  const isMac = /Mac/.test(navigator.platform);
+  // Linux = everything else
 
-  copyBtn.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(cmd);
-    } catch {
+  const projectDir = localStorage.getItem('synabun-project-dir');
+
+  // --- Manual command fallback ---
+  if (projectDir) {
+    const sep = isWin ? ' & ' : ' ; ';
+    const fallbackCmd = `cd "${projectDir}"${sep}npm start`;
+    const cmdOr = document.getElementById('cmdOr');
+    const cmdFallback = document.getElementById('cmdFallback');
+    const cmdFallbackText = document.getElementById('cmdFallbackText');
+    cmdOr.style.display = '';
+    cmdFallback.style.display = '';
+    const cmdFallbackLabel = document.getElementById('cmdFallbackLabel');
+    if (cmdFallbackLabel) cmdFallbackLabel.style.display = '';
+    cmdFallbackText.innerHTML = `<span>cd</span> "${projectDir}"${sep}<span>npm</span> start`;
+    document.getElementById('copyFallbackBtn').addEventListener('click', function() { copyToClipboard(fallbackCmd, this); });
+  }
+
+  // --- Copy helper ---
+  function copyToClipboard(text, btn) {
+    navigator.clipboard.writeText(text).catch(() => {
       const ta = document.createElement('textarea');
-      ta.value = cmd;
+      ta.value = text;
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
       document.body.appendChild(ta);
       ta.select();
       document.execCommand('copy');
       document.body.removeChild(ta);
-    }
-    copyBtn.textContent = 'Copied!';
-    copyBtn.classList.add('copied');
-    setTimeout(() => {
-      copyBtn.textContent = 'Copy';
-      copyBtn.classList.remove('copied');
-    }, 1500);
-  });
+    });
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+  }
+
+  document.getElementById('copyBtn').addEventListener('click', function() { copyToClipboard('synabun', this); });
 
   // --- Auto-retry ---
   const retry = document.getElementById('retry');

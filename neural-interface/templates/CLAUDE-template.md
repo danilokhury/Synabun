@@ -64,6 +64,10 @@ Never store directly in parent categories.
 - `reflect` requires FULL UUID — use the one returned by `remember`, or `recall` to find existing memories.
 - Sequential MCP calls only — never parallel.
 
+### Browser Sessions
+
+- When starting a browser session, **always create a new tab** — never reuse or navigate an existing tab. Existing tabs may contain the user's active work, unsaved state, or authenticated sessions that must not be disrupted.
+
 ### Plan Mode (MANDATORY)
 
 **CRITICAL**: Plan mode = research and planning ONLY. Do NOT use Edit, Write, or NotebookEdit. Read files, search code, investigate — then present the plan. Do NOT implement until the user approves and you exit plan mode.
@@ -113,6 +117,7 @@ If you notice the AI defaulting to another tool's memory features, add the enfor
 ```
 # Memory: SynaBun MCP (SQLite + local embeddings)
 ## Tools: remember, recall, forget, restore, reflect, memories, sync, category_create/update/delete/list
+Tool names may be prefixed by the host. Only call tools by their EXACT names from your available tools list. Never invent or guess tool names.
 ## Rules
 - Session start: recall project context
 - After any task: remember what+why+how with tags + importance (MANDATORY)
@@ -123,49 +128,72 @@ If you notice the AI defaulting to another tool's memory features, add the enfor
 - Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical, 10=foundational
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
+- Browser: always create a new tab — never reuse or navigate an existing tab.
 ```
 
 ### Generic
 ```
 ## Memory: SynaBun MCP
 Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
+Tool names are prefixed by the host (e.g. SynaBun_remember in OpenCode, mcp__SynaBun__remember in Claude Code).
+IMPORTANT: Only call tools by their EXACT names from your available tools list. Never invent or guess tool names.
 - Recall at session start. Remember after every task with tags + importance (MANDATORY).
 - Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
 - remember returns full UUID. reflect is for updating existing memories.
 - Sequential calls only. Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
+- Browser: always create a new tab — never reuse or navigate an existing tab.
 ```
 
 ### Gemini
 ```
 ## Memory: SynaBun MCP
 Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
+Tool names may be prefixed by the host (e.g. SynaBun_remember). Only call tools by their EXACT names from your available tools list.
 - Recall at session start. Remember after every task with tags + importance (MANDATORY).
 - Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
 - remember returns full UUID. reflect is for updating existing memories.
 - Sequential calls only. Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
+- Browser: always create a new tab — never reuse or navigate an existing tab.
 ```
 
 ### Codex
 ```
 ## Memory: SynaBun MCP
-Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
-- Recall at session start. Remember after every task with tags + importance (MANDATORY).
-- Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
-- remember returns full UUID. reflect is for updating existing memories.
-- Sequential calls only. Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical
-- Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
-- AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
+Use SynaBun for ALL memory operations. Tool names are prefixed by the host:
+- OpenCode: SynaBun_remember, SynaBun_recall, SynaBun_forget, SynaBun_restore, SynaBun_reflect, SynaBun_memories, SynaBun_sync, SynaBun_category, SynaBun_loop, SynaBun_git, SynaBun_image_staged
+- Claude Code / Codex: mcp__SynaBun__remember, mcp__SynaBun__recall, etc.
+IMPORTANT: Only call tools by their EXACT names as they appear in your available tool list. Never invent, guess, or use colon-separated tool names.
+- Session start: recall current project context, recent sessions, known issues, and prior decisions before substantial work.
+- During work: recall before architecture decisions, debugging, migrations, or when the user references prior work or existing patterns.
+- After any substantive task: remember what changed, why, and how with project, related_files, 3-5 tags, and importance (5=routine, 6-7=significant, 8+=critical). Do this BEFORE your final summary.
+- Response ordering: call remember/reflect FIRST, then write your completion summary LAST. Never summary-then-tools.
+- remember returns the full UUID. Use reflect only to update an existing memory; reflect requires the full UUID.
+- Category routing: use an existing child category when possible; otherwise create the needed child under the right parent. Never store directly in parent categories.
+- If you produce an approved implementation plan with durable value, store it in the appropriate `plans-*` category.
+- Sequential MCP calls only. Never parallelize SynaBun memory-tool calls.
+- Planning: while planning, do research and analysis only. Do not edit files until the plan is approved. Ask concise clarification questions only when necessary.
+- User preferences: when communication style matters, recall communication-style memories first. If you discover a stable new preference, store or update it there.
+- Coexistence: SynaBun owns memory. Do not use other tools or services for storing, recalling, or updating long-term context.
+- Capability boundary: Claude Code in this repo has additional hook-based automations. Codex should follow these rules via AGENTS.md + MCP and must not assume Claude hook events or `.claude/settings.json` behavior exist.
+- Browser: always create a new tab — never reuse or navigate an existing tab.
 ```
 
 ---
 
 ## Plan Files
 
-When in plan mode, write plan files to the project's `data/plans/` directory — **NOT** `~/.claude/plans/`. The `~/.claude/` directory is treated as sensitive by Claude Code, causing repeated permission prompts that don't persist across context compactions. The `data/plans/` directory is within the project root and requires no special permissions.
+When in plan mode, write plan files to `data/plans/YYYY-MM-DD/your-plan-slug.md` — a date-organized folder with a short descriptive slug derived from the plan title.
+
+- **Format:** `data/plans/2026-04-06/fix-session-crosstalk.md`
+- **Slug rules:** lowercase, kebab-case, max 60 chars, strip leading "Plan:" prefix
+- **Do NOT** create `PLAN.md` at the project root
+- **Do NOT** write to `~/.claude/plans/` — that directory is treated as sensitive by Claude Code, causing repeated permission prompts that don't persist across context compactions
+
+The `post-plan.mjs` hook auto-migrates any legacy flat plans and stores approved plans in SQLite memory on ExitPlanMode.
 
 ---
 
@@ -213,7 +241,7 @@ synabun/
 ```bash
 node neural-interface/server.js                    # UI on :3344
 cd mcp-server && npm run build                     # Build MCP
-claude mcp add SynaBun -s user -- node ".../mcp-server/run.mjs"
+claude mcp add SynaBun node ".../mcp-server/run.mjs" -s user
 ```
 
 **Architecture:** SQLite database (data/memory.db), local Transformers.js embeddings (384 dims), per-connection categories, ESM hooks, modular Neural Interface (vanilla JS + Three.js, shared/ modules), paths from `resolve(__dirname, '..')`.

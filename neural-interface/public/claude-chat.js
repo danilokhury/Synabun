@@ -284,15 +284,21 @@ function renderAssistant(msg) {
   }
 
   if (texts.length) {
-    const body = document.createElement('div');
-    body.className = 'msg-body';
-    body.innerHTML = md(texts.map(b => b.text).join('\n'));
-    addCodeLabels(body);
-    linkifyFilePaths(body);
-    wrap.appendChild(body);
+    const rawMd = texts.map(b => b.text).join('\n');
+    if (rawMd.trim()) {
+      const body = document.createElement('div');
+      body.className = 'msg-body';
+      body.innerHTML = md(rawMd);
+      addCodeLabels(body);
+      linkifyFilePaths(body);
+      wrap.appendChild(body);
+    }
   }
 
   for (const t of tools) wrap.appendChild(buildTool(t));
+
+  // Drop the row if nothing rendered — avoids a blank bubble next to the avatar
+  if (!wrap.querySelector('.msg-body, .msg-thinking, .tool-card')) return;
 
   el.appendChild(wrap);
   $msgs.appendChild(el);

@@ -13,5 +13,7 @@ import {
  * Register all image MCP tools on the given server instance.
  */
 export function registerImageTools(server: McpServer) {
-  server.tool('image_staged', imageStagedDescription, imageStagedSchema, handleImageStaged);
+  return [
+    server.tool('image_staged', imageStagedDescription, imageStagedSchema, handleImageStaged),
+  ];
 }

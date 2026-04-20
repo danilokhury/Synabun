@@ -95,6 +95,8 @@ export function getDb() {
     // Ensure schema exists (same tables as MCP server)
     db.exec(SCHEMA_SQL);
     try { db.exec(FTS_SQL); } catch { /* FTS5 may already exist */ }
+    try { db.exec(SESSION_CACHE_SQL); } catch { /* session_cache migration */ }
+    try { db.exec(SESSION_FTS_SQL); } catch { /* FTS5 may already exist */ }
   }
   return db;
 }
@@ -173,6 +175,41 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
   content, category, project, tags,
   content=memories, content_rowid=rowid,
   tokenize='porter unicode61'
+);
+`;
+
+const SESSION_CACHE_SQL = `
+CREATE TABLE IF NOT EXISTS session_cache (
+  session_id    TEXT NOT NULL,
+  provider      TEXT NOT NULL,
+  project       TEXT,
+  project_path  TEXT,
+  git_branch    TEXT,
+  first_prompt  TEXT,
+  message_count INTEGER DEFAULT 0,
+  created       TEXT,
+  modified      TEXT,
+  file_path     TEXT,
+  file_size     INTEGER,
+  file_mtime    TEXT,
+  body_size     INTEGER,
+  deleted       INTEGER DEFAULT 0,
+  PRIMARY KEY (session_id, provider)
+);
+CREATE INDEX IF NOT EXISTS idx_session_cache_provider_modified
+  ON session_cache(provider, modified DESC);
+CREATE INDEX IF NOT EXISTS idx_session_cache_project
+  ON session_cache(project_path);
+`;
+
+const SESSION_FTS_SQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
+  session_id UNINDEXED,
+  provider   UNINDEXED,
+  project    UNINDEXED,
+  first_prompt,
+  body,
+  tokenize = 'porter unicode61 remove_diacritics 2'
 );
 `;
 
@@ -571,6 +608,113 @@ function rowToPayload(row) {
     trashed_at: row.trashed_at || null,
     source_session_chunks: parseJson(row.source_session_chunks, undefined),
   };
+}
+
+// --- Session cache + FTS helpers ---
+
+export function upsertSessionCache(entry) {
+  const d = getDb();
+  d.prepare(`INSERT OR REPLACE INTO session_cache
+    (session_id, provider, project, project_path, git_branch, first_prompt, message_count,
+     created, modified, file_path, file_size, file_mtime, body_size, deleted)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    entry.session_id, entry.provider, entry.project || null, entry.project_path || null,
+    entry.git_branch || null, entry.first_prompt || null, entry.message_count || 0,
+    entry.created || null, entry.modified || null, entry.file_path || null,
+    entry.file_size || null, entry.file_mtime || null, entry.body_size || 0,
+    entry.deleted ? 1 : 0,
+  );
+}
+
+export function upsertSessionFts(entry) {
+  const d = getDb();
+  d.prepare('DELETE FROM session_fts WHERE session_id = ? AND provider = ?')
+    .run(entry.session_id, entry.provider);
+  d.prepare(`INSERT INTO session_fts
+    (session_id, provider, project, first_prompt, body)
+    VALUES (?, ?, ?, ?, ?)`).run(
+    entry.session_id, entry.provider, entry.project || null,
+    entry.first_prompt || '', entry.body || '',
+  );
+}
+
+export function getSessionCacheEntry(sessionId, provider) {
+  const d = getDb();
+  return d.prepare('SELECT * FROM session_cache WHERE session_id = ? AND provider = ?')
+    .get(sessionId, provider) || null;
+}
+
+export function getSessionCacheFileMeta(filePath, provider) {
+  const d = getDb();
+  return d.prepare('SELECT file_size, file_mtime FROM session_cache WHERE file_path = ? AND provider = ?')
+    .get(filePath, provider) || null;
+}
+
+export function markSessionDeleted(sessionId, provider, deleted = true) {
+  const d = getDb();
+  d.prepare('UPDATE session_cache SET deleted = ? WHERE session_id = ? AND provider = ?')
+    .run(deleted ? 1 : 0, sessionId, provider);
+}
+
+export function listSessionCache(provider, { projectPath, limit = 100, offset = 0 } = {}) {
+  const d = getDb();
+  const clauses = ['provider = ?'];
+  const params = [provider];
+  if (projectPath) {
+    clauses.push('project_path = ?');
+    params.push(projectPath);
+  }
+  const sql = `SELECT * FROM session_cache WHERE ${clauses.join(' AND ')}
+    ORDER BY modified DESC LIMIT ? OFFSET ?`;
+  params.push(limit, offset);
+  return d.prepare(sql).all(...params);
+}
+
+/** Escape a user-provided query for safe FTS5 MATCH.
+ *  Strips control chars, wraps each token in quotes, joins with AND. */
+export function buildFtsQuery(raw) {
+  if (!raw) return '';
+  const cleaned = String(raw)
+    .replace(/["'()]/g, ' ')
+    .replace(/[\r\n\t]+/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  const tokens = cleaned.split(/\s+/).filter(t => t.length >= 2);
+  if (tokens.length === 0) return '';
+  return tokens.map(t => `"${t}"*`).join(' AND ');
+}
+
+/** Run FTS5 search over session_fts. Returns array of { session_id, provider, rank, snippet }. */
+export function searchSessionFts(query, { provider, project, limit = 50 } = {}) {
+  const d = getDb();
+  const matchQuery = buildFtsQuery(query);
+  if (!matchQuery) return [];
+
+  const clauses = ['session_fts MATCH ?'];
+  const params = [matchQuery];
+
+  if (provider) {
+    clauses.push('provider = ?');
+    params.push(provider);
+  }
+  if (project) {
+    clauses.push('project = ?');
+    params.push(project);
+  }
+
+  const sql = `SELECT session_id, provider, project,
+                      snippet(session_fts, 4, '<mark>', '</mark>', '…', 16) AS snippet,
+                      bm25(session_fts) AS rank
+               FROM session_fts
+               WHERE ${clauses.join(' AND ')}
+               ORDER BY rank
+               LIMIT ?`;
+  params.push(limit);
+  try {
+    return d.prepare(sql).all(...params);
+  } catch {
+    return [];
+  }
 }
 
 function rowToSessionPayload(row) {

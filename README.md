@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/synabun"><img src="https://img.shields.io/npm/v/synabun?color=cb3837&logo=npm&logoColor=white" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/synabun"><img src="https://img.shields.io/npm/dm/synabun?color=cb3837&logo=npm&logoColor=white" alt="npm downloads" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/synabun?color=blue" alt="license" /></a>
+  <a href="https://github.com/danilokhury/Synabun/actions/workflows/ci.yml"><img src="https://github.com/danilokhury/Synabun/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://discord.gg/x6yWqE9GZP"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
   <a href="https://x.com/SynabunAI"><img src="https://img.shields.io/badge/Follow-%40SynabunAI-000000?logo=x&logoColor=white" alt="X / Twitter" /></a>
   <img src="https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white" alt="Node.js 22+" />
@@ -22,7 +26,7 @@
 
 ---
 
-Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and retain knowledge across sessions through semantic vector search. Memories are stored in a local SQLite database with built-in vector search — no external services, no API keys, no Docker.
+Any Claude Code, Codex, Gemini, OpenCode, Cursor, Windsurf, or MCP-compatible AI tool can connect to SynaBun and retain knowledge across sessions through semantic vector search. Dedicated sidepanels ship for Claude Code, Codex, and OpenCode with tool activity docks, per-agent abort, permission cards, context gauges, and Multi-CLI Resume. Memories are stored in a local SQLite database with built-in vector search — no external services, no API keys, no Docker.
 
 ## Screenshots
 
@@ -56,6 +60,7 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 ## Features
 
 - **Semantic Search** — find memories by meaning, not keywords, using cosine similarity
+- **Recall Profile Presets** — Quick, Balanced, Deep, and Custom profiles with 6 fine-tune controls, an impact indicator (tokens/recall, memories reachable, session context), and configurable server-side defaults
 - **Multi-Project** — single collection serves all projects with automatic project detection and cross-project recall
 - **Smart Relevance** — time decay (90-day half-life), project boost (1.2x), and access frequency scoring
 - **User-Defined Categories** — hierarchical categories with prescriptive routing descriptions; dynamic schema refresh without server restart
@@ -67,10 +72,16 @@ Any Claude Code instance (or MCP-compatible AI tool) can connect to SynaBun and 
 - **OpenClaw Bridge** — read-only integration overlays OpenClaw workspace memories as ephemeral nodes in the 3D graph
 - **Category Logos** — upload custom logos for parent categories, rendered on sun nodes in the 3D visualization
 - **Backup & Restore** — export and import SQLite database snapshots via the Neural Interface
+- **Multi-CLI Sidepanels** — dedicated sidepanels for Claude Code, Codex, and OpenCode with per-agent abort, tool activity docks, permission cards, TODO drawer, context gauge, session menu, new-session modal with project + branch selection, and Multi-CLI Resume with provider picker
+- **Automation Studio** — visual template editor with user-created collapsible folders (drag/drop, icons, colors), per-template launch defaults (CLI / Model / Thinking effort / MCP profile), and first-class 4-CLI support (Claude Code, Codex, Gemini, OpenCode)
+- **Universal MCP Management** — smart-paste add form auto-detects 5 config formats, syncs one MCP server across Claude Code / Codex / Gemini / OpenCode, centralized env vault with sensitive-value masking, auto profile registration, and one-click install from GitHub
 - **Claude Code Hooks** — 7 lifecycle hooks automate memory recall, storage, and session indexing
-- **User Learning** — autonomous observation of user communication patterns, preferences, and behavioral singularity across sessions
-- **Claude Code `/synabun` Command** — single slash command hub with interactive menu for brainstorming, auditing, health checks, and memory search
-- **Leonardo AI Integration** — 4 browser-based MCP tools for AI image and video generation via Leonardo.ai — no API key needed, full UI automation via Playwright with the `/leonardo` skill for guided creation
+- **User Learning** — 5 binding directives that observe user communication patterns, preferences, and behavioral singularity across sessions (Priority 7 nudge, feature flag, threshold controls)
+- **Hybrid Resume Search** — FTS5 + semantic search across saved sessions so old conversations can be resumed across CLIs
+- **Multi-Runtime Skills** — `/synabun` command hub and `/leonardo` media prompter work on both Claude Code and Codex; `/synabun changelog` quick action available from the OpenCode sidepanel
+- **Leonardo AI Integration** — 5 browser-based MCP tools for AI image and video generation via Leonardo.ai — no API key needed, full UI automation via Playwright with the `/leonardo` skill for guided creation
+- **Enhanced Browser Tooling** — new `browser_cheatsheet` tool with curated selectors per platform, snapshot modes + viewport filtering, `returnSnapshot` that folds actions and observations into one call, selector auto-heal via `textHint`, and CLI/sidepanel session isolation
+- **Modern Code Rendering** — syntax highlighting, file path linkification, language labels, hover-only copy buttons, 30fps throttled streaming, and real-time thinking block streaming across every sidepanel
 
 ## Table of Contents
 
@@ -185,15 +196,14 @@ Add to your project's `.mcp.json`:
 Or register globally for all projects:
 
 ```bash
-claude mcp add SynaBun -s user \
-  -- node "/path/to/Synabun/mcp-server/run.mjs"
+claude mcp add SynaBun node "/path/to/Synabun/mcp-server/run.mjs" -s user
 ```
 
 No environment variables needed — SQLite and local embeddings work out of the box.
 
 ### 3. Verify
 
-Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 72 tools listed.
+Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 76 tools listed.
 
 </details>
 
@@ -222,12 +232,13 @@ AI Assistant (any project)
 ┌───┴──────────────────────────┐
 │   SynaBun MCP Server         │  Node.js 22.5+ / TypeScript
 │                              │
-│  72 tools across 9 groups:   │
-│  Memory (8), Browser (39),   │
-│  Whiteboard (5), Cards (5),  │
-│  Discord (8), Leonardo (4),  │
-│  Git (1), Loop (1),          │
-│  TicTacToe (1)               │
+│  76 tools across 11 groups:  │
+│  Memory (8), Profile (1),    │
+│  Browser (40), Whiteboard (5)│
+│  Cards (5), Discord (8),     │
+│  Leonardo (5), Git (1),      │
+│  Loop (1), TicTacToe (1),    │
+│  Image (1)                   │
 │                              │
 │  Transformers.js             │  Local embeddings
 │  all-MiniLM-L6-v2            │  (384 dims, ~23MB model)
@@ -242,9 +253,9 @@ AI Assistant (any project)
 
 Everything runs in a single Node.js process — no external services, no Docker, no API keys.
 
-## MCP Tools (72)
+## MCP Tools (76)
 
-SynaBun exposes 72 tools via the Model Context Protocol, organized into 9 groups:
+SynaBun exposes 76 tools via the Model Context Protocol, organized into 11 groups:
 
 ### Memory (8 tools)
 
@@ -259,12 +270,20 @@ SynaBun exposes 72 tools via the Model Context Protocol, organized into 9 groups
 | `sync` | Detect stale memories via file hash comparison | `project` (optional filter) |
 | `category` | Create, update, delete, or list categories | `action` (create, update, delete, list), `name`, `description`, `parent` |
 
-### Browser (39 tools)
+### Profile (1 tool)
 
-18 general browser automation tools + 21 social media extraction tools, all powered by Playwright with persistent Chromium sessions.
+| Tool | Purpose | Key Parameters |
+|------|---------|----------------|
+| `profile` | Switch tool profiles at runtime — enable or disable whole groups without restarting | `action` (get / set), `name` (preset), `groups` (custom list) |
+
+Built-in presets include `full` (all 14 groups) and focused modes for memory-only or browser-only workloads.
+
+### Browser (40 tools)
+
+19 general browser automation tools + 21 social media extraction tools, all powered by Playwright with persistent Chromium sessions. `browser_snapshot` supports multiple modes + viewport filtering, `returnSnapshot` folds actions and observations into one call, and selector auto-heal via `textHint` repairs brittle locators when a site's DOM changes.
 
 **General automation:**
-`browser_navigate`, `browser_click`, `browser_fill`, `browser_type`, `browser_hover`, `browser_select`, `browser_press`, `browser_evaluate`, `browser_snapshot`, `browser_content`, `browser_screenshot`, `browser_session`, `browser_go_back`, `browser_go_forward`, `browser_reload`, `browser_wait`, `browser_scroll`, `browser_upload`
+`browser_navigate`, `browser_click`, `browser_fill`, `browser_type`, `browser_hover`, `browser_select`, `browser_press`, `browser_evaluate`, `browser_snapshot`, `browser_content`, `browser_screenshot`, `browser_session`, `browser_go_back`, `browser_go_forward`, `browser_reload`, `browser_wait`, `browser_scroll`, `browser_upload`, `browser_cheatsheet`
 
 **Social media extraction:**
 `browser_extract_tweets`, `browser_extract_fb_posts`, `browser_extract_tiktok_videos`, `browser_extract_tiktok_search`, `browser_extract_tiktok_studio`, `browser_extract_tiktok_profile`, `browser_extract_wa_chats`, `browser_extract_wa_messages`, `browser_extract_ig_feed`, `browser_extract_ig_profile`, `browser_extract_ig_post`, `browser_extract_ig_reels`, `browser_extract_ig_search`, `browser_extract_li_feed`, `browser_extract_li_profile`, `browser_extract_li_post`, `browser_extract_li_notifications`, `browser_extract_li_messages`, `browser_extract_li_search_people`, `browser_extract_li_network`, `browser_extract_li_jobs`
@@ -308,7 +327,7 @@ SynaBun exposes 72 tools via the Model Context Protocol, organized into 9 groups
 |------|---------|
 | `loop` | Run, stop, or check autonomous background tasks |
 
-### Leonardo AI (4 tools)
+### Leonardo AI (5 tools)
 
 Browser-based AI image and video generation via [Leonardo.ai](https://app.leonardo.ai). No API key needed — all tools automate the Leonardo.ai web UI directly via Playwright.
 
@@ -318,8 +337,15 @@ Browser-based AI image and video generation via [Leonardo.ai](https://app.leonar
 | `leonardo_browser_generate` | Fill the prompt and click Generate — configure UI settings (model, style, dimensions, motion controls) beforehand using generic browser tools |
 | `leonardo_browser_library` | View or search the Leonardo.ai generation library |
 | `leonardo_browser_download` | Capture the current Leonardo.ai page as a screenshot to see generation results |
+| `leonardo_browser_reference` | Upload and attach a reference image (style / character / content) to the next generation |
 
-> **Tip:** Use the `/leonardo` skill in Claude Code for an expert-guided creation experience with a 7-phase video prompter, 6-phase image prompter, model advisor with decision matrices for 30+ models, curated prompt library, and style guide with motion controls and camera combos.
+> **Tip:** Use the `/leonardo` skill in Claude Code or Codex for an expert-guided creation experience with a 7-phase video prompter, 6-phase image prompter, model advisor with decision matrices for 30+ models, curated prompt library, and style guide with motion controls and camera combos.
+
+### Image (1 tool)
+
+| Tool | Purpose |
+|------|---------|
+| `image_staged` | Manage staged images — list the pending upload queue, remove items, or clear the stage. Used alongside the Neural Interface image-upload flow. |
 
 ## Neural Interface
 
@@ -348,6 +374,57 @@ Then open **http://localhost:3344**
 - Category export — download all memories in a category as Markdown
 
 The Neural Interface also serves as the admin panel for category management, hook installation, skill management, and MCP registration — all from a single web UI.
+
+### Sidepanels (Claude Code, Codex, OpenCode)
+
+Three dedicated chat sidepanels dock to the side of your editor and talk to the same memory backend. They share a common visual language and now ship with matching feature parity:
+
+| Feature | Claude | Codex | OpenCode |
+|---------|--------|-------|----------|
+| Tool Activity Dock (left-edge log, `Ctrl/Cmd+Shift+A`) | — | — | ✅ |
+| TODO Widget slide-out drawer | ✅ | — | — |
+| Agents Drawer with per-agent abort + inline step expansion | ✅ | — | ✅ |
+| Permission cards with tool-specific context (bash/edit/write/read/webfetch) | ✅ | ✅ | ✅ |
+| Plan mode with AskUserQuestion + post-plan action card | ✅ | ✅ | ✅ |
+| Session menu, new-session modal (project + branch picker) | ✅ | ✅ | ✅ |
+| Multi-CLI Resume with provider picker | ✅ | ✅ | ✅ |
+| Context gauge with 1M context activation | ✅ | ✅ | ✅ |
+| Collapsible tool cards with lazy body flush | ✅ | ✅ | ✅ |
+| Streamed thinking blocks + 30fps throttled rendering | ✅ | ✅ | ✅ |
+| Syntax highlighting + file path linkification + copy button | ✅ | ✅ | ✅ |
+| `/synabun` + `/leonardo` multi-runtime skills | ✅ | ✅ | ✅ |
+| `/synabun changelog` quick skill button | — | — | ✅ |
+| Tray pills for minimized sessions | — | — | ✅ |
+
+### Automation Studio
+
+A visual template editor for autonomous loops and agents.
+
+- **User-created collapsible folders** — drag/drop templates between folders, reorder folders, per-folder icons (including social platform icons) and colors, per-device collapsed state, backup/restore via `loop-folders.json`.
+- **Per-template launch defaults** — save CLI / Model / Thinking effort / MCP profile with each template. The launch modal opens pre-filled with the saved choice; users can still override.
+- **First-class 4-CLI support** — Claude Code, Codex, Gemini, and OpenCode. Agent mode is Claude-exclusive; loop mode runs on any of the four.
+- **Runtime card with native `<select>`** — handles long MCP profile names and model labels without truncation.
+- **Context menus + folder popover** — right-click any template to move it; right-click a folder to rename, recolor, collapse, or delete (deletion detaches templates rather than removing them).
+
+### MCP Management
+
+One screen to manage every MCP server you use, synced across every CLI.
+
+- **Universal Add Form with smart paste** — auto-detects 5 config formats (stdio JSON, HTTP URL, OpenCode TOML, Claude `mcp add` command, plain JSON).
+- **Multi-platform sync** — one MCP server entry syncs to Claude Code, Codex, Gemini, and OpenCode with a single click.
+- **Centralized env vault** — secure storage for API keys and tokens, reused across servers, with sensitive-value masking in the form.
+- **Auto profile registration** — newly added servers are registered with profiles so they can be toggled by group.
+- **One-click install from GitHub** — paste a repo URL; SynaBun clones, builds, and registers the server.
+- **`data/mcp/` scaffold** — predictable layout for user-installed MCP servers.
+
+### Recall Profiles
+
+Control how much context flows into each `recall`:
+
+- **4 presets** — Quick (fast, narrow), Balanced (default), Deep (broad context), Custom (fine-tune).
+- **6 fine-tune controls** — number of results, similarity threshold, tag filter intensity, session chunk inclusion, importance floor, temporal bias.
+- **Impact indicator** — live estimate of tokens per recall, memories reachable, and how much session context will surface.
+- **Configurable server-side defaults** — set the "baseline" recall shape globally; every CLI follows it unless overridden.
 
 ## Usage
 
@@ -585,13 +662,13 @@ SynaBun ships with 7 [Claude Code hooks](https://docs.anthropic.com/en/docs/agen
 
 For detailed hook documentation, customization options, and custom hook templates, see the [Hooks Guide](./docs/hooks.md).
 
-## Claude Code Skills
+## Skills (Multi-Runtime)
 
-SynaBun ships [Claude Code skills](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/tutorials/custom-slash-commands) — slash commands that provide expert-guided workflows.
+SynaBun ships slash-command skills that work on both **Claude Code** and **Codex**, and includes a dedicated quick-action button in the **OpenCode** sidepanel.
 
 ### `/synabun` — Memory Command Hub
 
-The entry point for all memory-powered capabilities. Type `/synabun` in Claude Code and an interactive menu appears:
+The entry point for all memory-powered capabilities. Type `/synabun` in Claude Code or Codex and an interactive menu appears:
 
 | Option | What it does |
 |--------|-------------|
@@ -599,10 +676,11 @@ The entry point for all memory-powered capabilities. Type `/synabun` in Claude C
 | **Audit Memories** | Validate stored memories against the current codebase. Runs 6 phases: landscape survey, checksum pre-scan, bulk retrieval, parallel semantic verification, interactive classification (STALE/INVALID/VALID/UNVERIFIABLE), and audit report. |
 | **Memory Health** | Quick stats overview and staleness check — total count, category distribution, stale file references. |
 | **Search Memories** | Find something specific across your entire memory bank using semantic search. |
+| **Changelog** | Show the SynaBun release history and the newest user-facing features. Available as a dedicated quick-action button inside the OpenCode sidepanel. |
 
 ### `/leonardo` — Master Media Prompter
 
-Expert-guided AI image and video creation via Leonardo.ai. Supports quick mode for power users and interactive questionnaires for guided creation.
+Expert-guided AI image and video creation via Leonardo.ai. Runs on both Claude Code and Codex. Supports quick mode for power users and interactive questionnaires for guided creation.
 
 | Mode | Usage |
 |------|-------|
@@ -612,7 +690,7 @@ Expert-guided AI image and video creation via Leonardo.ai. Supports quick mode f
 
 The skill includes 5 expert modules: video prompter (7-phase cinematic questionnaire with motion controls and style stacking), image prompter (6-phase composition questionnaire with style presets), model advisor (decision matrices for 30+ models), prompt library (curated templates), and style guide (style stacking, motion controls, camera combos).
 
-**Install:** Copy the skills to your global skills directory:
+**Install:** Copy the skills to your global skills directory (Claude Code example below — Codex uses its own skills location, configured by the Neural Interface installer):
 
 ```bash
 # Skills live at:
@@ -630,9 +708,9 @@ Add this to any project's `CLAUDE.md` to instruct Claude to use memory automatic
 ```markdown
 ## Persistent Memory
 
-You have persistent vector memory via the `SynaBun` MCP server (72 tools).
+You have persistent vector memory via the `SynaBun` MCP server (76 tools).
 Core memory tools: remember, recall, forget, restore, reflect, memories, sync, category.
-Also available: browser automation (39 tools), whiteboard (5), cards (5), discord (8), leonardo AI (4), git, loop, tictactoe.
+Also available: profile (runtime tool-group toggle), browser automation (40 tools incl. browser_cheatsheet), whiteboard (5), cards (5), discord (8), leonardo AI (5), git, loop, tictactoe, image_staged.
 
 ### Auto-Recall (do this automatically)
 - At session start: recall context about the current project
@@ -816,7 +894,7 @@ Synabun/
     │   └── display-settings.json    # MCP response display config
     ├── dist/                        # Compiled JS (generated by npm run build)
     └── src/
-        ├── index.ts                 # Tool registration + schema refresh (72 tools)
+        ├── index.ts                 # Tool registration + schema refresh (76 tools)
         ├── config.ts                # Namespaced env config, project detection
         ├── types.ts                 # MemoryPayload interface (incl. file_checksums)
         ├── http.ts                  # HTTP MCP transport

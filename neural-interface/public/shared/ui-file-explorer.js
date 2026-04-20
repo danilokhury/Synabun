@@ -39,6 +39,8 @@ let _folderColors = {};           // { "/path/to/folder": "#hex" }
 let _customIcons = null;          // { extensions: {}, filenames: {} } from server
 let _planEditMode = false;        // true when editing a plan file from Claude panel
 let _planEditFilePath = null;     // path of the plan file being edited
+let _planEditSource = null;       // panel that opened the plan editor
+let _planEditTabId = null;        // tab id to route plan editor events back
 let _changelogEditMode = false;   // true when editing a changelog draft from Claude panel
 let _changelogEditFilePath = null; // path of the changelog draft being edited
 
@@ -1570,15 +1572,47 @@ function syncGutterScroll() {
   if (gutter && textarea) gutter.scrollTop = textarea.scrollTop;
 }
 
+let _hlMirror = null;
+const _hlMirrorProps = [
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight',
+  'letterSpacing', 'wordSpacing', 'whiteSpace', 'overflowWrap',
+  'wordBreak', 'tabSize', 'paddingTop', 'paddingRight',
+  'paddingBottom', 'paddingLeft', 'boxSizing'
+];
+
+function getLineVisualTop(textarea, pos) {
+  if (!_hlMirror) {
+    _hlMirror = document.createElement('div');
+    _hlMirror.style.position = 'absolute';
+    _hlMirror.style.visibility = 'hidden';
+    _hlMirror.style.pointerEvents = 'none';
+    _hlMirror.style.top = '-9999px';
+    _hlMirror.style.left = '0';
+    _hlMirror.style.height = 'auto';
+    _hlMirror.style.overflow = 'hidden';
+    _hlMirror.style.border = 'none';
+    document.body.appendChild(_hlMirror);
+  }
+  const cs = getComputedStyle(textarea);
+  for (const p of _hlMirrorProps) _hlMirror.style[p] = cs[p];
+  _hlMirror.style.width = textarea.clientWidth + 'px';
+
+  const val = textarea.value;
+  const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+  _hlMirror.textContent = '';
+  _hlMirror.appendChild(document.createTextNode(val.substring(0, lineStart)));
+  const marker = document.createElement('span');
+  marker.textContent = '\u200b';
+  _hlMirror.appendChild(marker);
+  return marker.offsetTop;
+}
+
 function updateLineHighlight() {
   const textarea = $('fe-editor-textarea');
   const hl = $('fe-editor-line-highlight');
   if (!textarea || !hl) return;
-  const val = textarea.value;
-  const pos = textarea.selectionStart;
-  const lineNum = val.substring(0, pos).split('\n').length - 1;
-  const lineH = 20;
-  hl.style.top = `${10 + lineNum * lineH - textarea.scrollTop}px`;
+  const yPos = getLineVisualTop(textarea, textarea.selectionStart);
+  hl.style.top = `${yPos - textarea.scrollTop}px`;
 }
 
 function updateScrollmap() {
@@ -1645,11 +1679,43 @@ function editorRedo(ta) {
   updateHighlight();
 }
 
-async function openFileEditor(filePath) {
+function getEditorSelectionOffset(text, lineNum, columnNum = 1) {
+  const content = String(text || '');
+  const lines = content.split('\n');
+  const targetLine = Math.min(Math.max(1, Number(lineNum) || 1), lines.length || 1);
+  const targetColumn = Math.max(1, Number(columnNum) || 1);
+  let pos = 0;
+  for (let i = 0; i < targetLine - 1; i++) pos += lines[i].length + 1;
+  pos += Math.min(targetColumn - 1, (lines[targetLine - 1] || '').length);
+  return { pos, line: targetLine };
+}
+
+function focusEditorLocation(lineNum, columnNum = 1) {
+  const textarea = $('fe-editor-textarea');
+  if (!textarea || !lineNum || lineNum < 1) return;
+  const { pos, line } = getEditorSelectionOffset(textarea.value, lineNum, columnNum);
+  textarea.focus();
+  textarea.setSelectionRange(pos, pos);
+  const yPos = getLineVisualTop(textarea, pos);
+  const lineHeight = 20;
+  textarea.scrollTop = Math.max(0, yPos - 5 * lineHeight);
+  updateCursorPos();
+  updateLineHighlight();
+  syncGutterScroll();
+}
+
+async function openFileEditor(filePath, opts = {}) {
   try {
+    const normalizedPath = String(filePath || '').replace(/\\/g, '/');
     const res = await fetch(`/api/file-content?path=${encodeURIComponent(filePath)}`);
     const data = await res.json();
     if (!res.ok) {
+      const isOpencodeConfig = normalizedPath.endsWith('/.config/opencode/config.json');
+      const isAllowlistMiss = res.status === 403 && data?.error === 'Path outside registered project roots';
+      if (isOpencodeConfig && isAllowlistMiss) {
+        showToast('Restart Synabun to apply OpenCode config editor support');
+        return;
+      }
       showToast(data.error || 'Cannot open file');
       return;
     }
@@ -1727,7 +1793,12 @@ async function openFileEditor(filePath) {
     updateCursorPos();
     updateEditorDirtyState();
     // Defer so the textarea has rendered its scroll dimensions
-    requestAnimationFrame(() => { updateLineHighlight(); updateScrollmap(); syncHighlightScroll(); });
+    requestAnimationFrame(() => {
+      if (opts?.line) focusEditorLocation(opts.line, opts.column || 1);
+      updateLineHighlight();
+      updateScrollmap();
+      syncHighlightScroll();
+    });
   } catch (err) {
     showToast('Failed to open file');
   }
@@ -1739,7 +1810,7 @@ function closeFileEditor() {
   }
 
   // Emit cancel events before clearing flags so Claude panel can re-enable buttons
-  if (_planEditMode) emit('plan-edit-cancelled');
+  if (_planEditMode) emit('plan-edit-cancelled', { source: _planEditSource, tabId: _planEditTabId });
   if (_changelogEditMode) emit('changelog-edit-cancelled');
 
   _editorOpen = false;
@@ -1750,6 +1821,8 @@ function closeFileEditor() {
   _editorPreviewMode = false;
   _planEditMode = false;
   _planEditFilePath = null;
+  _planEditSource = null;
+  _planEditTabId = null;
   _changelogEditMode = false;
   _changelogEditFilePath = null;
   $('fe-editor-panel')?.querySelector('.fe-plan-banner')?.remove();
@@ -1757,6 +1830,7 @@ function closeFileEditor() {
   _shLines = null;
   _shViewStart = 0;
   _shViewEnd = 0;
+  if (_hlMirror) { _hlMirror.remove(); _hlMirror = null; }
   const hlCode = $('fe-editor-highlight-code');
   if (hlCode) hlCode.innerHTML = '';
 
@@ -1800,10 +1874,14 @@ async function saveFileEditor() {
     if (_planEditMode && _editorFilePath === _planEditFilePath) {
       const savedContent = textarea.value;
       const savedPath = _editorFilePath;
+      const savedSource = _planEditSource;
+      const savedTabId = _planEditTabId;
       _planEditMode = false;
       _planEditFilePath = null;
-      showToast('Plan saved — sending to Claude');
-      emit('plan-saved', { filePath: savedPath, content: savedContent });
+      _planEditSource = null;
+      _planEditTabId = null;
+      showToast('Plan saved');
+      emit('plan-saved', { filePath: savedPath, content: savedContent, source: savedSource, tabId: savedTabId });
       closeFileEditor();
       return;
     }
@@ -1991,11 +2069,9 @@ function selectFindMatch(focusTextarea) {
     textarea.setSelectionRange(m.start, m.end);
   }
   // Scroll match into view
-  const text = textarea.value.substring(0, m.start);
-  const lineNum = text.split('\n').length;
+  const yPos = getLineVisualTop(textarea, m.start);
   const lineHeight = 20;
-  const targetScroll = (lineNum - 5) * lineHeight; // a few lines above
-  textarea.scrollTop = Math.max(0, targetScroll);
+  textarea.scrollTop = Math.max(0, yPos - 5 * lineHeight);
 }
 
 function updateFindCount() {
@@ -2070,19 +2146,7 @@ function closeGoToLine() {
 }
 
 function goToLine(lineNum) {
-  const textarea = $('fe-editor-textarea');
-  if (!textarea || !lineNum || lineNum < 1) return;
-  const lines = textarea.value.split('\n');
-  const target = Math.min(lineNum, lines.length);
-  let pos = 0;
-  for (let i = 0; i < target - 1; i++) pos += lines[i].length + 1;
-  textarea.focus();
-  textarea.setSelectionRange(pos, pos);
-  const lineHeight = 20;
-  textarea.scrollTop = Math.max(0, (target - 5) * lineHeight);
-  updateCursorPos();
-  updateLineHighlight();
-  syncGutterScroll();
+  focusEditorLocation(lineNum, 1);
   closeGoToLine();
 }
 
@@ -2336,9 +2400,11 @@ export function initFileExplorer() {
   });
 
   // ── Plan editor — open plan file from Claude panel for direct editing ──
-  on('open-plan-editor', ({ filePath }) => {
+  on('open-plan-editor', ({ filePath, source = 'claude', tabId = null }) => {
     _planEditMode = true;
     _planEditFilePath = filePath;
+    _planEditSource = source;
+    _planEditTabId = tabId;
     openFileEditor(filePath);
   });
 
@@ -2347,6 +2413,17 @@ export function initFileExplorer() {
     _changelogEditMode = true;
     _changelogEditFilePath = filePath;
     openFileEditor(filePath);
+  });
+
+  on('open-file-editor', ({ filePath, line, column } = {}) => {
+    if (!filePath) return;
+    _planEditMode = false;
+    _planEditFilePath = null;
+    _planEditSource = null;
+    _planEditTabId = null;
+    _changelogEditMode = false;
+    _changelogEditFilePath = null;
+    openFileEditor(filePath, { line, column });
   });
 
   const panel = $('file-explorer-panel');

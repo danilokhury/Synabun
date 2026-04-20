@@ -20,9 +20,11 @@ import {
  * Use the /leonardo skill for the full guided creation experience.
  */
 export function registerLeonardoTools(server: McpServer) {
-  server.tool('leonardo_browser_navigate', browserNavigateDescription, browserNavigateSchema, handleBrowserNavigate);
-  server.tool('leonardo_browser_generate', browserGenerateDescription, browserGenerateSchema, handleBrowserGenerate);
-  server.tool('leonardo_browser_library', browserLibraryDescription, browserLibrarySchema, handleBrowserLibrary);
-  server.tool('leonardo_browser_download', browserDownloadDescription, browserDownloadSchema, handleBrowserDownload);
-  server.tool('leonardo_browser_reference', browserReferenceDescription, browserReferenceSchema, handleBrowserReference);
+  return [
+    server.tool('leonardo_browser_navigate', browserNavigateDescription, browserNavigateSchema, handleBrowserNavigate),
+    server.tool('leonardo_browser_generate', browserGenerateDescription, browserGenerateSchema, handleBrowserGenerate),
+    server.tool('leonardo_browser_library', browserLibraryDescription, browserLibrarySchema, handleBrowserLibrary),
+    server.tool('leonardo_browser_download', browserDownloadDescription, browserDownloadSchema, handleBrowserDownload),
+    server.tool('leonardo_browser_reference', browserReferenceDescription, browserReferenceSchema, handleBrowserReference),
+  ];
 }

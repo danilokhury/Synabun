@@ -589,6 +589,10 @@ export async function createTerminalSession(profile, cols, rows, cwd, opts = {})
   });
 }
 
+export async function fetchProjects() {
+  return jsonFetch('/api/projects');
+}
+
 // ─── Claude Code Sessions (Resume) ─────
 
 export async function fetchClaudeSessions({ project, limit, offset, search, refresh } = {}) {
@@ -599,6 +603,51 @@ export async function fetchClaudeSessions({ project, limit, offset, search, refr
   if (search) params.set('search', search);
   if (refresh) params.set('refresh', 'true');
   return jsonFetch(`/api/claude-code/sessions?${params}`);
+}
+
+// ─── Codex CLI Sessions (Resume) ─────
+
+export async function fetchCodexSessions({ project, limit, offset, search, refresh } = {}) {
+  const params = new URLSearchParams();
+  if (project) params.set('project', project);
+  if (limit) params.set('limit', String(limit));
+  if (offset) params.set('offset', String(offset));
+  if (search) params.set('search', search);
+  if (refresh) params.set('refresh', 'true');
+  return jsonFetch(`/api/codex/sessions?${params}`);
+}
+
+// ─── OpenCode Sessions (Resume) ─────
+
+export async function fetchOpencodeSessions({ project, limit, offset, search } = {}) {
+  const params = new URLSearchParams();
+  if (project) params.set('project', project);
+  if (limit) params.set('limit', String(limit));
+  if (offset) params.set('offset', String(offset));
+  if (search) params.set('search', search);
+  return jsonFetch(`/api/opencode/sessions?${params}`);
+}
+
+// ─── Gemini CLI Sessions (Resume) ─────
+
+export async function fetchGeminiSessions({ project, limit, offset, search } = {}) {
+  const params = new URLSearchParams();
+  if (project) params.set('project', project);
+  if (limit) params.set('limit', String(limit));
+  if (offset) params.set('offset', String(offset));
+  if (search) params.set('search', search);
+  return jsonFetch(`/api/gemini/sessions?${params}`);
+}
+
+// ─── Hybrid session content search (FTS5 + semantic for Claude) ─────
+
+export async function searchSessions({ q, provider, project, limit } = {}) {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (provider) params.set('provider', provider);
+  if (project) params.set('project', project);
+  if (limit) params.set('limit', String(limit));
+  return jsonFetch(`/api/session-search?${params}`);
 }
 
 // ─── Session Indexing ─────
@@ -884,6 +933,37 @@ export async function importLoopTemplates(data) {
   });
 }
 
+// ── Loop Folders ──
+
+export async function fetchLoopFolders() {
+  return jsonFetch('/api/loop/folders');
+}
+
+export async function createLoopFolder(payload) {
+  return jsonFetch('/api/loop/folders', {
+    method: 'POST',
+    ...jsonBody(payload),
+  });
+}
+
+export async function updateLoopFolder(id, payload) {
+  return jsonFetch(`/api/loop/folders/${id}`, {
+    method: 'PUT',
+    ...jsonBody(payload),
+  });
+}
+
+export async function deleteLoopFolder(id) {
+  return jsonFetch(`/api/loop/folders/${id}`, { method: 'DELETE' });
+}
+
+export async function reorderLoopFolders(orderedIds) {
+  return jsonFetch('/api/loop/folders/reorder', {
+    method: 'POST',
+    ...jsonBody({ orderedIds }),
+  });
+}
+
 export async function fetchActiveLoop() {
   return jsonFetch('/api/loop/active');
 }
@@ -895,8 +975,11 @@ export async function launchLoop(params) {
   });
 }
 
-export async function stopLoop() {
-  return jsonFetch('/api/loop/stop', { method: 'POST' });
+export async function stopLoop(terminalSessionId) {
+  return jsonFetch('/api/loop/stop', {
+    method: 'POST',
+    ...jsonBody(terminalSessionId ? { terminalSessionId } : {}),
+  });
 }
 
 export async function fetchLoopHistory(limit = 50) {

@@ -12,8 +12,8 @@
 > SynaBun is maintained solely by its author. We do not accept external code contributions.
 >
 > **Instead, please:**
-> - Found a bug? [Open a bug report](https://github.com/ZaphreBR/synabun/issues/new?template=bug_report.md)
-> - Have a feature idea? [Open a feature request](https://github.com/ZaphreBR/synabun/issues/new?template=feature_request.md)
+> - Found a bug? [Open a bug report](https://github.com/danilokhury/Synabun/issues/new?template=bug_report.md)
+> - Have a feature idea? [Open a feature request](https://github.com/danilokhury/Synabun/issues/new?template=feature_request.md)
 >
 > You are welcome to **fork** this project and modify it for your own use under the [Apache 2.0 license](./LICENSE). If you fork, please use a different name (see [Trademark Notice](./CONTRIBUTING.md#trademark-notice)).
 >

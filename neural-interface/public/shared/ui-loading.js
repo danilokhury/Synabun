@@ -104,10 +104,8 @@ function resetLoadingToConnecting() {
 export async function checkHealth() {
   try {
     const health = await fetchHealth();
-    // Cache projectDir for the server-offline command display
     if (health.projectDir) {
       localStorage.setItem('synabun-project-dir', health.projectDir);
-      updateCmdText(health.projectDir);
     }
     if (!health.ok) {
       const messages = {
@@ -130,11 +128,11 @@ export async function checkHealth() {
 }
 
 /**
- * Update the command text element with the full path to npm start.
+ * Update the command text element with the restart command.
  */
 function updateCmdText(projectDir) {
   const cmdEl = $('loading-cmd-text');
-  if (cmdEl) cmdEl.textContent = `cd ${projectDir} && npm start`;
+  if (cmdEl) cmdEl.textContent = `cd "${projectDir}" ; npm start`;
 }
 
 // ═══════════════════════════════════════════
@@ -167,6 +165,8 @@ async function handleStartAction() {
       if ($label) $label.textContent = t('common.retry');
     }
   } catch (err) {
+    // Server is unreachable — try protocol handler as fallback
+    window.location.href = 'synabun://start';
     if ($status) $status.textContent = t('loading.somethingWrong');
     if (btn) btn.disabled = false;
     if ($label) $label.textContent = t('common.retry');

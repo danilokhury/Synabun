@@ -9,5 +9,7 @@ import {
  * Single tool with action-based dispatch: status, diff, commit, log, branches.
  */
 export function registerGitTools(server: McpServer) {
-  server.tool('git', gitDescription, gitSchema, handleGit);
+  return [
+    server.tool('git', gitDescription, gitSchema, handleGit),
+  ];
 }
