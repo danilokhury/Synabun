@@ -1022,6 +1022,8 @@ function ensurePanel() {
         else session.term?.focus();
         return;
       }
+      // Missed close-×/detach on active tab → no-op (don't trigger redundant switch).
+      if (idx === _activeIdx) return;
       switchToSession(idx);
     }
   });
@@ -1270,14 +1272,20 @@ function detachPanel() {
   // Save docked height before switching
   const dockedH = _panel.getBoundingClientRect().height;
 
-  // Load saved float position or compute default (centered, 60% width)
+  // Load saved float position or compute default (centered in usable area,
+  // so left margin matches right margin — accounts for left sidebars and right sidepanel)
   let pos;
   try { pos = JSON.parse(storage.getItem(KEYS.TERMINAL_FLOAT_POS)); } catch {}
   if (!pos) {
-    const w = Math.min(800, window.innerWidth * 0.6);
+    const cs = getComputedStyle(document.documentElement);
+    const leftEdge = (parseFloat(cs.getPropertyValue('--explorer-width')) || 0)
+                   + (parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0);
+    const rightEdge = window.innerWidth - getRightPanelReservedWidth(cs);
+    const usableW = Math.max(0, rightEdge - leftEdge);
+    const w = Math.min(800, usableW * 0.6);
     const h = Math.min(500, dockedH);
     pos = {
-      left: (window.innerWidth - w) / 2,
+      left: leftEdge + (usableW - w) / 2,
       top: Math.max(48, (window.innerHeight - h) / 2),
       width: w, height: h,
     };
@@ -2751,6 +2759,18 @@ function switchToSession(idx) {
     return;
   }
 
+  // Already active — just ensure focus, skip viewport swap + tab-bar rerender.
+  // Prevents the missed-close-×-switches-same-tab-then-rerenders feedback loop
+  // that makes follow-up clicks on the close/detach icons land on stale DOM.
+  if (idx === _activeIdx) {
+    const s = _sessions[idx];
+    if (s && !_detachedTabs.has(s.id)) {
+      if (s._isBrowser) s._browserCanvas?.focus();
+      else s.term?.focus();
+    }
+    return;
+  }
+
   _activeIdx = idx;
 
   // Close docked file tree on tab switch
@@ -3714,12 +3734,18 @@ function detachTab(idx) {
     <div class="float-resize float-resize-tl" data-resize="nw"></div>
   `;
 
-  // Default position: offset from center based on how many are already detached
+  // Default position: centered in usable area (between left sidebars and right sidepanel)
+  // so left margin matches right margin, offset from center based on how many are already detached
   const offset = _detachedTabs.size * 30;
   const isBrowser = session.profile === 'browser';
-  const w = Math.min(isBrowser ? 960 : 700, window.innerWidth * (isBrowser ? 0.65 : 0.5));
+  const cs = getComputedStyle(document.documentElement);
+  const leftEdge = (parseFloat(cs.getPropertyValue('--explorer-width')) || 0)
+                 + (parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0);
+  const rightEdge = window.innerWidth - getRightPanelReservedWidth(cs);
+  const usableW = Math.max(0, rightEdge - leftEdge);
+  const w = Math.min(isBrowser ? 960 : 700, usableW * (isBrowser ? 0.65 : 0.5));
   const h = Math.min(isBrowser ? 640 : 420, window.innerHeight * (isBrowser ? 0.6 : 0.5));
-  win.style.left = ((window.innerWidth - w) / 2 + offset) + 'px';
+  win.style.left = (leftEdge + (usableW - w) / 2 + offset) + 'px';
   win.style.top = Math.max(48, (window.innerHeight - h) / 2 + offset) + 'px';
   win.style.width = w + 'px';
   win.style.height = h + 'px';
