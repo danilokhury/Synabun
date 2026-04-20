@@ -60,6 +60,10 @@ Never store directly in parent categories.
 - `reflect` requires FULL UUID — use the one returned by `remember`, or `recall` to find existing memories.
 - Sequential MCP calls only — never parallel.
 
+### Browser Sessions
+
+- When starting a browser session, **always create a new tab** — never reuse or navigate an existing tab. Existing tabs may contain the user's active work, unsaved state, or authenticated sessions that must not be disrupted.
+
 ### Plan Mode (MANDATORY)
 
 **CRITICAL**: Plan mode = research and planning ONLY. Do NOT use Edit, Write, or NotebookEdit. Read files, search code, investigate — then present the plan. Do NOT implement until the user approves and you exit plan mode.
@@ -101,38 +105,7 @@ Never use [OtherTool] for remembering, recalling, or reflecting on past work.
 
 If you notice the AI defaulting to another tool's memory features, add the enforcement rule above to your project's `CLAUDE.md`.
 
----
-
 ====================================END SYNBUN
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## What is SynaBun
-
-Persistent vector memory for AI assistants — SQLite + local Transformers.js embeddings (all-MiniLM-L6-v2, 384 dims). No external services, no API keys, no Docker. Installed via `npm install -g synabun` or cloned from GitHub.
-
-## Commands
-
-```bash
-# Start everything (installs deps, builds MCP, launches Neural Interface)
-npm start                                    # runs setup.js
-
-# Neural Interface only (Express server on :3344)
-node neural-interface/server.js
-
-# Build MCP server (required after any TypeScript change)
-cd mcp-server && npm run build               # ALWAYS use npm run build, never npx tsc
-
-# Dev mode (auto-rebuild on change)
-cd mcp-server && npm run dev                 # tsx src/index.ts
-
-# Tests
-cd mcp-server && npm test                    # vitest run
-cd mcp-server && npm run test:watch          # vitest watch mode
-
-# Register MCP with Claude Code
-claude mcp add SynaBun -s user -- node "/path/to/Synabun/mcp-server/run.mjs"
-```
 
 ## Architecture
 
@@ -216,15 +189,6 @@ Hooks                  → fire on Claude Code events → inject context, enforc
 - CLAUDE.md is gitignored (user-local)
 
 ## Persistent Memory
-
-You have persistent vector memory via the `SynaBun` MCP server (72 tools).
-Core memory tools: remember, recall, forget, restore, reflect, memories, sync, category.
-
-### Auto-Recall
-- Session start: recall current project context
-- Topic mentioned: recall what you know
-- Before architecture decisions: recall past decisions
-- Debugging: recall similar bugs
 
 ### Auto-Remember (MANDATORY)
 After ANY task (bug fix, feature, refactor, config change, investigation, architecture decision), MUST `remember` BEFORE responding.
