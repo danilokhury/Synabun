@@ -9689,7 +9689,12 @@ function semverNewer(a, b) {
 }
 
 async function checkToolVersions() {
-  const augPath = getAugmentedPath();
+  // Strip node_modules/.bin entries so the version check reflects the user's
+  // global install rather than any copy bundled with SynaBun itself.
+  const augPath = getAugmentedPath()
+    .split(delimiter)
+    .filter(p => !/[\\/]node_modules[\\/]\.bin[\\/]?$/i.test(p))
+    .join(delimiter);
   const execOpts = { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: augPath } };
 
   const results = {};
@@ -16989,8 +16994,9 @@ app.get('/api/terminal/branches', (req, res) => {
       current = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
     } catch {}
 
-    // All local branches
-    const raw = execSync('git branch --format="%(refname:short)"', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString().trim();
+    // All local branches — spawnSync with argv so the %(...) format isn't mangled by cmd.exe variable expansion on Windows
+    const branchResult = spawnSync('git', ['branch', '--format=%(refname:short)'], { cwd: dir, stdio: 'pipe', timeout: 5000 });
+    const raw = branchResult.status === 0 ? branchResult.stdout.toString().trim() : '';
     const branches = raw ? raw.split('\n').map(b => b.trim()).filter(Boolean) : [];
 
     res.json({ branches, current });
@@ -21279,6 +21285,7 @@ function handleWhiteboardWebSocket(ws) {
             const buf = readFileSync(filePath);
             const ext = extname(filename).toLowerCase();
             const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+            if (_imageRecentlySeen(buf)) return;
             // Save a copy to data/images/ for reliable access (avoids macOS temp/permission issues)
             const localName = `screenshot-${Date.now()}${ext}`;
             const localPath = join(IMAGES_DIR, localName);
@@ -21298,6 +21305,99 @@ function handleWhiteboardWebSocket(ws) {
   } else {
     console.log('[screenshot-watcher] No screenshot directory found for this platform');
   }
+}
+
+// Shared dedup across fs watcher + clipboard watcher — Win+PrtScr fires both.
+const _recentImageHashes = new Map();
+const _IMAGE_DEDUP_TTL = 5000;
+function _imageRecentlySeen(buf) {
+  const hash = createHash('sha256').update(buf).digest('hex');
+  const now = Date.now();
+  for (const [h, ts] of _recentImageHashes) {
+    if (now - ts > _IMAGE_DEDUP_TTL) _recentImageHashes.delete(h);
+  }
+  if (_recentImageHashes.has(hash)) return true;
+  _recentImageHashes.set(hash, now);
+  return false;
+}
+
+// ── Clipboard Image Watcher → auto-paste to whiteboard (Windows only) ──
+// Mac screenshots always go to a file (handled above). On Windows, PrintScreen
+// and Snipping Tool often land only in the clipboard, so we poll it via PS.
+if (process.platform === 'win32') {
+  const _psScript = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "Add-Type -AssemblyName System.Drawing",
+    "if ([System.Windows.Forms.Clipboard]::ContainsImage()) {",
+    "  try {",
+    "    $img = [System.Windows.Forms.Clipboard]::GetImage()",
+    "    $ms = New-Object System.IO.MemoryStream",
+    "    $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)",
+    "    [Convert]::ToBase64String($ms.ToArray())",
+    "  } catch { 'NONE' }",
+    "} else { 'NONE' }",
+  ].join('; ');
+  const _psEncoded = Buffer.from(_psScript, 'utf16le').toString('base64');
+  const _psArgs = ['-Sta', '-NoProfile', '-NonInteractive', '-EncodedCommand', _psEncoded];
+
+  let _clipLastHash = null;
+  let _clipPolling = false;
+  let _clipFailures = 0;
+  let _clipIntervalId = null;
+
+  const _pollClipboard = (seed = false) => {
+    if (_clipPolling) return;
+    _clipPolling = true;
+    let child;
+    try {
+      child = spawn('powershell.exe', _psArgs, { windowsHide: true });
+    } catch (err) {
+      _clipPolling = false;
+      if (_clipIntervalId) clearInterval(_clipIntervalId);
+      console.warn('[clipboard-watcher] Could not spawn PowerShell:', err.message);
+      return;
+    }
+    let stdout = '';
+    const killTimer = setTimeout(() => { try { child.kill(); } catch {} }, 5000);
+    child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
+    child.on('error', () => { /* surface via close */ });
+    child.on('close', (code) => {
+      clearTimeout(killTimer);
+      _clipPolling = false;
+      if (code !== 0 && code !== null) {
+        _clipFailures++;
+        if (_clipFailures >= 5 && _clipIntervalId) {
+          clearInterval(_clipIntervalId);
+          console.warn('[clipboard-watcher] Disabled after repeated PowerShell failures');
+        }
+        return;
+      }
+      _clipFailures = 0;
+      const out = stdout.trim();
+      if (!out || out === 'NONE') return;
+      try {
+        const buf = Buffer.from(out, 'base64');
+        if (buf.length < 100) return;
+        const hash = createHash('sha256').update(buf).digest('hex');
+        if (hash === _clipLastHash) return;
+        _clipLastHash = hash;
+        if (seed) return; // Suppress whatever was already in clipboard at startup
+        if (_imageRecentlySeen(buf)) return;
+        const localName = `screenshot-${Date.now()}.png`;
+        const localPath = join(IMAGES_DIR, localName);
+        try { writeFileSync(localPath, buf); } catch {}
+        const dataUrl = `data:image/png;base64,${out}`;
+        console.log(`[clipboard-watcher] New clipboard image (${(buf.length / 1024).toFixed(0)}KB) → ${localName}`);
+        broadcastToWhiteboard({ type: 'screenshot:auto', dataUrl, filename: localName, localPath });
+      } catch (err) {
+        console.warn('[clipboard-watcher] Failed to process clipboard image:', err.message);
+      }
+    });
+  };
+
+  _pollClipboard(true); // seed: record current clipboard hash without broadcasting
+  _clipIntervalId = setInterval(() => _pollClipboard(false), 1500);
+  console.log('[clipboard-watcher] Windows clipboard image polling enabled');
 }
 
 // ── Cards WebSocket clients (Claude MCP integration) ──
