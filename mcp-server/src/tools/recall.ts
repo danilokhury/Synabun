@@ -9,7 +9,77 @@ import type { MemoryPayload, SessionChunkPayload } from '../types.js';
 import { config, detectProject } from '../config.js';
 import { text } from './response.js';
 
+// ── Recall defaults (must be defined before buildRecallSchema which runs at module level) ──
+
+interface RecallDefaults {
+  limit: number;
+  minImportance: number;
+  minScore: number;
+  maxChars: number;
+  includeSessions: 'auto' | 'always' | 'never';
+  recencyBoost: boolean;
+}
+
+const RECALL_DEFAULTS: RecallDefaults = {
+  limit: 5,
+  minImportance: 0,
+  minScore: 0.3,
+  maxChars: 0,
+  includeSessions: 'auto',
+  recencyBoost: false,
+};
+
+function getRecallDefaults(): RecallDefaults {
+  try {
+    const settingsPath = path.resolve(config.dataDir, 'display-settings.json');
+    const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    const d = data.recallDefaults;
+    if (!d) {
+      return { ...RECALL_DEFAULTS, maxChars: data.recallMaxChars ?? 0 };
+    }
+    return {
+      limit: d.limit ?? RECALL_DEFAULTS.limit,
+      minImportance: d.minImportance ?? RECALL_DEFAULTS.minImportance,
+      minScore: d.minScore ?? RECALL_DEFAULTS.minScore,
+      maxChars: d.maxChars ?? RECALL_DEFAULTS.maxChars,
+      includeSessions: d.includeSessions ?? RECALL_DEFAULTS.includeSessions,
+      recencyBoost: d.recencyBoost ?? RECALL_DEFAULTS.recencyBoost,
+    };
+  } catch {
+    return { ...RECALL_DEFAULTS };
+  }
+}
+
+// ── Schema builder ──
+
 export function buildRecallSchema() {
+  const defaults = getRecallDefaults();
+  const sessionDesc = defaults.includeSessions === 'auto'
+    ? 'Auto-triggers on temporal queries or sparse results.'
+    : `Default: ${defaults.includeSessions}.`;
+  // All configurable fields use .optional() — NOT .default() — so Zod never
+  // injects stale schema defaults.  handleRecall() reads fresh values from
+  // display-settings.json at runtime via getRecallDefaults() and applies them
+  // with the ?? operator when the AI omits a parameter.
+
+  const limitField = z.coerce.number().min(1).max(20).optional()
+    .describe(`Number of results. User configured: ${defaults.limit}. OMIT this parameter to respect the user's setting. Only override if the user explicitly asks for a different count.`);
+
+  const minImpField = defaults.minImportance > 0
+    ? z.coerce.number().min(1).max(10).optional()
+        .describe(`Minimum importance threshold. User configured: ${defaults.minImportance}. OMIT to use configured setting.`)
+    : z.coerce.number().min(1).max(10).optional()
+        .describe('Minimum importance threshold.');
+
+  const minScoreField = z.coerce.number().min(0).max(1).optional()
+    .describe(`Minimum similarity score 0-1. User configured: ${defaults.minScore}. OMIT to use configured setting.`);
+
+  const sessionField = z.boolean().optional()
+    .describe(`Override session chunk search. ${sessionDesc} Set true to force, false to disable.`);
+
+  const recencyField = z.boolean().optional()
+    .describe(`Prioritize recent memories. User configured: ${defaults.recencyBoost ? 'ON' : 'OFF'}. OMIT to use configured setting. Shifts scoring to favor recency over semantic similarity (14-day half-life, 55% recency weight). Ideal for session-start boot queries.`);
+
   return {
     query: z.string().describe('What to search for, in natural language.'),
     category: z
@@ -25,32 +95,11 @@ export function buildRecallSchema() {
     tags: coerceStringArray()
       .optional()
       .describe('Optional: filter by tags (any match).'),
-    limit: z
-      .coerce.number()
-      .min(1)
-      .max(20)
-      .optional()
-      .describe('Number of results (default 5).'),
-    min_importance: z
-      .coerce.number()
-      .min(1)
-      .max(10)
-      .optional()
-      .describe('Minimum importance threshold.'),
-    min_score: z
-      .coerce.number()
-      .min(0)
-      .max(1)
-      .optional()
-      .describe('Minimum similarity score 0-1 (default 0.3).'),
-    include_sessions: z
-      .boolean()
-      .optional()
-      .describe('Override session chunk search. Auto-triggers on temporal queries or sparse results. Set true to force, false to disable.'),
-    recency_boost: z
-      .boolean()
-      .optional()
-      .describe('Prioritize recent memories. Shifts scoring to favor recency over semantic similarity (14-day half-life, 55% recency weight). Ideal for session-start boot queries.'),
+    limit: limitField,
+    min_importance: minImpField,
+    min_score: minScoreField,
+    include_sessions: sessionField,
+    recency_boost: recencyField,
   };
 }
 
@@ -91,46 +140,6 @@ function formatAge(isoDate: string): string {
   const months = Math.floor(days / 30);
   if (months === 1) return '1 month ago';
   return `${months} months ago`;
-}
-
-interface RecallDefaults {
-  limit: number;
-  minImportance: number;
-  minScore: number;
-  maxChars: number;
-  includeSessions: 'auto' | 'always' | 'never';
-  recencyBoost: boolean;
-}
-
-const RECALL_DEFAULTS: RecallDefaults = {
-  limit: 5,
-  minImportance: 0,
-  minScore: 0.3,
-  maxChars: 0,
-  includeSessions: 'auto',
-  recencyBoost: false,
-};
-
-function getRecallDefaults(): RecallDefaults {
-  try {
-    const settingsPath = path.resolve(config.dataDir, 'display-settings.json');
-    const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    const d = data.recallDefaults;
-    if (!d) {
-      // Legacy: only recallMaxChars exists
-      return { ...RECALL_DEFAULTS, maxChars: data.recallMaxChars ?? 0 };
-    }
-    return {
-      limit: d.limit ?? RECALL_DEFAULTS.limit,
-      minImportance: d.minImportance ?? RECALL_DEFAULTS.minImportance,
-      minScore: d.minScore ?? RECALL_DEFAULTS.minScore,
-      maxChars: d.maxChars ?? RECALL_DEFAULTS.maxChars,
-      includeSessions: d.includeSessions ?? RECALL_DEFAULTS.includeSessions,
-      recencyBoost: d.recencyBoost ?? RECALL_DEFAULTS.recencyBoost,
-    };
-  } catch {
-    return { ...RECALL_DEFAULTS };
-  }
 }
 
 export async function handleRecall(args: {
@@ -243,15 +252,13 @@ export async function handleRecall(args: {
   const lines = scored.map((r, i) => {
     const p = r.payload;
     const score = (r.score * 100).toFixed(0);
-    const tagStr = p.tags?.length ? ` [${p.tags.join(', ')}]` : '';
     const sub = p.subcategory ? `/${p.subcategory}` : '';
-    const files = p.related_files?.length
-      ? `\n   Files: ${p.related_files.join(', ')}`
-      : '';
+    const tagStr = p.tags?.length ? p.tags.join(', ') : 'none';
+    const filesStr = p.related_files?.length ? p.related_files.join(', ') : 'none';
     const displayContent = (maxChars > 0 && p.content.length > maxChars)
       ? p.content.substring(0, maxChars) + '...'
       : p.content;
-    return `${i + 1}. [${r.id}] (${score}% match, importance: ${p.importance}, ${formatAge(p.created_at)})\n   ${p.category}${sub} | ${p.project}${tagStr}\n   ${displayContent}${files}`;
+    return `${i + 1}. [${r.id}] (${score}% match, importance: ${p.importance}, ${formatAge(p.created_at)})\n   ${p.category}${sub} | ${p.project} | source: ${p.source}\n   Tags: ${tagStr}\n   ${displayContent}\n   Files: ${filesStr}`;
   });
 
   // Session chunk search — auto-trigger when useful, or explicit override

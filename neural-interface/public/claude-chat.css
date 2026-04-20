@@ -662,6 +662,9 @@
   border-radius: 10px; padding: 14px 16px;
   margin-top: 8px;
 }
+/* Separate consecutive question cards so the previous card's custom-answer
+   input doesn't butt up against the next question's title. */
+.ask-card + .ask-card { margin-top: 22px; }
 .ask-header {
   font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.45);
   letter-spacing: 0.3px; margin-bottom: 6px;

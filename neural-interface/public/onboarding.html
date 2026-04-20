@@ -2154,10 +2154,10 @@ function getMcpSetup(id) {
   const env = { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: dataHome, MEMORY_DATA_DIR: dataHome + '/mcp-data' };
 
   if (id === 'claude') {
-    const envFlags = Object.entries(env).map(([k, v]) => `-e ${k}="${v}"`).join(' ');
+    const envFlags = Object.entries(env).map(([k, v]) => `-e "${k}=${v}"`).join(' ');
     return {
       label: 'Run this in your terminal to register SynaBun globally:',
-      code: `claude mcp add SynaBun -s user ${envFlags} -- node "${mcpPath}"`,
+      code: `claude mcp add SynaBun node "${mcpPath}" -s user ${envFlags}`,
       hint: 'Registers SynaBun globally. Restart Claude Code after running.',
     };
   }

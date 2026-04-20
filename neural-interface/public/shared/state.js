@@ -45,7 +45,7 @@ export const state = {
   linkedSessionIds: new Set(),  // session IDs currently in an active link
 
   // ── Side panel routing ──
-  lastActivePanel: 'claude',   // 'claude' | 'codex' — used by whiteboard "Send to Panel"
+  lastActivePanel: 'claude',   // 'claude' | 'codex' | 'opencode' — used by whiteboard "Send to Panel"
 };
 
 

@@ -25,8 +25,16 @@ import { promisify } from 'util';
 import { createRequire } from 'module';
 import { Readable } from 'stream';
 import { createConnection as netConnect } from 'net';
+import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
+import { Agent as UndiciAgent, fetch as undiciFetch } from 'undici';
 import os from 'node:os';
+
+// Dispatcher for OpenCode's long-polling message:send endpoint.
+// That request blocks until the LLM turn finishes and can pause indefinitely
+// during AskUserQuestion. Undici's default bodyTimeout (300s) would otherwise
+// kill the socket mid-turn with `TypeError: terminated`.
+const _ocpLongPollDispatcher = new UndiciAgent({ bodyTimeout: 0, headersTimeout: 0 });
 let pty = null;
 try { pty = (await import('node-pty')).default; }
 catch (err) { console.warn('[pty] node-pty not available — terminal features disabled:', err.message); }
@@ -36,6 +44,7 @@ import { chromium } from 'playwright';
 import { NodeHtmlMarkdown } from 'node-html-markdown';
 import { VTermBuffer } from './public/shared/vterm-buffer.js';
 import { startIndexing, getIndexingStatus, mirrorExistingChunks } from './lib/session-indexer.js';
+import * as mcpInstaller from './lib/mcp-installer.js';
 import { ensureProjectCategories } from '../hooks/claude-code/shared.mjs';
 import {
   getDb, closeDb, getDbPath, getEmbedding, getEmbeddingBatch, getEmbeddingDims, warmupEmbeddings,
@@ -48,7 +57,11 @@ import {
   getCategories as dbGetCategories, saveCategories as dbSaveCategories,
   countSessionChunks, searchSessionChunks as dbSearchSessionChunks,
   getKvConfig, setKvConfig, EMBEDDING_MODEL,
+  searchSessionFts, listSessionCache, getSessionCacheEntry,
 } from './lib/db.js';
+import {
+  rebuildClaudeCache, rebuildCodexCache, rebuildOpencodeCache,
+} from './lib/session-cache-builder.js';
 
 const execAsync = promisify(exec);
 
@@ -180,6 +193,8 @@ const PORT = process.env.NEURAL_PORT || 3344;
 const EMBEDDING_DIMS = getEmbeddingDims();
 const PACKAGE_ROOT = resolve(__dirname, '..');
 const DATA_HOME = process.env.SYNABUN_DATA_HOME || PACKAGE_ROOT;
+// Ensure in-process MCP server uses the same data directory as spawned agent processes
+if (!process.env.MEMORY_DATA_DIR) process.env.MEMORY_DATA_DIR = resolve(DATA_HOME, 'mcp-data');
 if (!process.env.SYNABUN_DATA_HOME && PACKAGE_ROOT.includes('node_modules')) {
   console.warn('[WARN] SYNABUN_DATA_HOME is not set and PACKAGE_ROOT is inside node_modules (' + PACKAGE_ROOT + ').');
   console.warn('[WARN] On global npm installs, DATA_HOME should point to a user-writable directory (e.g. %APPDATA%/synabun on Windows).');
@@ -2193,8 +2208,30 @@ function getClaudeBin() {
 }
 
 let _codexBinPath = null;
+let _codexBinSource = 'global';
+let _codexSdkInstalled = false;
+try {
+  createRequire(import.meta.url).resolve('@openai/codex-sdk/package.json');
+  _codexSdkInstalled = true;
+} catch {}
+
+function resolveLocalCodexBin() {
+  try {
+    const requireFromHere = createRequire(import.meta.url);
+    return requireFromHere.resolve('@openai/codex/bin/codex.js');
+  } catch {
+    return null;
+  }
+}
+
 function getCodexBin() {
   if (_codexBinPath) return _codexBinPath;
+  const bundledBin = resolveLocalCodexBin();
+  if (bundledBin && existsSync(bundledBin)) {
+    _codexBinPath = bundledBin;
+    _codexBinSource = 'bundled';
+    return _codexBinPath;
+  }
   const envWithPath = { ...process.env, PATH: getAugmentedPath() };
   if (process.platform === 'win32') {
     try { _codexBinPath = execSync('where codex', { encoding: 'utf-8', env: envWithPath }).split('\n')[0].trim(); }
@@ -2207,7 +2244,56 @@ function getCodexBin() {
     console.warn('[codex-skin] Codex CLI not found. Install: npm install -g @openai/codex');
     _codexBinPath = 'codex';
   }
+  _codexBinSource = 'global';
   return _codexBinPath;
+}
+
+const CODEX_CONFIG_KEYS = [
+  'model',
+  'review_model',
+  'model_provider',
+  'approval_policy',
+  'sandbox_mode',
+  'model_context_window',
+  'model_auto_compact_token_limit',
+  'web_search',
+  'model_reasoning_effort',
+  'plan_mode_reasoning_effort',
+  'personality',
+  'service_tier',
+  'features.fast_mode',
+  'features.personality',
+  'features.multi_agent',
+  'features.unified_exec',
+  'features.apps',
+  'tui.status_line',
+  'tui.terminal_title',
+];
+
+function flattenCodexConfigEdits(config, prefix = '') {
+  const edits = [];
+  if (!config || typeof config !== 'object') return edits;
+  for (const [key, value] of Object.entries(config)) {
+    if (value === undefined) continue;
+    const nextKey = prefix ? `${prefix}.${key}` : key;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      edits.push(...flattenCodexConfigEdits(value, nextKey));
+      continue;
+    }
+    edits.push({ key: nextKey, value });
+  }
+  return edits;
+}
+
+function extractCodexConfigValues(result) {
+  const cache = {};
+  if (!result || typeof result !== 'object') return cache;
+  const values = result.values || result.config || {};
+  if (!values || typeof values !== 'object') return cache;
+  for (const [key, value] of Object.entries(values)) {
+    cache[key] = value && typeof value === 'object' && 'value' in value ? value.value : value;
+  }
+  return cache;
 }
 
 // Convert a project path to Claude Code's directory name format.
@@ -2253,14 +2339,21 @@ function buildCodexSandboxPolicy(cwd = PACKAGE_ROOT, sandboxMode) {
   };
 }
 
-const _codexOrphanedProcs = new Map();
+const _codexOrphanedProcs = new Map(); // windowId:sessionId → orphan
+function _codexOrphanKey(wid, sid) { return sid ? `${wid}:${sid}` : wid; }
 const CODEX_ORPHAN_GRACE_MS = 30 * 60 * 1000; // 30 minutes — survive minimize, sleep, and network hiccups
 
 function handleCodexSkinWebSocket(ws) {
   const CODEX_GREETING_MARKER_START = '[SYNABUN_CODEX_GREETING_START]';
   const CODEX_GREETING_MARKER_END = '[SYNABUN_CODEX_GREETING_END]';
   const CODEX_PLAN_MODE_PREFIXES = [
-    '[PLAN MODE] Think step by step, create a detailed plan. Do NOT make code changes.',
+    `[PLAN MODE] Think step by step, create a detailed plan. Do NOT make code changes.
+
+CRITICAL — When you need clarification during planning:
+1. Use request_user_input to ask concise multiple-choice questions.
+2. After calling request_user_input, stop and wait for the user's reply before continuing.
+3. Do NOT ask clarification questions as plain text.
+4. Do NOT make code changes until the plan is approved.`,
   ];
   let child = null;
   let childStdoutBuf = '';
@@ -2269,8 +2362,10 @@ function handleCodexSkinWebSocket(ws) {
   let nextRequestId = 1;
   let activeThreadId = null;
   let activeTurnId = null;
+  let lastTurnLocalImages = []; // persisted image paths for current turn (enriches userMessage notifications)
   let shuttingDown = false;
   let wsWindowId = null;
+  let wsSessionId = null;
   let _codexOrphanBuffer = null;
   const pending = new Map(); // id -> { resolve, reject, timer }
   const pendingServerRequests = new Set();
@@ -2342,14 +2437,89 @@ function handleCodexSkinWebSocket(ws) {
     });
   }
 
+  function getCachedConfigValue(key, fallback = null) {
+    return _cachedConfig[key] ?? fallback;
+  }
+
+  function buildCodexInputItems(prompt, { mentions = [], localImages = [] } = {}) {
+    const input = [];
+    const text = typeof prompt === 'string' ? prompt.trim() : '';
+    if (text) {
+      input.push({
+        type: 'text',
+        text,
+        text_elements: [],
+      });
+    }
+    if (Array.isArray(mentions)) {
+      for (const mention of mentions) {
+        if (!mention || typeof mention !== 'object') continue;
+        const path = typeof mention.path === 'string' ? mention.path.trim() : '';
+        if (!path) continue;
+        input.push({
+          type: 'mention',
+          path,
+          name: typeof mention.name === 'string' ? mention.name.trim() : undefined,
+        });
+      }
+    }
+    if (Array.isArray(localImages)) {
+      for (const filePath of localImages) {
+        if (!filePath || typeof filePath !== 'string') continue;
+        input.push({
+          type: 'localImage',
+          path: filePath,
+          name: basename(filePath),
+        });
+      }
+    }
+    return input;
+  }
+
+  async function readConfigState(keys = CODEX_CONFIG_KEYS) {
+    const result = await request('config/read', { keys }, 10000);
+    Object.assign(_cachedConfig, extractCodexConfigValues(result));
+    return result || {};
+  }
+
+  async function buildStatusSnapshot(cwd = PACKAGE_ROOT) {
+    const config = await readConfigState();
+    const [accountResult, rateLimitResult, requirementsResult, experimentalResult, loadedThreadsResult] = await Promise.allSettled([
+      request('account/read', { refreshToken: false }, 10000),
+      request('account/rateLimits/read', {}, 10000),
+      request('configRequirements/read', {}, 10000),
+      request('experimentalFeature/list', { limit: 100 }, 10000),
+      request('thread/loaded/list', {}, 10000),
+    ]);
+    return {
+      runtime: {
+        codexBin: getCodexBin(),
+        codexBinSource: _codexBinSource,
+        sdkInstalled: _codexSdkInstalled,
+        activeThreadId,
+        activeTurnId,
+        pendingServerRequests: pendingServerRequests.size,
+        cwd,
+      },
+      config,
+      account: accountResult.status === 'fulfilled' ? accountResult.value || {} : { error: accountResult.reason?.message || 'Unavailable' },
+      rateLimits: rateLimitResult.status === 'fulfilled' ? rateLimitResult.value || {} : { error: rateLimitResult.reason?.message || 'Unavailable' },
+      requirements: requirementsResult.status === 'fulfilled' ? requirementsResult.value || {} : { error: requirementsResult.reason?.message || 'Unavailable' },
+      experimentalFeatures: experimentalResult.status === 'fulfilled' ? experimentalResult.value || {} : { error: experimentalResult.reason?.message || 'Unavailable' },
+      loadedThreads: loadedThreadsResult.status === 'fulfilled' ? loadedThreadsResult.value || {} : { error: loadedThreadsResult.reason?.message || 'Unavailable' },
+      writableRoots: buildCodexWritableRoots(cwd),
+      sandboxPolicy: buildCodexSandboxPolicy(cwd, getCachedConfigValue('sandbox_mode')),
+    };
+  }
+
   function getDefaultThreadParams(cwd = PACKAGE_ROOT) {
     const params = {
       cwd,
-      approvalPolicy: _cachedConfig.approval_policy || 'never',
-      sandbox: _cachedConfig.sandbox_mode || 'workspace-write',
-      personality: 'pragmatic',
+      approvalPolicy: getCachedConfigValue('approval_policy', 'never'),
+      sandbox: getCachedConfigValue('sandbox_mode', 'workspace-write'),
+      personality: getCachedConfigValue('personality', 'pragmatic'),
     };
-    if (_cachedConfig.model) params.model = _cachedConfig.model;
+    if (getCachedConfigValue('model')) params.model = getCachedConfigValue('model');
     return params;
   }
 
@@ -2357,10 +2527,43 @@ function handleCodexSkinWebSocket(ws) {
     return {
       threadId,
       cwd,
-      approvalPolicy: _cachedConfig.approval_policy || 'never',
-      sandbox: _cachedConfig.sandbox_mode || 'workspace-write',
-      personality: 'pragmatic',
+      approvalPolicy: getCachedConfigValue('approval_policy', 'never'),
+      sandbox: getCachedConfigValue('sandbox_mode', 'workspace-write'),
+      personality: getCachedConfigValue('personality', 'pragmatic'),
     };
+  }
+
+  function getDefaultReadParams(threadId) {
+    return {
+      threadId,
+      includeTurns: true,
+    };
+  }
+
+  function extractCodexThread(result) {
+    if (!result || typeof result !== 'object') return null;
+    return result.thread && typeof result.thread === 'object' ? result.thread : result;
+  }
+
+  function mergeCodexThreadHistory(readThread, resumedThread) {
+    const base = extractCodexThread(readThread);
+    const live = extractCodexThread(resumedThread);
+    if (!base && !live) return null;
+    if (!base) return live;
+    if (!live) return base;
+    return {
+      ...base,
+      ...live,
+      turns: Array.isArray(base.turns) && base.turns.length
+        ? base.turns
+        : live.turns,
+    };
+  }
+
+  async function readThreadHistory(threadId) {
+    if (!threadId) return null;
+    const readResult = await request('thread/read', getDefaultReadParams(threadId), 15000);
+    return extractCodexThread(readResult);
   }
 
   function tryParseJson(value) {
@@ -2428,8 +2631,29 @@ function handleCodexSkinWebSocket(ws) {
     return parts.slice(index).join('\n\n').trim();
   }
 
+  function stripInjectedCodexSkillPreamble(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    const startTag = '<skill-instructions>';
+    const endTag = '</skill-instructions>';
+    const start = raw.indexOf(startTag);
+    const end = raw.indexOf(endTag);
+    if (start === -1 || end === -1 || end < start) return raw;
+
+    const after = raw.slice(end + endTag.length).trim();
+    const invokeMatch = after.match(/^The user invoked the \/([^\s]+) command(?: with arguments: ([\s\S]*?))?\. Follow the skill instructions above exactly\.$/);
+    if (invokeMatch) {
+      const command = invokeMatch[1];
+      const args = String(invokeMatch[2] || '').trim();
+      return `/${command}${args ? ` ${args}` : ''}`;
+    }
+
+    const before = raw.slice(0, start).trim();
+    return [before, after].filter(Boolean).join('\n\n').trim();
+  }
+
   function sanitizeCodexUserFacingText(text) {
-    return stripInjectedCodexPlanPreamble(stripInjectedCodexGreeting(text));
+    return stripInjectedCodexSkillPreamble(stripInjectedCodexPlanPreamble(stripInjectedCodexGreeting(text)));
   }
 
   function sanitizeCodexThreadSummary(thread) {
@@ -2439,9 +2663,17 @@ function handleCodexSkinWebSocket(ws) {
     return next;
   }
 
+  function normalizeCodexClientItem(item) {
+    if (!item || typeof item !== 'object') return item;
+    if (item.type === 'collabToolCall') {
+      return { ...item, type: 'collabAgentToolCall' };
+    }
+    return item;
+  }
+
   function sanitizeCodexHistoryItem(item) {
     if (!item || typeof item !== 'object') return item;
-    if (item.type !== 'userMessage' || !Array.isArray(item.content)) return item;
+    if (item.type !== 'userMessage' || !Array.isArray(item.content)) return normalizeCodexClientItem(item);
     const content = item.content
       .map((entry) => {
         if (!entry || typeof entry !== 'object') return entry;
@@ -2452,7 +2684,7 @@ function handleCodexSkinWebSocket(ws) {
       })
       .filter(Boolean);
     if (!content.length) return null;
-    return { ...item, content };
+    return normalizeCodexClientItem({ ...item, content });
   }
 
   function sanitizeCodexThreadForClient(thread) {
@@ -2484,6 +2716,18 @@ function handleCodexSkinWebSocket(ws) {
     const next = { ...params };
     if (next.item) next.item = sanitizeCodexHistoryItem(next.item);
     if (next.thread) next.thread = sanitizeCodexThreadSummary(next.thread);
+    // Inject persisted local images into userMessage content so client renders them
+    const hasLocalImage = Array.isArray(next.item?.content)
+      && next.item.content.some((entry) => entry?.type === 'localImage');
+    if (next.item?.type === 'userMessage' && lastTurnLocalImages.length && !hasLocalImage) {
+      const imgItems = lastTurnLocalImages.map((filePath) => ({
+        type: 'localImage',
+        path: filePath,
+        name: basename(filePath),
+      }));
+      next.item = { ...next.item, content: [...imgItems, ...(next.item.content || [])] };
+      lastTurnLocalImages = [];
+    }
     return next;
   }
 
@@ -2712,6 +2956,7 @@ function handleCodexSkinWebSocket(ws) {
             activeTurnId = params.turn.id;
           } else if (method === 'turn/completed') {
             activeTurnId = null;
+            lastTurnLocalImages = [];
           } else if (method === 'thread/closed' && params.threadId && params.threadId === activeThreadId) {
             pendingGreetingThreads.delete(params.threadId);
             activeThreadId = null;
@@ -2790,21 +3035,23 @@ function handleCodexSkinWebSocket(ws) {
       return;
     }
     try {
-      const resumed = await request('thread/resume', getDefaultResumeParams(threadId, cwd));
-      activeThreadId = resumed.thread?.id || threadId;
+      const thread = await readThreadHistory(threadId);
+      const effectiveThreadId = thread?.id || threadId;
+      const historyMode = activeThreadId && effectiveThreadId && activeThreadId === effectiveThreadId
+        ? 'resume'
+        : 'read';
       sendToClient({
         type: 'history',
-        thread: sanitizeCodexThreadForClient(resumed.thread),
-        fallbackItems: loadCodexThreadHistoryFallback(activeThreadId),
+        thread: sanitizeCodexThreadForClient(thread),
+        fallbackItems: loadCodexThreadHistoryFallback(effectiveThreadId),
+        historyMode,
       });
-      sendToClient({ type: 'ready', threadId: activeThreadId });
+      sendToClient({ type: 'ready', threadId: activeThreadId || effectiveThreadId });
     } catch (err) {
       console.warn('[codex-skin] Failed to resume thread:', threadId, err.message);
-      activeThreadId = null;
-      activeTurnId = null;
       sendToClient({ type: 'history', thread: null, resumeFailed: true, threadId });
       sendToClient({ type: 'error', message: `Could not restore saved Codex thread. ${err.message}` });
-      sendToClient({ type: 'ready', threadId: null });
+      sendToClient({ type: 'ready', threadId: activeThreadId || null });
     }
   }
 
@@ -2840,13 +3087,15 @@ function handleCodexSkinWebSocket(ws) {
     await ensureInitialized();
     if (!threadId) throw new Error('No thread provided');
     if (activeTurnId) throw new Error('Codex is already processing a turn');
+    const readThread = await readThreadHistory(threadId).catch(() => null);
     const resumed = await request('thread/resume', getDefaultResumeParams(threadId, cwd));
     activeThreadId = resumed.thread?.id || threadId;
     activeTurnId = null;
     sendToClient({
       type: 'history',
-      thread: sanitizeCodexThreadForClient(resumed.thread),
+      thread: sanitizeCodexThreadForClient(mergeCodexThreadHistory(readThread, resumed.thread)),
       fallbackItems: loadCodexThreadHistoryFallback(activeThreadId),
+      historyMode: 'resume',
     });
     sendToClient({ type: 'ready', threadId: activeThreadId });
     return resumed.thread;
@@ -2861,12 +3110,48 @@ function handleCodexSkinWebSocket(ws) {
     return nextName;
   }
 
-  async function compactThread(threadId = null) {
+  async function compactThread(threadId = null, cwd = PACKAGE_ROOT) {
     await ensureInitialized();
     const targetThreadId = threadId || activeThreadId;
     if (!targetThreadId) throw new Error('No thread provided');
     if (activeTurnId) throw new Error('Codex is already processing a turn');
-    await request('thread/compact/start', { threadId: targetThreadId }, 10000);
+    // Always resume before compacting. The Codex panel can hydrate a thread into
+    // the UI via thread/read without the app-server treating it as the live
+    // active thread, which leads to "Thread not found" on compact.
+    const resumed = await request('thread/resume', getDefaultResumeParams(targetThreadId, cwd));
+    const liveThreadId = resumed.thread?.id || targetThreadId;
+    activeThreadId = liveThreadId;
+    await request('thread/compact/start', { threadId: liveThreadId || targetThreadId }, 10000);
+  }
+
+  function persistCodexLocalImages(images) {
+    if (!Array.isArray(images) || !images.length) return [];
+    if (!existsSync(IMAGES_DIR)) mkdirSync(IMAGES_DIR, { recursive: true });
+
+    const savedPaths = [];
+    for (const [index, image] of images.entries()) {
+      const raw = typeof image === 'string'
+        ? image
+        : (typeof image?.dataUrl === 'string' ? image.dataUrl : '');
+      if (!raw.startsWith('data:image/')) continue;
+
+      const match = raw.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (!match) continue;
+      const [, mime, base64] = match;
+      const ext = mime === 'image/png' ? 'png'
+        : mime === 'image/webp' ? 'webp'
+        : mime === 'image/gif' ? 'gif'
+        : mime === 'image/svg+xml' ? 'svg'
+        : 'jpg';
+      const filePath = join(IMAGES_DIR, `codex-panel-${Date.now()}-${index}-${randomBytes(3).toString('hex')}.${ext}`);
+      try {
+        writeFileSync(filePath, Buffer.from(base64, 'base64'));
+        savedPaths.push(filePath);
+      } catch (err) {
+        console.warn('[codex-skin] Failed to persist local image:', err.message);
+      }
+    }
+    return savedPaths;
   }
 
   async function startTurn(prompt, opts = {}) {
@@ -2880,11 +3165,6 @@ function handleCodexSkinWebSocket(ws) {
     if (threadId && threadId !== activeThreadId) {
       const resumed = await request('thread/resume', getDefaultResumeParams(threadId, cwd));
       activeThreadId = resumed.thread?.id || threadId;
-      sendToClient({
-        type: 'history',
-        thread: sanitizeCodexThreadForClient(resumed.thread),
-        fallbackItems: loadCodexThreadHistoryFallback(activeThreadId),
-      });
       threadId = activeThreadId;
     }
     if (!threadId) {
@@ -2892,30 +3172,32 @@ function handleCodexSkinWebSocket(ws) {
       threadId = startedThread?.id || null;
       startedFreshThread = true;
     }
-    const shouldInjectGreeting = !!threadId && (startedFreshThread || pendingGreetingThreads.has(threadId));
+    const isSlashCommand = /^\/\w/.test(String(prompt || '').trim());
+    const shouldInjectGreeting = !!threadId && !isSlashCommand && (startedFreshThread || pendingGreetingThreads.has(threadId));
     const turnPrompt = shouldInjectGreeting
       ? buildCodexGreetingUserPrompt({ cwd, userPrompt: prompt }) || prompt
       : prompt;
     if (threadId) pendingGreetingThreads.delete(threadId);
+    const input = buildCodexInputItems(turnPrompt, {
+      mentions: Array.isArray(opts.mentions) ? opts.mentions : [],
+      localImages: Array.isArray(opts.localImages) ? opts.localImages : [],
+    });
     const turnParams = {
       threadId,
       cwd,
-      approvalPolicy: _cachedConfig.approval_policy || 'never',
-      personality: 'pragmatic',
-      sandboxPolicy: buildCodexSandboxPolicy(cwd, _cachedConfig.sandbox_mode),
-      input: [
-        {
-          type: 'text',
-          text: turnPrompt,
-          text_elements: [],
-        },
-      ],
+      approvalPolicy: getCachedConfigValue('approval_policy', 'never'),
+      personality: getCachedConfigValue('personality', 'pragmatic'),
+      sandboxPolicy: buildCodexSandboxPolicy(cwd, getCachedConfigValue('sandbox_mode')),
+      input,
     };
-    if (_cachedConfig.web_search) turnParams.search = true;
+    if (Array.isArray(opts.localImages) && opts.localImages.length) {
+      turnParams.local_images = opts.localImages;
+    }
+    if (getCachedConfigValue('web_search')) turnParams.search = true;
     if (opts.model) turnParams.model = opts.model;
-    else if (_cachedConfig.model) turnParams.model = _cachedConfig.model;
+    else if (getCachedConfigValue('model')) turnParams.model = getCachedConfigValue('model');
     if (opts.effort) turnParams.effort = opts.effort;
-    else if (_cachedConfig.model_reasoning_effort) turnParams.effort = _cachedConfig.model_reasoning_effort;
+    else if (getCachedConfigValue('model_reasoning_effort')) turnParams.effort = getCachedConfigValue('model_reasoning_effort');
     const result = await request('turn/start', turnParams, 15000);
     activeTurnId = result.turn?.id || activeTurnId;
     sendToClient({ type: 'turn', turn: result.turn });
@@ -2930,6 +3212,7 @@ function handleCodexSkinWebSocket(ws) {
     }
 
     try {
+      if (msg.sessionId) wsSessionId = String(msg.sessionId);
       if (msg.type === 'heartbeat') {
         return; // no-op — TCP activity from the message itself keeps the WS alive
       }
@@ -2937,10 +3220,11 @@ function handleCodexSkinWebSocket(ws) {
         const wid = msg.windowId;
         if (!wid) { sendToClient({ type: 'reattach_result', ok: false }); return; }
         wsWindowId = wid;
-        const orphan = _codexOrphanedProcs.get(wid);
+        const okey = _codexOrphanKey(wid, wsSessionId);
+        const orphan = _codexOrphanedProcs.get(okey);
         if (!orphan || !orphan.child || orphan.child.killed || orphan.child.exitCode !== null) {
           sendToClient({ type: 'reattach_result', ok: false });
-          if (orphan) { clearTimeout(orphan.killTimer); _codexOrphanedProcs.delete(wid); }
+          if (orphan) { clearTimeout(orphan.killTimer); _codexOrphanedProcs.delete(okey); }
           return;
         }
         clearTimeout(orphan.killTimer);
@@ -2949,17 +3233,18 @@ function handleCodexSkinWebSocket(ws) {
         activeThreadId = orphan.activeThreadId;
         activeTurnId = orphan.activeTurnId;
         nextRequestId = orphan.nextRequestId;
+        Object.assign(_cachedConfig, orphan.cachedConfig || {});
         pendingGreetingThreads.clear();
         for (const threadId of orphan.pendingGreetingThreads || []) pendingGreetingThreads.add(threadId);
         shuttingDown = false;
         for (const [k, v] of orphan.pending) pending.set(k, v);
         for (const id of orphan.pendingServerRequests) pendingServerRequests.add(id);
         orphan.swapWs(ws);
-        console.log(`[codex-skin] Reattached orphan for window ${wid}, buffered ${orphan.buffer.length} events`);
+        console.log(`[codex-skin] Reattached orphan for ${okey}, buffered ${orphan.buffer.length} events`);
         for (const evt of orphan.buffer) {
           if (ws.readyState === 1) ws.send(JSON.stringify(evt));
         }
-        _codexOrphanedProcs.delete(wid);
+        _codexOrphanedProcs.delete(okey);
         sendToClient({
           type: 'reattach_result',
           ok: true,
@@ -3078,10 +3363,19 @@ function handleCodexSkinWebSocket(ws) {
         return;
       }
       if (msg.type === 'query') {
-        const prompt = typeof msg.prompt === 'string' ? msg.prompt.trim() : '';
-        if (!prompt) {
+        let prompt = typeof msg.prompt === 'string' ? msg.prompt.trim() : '';
+        const localImages = persistCodexLocalImages(msg.images);
+        lastTurnLocalImages = localImages.length ? localImages : [];
+        if (!prompt && !localImages.length) {
           sendToClient({ type: 'error', message: 'No prompt provided' });
           return;
+        }
+        if (prompt.startsWith('/')) {
+          const injected = maybeInjectSkillPrompt(prompt);
+          if (injected.skill) {
+            console.log('[codex-skin] Skill injection: /' + injected.command, 'dir:', injected.skill.dir);
+            prompt = injected.prompt;
+          }
         }
         await startTurn(prompt, {
           fresh: !!msg.fresh,
@@ -3089,33 +3383,55 @@ function handleCodexSkinWebSocket(ws) {
           cwd: msg.cwd || PACKAGE_ROOT,
           model: msg.model || null,
           effort: msg.effort || null,
+          localImages,
+          mentions: Array.isArray(msg.mentions) ? msg.mentions : [],
         });
         return;
       }
       if (msg.type === 'account_read') {
         try {
           await ensureInitialized();
-          const result = await request('account/read', {}, 10000);
+          const result = await request('account/read', { refreshToken: !!msg.refreshToken }, 10000);
           sendToClient({ type: 'account_info', requestId: msg.requestId || null, account: result || {} });
         } catch (err) {
           sendToClient({ type: 'account_info', requestId: msg.requestId || null, account: {}, error: err.message });
         }
         return;
       }
+      if (msg.type === 'codex_login') {
+        try {
+          await ensureInitialized();
+          const result = await request('account/login/start', { type: msg.loginType || 'chatgpt' }, 10000);
+          sendToClient({ type: 'account_login_started', requestId: msg.requestId || null, login: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Login failed: ${err.message}` });
+        }
+        return;
+      }
+      if (msg.type === 'account_logout') {
+        try {
+          await ensureInitialized();
+          const result = await request('account/logout', {}, 10000);
+          sendToClient({ type: 'account_logged_out', requestId: msg.requestId || null, result: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Logout failed: ${err.message}` });
+        }
+        return;
+      }
+      if (msg.type === 'rate_limits_read') {
+        try {
+          await ensureInitialized();
+          const result = await request('account/rateLimits/read', {}, 10000);
+          sendToClient({ type: 'rate_limits', requestId: msg.requestId || null, rateLimits: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'rate_limits', requestId: msg.requestId || null, rateLimits: {}, error: err.message });
+        }
+        return;
+      }
       if (msg.type === 'config_read') {
         try {
           await ensureInitialized();
-          const result = await request('config/read', {
-            keys: ['model', 'review_model', 'model_provider', 'approval_policy',
-                   'sandbox_mode', 'model_context_window', 'model_auto_compact_token_limit',
-                   'web_search', 'model_reasoning_effort'],
-          }, 10000);
-          // Cache effective values for thread/turn creation
-          if (result?.values) {
-            for (const [k, v] of Object.entries(result.values)) {
-              if (v && typeof v === 'object' && 'value' in v) _cachedConfig[k] = v.value;
-            }
-          }
+          const result = await readConfigState(Array.isArray(msg.keys) && msg.keys.length ? msg.keys : CODEX_CONFIG_KEYS);
           sendToClient({ type: 'config_data', requestId: msg.requestId || null, config: result || {} });
         } catch (err) {
           sendToClient({ type: 'config_data', requestId: msg.requestId || null, config: {}, error: err.message });
@@ -3125,9 +3441,7 @@ function handleCodexSkinWebSocket(ws) {
       if (msg.type === 'config_write') {
         try {
           await ensureInitialized();
-          const edits = Object.entries(msg.config || {})
-            .filter(([, v]) => v !== undefined)
-            .map(([key, value]) => ({ key, value }));
+          const edits = flattenCodexConfigEdits(msg.config || {}).filter(({ value }) => value !== undefined);
           await request('config/batchWrite', { edits }, 10000);
           // Update cache with written values
           for (const { key, value } of edits) _cachedConfig[key] = value;
@@ -3141,7 +3455,7 @@ function handleCodexSkinWebSocket(ws) {
         try {
           await ensureInitialized();
           const result = await request('mcp/serverStatus/list', {}, 10000);
-          sendToClient({ type: 'mcp_status', requestId: msg.requestId || null, servers: result?.servers || [] });
+          sendToClient({ type: 'mcp_status', requestId: msg.requestId || null, servers: result?.servers || result?.data || [] });
         } catch (err) {
           sendToClient({ type: 'mcp_status', requestId: msg.requestId || null, servers: [], error: err.message });
         }
@@ -3170,34 +3484,216 @@ function handleCodexSkinWebSocket(ws) {
       if (msg.type === 'model_list') {
         try {
           await ensureInitialized();
-          const result = await request('model/list', {}, 10000);
-          sendToClient({ type: 'model_list', requestId: msg.requestId || null, models: result?.models || [] });
+          const result = await request('model/list', { includeHidden: !!msg.includeHidden }, 10000);
+          sendToClient({ type: 'model_list', requestId: msg.requestId || null, models: result?.models || result?.data || [] });
         } catch (err) {
           sendToClient({ type: 'model_list', requestId: msg.requestId || null, models: [], error: err.message });
         }
         return;
       }
+      if (msg.type === 'config_requirements') {
+        try {
+          await ensureInitialized();
+          const result = await request('configRequirements/read', {}, 10000);
+          sendToClient({ type: 'config_requirements', requestId: msg.requestId || null, requirements: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'config_requirements', requestId: msg.requestId || null, requirements: {}, error: err.message });
+        }
+        return;
+      }
+      if (msg.type === 'experimental_features') {
+        try {
+          await ensureInitialized();
+          const result = await request('experimentalFeature/list', { limit: Number.isFinite(msg.limit) ? msg.limit : 100 }, 10000);
+          sendToClient({ type: 'experimental_features', requestId: msg.requestId || null, features: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'experimental_features', requestId: msg.requestId || null, features: {}, error: err.message });
+        }
+        return;
+      }
+      if (msg.type === 'skills_list') {
+        try {
+          await ensureInitialized();
+          const result = await request('skills/list', {
+            cwds: Array.isArray(msg.cwds) && msg.cwds.length ? msg.cwds : [msg.cwd || PACKAGE_ROOT],
+            forceReload: !!msg.forceReload,
+            perCwdExtraUserRoots: msg.perCwdExtraUserRoots || null,
+          }, 10000);
+          sendToClient({ type: 'skills_list', requestId: msg.requestId || null, skills: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'skills_list', requestId: msg.requestId || null, skills: {}, error: err.message });
+        }
+        return;
+      }
+      if (msg.type === 'app_list') {
+        try {
+          await ensureInitialized();
+          const result = await request('app/list', {
+            threadId: msg.threadId || activeThreadId || null,
+            limit: Number.isFinite(msg.limit) ? msg.limit : 100,
+            cursor: msg.cursor || null,
+          }, 10000);
+          sendToClient({ type: 'app_list', requestId: msg.requestId || null, apps: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'app_list', requestId: msg.requestId || null, apps: {}, error: err.message });
+        }
+        return;
+      }
+      if (msg.type === 'plugin_list') {
+        try {
+          await ensureInitialized();
+          const result = await request('plugin/list', { forceRemoteSync: !!msg.forceRemoteSync }, 10000);
+          sendToClient({ type: 'plugin_list', requestId: msg.requestId || null, plugins: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'plugin_list', requestId: msg.requestId || null, plugins: {}, error: err.message });
+        }
+        return;
+      }
+      if (msg.type === 'thread_loaded_list') {
+        try {
+          await ensureInitialized();
+          const result = await request('thread/loaded/list', {}, 10000);
+          sendToClient({ type: 'thread_loaded_list', requestId: msg.requestId || null, threads: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'thread_loaded_list', requestId: msg.requestId || null, threads: {}, error: err.message });
+        }
+        return;
+      }
+      if (msg.type === 'review_start') {
+        try {
+          await ensureInitialized();
+          const result = await request('review/start', {
+            threadId: msg.threadId || activeThreadId,
+            delivery: 'inline',
+            target: msg.target || { type: 'uncommittedChanges' },
+          }, 10000);
+          sendToClient({ type: 'review_started', requestId: msg.requestId || null, review: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Review failed: ${err.message}` });
+        }
+        return;
+      }
+      if (msg.type === 'thread_rollback') {
+        try {
+          await ensureInitialized();
+          const result = await request('thread/rollback', {
+            threadId: msg.threadId || activeThreadId,
+            numTurns: Math.max(1, Number(msg.numTurns) || 1),
+          }, 10000);
+          sendToClient({ type: 'thread_rolled_back', requestId: msg.requestId || null, thread: sanitizeCodexThreadForClient(result?.thread || result || null) });
+        } catch (err) {
+          sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Rollback failed: ${err.message}` });
+        }
+        return;
+      }
+      if (msg.type === 'background_clean') {
+        try {
+          await ensureInitialized();
+          const result = await request('thread/backgroundTerminals/clean', { threadId: msg.threadId || activeThreadId }, 10000);
+          sendToClient({ type: 'background_cleaned', requestId: msg.requestId || null, result: result || {} });
+        } catch (err) {
+          sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Stop background terminals failed: ${err.message}` });
+        }
+        return;
+      }
+      if (msg.type === 'status_snapshot') {
+        try {
+          await ensureInitialized();
+          const snapshot = await buildStatusSnapshot(msg.cwd || PACKAGE_ROOT);
+          sendToClient({ type: 'status_snapshot', requestId: msg.requestId || null, snapshot });
+        } catch (err) {
+          sendToClient({ type: 'status_snapshot', requestId: msg.requestId || null, snapshot: {}, error: err.message });
+        }
+        return;
+      }
+      if (msg.type === 'turn_steer') {
+        try {
+          await ensureInitialized();
+          const prompt = typeof msg.prompt === 'string' ? msg.prompt.trim() : '';
+          const localImages = persistCodexLocalImages(msg.images);
+          const threadId = msg.threadId || activeThreadId;
+          if (!threadId) throw new Error('No active thread to steer');
+          if (!activeTurnId) throw new Error('No active turn to steer');
+          lastTurnLocalImages = localImages.length ? localImages : [];
+          const result = await request('turn/steer', {
+            threadId,
+            expectedTurnId: activeTurnId,
+            input: buildCodexInputItems(prompt, {
+              mentions: Array.isArray(msg.mentions) ? msg.mentions : [],
+              localImages,
+            }),
+            local_images: localImages,
+          }, 10000);
+          sendToClient({ type: 'turn_steered', requestId: msg.requestId || null, turn: result?.turn || null });
+        } catch (err) {
+          sendToClient({ type: 'error', requestId: msg.requestId || null, message: `Steer failed: ${err.message}` });
+        }
+        return;
+      }
       if (msg.type === 'interrupt') {
-        // Client already reset its UI — this is now a no-op kept for backwards compat
-        console.log(`[codex-bridge:${sid}] Interrupt (legacy) — use force_kill instead`);
+        const threadToInterrupt = msg.threadId || activeThreadId;
+        const turnToInterrupt = activeTurnId;
+        let rpcOk = false;
+        if (turnToInterrupt && threadToInterrupt) {
+          try {
+            await ensureInitialized();
+            await request('turn/interrupt', {
+              threadId: threadToInterrupt,
+              turnId: turnToInterrupt,
+            }, 10000);
+            rpcOk = true;
+            sendToClient({ type: 'interrupt_ack', requestId: msg.requestId || null });
+          } catch (err) {
+            console.log(`[codex-skin] turn/interrupt RPC failed: ${err.message} — falling back to force-kill`);
+          }
+        }
+        if (!rpcOk) {
+          // No active turn id OR interrupt RPC failed — force-kill the child so
+          // the run actually stops instead of hanging.
+          if (child) {
+            console.log('[codex-skin] Force-killing Codex app-server (interrupt fallback)');
+            const proc = child;
+            try { proc.kill('SIGTERM'); } catch {}
+            setTimeout(() => {
+              try { if (!proc.killed && proc.exitCode === null) proc.kill('SIGKILL'); } catch {}
+            }, 2000);
+          }
+          // Reject all in-flight RPCs so the client doesn't hang waiting.
+          for (const key of Array.from(pending.keys())) {
+            const entry = clearPendingRequest(key);
+            try { entry?.reject?.(new Error('Aborted by user')); } catch {}
+          }
+          pendingServerRequests.clear();
+          activeTurnId = null;
+          lastTurnLocalImages = [];
+          sendToClient({ type: 'notify', method: 'turn/completed', params: { turn: { id: null, error: { message: 'Force-stopped by user' } } } });
+          sendToClient({ type: 'interrupt_ack', requestId: msg.requestId || null });
+        }
         return;
       }
       if (msg.type === 'force_kill') {
         if (child) {
-          console.log(`[codex-bridge:${sid}] Force-killing Codex process`);
+          console.log('[codex-skin] Force-killing Codex app-server process');
           const proc = child;
-          proc.kill('SIGTERM');
+          try { proc.kill('SIGTERM'); } catch {}
           // Escalate to SIGKILL after 2s if process survives SIGTERM
           setTimeout(() => {
             try { if (!proc.killed && proc.exitCode === null) proc.kill('SIGKILL'); } catch {}
           }, 2000);
+          // Reject all in-flight RPCs so the client doesn't hang waiting.
+          for (const key of Array.from(pending.keys())) {
+            const entry = clearPendingRequest(key);
+            try { entry?.reject?.(new Error('Force-stopped by user')); } catch {}
+          }
+          pendingServerRequests.clear();
           activeTurnId = null;
+          lastTurnLocalImages = [];
           sendToClient({ type: 'notify', method: 'turn/completed', params: { turn: { id: null, error: { message: 'Force-stopped by user' } } } });
         }
         return;
       }
       if (msg.type === 'compact') {
-        await compactThread(msg.threadId || null);
+        await compactThread(msg.threadId || null, msg.cwd || PACKAGE_ROOT);
         return;
       }
       if (msg.type === 'reset_thread') {
@@ -3234,7 +3730,8 @@ function handleCodexSkinWebSocket(ws) {
 
   ws.on('close', () => {
     if (child && child.exitCode == null && !child.killed && wsWindowId) {
-      console.log(`[codex-skin] WS closed — orphaning process pid ${child.pid} for window ${wsWindowId} (${CODEX_ORPHAN_GRACE_MS / 1000}s grace)`);
+      const okey = _codexOrphanKey(wsWindowId, wsSessionId);
+      console.log(`[codex-skin] WS closed — orphaning process pid ${child.pid} for ${okey} (${CODEX_ORPHAN_GRACE_MS / 1000}s grace)`);
       _codexOrphanBuffer = [];
       const orphan = {
         child,
@@ -3243,6 +3740,7 @@ function handleCodexSkinWebSocket(ws) {
         activeTurnId,
         nextRequestId,
         pendingGreetingThreads: new Set(pendingGreetingThreads),
+        cachedConfig: { ..._cachedConfig },
         pending: new Map(pending),
         pendingServerRequests: new Set(pendingServerRequests),
         buffer: _codexOrphanBuffer,
@@ -3257,12 +3755,12 @@ function handleCodexSkinWebSocket(ws) {
           }
         },
         killTimer: setTimeout(() => {
-          console.log(`[codex-skin] Orphan grace expired for window ${wsWindowId} — killing pid ${orphan.child?.pid}`);
+          console.log(`[codex-skin] Orphan grace expired for ${okey} — killing pid ${orphan.child?.pid}`);
           orphan.kill();
-          _codexOrphanedProcs.delete(wsWindowId);
+          _codexOrphanedProcs.delete(okey);
         }, CODEX_ORPHAN_GRACE_MS),
       };
-      _codexOrphanedProcs.set(wsWindowId, orphan);
+      _codexOrphanedProcs.set(okey, orphan);
       return;
     }
     shuttingDown = true;
@@ -3285,8 +3783,242 @@ let _ocpReady = false;
 let _ocpVersion = null;
 let _ocpSseAbort = null;      // AbortController for SSE relay
 const _ocpWsClients = new Set(); // all connected /ws/opencode-skin clients
+const OCP_MANAGED_PID_PATH = resolve(DATA_HOME, 'data', 'opencode-managed.pid');
+let _ocpBootReconcileTried = false;
+let _ocpLastBootAt = 0;           // Date.now() when serve process last became ready
+let _ocpAuthReconciling = false;  // prevent concurrent reconciliation
 
+// ── Verbose trace logging (toggle with OCP_VERBOSE=0 to disable) ──
+const OCP_VERBOSE = process.env.OCP_VERBOSE !== '0';
+let _ocpTraceSeq = 0;
+function _ocpNow() { return Number(process.hrtime.bigint() / 1_000_000n); }
+function _ocpMs(start) { return _ocpNow() - start; }
+function _ocpTraceId() { return `t${Date.now().toString(36)}-${(++_ocpTraceSeq).toString(36)}`; }
+function ocpTrace(tag, fields = {}) {
+  if (!OCP_VERBOSE) return;
+  const parts = [];
+  for (const k of Object.keys(fields)) {
+    const v = fields[k];
+    if (v === undefined || v === null) continue;
+    const s = typeof v === 'string' ? v : JSON.stringify(v);
+    parts.push(`${k}=${s}`);
+  }
+  console.log(`[ocp-trace] ${tag}${parts.length ? ' ' + parts.join(' ') : ''}`);
+}
+function _ocpByteLen(text) {
+  if (text == null) return 0;
+  try { return Buffer.byteLength(typeof text === 'string' ? text : JSON.stringify(text), 'utf8'); } catch { return 0; }
+}
+
+function getOpencodeAuthPath() {
+  const xdgDataHome = process.env.XDG_DATA_HOME;
+  if (xdgDataHome) return join(xdgDataHome, 'opencode', 'auth.json');
+  const homeDir = os.homedir();
+  const localSharePath = join(homeDir, '.local', 'share', 'opencode', 'auth.json');
+  if (process.platform !== 'win32' || existsSync(localSharePath)) return localSharePath;
+  return join(homeDir, '.opencode', 'auth.json');
+}
+
+function getOpencodeConfigPath() {
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME;
+  const configDir = xdgConfigHome
+    ? join(xdgConfigHome, 'opencode')
+    : join(os.homedir(), '.config', 'opencode');
+  return join(configDir, 'config.json');
+}
+
+function ensureOpencodeConfigFile() {
+  const configPath = resolve(getOpencodeConfigPath());
+  const configDir = dirname(configPath);
+  if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
+  if (!existsSync(configPath)) writeFileSync(configPath, '{}\n', 'utf8');
+  return configPath;
+}
+
+// Persist an MCP server entry to ~/.config/opencode/config.json so it survives restarts.
+// config.json uses type:"local" with command as an array and "environment" (not "env").
+// The runtime POST /mcp API uses type:"stdio" with command string + args array — we translate.
+function persistMcpToOpencodeConfig(name, mcpConfig) {
+  const configPath = getOpencodeConfigPath();
+  let cfg = {};
+  try {
+    if (existsSync(configPath)) cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+  } catch {}
+  if (!cfg.mcp) cfg.mcp = {};
+  // Translate runtime API format → config.json format
+  const { type, command, args, env, environment, ...rest } = mcpConfig;
+  const entry = { type: 'local', ...rest };
+  // command: string + args → array
+  if (command) {
+    entry.command = Array.isArray(command) ? command : [command, ...(args || [])];
+  }
+  // env → environment
+  const envObj = environment || env;
+  if (envObj && Object.keys(envObj).length > 0) entry.environment = envObj;
+  cfg.mcp[name] = entry;
+  const configDir = join(configPath, '..');
+  if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
+  writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  console.log(`[opencode] Persisted MCP server "${name}" to ${configPath}`);
+}
+
+// OpenCode reads env from config.json once per `opencode run`. The MCP child
+// reads SYNABUN_PROFILE before falling back to active-profile.json, so this
+// must stay in sync with whichever profile the user picked.
+function syncProfileToOpencode(profile) {
+  try {
+    const configPath = getOpencodeConfigPath();
+    if (!existsSync(configPath)) return false;
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+    if (!cfg?.mcp?.SynaBun) return false;
+    if (!cfg.mcp.SynaBun.environment) cfg.mcp.SynaBun.environment = {};
+    if (cfg.mcp.SynaBun.environment.SYNABUN_PROFILE === profile) return false;
+    cfg.mcp.SynaBun.environment.SYNABUN_PROFILE = profile;
+    writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    console.log(`[mcp/profile] OpenCode SYNABUN_PROFILE → ${profile}`);
+    return true;
+  } catch (err) {
+    console.warn(`[mcp/profile] OpenCode sync failed: ${err.message}`);
+    return false;
+  }
+}
+
+function readOpencodeManagedPid() {
+  try {
+    const pid = Number(readFileSync(OCP_MANAGED_PID_PATH, 'utf8').trim());
+    if (Number.isFinite(pid) && pid > 0) return pid;
+  } catch {}
+  return null;
+}
+
+function writeOpencodeManagedPid(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  try {
+    mkdirSync(dirname(OCP_MANAGED_PID_PATH), { recursive: true });
+    writeFileSync(OCP_MANAGED_PID_PATH, `${pid}\n`, 'utf8');
+  } catch {}
+}
+
+function clearOpencodeManagedPid() {
+  try { if (existsSync(OCP_MANAGED_PID_PATH)) unlinkSync(OCP_MANAGED_PID_PATH); } catch {}
+}
+
+function parseOpencodeLogTimestamp(fileName) {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})(\d{2})(\d{2})\.log$/.exec(String(fileName || ''));
+  if (!match) return 0;
+  const [, day, hh, mm, ss] = match;
+  const parsed = Date.parse(`${day}T${hh}:${mm}:${ss}Z`);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getLatestOpencodeLogStartedAt() {
+  try {
+    const logDir = join(dirname(getOpencodeAuthPath()), 'log');
+    const latest = readdirSync(logDir)
+      .filter((name) => name.endsWith('.log'))
+      .sort()
+      .at(-1);
+    return parseOpencodeLogTimestamp(latest);
+  } catch {}
+  return 0;
+}
+
+function hasStoredOpencodeAuth() {
+  try {
+    const authPath = getOpencodeAuthPath();
+    if (!existsSync(authPath)) return false;
+    const auth = JSON.parse(readFileSync(authPath, 'utf8'));
+    return Object.keys(auth || {}).length > 0;
+  } catch {}
+  return false;
+}
+
+function shouldReconcileOpencodeForStoredAuth() {
+  if (!hasStoredOpencodeAuth()) return false;
+  try {
+    const authStartedAt = existsSync(getOpencodeAuthPath()) ? statSync(getOpencodeAuthPath()).mtimeMs : 0;
+    const serverStartedAt = getLatestOpencodeLogStartedAt();
+    return authStartedAt > 0 && serverStartedAt > 0 && authStartedAt > serverStartedAt + 1000;
+  } catch {}
+  return false;
+}
+
+// Runtime auth reconciliation: restart serve if auth.json changed since last boot
+async function reconcileAuthIfStale() {
+  if (_ocpAuthReconciling || !_ocpReady || !_ocpLastBootAt) return false;
+  try {
+    const authPath = getOpencodeAuthPath();
+    if (!existsSync(authPath)) return false;
+    const authMtime = statSync(authPath).mtimeMs;
+    if (authMtime <= _ocpLastBootAt) return false;
+    _ocpAuthReconciling = true;
+    console.log('[opencode] auth.json modified after last boot — restarting to pick up new credentials');
+    await takeoverOpencodeServer();
+    broadcastToOpencodeClients({ type: 'providers:changed' });
+    console.log('[opencode] Restart complete after auth reconciliation');
+    return true;
+  } catch (err) {
+    console.error('[opencode] Auth reconciliation failed:', err.message);
+    return false;
+  } finally {
+    _ocpAuthReconciling = false;
+  }
+}
+
+function listPortListenerPids(port) {
+  if (!port || process.platform === 'win32') return [];
+  try {
+    const out = execSync(`lsof -nP -tiTCP:${port} -sTCP:LISTEN`, { encoding: 'utf8' }).trim();
+    return out.split('\n').filter(Boolean).map((pid) => Number(pid)).filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+  } catch {}
+  return [];
+}
+
+function listOpencodeServePids() {
+  if (process.platform === 'win32') return [];
+  try {
+    const out = execSync('pgrep -f "opencode.*serve"', { encoding: 'utf8' }).trim();
+    return out.split('\n').filter(Boolean).map((pid) => Number(pid)).filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+  } catch {}
+  return [];
+}
+
+function signalPids(pids, signal) {
+  const targeted = [];
+  for (const pid of pids) {
+    try {
+      process.kill(pid, signal);
+      targeted.push(pid);
+    } catch {}
+  }
+  return targeted;
+}
+
+async function waitForOpencodeShutdown(timeoutMs = 6000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const listenerPids = listPortListenerPids(_ocpPort);
+    if (!listenerPids.length) {
+      const healthy = await checkOpencodeHealth();
+      if (!healthy) return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
+let _ocpSseEventSeq = 0;
 function broadcastToOpencodeClients(data) {
+  if (OCP_VERBOSE) {
+    const isEvent = data?.type === 'event';
+    ocpTrace('ws:broadcast', {
+      type: data?.type,
+      eventType: isEvent ? data?.eventType : undefined,
+      seq: isEvent ? ++_ocpSseEventSeq : undefined,
+      clients: _ocpWsClients.size,
+      bytes: _ocpByteLen(data),
+    });
+  }
   const msg = JSON.stringify(data);
   for (const c of _ocpWsClients) {
     if (c.readyState === 1) c.send(msg);
@@ -3305,6 +4037,22 @@ async function checkOpencodeHealth() {
   return false;
 }
 
+async function reconcileOpencodeServerIfStale() {
+  const listenerPids = listPortListenerPids(_ocpPort);
+  const managedPid = readOpencodeManagedPid();
+  const shouldReconcile = !_ocpBootReconcileTried && (
+    (managedPid && listenerPids.includes(managedPid)) ||
+    shouldReconcileOpencodeForStoredAuth()
+  );
+  if (!shouldReconcile) return false;
+  _ocpBootReconcileTried = true;
+  _ocpReady = false;
+  _ocpStarting = false;
+  console.log(`[opencode] Existing server on port ${_ocpPort} is stale for current auth; taking over`);
+  await takeoverOpencodeServer();
+  return true;
+}
+
 async function ensureOpencodeServer() {
   if (_ocpReady) return true;
   if (_ocpStarting) {
@@ -3318,8 +4066,11 @@ async function ensureOpencodeServer() {
 
   // 1. Check if already running externally
   if (await checkOpencodeHealth()) {
+    if (await reconcileOpencodeServerIfStale()) return true;
     _ocpReady = true;
     _ocpStarting = false;
+    _ocpBootReconcileTried = true;
+    _ocpLastBootAt = Date.now();
     startOpencodeSSERelay();
     broadcastToOpencodeClients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: false });
     console.log(`[opencode] External server detected on port ${_ocpPort} (v${_ocpVersion || '?'})`);
@@ -3331,11 +4082,14 @@ async function ensureOpencodeServer() {
     const config = loadCliConfig();
     const cmd = config.opencode?.command || 'opencode';
     console.log(`[opencode] Spawning: ${cmd} serve --port ${_ocpPort}`);
-    _ocpProc = spawn(cmd, ['serve', '--port', String(_ocpPort)], {
+    const shellArgs = IS_WIN
+      ? ['/d', '/s', '/c', `${cmd} serve --port ${_ocpPort}`]
+      : ['-lc', `exec ${cmd} serve --port ${_ocpPort}`];
+    _ocpProc = spawn(DEFAULT_SHELL, shellArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...process.env, FORCE_COLOR: '0', OPENCODE_DISABLE_CLAUDE_CODE: '1' },
       detached: false,
-      shell: true,
+      shell: false,
     });
     _ocpProc.stdout?.on('data', (d) => console.log(`[opencode:stdout] ${d.toString().trim()}`));
     _ocpProc.stderr?.on('data', (d) => console.log(`[opencode:stderr] ${d.toString().trim()}`));
@@ -3343,6 +4097,7 @@ async function ensureOpencodeServer() {
       console.log(`[opencode] Process exited with code ${code}`);
       _ocpProc = null;
       _ocpReady = false;
+      clearOpencodeManagedPid();
       stopOpencodeSSERelay();
       broadcastToOpencodeClients({ type: 'server:status', status: 'offline', port: _ocpPort });
     });
@@ -3358,6 +4113,9 @@ async function ensureOpencodeServer() {
     if (await checkOpencodeHealth()) {
       _ocpReady = true;
       _ocpStarting = false;
+      _ocpBootReconcileTried = true;
+      _ocpLastBootAt = Date.now();
+      writeOpencodeManagedPid(listPortListenerPids(_ocpPort)[0] || _ocpProc?.pid);
       startOpencodeSSERelay();
       broadcastToOpencodeClients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: true });
       console.log(`[opencode] Server ready on port ${_ocpPort} (v${_ocpVersion || '?'})`);
@@ -3373,18 +4131,69 @@ async function ensureOpencodeServer() {
 
 function stopOpencodeServer() {
   stopOpencodeSSERelay();
+  const managedPid = readOpencodeManagedPid();
+  const procPid = _ocpProc?.pid || null;
   if (_ocpProc && !_ocpProc.killed) {
     try { _ocpProc.kill(); } catch {}
     _ocpProc = null;
   }
+  if (managedPid && managedPid !== procPid) {
+    signalPids([managedPid], 'SIGTERM');
+  }
+  clearOpencodeManagedPid();
   _ocpReady = false;
   _ocpStarting = false;
   broadcastToOpencodeClients({ type: 'server:status', status: 'offline', port: _ocpPort });
+  // Stop Ollama if we configured it this session
+  try { stopOllama(); } catch {}
+}
+
+// Takeover: kill external server (or restart managed), then spawn managed
+async function takeoverOpencodeServer() {
+  if (_ocpProc) {
+    // Already managed — simple restart
+    stopOpencodeServer();
+    await new Promise(r => setTimeout(r, 1000));
+    return ensureOpencodeServer();
+  }
+  // External server — terminate the actual port listener so we can take over with
+  // a managed process that will boot from the updated auth/config files.
+  stopOpencodeSSERelay();
+  _ocpReady = false;
+  _ocpStarting = false;
+  try {
+    await ocpProxy('POST', '/global/dispose');
+  } catch {}
+  const initialPortPids = listPortListenerPids(_ocpPort);
+  const commandPids = listOpencodeServePids();
+  const candidatePids = [...new Set([...initialPortPids, ...commandPids])];
+  if (candidatePids.length) {
+    const terminated = signalPids(candidatePids, 'SIGTERM');
+    console.log(`[opencode] Sent SIGTERM to external server PIDs: ${terminated.join(', ') || 'none'}`);
+  } else {
+    console.log(`[opencode] No external listener PIDs found on port ${_ocpPort}; waiting for shutdown`);
+  }
+  if (!(await waitForOpencodeShutdown())) {
+    const stubbornPids = [...new Set([...listPortListenerPids(_ocpPort), ...listOpencodeServePids()])];
+    if (stubbornPids.length) {
+      const killed = signalPids(stubbornPids, 'SIGKILL');
+      console.log(`[opencode] Sent SIGKILL to stubborn external PIDs: ${killed.join(', ') || 'none'}`);
+    }
+    await waitForOpencodeShutdown(4000);
+  }
+  if (await checkOpencodeHealth()) {
+    throw new Error(`External OpenCode server on port ${_ocpPort} survived takeover`);
+  }
+  await new Promise(r => setTimeout(r, 500));
+  return ensureOpencodeServer();
 }
 
 // ── SSE Relay: single persistent connection to opencode /global/event ──
 
 let _ocpSseReader = null;
+let _ocpSsePromise = null;
+let _ocpDb = null;
+let _ocpDbPath = null;
 
 function startOpencodeSSERelay() {
   if (_ocpSseAbort) return;
@@ -3392,7 +4201,7 @@ function startOpencodeSSERelay() {
   const url = `${_ocpBaseUrl()}/global/event`;
   console.log(`[opencode] Starting SSE relay from ${url}`);
 
-  (async () => {
+  _ocpSsePromise = (async () => {
     try {
       const resp = await fetch(url, {
         signal: _ocpSseAbort.signal,
@@ -3423,7 +4232,11 @@ function startOpencodeSSERelay() {
             const raw = dataLines.join('\n');
             try {
               const parsed = JSON.parse(raw);
-              broadcastToOpencodeClients({ type: 'event', eventType, event: parsed });
+              // Unwrap GlobalEvent envelope: { directory, payload: { type, properties } }
+              const payload = parsed?.payload;
+              const evType = payload?.type || eventType;
+              const evData = payload?.properties || parsed;
+              broadcastToOpencodeClients({ type: 'event', eventType: evType, event: evData });
             } catch {
               broadcastToOpencodeClients({ type: 'event', eventType, event: raw });
             }
@@ -3438,33 +4251,207 @@ function startOpencodeSSERelay() {
       }
     } finally {
       _ocpSseReader = null;
+      _ocpSsePromise = null;
       if (_ocpReady && _ocpSseAbort) {
         _ocpSseAbort = null;
         setTimeout(() => { if (_ocpReady) startOpencodeSSERelay(); }, 2000);
       }
     }
   })();
+  // Suppress unhandled rejection when abort() races with the IIFE's catch
+  _ocpSsePromise.catch(() => {});
 }
 
 function stopOpencodeSSERelay() {
-  if (_ocpSseAbort) { _ocpSseAbort.abort(); _ocpSseAbort = null; }
-  if (_ocpSseReader) { try { _ocpSseReader.cancel(); } catch {} _ocpSseReader = null; }
+  const ac = _ocpSseAbort;
+  const reader = _ocpSseReader;
+  _ocpSseAbort = null;
+  _ocpSseReader = null;
+  _ocpSsePromise = null;
+  if (reader) { try { reader.cancel(); } catch {} }
+  if (ac) { try { ac.abort(); } catch {} }
+}
+
+function getOpencodeDbPath() {
+  const dataHome = process.env.XDG_DATA_HOME || resolve(os.homedir(), '.local', 'share');
+  return resolve(dataHome, 'opencode', 'opencode.db');
+}
+
+function getOpencodeDb() {
+  const dbPath = getOpencodeDbPath();
+  if (!existsSync(dbPath)) return null;
+  if (!_ocpDb || _ocpDbPath !== dbPath) {
+    try { _ocpDb?.close?.(); } catch {}
+    _ocpDb = new DatabaseSync(dbPath);
+    _ocpDbPath = dbPath;
+    try { _ocpDb.exec('PRAGMA busy_timeout = 1000'); } catch {}
+  }
+  return _ocpDb;
+}
+
+function parseOpencodeJson(value) {
+  if (!value || typeof value !== 'string') return (value && typeof value === 'object') ? value : null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function opencodeMessagesNeedFallback(payload) {
+  const messages = Array.isArray(payload) ? payload : (Array.isArray(payload?.messages) ? payload.messages : null);
+  if (!messages?.length) return true;
+  return messages.every((msg) => {
+    const parsed = parseOpencodeJson(msg?.data);
+    const hasRenderableContent = msg?.content != null
+      || msg?.text != null
+      || (Array.isArray(msg?.parts) && msg.parts.length > 0)
+      || parsed?.content != null
+      || parsed?.text != null
+      || (Array.isArray(parsed?.parts) && parsed.parts.length > 0);
+    return !hasRenderableContent;
+  });
+}
+
+function loadOpencodeMessagesFallback(sessionId) {
+  if (!sessionId) return null;
+  const db = getOpencodeDb();
+  if (!db) return null;
+  const _t0 = _ocpNow();
+  try {
+    const rows = db.prepare(`
+      SELECT
+        m.id AS message_id,
+        m.session_id AS session_id,
+        m.time_created AS message_created,
+        m.time_updated AS message_updated,
+        m.data AS message_data,
+        p.id AS part_id,
+        p.time_created AS part_created,
+        p.time_updated AS part_updated,
+        p.data AS part_data
+      FROM message m
+      LEFT JOIN part p ON p.message_id = m.id
+      WHERE m.session_id = ?
+      ORDER BY m.time_created ASC, p.time_created ASC
+    `).all(sessionId);
+
+    if (!rows.length) return [];
+
+    const messages = [];
+    const byId = new Map();
+    for (const row of rows) {
+      let message = byId.get(row.message_id);
+      if (!message) {
+        const payload = parseOpencodeJson(row.message_data) || {};
+        message = {
+          id: row.message_id,
+          sessionId: row.session_id,
+          timeCreated: row.message_created,
+          timeUpdated: row.message_updated,
+          ...payload,
+          role: payload.role || null,
+          parts: [],
+          content: payload.content ?? payload.parts ?? payload.text ?? null,
+        };
+        byId.set(row.message_id, message);
+        messages.push(message);
+      }
+
+      if (row.part_id) {
+        const partPayload = parseOpencodeJson(row.part_data) || {};
+        message.parts.push({
+          id: row.part_id,
+          timeCreated: row.part_created,
+          timeUpdated: row.part_updated,
+          ...partPayload,
+        });
+      }
+    }
+
+    for (const message of messages) {
+      if (message.parts.length > 0) {
+        message.content = message.parts;
+      }
+    }
+
+    ocpTrace('db:messages-fallback', { sid: sessionId, rows: rows.length, messages: messages.length, ms: _ocpMs(_t0) });
+    return messages;
+  } catch (err) {
+    ocpTrace('db:messages-fallback-err', { sid: sessionId, ms: _ocpMs(_t0), msg: err.message });
+    console.warn('[opencode] Failed to read message fallback from SQLite:', err.message);
+    return null;
+  }
+}
+
+function enrichOpencodeSessions(payload) {
+  const sessions = Array.isArray(payload) ? payload : (Array.isArray(payload?.sessions) ? payload.sessions : null);
+  if (!sessions?.length) return payload;
+
+  const db = getOpencodeDb();
+  if (!db) return payload;
+
+  const _t0 = _ocpNow();
+  try {
+    const sessionIds = sessions.map((session) => session?.id || session?.sessionID).filter(Boolean);
+    if (!sessionIds.length) return payload;
+
+    const placeholders = sessionIds.map(() => '?').join(', ');
+    const rows = db.prepare(`
+      SELECT session_id, COUNT(*) AS message_count
+      FROM message
+      WHERE session_id IN (${placeholders})
+      GROUP BY session_id
+    `).all(...sessionIds);
+    const counts = new Map(rows.map((row) => [row.session_id, row.message_count]));
+
+    const enriched = sessions.map((session) => {
+      const sid = session?.id || session?.sessionID;
+      return {
+        ...session,
+        messageCount: counts.get(sid) || 0,
+      };
+    });
+
+    ocpTrace('db:enrich-sessions', { sessions: sessions.length, ids: sessionIds.length, ms: _ocpMs(_t0) });
+    return Array.isArray(payload) ? enriched : { ...payload, sessions: enriched };
+  } catch (err) {
+    ocpTrace('db:enrich-sessions-err', { ms: _ocpMs(_t0), msg: err.message });
+    console.warn('[opencode] Failed to enrich sessions with message counts:', err.message);
+    return payload;
+  }
 }
 
 // ── Proxy helper: forward REST calls to opencode serve ──
 
-async function ocpProxy(method, path, body = null) {
+async function ocpProxy(method, path, body = null, timeoutMs = 30000) {
   const url = `${_ocpBaseUrl()}${path}`;
   const opts = {
     method,
     headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(timeoutMs),
   };
   if (body !== null && method !== 'GET') opts.body = JSON.stringify(body);
-  const resp = await fetch(url, opts);
+  const traceId = _ocpTraceId();
+  const t0 = _ocpNow();
+  const reqBytes = opts.body ? _ocpByteLen(opts.body) : 0;
+  ocpTrace('proxy:req', { tid: traceId, method, path, reqBytes, timeoutMs });
+  let resp;
+  try {
+    resp = await fetch(url, opts);
+  } catch (err) {
+    ocpTrace('proxy:err', { tid: traceId, method, path, ms: _ocpMs(t0), err: err?.name || 'Error', msg: err?.message });
+    throw err;
+  }
+  const tFetch = _ocpMs(t0);
   const text = await resp.text();
+  const tBody = _ocpMs(t0);
   let data;
   try { data = JSON.parse(text); } catch { data = text; }
+  ocpTrace('proxy:res', {
+    tid: traceId, method, path, status: resp.status,
+    fetchMs: tFetch, totalMs: tBody, respBytes: _ocpByteLen(text),
+  });
   return { status: resp.status, data };
 }
 
@@ -3472,7 +4459,10 @@ async function ocpProxy(method, path, body = null) {
 
 function handleOpencodeWs(ws) {
   _ocpWsClients.add(ws);
+  cancelOllamaStop(); // client reconnected — cancel any pending shutdown
   let wsAlive = true;
+  const _sendAbortControllers = new Map(); // sessionId → AbortController for in-flight message:send
+  const pendingGreetingSessions = new Map(); // sessionId → cwd (fire-once greeting injection)
 
   const pingInterval = setInterval(() => {
     if (!wsAlive) { ws.terminate(); return; }
@@ -3482,13 +4472,27 @@ function handleOpencodeWs(ws) {
   ws.on('pong', () => { wsAlive = true; });
 
   function sendToClient(data) {
-    if (ws.readyState === 1) ws.send(JSON.stringify(data));
+    if (ws.readyState === 1) {
+      const payload = JSON.stringify(data);
+      if (OCP_VERBOSE) {
+        ocpTrace('ws:out', {
+          type: data?.type, id: data?.id, status: data?.status,
+          bytes: _ocpByteLen(payload), clients: _ocpWsClients.size,
+        });
+      }
+      ws.send(payload);
+    }
   }
 
   ws.on('message', async (raw) => {
+    const _wsRecvAt = _ocpNow();
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     const { type, id } = msg;
+    ocpTrace('ws:in', {
+      type, id, sid: msg.sessionId, bytes: _ocpByteLen(raw),
+      hasBody: !!msg.body, hasContent: typeof msg.content === 'string',
+    });
 
     try {
       switch (type) {
@@ -3499,11 +4503,13 @@ function handleOpencodeWs(ws) {
         }
         case 'session:list': {
           const r = await ocpProxy('GET', '/session');
-          sendToClient({ type: 'session:list:result', id, ...r });
+          sendToClient({ type: 'session:list:result', id, status: r.status, data: enrichOpencodeSessions(r.data) });
           break;
         }
         case 'session:create': {
           const r = await ocpProxy('POST', '/session', msg.body || {});
+          const newSid = r?.data?.id || r?.data?.sessionID || r?.data?.info?.id || null;
+          if (newSid) pendingGreetingSessions.set(newSid, msg.cwd || PACKAGE_ROOT);
           sendToClient({ type: 'session:create:result', id, ...r });
           break;
         }
@@ -3512,19 +4518,154 @@ function handleOpencodeWs(ws) {
           sendToClient({ type: 'session:get:result', id, ...r });
           break;
         }
+        case 'session:update': {
+          const r = await ocpProxy('PATCH', `/session/${msg.sessionId}`, msg.body || {});
+          sendToClient({ type: 'session:update:result', id, ...r });
+          break;
+        }
         case 'session:delete': {
+          pendingGreetingSessions.delete(msg.sessionId);
           const r = await ocpProxy('DELETE', `/session/${msg.sessionId}`);
           sendToClient({ type: 'session:delete:result', id, ...r });
           break;
         }
         case 'message:send': {
-          const r = await ocpProxy('POST', `/session/${msg.sessionId}/message`, msg.body || { content: msg.content });
-          sendToClient({ type: 'message:send:result', id, ...r });
+          // OpenCode's message endpoint is synchronous — blocks until the LLM finishes.
+          // Use an AbortController so message:abort can cancel this fetch immediately.
+          const ac = new AbortController();
+          const sid = msg.sessionId;
+          _sendAbortControllers.set(sid, ac);
+          const tid = _ocpTraceId();
+          const tStart = _ocpNow();
+          ocpTrace('send:begin', { tid, id, sid, dispatchMs: _ocpMs(_wsRecvAt) });
+          // ── Slash command → skill injection ──
+          try {
+            const parts = Array.isArray(msg.body?.parts) ? msg.body.parts : null;
+            if (parts) {
+              const idx = parts.findIndex(p => p && p.type === 'text' && typeof p.text === 'string' && p.text.trim().startsWith('/'));
+              if (idx >= 0) {
+                const injected = maybeInjectSkillPrompt(parts[idx].text);
+                if (injected.skill) {
+                  console.log('[ocp] Skill injection: /' + injected.command, 'dir:', injected.skill.dir);
+                  ocpTrace('send:skill-inject', { tid, cmd: injected.command, dir: injected.skill.dir, promptBytes: _ocpByteLen(injected.prompt) });
+                  parts[idx] = { ...parts[idx], text: injected.prompt };
+                }
+              }
+            } else if (typeof msg.content === 'string' && msg.content.trim().startsWith('/')) {
+              const injected = maybeInjectSkillPrompt(msg.content);
+              if (injected.skill) {
+                console.log('[ocp] Skill injection: /' + injected.command, 'dir:', injected.skill.dir);
+                ocpTrace('send:skill-inject', { tid, cmd: injected.command, dir: injected.skill.dir, promptBytes: _ocpByteLen(injected.prompt) });
+                msg.content = injected.prompt;
+              }
+            }
+          } catch (err) {
+            console.warn('[ocp] Skill injection failed:', err.message);
+            ocpTrace('send:skill-err', { tid, msg: err.message });
+          }
+          // ── OpenCode greeting injection (fire-once per fresh session) ──
+          if (pendingGreetingSessions.has(sid)) {
+            try {
+              const greetingEnabled = loadOpencodeGreetingConfig().enabled === true;
+              const parts = Array.isArray(msg.body?.parts) ? msg.body.parts : null;
+              const firstTextIdx = parts ? parts.findIndex(p => p && p.type === 'text' && typeof p.text === 'string') : -1;
+              const firstText = firstTextIdx >= 0
+                ? parts[firstTextIdx].text
+                : (typeof msg.content === 'string' ? msg.content : '');
+              const startsWithSlash = String(firstText || '').trim().startsWith('/');
+              if (greetingEnabled && !startsWithSlash && firstText) {
+                const storedCwd = pendingGreetingSessions.get(sid) || msg.cwd || PACKAGE_ROOT;
+                const wrapped = buildOpencodeGreetingUserPrompt({ cwd: storedCwd, userPrompt: firstText });
+                if (wrapped) {
+                  if (firstTextIdx >= 0) {
+                    parts[firstTextIdx] = { ...parts[firstTextIdx], text: wrapped };
+                  } else if (typeof msg.content === 'string') {
+                    msg.content = wrapped;
+                  }
+                  ocpTrace('send:greeting-inject', { tid, sid, bytes: _ocpByteLen(wrapped) });
+                }
+              }
+            } catch (err) {
+              console.warn('[ocp] Greeting injection failed:', err.message);
+              ocpTrace('send:greeting-err', { tid, msg: err.message });
+            } finally {
+              pendingGreetingSessions.delete(sid); // fire-once regardless of outcome
+            }
+          }
+          try {
+            const url = `${_ocpBaseUrl()}/session/${sid}/message`;
+            const reqBody = JSON.stringify(msg.body || { content: msg.content });
+            ocpTrace('send:fetch-start', { tid, sid, url: `/session/${sid}/message`, reqBytes: _ocpByteLen(reqBody) });
+            const tFetchStart = _ocpNow();
+            const resp = await undiciFetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: reqBody,
+              signal: ac.signal,
+              dispatcher: _ocpLongPollDispatcher,
+            });
+            const tHeaders = _ocpMs(tFetchStart);
+            ocpTrace('send:fetch-headers', { tid, sid, status: resp.status, headersMs: tHeaders });
+            const text = await resp.text();
+            const tBody = _ocpMs(tFetchStart);
+            let data;
+            try { data = JSON.parse(text); } catch { data = text; }
+            const respBytes = _ocpByteLen(text);
+            ocpTrace('send:fetch-done', {
+              tid, sid, status: resp.status,
+              headersMs: tHeaders, bodyMs: tBody, respBytes,
+            });
+            sendToClient({ type: 'message:send:result', id, status: resp.status, data });
+            ocpTrace('send:end', { tid, sid, status: resp.status, totalMs: _ocpMs(tStart) });
+          } catch (err) {
+            if (err.name === 'AbortError') {
+              ocpTrace('send:abort', { tid, sid, totalMs: _ocpMs(tStart) });
+              sendToClient({ type: 'message:send:result', id, status: 499, data: { error: 'Aborted' } });
+            } else {
+              ocpTrace('send:err', { tid, sid, err: err.name, msg: err.message, totalMs: _ocpMs(tStart) });
+              sendToClient({ type: 'message:send:result', id, status: 500, data: { error: err.message } });
+            }
+          } finally {
+            _sendAbortControllers.delete(sid);
+          }
           break;
         }
         case 'message:abort': {
-          const r = await ocpProxy('POST', `/session/${msg.sessionId}/abort`);
-          sendToClient({ type: 'message:abort:result', id, ...r });
+          // Cancel the in-flight message:send fetch for this session
+          const sendAc = _sendAbortControllers.get(msg.sessionId);
+          if (sendAc) { try { sendAc.abort(); } catch {} }
+          let r;
+          try {
+            r = await ocpProxy('POST', `/session/${msg.sessionId}/abort`);
+          } catch (err) {
+            r = { status: 0, ok: false, error: err?.message || String(err) };
+          }
+          // Always ack so the client never hangs waiting for this reply.
+          sendToClient({ type: 'message:abort:result', id, ...(r || { ok: true }) });
+          break;
+        }
+        case 'question:reply': {
+          const r = await ocpProxy('POST', `/question/${msg.requestID}/reply`, msg.body || { answers: [] });
+          sendToClient({ type: 'question:reply:result', id, ...r });
+          break;
+        }
+        case 'question:reject': {
+          const r = await ocpProxy('POST', `/question/${msg.requestID}/reject`);
+          sendToClient({ type: 'question:reject:result', id, ...r });
+          break;
+        }
+        case 'permission:respond': {
+          const sid = msg.sessionId || msg.sessionID;
+          const permId = msg.permissionID || msg.permissionId || msg.requestID;
+          const body = { response: msg.response || 'once' };
+          if (typeof msg.remember === 'boolean') body.remember = msg.remember;
+          const r = await ocpProxy('POST', `/session/${sid}/permissions/${permId}`, body);
+          sendToClient({ type: 'permission:respond:result', id, ...r });
+          break;
+        }
+        case 'question:list': {
+          const r = await ocpProxy('GET', '/question');
+          sendToClient({ type: 'question:list:result', id, ...r });
           break;
         }
         case 'session:revert': {
@@ -3549,6 +4690,23 @@ function handleOpencodeWs(ws) {
         }
         case 'messages:list': {
           const r = await ocpProxy('GET', `/session/${msg.sessionId}/message`);
+          if (r.status < 400 && opencodeMessagesNeedFallback(r.data)) {
+            const fallback = loadOpencodeMessagesFallback(msg.sessionId);
+            if (fallback?.length) {
+              if (Array.isArray(r.data)) {
+                sendToClient({ type: 'messages:list:result', id, status: r.status, data: fallback, source: 'opencode-db-fallback' });
+              } else {
+                sendToClient({
+                  type: 'messages:list:result',
+                  id,
+                  status: r.status,
+                  data: { ...(r.data || {}), messages: fallback },
+                  source: 'opencode-db-fallback',
+                });
+              }
+              break;
+            }
+          }
           sendToClient({ type: 'messages:list:result', id, ...r });
           break;
         }
@@ -3563,8 +4721,60 @@ function handleOpencodeWs(ws) {
           break;
         }
         case 'providers:list': {
+          await reconcileAuthIfStale();
           const r = await ocpProxy('GET', '/provider');
           sendToClient({ type: 'providers:list:result', id, ...r });
+          break;
+        }
+        case 'providers:full': {
+          await reconcileAuthIfStale();
+          const r = await ocpProxy('GET', '/provider');
+          sendToClient({ type: 'providers:full:result', id, ...r });
+          break;
+        }
+        case 'providers:auth': {
+          const r = await ocpProxy('GET', '/provider/auth');
+          sendToClient({ type: 'providers:auth:result', id, ...r });
+          break;
+        }
+        case 'auth:set': {
+          const r = await ocpProxy('PUT', `/auth/${msg.providerId}`, msg.body || {});
+          sendToClient({ type: 'auth:set:result', id, ...r });
+          break;
+        }
+        case 'oauth:authorize': {
+          const r = await ocpProxy('POST', `/provider/${msg.providerId}/oauth/authorize`);
+          sendToClient({ type: 'oauth:authorize:result', id, ...r });
+          break;
+        }
+        case 'oauth:callback': {
+          const r = await ocpProxy('POST', `/provider/${msg.providerId}/oauth/callback`, msg.body || {});
+          sendToClient({ type: 'oauth:callback:result', id, ...r });
+          break;
+        }
+        case 'agents:list': {
+          const r = await ocpProxy('GET', '/agent');
+          sendToClient({ type: 'agents:list:result', id, ...r });
+          break;
+        }
+        case 'config:providers': {
+          const r = await ocpProxy('GET', '/config/providers');
+          sendToClient({ type: 'config:providers:result', id, ...r });
+          break;
+        }
+        case 'mcp:list': {
+          const r = await ocpProxy('GET', '/mcp');
+          sendToClient({ type: 'mcp:list:result', id, ...r });
+          break;
+        }
+        case 'mcp:add': {
+          const r = await ocpProxy('POST', '/mcp', msg.body || {});
+          sendToClient({ type: 'mcp:add:result', id, ...r });
+          break;
+        }
+        case 'tools:list': {
+          const r = await ocpProxy('GET', '/experimental/tool/ids');
+          sendToClient({ type: 'tools:list:result', id, ...r });
           break;
         }
         default:
@@ -3578,19 +4788,230 @@ function handleOpencodeWs(ws) {
   ws.on('close', () => {
     clearInterval(pingInterval);
     _ocpWsClients.delete(ws);
+    // Abort any in-flight message:send fetches for this connection
+    for (const ac of _sendAbortControllers.values()) { try { ac.abort(); } catch {} }
+    _sendAbortControllers.clear();
+    if (_ocpWsClients.size === 0) scheduleOllamaStop();
   });
 
   ws.on('error', () => {
     clearInterval(pingInterval);
     _ocpWsClients.delete(ws);
+    if (_ocpWsClients.size === 0) scheduleOllamaStop();
   });
 }
+
+// ── Ollama local model endpoints ──
+
+const OLLAMA_BASE = 'http://localhost:11434';
+let _ollamaUserRemoved = false; // tracks if user explicitly removed config this session
+let _ollamaManagedByUs = false; // true if we auto-configured Ollama this session
+let _ollamaGraceTimer = null;
+const OLLAMA_GRACE_MS = 30_000; // 30s grace before killing — handles reconnects/refreshes
+
+function stopOllama() {
+  if (!_ollamaManagedByUs) return;
+  try {
+    if (process.platform === 'win32') {
+      execSync('taskkill /F /IM ollama.exe 2>nul', { stdio: 'pipe' });
+    } else {
+      execSync('pkill -f "ollama serve" 2>/dev/null || pkill ollama 2>/dev/null', { stdio: 'pipe', shell: true });
+    }
+    console.log('[ollama] Stopped Ollama process');
+    _ollamaManagedByUs = false;
+  } catch {}
+}
+
+function scheduleOllamaStop() {
+  if (!_ollamaManagedByUs) return;
+  if (_ollamaGraceTimer) clearTimeout(_ollamaGraceTimer);
+  _ollamaGraceTimer = setTimeout(() => {
+    _ollamaGraceTimer = null;
+    if (_ocpWsClients.size === 0) {
+      console.log('[ollama] No OpenCode clients for 30s — stopping Ollama');
+      stopOllama();
+    }
+  }, OLLAMA_GRACE_MS);
+}
+
+function cancelOllamaStop() {
+  if (_ollamaGraceTimer) { clearTimeout(_ollamaGraceTimer); _ollamaGraceTimer = null; }
+}
+
+app.get('/api/ollama/status', async (req, res) => {
+  try {
+    const ctrl = AbortSignal.timeout(3000);
+    const r = await fetch(`${OLLAMA_BASE}/api/version`, { signal: ctrl });
+    const data = await r.json();
+    res.json({ ok: true, running: true, version: data.version || null });
+  } catch {
+    res.json({ ok: true, running: false, version: null });
+  }
+});
+
+app.get('/api/ollama/models', async (req, res) => {
+  try {
+    const ctrl = AbortSignal.timeout(5000);
+    const r = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: ctrl });
+    const data = await r.json();
+    const models = (data.models || []).map(m => ({
+      name: m.name || m.model,
+      size: m.size || 0,
+      parameterSize: m.details?.parameter_size || null,
+      family: m.details?.family || null,
+      quantization: m.details?.quantization_level || null,
+    }));
+    res.json({ ok: true, models });
+  } catch {
+    res.json({ ok: true, models: [] });
+  }
+});
+
+app.post('/api/ollama/configure', async (req, res) => {
+  try {
+    // Fetch current Ollama models
+    const ctrl = AbortSignal.timeout(5000);
+    const r = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: ctrl });
+    const data = await r.json();
+    const ollamaModels = data.models || [];
+    if (!ollamaModels.length) return res.json({ ok: false, error: 'No Ollama models found' });
+
+    // Build model map for opencode config
+    const models = {};
+    for (const m of ollamaModels) {
+      const id = m.name || m.model;
+      const parts = [m.details?.parameter_size, m.details?.quantization_level].filter(Boolean).join(' ');
+      const humanName = id.split(':')[0].replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      models[id] = { name: parts ? `${humanName} (${parts})` : humanName };
+    }
+
+    // Read + update opencode config
+    const configPath = getOpencodeConfigPath();
+    const configDir = join(configPath, '..');
+    if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
+    let cfg = {};
+    try { if (existsSync(configPath)) cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
+    if (!cfg.provider) cfg.provider = {};
+    cfg.provider.ollama = {
+      npm: '@ai-sdk/openai-compatible',
+      name: 'Ollama (local)',
+      options: { baseURL: `${OLLAMA_BASE}/v1` },
+      models,
+    };
+    writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    console.log(`[ollama] Configured ${Object.keys(models).length} model(s) in ${configPath}`);
+
+    // Install @ai-sdk/openai-compatible if not present
+    const pkgPath = join(configDir, 'package.json');
+    let needsInstall = true;
+    try {
+      if (existsSync(pkgPath)) {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+        needsInstall = !pkg.dependencies?.['@ai-sdk/openai-compatible'];
+      }
+    } catch {}
+    if (needsInstall) {
+      console.log('[ollama] Installing @ai-sdk/openai-compatible…');
+      execSync('npm install @ai-sdk/openai-compatible --save', { cwd: configDir, timeout: 60000, stdio: 'pipe' });
+      console.log('[ollama] Package installed');
+    }
+
+    // Restart OpenCode server if running
+    if (_ocpReady) {
+      setTimeout(async () => {
+        try {
+          console.log('[ollama] Restarting OpenCode to load Ollama provider…');
+          await takeoverOpencodeServer();
+          broadcastToOpencodeClients({ type: 'providers:changed' });
+          console.log('[ollama] OpenCode restart complete');
+        } catch (err) {
+          console.error('[ollama] OpenCode restart failed:', err.message);
+        }
+      }, 300);
+    }
+
+    _ollamaUserRemoved = false;
+    _ollamaManagedByUs = true;
+    res.json({ ok: true, modelsConfigured: Object.keys(models).length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete('/api/ollama/configure', async (req, res) => {
+  try {
+    const configPath = getOpencodeConfigPath();
+    let cfg = {};
+    try { if (existsSync(configPath)) cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
+    if (cfg.provider?.ollama) {
+      delete cfg.provider.ollama;
+      if (Object.keys(cfg.provider).length === 0) delete cfg.provider;
+      writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      console.log('[ollama] Removed Ollama provider from config');
+    }
+    _ollamaUserRemoved = true;
+
+    // Restart OpenCode server if running
+    if (_ocpReady) {
+      setTimeout(async () => {
+        try {
+          await takeoverOpencodeServer();
+          broadcastToOpencodeClients({ type: 'providers:changed' });
+        } catch (err) {
+          console.error('[ollama] OpenCode restart after removal failed:', err.message);
+        }
+      }, 300);
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/api/ollama/configured', (req, res) => {
+  try {
+    const configPath = getOpencodeConfigPath();
+    let cfg = {};
+    try { if (existsSync(configPath)) cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
+    const configured = !!cfg.provider?.ollama;
+    const modelCount = configured ? Object.keys(cfg.provider.ollama.models || {}).length : 0;
+    res.json({ ok: true, configured, modelCount, userRemoved: _ollamaUserRemoved });
+  } catch {
+    res.json({ ok: true, configured: false, modelCount: 0, userRemoved: _ollamaUserRemoved });
+  }
+});
+
+app.post('/api/ollama/stop', (req, res) => {
+  try {
+    if (process.platform === 'win32') {
+      execSync('taskkill /F /IM ollama.exe 2>nul', { stdio: 'pipe' });
+    } else {
+      execSync('pkill -f "ollama serve" 2>/dev/null || pkill ollama 2>/dev/null', { stdio: 'pipe', shell: true });
+    }
+    _ollamaManagedByUs = false;
+    console.log('[ollama] Stopped Ollama via manual request');
+    res.json({ ok: true });
+  } catch {
+    res.json({ ok: true }); // may already be stopped
+  }
+});
 
 // ── REST endpoints for OpenCode settings/management ──
 
 app.get('/api/opencode/status', async (req, res) => {
   try {
-    const running = await checkOpencodeHealth();
+    let running = await checkOpencodeHealth();
+    if (running) {
+      const reconciled = await reconcileOpencodeServerIfStale();
+      if (reconciled) running = await checkOpencodeHealth();
+    }
+    if (running && !_ocpReady) {
+      running = await ensureOpencodeServer();
+    } else if (!running && _ocpReady) {
+      _ocpReady = false;
+      stopOpencodeSSERelay();
+    }
     res.json({ ok: true, running, port: _ocpPort, version: _ocpVersion, managed: !!_ocpProc });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -3620,6 +5041,7 @@ app.patch('/api/opencode/config', async (req, res) => {
 app.get('/api/opencode/providers', async (req, res) => {
   try {
     if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: [] });
+    await reconcileAuthIfStale();
     const r = await ocpProxy('GET', '/provider');
     res.status(r.status).json({ ok: r.status === 200, data: r.data });
   } catch (err) {
@@ -3641,6 +5063,197 @@ app.post('/api/opencode/serve/stop', (req, res) => {
   try {
     stopOpencodeServer();
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Full provider data including connected[] array and auth methods
+app.get('/api/opencode/providers/full', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: {} });
+    await reconcileAuthIfStale();
+    const r = await ocpProxy('GET', '/provider');
+    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Auth methods per provider (api_key, oauth, etc.)
+app.get('/api/opencode/providers/auth', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: {} });
+    const r = await ocpProxy('GET', '/provider/auth');
+    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Check which providers have stored API keys in auth.json
+app.get('/api/opencode/auth/stored', (req, res) => {
+  try {
+    const authPath = getOpencodeAuthPath();
+    const data = existsSync(authPath) ? readFileSync(authPath, 'utf8') : '{}';
+    const auth = JSON.parse(data);
+    res.json({ ok: true, data: Object.keys(auth) });
+  } catch (err) {
+    res.json({ ok: true, data: [] });
+  }
+});
+
+// Set API key / credential for a provider
+app.put('/api/opencode/auth/:providerId', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
+    const r = await ocpProxy('PUT', `/auth/${req.params.providerId}`, req.body);
+    if (r.status !== 200) return res.status(r.status).json({ ok: false, data: r.data });
+
+    // Takeover + restart so the server reads updated auth.json
+    setTimeout(async () => {
+      try {
+        console.log('[opencode] Restarting to apply new credentials…');
+        await takeoverOpencodeServer();
+        broadcastToOpencodeClients({ type: 'providers:changed' });
+        console.log('[opencode] Restart complete after credential update');
+      } catch (err) {
+        console.error('[opencode] Restart after auth update failed:', err.message);
+      }
+    }, 300);
+    res.json({ ok: true, data: r.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Remove API key / credential for a provider
+app.delete('/api/opencode/auth/:providerId', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
+    const providerId = req.params.providerId;
+
+    // Proxy DELETE to OpenCode server — this is where credentials actually live
+    const r = await ocpProxy('DELETE', `/auth/${providerId}`);
+    if (r.status !== 200 && r.status !== 204) {
+      return res.status(r.status).json({ ok: false, data: r.data, error: r.data?.error || 'Failed to remove credentials from OpenCode' });
+    }
+
+    // Takeover + restart so the server drops the credential
+    setTimeout(async () => {
+      try {
+        console.log('[opencode] Restarting after credential removal…');
+        await takeoverOpencodeServer();
+        broadcastToOpencodeClients({ type: 'providers:changed' });
+        console.log('[opencode] Restart complete after credential removal');
+      } catch (err) {
+        console.error('[opencode] Restart after auth removal failed:', err.message);
+      }
+    }, 300);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Start OAuth flow for a provider
+app.post('/api/opencode/oauth/:providerId/authorize', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
+    const r = await ocpProxy('POST', `/provider/${req.params.providerId}/oauth/authorize`, req.body || {});
+    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Handle OAuth callback
+app.post('/api/opencode/oauth/:providerId/callback', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
+    const r = await ocpProxy('POST', `/provider/${req.params.providerId}/oauth/callback`, req.body);
+    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// List available agents
+app.get('/api/opencode/agents', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: [] });
+    const r = await ocpProxy('GET', '/agent');
+    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Providers with default model mappings
+app.get('/api/opencode/config/providers', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: {} });
+    const r = await ocpProxy('GET', '/config/providers');
+    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// List MCP server statuses
+app.get('/api/opencode/mcp', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: {} });
+    const r = await ocpProxy('GET', '/mcp');
+    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Add MCP server dynamically and persist to config so it survives restarts
+app.post('/api/opencode/mcp', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
+    const { name, config: mcpConfig } = req.body || {};
+    // Persist to ~/.config/opencode/config.json before registering with the running server
+    if (name && mcpConfig) {
+      try { persistMcpToOpencodeConfig(name, mcpConfig); } catch (e) {
+        console.warn(`[opencode] Failed to persist MCP config: ${e.message}`);
+      }
+    }
+    const r = await ocpProxy('POST', '/mcp', req.body);
+    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// List available tool IDs
+app.get('/api/opencode/tools', async (req, res) => {
+  try {
+    if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: [] });
+    const r = await ocpProxy('GET', '/experimental/tool/ids');
+    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/api/opencode/config/file', (req, res) => {
+  try {
+    const path = ensureOpencodeConfigFile().replace(/\\/g, '/');
+    res.json({ ok: true, path });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Return the OpenCode config directory for editor flows.
+app.post('/api/opencode/config/reveal', (req, res) => {
+  try {
+    const configDir = dirname(ensureOpencodeConfigFile());
+    res.json({ ok: true, path: configDir });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -3673,6 +5286,91 @@ function handleClaudeSkinWebSocket(ws) {
   let wsWindowId = null; // set by first query message — used for lock cleanup on close
   let _orphanBuffer = null; // when non-null, sendToClient buffers here instead of sending over WS
   let prevTurnTokens = 0; // total input tokens from last turn — used to detect auto-compact (>50% drop)
+  let _suppressedCount = 0; // events dropped after an exitPlan/ask kill — logged as a running count
+
+  // Verbose trace for plan-mode lifecycle. Prefixed with [plan-trace] for easy grep.
+  // Emits a single structured line per decision point so we can reconstruct the full
+  // AskUserQuestion → ExitPlanMode → PLAN COMPLETE timeline from logs alone.
+  function planTrace(stage, data = {}) {
+    const parts = [`[plan-trace] ${stage}`];
+    for (const [k, v] of Object.entries(data)) {
+      let s;
+      if (v == null) s = 'null';
+      else if (typeof v === 'string') s = v.length > 120 ? `${v.slice(0, 117)}...` : v;
+      else if (Array.isArray(v)) s = `[${v.join(',')}]`;
+      else if (typeof v === 'object') { try { s = JSON.stringify(v); } catch { s = '[obj]'; } }
+      else s = String(v);
+      parts.push(`${k}=${s}`);
+    }
+    console.log(parts.join(' '));
+  }
+
+  // Builds the respawn prompt after an AskUserQuestion is answered. Preserves per-question
+  // Q→A mapping so Claude knows which answer maps to which question, and re-injects the
+  // plan-mode prefix when the previous turn was in plan mode — otherwise Claude jumps
+  // straight to ExitPlanMode without integrating the answers.
+  function buildAskAnswerPrompt(questions, answers, wasPlanMode) {
+    const answerObj = (answers && typeof answers === 'object') ? answers : {};
+    const answerKeys = Object.keys(answerObj);
+    const readAnswer = (v) => {
+      if (v == null) return '';
+      if (Array.isArray(v?.answers)) return v.answers.join(', ');
+      if (typeof v === 'string') return v;
+      if (typeof v === 'object') return JSON.stringify(v);
+      return String(v);
+    };
+
+    const pairs = [];
+    const qArr = Array.isArray(questions) ? questions : [];
+    qArr.forEach((q, i) => {
+      const qText = (q && (q.question || q.text || q.header)) || `Question ${i + 1}`;
+      const candidates = [q?.question, q?.text, q?.header, q?.id, String(i), answerKeys[i]].filter(Boolean);
+      let a = '';
+      for (const key of candidates) {
+        if (Object.prototype.hasOwnProperty.call(answerObj, key)) {
+          a = readAnswer(answerObj[key]);
+          if (a) break;
+        }
+      }
+      pairs.push(`- Q: ${qText}\n  A: ${a || '(no answer provided)'}`);
+    });
+    if (pairs.length === 0) {
+      for (const k of answerKeys) pairs.push(`- Q: ${k}\n  A: ${readAnswer(answerObj[k]) || '(no answer provided)'}`);
+    }
+    const mappingText = pairs.length ? pairs.join('\n') : '(no answers captured — continue with best judgement)';
+
+    if (wasPlanMode) {
+      return [
+        '[PLAN MODE — think step by step, refine the plan, do NOT make code changes.]',
+        '',
+        'CRITICAL — You are still in plan mode. When you need further clarification:',
+        '1. Call ToolSearch with query "select:AskUserQuestion" to load the tool schema',
+        '2. Use AskUserQuestion to present options (2-4 choices per question, max 4 questions)',
+        '3. NEVER write questions as plain text',
+        '4. Only call ExitPlanMode AFTER the plan fully reflects the user\'s answers',
+        '',
+        'The user just answered your previous AskUserQuestion. Integrate these answers into the plan:',
+        '',
+        mappingText,
+        '',
+        'Do NOT call ExitPlanMode yet. First update the plan so it accurately incorporates the answers above. If anything is still unclear, ask follow-up AskUserQuestion(s). Only call ExitPlanMode once the plan is complete and reflects the user\'s selections.',
+        '',
+        'STRICT ORDERING — ExitPlanMode MUST be your FINAL action in the turn:',
+        '- Do ALL research (Grep, Read, Glob, etc.) BEFORE calling ExitPlanMode',
+        '- Write the complete refined plan as a text block BEFORE calling ExitPlanMode',
+        '- Never emit any text, tool call, or follow-up work AFTER ExitPlanMode — anything after will be dropped and the user will only see the PLAN COMPLETE approval card',
+        '- If you realise mid-response that you need to revise, do NOT call ExitPlanMode at all this turn; continue researching and writing, and call ExitPlanMode only when the plan is truly done',
+      ].join('\n');
+    }
+
+    return [
+      'The user answered your AskUserQuestion:',
+      '',
+      mappingText,
+      '',
+      'Continue based on their selection.',
+    ].join('\n');
+  }
 
   // Ping/pong keepalive — detect silent TCP death from macOS sleep, network switches, idle timeouts
   let _wsAlive = true;
@@ -3744,6 +5442,12 @@ function handleClaudeSkinWebSocket(ws) {
 
   function spawnProc(sessionId, model, cwd, effort, prompt) {
     killProc();
+    // Always reset permission state — killProc() skips this when activeProc is already null
+    // (e.g. process exited naturally while awaitingPermission was true for AskUserQuestion)
+    awaitingPermission = false;
+    lastPermissionDenials = null;
+    let exitPlanKilled = false;
+    _suppressedCount = 0;
     // Read current MCP permissions so we can show proactive cards for non-allowed MCP tools
     const _globalSettings = readClaudeSettings(getGlobalClaudeSettingsPath()) || {};
     mcpAllowedTools = new Set(
@@ -3778,6 +5482,15 @@ function handleClaudeSkinWebSocket(ws) {
     if (sessionId) args.push('--resume', sessionId);
     if (model) args.push('--model', model);
     if (effort && ['low', 'medium', 'high', 'max'].includes(effort)) args.push('--effort', effort);
+    planTrace('spawn', {
+      planMode: typeof prompt === 'string' && /\[PLAN MODE/i.test(prompt),
+      resume: sessionId || 'none',
+      model: model || 'default',
+      effort: effort || 'default',
+      approvedTools: approvedTools.size > 0 ? [...approvedTools] : 'none',
+      promptLen: (prompt || '').length,
+      promptHead: (prompt || '').split('\n')[0] || '',
+    });
     let claudeBin = getClaudeBin();
     // On Windows, .js files can't be executed directly by CreateProcessW.
     // Prepend the Node.js binary so the CLI actually runs.
@@ -3838,6 +5551,7 @@ function handleClaudeSkinWebSocket(ws) {
     inTurn = false;
     let eventCount = 0;
     let lastLoggedType = '';
+    let bootComplete = false; // flips true on first non-system event (model responding)
 
     function sendToClient(data) {
       // If orphaned, buffer events for replay on reattach
@@ -3848,8 +5562,11 @@ function handleClaudeSkinWebSocket(ws) {
     // Stall detector — auto-retry when no stdout events for a while during an active turn.
     // Effort-based timeout: extended thinking with max effort can take 5+ minutes.
     // Killing during thinking causes a kill-restart loop that never lets the model finish.
+    // Boot phase: CLI needs time to load MCP servers + run hooks before model responds.
+    // During boot, only enforce a generous 120s timeout to catch truly hung processes.
     const STALL_WARN_SEC = 30;
     const STALL_KILL_SEC = effort === 'max' ? 300 : effort === 'high' ? 120 : 45;
+    const BOOT_TIMEOUT_SEC = 120;
     const MAX_RETRIES = 2;
     let stallRetries = 0;
     console.log(`[claude-skin] Stall timeout: ${STALL_KILL_SEC}s (effort: ${effort || 'default'})`);
@@ -3857,6 +5574,16 @@ function handleClaudeSkinWebSocket(ws) {
       if (activeProc !== proc) { clearInterval(stallCheck); return; }
       if (!inTurn) return;
       const silentSec = Math.round((Date.now() - lastEventTime) / 1000);
+      // During boot (MCP init, hooks), suppress stall warnings and use generous timeout
+      if (!bootComplete) {
+        if (silentSec >= BOOT_TIMEOUT_SEC && !proc.killed) {
+          console.log(`[claude-skin] ✗ BOOT TIMEOUT — ${silentSec}s without model response, MCP servers or hooks may be hanging`);
+          killProc();
+          sendToClient({ type: 'error', message: `Session failed to start within ${BOOT_TIMEOUT_SEC}s. MCP servers or hooks may be hanging.` });
+          sendToClient({ type: 'done', code: -1 });
+        }
+        return;
+      }
       if (silentSec >= STALL_WARN_SEC) {
         // Diagnostic: check actual file size vs what we've read
         let fileSize = 0;
@@ -3888,9 +5615,21 @@ function handleClaudeSkinWebSocket(ws) {
 
     // ── Process stdout events from a line of JSON ──
     function processEvent(trimmed) {
+      if (exitPlanKilled) {
+        _suppressedCount++;
+        if (_suppressedCount === 1 || _suppressedCount % 10 === 0) {
+          planTrace('event-suppressed-post-kill', { count: _suppressedCount, preview: trimmed.slice(0, 80) });
+        }
+        return;
+      }
       try {
         const event = JSON.parse(trimmed);
         eventCount++;
+        // Mark boot complete once model starts responding (not system/init events)
+        if (!bootComplete && event.type !== 'system') {
+          bootComplete = true;
+          console.log(`[claude-skin] Boot complete — first model event: ${event.type}`);
+        }
         // Track session_id from init event
         if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
           procSessionId = event.session_id;
@@ -3984,23 +5723,83 @@ function handleClaudeSkinWebSocket(ws) {
         if (event.type === 'assistant') {
           const GATED_TOOLS = ['Edit', 'Write', 'MultiEdit', 'Bash'];
           const toolUses = (event.message?.content || []).filter(b => b.type === 'tool_use');
-          for (const tool of toolUses) {
-            // AskUserQuestion: send control_request so the client renders an interactive
-            // ask card instead of letting it fall through as a permission_denial later.
-            // This is the primary trigger — the permission_denial path is a backup.
-            if (tool.name === 'AskUserQuestion') {
-              const requestId = `perm-${tool.id}`;
-              const input = tool.input || {};
-              permCardToolNames.set(requestId, 'AskUserQuestion');
-              console.log(`[claude-skin] ▶ AskUserQuestion detected → sending control_request`);
-              sendToClient({
-                type: 'control_request',
-                request_id: requestId,
-                request: { tool_name: 'AskUserQuestion', subtype: 'can_use_tool', input },
-              });
-              awaitingPermission = true;
-              continue;
+          // AskUserQuestion: kill process to prevent Claude from continuing in the same turn.
+          // --print mode does NOT pause on AskUserQuestion — the CLI keeps emitting tool_use
+          // blocks (Write, Bash, ExitPlanMode) because it never receives a control_response
+          // over stdin. Without this hard-stop, Claude builds the plan and fires ExitPlanMode
+          // while the question card is still pending, producing a premature PLAN COMPLETE.
+          // Must run BEFORE the ExitPlanMode check so that if both tools appear in the same
+          // message, the question wins and trimming drops the ExitPlanMode block too.
+          const askIdx = (event.message?.content || []).findIndex(b => b?.type === 'tool_use' && b?.name === 'AskUserQuestion');
+          if (askIdx >= 0) {
+            const askTool = event.message.content[askIdx];
+            const content = event.message.content;
+            const trailingBlocks = content.slice(askIdx + 1);
+            const trailingTypes = trailingBlocks.map(b => b?.type === 'tool_use' ? `tool_use:${b.name}` : (b?.type || 'unknown'));
+            const qCount = Array.isArray(askTool.input?.questions) ? askTool.input.questions.length : 0;
+            planTrace('ask-detected', {
+              questionCount: qCount,
+              contentBlocks: content.length,
+              trailingCount: trailingBlocks.length,
+              trailingTypes,
+              toolId: askTool.id,
+              containsExitPlan: trailingTypes.some(t => t === 'tool_use:ExitPlanMode'),
+            });
+            console.log('[claude-skin] ▶ AskUserQuestion detected — killing process to await user answer');
+            if (askIdx < content.length - 1) {
+              event.message.content = content.slice(0, askIdx + 1);
+              console.log(`[claude-skin] ▶ Trimmed ${content.length - askIdx - 1} block(s) after AskUserQuestion`);
             }
+            sendToClient({ type: 'event', event });
+            const requestId = `perm-${askTool.id}`;
+            permCardToolNames.set(requestId, 'AskUserQuestion');
+            sendToClient({
+              type: 'control_request',
+              request_id: requestId,
+              request: { tool_name: 'AskUserQuestion', subtype: 'can_use_tool', input: askTool.input || {} },
+            });
+            awaitingPermission = true;
+            exitPlanKilled = true;
+            killProc();
+            sendToClient({ type: 'done', code: 0 });
+            return;
+          }
+          // ExitPlanMode: kill process to prevent implementation before user approval.
+          // --print mode auto-approves plans, so Claude continues with Edit/Read in the same
+          // turn. Kill the process here so the client can show the plan card and wait for user.
+          if (toolUses.some(t => t.name === 'ExitPlanMode')) {
+            console.log('[claude-skin] ▶ ExitPlanMode detected — killing process to await user approval');
+            // Trim any content blocks that appear AFTER ExitPlanMode in the same message.
+            // Claude sometimes emits follow-up text/tool_use blocks after ExitPlanMode
+            // (e.g. "let me rewrite the plan..." + Grep calls), which never execute since
+            // we kill the process — leaving ghost tool cards below PLAN COMPLETE. Drop
+            // them at the protocol boundary so the UI renders: plan text → ExitPlanMode → PLAN COMPLETE.
+            const content = event.message?.content;
+            if (Array.isArray(content)) {
+              const exitIdx = content.findIndex(b => b?.type === 'tool_use' && b?.name === 'ExitPlanMode');
+              const precedingTypes = content.slice(0, exitIdx).map(b => b?.type === 'tool_use' ? `tool_use:${b.name}` : (b?.type || 'unknown'));
+              const trailingTypes = content.slice(exitIdx + 1).map(b => b?.type === 'tool_use' ? `tool_use:${b.name}` : (b?.type || 'unknown'));
+              const planTextBlock = content.slice(0, exitIdx).find(b => b?.type === 'text');
+              planTrace('exit-detected', {
+                contentBlocks: content.length,
+                exitIdx,
+                precedingTypes,
+                trailingCount: trailingTypes.length,
+                trailingTypes,
+                planLen: (planTextBlock?.text || '').length,
+              });
+              if (exitIdx >= 0 && exitIdx < content.length - 1) {
+                event.message.content = content.slice(0, exitIdx + 1);
+                console.log(`[claude-skin] ▶ Trimmed ${content.length - exitIdx - 1} block(s) after ExitPlanMode`);
+              }
+            }
+            sendToClient({ type: 'event', event });
+            exitPlanKilled = true;
+            killProc();
+            sendToClient({ type: 'done', code: 0 });
+            return;
+          }
+          for (const tool of toolUses) {
             if (GATED_TOOLS.includes(tool.name) && !approvedTools.has(tool.name)) {
               const requestId = `perm-${tool.id}`;
               const input = tool.input || {};
@@ -4088,6 +5887,14 @@ function handleClaudeSkinWebSocket(ws) {
       if (promptTmpFile) { try { unlinkSync(promptTmpFile); } catch {} }
       try { unlinkSync(stdoutTmpFile); } catch {}
       console.log(`[claude-skin] Process closed, code: ${code}, events: ${eventCount}, buf: ${buf.length}b, stale: ${isStale}, awaitingPermission: ${awaitingPermission}`);
+      planTrace('proc-closed', {
+        code,
+        events: eventCount,
+        stale: isStale,
+        awaitingPermission,
+        exitPlanKilled,
+        suppressedAfterKill: _suppressedCount,
+      });
       if (isStale) return;
       // Process any remaining partial line in buf
       if (buf.trim()) {
@@ -4100,6 +5907,16 @@ function handleClaudeSkinWebSocket(ws) {
         sendToClient({ type: 'done', code });
       }
       activeProc = null;
+      // Clean up orphan entry if process exits naturally while orphaned —
+      // prevents the 30-min killTimer from firing on a dead process
+      if (wsWindowId && procSessionId) {
+        const okey = _orphanKey(wsWindowId, procSessionId);
+        const orphan = _orphanedProcs.get(okey);
+        if (orphan) {
+          clearTimeout(orphan.killTimer);
+          _orphanedProcs.delete(okey);
+        }
+      }
     });
 
     proc.on('error', (err) => {
@@ -4119,23 +5936,6 @@ function handleClaudeSkinWebSocket(ws) {
     return proc;
   }
 
-  // ── Skill injection for slash commands (print mode doesn't support them natively) ──
-  function resolveSkillPrompt(command, args) {
-    const dirs = [
-      join(SKILLS_SOURCE_DIR, command),
-      join(getGlobalSkillsDir(), command),
-    ];
-    for (const dir of dirs) {
-      const file = join(dir, 'SKILL.md');
-      if (existsSync(file)) {
-        let content = readFileSync(file, 'utf-8');
-        content = content.replace(/\$ARGUMENTS/g, args || '(none)');
-        return { content, dir };
-      }
-    }
-    return null;
-  }
-
   ws.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
@@ -4143,8 +5943,10 @@ function handleClaudeSkinWebSocket(ws) {
       if (msg.type === 'query') {
         let { prompt, cwd, sessionId, model, effort, images, windowId } = msg;
         if (windowId) wsWindowId = windowId;
-        // Strip composite ":contextWindow" suffix (e.g. "claude-opus-4-6:1000000" → "claude-opus-4-6")
-        if (model && model.includes(':')) model = model.split(':')[0];
+        // Normalize composite "modelId:contextWindow" → CLI-ready id.
+        // Windows >200K map to the `[1m]` beta suffix required by Claude Code.
+        // Defensive: newer clients already send the suffix directly.
+        if (model && model.includes(':')) model = toCliModelName(model);
         if (!prompt && !images?.length) return ws.send(JSON.stringify({ type: 'error', message: 'No prompt provided' }));
 
         // ── Session lock: prevent two windows from using the same session ──
@@ -4158,14 +5960,11 @@ function handleClaudeSkinWebSocket(ws) {
 
         // ── Slash command → skill injection ──
         if (prompt && prompt.startsWith('/')) {
-          const parts = prompt.slice(1).split(/\s+/);
-          const cmd = parts[0].toLowerCase();
-          const args = parts.slice(1).join(' ');
-          if (cmd === 'clear') return; // client-only command
-          const skill = resolveSkillPrompt(cmd, args);
-          if (skill) {
-            console.log('[claude-skin] Skill injection: /' + cmd, 'dir:', skill.dir);
-            prompt = `<skill-instructions>\nBase directory for this skill: ${skill.dir}\n\n${skill.content}\n</skill-instructions>\n\nThe user invoked the /${cmd} command${args ? ' with arguments: ' + args : ''}. Follow the skill instructions above exactly.`;
+          const injected = maybeInjectSkillPrompt(prompt);
+          if (injected.command === 'clear' && !injected.skill) return; // client-only command
+          if (injected.skill) {
+            console.log('[claude-skin] Skill injection: /' + injected.command, 'dir:', injected.skill.dir);
+            prompt = injected.prompt;
           }
         }
 
@@ -4229,13 +6028,23 @@ function handleClaudeSkinWebSocket(ws) {
             // ── AskUserQuestion: extract user's answer and respawn with it ──
             if (toolName === 'AskUserQuestion') {
               const answers = innerResponse?.updatedInput?.answers || msg.response?.updatedInput?.answers;
-              const answerText = answers ? Object.values(answers).join(', ') : '';
-              console.log(`[claude-skin] ▶ AskUserQuestion answered: "${answerText}"`);
+              const questions = innerResponse?.updatedInput?.questions || msg.response?.updatedInput?.questions;
+              const wasPlanMode = typeof lastPrompt === 'string' && /\[PLAN MODE/.test(lastPrompt);
+              const answerPrompt = buildAskAnswerPrompt(questions, answers, wasPlanMode);
+              planTrace('ask-answered', {
+                wasPlanMode,
+                questionCount: Array.isArray(questions) ? questions.length : 0,
+                answerCount: answers && typeof answers === 'object' ? Object.keys(answers).length : 0,
+                answerPromptLen: answerPrompt.length,
+                answerPromptHead: answerPrompt.split('\n').find(l => l.trim()) || '',
+                resume: procSessionId || 'none',
+              });
+              console.log(`[claude-skin] ▶ AskUserQuestion answered (planMode=${wasPlanMode}):`, answerPrompt.slice(0, 200));
               const sid = procSessionId;
-              const answerPrompt = answerText
-                ? `The user answered your question: "${answerText}"\nContinue based on their selection.`
-                : 'The user did not provide an answer. Continue with your best judgement.';
               spawnProc(sid, procModel, procCwd, procEffort, answerPrompt);
+              // Preserve the plan-mode-aware prompt as the new "last prompt" so further
+              // respawns (AskUserQuestion chains) keep re-injecting the plan prefix.
+              lastPrompt = answerPrompt;
               inTurn = true;
               lastEventTime = Date.now();
               lastPermissionDenials = null;
@@ -4248,6 +6057,11 @@ function handleClaudeSkinWebSocket(ws) {
             if (innerResponse?.always || msg.response?.always) {
               console.log(`[claude-skin] ▶ Always-allow: ${toolName}`);
             }
+            planTrace('tool-approved', {
+              tool: toolName,
+              approvedTools: [...approvedTools],
+              planMode: typeof lastPrompt === 'string' && /\[PLAN MODE/i.test(lastPrompt),
+            });
             // Respawn with updated --allowedTools and retry
             console.log(`[claude-skin] ▶ Respawning with approved tools: ${[...approvedTools].join(', ')}`);
             const sid = procSessionId;
@@ -4277,8 +6091,16 @@ function handleClaudeSkinWebSocket(ws) {
         const answer = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
         console.log('[claude-skin] Tool result (AskUserQuestion) → respawn with answer:', answer.slice(0, 200));
         const sid = procSessionId;
-        const answerPrompt = `The user answered your AskUserQuestion: ${answer}\nContinue with their selection.`;
+        const wasPlanMode = typeof lastPrompt === 'string' && /\[PLAN MODE/.test(lastPrompt);
+        // Tool-result path has no structured questions/answers — wrap the raw answer so
+        // buildAskAnswerPrompt still re-injects the plan-mode prefix when applicable.
+        const answerPrompt = buildAskAnswerPrompt(
+          [{ question: 'Previous AskUserQuestion' }],
+          { 'Previous AskUserQuestion': answer },
+          wasPlanMode,
+        );
         spawnProc(sid, procModel, procCwd, procEffort, answerPrompt);
+        lastPrompt = answerPrompt;
         inTurn = true;
         lastEventTime = Date.now();
       }
@@ -4403,7 +6225,11 @@ app.get('/api/claude/config', (req, res) => {
       catch { return []; }
     })();
     const models = [
-      // 1M variants first — CLI uses 1M context by default for opus/sonnet 4.6
+      // 1M variants first. Claude Code CLI requires the `[1m]` beta suffix
+      // (e.g. claude-opus-4-6[1m]) to enable the 1M-token context window.
+      // The client appends that suffix via _getModelId() before sending.
+      { id: 'claude-opus-4-7', label: 'Opus 4.7 xhigh', tier: 'capable', contextWindow: 1000000 },
+      { id: 'claude-opus-4-7', label: 'Opus 4.7 xhigh (200K)', tier: 'capable', contextWindow: 200000 },
       { id: 'claude-opus-4-6', label: 'Opus 4.6', tier: 'capable', contextWindow: 1000000 },
       { id: 'claude-opus-4-6', label: 'Opus 4.6 (200K)', tier: 'capable', contextWindow: 200000 },
       { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', tier: 'fast', contextWindow: 1000000 },
@@ -4484,8 +6310,26 @@ app.post('/api/claude-skin/cost', express.json(), (req, res) => {
 // --- CLI Session Cost Scanner ---
 // Parses JSONL session files to extract costs from direct CLI usage (not via skin)
 
+// Normalize a model selector into a Claude Code CLI-ready model id.
+// Accepts three forms:
+//   "claude-opus-4-6"             → "claude-opus-4-6" (CLI defaults to 200K)
+//   "claude-opus-4-6[1m]"         → passthrough
+//   "claude-opus-4-6:1000000"     → "claude-opus-4-6[1m]" (composite from UI)
+//   "claude-opus-4-6:200000"      → "claude-opus-4-6"
+// The `[1m]` beta suffix is the only way to activate the 1M-token context
+// window in CLI 2.1.x — without it the CLI silently falls back to 200K.
+function toCliModelName(model) {
+  if (!model || typeof model !== 'string') return model;
+  if (!model.includes(':')) return model;
+  const [id, cwRaw] = model.split(':');
+  const cw = parseInt(cwRaw, 10);
+  if (!id) return model;
+  return Number.isFinite(cw) && cw > 200000 ? `${id}[1m]` : id;
+}
+
 const MODEL_PRICING = {
   // $/MTok — [input, output, cache_write, cache_read]
+  'claude-opus-4-7':            [15, 75, 18.75, 1.50],
   'claude-opus-4-6':            [15, 75, 18.75, 1.50],
   'claude-sonnet-4-6':          [3, 15, 3.75, 0.30],
   'claude-haiku-4-5-20251001':  [0.80, 4, 1.00, 0.08],
@@ -4496,7 +6340,10 @@ const MODEL_PRICING = {
 };
 
 function calcMessageCost(model, usage) {
-  const pricing = MODEL_PRICING[model] || MODEL_PRICING['claude-sonnet-4-6']; // safe fallback
+  // JSONL strips the `[1m]` suffix before persisting, but result.modelUsage
+  // keys include it. Strip defensively so pricing lookup works either way.
+  const baseId = typeof model === 'string' ? model.replace(/\[1m\]$/, '') : model;
+  const pricing = MODEL_PRICING[baseId] || MODEL_PRICING['claude-sonnet-4-6']; // safe fallback
   const [pIn, pOut, pCacheW, pCacheR] = pricing;
   const input = (usage.input_tokens || 0) / 1e6 * pIn;
   const output = (usage.output_tokens || 0) / 1e6 * pOut;
@@ -5838,6 +7685,7 @@ app.get('/api/connections', (req, res) => {
 
 const LOOP_TEMPLATES_PATH = resolve(DATA_HOME, 'data', 'loop-templates.json');
 const LOOP_SCHEDULES_PATH = resolve(DATA_HOME, 'data', 'loop-schedules.json');
+const LOOP_FOLDERS_PATH = resolve(DATA_HOME, 'data', 'loop-folders.json');
 const LOOP_DIR = resolve(DATA_HOME, 'data', 'loop');
 
 function readLoopTemplates() {
@@ -5853,6 +7701,20 @@ function writeLoopTemplates(templates) {
   writeFileSync(LOOP_TEMPLATES_PATH, JSON.stringify(templates, null, 2));
 }
 
+function readLoopFolders() {
+  try {
+    if (existsSync(LOOP_FOLDERS_PATH)) {
+      const data = JSON.parse(readFileSync(LOOP_FOLDERS_PATH, 'utf-8'));
+      if (Array.isArray(data)) return data;
+    }
+  } catch { /* corrupt file */ }
+  return [];
+}
+
+function writeLoopFolders(folders) {
+  writeFileSync(LOOP_FOLDERS_PATH, JSON.stringify(folders, null, 2));
+}
+
 // GET /api/loop/templates — list all saved templates
 app.get('/api/loop/templates', (req, res) => {
   res.json(readLoopTemplates());
@@ -5860,7 +7722,7 @@ app.get('/api/loop/templates', (req, res) => {
 
 // POST /api/loop/templates — create a template
 app.post('/api/loop/templates', (req, res) => {
-  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser } = req.body;
+  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser, profile, model, effort, mcpProfile, folderId } = req.body;
   if (!name?.trim() || !task?.trim()) {
     return res.status(400).json({ error: 'name and task are required' });
   }
@@ -5877,6 +7739,11 @@ app.post('/api/loop/templates', (req, res) => {
     usesBrowser: usesBrowser || false,
     icon: icon || '\u{1F504}',
     category: category || 'custom',
+    profile: profile || null,
+    model: model || null,
+    effort: effort || null,
+    mcpProfile: mcpProfile || null,
+    folderId: folderId || null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -5888,23 +7755,58 @@ app.post('/api/loop/templates', (req, res) => {
 // GET /api/loop/templates/export — export all templates as JSON (must be before /:id)
 app.get('/api/loop/templates/export', (req, res) => {
   const templates = readLoopTemplates();
+  const folders = readLoopFolders();
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Disposition', 'attachment; filename="synabun-loop-templates.json"');
   res.json({
-    version: 1,
+    version: 2,
     type: 'synabun-loop-templates',
     exportedAt: new Date().toISOString(),
     templates,
+    folders,
   });
 });
 
 // POST /api/loop/templates/import — import templates from JSON
 app.post('/api/loop/templates/import', (req, res) => {
-  const { templates: incoming, template: single } = req.body;
+  const { templates: incoming, template: single, folders: incomingFolders } = req.body;
   const toImport = incoming || (single ? [single] : null);
   if (!toImport || !Array.isArray(toImport)) {
     return res.status(400).json({ error: 'Invalid import format: expected templates array or template object' });
   }
+
+  // Merge incoming folders first (match by name) so we can remap template folderIds.
+  const folderIdMap = new Map();
+  let foldersAdded = 0;
+  if (Array.isArray(incomingFolders) && incomingFolders.length > 0) {
+    const existingFolders = readLoopFolders();
+    for (const f of incomingFolders) {
+      if (!f?.name?.trim()) continue;
+      const match = existingFolders.find(e => e.name.trim().toLowerCase() === f.name.trim().toLowerCase());
+      if (match) {
+        if (f.id) folderIdMap.set(f.id, match.id);
+      } else {
+        const newId = f.id && !existingFolders.some(e => e.id === f.id)
+          ? f.id
+          : `f_${randomBytes(6).toString('hex')}`;
+        if (f.id && f.id !== newId) folderIdMap.set(f.id, newId);
+        else if (f.id) folderIdMap.set(f.id, newId);
+        existingFolders.push({
+          id: newId,
+          name: f.name.trim(),
+          icon: f.icon || null,
+          color: f.color || null,
+          order: typeof f.order === 'number' ? f.order : existingFolders.length,
+          collapsed: !!f.collapsed,
+          createdAt: f.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        foldersAdded++;
+      }
+    }
+    writeLoopFolders(existingFolders);
+  }
+
   const existing = readLoopTemplates();
   let added = 0;
   let updated = 0;
@@ -5922,6 +7824,11 @@ app.post('/api/loop/templates/import', (req, res) => {
       usesBrowser: t.usesBrowser || false,
       icon: t.icon || '\u{1F504}',
       category: t.category || 'custom',
+      profile: t.profile || null,
+      model: t.model || null,
+      effort: t.effort || null,
+      mcpProfile: t.mcpProfile || null,
+      folderId: folderIdMap.get(t.folderId) || t.folderId || null,
       createdAt: t.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -5935,7 +7842,7 @@ app.post('/api/loop/templates/import', (req, res) => {
     }
   }
   writeLoopTemplates(existing);
-  res.json({ ok: true, added, updated, total: existing.length });
+  res.json({ ok: true, added, updated, total: existing.length, foldersAdded });
 });
 
 // PUT /api/loop/templates/:id — update a template
@@ -5943,7 +7850,7 @@ app.put('/api/loop/templates/:id', (req, res) => {
   const templates = readLoopTemplates();
   const idx = templates.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Template not found' });
-  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser } = req.body;
+  const { name, description, task, context, iterations, maxMinutes, icon, category, usesBrowser, profile, model, effort, mcpProfile, folderId } = req.body;
   if (name !== undefined) templates[idx].name = name.trim();
   if (description !== undefined) templates[idx].description = description.trim();
   if (task !== undefined) templates[idx].task = task.trim();
@@ -5953,6 +7860,11 @@ app.put('/api/loop/templates/:id', (req, res) => {
   if (icon !== undefined) templates[idx].icon = icon;
   if (category !== undefined) templates[idx].category = category;
   if (usesBrowser !== undefined) templates[idx].usesBrowser = !!usesBrowser;
+  if (profile !== undefined) templates[idx].profile = profile || null;
+  if (model !== undefined) templates[idx].model = model || null;
+  if (effort !== undefined) templates[idx].effort = effort || null;
+  if (mcpProfile !== undefined) templates[idx].mcpProfile = mcpProfile || null;
+  if (folderId !== undefined) templates[idx].folderId = folderId || null;
   templates[idx].updatedAt = new Date().toISOString();
   writeLoopTemplates(templates);
   res.json(templates[idx]);
@@ -5965,6 +7877,97 @@ app.delete('/api/loop/templates/:id', (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Template not found' });
   templates.splice(idx, 1);
   writeLoopTemplates(templates);
+  res.json({ ok: true });
+});
+
+// ─── LOOP FOLDERS ──────────────────────────────
+// User-created folders for organizing custom automation templates in the sidebar.
+// Folders apply to custom templates only; presets are grouped by their hard-coded category.
+
+// GET /api/loop/folders — list all folders (sorted by order)
+app.get('/api/loop/folders', (req, res) => {
+  const folders = readLoopFolders();
+  folders.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  res.json(folders);
+});
+
+// POST /api/loop/folders — create a folder
+app.post('/api/loop/folders', (req, res) => {
+  const { name, icon, color } = req.body || {};
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'name is required' });
+  }
+  const folders = readLoopFolders();
+  const folder = {
+    id: `f_${randomBytes(6).toString('hex')}`,
+    name: name.trim(),
+    icon: icon || null,
+    color: color || null,
+    order: folders.length,
+    collapsed: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  folders.push(folder);
+  writeLoopFolders(folders);
+  res.json(folder);
+});
+
+// PUT /api/loop/folders/:id — rename, recolor, change icon, toggle collapsed, or reorder
+app.put('/api/loop/folders/:id', (req, res) => {
+  const folders = readLoopFolders();
+  const idx = folders.findIndex(f => f.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Folder not found' });
+  const { name, icon, color, collapsed, order } = req.body || {};
+  if (name !== undefined && name.trim()) folders[idx].name = name.trim();
+  if (icon !== undefined) folders[idx].icon = icon || null;
+  if (color !== undefined) folders[idx].color = color || null;
+  if (collapsed !== undefined) folders[idx].collapsed = !!collapsed;
+  if (order !== undefined && typeof order === 'number') folders[idx].order = order;
+  folders[idx].updatedAt = new Date().toISOString();
+  writeLoopFolders(folders);
+  res.json(folders[idx]);
+});
+
+// DELETE /api/loop/folders/:id — delete folder; unassigns templates (does NOT delete them)
+app.delete('/api/loop/folders/:id', (req, res) => {
+  const folders = readLoopFolders();
+  const idx = folders.findIndex(f => f.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Folder not found' });
+  folders.splice(idx, 1);
+  writeLoopFolders(folders);
+
+  const templates = readLoopTemplates();
+  let moved = 0;
+  for (const t of templates) {
+    if (t.folderId === req.params.id) {
+      t.folderId = null;
+      t.updatedAt = new Date().toISOString();
+      moved++;
+    }
+  }
+  if (moved > 0) writeLoopTemplates(templates);
+  res.json({ ok: true, templatesUnassigned: moved });
+});
+
+// POST /api/loop/folders/reorder — batch reorder { orderedIds: [...] }
+app.post('/api/loop/folders/reorder', (req, res) => {
+  const { orderedIds } = req.body || {};
+  if (!Array.isArray(orderedIds)) {
+    return res.status(400).json({ error: 'orderedIds array required' });
+  }
+  const folders = readLoopFolders();
+  const byId = new Map(folders.map(f => [f.id, f]));
+  let n = 0;
+  for (const id of orderedIds) {
+    const f = byId.get(id);
+    if (f) { f.order = n++; f.updatedAt = new Date().toISOString(); }
+  }
+  // Append any folders not in the orderedIds list (preserves safety on partial updates)
+  for (const f of folders) {
+    if (!orderedIds.includes(f.id)) { f.order = n++; }
+  }
+  writeLoopFolders(folders);
   res.json({ ok: true });
 });
 
@@ -6060,8 +8063,11 @@ app.post('/api/loop/launch', async (req, res) => {
 
     // 1c. Acquire browser for this loop — reuse existing system browser session.
     // Opens a new TAB in the shared CDP session instead of creating isolated sessions.
+    // Generate terminalSessionId early so we can mark loop ownership immediately after
+    // acquiring a session (before any async tab-creation awaits that create a TOCTOU window).
     let browserSessionId = null;
     let browserTabId = null;
+    const terminalSessionId = randomBytes(16).toString('hex');
     if (usesBrowser) {
       // Strategy 0: Best-effort pin to the caller-provided browser session.
       if (requestedBrowserSessionId) {
@@ -6109,12 +8115,16 @@ app.post('/api/loop/launch', async (req, res) => {
         return res.status(500).json({ error: 'Could not start browser session for this loop. Open Browser Settings and verify the selected profile can launch.' });
       }
 
-      // Open a new tab in the shared session for this loop
+      // Mark loop-owned IMMEDIATELY after acquisition — before any await points
+      // (tab creation, tab switching) that could let a concurrent launch steal this session.
       const claimedSession = browserSessions.get(browserSessionId);
+      if (claimedSession) claimedSession._loopOwned.add(terminalSessionId);
       if (claimedSession?.graceTimer) {
         clearTimeout(claimedSession.graceTimer);
         claimedSession.graceTimer = null;
       }
+
+      // Open a new tab in the shared session for this loop
       if (claimedSession?.tabs && claimedSession.tabs.size > 0) {
         try {
           const newTab = await createSessionTab(claimedSession, browserSessionId, 'about:blank');
@@ -6134,14 +8144,6 @@ app.post('/api/loop/launch', async (req, res) => {
     // 2. Prepare loop state and write file BEFORE spawning PTY.
     // This prevents a race where Claude starts before the hook can find the pending file.
     const loopCwd = cwd || PACKAGE_ROOT;
-    const terminalSessionId = randomBytes(16).toString('hex');
-
-    // Mark this session as loop-owned so interactive sessions don't steal it
-    // (must be after terminalSessionId is defined)
-    if (usesBrowser && browserSessionId) {
-      const owned = browserSessions.get(browserSessionId);
-      if (owned) owned._loopOwned.add(terminalSessionId);
-    }
     const pendingId = 'pending-' + randomBytes(8).toString('hex');
     const loopState = {
       active: true,
@@ -6161,22 +8163,31 @@ app.post('/api/loop/launch', async (req, res) => {
       profile: cliProfile,
       model: model || null,
       effort: effort || null,
+      driverType: cliProfile === 'claude-code' ? 'hook' : 'exec',
+      cwd: loopCwd,
     };
     writeFileSync(resolve(LOOP_DIR, `${pendingId}.json`), JSON.stringify(loopState, null, 2));
 
-    // 3. Create terminal PTY session with selected CLI profile + optional model flag
-    // Default CWD to Synabun project root — it has no .mcp.json, so no auth-requiring
-    // MCP servers (e.g. supabase OAuth) trigger the "needs auth" prompt that blocks loops.
-    // The SynaBun MCP server is registered globally in ~/.claude.json, so it's always available.
+    // 3. Create terminal PTY session + attach appropriate loop driver.
     // SYNABUN_TERMINAL_SESSION lets hooks correlate with the correct loop file
     // after /clear changes the Claude session ID. This is the key to multi-loop isolation.
     const loopExtraEnv = { SYNABUN_TERMINAL_SESSION: terminalSessionId };
     if (browserSessionId) loopExtraEnv.SYNABUN_BROWSER_SESSION = browserSessionId;
     if (browserTabId) loopExtraEnv.SYNABUN_BROWSER_TAB = browserTabId;
-    createTerminalSession(cliProfile, 120, 30, loopCwd, { model, effort, extraEnv: loopExtraEnv, sessionId: terminalSessionId });
+    // Claude Code uses ToolSearch for deferred loading — always give it the full profile
+    if (cliProfile === 'claude-code') loopExtraEnv.SYNABUN_PROFILE = 'full';
 
-    // Attach loop driver to watch for iteration transitions (/clear + re-prompt)
-    attachLoopDriver(terminalSessionId);
+    if (cliProfile === 'claude-code') {
+      // Claude Code: spawn interactive CLI, hook-driven iteration transitions (/clear + re-prompt)
+      createTerminalSession(cliProfile, 120, 30, loopCwd, { model, effort, extraEnv: loopExtraEnv, sessionId: terminalSessionId });
+      attachLoopDriver(terminalSessionId);
+    } else {
+      // Codex/Gemini/other: spawn shell, server drives `<cli> exec` commands per iteration.
+      // Sentinel echo approach: driver sends `<cmd>; echo SYNABUN_ITER_DONE_<N>`
+      // and detects the echo in PTY output. Immune to PS1 overrides.
+      createTerminalSession('shell', 120, 30, loopCwd, { extraEnv: loopExtraEnv, sessionId: terminalSessionId });
+      attachExecLoopDriver(terminalSessionId);
+    }
 
     broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile: cliProfile });
 
@@ -6451,10 +8462,19 @@ async function launchScheduledLoop(schedule) {
       } catch { /* skip corrupt */ }
     }
 
-    const cliProfile = schedule.profile || 'claude-code';
-    const cliModel = schedule.model || null;
-    const cliEffort = schedule.effort || null;
+    const cliProfile    = schedule.profile    || template.profile    || 'claude-code';
+    const cliModel      = schedule.model      || template.model      || null;
+    const cliEffort     = schedule.effort     || template.effort     || null;
+    const cliMcpProfile = schedule.mcpProfile || template.mcpProfile || null;
     const scheduledUsesBrowser = schedule.usesBrowser !== undefined ? !!schedule.usesBrowser : !!template.usesBrowser;
+
+    if (cliProfile !== 'claude-code' && cliMcpProfile) {
+      try {
+        applyMcpProfile(cliMcpProfile);
+      } catch (err) {
+        console.warn(`[schedule] Failed to apply MCP profile "${cliMcpProfile}": ${err.message}`);
+      }
+    }
 
     // Reuse an existing healthy browser session or create one
     let scheduledBrowserSessionId = null;
@@ -6539,7 +8559,7 @@ async function launchScheduledLoop(schedule) {
     }
 
     broadcastSync({ type: 'schedule:completed', scheduleId: schedule.id, pendingId, terminalSessionId, profile: cliProfile });
-    console.log(`[schedule] Launched loop for "${schedule.name}" → terminal ${terminalSessionId} (${cliProfile}/${cliModel || 'default'})`);
+    console.log(`[schedule] Launched loop for "${schedule.name}" → terminal ${terminalSessionId} (${cliProfile}/${cliModel || 'default'}/${cliEffort || 'off'}${cliMcpProfile ? '/mcp:' + cliMcpProfile : ''})`);
   } catch (err) {
     console.error(`[schedule] Failed to launch loop for "${schedule.name}":`, err.message);
     const schedules = loadSchedules();
@@ -7007,7 +9027,7 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
     }
     agent._resumableSessionId = sessionId; // Mark this session-id as resumable for next iteration
 
-    if (agent.model && agent.model !== 'default') args.push('--model', agent.model);
+    if (agent.model && agent.model !== 'default') args.push('--model', toCliModelName(agent.model));
     if (agent.effort && ['low', 'medium', 'high', 'max'].includes(agent.effort)) args.push('--effort', agent.effort);
     if (agent._maxTurns) args.push('--max-turns', String(agent._maxTurns));
     if (agent._systemPrompt) args.push('--system-prompt', agent._systemPrompt);
@@ -7417,6 +9437,11 @@ app.post('/api/agents/launch', async (req, res) => {
       try {
         const result = await createBrowserSession({ url: 'about:blank' });
         browserSessionId = result.sessionId;
+        // Mark agent-owned IMMEDIATELY to prevent concurrent launches from stealing
+        // this session via findReusableBrowserSession(). Uses a temporary sentinel —
+        // launchAgentController overwrites with the real agentId.
+        const preOwned = browserSessions.get(browserSessionId);
+        if (preOwned) preOwned._agentOwned = '__pending__';
         broadcastSync({
           type: 'browser:session-created',
           sessionId: browserSessionId, url: 'about:blank',
@@ -7638,6 +9663,90 @@ app.get('/api/system/version', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════
+// EXTERNAL CLI TOOL VERSION CHECK
+// ═══════════════════════════════════════════
+
+const TOOL_DEFS = [
+  { key: 'claude-code', cmd: 'claude',   versionArg: '--version', npm: '@anthropic-ai/claude-code' },
+  { key: 'codex',       cmd: 'codex',    versionArg: '--version', npm: '@openai/codex' },
+  { key: 'gemini',      cmd: 'gemini',   versionArg: '--version', npm: '@google/gemini-cli' },
+  { key: 'opencode',    cmd: 'opencode', versionArg: '--version', npm: 'opencode-ai' },
+];
+
+let _toolVersionCache = { checkedAt: null, tools: {} };
+
+function parseVersion(raw) {
+  const m = raw.match(/(\d+\.\d+\.\d+)/);
+  return m ? m[1] : null;
+}
+
+function semverNewer(a, b) {
+  if (!a || !b) return false;
+  const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+  return pb[0] > pa[0]
+    || (pb[0] === pa[0] && pb[1] > pa[1])
+    || (pb[0] === pa[0] && pb[1] === pa[1] && pb[2] > pa[2]);
+}
+
+async function checkToolVersions() {
+  const augPath = getAugmentedPath();
+  const execOpts = { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: augPath } };
+
+  const results = {};
+
+  for (const tool of TOOL_DEFS) {
+    let installed = null;
+    try {
+      const raw = execSync(`${tool.cmd} ${tool.versionArg}`, execOpts).trim();
+      installed = parseVersion(raw);
+    } catch { /* not installed or errored */ }
+
+    let latest = null;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      if (tool.npm) {
+        const res = await fetch(`https://registry.npmjs.org/${tool.npm}/latest`, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (res.ok) { const d = await res.json(); latest = d.version; }
+      } else if (tool.github) {
+        const res = await fetch(`https://api.github.com/repos/${tool.github}/releases/latest`, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (res.ok) { const d = await res.json(); latest = parseVersion(d.tag_name || ''); }
+      }
+    } catch { /* network error */ }
+
+    results[tool.key] = {
+      installed,
+      latest,
+      updateAvailable: !!(installed && latest && semverNewer(installed, latest)),
+    };
+  }
+
+  _toolVersionCache = { checkedAt: new Date().toISOString(), tools: results };
+
+  const updates = Object.entries(results).filter(([, v]) => v.updateAvailable);
+  if (updates.length) {
+    console.log(`  CLI Tools: ${updates.map(([k, v]) => `${k} v${v.installed}→v${v.latest}`).join(', ')}`);
+  } else {
+    console.log('  CLI Tools: all up to date');
+  }
+}
+
+app.get('/api/system/tool-versions', async (req, res) => {
+  const force = req.query.force === '1';
+  if (force || !_toolVersionCache.checkedAt) {
+    try { await checkToolVersions(); } catch {}
+  } else {
+    const age = Date.now() - new Date(_toolVersionCache.checkedAt).getTime();
+    if (age > 3 * 60 * 60 * 1000) {
+      try { await checkToolVersions(); } catch {}
+    }
+  }
+  res.json(_toolVersionCache);
+});
+
+// ═══════════════════════════════════════════
 // FULL SYSTEM BACKUP & RESTORE
 // ═══════════════════════════════════════════
 
@@ -7714,10 +9823,11 @@ app.get('/api/system/backup', async (req, res) => {
 
     // 2. data/ directory
     const dataDir = resolve(DATA_HOME, 'data');
-    for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
+    for (const f of ['ui-state.json', 'greeting-config.json', 'codex-greeting-config.json',
+                      'opencode-greeting-config.json', 'hook-features.json',
                       'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json',
                       'invite-key.json', 'invite-proxy.json', 'invite-permissions.json',
-                      'loop-templates.json', 'loop-schedules.json', 'auto-backup-config.json',
+                      'loop-templates.json', 'loop-schedules.json', 'loop-folders.json', 'auto-backup-config.json',
                       'cost-tracking.json', 'skin-config.json', 'image-favorites.json',
                       'browser-config.json', 'browser-storage.json', 'last-session.json',
                       'invite-sessions.json']) {
@@ -8096,10 +10206,11 @@ function buildBackupZipToFile(destPath) {
     addFile('env.bak', ENV_PATH);
 
     const dataDir = resolve(DATA_HOME, 'data');
-    for (const f of ['ui-state.json', 'greeting-config.json', 'hook-features.json',
+    for (const f of ['ui-state.json', 'greeting-config.json', 'codex-greeting-config.json',
+                      'opencode-greeting-config.json', 'hook-features.json',
                       'claude-code-projects.json', 'mcp-api-key.json', 'keybinds.json', 'cli-config.json',
                       'invite-key.json', 'invite-proxy.json', 'invite-permissions.json',
-                      'loop-templates.json', 'loop-schedules.json', 'auto-backup-config.json',
+                      'loop-templates.json', 'loop-schedules.json', 'loop-folders.json', 'auto-backup-config.json',
                       'cost-tracking.json', 'skin-config.json', 'image-favorites.json',
                       'browser-config.json', 'browser-storage.json', 'last-session.json',
                       'invite-sessions.json']) {
@@ -8285,7 +10396,8 @@ function validateProjectPath(filePath) {
   const registeredProjects = loadHookProjects();
   const claudePlansDir = resolve(join(process.env.USERPROFILE || process.env.HOME || '', '.claude', 'plans'));
   const localPlansDir = resolve(join(DATA_HOME, 'data', 'plans'));
-  const allowedRoots = [resolve(DATA_HOME), ...registeredProjects.map(p => resolve(p.path)), localPlansDir, claudePlansDir];
+  const opencodeConfigPath = resolve(getOpencodeConfigPath());
+  const allowedRoots = [resolve(DATA_HOME), ...registeredProjects.map(p => resolve(p.path)), localPlansDir, claudePlansDir, opencodeConfigPath];
   const matched = allowedRoots.find(r => normalized === r || normalized.startsWith(r + sep));
   return matched ? normalized : null;
 }
@@ -8398,7 +10510,7 @@ app.delete('/api/file-content', (req, res) => {
   }
 });
 
-// GET /api/latest-plan — Find most recently modified plan file (data/plans/ preferred, ~/.claude/plans/ fallback)
+// GET /api/latest-plan — Find most recently modified plan file (data/plans/YYYY-MM-DD/ preferred, flat fallback)
 app.get('/api/latest-plan', (req, res) => {
   try {
     const localPlansDir = join(DATA_HOME, 'data', 'plans');
@@ -8406,37 +10518,82 @@ app.get('/api/latest-plan', (req, res) => {
     const maxAge = 24 * 60 * 60 * 1000; // 24 hours
     const now = Date.now();
     const files = [];
-    for (const dir of [localPlansDir, legacyPlansDir]) {
-      if (!existsSync(dir)) continue;
-      for (const f of readdirSync(dir).filter(f => f.endsWith('.md'))) {
+
+    // Primary: scan localPlansDir — date subdirectories (YYYY-MM-DD/) and legacy flat files
+    if (existsSync(localPlansDir)) {
+      for (const entry of readdirSync(localPlansDir)) {
+        if (entry.startsWith('.')) continue;
+        const entryPath = join(localPlansDir, entry);
+        const entryStat = statSync(entryPath);
+        if (entryStat.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(entry)) {
+          for (const f of readdirSync(entryPath).filter(f => f.endsWith('.md'))) {
+            const fullPath = join(entryPath, f);
+            const st = statSync(fullPath);
+            if ((now - st.mtimeMs) < maxAge) {
+              files.push({ name: f, path: fullPath.replace(/\\/g, '/'), mtime: st.mtimeMs });
+            }
+          }
+        } else if (entry.endsWith('.md')) {
+          if ((now - entryStat.mtimeMs) < maxAge) {
+            files.push({ name: entry, path: entryPath.replace(/\\/g, '/'), mtime: entryStat.mtimeMs });
+          }
+        }
+      }
+    }
+
+    // Fallback: ~/.claude/plans/ (flat only)
+    if (existsSync(legacyPlansDir)) {
+      for (const f of readdirSync(legacyPlansDir).filter(f => f.endsWith('.md'))) {
         if (files.some(r => r.name === f)) continue;
-        const fullPath = join(dir, f);
+        const fullPath = join(legacyPlansDir, f);
         const st = statSync(fullPath);
         if ((now - st.mtimeMs) < maxAge) {
           files.push({ name: f, path: fullPath.replace(/\\/g, '/'), mtime: st.mtimeMs });
         }
       }
     }
+
     files.sort((a, b) => b.mtime - a.mtime);
 
     if (!files.length) return res.json({ ok: true, found: false });
-    res.json({ ok: true, found: true, path: files[0].path, name: files[0].name });
+    res.json({ ok: true, found: true, path: files[0].path, name: files[0].name, mtime: files[0].mtime });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/create-plan — Materialize plan content into a file in data/plans/
+// POST /api/create-plan — Materialize plan content into a file in data/plans/YYYY-MM-DD/slug.md
 app.post('/api/create-plan', (req, res) => {
   try {
     const { content } = req.body;
     if (!content || typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
 
-    const plansDir = join(DATA_HOME, 'data', 'plans');
+    // Date-organized folder
+    const d = new Date();
+    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const plansDir = join(DATA_HOME, 'data', 'plans', ymd);
     if (!existsSync(plansDir)) mkdirSync(plansDir, { recursive: true });
 
-    const name = `synabun-plan-${Date.now()}.md`;
-    const fullPath = join(plansDir, name);
+    // Slug from H1 heading or first line
+    const h1 = content.match(/^#\s+(.+)$/m);
+    const title = h1 ? h1[1].trim() : (content.split('\n').find(l => l.trim()) || 'untitled').trim();
+    const slug = (title || 'untitled')
+      .toLowerCase()
+      .replace(/^plan[:\s]+/i, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'untitled';
+
+    // Collision-safe naming
+    let name = `${slug}.md`;
+    let fullPath = join(plansDir, name);
+    if (existsSync(fullPath)) {
+      let n = 2;
+      while (existsSync(join(plansDir, `${slug}-${n}.md`))) n++;
+      name = `${slug}-${n}.md`;
+      fullPath = join(plansDir, name);
+    }
+
     writeFileSync(fullPath, content, 'utf-8');
     res.json({ ok: true, path: fullPath.replace(/\\/g, '/'), name });
   } catch (err) {
@@ -9680,6 +11837,353 @@ app.get('/api/claude-code/sessions', (req, res) => {
   }
 });
 
+// GET /api/codex/sessions — browse past Codex CLI sessions across registered projects
+app.get('/api/codex/sessions', (req, res) => {
+  try {
+    const projects = loadHookProjects();
+    const targetProject = req.query.project;
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+    const offset = parseInt(req.query.offset) || 0;
+    const search = (req.query.search || '').toLowerCase().trim();
+
+    const homeDir = process.env.USERPROFILE || process.env.HOME;
+    const codexSessionsDir = join(homeDir, '.codex', 'sessions');
+    if (!existsSync(codexSessionsDir)) return res.json({ projects: projects.map(p => ({ path: p.path, label: p.label || basename(p.path), total: 0, sessions: [] })) });
+
+    // Recursively find all .jsonl files
+    const allJsonl = [];
+    const walkCodex = (dir) => {
+      try {
+        for (const f of readdirSync(dir, { withFileTypes: true })) {
+          if (f.isDirectory()) walkCodex(join(dir, f.name));
+          else if (f.name.endsWith('.jsonl')) allJsonl.push(join(dir, f.name));
+        }
+      } catch { /* permission error or missing dir */ }
+    };
+    walkCodex(codexSessionsDir);
+
+    // Group sessions by registered project
+    const sessionsByProject = new Map();
+    for (const proj of projects) sessionsByProject.set(resolve(proj.path), []);
+
+    for (const filePath of allJsonl) {
+      try {
+        // Codex session_meta lines can be very large (embed full system prompt), so read enough
+        const fd = openSync(filePath, 'r');
+        const buf = Buffer.alloc(64 * 1024); // 64KB — enough for session_meta with base_instructions
+        const bytesRead = readSync(fd, buf, 0, buf.length, 0);
+        closeSync(fd);
+        if (bytesRead === 0) continue;
+
+        const raw = buf.toString('utf-8', 0, bytesRead);
+        const nlIdx = raw.indexOf('\n');
+        const firstLine = nlIdx > 0 ? raw.slice(0, nlIdx) : raw;
+        if (!firstLine) continue;
+        const meta = JSON.parse(firstLine);
+        if (meta.type !== 'session_meta' || !meta.payload) continue;
+
+        const p = meta.payload;
+        const cwd = p.cwd ? resolve(p.cwd) : null;
+        if (!cwd) continue;
+
+        // Match to a registered project
+        const projPath = [...sessionsByProject.keys()].find(pp => cwd.startsWith(pp));
+        if (!projPath) continue;
+        if (targetProject && projPath !== resolve(targetProject)) continue;
+
+        const stat = statSync(filePath);
+        const sessionId = p.id || basename(filePath, '.jsonl');
+        const gitBranch = p.git?.branch || null;
+
+        // Extract first user prompt from subsequent lines
+        // Codex JSONL uses type:"response_item" with payload.type:"message" (not top-level type:"message")
+        // Skip developer role and <environment_context> user messages to find the real prompt
+        let firstPrompt = '';
+        const remaining = nlIdx > 0 ? raw.slice(nlIdx + 1) : '';
+        const nextLines = remaining.split('\n').slice(0, 30);
+        for (const line of nextLines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            const payload = msg.payload;
+            const isMessage = msg.type === 'message' || (msg.type === 'response_item' && payload?.type === 'message');
+            if (!isMessage || payload?.role !== 'user') continue;
+            const content = payload.content;
+            let text = '';
+            if (typeof content === 'string') text = content;
+            else if (Array.isArray(content)) {
+              const textPart = content.find(c => c.type === 'input_text' || c.type === 'text');
+              if (textPart) text = textPart.text || '';
+            }
+            // Skip system injections — not real user prompts
+            if (text.startsWith('<environment_context>') ||
+                text.startsWith('# AGENTS.md') ||
+                text.startsWith('<permissions') ||
+                text.startsWith('<INSTRUCTIONS>')) continue;
+            if (text) { firstPrompt = text.slice(0, 200); break; }
+          } catch { /* skip unparseable line */ }
+        }
+
+        sessionsByProject.get(projPath).push({
+          sessionId,
+          firstPrompt,
+          messageCount: 0,
+          created: p.timestamp || stat.birthtime?.toISOString(),
+          modified: stat.mtime?.toISOString(),
+          gitBranch,
+        });
+      } catch { /* skip unparseable session */ }
+    }
+
+    const result = [];
+    for (const proj of projects) {
+      if (targetProject && resolve(proj.path) !== resolve(targetProject)) continue;
+      let entries = sessionsByProject.get(resolve(proj.path)) || [];
+      entries.sort((a, b) => new Date(b.modified) - new Date(a.modified));
+      if (search) {
+        entries = entries.filter(e =>
+          (e.firstPrompt || '').toLowerCase().includes(search) ||
+          (e.gitBranch || '').toLowerCase().includes(search) ||
+          (e.sessionId || '').toLowerCase().includes(search)
+        );
+      }
+      const total = entries.length;
+      result.push({
+        path: proj.path,
+        label: proj.label || basename(proj.path),
+        total,
+        sessions: entries.slice(offset, offset + limit),
+      });
+    }
+    res.json({ projects: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/opencode/sessions — browse past OpenCode sessions across registered projects
+app.get('/api/opencode/sessions', (req, res) => {
+  try {
+    const db = getOpencodeDb();
+    const projects = loadHookProjects();
+    const targetProject = req.query.project;
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+    const offset = parseInt(req.query.offset) || 0;
+    const search = (req.query.search || '').toLowerCase().trim();
+
+    if (!db) return res.json({ projects: projects.map(p => ({ path: p.path, label: p.label || basename(p.path), total: 0, sessions: [] })) });
+
+    let rows;
+    try {
+      const stmt = db.prepare(`
+        SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
+               p.worktree as project_worktree,
+               (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) as message_count
+        FROM session s
+        LEFT JOIN project p ON s.project_id = p.id
+        WHERE s.time_archived IS NULL
+        ORDER BY s.time_updated DESC
+      `);
+      rows = stmt.all();
+    } catch { rows = []; }
+
+    // Group by registered project
+    const sessionsByProject = new Map();
+    for (const proj of projects) sessionsByProject.set(resolve(proj.path), []);
+
+    for (const row of rows) {
+      // OpenCode's project.worktree is the actual project path
+      const projWorktree = row.project_worktree ? resolve(row.project_worktree) : null;
+      const dir = row.directory ? resolve(row.directory) : null;
+      const matchDir = projWorktree || dir;
+      if (!matchDir) continue;
+      const projPath = [...sessionsByProject.keys()].find(pp => matchDir.startsWith(pp));
+      if (!projPath) continue;
+      if (targetProject && projPath !== resolve(targetProject)) continue;
+
+      sessionsByProject.get(projPath).push({
+        sessionId: row.id,
+        firstPrompt: row.title || '',
+        messageCount: row.message_count || 0,
+        created: row.time_created ? new Date(row.time_created).toISOString() : null,
+        modified: row.time_updated ? new Date(row.time_updated).toISOString() : null,
+        gitBranch: null,
+      });
+    }
+
+    const result = [];
+    for (const proj of projects) {
+      if (targetProject && resolve(proj.path) !== resolve(targetProject)) continue;
+      let entries = sessionsByProject.get(resolve(proj.path)) || [];
+      entries.sort((a, b) => new Date(b.modified) - new Date(a.modified));
+      if (search) {
+        entries = entries.filter(e =>
+          (e.firstPrompt || '').toLowerCase().includes(search) ||
+          (e.sessionId || '').toLowerCase().includes(search)
+        );
+      }
+      const total = entries.length;
+      result.push({
+        path: proj.path,
+        label: proj.label || basename(proj.path),
+        total,
+        sessions: entries.slice(offset, offset + limit),
+      });
+    }
+    res.json({ projects: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/gemini/sessions — stub (Gemini CLI has no known session storage)
+app.get('/api/gemini/sessions', (req, res) => {
+  const projects = loadHookProjects();
+  res.json({ projects: projects.map(p => ({ path: p.path, label: p.label || basename(p.path), total: 0, sessions: [] })) });
+});
+
+// ── Hybrid session content search (FTS5 + semantic re-rank for Claude) ──
+// GET /api/session-search?q=<query>&provider=<p>&project=<path>&limit=50
+app.get('/api/session-search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const provider = String(req.query.provider || 'claude-code');
+    const projectPath = req.query.project ? String(req.query.project) : null;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+
+    if (!q || q.length < 2) {
+      return res.json({ provider, query: q, projects: [] });
+    }
+
+    const projects = loadHookProjects();
+    const projMatch = projectPath
+      ? projects.find(p => resolve(p.path) === resolve(projectPath))
+      : null;
+    const projectFilter = projMatch ? basename(projMatch.path) : null;
+
+    // 1. FTS5 substring hits
+    const ftsRows = searchSessionFts(q, { provider, project: projectFilter, limit: limit * 2 });
+    const ftsMap = new Map();
+    let maxFtsRank = 0;
+    for (const row of ftsRows) {
+      // bm25 is negative-ish, lower = better; normalize against the worst (max abs) rank seen
+      const absRank = Math.abs(row.rank || 0);
+      if (absRank > maxFtsRank) maxFtsRank = absRank;
+      ftsMap.set(`${row.session_id}:${row.provider}`, {
+        session_id: row.session_id,
+        provider: row.provider,
+        snippet: row.snippet || '',
+        fts_rank: row.rank || 0,
+      });
+    }
+
+    // 2. Semantic re-rank (Claude only — uses existing session_chunks vectors)
+    const semanticMap = new Map();
+    if (provider === 'claude-code') {
+      try {
+        const vec = await getEmbedding(q);
+        const chunkResults = dbSearchSessionChunks(vec, 100, {
+          project: projectFilter || undefined,
+          scoreThreshold: 0.35,
+        });
+        for (const r of chunkResults) {
+          const sid = r.payload?.session_id;
+          if (!sid) continue;
+          const key = `${sid}:claude-code`;
+          const existing = semanticMap.get(key);
+          if (!existing || r.score > existing.score) {
+            semanticMap.set(key, { session_id: sid, provider: 'claude-code', score: r.score });
+          }
+        }
+      } catch { /* embedding pipeline not ready; skip semantic layer */ }
+    }
+
+    // 3. Merge — boost sessions that hit both, then FTS-only, then semantic-only
+    const composite = new Map();
+    for (const [key, hit] of ftsMap) {
+      const ftsNorm = maxFtsRank > 0 ? 1 - (Math.abs(hit.fts_rank) / maxFtsRank) : 1;
+      composite.set(key, {
+        ...hit,
+        match_kind: 'fts',
+        composite_score: 0.6 * ftsNorm,
+      });
+    }
+    for (const [key, hit] of semanticMap) {
+      const existing = composite.get(key);
+      if (existing) {
+        existing.match_kind = 'both';
+        existing.semantic_score = hit.score;
+        existing.composite_score += 0.4 * hit.score;
+      } else {
+        composite.set(key, {
+          session_id: hit.session_id,
+          provider: hit.provider,
+          snippet: '',
+          fts_rank: 0,
+          semantic_score: hit.score,
+          match_kind: 'semantic-only',
+          composite_score: 0.4 * hit.score,
+        });
+      }
+    }
+
+    const ordered = [...composite.values()]
+      .sort((a, b) => {
+        const rank = (x) => x.match_kind === 'both' ? 2 : x.match_kind === 'fts' ? 1 : 0;
+        const dr = rank(b) - rank(a);
+        if (dr !== 0) return dr;
+        return b.composite_score - a.composite_score;
+      })
+      .slice(0, limit);
+
+    // 4. Hydrate from session_cache and group by registered project
+    const resultByProject = new Map();
+    for (const proj of projects) {
+      resultByProject.set(resolve(proj.path), {
+        path: proj.path,
+        label: proj.label || basename(proj.path),
+        total: 0,
+        sessions: [],
+      });
+    }
+
+    for (const hit of ordered) {
+      const entry = getSessionCacheEntry(hit.session_id, hit.provider);
+      if (!entry) continue;
+
+      let projKey = null;
+      if (entry.project_path) {
+        const entryPath = resolve(entry.project_path);
+        projKey = [...resultByProject.keys()].find(pp => entryPath.startsWith(pp));
+      }
+      if (!projKey) continue;
+      if (projectPath && projKey !== resolve(projectPath)) continue;
+
+      const bucket = resultByProject.get(projKey);
+      bucket.sessions.push({
+        sessionId: entry.session_id,
+        firstPrompt: entry.first_prompt || '',
+        messageCount: entry.message_count || 0,
+        created: entry.created,
+        modified: entry.modified,
+        gitBranch: entry.git_branch || null,
+        deleted: !!entry.deleted,
+        fts_snippet: hit.snippet || null,
+        match_kind: hit.match_kind,
+        composite_score: hit.composite_score,
+      });
+      bucket.total++;
+    }
+
+    const result = [...resultByProject.values()]
+      .filter(p => !projectPath || resolve(p.path) === resolve(projectPath));
+
+    res.json({ provider, query: q, projects: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Session Messages (read JSONL for panel history) ---
 
 app.get('/api/claude-code/sessions/:sessionId/messages', (req, res) => {
@@ -9786,16 +12290,12 @@ app.get('/api/claude-code/sessions/:sessionId/messages', (req, res) => {
         cache_creation_input_tokens: lastUsage.cache_creation_input_tokens || 0,
       };
     }
-    // Infer context window from model — CLI reports 200K via modelUsage.contextWindow
-    if (lastModel) {
-      const CLI_CONTEXT_WINDOWS = {
-        'claude-opus-4-6': 200000,
-        'claude-sonnet-4-6': 200000,
-        'claude-haiku-4-5-20251001': 200000,
-      };
-      const cw = CLI_CONTEXT_WINDOWS[lastModel];
-      if (cw) result.contextWindow = cw;
-    }
+    // Do NOT infer contextWindow from lastModel: JSONL strips the `[1m]`
+    // beta suffix, so a session run with 1M context is indistinguishable
+    // from a 200K session based on the stored model id alone. The client
+    // falls back to the dropdown's current selection; the gauge is then
+    // re-anchored to the real value the next time CLI emits a result
+    // event (which carries modelUsage.contextWindow).
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -9954,7 +12454,7 @@ app.get('/api/claude-code/integrations', (req, res) => {
 
     const mcpIndexPath = resolve(PACKAGE_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
     const envPath = resolve(DATA_HOME, '.env').replace(/\\/g, '/');
-    const cliCommand = `claude mcp add SynaBun -s user -e DOTENV_PATH="${envPath}" -- node "${mcpIndexPath}"`;
+    const cliCommand = `claude mcp add SynaBun node "${mcpIndexPath}" -s user -e "DOTENV_PATH=${envPath}"`;
 
     res.json({
       ok: true,
@@ -10262,6 +12762,7 @@ app.put('/api/claude-code/tool-permissions', (req, res) => {
 
 const GREETING_CONFIG_PATH = resolve(DATA_HOME, 'data', 'greeting-config.json');
 const CODEX_GREETING_CONFIG_PATH = resolve(DATA_HOME, 'data', 'codex-greeting-config.json');
+const OPENCODE_GREETING_CONFIG_PATH = resolve(DATA_HOME, 'data', 'opencode-greeting-config.json');
 
 function loadGreetingConfig() {
   try {
@@ -10513,6 +13014,119 @@ function buildCodexGreetingPrompt({ cwd = PACKAGE_ROOT, userPrompt = '', markerS
   return parts.filter((part) => part !== undefined).join('\n').trim();
 }
 
+// ── OpenCode Panel Greeting (isolated from Claude + Codex) ──
+
+function buildSeededOpencodeGreetingConfig() {
+  const base = loadGreetingConfig();
+  return {
+    version: 1,
+    enabled: false,
+    defaults: deepCloneJson(base.defaults, {}),
+    projects: deepCloneJson(base.projects, {}),
+    global: deepCloneJson(base.global, {}),
+  };
+}
+
+function normalizeOpencodeGreetingConfig(config) {
+  const seeded = buildSeededOpencodeGreetingConfig();
+  const next = (config && typeof config === 'object') ? config : {};
+  return {
+    version: 1,
+    enabled: typeof next.enabled === 'boolean' ? next.enabled : seeded.enabled,
+    defaults: deepCloneJson(next.defaults, seeded.defaults),
+    projects: deepCloneJson(next.projects, seeded.projects),
+    global: deepCloneJson(next.global, seeded.global),
+  };
+}
+
+function saveOpencodeGreetingConfig(config) {
+  const dir = dirname(OPENCODE_GREETING_CONFIG_PATH);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(OPENCODE_GREETING_CONFIG_PATH, JSON.stringify(normalizeOpencodeGreetingConfig(config), null, 2), 'utf-8');
+}
+
+function loadOpencodeGreetingConfig() {
+  try {
+    if (!existsSync(OPENCODE_GREETING_CONFIG_PATH)) {
+      const seeded = buildSeededOpencodeGreetingConfig();
+      saveOpencodeGreetingConfig(seeded);
+      return seeded;
+    }
+    const parsed = JSON.parse(readFileSync(OPENCODE_GREETING_CONFIG_PATH, 'utf-8'));
+    const normalized = normalizeOpencodeGreetingConfig(parsed);
+    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) saveOpencodeGreetingConfig(normalized);
+    return normalized;
+  } catch {
+    const seeded = buildSeededOpencodeGreetingConfig();
+    try { saveOpencodeGreetingConfig(seeded); } catch {}
+    return seeded;
+  }
+}
+
+function buildOpencodeGreetingUserPrompt({ cwd = PACKAGE_ROOT, userPrompt = '' } = {}) {
+  const config = loadOpencodeGreetingConfig();
+  if (config.enabled !== true) return '';
+
+  const project = detectGreetingProject(cwd);
+  const projectConfig = getProviderGreetingProjectConfig(config, project);
+  const defaultTemplate = '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.';
+  const projectLabel = projectConfig?.label || project;
+  const branch = getGreetingGitBranch(cwd);
+  const vars = {
+    time_greeting: getTimeGreeting(),
+    project,
+    project_name: project,
+    project_label: projectLabel,
+    branch,
+    date: new Date().toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    }),
+  };
+  const greetingText = resolveGreetingTemplate(
+    projectConfig?.greetingTemplate || config.defaults?.greetingTemplate || defaultTemplate,
+    vars,
+  ).trim();
+  if (!greetingText) return '';
+
+  const reminders = Array.isArray(projectConfig?.reminders)
+    ? projectConfig.reminders.filter((reminder) => reminder && (reminder.label || reminder.command))
+    : [];
+  const showReminders = projectConfig?.showReminders ?? config.defaults?.showReminders ?? false;
+  const showLastSession = projectConfig?.showLastSession ?? config.defaults?.showLastSession ?? false;
+
+  const parts = [];
+  parts.push(`Before answering, please use the recall tool to search for "recent sessions, ongoing work, known issues, decisions" in the "${project}" project with recency_boost enabled.`);
+  parts.push('');
+  parts.push(`Start your reply with this greeting:`);
+  parts.push(`> ${greetingText}`);
+
+  if (showReminders && reminders.length) {
+    parts.push('');
+    parts.push('After the greeting, show these service reminders:');
+    for (const reminder of reminders) {
+      const label = reminder.label || 'Reminder';
+      const command = reminder.command || '';
+      parts.push(`- **${label}**: \`${command}\``);
+    }
+  }
+
+  if (showLastSession) {
+    parts.push('');
+    parts.push('If the recall results mention recent work, include a brief "Last session:" summary line.');
+  }
+
+  const userMsg = String(userPrompt || '').trim();
+  if (userMsg) {
+    parts.push('');
+    parts.push(`Then respond to: ${userMsg}`);
+  }
+
+  return parts.join('\n').trim();
+}
+
 // GET /api/greeting/config — read the full greeting configuration
 app.get('/api/greeting/config', (req, res) => {
   try {
@@ -10593,6 +13207,51 @@ app.put('/api/codex-panel/greeting/config/:project', (req, res) => {
   }
 });
 
+// GET /api/opencode-panel/greeting/config — read OpenCode-only greeting configuration
+app.get('/api/opencode-panel/greeting/config', (req, res) => {
+  try {
+    res.json({ ok: true, config: loadOpencodeGreetingConfig() });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// PUT /api/opencode-panel/greeting/config — update top-level OpenCode greeting settings
+app.put('/api/opencode-panel/greeting/config', (req, res) => {
+  try {
+    const config = loadOpencodeGreetingConfig();
+    if (typeof req.body?.enabled === 'boolean') config.enabled = req.body.enabled;
+    saveOpencodeGreetingConfig(config);
+    res.json({ ok: true, config });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// PUT /api/opencode-panel/greeting/config/:project — update OpenCode-only project greeting config
+app.put('/api/opencode-panel/greeting/config/:project', (req, res) => {
+  try {
+    const { project } = req.params;
+    const { greetingTemplate, showReminders, showLastSession, reminders, label } = req.body;
+    const config = loadOpencodeGreetingConfig();
+
+    const target = project === 'global'
+      ? (config.global || (config.global = {}))
+      : (config.projects[project] || (config.projects[project] = {}));
+
+    if (greetingTemplate !== undefined) target.greetingTemplate = greetingTemplate;
+    if (showReminders !== undefined) target.showReminders = showReminders;
+    if (showLastSession !== undefined) target.showLastSession = showLastSession;
+    if (reminders !== undefined) target.reminders = reminders;
+    if (label !== undefined) target.label = label;
+
+    saveOpencodeGreetingConfig(config);
+    res.json({ ok: true, config });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET /api/claude-code/ruleset — Return the SynaBun CLAUDE.md memory ruleset for copy/paste
 // Supports ?format=claude (default) | cursor | generic
 app.get('/api/claude-code/ruleset', (req, res) => {
@@ -10658,29 +13317,30 @@ app.get('/api/claude-code/mcp', (req, res) => {
     const claudeJsonPath = join(home, '.claude.json');
     if (!existsSync(claudeJsonPath)) return res.json({ ok: true, connected: false });
     const data = JSON.parse(readFileSync(claudeJsonPath, 'utf-8'));
-    const connected = !!(data.mcpServers && data.mcpServers.SynaBun);
-    res.json({ ok: true, connected });
+    const entry = data.mcpServers && data.mcpServers.SynaBun;
+    const connected = !!entry;
+    const transport = entry?.type || (entry?.command ? 'stdio' : 'unknown');
+    res.json({ ok: true, connected, transport });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // POST /api/claude-code/mcp — Register SynaBun MCP in Claude's ~/.claude.json
+// Uses HTTP transport pointing at the Neural Interface's persistent /mcp endpoint.
+// This avoids cold-starting a new MCP process per session (embedding model stays warm).
 app.post('/api/claude-code/mcp', (req, res) => {
   try {
     const home = process.env.USERPROFILE || process.env.HOME || '';
     const claudeJsonPath = join(home, '.claude.json');
-    const mcpIndexPath = resolve(PACKAGE_ROOT, 'mcp-server', 'run.mjs').replace(/\\/g, '/');
-    const envPath = resolve(DATA_HOME, '.env').replace(/\\/g, '/');
+    const mcpUrl = `http://localhost:${PORT}/mcp`;
 
     let data = {};
     try { data = JSON.parse(readFileSync(claudeJsonPath, 'utf-8')); } catch {}
     if (!data.mcpServers) data.mcpServers = {};
     data.mcpServers.SynaBun = {
-      type: 'stdio',
-      command: 'node',
-      args: [mcpIndexPath],
-      env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
+      type: 'http',
+      url: mcpUrl,
     };
     writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
 
@@ -10690,7 +13350,7 @@ app.post('/api/claude-code/mcp', (req, res) => {
     ensureSynaBunPermissions(globalSettings);
     writeClaudeSettings(globalSettingsPath, globalSettings);
 
-    res.json({ ok: true, message: 'SynaBun MCP registered. Restart Claude Code to connect.' });
+    res.json({ ok: true, message: 'SynaBun MCP registered (HTTP). Restart Claude Code to connect.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -10770,6 +13430,48 @@ function tomlRemoveAllToolSections(content, prefix) {
     re.lastIndex = 0;
   }
   return content;
+}
+
+// Codex MCP child reads SYNABUN_PROFILE from the env inline-table inside
+// [mcp_servers.SynaBun]; if absent it falls back to active-profile.json.
+// Surgically upserts SYNABUN_PROFILE without disturbing the other env keys.
+function syncProfileToCodex(profile) {
+  try {
+    const configPath = join(getHomePath(), '.codex', 'config.toml');
+    if (!existsSync(configPath)) return false;
+    const content = readFileSync(configPath, 'utf-8');
+    if (!tomlHasSection(content, 'mcp_servers.SynaBun')) return false;
+    const range = tomlSectionRange(content, 'mcp_servers.SynaBun');
+    if (!range) return false;
+    const section = content.slice(range.start, range.end);
+    const envRe = /^env\s*=\s*\{([^}]*)\}/m;
+    const envMatch = section.match(envRe);
+    let newSection;
+    if (envMatch) {
+      const body = envMatch[1];
+      const profileRe = /SYNABUN_PROFILE\s*=\s*"[^"]*"/;
+      let newBody;
+      if (profileRe.test(body)) {
+        newBody = body.replace(profileRe, `SYNABUN_PROFILE = "${profile}"`);
+      } else {
+        const trimmed = body.trim().replace(/,$/, '');
+        newBody = trimmed
+          ? ` ${trimmed}, SYNABUN_PROFILE = "${profile}" `
+          : ` SYNABUN_PROFILE = "${profile}" `;
+      }
+      newSection = section.replace(envRe, `env = {${newBody}}`);
+    } else {
+      newSection = section.trimEnd() + `\nenv = { SYNABUN_PROFILE = "${profile}" }\n`;
+    }
+    if (newSection === section) return false;
+    const updated = content.slice(0, range.start) + newSection + content.slice(range.end);
+    writeFileSync(configPath, updated, 'utf-8');
+    console.log(`[mcp/profile] Codex SYNABUN_PROFILE → ${profile}`);
+    return true;
+  } catch (err) {
+    console.warn(`[mcp/profile] Codex sync failed: ${err.message}`);
+    return false;
+  }
 }
 
 // ── Codex Tool Permission Sync ──
@@ -10941,7 +13643,7 @@ app.get('/api/setup/status', (req, res) => {
       const cj = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8'));
       claude.connected = !!(cj.mcpServers && cj.mcpServers.SynaBun);
     } catch {}
-    claude.cliCommand = `claude mcp add SynaBun -s user -e DOTENV_PATH="${envPath}" -- node "${mcpIndexPath}"`;
+    claude.cliCommand = `claude mcp add SynaBun node "${mcpIndexPath}" -s user -e "DOTENV_PATH=${envPath}"`;
 
     // Gemini
     let gemini = { connected: false };
@@ -10980,6 +13682,124 @@ function getGlobalSkillsDir() {
   return join(home, '.claude', 'skills');
 }
 
+function getCodexPromptsDir() {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  return join(home, '.codex', 'prompts');
+}
+
+function getOpenCodeCommandDir() {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  // OpenCode's documented default is XDG_CONFIG_HOME/opencode/command.
+  // Honour the legacy ~/.opencode/command path when it exists already.
+  const xdgDefault = join(home, '.config', 'opencode', 'command');
+  const legacy = join(home, '.opencode', 'command');
+  if (existsSync(legacy) && !existsSync(xdgDefault)) return legacy;
+  return xdgDefault;
+}
+
+const SKILL_TARGETS = /** @type {const} */ (['claude', 'codex', 'opencode']);
+
+function getSkillTargetPath(target, skillName) {
+  if (target === 'claude') return join(getGlobalSkillsDir(), skillName);
+  if (target === 'codex') return join(getCodexPromptsDir(), `${skillName}.md`);
+  if (target === 'opencode') return join(getOpenCodeCommandDir(), `${skillName}.md`);
+  return null;
+}
+
+function isSkillInstalled(target, skillName) {
+  const p = getSkillTargetPath(target, skillName);
+  if (!p) return false;
+  if (target === 'claude') return existsSync(join(p, 'SKILL.md'));
+  return existsSync(p);
+}
+
+/** Build a single-file prompt for Codex/OpenCode CLI targets.
+ *  Keeps SKILL.md's YAML frontmatter, rewrites $SKILL_DIR to the bundled
+ *  absolute path so modules are loaded lazily via the CLI's file-read tool,
+ *  and normalizes $ARGUMENTS per target: OpenCode substitutes $ARGUMENTS
+ *  natively; Codex only expands shell-style positionals, so every
+ *  $ARGUMENTS token is rewritten to $1 for Codex. */
+function buildCliSkillPrompt(skillName, target) {
+  const sourceDir = join(SKILLS_SOURCE_DIR, skillName);
+  const sourceFile = join(sourceDir, 'SKILL.md');
+  if (!existsSync(sourceFile)) throw new Error(`Skill "${skillName}" not found in bundled skills.`);
+  const raw = readFileSync(sourceFile, 'utf-8');
+  // Replace $SKILL_DIR placeholders with the bundled absolute path. Modules
+  // stay in the bundled location and are loaded on demand.
+  let body = raw.replace(/\$SKILL_DIR/g, sourceDir);
+
+  // Per-target argument-token rewriting. Claude and OpenCode substitute
+  // $ARGUMENTS natively; Codex only expands shell-style positionals ($1..$N)
+  // and leaves $ARGUMENTS as literal text — rewrite to $1 so Codex injects
+  // the full argument string that follows /<command>.
+  const argsNote = target === 'codex'
+    ? `> Invocation: \`/${skillName} <args>\` — the full argument string is available as \`$1\` below.\n`
+    : '';
+  if (target === 'codex') {
+    body = body.replace(/\$ARGUMENTS/g, '$1');
+  }
+
+  // Prefix a short orientation note so CLI agents know the bridge layout.
+  const banner = `\n> SynaBun skill bridge — full instructions live in the bundled SynaBun repo at\n> ${sourceDir}. Load any referenced module files using your runtime's file-read tool.\n${argsNote}`;
+
+  // Insert the banner after the closing frontmatter delimiter.
+  const fmClose = body.indexOf('\n---', 4);
+  if (fmClose !== -1) {
+    const splitAt = body.indexOf('\n', fmClose + 1) + 1;
+    body = body.slice(0, splitAt) + banner + body.slice(splitAt);
+  } else {
+    body = banner + body;
+  }
+
+  return body;
+}
+
+function installSkillToTarget(target, skillName) {
+  const sourceDir = join(SKILLS_SOURCE_DIR, skillName);
+  const sourceFile = join(sourceDir, 'SKILL.md');
+  if (!existsSync(sourceFile)) throw new Error(`Skill "${skillName}" not found in skills/.`);
+
+  if (target === 'claude') {
+    const targetDir = join(getGlobalSkillsDir(), skillName);
+    if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
+    mkdirSync(dirname(targetDir), { recursive: true });
+    cpSync(sourceDir, targetDir, { recursive: true });
+    return { restartMsg: 'Restart Claude Code to apply.' };
+  }
+  if (target === 'codex') {
+    const dir = getCodexPromptsDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${skillName}.md`), buildCliSkillPrompt(skillName, 'codex'));
+    return { restartMsg: 'Restart Codex CLI to apply.' };
+  }
+  if (target === 'opencode') {
+    const dir = getOpenCodeCommandDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${skillName}.md`), buildCliSkillPrompt(skillName, 'opencode'));
+    return { restartMsg: 'Restart OpenCode CLI to apply.' };
+  }
+  throw new Error(`Unknown target: ${target}`);
+}
+
+function uninstallSkillFromTarget(target, skillName) {
+  if (target === 'claude') {
+    const targetDir = join(getGlobalSkillsDir(), skillName);
+    if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
+    return;
+  }
+  if (target === 'codex') {
+    const f = join(getCodexPromptsDir(), `${skillName}.md`);
+    if (existsSync(f)) unlinkSync(f);
+    return;
+  }
+  if (target === 'opencode') {
+    const f = join(getOpenCodeCommandDir(), `${skillName}.md`);
+    if (existsSync(f)) unlinkSync(f);
+    return;
+  }
+  throw new Error(`Unknown target: ${target}`);
+}
+
 function parseSkillFrontmatter(content) {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return { name: null, description: null };
@@ -10997,6 +13817,12 @@ function listAvailableSkills() {
   const skills = [];
   const seen = new Set();
 
+  const buildInstalledState = (dirName) => ({
+    claude: isSkillInstalled('claude', dirName),
+    codex: isSkillInstalled('codex', dirName),
+    opencode: isSkillInstalled('opencode', dirName),
+  });
+
   // 1. Bundled skills (PACKAGE_ROOT/skills/)
   if (existsSync(SKILLS_SOURCE_DIR)) {
     for (const entry of readdirSync(SKILLS_SOURCE_DIR, { withFileTypes: true })) {
@@ -11005,8 +13831,17 @@ function listAvailableSkills() {
       if (!existsSync(skillFile)) continue;
       const content = readFileSync(skillFile, 'utf-8');
       const { name, description } = parseSkillFrontmatter(content);
+      const installedTargets = buildInstalledState(entry.name);
       const installedPath = join(getGlobalSkillsDir(), entry.name, 'SKILL.md');
-      skills.push({ dirName: entry.name, name: name || entry.name, description: description || '', installed: existsSync(installedPath), sourcePath: skillFile, installedPath });
+      skills.push({
+        dirName: entry.name,
+        name: name || entry.name,
+        description: description || '',
+        installed: installedTargets.claude, // back-compat: legacy callers expect a single flag (claude)
+        installedTargets,
+        sourcePath: skillFile,
+        installedPath,
+      });
       seen.add(entry.name);
     }
   }
@@ -11021,7 +13856,15 @@ function listAvailableSkills() {
         if (!existsSync(skillFile)) continue;
         const content = readFileSync(skillFile, 'utf-8');
         const { name, description } = parseSkillFrontmatter(content);
-        skills.push({ dirName: entry.name, name: name || entry.name, description: description || '', installed: true, sourcePath: skillFile, installedPath: skillFile });
+        skills.push({
+          dirName: entry.name,
+          name: name || entry.name,
+          description: description || '',
+          installed: true,
+          installedTargets: { claude: true, codex: false, opencode: false },
+          sourcePath: skillFile,
+          installedPath: skillFile,
+        });
         seen.add(entry.name);
       }
     } catch {}
@@ -11030,6 +13873,78 @@ function listAvailableSkills() {
   return skills;
 }
 
+function resolveSkillPrompt(command, args) {
+  const dirs = [
+    join(SKILLS_SOURCE_DIR, command),
+    join(getGlobalSkillsDir(), command),
+  ];
+  for (const dir of dirs) {
+    const file = join(dir, 'SKILL.md');
+    if (!existsSync(file)) continue;
+    let content = readFileSync(file, 'utf-8');
+    content = content.replace(/\$ARGUMENTS/g, args || '(none)');
+    return { content, dir };
+  }
+  return null;
+}
+
+function maybeInjectSkillPrompt(prompt) {
+  const input = typeof prompt === 'string' ? prompt.trim() : '';
+  if (!input.startsWith('/')) return { prompt: input, command: null, args: '', skill: null };
+  const parts = input.slice(1).split(/\s+/);
+  const command = (parts[0] || '').toLowerCase();
+  const args = parts.slice(1).join(' ');
+  if (!command || command === 'clear') return { prompt: input, command, args, skill: null };
+  const skill = resolveSkillPrompt(command, args);
+  if (!skill) return { prompt: input, command, args, skill: null };
+  return {
+    prompt: `<skill-instructions>\nBase directory for this skill: ${skill.dir}\n\n${skill.content}\n</skill-instructions>\n\nThe user invoked the /${command} command${args ? ' with arguments: ' + args : ''}. Follow the skill instructions above exactly.`,
+    command,
+    args,
+    skill,
+  };
+}
+
+// GET /api/skills — list available skills with per-target install state
+app.get('/api/skills', (req, res) => {
+  try {
+    res.json({ ok: true, skills: listAvailableSkills() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/skills/install — install a skill into one runtime target
+app.post('/api/skills/install', (req, res) => {
+  try {
+    const { name, target } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'name is required.' });
+    if (!target || !SKILL_TARGETS.includes(target)) {
+      return res.status(400).json({ error: `target must be one of: ${SKILL_TARGETS.join(', ')}` });
+    }
+    const { restartMsg } = installSkillToTarget(target, name);
+    res.json({ ok: true, target, message: `Skill "${name}" installed for ${target}. ${restartMsg}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/skills/install — uninstall a skill from one runtime target
+app.delete('/api/skills/install', (req, res) => {
+  try {
+    const { name, target } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'name is required.' });
+    if (!target || !SKILL_TARGETS.includes(target)) {
+      return res.status(400).json({ error: `target must be one of: ${SKILL_TARGETS.join(', ')}` });
+    }
+    uninstallSkillFromTarget(target, name);
+    res.json({ ok: true, target, message: `Skill "${name}" uninstalled from ${target}.` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Legacy aliases (Claude Code-only install path) ──
 // GET /api/claude-code/skills — list available skills and their install status
 app.get('/api/claude-code/skills', (req, res) => {
   try {
@@ -11042,18 +13957,9 @@ app.get('/api/claude-code/skills', (req, res) => {
 // POST /api/claude-code/skills — install a skill globally (copies entire directory)
 app.post('/api/claude-code/skills', (req, res) => {
   try {
-    const { name } = req.body;
+    const { name } = req.body || {};
     if (!name) return res.status(400).json({ error: 'name is required.' });
-
-    const sourceDir = join(SKILLS_SOURCE_DIR, name);
-    const sourceFile = join(sourceDir, 'SKILL.md');
-    if (!existsSync(sourceFile)) return res.status(404).json({ error: `Skill "${name}" not found in skills/.` });
-
-    const targetDir = join(getGlobalSkillsDir(), name);
-    // Remove old install if present, then copy entire directory
-    if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
-    cpSync(sourceDir, targetDir, { recursive: true });
-
+    installSkillToTarget('claude', name);
     res.json({ ok: true, message: `Skill "${name}" installed. Restart Claude Code to use /${name}.` });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -11063,14 +13969,9 @@ app.post('/api/claude-code/skills', (req, res) => {
 // DELETE /api/claude-code/skills — uninstall a skill (removes entire directory)
 app.delete('/api/claude-code/skills', (req, res) => {
   try {
-    const { name } = req.body;
+    const { name } = req.body || {};
     if (!name) return res.status(400).json({ error: 'name is required.' });
-
-    const targetDir = join(getGlobalSkillsDir(), name);
-    if (!existsSync(join(targetDir, 'SKILL.md'))) return res.json({ ok: true, message: `Skill "${name}" is not installed.` });
-
-    rmSync(targetDir, { recursive: true, force: true });
-
+    uninstallSkillFromTarget('claude', name);
     res.json({ ok: true, message: `Skill "${name}" uninstalled.` });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -11910,6 +14811,573 @@ app.delete('/api/mcp-key', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- MCP Profile API ---
+const MCP_PROFILE_PATH = resolve(DATA_HOME, 'data', 'active-profile.json');
+
+function getRuntimeMcpProfilePaths() {
+  const paths = new Set([
+    resolve(DATA_HOME, 'mcp-data', 'active-profile.json'),
+    MCP_PROFILE_PATH,
+    resolve(PACKAGE_ROOT, 'mcp-server', 'data', 'active-profile.json'),
+  ]);
+  return [...paths];
+}
+
+function readActiveMcpProfile() {
+  for (const profilePath of getRuntimeMcpProfilePaths()) {
+    try {
+      if (!existsSync(profilePath)) continue;
+      const data = JSON.parse(readFileSync(profilePath, 'utf-8'));
+      if (data.profile && typeof data.profile === 'string') return data.profile;
+    } catch {}
+  }
+  return 'full';
+}
+
+function buildMcpProfilePresets() {
+  const registry = readMcpRegistry();
+  const profiles = registry.profiles || {};
+  const tg = SYNABUN_TOOL_GROUPS;
+  const alwaysOnCount = Object.values(tg).filter(g => g.alwaysOn).reduce((sum, g) => sum + g.tools, 0);
+  const presets = {};
+  for (const [name, prof] of Object.entries(profiles)) {
+    const groupTools = (prof.groups || []).reduce((sum, g) => sum + (tg[g]?.tools || 0), 0);
+    presets[name] = { label: prof.label || name, groups: prof.groups || [], tools: `~${alwaysOnCount + groupTools}` };
+  }
+  return presets;
+}
+
+app.get('/api/mcp/profile', (req, res) => {
+  try {
+    res.json({ ok: true, profile: readActiveMcpProfile(), presets: buildMcpProfilePresets() });
+  } catch (err) {
+    res.json({ ok: true, profile: 'full', presets: buildMcpProfilePresets() });
+  }
+});
+
+function applyMcpProfile(profile) {
+  if (!profile || typeof profile !== 'string') {
+    throw new Error('Missing "profile"');
+  }
+  const normalized = profile.toLowerCase().trim();
+  const payload = JSON.stringify({ profile: normalized }, null, 2) + '\n';
+  for (const profilePath of getRuntimeMcpProfilePaths()) {
+    const dir = resolve(profilePath, '..');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(profilePath, payload, 'utf-8');
+  }
+  const synced = {
+    opencode: syncProfileToOpencode(normalized),
+    codex: syncProfileToCodex(normalized),
+  };
+  return { profile: normalized, synced };
+}
+
+app.post('/api/mcp/profile', (req, res) => {
+  try {
+    const result = applyMcpProfile(req.body?.profile);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    const status = err.message === 'Missing "profile"' ? 400 : 500;
+    res.status(status).json({ ok: false, error: err.message });
+  }
+});
+
+// --- MCP Registry API ---
+const MCP_REGISTRY_PATH = resolve(DATA_HOME, 'data', 'mcp-registry.json');
+
+const SYNABUN_TOOL_GROUPS = {
+  memory:            { label: 'Memory',     tools: 6, alwaysOn: true },
+  category:          { label: 'Categories', tools: 1, alwaysOn: true },
+  sync:              { label: 'Sync',       tools: 1, alwaysOn: true },
+  loop:              { label: 'Loop',       tools: 1, alwaysOn: true },
+  profile:           { label: 'Profile',    tools: 1, alwaysOn: true },
+  git:               { label: 'Git',        tools: 1  },
+  image:             { label: 'Images',     tools: 1  },
+  whiteboard:        { label: 'Whiteboard', tools: 5  },
+  card:              { label: 'Cards',      tools: 5  },
+  tictactoe:         { label: 'TicTacToe',  tools: 1  },
+  browser:           { label: 'Browser',    tools: 18 },
+  browser_twitter:   { label: 'Twitter/X',  tools: 1  },
+  browser_facebook:  { label: 'Facebook',   tools: 1  },
+  browser_tiktok:    { label: 'TikTok',     tools: 4  },
+  browser_whatsapp:  { label: 'WhatsApp',   tools: 2  },
+  browser_instagram: { label: 'Instagram',  tools: 5  },
+  browser_linkedin:  { label: 'LinkedIn',   tools: 8  },
+  leonardo:          { label: 'Leonardo',   tools: 5  },
+  discord:           { label: 'Discord',    tools: 8  },
+};
+
+function readMcpRegistry() {
+  try {
+    if (existsSync(MCP_REGISTRY_PATH)) return JSON.parse(readFileSync(MCP_REGISTRY_PATH, 'utf-8'));
+  } catch {}
+  const mcpPreload = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'preload.js');
+  const envPath = resolve(DATA_HOME, '.env');
+  return {
+    servers: {
+      SynaBun: { type: 'stdio', command: 'node', args: [mcpPreload], env: { DOTENV_PATH: envPath }, builtin: true },
+    },
+    profiles: {
+      core:       { label: 'Core',       groups: ['git', 'image'], servers: [] },
+      standard:   { label: 'Standard',   groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe'], servers: [] },
+      twitter:    { label: 'Twitter/X',  groups: ['git', 'image', 'browser', 'browser_twitter'], servers: [] },
+      facebook:   { label: 'Facebook',   groups: ['git', 'image', 'browser', 'browser_facebook'], servers: [] },
+      tiktok:     { label: 'TikTok',     groups: ['git', 'image', 'browser', 'browser_tiktok'], servers: [] },
+      whatsapp:   { label: 'WhatsApp',   groups: ['git', 'image', 'browser', 'browser_whatsapp'], servers: [] },
+      instagram:  { label: 'Instagram',  groups: ['git', 'image', 'browser', 'browser_instagram'], servers: [] },
+      linkedin:   { label: 'LinkedIn',   groups: ['git', 'image', 'browser', 'browser_linkedin'], servers: [] },
+      browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo'], servers: [] },
+      full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'discord'], servers: [] },
+      leonardoai: { label: 'LeonardoAI', groups: ['leonardo'], servers: [] },
+    },
+    activeProfile: 'full',
+  };
+}
+
+function writeMcpRegistry(registry) {
+  const dir = resolve(MCP_REGISTRY_PATH, '..');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(MCP_REGISTRY_PATH, JSON.stringify(registry, null, 2) + '\n', 'utf-8');
+}
+
+// Push `name` into every profile's servers[] (idempotent), honoring excludeProfiles.
+// Returns mutated registry.
+function addServerToAllProfiles(registry, name) {
+  const defaults = registry.profileDefaults || { autoAddNewServers: true, excludeProfiles: ['core'] };
+  const exclude = new Set(defaults.excludeProfiles || []);
+  if (!defaults.autoAddNewServers) return registry;
+  for (const [profileName, profile] of Object.entries(registry.profiles || {})) {
+    if (exclude.has(profileName)) continue;
+    if (!Array.isArray(profile.servers)) profile.servers = [];
+    if (!profile.servers.includes(name)) profile.servers.push(name);
+  }
+  return registry;
+}
+
+function removeServerFromAllProfiles(registry, name) {
+  for (const profile of Object.values(registry.profiles || {})) {
+    if (Array.isArray(profile.servers)) {
+      profile.servers = profile.servers.filter(s => s !== name);
+    }
+  }
+  return registry;
+}
+
+// Backfill migration: ensure profileDefaults is set and each profile's servers[]
+// lists every currently-registered server name. Runs idempotently on startup.
+function ensureProfileServersBackfilled() {
+  try {
+    const reg = readMcpRegistry();
+    let changed = false;
+    if (!reg.profileDefaults) {
+      reg.profileDefaults = { autoAddNewServers: true, excludeProfiles: ['core'] };
+      changed = true;
+    }
+    const allServerNames = Object.keys(reg.servers || {});
+    const exclude = new Set(reg.profileDefaults.excludeProfiles || []);
+    for (const [profileName, profile] of Object.entries(reg.profiles || {})) {
+      if (!Array.isArray(profile.servers)) { profile.servers = []; changed = true; }
+      if (exclude.has(profileName)) continue;
+      for (const serverName of allServerNames) {
+        if (!profile.servers.includes(serverName)) {
+          profile.servers.push(serverName);
+          changed = true;
+        }
+      }
+    }
+    if (changed) writeMcpRegistry(reg);
+  } catch (err) {
+    console.warn('[mcp-registry] backfill failed:', err.message);
+  }
+}
+ensureProfileServersBackfilled();
+
+// Build a per-CLI launch config from a server entry, merging env.json secrets.
+function buildLaunchConfig(name, serverEntry) {
+  const base = { ...serverEntry };
+  const envFromFile = mcpInstaller.readEnvFile(DATA_HOME, name);
+  base.env = { ...(serverEntry.env || {}), ...envFromFile };
+  return base;
+}
+
+app.get('/api/mcp/registry', (req, res) => {
+  res.json({ ok: true, toolGroups: SYNABUN_TOOL_GROUPS, ...readMcpRegistry() });
+});
+
+app.put('/api/mcp/registry/servers/:name', (req, res) => {
+  try {
+    const { name } = req.params;
+    const config = req.body;
+    if (!name || !config?.type) return res.status(400).json({ ok: false, error: 'Missing name or type' });
+    const reg = readMcpRegistry();
+    const isNew = !reg.servers[name];
+    reg.servers[name] = { ...config };
+    if (isNew && !reg.servers[name].builtin) {
+      addServerToAllProfiles(reg, name);
+    }
+    writeMcpRegistry(reg);
+    res.json({ ok: true, server: name, autoRegisteredProfiles: isNew });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete('/api/mcp/registry/servers/:name', (req, res) => {
+  try {
+    const { name } = req.params;
+    const { purgeFiles } = req.query || {};
+    const reg = readMcpRegistry();
+    if (reg.servers[name]?.builtin) return res.status(400).json({ ok: false, error: 'Cannot delete built-in server' });
+    delete reg.servers[name];
+    removeServerFromAllProfiles(reg, name);
+    writeMcpRegistry(reg);
+    let purged = false;
+    if (String(purgeFiles) === '1') {
+      try {
+        const dir = mcpInstaller.serverDir(DATA_HOME, name);
+        if (existsSync(dir)) { rmSync(dir, { recursive: true, force: true }); purged = true; }
+      } catch (err) {
+        console.warn(`[mcp-registry] purge files failed for ${name}:`, err.message);
+      }
+    }
+    res.json({ ok: true, purged });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put('/api/mcp/registry/profiles/:name', (req, res) => {
+  try {
+    const { name } = req.params;
+    const profile = req.body;
+    if (!name) return res.status(400).json({ ok: false, error: 'Missing profile name' });
+    const reg = readMcpRegistry();
+    reg.profiles[name] = { label: profile.label || name, groups: profile.groups || [], servers: profile.servers || [] };
+    writeMcpRegistry(reg);
+    res.json({ ok: true, profile: name });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete('/api/mcp/registry/profiles/:name', (req, res) => {
+  try {
+    const { name } = req.params;
+    const reg = readMcpRegistry();
+    if (reg.activeProfile === name) return res.status(400).json({ ok: false, error: 'Cannot delete the active profile' });
+    delete reg.profiles[name];
+    writeMcpRegistry(reg);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/mcp/registry/activate', (req, res) => {
+  try {
+    const { profile } = req.body;
+    if (!profile) return res.status(400).json({ ok: false, error: 'Missing profile name' });
+    const reg = readMcpRegistry();
+    if (!reg.profiles[profile]) return res.status(404).json({ ok: false, error: `Profile "${profile}" not found` });
+    reg.activeProfile = profile;
+    writeMcpRegistry(reg);
+    const groups = reg.profiles[profile].groups || [];
+    const profileValue = groups.join(',') || 'core';
+    const profileDir = resolve(MCP_PROFILE_PATH, '..');
+    if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true });
+    writeFileSync(MCP_PROFILE_PATH, JSON.stringify({ profile: profileValue }, null, 2) + '\n', 'utf-8');
+    res.json({ ok: true, activeProfile: profile, profileValue });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── MCP Platform Detection & Sync ──
+
+app.get('/api/mcp/platforms', (req, res) => {
+  const home = getHomePath();
+  res.json({
+    ok: true,
+    claudeCode: existsSync(join(home, '.claude.json')) || existsSync(join(home, '.claude')),
+    opencode: existsSync(getOpencodeConfigPath()) || existsSync(join(home, '.config', 'opencode')),
+    codex: existsSync(join(home, '.codex')),
+    gemini: existsSync(join(home, '.gemini')),
+  });
+});
+
+// ── GitHub install flow ──
+// POST /api/mcp/install/github  { url, name?, runInstall? } → clones, detects, installs.
+app.post('/api/mcp/install/github', async (req, res) => {
+  try {
+    const { url, name: nameOverride, runInstall = true } = req.body || {};
+    if (!url) return res.status(400).json({ ok: false, error: 'Missing url' });
+    const parsed = mcpInstaller.parseGithubUrl(url);
+    if (!parsed) return res.status(400).json({ ok: false, error: 'Invalid GitHub URL (expected https://github.com/owner/repo)' });
+    const name = mcpInstaller.deriveServerName(parsed, nameOverride);
+    if (!name) return res.status(400).json({ ok: false, error: 'Could not derive server name' });
+    const lines = [];
+    const onLine = (l) => { if (lines.length < 500) lines.push(l); };
+
+    const clone = await mcpInstaller.cloneRepo({ dataHome: DATA_HOME, name, cloneUrl: parsed.cloneUrl, onLine });
+    if (!clone.ok) return res.status(500).json({ ok: false, error: clone.error, stderr: clone.stderr, log: lines });
+
+    const detect = mcpInstaller.detectServer(clone.path);
+    if (!detect.ok) return res.status(422).json({ ok: false, error: detect.error, name, repoPath: clone.path, log: lines });
+
+    let installResult = { ok: true, skipped: true };
+    if (runInstall) {
+      installResult = await mcpInstaller.installDependencies({ dataHome: DATA_HOME, name, repoPath: clone.path, onLine });
+      if (!installResult.ok) {
+        return res.status(500).json({ ok: false, error: installResult.error, name, repoPath: clone.path, detected: detect.detected, log: lines });
+      }
+    }
+
+    // After install, re-detect in case build produced dist/ paths
+    const detect2 = mcpInstaller.detectServer(clone.path);
+    const detected = detect2.ok ? detect2.detected : detect.detected;
+
+    res.json({
+      ok: true,
+      name,
+      repoPath: clone.path,
+      cloneReused: clone.reused,
+      detected,
+      detectSource: detect.detected?.source,
+      install: installResult,
+      log: lines.slice(-50),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/mcp/install/detect  { path } or { name } → re-run detection.
+app.post('/api/mcp/install/detect', (req, res) => {
+  try {
+    const { path: repoPath, name } = req.body || {};
+    const target = repoPath || (name ? mcpInstaller.repoDir(DATA_HOME, name) : null);
+    if (!target) return res.status(400).json({ ok: false, error: 'Missing path or name' });
+    const result = mcpInstaller.detectServer(target);
+    if (!result.ok) return res.status(422).json(result);
+    res.json({ ok: true, detected: result.detected, attempts: result.attempts });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/mcp/install/run  { name, runInstall? } → re-run deps install.
+app.post('/api/mcp/install/run', async (req, res) => {
+  try {
+    const { name } = req.body || {};
+    if (!name) return res.status(400).json({ ok: false, error: 'Missing name' });
+    const repoPath = mcpInstaller.repoDir(DATA_HOME, name);
+    if (!existsSync(repoPath)) return res.status(404).json({ ok: false, error: `No cloned repo for "${name}" at ${repoPath}` });
+    const lines = [];
+    const result = await mcpInstaller.installDependencies({
+      dataHome: DATA_HOME, name, repoPath,
+      onLine: (l) => { if (lines.length < 500) lines.push(l); },
+    });
+    if (!result.ok) return res.status(500).json({ ok: false, error: result.error, log: lines });
+    res.json({ ok: true, ...result, log: lines.slice(-50) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/mcp/install/log?name=foo&tail=200
+app.get('/api/mcp/install/log', (req, res) => {
+  try {
+    const { name, tail } = req.query || {};
+    if (!name) return res.status(400).json({ ok: false, error: 'Missing name' });
+    const p = mcpInstaller.installLogPath(DATA_HOME, String(name));
+    if (!existsSync(p)) return res.json({ ok: true, log: '' });
+    const content = readFileSync(p, 'utf-8');
+    const n = Number(tail) || 500;
+    const lines = content.split(/\r?\n/);
+    res.json({ ok: true, log: lines.slice(-n).join('\n') });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/mcp/env/:name?reveal=1 — mask secrets unless reveal=1.
+app.get('/api/mcp/env/:name', (req, res) => {
+  try {
+    const { name } = req.params;
+    const reveal = String(req.query.reveal || '') === '1';
+    const env = mcpInstaller.readEnvFile(DATA_HOME, name);
+    res.json({ ok: true, env: reveal ? env : mcpInstaller.maskEnv(env) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// PUT /api/mcp/env/:name { env: {...}, platforms?: [...] } → write env.json and optionally re-sync.
+app.put('/api/mcp/env/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const { env, platforms } = req.body || {};
+    if (!env || typeof env !== 'object') return res.status(400).json({ ok: false, error: 'Missing env object' });
+    // Do not store masked values — preserve existing ones.
+    const existing = mcpInstaller.readEnvFile(DATA_HOME, name);
+    const merged = { ...existing };
+    for (const [k, v] of Object.entries(env)) {
+      if (typeof v === 'string' && /^\*+/.test(v)) continue; // skip masked
+      merged[k] = v;
+    }
+    // Remove keys explicitly set to null.
+    for (const [k, v] of Object.entries(env)) {
+      if (v === null) delete merged[k];
+    }
+    mcpInstaller.writeEnvFile(DATA_HOME, name, merged);
+
+    // Trigger resync if caller requested.
+    let resync = null;
+    if (Array.isArray(platforms) && platforms.length) {
+      const reg = readMcpRegistry();
+      const serverEntry = reg.servers[name];
+      if (serverEntry) {
+        const launchConfig = buildLaunchConfig(name, serverEntry);
+        resync = await internalMcpSync({ name, config: launchConfig, platforms });
+      }
+    }
+    res.json({ ok: true, resync });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Internal helper shared by PUT /api/mcp/env and POST /api/mcp/sync
+async function internalMcpSync({ name, config, platforms }) {
+  const results = {};
+  const home = getHomePath();
+  for (const p of platforms) {
+    try {
+      if (p === 'claudeCode') {
+        const claudeJsonPath = join(home, '.claude.json');
+        let data = {};
+        try { data = JSON.parse(readFileSync(claudeJsonPath, 'utf-8')); } catch {}
+        if (!data.mcpServers) data.mcpServers = {};
+        if (config.type === 'stdio') {
+          const entry = { command: config.command };
+          if (config.args?.length) entry.args = config.args;
+          if (config.env && Object.keys(config.env).length) entry.env = config.env;
+          data.mcpServers[name] = entry;
+        } else {
+          data.mcpServers[name] = { type: config.type, url: config.url };
+        }
+        writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+        results.claudeCode = 'ok';
+      } else if (p === 'opencode') {
+        persistMcpToOpencodeConfig(name, config);
+        results.opencode = 'ok';
+      } else if (p === 'codex') {
+        const dir = join(home, '.codex');
+        const configPath = join(dir, 'config.toml');
+        mkdirSync(dir, { recursive: true });
+        let content = '';
+        try { content = readFileSync(configPath, 'utf-8'); } catch {}
+        const kvPairs = { command: config.command || '' };
+        if (config.args?.length) kvPairs.args = config.args;
+        if (config.env && Object.keys(config.env).length) kvPairs.env = config.env;
+        content = tomlUpsertSection(content, `mcp_servers.${name}`, kvPairs);
+        writeFileSync(configPath, content, 'utf-8');
+        results.codex = 'ok';
+      } else if (p === 'gemini') {
+        const dir = join(home, '.gemini');
+        const settingsPath = join(dir, 'settings.json');
+        mkdirSync(dir, { recursive: true });
+        let data = {};
+        try { data = JSON.parse(readFileSync(settingsPath, 'utf-8')); } catch {}
+        if (!data.mcpServers) data.mcpServers = {};
+        const entry = { command: config.command || '' };
+        if (config.args?.length) entry.args = config.args;
+        if (config.env && Object.keys(config.env).length) entry.env = config.env;
+        data.mcpServers[name] = entry;
+        writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+        results.gemini = 'ok';
+      }
+    } catch (err) {
+      results[p] = `error: ${err.message}`;
+    }
+  }
+  return results;
+}
+
+app.post('/api/mcp/sync', async (req, res) => {
+  const { name, config: incomingConfig, platforms } = req.body;
+  if (!name || !incomingConfig || !Array.isArray(platforms)) {
+    return res.status(400).json({ ok: false, error: 'Missing name, config, or platforms array' });
+  }
+  // Always merge env.json secrets on top of the incoming config.
+  const envFromFile = mcpInstaller.readEnvFile(DATA_HOME, name);
+  const config = { ...incomingConfig, env: { ...(incomingConfig.env || {}), ...envFromFile } };
+  const results = await internalMcpSync({ name, config, platforms });
+  res.json({ ok: true, results });
+});
+
+app.delete('/api/mcp/sync', (req, res) => {
+  const { name, platforms } = req.body;
+  if (!name || !Array.isArray(platforms)) {
+    return res.status(400).json({ ok: false, error: 'Missing name or platforms array' });
+  }
+  const results = {};
+  const home = getHomePath();
+
+  for (const p of platforms) {
+    try {
+      if (p === 'claudeCode') {
+        const claudeJsonPath = join(home, '.claude.json');
+        if (existsSync(claudeJsonPath)) {
+          const data = JSON.parse(readFileSync(claudeJsonPath, 'utf-8'));
+          if (data.mcpServers?.[name]) {
+            delete data.mcpServers[name];
+            if (Object.keys(data.mcpServers).length === 0) delete data.mcpServers;
+            writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+          }
+        }
+        results.claudeCode = 'ok';
+
+      } else if (p === 'opencode') {
+        const configPath = getOpencodeConfigPath();
+        if (existsSync(configPath)) {
+          const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+          if (cfg.mcp?.[name]) {
+            delete cfg.mcp[name];
+            writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+          }
+        }
+        results.opencode = 'ok';
+
+      } else if (p === 'codex') {
+        const configPath = join(home, '.codex', 'config.toml');
+        if (existsSync(configPath)) {
+          let content = readFileSync(configPath, 'utf-8');
+          content = tomlRemoveSection(content, `mcp_servers.${name}`);
+          writeFileSync(configPath, content, 'utf-8');
+        }
+        results.codex = 'ok';
+
+      } else if (p === 'gemini') {
+        const settingsPath = join(home, '.gemini', 'settings.json');
+        if (existsSync(settingsPath)) {
+          const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+          if (data.mcpServers?.[name]) {
+            delete data.mcpServers[name];
+            if (Object.keys(data.mcpServers).length === 0) delete data.mcpServers;
+            writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+          }
+        }
+        results.gemini = 'ok';
+      }
+    } catch (err) {
+      results[p] = `error: ${err.message}`;
+    }
+  }
+  res.json({ ok: true, results });
+});
+
 // --- Invite Key & Session Management ---
 const INVITE_KEY_PATH = resolve(DATA_HOME, 'data', 'invite-key.json');
 const INVITE_SESSIONS_PATH = resolve(DATA_HOME, 'data', 'invite-sessions.json');
@@ -12231,9 +15699,18 @@ app.post('/api/tunnel/stop', (req, res) => {
 // --- MCP HTTP Transport ---
 // Mount the SynaBun MCP server as an HTTP endpoint for Claude web client
 // Auth via URL-embedded key: /mcp/<key> for tunnel access, /mcp for local access
+// Eagerly init DB + embeddings so first request is instant (no cold-start)
 try {
   const mcpPath = pathToFileURL(resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'http.js')).href;
-  const { createMcpRoutes } = await import(mcpPath);
+  const { createMcpRoutes, ensureInit: mcpEnsureInit } = await import(mcpPath);
+
+  // Eagerly init: DB, categories, embedding model — runs in background, doesn't block server start
+  mcpEnsureInit().then(() => {
+    console.log('  MCP HTTP: DB + embeddings warm');
+  }).catch(err => {
+    console.error('  MCP HTTP eager init failed:', err.message);
+  });
+
   const mcpRouter = createMcpRoutes();
 
   // Keyed path: /mcp/<key> — validates key, then forwards to MCP router
@@ -12314,14 +15791,22 @@ function getTerminalProfile(profileId, opts = {}) {
   let cmd = entry.command.trim();
   if (!cmd) return SHELL_PROFILE;
 
-  // Append resume flag for Claude Code (mutually exclusive with model)
+  // Append resume flag for supported CLIs (mutually exclusive with model)
   if (opts.resume && profileId === 'claude-code') {
     cmd = `${cmd} --resume ${opts.resume}`;
+  } else if (opts.resume && profileId === 'codex') {
+    cmd = `${cmd} resume ${opts.resume}`;
+  } else if (opts.resume && profileId === 'opencode') {
+    cmd = `${cmd} -s ${opts.resume}`;
   }
   // Append model flag for CLIs that support it
   else if (opts.model) {
-    // Strip composite ":contextWindow" suffix if present
-    const cleanModel = opts.model.includes(':') ? opts.model.split(':')[0] : opts.model;
+    // Normalize composite "modelId:contextWindow" → CLI-ready id (adds `[1m]`
+    // suffix when the selected variant exceeds 200K). Only Claude Code uses
+    // the suffix; other CLIs are handed the bare id.
+    const cleanModel = profileId === 'claude-code'
+      ? toCliModelName(opts.model)
+      : (opts.model.includes(':') ? opts.model.split(':')[0] : opts.model);
     const modelMap = {
       'claude-code': (m) => `${cmd} --model ${m}`,
       'codex':       (m) => `${cmd} --model ${m}`,
@@ -12414,6 +15899,7 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     });
   };
 
+  const OUTPUT_BURST_CAP = 64 * 1024; // flush early when this much buffered in one tick
   ptyProcess.onData((data) => {
     // Accumulate into coalesce buffer
     _outputCoalesceBuf += data;
@@ -12429,6 +15915,14 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
       if (session._loopDriverBuffer.length > 16384) {
         session._loopDriverBuffer = session._loopDriverBuffer.slice(-8192);
       }
+    }
+
+    // Burst cap: if a huge chunk arrives in one tick, flush synchronously so a
+    // multi-MB JSON doesn't pile up and block the client write loop (which
+    // stalls xterm rendering and causes drawn-glitch artifacts).
+    if (_outputCoalesceBuf.length >= OUTPUT_BURST_CAP) {
+      _flushCoalesced();
+      return;
     }
 
     // Schedule flush for end of current event-loop tick
@@ -12706,6 +16200,239 @@ async function driveNextIteration(session, loopState, filename) {
   return true;
 }
 
+// ── Exec-based Loop Driver (Codex, Gemini, etc.) ──
+// Fully isolated from Claude's hook-based driver. Spawns CLI exec commands
+// inside a shell PTY and detects completion via sentinel echo markers.
+// Sentinel approach: after `codex exec ...`, we append `; echo SYNABUN_ITER_DONE_<N>`.
+// When codex exits and the shell resumes, it runs the echo and we detect the marker.
+// This is immune to PS1 overrides (oh-my-zsh, starship, etc.).
+
+const EXEC_SENTINEL_PREFIX = 'SYNABUN_ITER_DONE_';
+const EXEC_BOOT_SENTINEL = 'SYNABUN_EXEC_BOOT_READY';
+
+/**
+ * Write loop task to a temp file so the exec command can read from it via stdin.
+ * Long task texts garble when passed as shell arguments through PTY chunking
+ * (256-byte chunks at 30ms intervals corrupt multi-KB single-quoted strings).
+ * The temp file is written once and reused across all iterations.
+ */
+function prepareExecTaskFile(terminalSessionId, loopState) {
+  const taskFile = resolve('/tmp', `synabun-loop-${terminalSessionId}.txt`);
+  const wrappedTask = `AUTHORIZATION: This task is running inside SynaBun Automation Studio, a user-supervised automation platform. The user has explicitly configured and launched this automation. All browser tools are first-party MCP tools under user control. Execute the task as instructed.\n\nTASK:\n${loopState.task}`;
+  const fullTask = loopState.context ? `${wrappedTask}\n\nCONTEXT:\n${loopState.context}` : wrappedTask;
+  writeFileSync(taskFile, fullTask, 'utf-8');
+  return taskFile;
+}
+
+/**
+ * Build a CLI exec command for non-Claude loop iterations.
+ * Task is read from a temp file via stdin (`cat <file> | <cli> exec -`)
+ * to avoid PTY chunking garble on large task texts.
+ * Does NOT include the sentinel echo — that's added by the driver.
+ */
+function buildExecCommand(profile, loopState, taskFile) {
+  const config = loadCliConfig();
+  const bin = config[profile]?.command || profile;
+  const cwd = loopState.cwd || PACKAGE_ROOT;
+  const model = loopState.model;
+
+  // Shell-escape a string for safe embedding in single quotes
+  const esc = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
+
+  switch (profile) {
+    case 'codex': {
+      // --dangerously-bypass-approvals-and-sandbox: SynaBun Automation Studio
+      // provides its own sandboxed, user-supervised environment.
+      const parts = ['cat', esc(taskFile), '|', bin, 'exec', '--dangerously-bypass-approvals-and-sandbox'];
+      if (model) parts.push('--model', model);
+      parts.push('-C', esc(cwd), '-');
+      return parts.join(' ');
+    }
+    case 'gemini': {
+      const parts = ['cat', esc(taskFile), '|', bin];
+      if (model) parts.push('--model', model);
+      return parts.join(' ');
+    }
+    case 'opencode': {
+      // `opencode run` is the non-interactive equivalent of `codex exec`.
+      // Model expects provider/model format (e.g. opencode/claude-sonnet-4-6).
+      const parts = ['cat', esc(taskFile), '|', bin, 'run'];
+      if (model) parts.push('--model', model);
+      parts.push('--format', 'default');
+      return parts.join(' ');
+    }
+    default: {
+      const parts = ['cat', esc(taskFile), '|', bin];
+      return parts.join(' ');
+    }
+  }
+}
+
+/**
+ * Find the loop state file owned by a given terminal session.
+ * Searches both pending-*.json and active loop files.
+ */
+function findLoopFileForTerminal(terminalSessionId) {
+  if (!existsSync(LOOP_DIR)) return null;
+  const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
+  for (const f of files) {
+    try {
+      const data = JSON.parse(readFileSync(resolve(LOOP_DIR, f), 'utf-8'));
+      if (data.terminalSessionId === terminalSessionId) return f;
+    } catch { continue; }
+  }
+  return null;
+}
+
+/**
+ * Exec-based loop driver for non-Claude CLIs (Codex, Gemini, etc.).
+ * State machine: booting → ready → running → ready → ...
+ *
+ * Completion detection: sentinel echo approach.
+ * - Boot: sends `echo SYNABUN_EXEC_BOOT_READY` and waits for it in output.
+ * - Each iteration: sends `<exec command>; echo SYNABUN_ITER_DONE_<N>`.
+ *   When the exec finishes and shell resumes, it runs the echo.
+ *   We detect `SYNABUN_ITER_DONE_<N>` in the PTY output buffer.
+ * This is immune to PS1/PROMPT overrides from oh-my-zsh, starship, etc.
+ */
+function attachExecLoopDriver(terminalSessionId) {
+  const session = terminalSessions.get(terminalSessionId);
+  if (!session) return;
+
+  session._loopDriverBuffer = '';
+  session._loopDriverStartedAt = Date.now();
+  session._execDriverState = 'booting';
+  session._execBootSent = false;
+  session._execCurrentIter = 0;
+  session._execTaskFile = null; // prepared on first ready
+  let driving = false;
+
+  const interval = setInterval(async () => {
+    if (driving) return;
+    if (!terminalSessions.has(terminalSessionId)) {
+      clearInterval(interval);
+      console.log('[exec-loop-driver] Terminal session gone, clearing driver interval');
+      return;
+    }
+
+    // Load loop state file for this terminal
+    const loopFile = findLoopFileForTerminal(terminalSessionId);
+    if (!loopFile) return;
+
+    const loopPath = resolve(LOOP_DIR, loopFile);
+    let loopState;
+    try { loopState = JSON.parse(readFileSync(loopPath, 'utf-8')); }
+    catch { return; }
+
+    if (!loopState.active) {
+      clearInterval(interval);
+      console.log('[exec-loop-driver] Loop inactive, stopping driver');
+      return;
+    }
+
+    // Check for sentinel markers in ANSI-stripped PTY output
+    const buffer = session._loopDriverBuffer || '';
+    const stripped = buffer.replace(LOOP_ANSI_RE, '');
+
+    driving = true;
+    try {
+      const state = session._execDriverState;
+
+      if (state === 'booting') {
+        const bootElapsed = Date.now() - session._loopDriverStartedAt;
+
+        // Send boot sentinel after initial shell startup delay
+        if (!session._execBootSent && bootElapsed > 3000) {
+          session._loopDriverBuffer = '';
+          writeToLoopPty(session, `echo ${EXEC_BOOT_SENTINEL}`, true);
+          session._execBootSent = true;
+          console.log('[exec-loop-driver] Sent boot sentinel echo');
+        }
+
+        // Detect boot sentinel OR use fallback timeout
+        if ((session._execBootSent && stripped.includes(EXEC_BOOT_SENTINEL)) || bootElapsed > 20000) {
+          session._execDriverState = 'ready';
+          session._loopDriverBuffer = '';
+          console.log(`[exec-loop-driver] Shell ready (sentinel=${stripped.includes(EXEC_BOOT_SENTINEL)}, elapsed=${Math.round(bootElapsed / 1000)}s)`);
+        }
+      }
+
+      else if (state === 'ready') {
+        // Check iteration cap
+        const iter = loopState.currentIteration || 0;
+        if (iter >= loopState.totalIterations) {
+          loopState.active = false;
+          loopState.completedAt = new Date().toISOString();
+          writeFileSync(loopPath, JSON.stringify(loopState, null, 2));
+          clearInterval(interval);
+          console.log(`[exec-loop-driver] Loop complete: ${iter}/${loopState.totalIterations}`);
+          if (session._execTaskFile) try { unlinkSync(session._execTaskFile); } catch { /* ok */ }
+          driving = false;
+          return;
+        }
+
+        // Check time cap
+        const elapsedMin = (Date.now() - new Date(loopState.startedAt).getTime()) / 60000;
+        if (elapsedMin >= loopState.maxMinutes) {
+          loopState.active = false;
+          loopState.completedAt = new Date().toISOString();
+          loopState.stoppedReason = 'time_cap';
+          writeFileSync(loopPath, JSON.stringify(loopState, null, 2));
+          clearInterval(interval);
+          console.log(`[exec-loop-driver] Time cap reached: ${Math.round(elapsedMin)}/${loopState.maxMinutes}min`);
+          if (session._execTaskFile) try { unlinkSync(session._execTaskFile); } catch { /* ok */ }
+          driving = false;
+          return;
+        }
+
+        // Prepare task file on first iteration (reused across all iterations)
+        if (!session._execTaskFile) {
+          session._execTaskFile = prepareExecTaskFile(terminalSessionId, loopState);
+          console.log(`[exec-loop-driver] Task file prepared: ${session._execTaskFile}`);
+        }
+
+        // Fire next iteration with sentinel echo appended
+        const cmd = buildExecCommand(loopState.profile, loopState, session._execTaskFile);
+        const nextIter = iter + 1;
+        const sentinel = `${EXEC_SENTINEL_PREFIX}${nextIter}`;
+        const fullCmd = `${cmd}; echo ${sentinel}`;
+        console.log(`[exec-loop-driver] Starting iteration ${nextIter}/${loopState.totalIterations}`);
+
+        // Grace delay before sending command
+        await new Promise(r => setTimeout(r, 2000));
+
+        session._loopDriverBuffer = '';
+        session._execDriverState = 'running';
+        session._execCurrentIter = nextIter;
+        writeToLoopPty(session, fullCmd, true);
+
+        // Update loop state
+        loopState.currentIteration = nextIter;
+        loopState.lastIterationAt = new Date().toISOString();
+        loopState.pending = false;
+        writeFileSync(loopPath, JSON.stringify(loopState, null, 2));
+      }
+
+      else if (state === 'running') {
+        // Detect iteration completion via sentinel echo in PTY output
+        const sentinel = `${EXEC_SENTINEL_PREFIX}${session._execCurrentIter}`;
+        if (stripped.includes(sentinel)) {
+          console.log(`[exec-loop-driver] Iteration ${session._execCurrentIter} complete — sentinel detected`);
+          session._loopDriverBuffer = '';
+          session._execDriverState = 'ready';
+          // Cooldown before next iteration
+          await new Promise(r => setTimeout(r, 3000));
+        }
+      }
+    } catch (err) {
+      console.error('[exec-loop-driver] Error:', err.message);
+    }
+    driving = false;
+  }, 2000);
+
+  session._loopDriverInterval = interval;
+}
+
 // ── Last Session (resume after server restart) ──
 
 const LAST_SESSION_PATH = resolve(DATA_HOME, 'data', 'last-session.json');
@@ -12911,7 +16638,9 @@ let _lastLeakHash = '';
 setInterval(() => {
   syncRegistryFromTerminals();
   const leaks = scanForLeaks();
-  const hash = JSON.stringify(leaks.map(l => { const { ageMs, ...stable } = l; return stable; }));
+  // Strip ageMs AND description (which embeds age as "Xm old") to prevent
+  // broadcasts every ~60s when the minute counter ticks in descriptions
+  const hash = JSON.stringify(leaks.map(l => { const { ageMs, description, ...stable } = l; return stable; }));
   if (hash !== _lastLeakHash) {
     _lastLeakHash = hash;
     if (leaks.length > 0) broadcastSessionEvent({ type: 'session:leaks', leaks });
@@ -13123,7 +16852,11 @@ function getGitInfo(dir) {
     } catch {}
 
     // Get status for this directory (porcelain v1: XY <path>)
-    const raw = execSync('git status --porcelain -u .', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString();
+    // spawnSync over execSync — execSync's 1MB default maxBuffer overflows on repos with very large
+    // status output (e.g. tracked browser-profile caches), throwing ENOBUFS and silently disabling git UI.
+    const statusResult = spawnSync('git', ['status', '--porcelain', '-u', '.'], { cwd: dir, stdio: 'pipe', timeout: 5000, maxBuffer: 256 * 1024 * 1024 });
+    if (statusResult.status !== 0) return { branch, statuses: new Map() };
+    const raw = statusResult.stdout.toString();
     const statuses = new Map(); // name → status code
 
     for (const line of raw.split('\n')) {
@@ -13316,7 +17049,9 @@ app.get('/api/git/status', (req, res) => {
       if (!branch) branch = execSync('git rev-parse --short HEAD', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
     } catch {}
 
-    const raw = execSync('git status --porcelain', { cwd: dir, stdio: 'pipe', timeout: 5000 }).toString();
+    const statusResult = spawnSync('git', ['status', '--porcelain'], { cwd: dir, stdio: 'pipe', timeout: 5000, maxBuffer: 256 * 1024 * 1024 });
+    if (statusResult.status !== 0) return res.status(500).json({ error: statusResult.stderr?.toString?.()?.trim() || 'git status failed' });
+    const raw = statusResult.stdout.toString();
     const changes = [];
     for (const line of raw.split('\n')) {
       if (!line || line.length < 4) continue;
@@ -14501,6 +18236,15 @@ async function findReusableBrowserSession(opts = {}) {
   for (const [id, session] of browserSessions) {
     if (excludeAgentOwned && session._agentOwned) continue;
     if (excludeLoopOwned && session._loopOwned?.size > 0) continue;
+    // Belt-and-suspenders: also check agent registry in case _agentOwned flag
+    // hasn't been set yet (race between session creation and ownership marking)
+    if (excludeAgentOwned) {
+      let agentClaimed = false;
+      for (const agent of agentRegistry.values()) {
+        if (agent.status === 'running' && agent.browserSessionId === id) { agentClaimed = true; break; }
+      }
+      if (agentClaimed) continue;
+    }
     if (selectedNorm) {
       const sessionSelected = normalize(session._selectedProfilePath);
       const sessionRoot = normalize(session._launchUserDataDir);
@@ -16085,7 +19829,9 @@ app.get('/api/browser/sessions', (req, res) => {
     wsEndpoint: s._isPersistent ? null : (s.browser.wsEndpoint?.() || null),
     activeTabId: s.activeTabId || null,
     loopOwned: (s._loopOwned?.size || 0) > 0,
-    agentOwned: !!s._agentOwned,
+    // Also check agent registry as fallback — covers the race window between
+    // session creation and _agentOwned flag being set
+    agentOwned: !!s._agentOwned || [...agentRegistry.values()].some(a => a.status === 'running' && a.browserSessionId === id),
     tabs: s.tabs ? [...s.tabs.entries()].map(([tid, t]) => ({
       id: tid,
       url: t.url,
@@ -16175,11 +19921,20 @@ app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
-  const { url } = req.body;
+  const { url, returnSnapshot } = req.body;
   try {
     await routed.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
     const state = await syncPageState(session, routed);
-    res.json({ ok: true, url: state.url, title: state.title });
+    const body = { ok: true, url: state.url, title: state.title };
+    if (returnSnapshot) {
+      const snap = await buildSnapshotResponse(routed.page, {
+        scopeSel: returnSnapshot.selector ? normalizeSelector(returnSnapshot.selector) : null,
+        mode: returnSnapshot.mode,
+        viewport: returnSnapshot.viewport,
+      }).catch(err => ({ snapshot: null, snapshotError: err.message }));
+      Object.assign(body, snap);
+    }
+    res.json(body);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -16286,28 +20041,191 @@ function normalizeSelector(sel) {
   return sel;
 }
 
-async function getInteractiveHints(page) {
+// Compute visible interactive elements with stable selector hints.
+// opts: { limit=15, viewportOnly=true }
+async function getInteractiveHints(page, opts = {}) {
+  const limit = opts.limit ?? 15;
+  const viewportOnly = opts.viewportOnly !== false;
   try {
-    return await page.evaluate(() => {
+    return await page.evaluate(({ limit, viewportOnly }) => {
+      function cssEscape(s) {
+        if (window.CSS && CSS.escape) return CSS.escape(s);
+        return String(s).replace(/["\\]/g, '\\$&');
+      }
+      function isUniqueCss(sel) {
+        try { return document.querySelectorAll(sel).length === 1; } catch { return false; }
+      }
+      function stableSelector(el) {
+        const testid = el.getAttribute('data-testid');
+        if (testid) return `[data-testid="${cssEscape(testid)}"]`;
+        const e2e = el.getAttribute('data-e2e');
+        if (e2e) return `[data-e2e="${cssEscape(e2e)}"]`;
+        const tt = el.getAttribute('data-tt');
+        if (tt) return `[data-tt="${cssEscape(tt)}"]`;
+        if (el.id && !/^(ember|ext-|react-|__)/.test(el.id)) {
+          const sel = `#${cssEscape(el.id)}`;
+          if (isUniqueCss(sel)) return sel;
+        }
+        const aria = el.getAttribute('aria-label');
+        if (aria && aria.length <= 80) return `[aria-label="${cssEscape(aria)}"]`;
+        const role = el.getAttribute('role') || ({ BUTTON: 'button', A: 'link', INPUT: 'textbox', TEXTAREA: 'textbox' })[el.tagName];
+        const name = (el.innerText || '').trim().slice(0, 60);
+        if (role && name) return `role=${role}[name="${name.replace(/"/g, '\\"')}"]`;
+        const tag = el.tagName.toLowerCase();
+        if (name && name.length <= 40) return `${tag}:has-text("${name.replace(/"/g, '\\"')}")`;
+        return tag;
+      }
       const els = document.querySelectorAll(
-        'button, [role="button"], [role="textbox"], a[href], input, textarea, ' +
+        'button, [role="button"], [role="textbox"], [role="link"], [role="checkbox"], [role="tab"], ' +
+        'a[href], input, textarea, select, [role="combobox"], [role="menuitem"], ' +
         '[contenteditable="true"], [tabindex="0"]'
       );
       const visible = Array.from(els).filter(el => {
         const r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0 && r.top < window.innerHeight;
+        if (r.width === 0 || r.height === 0) return false;
+        if (viewportOnly && (r.top >= window.innerHeight || r.bottom <= 0)) return false;
+        return true;
       });
-      return visible.slice(0, 15).map(el => {
+      const picks = visible.slice(0, limit);
+      const selCounts = new Map();
+      return picks.map(el => {
         const role = el.getAttribute('role') || el.tagName.toLowerCase();
         const text = (el.innerText || '').trim().substring(0, 60);
         const ariaLabel = el.getAttribute('aria-label') || '';
         const placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-placeholder') || '';
-        return { role, text, ariaLabel, placeholder };
+        const selector = stableSelector(el);
+        let nth;
+        try {
+          const matches = document.querySelectorAll(selector);
+          if (matches.length > 1) {
+            const seen = selCounts.get(selector) || 0;
+            nth = seen;
+            selCounts.set(selector, seen + 1);
+          }
+        } catch { /* ignore */ }
+        const rect = el.getBoundingClientRect();
+        return {
+          role, text, ariaLabel, placeholder, selector,
+          ...(nth !== undefined ? { nth } : {}),
+          rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+        };
       });
-    });
+    }, { limit, viewportOnly });
   } catch (_) {
     return [];
   }
+}
+
+// Rank hints by fuzzy relevance to an attempted selector's text/aria fragments.
+function rankHintsAgainst(hints, attemptedSelector) {
+  if (!attemptedSelector || !hints.length) return hints;
+  const m = attemptedSelector.match(/(?:has-text|name|aria-label|text)\s*=?\s*["']([^"']{2,80})["']/i)
+    || attemptedSelector.match(/["']([^"']{3,80})["']/);
+  if (!m) return hints;
+  const needle = m[1].toLowerCase();
+  const scored = hints.map(h => {
+    const hay = `${h.text || ''} ${h.ariaLabel || ''} ${h.placeholder || ''}`.toLowerCase();
+    let score = 0;
+    if (hay.includes(needle)) score += 10;
+    else {
+      for (const tok of needle.split(/\s+/).filter(t => t.length >= 3)) if (hay.includes(tok)) score += 2;
+    }
+    return { h, score };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  return scored.every(s => s.score === 0) ? hints : scored.map(s => s.h);
+}
+
+// textHint auto-heal: probe a few role/text selectors; return the first that yields
+// exactly one match, or null if nothing uniquely resolves.
+// For count>1 errors: enumerate up to `limit` of the matching elements with
+// stable selector + context so the caller can pick the right one without blind nthMatch.
+async function describeMatches(page, selector, limit = 10) {
+  try {
+    return await page.evaluate(({ selector, limit }) => {
+      function cssEscape(s) {
+        if (window.CSS && CSS.escape) return CSS.escape(s);
+        return String(s).replace(/["\\]/g, '\\$&');
+      }
+      function stableSelector(el) {
+        const testid = el.getAttribute('data-testid');
+        if (testid) return `[data-testid="${cssEscape(testid)}"]`;
+        const e2e = el.getAttribute('data-e2e');
+        if (e2e) return `[data-e2e="${cssEscape(e2e)}"]`;
+        const aria = el.getAttribute('aria-label');
+        if (aria && aria.length <= 80) return `[aria-label="${cssEscape(aria)}"]`;
+        const role = el.getAttribute('role') || ({ BUTTON: 'button', A: 'link' })[el.tagName];
+        const name = (el.innerText || '').trim().slice(0, 60);
+        if (role && name) return `role=${role}[name="${name.replace(/"/g, '\\"')}"]`;
+        return el.tagName.toLowerCase();
+      }
+      let els = [];
+      try { els = Array.from(document.querySelectorAll(selector)); } catch { return []; }
+      return els.slice(0, limit).map((el, i) => {
+        const role = el.getAttribute('role') || el.tagName.toLowerCase();
+        const text = (el.innerText || '').trim().substring(0, 60);
+        const ariaLabel = el.getAttribute('aria-label') || '';
+        const placeholder = el.getAttribute('placeholder') || '';
+        return { role, text, ariaLabel, placeholder, selector: stableSelector(el), nth: i };
+      });
+    }, { selector, limit });
+  } catch {
+    return [];
+  }
+}
+
+async function healWithTextHint(page, textHint) {
+  if (!textHint || typeof textHint !== 'string') return null;
+  const esc = textHint.replace(/"/g, '\\"');
+  const candidates = [
+    `role=button[name="${esc}"]`,
+    `role=link[name="${esc}"]`,
+    `role=textbox[name="${esc}"]`,
+    `[aria-label="${esc}"]`,
+    `text="${esc}"`,
+    `:has-text("${esc}")`,
+  ];
+  for (const sel of candidates) {
+    try {
+      const count = await page.locator(sel).count();
+      if (count === 1) return sel;
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
+// Shared locator resolver for click/fill/type/hover/select.
+// Returns { target, healed, error }. When `error` is set, it's a ready-to-send 400 body.
+async function resolveInteractLocator(page, selector, nthMatch, textHint) {
+  let loc, count;
+  try {
+    loc = page.locator(selector);
+    count = await loc.count();
+  } catch (err) {
+    const hints = rankHintsAgainst(await getInteractiveHints(page, { limit: 10 }), selector);
+    return { error: { error: `Selector parse failed: ${err.message}`, hints, hintsLabel: 'Try one of these selectors' } };
+  }
+
+  if (count === 0) {
+    if (textHint) {
+      const healed = await healWithTextHint(page, textHint);
+      if (healed) return { target: page.locator(healed), healed: true };
+    }
+    const hints = rankHintsAgainst(await getInteractiveHints(page, { limit: 10 }), selector);
+    return { error: { error: `No elements match selector: ${selector}`, hints, hintsLabel: 'Try one of these selectors' } };
+  }
+
+  if (count > 1 && nthMatch === undefined) {
+    const matches = await describeMatches(page, selector, 10);
+    return { error: {
+      error: `Selector matches ${count} elements (must be unique). Pass nthMatch or use a more specific selector.`,
+      hints: matches,
+      hintsLabel: `Matched elements (pass nthMatch 0..${Math.min(count, 10) - 1} or switch to one of these selectors)`,
+    }};
+  }
+
+  const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
+  return { target, healed: false };
 }
 
 app.post('/api/browser/sessions/:id/click', async (req, res) => {
@@ -16315,26 +20233,27 @@ app.post('/api/browser/sessions/:id/click', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
-  const { selector: rawSelector, timeout, nthMatch } = req.body;
+  const { selector: rawSelector, timeout, nthMatch, textHint, returnSnapshot } = req.body;
   if (!rawSelector) return res.status(400).json({ error: 'selector required' });
   const selector = normalizeSelector(rawSelector);
   try {
-    const loc = routed.page.locator(selector);
-    // Pre-check element count for better error messages
-    const count = await loc.count().catch(() => -1);
-    if (count === 0) {
-      const hints = await getInteractiveHints(routed.page);
-      return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
-    }
-    if (count > 1 && nthMatch === undefined) {
-      return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
-    }
-    const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
-    await target.click({ timeout: timeout || 5000 });
+    const resolved = await resolveInteractLocator(routed.page, selector, nthMatch, textHint);
+    if (resolved.error) return res.status(400).json(resolved.error);
+    await resolved.target.click({ timeout: timeout || 5000 });
     const state = await syncPageState(session, routed);
-    res.json({ ok: true, url: state.url, title: state.title });
+    const body = { ok: true, url: state.url, title: state.title, ...(resolved.healed ? { healed: true } : {}) };
+    if (returnSnapshot) {
+      const snap = await buildSnapshotResponse(routed.page, {
+        scopeSel: returnSnapshot.selector ? normalizeSelector(returnSnapshot.selector) : null,
+        mode: returnSnapshot.mode,
+        viewport: returnSnapshot.viewport,
+      }).catch(err => ({ snapshot: null, snapshotError: err.message }));
+      Object.assign(body, snap);
+    }
+    res.json(body);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    const hints = rankHintsAgainst(await getInteractiveHints(routed.page, { limit: 10 }), selector);
+    res.status(400).json({ error: err.message, hints, hintsLabel: 'Possibly usable elements' });
   }
 });
 
@@ -16343,23 +20262,15 @@ app.post('/api/browser/sessions/:id/fill', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
-  const { selector: rawFillSel, value, timeout, nthMatch } = req.body;
+  const { selector: rawFillSel, value, timeout, nthMatch, textHint } = req.body;
   if (!rawFillSel) return res.status(400).json({ error: 'selector required' });
   const selector = normalizeSelector(rawFillSel);
   try {
-    const loc = routed.page.locator(selector);
-    const count = await loc.count().catch(() => -1);
-    if (count === 0) {
-      const hints = await getInteractiveHints(routed.page);
-      return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
-    }
-    if (count > 1 && nthMatch === undefined) {
-      return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
-    }
-    const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
-    await target.fill(value ?? '', { timeout: timeout || 5000 });
+    const resolved = await resolveInteractLocator(routed.page, selector, nthMatch, textHint);
+    if (resolved.error) return res.status(400).json(resolved.error);
+    await resolved.target.fill(value ?? '', { timeout: timeout || 5000 });
     const state = await syncPageState(session, routed);
-    res.json({ ok: true, url: state.url, title: state.title });
+    res.json({ ok: true, url: state.url, title: state.title, ...(resolved.healed ? { healed: true } : {}) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -16370,27 +20281,20 @@ app.post('/api/browser/sessions/:id/type', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
-  const { selector: rawTypeSel, text, timeout, nthMatch } = req.body;
+  const { selector: rawTypeSel, text, timeout, nthMatch, textHint } = req.body;
   try {
+    let healed = false;
     if (rawTypeSel) {
       const selector = normalizeSelector(rawTypeSel);
-      const loc = routed.page.locator(selector);
-      const count = await loc.count().catch(() => -1);
-      if (count === 0) {
-        const hints = await getInteractiveHints(routed.page);
-        return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
-      }
-      if (count > 1 && nthMatch === undefined) {
-        return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
-      }
-      const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
-      await target.pressSequentially(text ?? '', { timeout: timeout || 5000 });
+      const resolved = await resolveInteractLocator(routed.page, selector, nthMatch, textHint);
+      if (resolved.error) return res.status(400).json(resolved.error);
+      healed = resolved.healed;
+      await resolved.target.pressSequentially(text ?? '', { timeout: timeout || 5000 });
     } else {
-      // No selector: type into the currently focused element via keyboard
       await routed.page.keyboard.type(text ?? '');
     }
     const state = await syncPageState(session, routed);
-    res.json({ ok: true, url: state.url, title: state.title });
+    res.json({ ok: true, url: state.url, title: state.title, ...(healed ? { healed: true } : {}) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -16401,23 +20305,15 @@ app.post('/api/browser/sessions/:id/hover', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
-  const { selector: rawHoverSel, timeout, nthMatch } = req.body;
+  const { selector: rawHoverSel, timeout, nthMatch, textHint } = req.body;
   if (!rawHoverSel) return res.status(400).json({ error: 'selector required' });
   const selector = normalizeSelector(rawHoverSel);
   try {
-    const loc = routed.page.locator(selector);
-    const count = await loc.count().catch(() => -1);
-    if (count === 0) {
-      const hints = await getInteractiveHints(routed.page);
-      return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
-    }
-    if (count > 1 && nthMatch === undefined) {
-      return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
-    }
-    const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
-    await target.hover({ timeout: timeout || 5000 });
+    const resolved = await resolveInteractLocator(routed.page, selector, nthMatch, textHint);
+    if (resolved.error) return res.status(400).json(resolved.error);
+    await resolved.target.hover({ timeout: timeout || 5000 });
     const state = await syncPageState(session, routed);
-    res.json({ ok: true, url: state.url, title: state.title });
+    res.json({ ok: true, url: state.url, title: state.title, ...(resolved.healed ? { healed: true } : {}) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -16428,23 +20324,15 @@ app.post('/api/browser/sessions/:id/select', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
-  const { selector: rawSelSel, value, timeout, nthMatch } = req.body;
+  const { selector: rawSelSel, value, timeout, nthMatch, textHint } = req.body;
   if (!rawSelSel) return res.status(400).json({ error: 'selector required' });
   const selector = normalizeSelector(rawSelSel);
   try {
-    const loc = routed.page.locator(selector);
-    const count = await loc.count().catch(() => -1);
-    if (count === 0) {
-      const hints = await getInteractiveHints(routed.page);
-      return res.status(400).json({ error: `No elements match selector: ${selector}`, hints });
-    }
-    if (count > 1 && nthMatch === undefined) {
-      return res.status(400).json({ error: `Selector matches ${count} elements (must be unique). Use a more specific selector or pass nthMatch (0-indexed). Matched: ${selector}` });
-    }
-    const target = (count > 1 && nthMatch !== undefined) ? loc.nth(nthMatch) : loc;
-    await target.selectOption(value ?? '', { timeout: timeout || 5000 });
+    const resolved = await resolveInteractLocator(routed.page, selector, nthMatch, textHint);
+    if (resolved.error) return res.status(400).json(resolved.error);
+    await resolved.target.selectOption(value ?? '', { timeout: timeout || 5000 });
     const state = await syncPageState(session, routed);
-    res.json({ ok: true, url: state.url, title: state.title });
+    res.json({ ok: true, url: state.url, title: state.title, ...(resolved.healed ? { healed: true } : {}) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -16511,27 +20399,77 @@ app.post('/api/browser/sessions/:id/snapshot', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
-  const { selector: rawSel } = req.body;
+  const { selector: rawSel, mode, viewport } = req.body || {};
   const scopeSel = rawSel ? normalizeSelector(rawSel) : null;
   try {
-    let tree = null;
-    if (scopeSel) {
-      const ariaText = await routed.page.locator(scopeSel).ariaSnapshot({ timeout: 8000 }).catch(() => null);
-      if (ariaText) tree = parseAriaSnapshotText(ariaText);
-    } else {
-      if (routed.page.accessibility && typeof routed.page.accessibility.snapshot === 'function') {
-        tree = await routed.page.accessibility.snapshot();
-      } else {
-        const ariaText = await routed.page.locator('body').ariaSnapshot({ timeout: 5000 }).catch(() => null);
-        if (ariaText) tree = parseAriaSnapshotText(ariaText);
-      }
-    }
+    const payload = await buildSnapshotResponse(routed.page, { scopeSel, mode, viewport });
     const state = await syncPageState(session, routed);
-    res.json({ ok: true, url: state.url, title: state.title, snapshot: tree });
+    res.json({ ok: true, url: state.url, title: state.title, ...payload });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Build snapshot payload shared between the snapshot endpoints and the combined
+// action-and-snapshot endpoints. Honors mode (full/interactive/landmarks) and viewport filter.
+async function buildSnapshotResponse(page, opts = {}) {
+  const { scopeSel, mode = 'full', viewport = false } = opts;
+
+  // mode=interactive: skip the tree entirely — return a flat list of interactive elements.
+  if (mode === 'interactive') {
+    const interactive = await getInteractiveHints(page, { limit: 200, viewportOnly: !!viewport });
+    return { snapshot: null, interactive, mode };
+  }
+
+  let tree = null;
+  if (scopeSel) {
+    const ariaText = await page.locator(scopeSel).ariaSnapshot({ timeout: 8000 }).catch(() => null);
+    if (ariaText) tree = parseAriaSnapshotText(ariaText);
+  } else if (page.accessibility && typeof page.accessibility.snapshot === 'function') {
+    tree = await page.accessibility.snapshot();
+  } else {
+    const ariaText = await page.locator('body').ariaSnapshot({ timeout: 5000 }).catch(() => null);
+    if (ariaText) tree = parseAriaSnapshotText(ariaText);
+  }
+
+  if (viewport && tree) {
+    const nameBox = await getViewportNamedRects(page).catch(() => new Map());
+    tree = filterTreeByViewport(tree, nameBox);
+  }
+
+  return { snapshot: tree, mode };
+}
+
+// Build a {lowercase-name → true} set of element names that are currently in-viewport.
+// Used to drop ax-tree nodes whose name doesn't match any visible DOM element name.
+async function getViewportNamedRects(page) {
+  const names = await page.evaluate(() => {
+    const out = new Set();
+    const els = document.querySelectorAll(
+      'button, a, input, textarea, select, [role], [aria-label], h1, h2, h3, h4, h5, h6'
+    );
+    for (const el of els) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      if (r.top >= window.innerHeight || r.bottom <= 0) continue;
+      const name = (el.getAttribute('aria-label') || el.innerText || '').trim();
+      if (name) out.add(name.slice(0, 120).toLowerCase());
+    }
+    return Array.from(out);
+  });
+  return new Set(names);
+}
+
+function filterTreeByViewport(node, names) {
+  if (!node || typeof node !== 'object') return node;
+  const keep = !node.name || names.has(String(node.name).toLowerCase());
+  const children = Array.isArray(node.children) ? node.children : [];
+  const keptChildren = children.map(c => filterTreeByViewport(c, names)).filter(c => c && (c.name || (c.children && c.children.length)));
+  if (keep || keptChildren.length > 0) {
+    return { ...node, children: keptChildren };
+  }
+  return null;
+}
 
 // Parse Playwright's ariaSnapshot YAML-like text into a tree structure
 function parseAriaSnapshotText(text) {
@@ -16745,7 +20683,7 @@ app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
-  const { direction = 'down', distance = 500, selector: rawSel } = req.body;
+  const { direction = 'down', distance = 500, selector: rawSel, returnSnapshot } = req.body;
   const deltaX = direction === 'right' ? distance : direction === 'left' ? -distance : 0;
   const deltaY = direction === 'down' ? distance : direction === 'up' ? -distance : 0;
   try {
@@ -16758,7 +20696,16 @@ app.post('/api/browser/sessions/:id/scroll', async (req, res) => {
     }
     await routed.page.waitForTimeout(300);
     const state = await syncPageState(session, routed);
-    res.json({ ok: true, url: state.url, title: state.title });
+    const body = { ok: true, url: state.url, title: state.title };
+    if (returnSnapshot) {
+      const snap = await buildSnapshotResponse(routed.page, {
+        scopeSel: returnSnapshot.selector ? normalizeSelector(returnSnapshot.selector) : null,
+        mode: returnSnapshot.mode,
+        viewport: returnSnapshot.viewport,
+      }).catch(err => ({ snapshot: null, snapshotError: err.message }));
+      Object.assign(body, snap);
+    }
+    res.json(body);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -16930,6 +20877,25 @@ const httpServer = app.listen(PORT, async () => {
 
   // SQLite indexes are created in schema — no runtime index creation needed
 
+  // Warm the session_cache + session_fts tables so the hybrid search has data
+  // on first keystroke. Runs async — does not block server boot.
+  setTimeout(() => {
+    Promise.resolve().then(() => {
+      try {
+        const claude = rebuildClaudeCache();
+        if (claude.updated > 0) console.log(`  Session cache (claude): indexed ${claude.updated}/${claude.sessions}`);
+      } catch (err) { console.warn('  Session cache (claude) error:', err.message); }
+      try {
+        const codex = rebuildCodexCache();
+        if (codex.updated > 0) console.log(`  Session cache (codex): indexed ${codex.updated}/${codex.sessions}`);
+      } catch (err) { console.warn('  Session cache (codex) error:', err.message); }
+      try {
+        const oc = rebuildOpencodeCache({ getOpencodeDb });
+        if (oc.updated > 0) console.log(`  Session cache (opencode): indexed ${oc.updated}/${oc.sessions}`);
+      } catch (err) { console.warn('  Session cache (opencode) error:', err.message); }
+    });
+  }, 2000);
+
   // Auto-sync OpenClaw bridge if enabled
   try {
     const ocConfig = loadBridgeConfig('openclaw');
@@ -16970,6 +20936,20 @@ const httpServer = app.listen(PORT, async () => {
 
   // Check for npm updates
   try { await checkNpmUpdate(); } catch {}
+
+  // Check for CLI tool updates
+  try { await checkToolVersions(); } catch {}
+
+  // Auto-start OpenCode server on boot so downstream UIs (Automation Studio,
+  // OpenCode panel, Settings) see providers/models immediately without the
+  // user having to click Start each time.
+  try {
+    const ready = await ensureOpencodeServer();
+    if (ready) console.log(`  OpenCode:  auto-started on :${_ocpPort}`);
+    else console.log('  OpenCode:  auto-start skipped (binary missing or failed to launch)');
+  } catch (err) {
+    console.warn('  OpenCode:  auto-start error:', err.message);
+  }
 });
 
 // ═══════════════════════════════════════════
@@ -17082,7 +21062,33 @@ wss.on('connection', (ws, req) => {
       if (msg.type === 'input') {
         session.pty.write(msg.data);
       } else if (msg.type === 'resize') {
-        session.pty.resize(msg.cols, msg.rows);
+        // 50ms trailing-edge throttle per session — guards against bursts
+        // from multi-monitor DPI changes, programmatic resizes, or any client
+        // that forgets to snap/debounce. Client already cell-snaps the common
+        // path; this is defense in depth so the PTY never sees >20 SIGWINCH/s.
+        const last = session._lastResize;
+        session._lastResize = { cols: msg.cols, rows: msg.rows };
+        if (session._resizeTimer) {
+          // A resize is already pending — it will pick up the latest values.
+          return;
+        }
+        const apply = () => {
+          session._resizeTimer = null;
+          const r = session._lastResize;
+          if (!r || !session.pty) return;
+          // Skip no-op resizes (cols/rows unchanged from what we last applied)
+          if (session._appliedResize &&
+              session._appliedResize.cols === r.cols &&
+              session._appliedResize.rows === r.rows) return;
+          session._appliedResize = { cols: r.cols, rows: r.rows };
+          try { session.pty.resize(r.cols, r.rows); } catch {}
+        };
+        if (!last) {
+          // First resize on this session — apply immediately (don't delay the initial fit).
+          apply();
+        } else {
+          session._resizeTimer = setTimeout(apply, 50);
+        }
       } else if (msg.type === 'image_paste' && msg.data) {
         // Save pasted image to temp file
         const ext = (msg.mimeType === 'image/jpeg') ? 'jpg' : 'png';
@@ -17130,6 +21136,7 @@ wss.on('connection', (ws, req) => {
     if (session.clients.size === 0 && terminalSessions.has(sessionId)) {
       session.graceTimer = setTimeout(() => {
         if (session.clients.size === 0 && terminalSessions.has(sessionId)) {
+          if (session._resizeTimer) { clearTimeout(session._resizeTimer); session._resizeTimer = null; }
           try { session.pty.kill(); } catch {}
           if (session.tempFiles) session.tempFiles.forEach(f => { try { unlinkSync(f); } catch {} });
           terminalSessions.delete(sessionId);
@@ -17595,6 +21602,6 @@ function saveSessionSnapshot() {
 setInterval(saveSessionSnapshot, SESSION_SNAPSHOT_INTERVAL_MS);
 
 // Also try to save on clean shutdown (works with Ctrl+C, not window close)
-process.on('SIGINT', () => { saveSessionSnapshot(); process.exit(0); });
-process.on('SIGTERM', () => { saveSessionSnapshot(); process.exit(0); });
-process.on('exit', saveSessionSnapshot);
+process.on('SIGINT', () => { stopOpencodeServer(); saveSessionSnapshot(); process.exit(0); });
+process.on('SIGTERM', () => { stopOpencodeServer(); saveSessionSnapshot(); process.exit(0); });
+process.on('exit', () => { stopOpencodeServer(); saveSessionSnapshot(); });

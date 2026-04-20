@@ -7,21 +7,17 @@ const tabIdField = z.string().optional().describe('Target a specific tab within 
 // ── browser_snapshot ──
 
 export const browserSnapshotSchema = {
-  selector: z.string().optional().describe(
-    'Scope snapshot to a specific element\'s subtree. Dramatically reduces output on complex pages. Twitter: [data-testid="primaryColumn"] for main feed, [data-testid="tweet"] for a single tweet card.'
-  ),
+  selector: z.string().optional().describe('Scope snapshot to a specific element\'s subtree. Dramatically reduces output on complex pages. Call browser_cheatsheet for per-platform scopes.'),
+  mode: z.enum(['full', 'interactive', 'landmarks']).optional().describe('"full" (default) = full accessibility tree. "interactive" = only buttons/links/inputs with stable selector hints (~85% smaller on feed pages). "landmarks" = only main/nav/banner/region/form + first-level headings.'),
+  viewport: z.coerce.boolean().optional().describe('If true, drop nodes whose bounding box is outside the current viewport. ~40-60% reduction.'),
+  maxChars: z.coerce.number().int().positive().optional().describe('Cap output length in characters (default 30000).'),
+  format: z.enum(['text', 'json']).optional().describe('"text" (default) = indented tree. "json" = compact array (only meaningful with mode="interactive"). ~45% smaller than text for interactive lists.'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
   tabId: tabIdField,
 };
 
 export const browserSnapshotDescription =
-  'Get an accessibility tree snapshot of the current page. Returns a structured text representation of all visible elements with their ARIA roles, names, and values. This is the primary and most token-efficient way to "see" the page — prefer this over screenshots. ' +
-  'Twitter/X: scope to [data-testid="primaryColumn"] for main feed, [data-testid="tweet"] for a single tweet card. ' +
-  'Facebook: scope to [role="feed"] for group/page feed, [role="article"] for a single post, [role="dialog"] for the post composer dialog. ' +
-  'TikTok: scope to article for a single video in For You feed, [data-e2e="search_top-item-list"] for search results, [data-tt="components_PostTable_Container"] for Studio content list. ' +
-  'WhatsApp: scope to [aria-label="Lista de conversas"] for the chat list, [role="application"] for the open chat message view. ' +
-  'Instagram: scope to article for a single feed post, header for profile info, main for a post page with comments, form for the comment input area. ' +
-  'LinkedIn: scope to .feed-shared-update-v2[data-urn] for a single feed post, .scaffold-layout__main for main content, .msg-conversation-listitem for a messaging conversation, article.nt-card for a notification, [role="dialog"] for the post composer.';
+  'Token-efficient page "view". Default returns the accessibility tree. Use mode="interactive" for just clickable/fillable elements (recommended on feed-heavy pages), mode="landmarks" for structural overview, or viewport=true to drop off-screen nodes. Pass selector to scope to a subtree. Call browser_cheatsheet for per-platform selectors.';
 
 // Roles that are pure structural containers with no semantic value when unnamed
 const NOISE_ROLES = new Set(['none', 'presentation', 'generic']);
@@ -62,23 +58,143 @@ function formatSnapshotNode(node: Record<string, unknown>, indent = 0): string {
   return line;
 }
 
-export async function handleBrowserSnapshot(args: { selector?: string; sessionId?: string; tabId?: string }) {
+type SnapshotMode = 'full' | 'interactive' | 'landmarks';
+type SnapshotFormat = 'text' | 'json';
+
+// Roles considered "interactive" for mode=interactive filtering.
+const INTERACTIVE_ROLES = new Set([
+  'button', 'link', 'textbox', 'checkbox', 'combobox', 'menuitem', 'menuitemcheckbox',
+  'menuitemradio', 'tab', 'radio', 'slider', 'switch', 'searchbox', 'spinbutton', 'option',
+]);
+
+// Roles considered "landmarks" for mode=landmarks filtering.
+const LANDMARK_ROLES = new Set([
+  'main', 'navigation', 'banner', 'contentinfo', 'complementary', 'region', 'form',
+  'search', 'heading',
+]);
+
+function filterTree(
+  node: Record<string, unknown>,
+  mode: SnapshotMode,
+  keep: (role: string) => boolean,
+): Record<string, unknown> | null {
+  if (!node) return null;
+  const role = (node.role as string) || 'generic';
+  const children = (node.children as Record<string, unknown>[] | undefined) || [];
+
+  const keptChildren = children
+    .map(c => filterTree(c, mode, keep))
+    .filter((c): c is Record<string, unknown> => c !== null);
+
+  if (keep(role)) return { ...node, children: keptChildren };
+  // Hoist kept descendants through uninteresting parents
+  if (keptChildren.length > 0) return { role: 'generic', name: '', children: keptChildren };
+  return null;
+}
+
+// Exported so navigate/click/scroll can format an attached returnSnapshot consistently.
+export function formatInlineSnapshot(
+  result: Record<string, unknown>,
+  opts: { mode?: SnapshotMode; format?: SnapshotFormat; maxChars?: number } = {}
+): string {
+  const mode: SnapshotMode = opts.mode || (result.mode as SnapshotMode) || 'full';
+  const format: SnapshotFormat = opts.format || 'text';
+  const maxChars = opts.maxChars && opts.maxChars > 0 ? opts.maxChars : 12000;
+
+  if (mode === 'interactive') {
+    const flat = (result.interactive as Array<Record<string, unknown>> | undefined) || [];
+    if (format === 'json') {
+      const body = JSON.stringify(flat, null, 2);
+      return body.length > maxChars ? body.slice(0, maxChars) + '\n... (truncated)' : body;
+    }
+    const lines = flat.map(h => {
+      const role = h.role || 'generic';
+      const label = h.ariaLabel || h.text || h.placeholder || '(unnamed)';
+      const sel = h.selector ? ` → ${h.selector}${h.nth !== undefined ? ` [nth:${h.nth}]` : ''}` : '';
+      return `- ${role}: "${String(label).slice(0, 60)}"${sel}`;
+    });
+    const body = lines.join('\n');
+    return body.length > maxChars ? body.slice(0, maxChars) + '\n... (truncated)' : body;
+  }
+
+  const tree = result.snapshot as Record<string, unknown> | null | undefined;
+  let working: Record<string, unknown> | null | undefined = tree;
+  if (tree && mode === 'landmarks') {
+    working = filterTree(tree, 'landmarks', r => LANDMARK_ROLES.has(r));
+  }
+  const formatted = working ? formatSnapshotNode(working) : '(empty page)';
+  return formatted.length > maxChars ? formatted.slice(0, maxChars) + '\n... (truncated)' : formatted;
+}
+
+function flattenInteractive(node: Record<string, unknown>): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const role = (node.role as string) || '';
+  if (INTERACTIVE_ROLES.has(role)) {
+    const entry: Record<string, unknown> = { role, name: node.name || '' };
+    if (node.value) entry.value = node.value;
+    if (node.description) entry.description = node.description;
+    if (node.checked !== undefined) entry.checked = node.checked;
+    if (node.selected) entry.selected = true;
+    if (node.disabled) entry.disabled = true;
+    out.push(entry);
+  }
+  const children = (node.children as Record<string, unknown>[] | undefined) || [];
+  for (const c of children) out.push(...flattenInteractive(c));
+  return out;
+}
+
+export async function handleBrowserSnapshot(args: {
+  selector?: string;
+  mode?: SnapshotMode;
+  viewport?: boolean;
+  maxChars?: number;
+  format?: SnapshotFormat;
+  sessionId?: string;
+  tabId?: string;
+}) {
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.snapshot(resolved.sessionId, args.selector, resolved.tabId);
+  const mode: SnapshotMode = args.mode || 'full';
+  const format: SnapshotFormat = args.format || 'text';
+  const maxChars = args.maxChars && args.maxChars > 0 ? args.maxChars : 30000;
+
+  const result = await ni.snapshot(resolved.sessionId, args.selector, resolved.tabId, {
+    mode,
+    viewport: args.viewport,
+  });
   if (result.error) return text(`Snapshot failed: ${result.error}`);
 
   const tree = result.snapshot as Record<string, unknown> | null;
-  const formatted = tree ? formatSnapshotNode(tree) : '(empty page)';
+
+  // mode=interactive with format=json uses the server-provided flat list if present,
+  // otherwise derives it from the tree.
+  if (mode === 'interactive' && format === 'json') {
+    const flat = (result.interactive as Array<Record<string, unknown>> | undefined)
+      || (tree ? flattenInteractive(tree) : []);
+    const body = JSON.stringify(flat, null, 2);
+    let msg = `Page: ${result.url}\nTitle: "${result.title}"\nMode: interactive (json)\nCount: ${flat.length}\n\n${body}`;
+    if (msg.length > maxChars) msg = msg.slice(0, maxChars) + '\n... (truncated — lower maxChars or use selector)';
+    return text(msg);
+  }
+
+  let working: Record<string, unknown> | null = tree;
+  if (tree && mode === 'interactive') {
+    working = filterTree(tree, 'interactive', r => INTERACTIVE_ROLES.has(r));
+  } else if (tree && mode === 'landmarks') {
+    working = filterTree(tree, 'landmarks', r => LANDMARK_ROLES.has(r));
+  }
+
+  const formatted = working ? formatSnapshotNode(working) : '(empty page)';
 
   let msg = `Page: ${result.url}\nTitle: "${result.title}"\n`;
   if (args.selector) msg += `Scope: ${args.selector}\n`;
+  if (mode !== 'full') msg += `Mode: ${mode}\n`;
+  if (args.viewport) msg += `Viewport-filtered\n`;
   msg += '\n' + formatted;
 
-  // Truncate if very long
-  if (msg.length > 30000) {
-    msg = msg.slice(0, 30000) + '\n... (truncated — narrow scope with selector param)';
+  if (msg.length > maxChars) {
+    msg = msg.slice(0, maxChars) + '\n... (truncated — narrow scope, lower maxChars, or use mode="interactive")';
   }
 
   return text(msg);

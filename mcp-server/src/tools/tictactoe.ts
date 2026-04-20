@@ -9,5 +9,7 @@ import {
  * Single tool with action-based dispatch: start, move, state, end.
  */
 export function registerTicTacToeTools(server: McpServer) {
-  server.tool('tictactoe', tictactoeDescription, tictactoeSchema, handleTictactoe);
+  return [
+    server.tool('tictactoe', tictactoeDescription, tictactoeSchema, handleTictactoe),
+  ];
 }

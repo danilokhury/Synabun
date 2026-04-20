@@ -14,6 +14,11 @@ import {
   updateLoopTemplate,
   deleteLoopTemplate,
   importLoopTemplates,
+  fetchLoopFolders,
+  createLoopFolder,
+  updateLoopFolder,
+  deleteLoopFolder,
+  reorderLoopFolders,
   fetchActiveLoop,
   launchLoop,
   stopLoop,
@@ -41,6 +46,12 @@ const $ = (id) => document.getElementById(id);
 // ── Module-local state ──
 let _panel = null;
 let _backdrop = null;
+let _folders = [];         // user-created folders for organizing custom templates
+let _collapsedFolders = null; // Set<folderId> loaded lazily from localStorage
+let _draggingTemplateId = null;
+let _draggingFolderId = null;
+let _contextMenuEl = null;   // currently-open floating context menu
+let _folderPopover = null;   // currently-open create/edit folder popover
 let _templates = [];       // user-created templates from API
 let _activeLoop = null;    // current active loop status
 let _view = 'welcome';    // 'welcome' | 'picker' | 'detail' | 'wizard' | 'running'
@@ -160,23 +171,92 @@ const CLI_PROFILES = [
   { id: 'claude-code', label: 'Claude Code', desc: 'Anthropic' },
   { id: 'codex',       label: 'Codex CLI',   desc: 'OpenAI' },
   { id: 'gemini',      label: 'Gemini CLI',  desc: 'Google' },
+  { id: 'opencode',    label: 'OpenCode CLI', desc: 'Multi-provider' },
 ];
 
 const CLI_MODELS = {
   'claude-code': [
-    { id: 'claude-opus-4-6',   label: 'Opus 4.6',   desc: 'Most capable', tier: 'top' },
+    { id: 'claude-opus-4-7',   label: 'Opus 4.7',   desc: 'Most capable', tier: 'top' },
     { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6',  desc: 'Balanced', tier: 'default' },
     { id: 'claude-haiku-4-5',  label: 'Haiku 4.5',   desc: 'Fastest' },
   ],
   'codex': [
-    { id: 'o3',      label: 'o3',      desc: 'Deep reasoning', tier: 'top' },
-    { id: 'o4-mini', label: 'o4-mini', desc: 'Fast reasoning', tier: 'default' },
+    { id: 'gpt-5.4',       label: 'GPT-5.4',       desc: 'Most capable', tier: 'top' },
+    { id: 'gpt-5.4-mini',  label: 'GPT-5.4 Mini',  desc: 'Fast & cheap', tier: 'default' },
+    { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', desc: 'Codex-tuned' },
   ],
   'gemini': [
     { id: 'gemini-2.5-pro',   label: '2.5 Pro',   desc: 'Most capable', tier: 'default' },
     { id: 'gemini-2.5-flash', label: '2.5 Flash', desc: 'Lightweight' },
   ],
+  // OpenCode models are resolved dynamically from the running OpenCode server
+  // (connected providers minus hidden models). See getModelsForProfile().
+  'opencode': [],
 };
+
+// ── OpenCode dynamic model list ──
+let _opencodeModelsCache = null;
+let _opencodeModelsLoading = null;
+
+function _readHiddenOpencodeModels() {
+  try { return new Set(JSON.parse(localStorage.getItem('ocp-hidden-models') || '[]')); }
+  catch { return new Set(); }
+}
+
+async function fetchOpencodeModels(force = false) {
+  if (!force && _opencodeModelsCache && _opencodeModelsCache.length) return _opencodeModelsCache;
+  if (_opencodeModelsLoading) return _opencodeModelsLoading;
+  _opencodeModelsLoading = (async () => {
+    try {
+      const r = await fetch('/api/opencode/providers/full');
+      const data = await r.json().catch(() => ({}));
+      // Server returns {ok:false} while OpenCode is booting; don't cache empties.
+      if (!data || data.ok === false) return [];
+      const raw = data.data || {};
+      const all = Array.isArray(raw.all) ? raw.all : (Array.isArray(raw) ? raw : []);
+      const connected = new Set(Array.isArray(raw.connected) ? raw.connected : []);
+      const hidden = _readHiddenOpencodeModels();
+      const out = [];
+      for (const p of all) {
+        if (!p?.id) continue;
+        if (connected.size && !connected.has(p.id)) continue;
+        const modelObj = p.models || {};
+        const arr = Array.isArray(modelObj) ? modelObj : Object.values(modelObj);
+        for (const m of arr) {
+          if (!m || typeof m !== 'object') continue;
+          const mid = m.id || m.name;
+          if (!mid) continue;
+          const fullId = `${p.id}/${mid}`;
+          if (hidden.has(fullId)) continue;
+          out.push({
+            id: fullId,
+            label: m.name || mid,
+            desc: p.name || p.id,
+          });
+        }
+      }
+      // Only cache non-empty results so a transient boot/not-ready response
+      // doesn't poison the cache for the rest of the session.
+      if (out.length) _opencodeModelsCache = out;
+      return out;
+    } catch {
+      return [];
+    } finally {
+      _opencodeModelsLoading = null;
+    }
+  })();
+  return _opencodeModelsLoading;
+}
+
+function getModelsForProfile(profileId) {
+  if (profileId === 'opencode') return _opencodeModelsCache || [];
+  return CLI_MODELS[profileId] || [];
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('ocp-hidden-models-changed', () => { _opencodeModelsCache = null; });
+  document.addEventListener('ocp-providers-changed', () => { _opencodeModelsCache = null; });
+}
 
 // Effort levels for Claude models (extended thinking)
 const EFFORT_LEVELS = [
@@ -191,6 +271,40 @@ const EFFORT_LEVELS = [
 let _launchProfile = storage.getItem('as-launch-profile') || 'claude-code';
 let _launchModel = storage.getItem('as-launch-model') || null;
 let _launchEffort = storage.getItem('as-launch-effort') || 'off';
+let _launchMcpProfile = storage.getItem('as-launch-mcp-profile') || 'full';
+let _mcpProfilePresets = null; // cached presets from API
+
+async function fetchMcpProfiles() {
+  if (_mcpProfilePresets) return _mcpProfilePresets;
+  try {
+    const resp = await fetch('/api/mcp/profile');
+    const data = await resp.json();
+    if (data.ok && data.presets) {
+      _mcpProfilePresets = data.presets;
+      if (data.profile) _launchMcpProfile = data.profile;
+      return _mcpProfilePresets;
+    }
+  } catch {}
+  return {};
+}
+
+function renderMcpProfileChips(presets, selected) {
+  const entries = Object.entries(presets);
+  if (entries.length > 5) {
+    const options = entries.map(([id, p]) => ({
+      id,
+      label: p.label || id,
+      desc: `${p.tools} tools`,
+    }));
+    return renderLaunchSelect('mcp', options, selected);
+  }
+  return entries.map(([id, p]) => `
+    <button class="as-launch-mcp-profile${id === selected ? ' active' : ''}" data-mcp-profile="${id}">
+      <span class="as-launch-mcp-profile-name">${p.label || id}</span>
+      <span class="as-launch-mcp-profile-tools">${p.tools} tools</span>
+    </button>
+  `).join('');
+}
 
 // ── Preset Templates with Wizard Steps ──
 
@@ -681,6 +795,57 @@ const PRESET_TEMPLATES = [
 // HELPERS
 // ═══════════════════════════════════════════
 
+// Color palette offered in the folder popover. Mirrors CATEGORY_COLORS style.
+const FOLDER_COLOR_PALETTE = [
+  'hsla(200, 40%, 55%, 0.9)',  // blue
+  'hsla(160, 40%, 55%, 0.9)',  // green
+  'hsla(35, 50%, 58%, 0.9)',   // orange
+  'hsla(270, 30%, 60%, 0.9)',  // violet
+  'hsla(340, 50%, 60%, 0.9)',  // pink
+  'hsla(50, 60%, 55%, 0.9)',   // yellow
+  'hsla(0, 45%, 58%, 0.9)',    // red
+  'hsla(180, 35%, 50%, 0.9)',  // teal
+];
+
+function loadCollapsedFolders() {
+  if (_collapsedFolders) return _collapsedFolders;
+  let stored = [];
+  try {
+    const raw = storage.getItem('as-collapsed-folders');
+    if (raw) stored = JSON.parse(raw);
+  } catch { stored = []; }
+  _collapsedFolders = new Set(Array.isArray(stored) ? stored : []);
+  return _collapsedFolders;
+}
+
+function saveCollapsedFolders() {
+  if (!_collapsedFolders) return;
+  try { storage.setItem('as-collapsed-folders', JSON.stringify([..._collapsedFolders])); } catch {}
+}
+
+function isFolderCollapsed(folderId) {
+  const set = loadCollapsedFolders();
+  if (set.has(folderId)) return true;
+  // Fallback to server-side default if nothing stored locally
+  const f = _folders.find(x => x.id === folderId);
+  return !!(f && f.collapsed);
+}
+
+function toggleFolderCollapsed(folderId) {
+  const set = loadCollapsedFolders();
+  if (set.has(folderId)) set.delete(folderId);
+  else set.add(folderId);
+  saveCollapsedFolders();
+}
+
+function closeContextMenu() {
+  if (_contextMenuEl) { _contextMenuEl.remove(); _contextMenuEl = null; }
+}
+
+function closeFolderPopover() {
+  if (_folderPopover) { _folderPopover.remove(); _folderPopover = null; }
+}
+
 function esc(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -734,6 +899,11 @@ function showLaunchInline(params) {
   if (params.usesBrowser && (!params.context || !params.context.includes('BROWSER REQUIRED'))) {
     params.context = BROWSER_CONTEXT;
   }
+  // Apply template-preset launch defaults (CLI / model / effort / MCP profile)
+  if (params.profile) { _launchProfile = params.profile; storage.setItem('as-launch-profile', _launchProfile); }
+  if (params.model)   { _launchModel = params.model; storage.setItem('as-launch-model', _launchModel); }
+  if (params.effort)  { _launchEffort = params.effort; storage.setItem('as-launch-effort', _launchEffort); }
+  if (params.mcpProfile) { _launchMcpProfile = params.mcpProfile; storage.setItem('as-launch-mcp-profile', _launchMcpProfile); }
   _pendingLaunchParams = params;
   _launchPanelActive = true;
 
@@ -749,7 +919,7 @@ function showLaunchInline(params) {
   }
 
   const profile = _launchProfile || 'claude-code';
-  const models = CLI_MODELS[profile] || [];
+  const models = getModelsForProfile(profile);
   const defaultModel = models.find(m => m.tier === 'default') || models[0];
   const currentModel = _launchModel && models.some(m => m.id === _launchModel) ? _launchModel : defaultModel?.id;
 
@@ -799,6 +969,12 @@ function showLaunchInline(params) {
           <label class="as-launch-label">Think</label>
           <div class="as-launch-efforts" id="as-launch-efforts">
             ${renderEffortChips(_launchEffort)}
+          </div>
+        </div>
+        <div class="as-launch-section" id="as-launch-mcp-section" style="${profile !== 'claude-code' ? '' : 'display:none'}">
+          <label class="as-launch-label">MCP Profile</label>
+          <div class="as-launch-mcp-profiles" id="as-launch-mcp-profiles">
+            <span class="as-launch-mcp-loading">Loading profiles...</span>
           </div>
         </div>
         <div class="as-launch-section as-launch-summary">
@@ -859,17 +1035,163 @@ function showLaunchInline(params) {
   `;
 
   wireLaunchInline(contentEl);
+
+  // Async-load MCP profiles for codex/gemini
+  if (profile !== 'claude-code') {
+    fetchMcpProfiles().then(presets => {
+      const container = contentEl.querySelector('#as-launch-mcp-profiles');
+      if (container && presets && Object.keys(presets).length) {
+        container.innerHTML = renderMcpProfileChips(presets, _launchMcpProfile);
+        wireMcpProfileChips(contentEl);
+      }
+    });
+  }
+
+  // Async-load OpenCode models and re-render chips when ready.
+  // Retries a couple of times in case OpenCode is still booting.
+  if (profile === 'opencode' && !(_opencodeModelsCache && _opencodeModelsCache.length)) {
+    const refresh = async (attempt = 0) => {
+      const list = await fetchOpencodeModels();
+      if (!_launchPanelActive || _launchProfile !== 'opencode') return;
+      if (!list.length && attempt < 4) {
+        setTimeout(() => refresh(attempt + 1), 1500);
+        return;
+      }
+      const def = list.find(m => m.tier === 'default') || list[0];
+      if (!_launchModel || !list.some(m => m.id === _launchModel)) {
+        _launchModel = def?.id || null;
+        storage.setItem('as-launch-model', _launchModel);
+      }
+      const box = contentEl.querySelector('#as-launch-models');
+      if (box) {
+        box.innerHTML = renderModelChips(profile, _launchModel);
+        wireModelChips(contentEl.querySelector('.as-launch-inline'));
+      }
+    };
+    refresh();
+  }
 }
 
+const LAUNCH_CHIP_MAX = 5;
+
 function renderModelChips(profileId, selectedModel) {
-  const models = CLI_MODELS[profileId] || [];
-  if (!models.length) return '<span class="as-launch-no-models">No model selection available</span>';
+  const models = getModelsForProfile(profileId);
+  if (!models.length) {
+    if (profileId === 'opencode') {
+      return '<span class="as-launch-no-models">Loading models from OpenCode… If empty, start the OpenCode server and connect a provider in Settings → OpenCode.</span>';
+    }
+    return '<span class="as-launch-no-models">No model selection available</span>';
+  }
+  if (models.length > LAUNCH_CHIP_MAX) {
+    return renderLaunchSelect('model', models, selectedModel, { groupByDesc: profileId === 'opencode' });
+  }
   return models.map(m => `
     <button class="as-launch-model${m.id === selectedModel ? ' active' : ''}${m.tier ? ` as-launch-model--${m.tier}` : ''}" data-model="${m.id}">
       <span class="as-launch-model-name">${m.label}</span>
       <span class="as-launch-model-desc">${m.desc}</span>
     </button>
   `).join('');
+}
+
+function _escLaunch(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderLaunchSelect(type, options, selectedId, opts = {}) {
+  const { groupByDesc = false } = opts;
+  const esc = _escLaunch;
+  const sel = options.find(o => o.id === selectedId) || options[0];
+  const showSearch = options.length > 8;
+
+  const groups = new Map();
+  for (const o of options) {
+    const g = groupByDesc ? (o.desc || '—') : '';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(o);
+  }
+  const grouped = groupByDesc && groups.size > 1;
+
+  const searchFor = o => esc(((o.label || '') + ' ' + (o.desc || '')).toLowerCase());
+  const renderOpt = o => `
+    <button class="as-launch-select-option${o.id === sel.id ? ' active' : ''}${o.tier ? ` as-launch-select-option--${o.tier}` : ''}" type="button" data-value="${esc(o.id)}" data-search="${searchFor(o)}">
+      <span class="as-launch-select-opt-name">${esc(o.label)}</span>
+      ${o.desc && !grouped ? `<span class="as-launch-select-opt-desc">${esc(o.desc)}</span>` : ''}
+    </button>`;
+
+  const body = grouped
+    ? Array.from(groups.entries()).map(([g, items]) => `
+        <div class="as-launch-select-group">
+          <div class="as-launch-select-group-label">${esc(g)}</div>
+          ${items.map(renderOpt).join('')}
+        </div>`).join('')
+    : options.map(renderOpt).join('');
+
+  return `
+    <div class="as-launch-select" data-select-type="${esc(type)}">
+      <button class="as-launch-select-trigger" type="button">
+        <span class="as-launch-select-current">
+          <span class="as-launch-select-label">${esc(sel.label)}</span>
+          ${sel.desc ? `<span class="as-launch-select-sublabel">${esc(sel.desc)}</span>` : ''}
+        </span>
+        <svg class="as-launch-select-caret" viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 5 6 8 9 5"/></svg>
+      </button>
+      <div class="as-launch-select-menu" hidden>
+        ${showSearch ? `<div class="as-launch-select-search"><input type="text" placeholder="Search…" class="as-launch-select-search-input" /></div>` : ''}
+        <div class="as-launch-select-options">${body}</div>
+      </div>
+    </div>`;
+}
+
+function wireLaunchSelect(root, type, onChange) {
+  root.querySelectorAll(`.as-launch-select[data-select-type="${type}"]`).forEach(sel => {
+    if (sel._wired) return; sel._wired = true;
+    const trigger = sel.querySelector('.as-launch-select-trigger');
+    const menu = sel.querySelector('.as-launch-select-menu');
+    const search = sel.querySelector('.as-launch-select-search-input');
+    const label = trigger.querySelector('.as-launch-select-label');
+    const sublabel = trigger.querySelector('.as-launch-select-sublabel');
+
+    const close = () => { menu.hidden = true; sel.classList.remove('open'); };
+    const filter = q => {
+      const s = (q || '').toLowerCase().trim();
+      sel.querySelectorAll('.as-launch-select-option').forEach(opt => {
+        opt.style.display = !s || (opt.dataset.search || '').includes(s) ? '' : 'none';
+      });
+      sel.querySelectorAll('.as-launch-select-group').forEach(grp => {
+        const anyVisible = Array.from(grp.querySelectorAll('.as-launch-select-option')).some(o => o.style.display !== 'none');
+        grp.style.display = anyVisible ? '' : 'none';
+      });
+    };
+    const open = () => {
+      document.querySelectorAll('.as-launch-select.open').forEach(s => {
+        if (s !== sel) { s.classList.remove('open'); const m = s.querySelector('.as-launch-select-menu'); if (m) m.hidden = true; }
+      });
+      menu.hidden = false; sel.classList.add('open');
+      if (search) { search.value = ''; filter(''); setTimeout(() => search.focus(), 0); }
+    };
+
+    trigger.addEventListener('click', e => { e.stopPropagation(); menu.hidden ? open() : close(); });
+    search?.addEventListener('input', () => filter(search.value));
+    search?.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+
+    sel.querySelectorAll('.as-launch-select-option').forEach(opt => {
+      opt.addEventListener('click', e => {
+        e.stopPropagation();
+        sel.querySelectorAll('.as-launch-select-option').forEach(o => o.classList.remove('active'));
+        opt.classList.add('active');
+        const name = opt.querySelector('.as-launch-select-opt-name')?.textContent || '';
+        const desc = opt.querySelector('.as-launch-select-opt-desc')?.textContent
+          || opt.closest('.as-launch-select-group')?.querySelector('.as-launch-select-group-label')?.textContent
+          || '';
+        if (label) label.textContent = name;
+        if (sublabel) sublabel.textContent = desc;
+        close();
+        onChange?.(opt.dataset.value);
+      });
+    });
+
+    document.addEventListener('click', e => { if (!sel.contains(e.target)) close(); });
+  });
 }
 
 function renderEffortChips(selectedEffort) {
@@ -881,9 +1203,34 @@ function renderEffortChips(selectedEffort) {
   `).join('');
 }
 
+// Agent mode is Claude-only today (spawnAgentProcess uses the claude binary).
+// For other CLIs, disable the Agent toggle and force Loop mode.
+function applyAgentModeGating(root, profileId) {
+  if (!root) return;
+  const agentBtn = root.querySelector('.as-launch-mode[data-mode="agent"]');
+  const loopBtn  = root.querySelector('.as-launch-mode[data-mode="loop"]');
+  if (!agentBtn || !loopBtn) return;
+  const agentOnlyClaude = profileId !== 'claude-code';
+  agentBtn.disabled = agentOnlyClaude;
+  agentBtn.classList.toggle('as-launch-mode--disabled', agentOnlyClaude);
+  agentBtn.title = agentOnlyClaude ? 'Agent mode is Claude Code only' : '';
+  if (agentOnlyClaude && _launchMode === 'agent') {
+    _launchMode = 'loop';
+    agentBtn.classList.remove('active');
+    loopBtn.classList.add('active');
+    const loopFields = root.querySelector('.as-launch-loop-fields');
+    const agentFields = root.querySelector('.as-launch-agent-fields');
+    if (loopFields) loopFields.style.display = '';
+    if (agentFields) agentFields.style.display = 'none';
+    const confirmBtn = root.querySelector('#as-launch-confirm-btn');
+    if (confirmBtn) confirmBtn.textContent = 'Launch';
+  }
+}
+
 function wireLaunchInline(container) {
   const root = container.querySelector('.as-launch-inline');
   if (!root) return;
+  applyAgentModeGating(root, _launchProfile);
 
   // Mode toggle (Loop vs Agent)
   root.querySelectorAll('.as-launch-mode').forEach(btn => {
@@ -908,7 +1255,7 @@ function wireLaunchInline(container) {
       const profileId = btn.dataset.profile;
       _launchProfile = profileId;
       storage.setItem('as-launch-profile', profileId);
-      const models = CLI_MODELS[profileId] || [];
+      const models = getModelsForProfile(profileId);
       const defaultModel = models.find(m => m.tier === 'default') || models[0];
       _launchModel = defaultModel?.id || null;
       storage.setItem('as-launch-model', _launchModel);
@@ -917,9 +1264,43 @@ function wireLaunchInline(container) {
         modelsContainer.innerHTML = renderModelChips(profileId, _launchModel);
         wireModelChips(root);
       }
+      if (profileId === 'opencode' && !(_opencodeModelsCache && _opencodeModelsCache.length)) {
+        const refresh = async (attempt = 0) => {
+          const list = await fetchOpencodeModels();
+          if (!_launchPanelActive || _launchProfile !== 'opencode') return;
+          if (!list.length && attempt < 4) {
+            setTimeout(() => refresh(attempt + 1), 1500);
+            return;
+          }
+          const def = list.find(m => m.tier === 'default') || list[0];
+          _launchModel = def?.id || null;
+          storage.setItem('as-launch-model', _launchModel);
+          const box = root.querySelector('#as-launch-models');
+          if (box) {
+            box.innerHTML = renderModelChips('opencode', _launchModel);
+            wireModelChips(root);
+          }
+        };
+        refresh();
+      }
       // Show/hide effort section based on profile (Claude only)
       const effortSection = root.querySelector('#as-launch-effort-section');
       if (effortSection) effortSection.style.display = profileId === 'claude-code' ? '' : 'none';
+      applyAgentModeGating(root, profileId);
+      // Show/hide MCP profile section (Codex/Gemini only — Claude Code has tool search)
+      const mcpSection = root.querySelector('#as-launch-mcp-section');
+      if (mcpSection) {
+        mcpSection.style.display = profileId !== 'claude-code' ? '' : 'none';
+        if (profileId !== 'claude-code') {
+          fetchMcpProfiles().then(presets => {
+            const container = root.querySelector('#as-launch-mcp-profiles');
+            if (container && presets && Object.keys(presets).length) {
+              container.innerHTML = renderMcpProfileChips(presets, _launchMcpProfile);
+              wireMcpProfileChips(root);
+            }
+          });
+        }
+      }
     });
   });
 
@@ -953,6 +1334,10 @@ function wireModelChips(container) {
       storage.setItem('as-launch-model', _launchModel);
     });
   });
+  wireLaunchSelect(container, 'model', (value) => {
+    _launchModel = value;
+    storage.setItem('as-launch-model', _launchModel);
+  });
 }
 
 function wireEffortChips(container) {
@@ -963,6 +1348,21 @@ function wireEffortChips(container) {
       _launchEffort = btn.dataset.effort;
       storage.setItem('as-launch-effort', _launchEffort);
     });
+  });
+}
+
+function wireMcpProfileChips(container) {
+  container.querySelectorAll('.as-launch-mcp-profile').forEach(btn => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.as-launch-mcp-profile').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _launchMcpProfile = btn.dataset.mcpProfile;
+      storage.setItem('as-launch-mcp-profile', _launchMcpProfile);
+    });
+  });
+  wireLaunchSelect(container, 'mcp', (value) => {
+    _launchMcpProfile = value;
+    storage.setItem('as-launch-mcp-profile', _launchMcpProfile);
   });
 }
 
@@ -989,6 +1389,17 @@ async function confirmLaunch() {
   const agentSubmode = submodeBtn?.dataset?.submode || 'single';
   const agentIterations = parseInt(document.getElementById('as-agent-iterations')?.value || '1', 10);
   const agentMaxMinutes = parseInt(document.getElementById('as-agent-maxminutes')?.value || '30', 10);
+
+  // Apply MCP profile before launching for Codex/Gemini (Claude Code has tool search)
+  if (_launchProfile !== 'claude-code' && _launchMcpProfile) {
+    try {
+      await fetch('/api/mcp/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile: _launchMcpProfile }),
+      });
+    } catch {}
+  }
 
   // Clear launch state (don't re-render detail — we're about to navigate away)
   _pendingLaunchParams = null;
@@ -1205,6 +1616,7 @@ function buildPanelHTML() {
       </div>
       <div class="as-header-actions">
         <button class="as-header-btn" id="as-new-btn">+ New</button>
+        <button class="as-header-btn" id="as-new-folder-btn" data-tooltip="New folder">+ Folder</button>
         <button class="as-header-btn" id="as-schedules-btn">${AS_ICONS.clock} Schedules</button>
         <button class="as-header-btn" id="as-import-btn">Import</button>
       </div>
@@ -1246,6 +1658,7 @@ function buildPanelHTML() {
 function wirePanel() {
   $('as-close')?.addEventListener('click', closePanel);
   $('as-new-btn')?.addEventListener('click', () => { _view = 'picker'; _selected = null; renderView(); });
+  $('as-new-folder-btn')?.addEventListener('click', (e) => openFolderPopover(e.currentTarget, null));
   $('as-schedules-btn')?.addEventListener('click', () => { _view = 'schedules'; _selected = null; loadScheduleData().then(() => renderView()); });
   $('as-import-btn')?.addEventListener('click', () => triggerImport());
 
@@ -1279,6 +1692,30 @@ function wirePanel() {
 
   // Delegated click handler for all data-action buttons
   _panel.addEventListener('click', (e) => handlePanelClick(e));
+
+  // ── Folder drag-and-drop + context menu wiring (sidebar-scoped) ──
+  const sidebarEl = $('as-sidebar');
+  if (sidebarEl) {
+    sidebarEl.addEventListener('dragstart', onSidebarDragStart);
+    sidebarEl.addEventListener('dragend', onSidebarDragEnd);
+    sidebarEl.addEventListener('dragover', onSidebarDragOver);
+    sidebarEl.addEventListener('dragleave', onSidebarDragLeave);
+    sidebarEl.addEventListener('drop', onSidebarDrop);
+    sidebarEl.addEventListener('contextmenu', onSidebarContextMenu);
+  }
+
+  // Global click to dismiss context menu / folder popover
+  const onDocClick = (e) => {
+    if (_contextMenuEl && !_contextMenuEl.contains(e.target)) closeContextMenu();
+    if (_folderPopover && !_folderPopover.contains(e.target)
+        && !e.target.closest('#as-new-folder-btn')
+        && !e.target.closest('[data-action="folder-menu"]')
+        && !e.target.closest('[data-action="folder-edit"]')) {
+      closeFolderPopover();
+    }
+  };
+  document.addEventListener('mousedown', onDocClick);
+  _docListeners.push(['mousedown', onDocClick]);
 
   // Escape key
   const onEsc = (e) => {
@@ -1329,11 +1766,406 @@ function initDrag() {
 }
 
 // ═══════════════════════════════════════════
+// FOLDERS — drag/drop, context menu, popover
+// ═══════════════════════════════════════════
+
+function onSidebarDragStart(e) {
+  const item = e.target.closest('.as-sidebar-item');
+  if (item && item.getAttribute('draggable') === 'true') {
+    _draggingTemplateId = item.dataset.id;
+    _draggingFolderId = null;
+    item.classList.add('as-sidebar-item--dragging');
+    try { e.dataTransfer.setData('text/plain', 'tpl:' + item.dataset.id); } catch {}
+    e.dataTransfer.effectAllowed = 'move';
+    return;
+  }
+  const fh = e.target.closest('.as-folder-header');
+  if (fh) {
+    const folder = fh.closest('.as-folder');
+    if (folder && folder.dataset.folderId && folder.dataset.folderId !== '__unsorted__') {
+      _draggingFolderId = folder.dataset.folderId;
+      _draggingTemplateId = null;
+      folder.classList.add('as-folder--dragging');
+      try { e.dataTransfer.setData('text/plain', 'folder:' + _draggingFolderId); } catch {}
+      e.dataTransfer.effectAllowed = 'move';
+    }
+  }
+}
+
+function onSidebarDragEnd() {
+  _panel?.querySelectorAll('.as-sidebar-item--dragging').forEach(el => el.classList.remove('as-sidebar-item--dragging'));
+  _panel?.querySelectorAll('.as-folder--dragging').forEach(el => el.classList.remove('as-folder--dragging'));
+  _panel?.querySelectorAll('.as-folder--drop-target').forEach(el => el.classList.remove('as-folder--drop-target'));
+  _draggingTemplateId = null;
+  _draggingFolderId = null;
+}
+
+function onSidebarDragOver(e) {
+  if (!_draggingTemplateId && !_draggingFolderId) return;
+  const folderEl = e.target.closest('.as-folder');
+  if (_draggingTemplateId) {
+    if (folderEl) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      _panel.querySelectorAll('.as-folder--drop-target').forEach(el => { if (el !== folderEl) el.classList.remove('as-folder--drop-target'); });
+      folderEl.classList.add('as-folder--drop-target');
+    }
+  } else if (_draggingFolderId) {
+    // Reorder folders: highlight the target folder we hover over
+    if (folderEl && folderEl.dataset.folderId && folderEl.dataset.folderId !== '__unsorted__' && folderEl.dataset.folderId !== _draggingFolderId) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      _panel.querySelectorAll('.as-folder--drop-target').forEach(el => { if (el !== folderEl) el.classList.remove('as-folder--drop-target'); });
+      folderEl.classList.add('as-folder--drop-target');
+    }
+  }
+}
+
+function onSidebarDragLeave(e) {
+  const folderEl = e.target.closest('.as-folder');
+  // Only remove if we're actually leaving (related target outside)
+  if (folderEl && !folderEl.contains(e.relatedTarget)) {
+    folderEl.classList.remove('as-folder--drop-target');
+  }
+}
+
+async function onSidebarDrop(e) {
+  if (!_draggingTemplateId && !_draggingFolderId) return;
+  const folderEl = e.target.closest('.as-folder');
+  e.preventDefault();
+
+  if (_draggingTemplateId) {
+    const targetFolderId = folderEl?.dataset.folderId;
+    if (!targetFolderId) return;
+    const newFolderId = targetFolderId === '__unsorted__' ? null : targetFolderId;
+    const tpl = _templates.find(t => t.id === _draggingTemplateId);
+    if (!tpl || tpl.folderId === newFolderId) return;
+    try {
+      await updateLoopTemplate(_draggingTemplateId, { folderId: newFolderId });
+      tpl.folderId = newFolderId;
+      renderSidebar();
+      showToast(newFolderId ? `Moved to ${_folders.find(f => f.id === newFolderId)?.name || 'folder'}` : 'Moved to Unsorted');
+    } catch (err) {
+      showToast(`Move failed: ${err.message}`);
+    }
+  } else if (_draggingFolderId) {
+    const targetId = folderEl?.dataset.folderId;
+    if (!targetId || targetId === '__unsorted__' || targetId === _draggingFolderId) return;
+    const sorted = [..._folders].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const fromIdx = sorted.findIndex(f => f.id === _draggingFolderId);
+    const toIdx = sorted.findIndex(f => f.id === targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const [moved] = sorted.splice(fromIdx, 1);
+    sorted.splice(toIdx, 0, moved);
+    sorted.forEach((f, i) => { f.order = i; });
+    _folders = sorted;
+    renderSidebar();
+    try {
+      await reorderLoopFolders(sorted.map(f => f.id));
+    } catch (err) {
+      showToast(`Reorder failed: ${err.message}`);
+    }
+  }
+}
+
+function onSidebarContextMenu(e) {
+  const item = e.target.closest('.as-sidebar-item');
+  if (item && item.dataset.kind === 'custom') {
+    e.preventDefault();
+    openTemplateContextMenu(e.clientX, e.clientY, item.dataset.id);
+    return;
+  }
+  const header = e.target.closest('.as-folder-header');
+  if (header) {
+    const folderEl = header.closest('.as-folder');
+    const fid = folderEl?.dataset.folderId;
+    if (fid && fid !== '__unsorted__') {
+      e.preventDefault();
+      openFolderContextMenuAt(e.clientX, e.clientY, fid);
+    }
+  }
+}
+
+function openTemplateContextMenu(x, y, templateId) {
+  closeContextMenu();
+  const tpl = _templates.find(t => t.id === templateId);
+  if (!tpl) return;
+  const folders = [..._folders].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const moveItems = [
+    { label: 'Unsorted', value: '' },
+    ...folders.map(f => ({ label: f.name, value: f.id })),
+    { divider: true },
+    { label: '+ New folder\u2026', value: '__new__' },
+  ];
+  const menu = document.createElement('div');
+  menu.className = 'as-context-menu';
+  menu.innerHTML = `
+    <div class="as-context-menu__label">Move to folder</div>
+    ${moveItems.map(i => i.divider
+      ? '<div class="as-context-menu__divider"></div>'
+      : `<div class="as-context-menu__item${i.value === (tpl.folderId || '') ? ' as-context-menu__item--current' : ''}" data-move-to="${esc(i.value)}">${esc(i.label)}</div>`).join('')}
+    <div class="as-context-menu__divider"></div>
+    <div class="as-context-menu__item as-context-menu__item--danger" data-cm-action="delete">Delete template</div>
+  `;
+  positionFloating(menu, x, y);
+  document.body.appendChild(menu);
+  _contextMenuEl = menu;
+  menu.addEventListener('click', async (ev) => {
+    const moveTo = ev.target.closest('[data-move-to]');
+    const cmAction = ev.target.closest('[data-cm-action]');
+    if (moveTo) {
+      closeContextMenu();
+      const raw = moveTo.dataset.moveTo;
+      if (raw === '__new__') {
+        const newFolder = await promptCreateFolder();
+        if (newFolder) await moveTemplateToFolder(templateId, newFolder.id);
+      } else {
+        await moveTemplateToFolder(templateId, raw || null);
+      }
+    } else if (cmAction?.dataset.cmAction === 'delete') {
+      closeContextMenu();
+      if (confirm(`Delete template "${tpl.name}"?`)) {
+        try {
+          await deleteLoopTemplate(templateId);
+          _templates = _templates.filter(t => t.id !== templateId);
+          if (_selected?.id === templateId) { _selected = null; _view = 'welcome'; }
+          renderView();
+          showToast('Template deleted');
+        } catch (err) { showToast(`Delete failed: ${err.message}`); }
+      }
+    }
+  });
+}
+
+function openFolderContextMenu(anchorEl, folderId) {
+  const rect = anchorEl.getBoundingClientRect();
+  openFolderContextMenuAt(rect.right, rect.bottom, folderId);
+}
+
+function openFolderContextMenuAt(x, y, folderId) {
+  closeContextMenu();
+  const f = _folders.find(x => x.id === folderId);
+  if (!f) return;
+  const collapsed = isFolderCollapsed(folderId);
+  const menu = document.createElement('div');
+  menu.className = 'as-context-menu';
+  menu.innerHTML = `
+    <div class="as-context-menu__item" data-fm-action="edit">Rename / Recolor\u2026</div>
+    <div class="as-context-menu__item" data-fm-action="collapse">${collapsed ? 'Expand' : 'Collapse'}</div>
+    <div class="as-context-menu__divider"></div>
+    <div class="as-context-menu__item as-context-menu__item--danger" data-fm-action="delete">Delete folder</div>
+  `;
+  positionFloating(menu, x, y);
+  document.body.appendChild(menu);
+  _contextMenuEl = menu;
+  menu.addEventListener('click', async (ev) => {
+    const act = ev.target.closest('[data-fm-action]')?.dataset.fmAction;
+    if (!act) return;
+    closeContextMenu();
+    if (act === 'edit') {
+      openFolderPopover(null, folderId, { x, y });
+    } else if (act === 'collapse') {
+      toggleFolderCollapsed(folderId);
+      renderSidebar();
+    } else if (act === 'delete') {
+      await confirmDeleteFolder(folderId);
+    }
+  });
+}
+
+function positionFloating(el, x, y) {
+  el.style.position = 'fixed';
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+  el.style.zIndex = '300010';
+  // Adjust after mounting to keep in viewport
+  requestAnimationFrame(() => {
+    const r = el.getBoundingClientRect();
+    if (r.right > window.innerWidth - 8) el.style.left = `${Math.max(8, window.innerWidth - r.width - 8)}px`;
+    if (r.bottom > window.innerHeight - 8) el.style.top = `${Math.max(8, window.innerHeight - r.height - 8)}px`;
+  });
+}
+
+async function moveTemplateToFolder(templateId, folderId) {
+  const tpl = _templates.find(t => t.id === templateId);
+  if (!tpl) return;
+  try {
+    await updateLoopTemplate(templateId, { folderId });
+    tpl.folderId = folderId || null;
+    renderSidebar();
+    if (_view === 'detail' && _selected?.id === templateId) renderDetailMain();
+    showToast(folderId ? `Moved to ${_folders.find(f => f.id === folderId)?.name || 'folder'}` : 'Moved to Unsorted');
+  } catch (err) { showToast(`Move failed: ${err.message}`); }
+}
+
+async function confirmDeleteFolder(folderId) {
+  const f = _folders.find(x => x.id === folderId);
+  if (!f) return;
+  const count = _templates.filter(t => t.folderId === folderId).length;
+  const msg = count > 0
+    ? `Delete folder "${f.name}"? Its ${count} template${count === 1 ? '' : 's'} will move to Unsorted.`
+    : `Delete folder "${f.name}"?`;
+  if (!confirm(msg)) return;
+  try {
+    await deleteLoopFolder(folderId);
+    _folders = _folders.filter(x => x.id !== folderId);
+    for (const t of _templates) if (t.folderId === folderId) t.folderId = null;
+    renderSidebar();
+    showToast('Folder deleted');
+  } catch (err) { showToast(`Delete failed: ${err.message}`); }
+}
+
+// ── Folder popover (create + edit) ──
+
+function openFolderPopover(anchorEl, folderId, coords) {
+  closeFolderPopover();
+  const editing = folderId ? _folders.find(f => f.id === folderId) : null;
+  const initial = editing || { name: '', icon: null, color: FOLDER_COLOR_PALETTE[0] };
+  const pop = document.createElement('div');
+  pop.className = 'as-folder-popover';
+  pop.innerHTML = `
+    <div class="as-folder-popover__title">${editing ? 'Edit Folder' : 'New Folder'}</div>
+    <label class="as-folder-popover__label">Name</label>
+    <input class="as-folder-popover__input" id="as-fp-name" type="text" value="${esc(initial.name)}" placeholder="Folder name" autocomplete="off" spellcheck="false">
+    <label class="as-folder-popover__label">Color</label>
+    <div class="as-folder-popover__colors" id="as-fp-colors">
+      ${FOLDER_COLOR_PALETTE.map(c => `<button type="button" class="as-folder-popover__color${c === initial.color ? ' active' : ''}" style="background:${c}" data-color="${esc(c)}"></button>`).join('')}
+    </div>
+    <label class="as-folder-popover__label">Icon</label>
+    <div class="as-folder-popover__icons" id="as-fp-icons">
+      ${['blank','bolt','pin','brain','chart','code','mail','globe','monitor','pencil','chat','search','research','x','instagram','facebook','linkedin','tiktok','youtube','whatsapp','discord'].map(k => `<button type="button" class="as-folder-popover__icon${k === initial.icon ? ' active' : ''}" data-icon="${esc(k)}" title="${esc(k)}">${icon(k)}</button>`).join('')}
+    </div>
+    <div class="as-folder-popover__actions">
+      ${editing ? `<button class="as-folder-popover__btn as-folder-popover__btn--danger" data-action="folder-popover-delete" data-id="${esc(folderId)}">Delete</button>` : ''}
+      <span class="as-folder-popover__spacer"></span>
+      <button class="as-folder-popover__btn" data-action="folder-popover-cancel">Cancel</button>
+      <button class="as-folder-popover__btn as-folder-popover__btn--primary" data-action="folder-popover-save" data-id="${esc(folderId || '')}">Save</button>
+    </div>
+  `;
+  // Track selection state on the popover element itself
+  pop.dataset.selectedColor = initial.color || '';
+  pop.dataset.selectedIcon = initial.icon || '';
+  pop.dataset.editingId = folderId || '';
+
+  // Color picker
+  pop.querySelector('#as-fp-colors').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-color]');
+    if (!b) return;
+    pop.querySelectorAll('.as-folder-popover__color').forEach(x => x.classList.toggle('active', x === b));
+    pop.dataset.selectedColor = b.dataset.color;
+  });
+  pop.querySelector('#as-fp-icons').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-icon]');
+    if (!b) return;
+    pop.querySelectorAll('.as-folder-popover__icon').forEach(x => x.classList.toggle('active', x === b));
+    pop.dataset.selectedIcon = b.dataset.icon;
+  });
+
+  // Action buttons — wired directly because the popover lives in document.body,
+  // not inside `_panel`, so the panel-level delegated click handler never sees them.
+  pop.addEventListener('click', async (ev) => {
+    const action = ev.target.closest('[data-action]')?.dataset.action;
+    if (action === 'folder-popover-save') {
+      ev.stopPropagation();
+      await submitFolderPopover();
+    } else if (action === 'folder-popover-cancel') {
+      ev.stopPropagation();
+      closeFolderPopover();
+    } else if (action === 'folder-popover-delete') {
+      ev.stopPropagation();
+      const fid = ev.target.closest('[data-action="folder-popover-delete"]').dataset.id;
+      closeFolderPopover();
+      await confirmDeleteFolder(fid);
+    }
+  });
+
+  // Position: either anchored to an element or at explicit coords
+  if (anchorEl) {
+    const r = anchorEl.getBoundingClientRect();
+    positionFloating(pop, r.left, r.bottom + 4);
+  } else if (coords) {
+    positionFloating(pop, coords.x, coords.y);
+  } else {
+    positionFloating(pop, window.innerWidth / 2 - 140, window.innerHeight / 2 - 160);
+  }
+  document.body.appendChild(pop);
+  _folderPopover = pop;
+  setTimeout(() => pop.querySelector('#as-fp-name')?.focus(), 0);
+
+  // Enter-to-save, Escape-to-cancel
+  pop.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); submitFolderPopover(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); closeFolderPopover(); }
+  });
+}
+
+async function submitFolderPopover() {
+  if (!_folderPopover) return;
+  const name = _folderPopover.querySelector('#as-fp-name')?.value.trim();
+  if (!name) { showToast('Folder name required'); return; }
+  const color = _folderPopover.dataset.selectedColor || null;
+  const iconKey = _folderPopover.dataset.selectedIcon || null;
+  const editingId = _folderPopover.dataset.editingId || null;
+  try {
+    if (editingId) {
+      const updated = await updateLoopFolder(editingId, { name, color, icon: iconKey });
+      const idx = _folders.findIndex(f => f.id === editingId);
+      if (idx >= 0) _folders[idx] = updated;
+    } else {
+      const created = await createLoopFolder({ name, color, icon: iconKey });
+      _folders.push(created);
+    }
+    closeFolderPopover();
+    renderSidebar();
+    if (_view === 'detail' && _selected) renderDetailMain();
+    showToast(editingId ? 'Folder updated' : 'Folder created');
+  } catch (err) {
+    showToast(`Save failed: ${err.message}`);
+  }
+}
+
+async function promptCreateFolder() {
+  // Used by the "New folder…" option in the template context menu. Opens the
+  // popover and returns a Promise that resolves to the created folder (or null).
+  return new Promise((resolve) => {
+    openFolderPopover(null, null);
+    if (!_folderPopover) { resolve(null); return; }
+    const pop = _folderPopover;
+    // Intercept by hooking the save button directly (fires before the panel-level
+    // delegated handler so we can short-circuit)
+    const saveBtn = pop.querySelector('[data-action="folder-popover-save"]');
+    if (!saveBtn) { resolve(null); return; }
+    const handler = async (ev) => {
+      ev.stopPropagation();
+      const name = pop.querySelector('#as-fp-name')?.value.trim();
+      if (!name) { showToast('Folder name required'); return; }
+      const color = pop.dataset.selectedColor || null;
+      const iconKey = pop.dataset.selectedIcon || null;
+      try {
+        const created = await createLoopFolder({ name, color, icon: iconKey });
+        _folders.push(created);
+        closeFolderPopover();
+        renderSidebar();
+        resolve(created);
+      } catch (err) {
+        showToast(`Save failed: ${err.message}`);
+        resolve(null);
+      }
+    };
+    saveBtn.addEventListener('click', handler, { capture: true, once: true });
+    // Also handle cancel/escape
+    const cancelBtn = pop.querySelector('[data-action="folder-popover-cancel"]');
+    cancelBtn?.addEventListener('click', () => resolve(null), { once: true });
+  });
+}
+
+// ═══════════════════════════════════════════
 // DATA LOADING & POLLING
 // ═══════════════════════════════════════════
 
 async function loadData() {
   try { _templates = await fetchLoopTemplates(); } catch { _templates = []; }
+  try { _folders = await fetchLoopFolders(); } catch { _folders = []; }
   try { _activeLoop = await fetchActiveLoop(); } catch { _activeLoop = null; }
   await refreshAgents();
   updateSidebarFooter();
@@ -1407,56 +2239,118 @@ function renderView() {
   }
 }
 
-function filterTemplates(all) {
-  return all.filter(t => {
-    if (_filterCategory !== 'all' && t.category !== _filterCategory) return false;
-    if (_searchQuery && !t.name.toLowerCase().includes(_searchQuery) && !t.description?.toLowerCase().includes(_searchQuery)) return false;
-    return true;
-  });
-}
-
 // ── Sidebar ──
+
+function renderSidebarItem(t, opts = {}) {
+  const active = _selected?.id === t.id ? ' active' : '';
+  const isPreset = t.id.startsWith('__preset_');
+  const dot = isPreset ? '<span class="as-item-preset-dot"></span>' : '<span class="as-item-custom-dot"></span>';
+  const draggable = isPreset ? '' : ' draggable="true"';
+  return `<div class="as-sidebar-item${active}"${draggable} data-action="open-detail" data-id="${t.id}" data-kind="${isPreset ? 'preset' : 'custom'}">
+    <div class="as-sidebar-icon">${icon(t.icon)}</div>
+    <div class="as-sidebar-info">
+      <div class="as-sidebar-name">${dot}${esc(t.name)}</div>
+      <div class="as-sidebar-desc">${t.iterations}x \u00B7 ${t.maxMinutes}m${t.usesBrowser ? ' \u00B7 <span class="as-browser-dot"></span>' : ''}</div>
+    </div>
+  </div>`;
+}
 
 function renderSidebar() {
   const list = $('as-template-list');
   if (!list) return;
 
-  const all = [...PRESET_TEMPLATES, ..._templates];
-  const filtered = filterTemplates(all);
+  // Filter helpers
+  const matchesFilter = (t) => {
+    if (_filterCategory !== 'all' && t.category !== _filterCategory) return false;
+    if (_searchQuery && !t.name.toLowerCase().includes(_searchQuery) && !t.description?.toLowerCase().includes(_searchQuery)) return false;
+    return true;
+  };
 
-  const groups = {};
-  for (const t of filtered) {
-    const cat = t.category || 'custom';
-    if (!groups[cat]) groups[cat] = [];
-    groups[cat].push(t);
-  }
+  const filteredPresets = PRESET_TEMPLATES.filter(matchesFilter);
+  const filteredCustom = _templates.filter(matchesFilter);
 
   let html = '';
-  for (const [cat, items] of Object.entries(groups)) {
+
+  // 1. User folders + Unsorted come FIRST so user-created organization is the
+  // primary view. Only shown when the filter permits custom templates.
+  const showFolders = _filterCategory === 'all' || _filterCategory === 'custom';
+  const foldersSorted = [..._folders].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const customByFolder = new Map();
+  const unassigned = [];
+  for (const t of filteredCustom) {
+    if (t.folderId && foldersSorted.some(f => f.id === t.folderId)) {
+      if (!customByFolder.has(t.folderId)) customByFolder.set(t.folderId, []);
+      customByFolder.get(t.folderId).push(t);
+    } else {
+      unassigned.push(t);
+    }
+  }
+
+  if (showFolders) {
+    for (const f of foldersSorted) {
+      const items = customByFolder.get(f.id) || [];
+      const collapsed = isFolderCollapsed(f.id);
+      const accent = f.color ? `style="--folder-color:${esc(f.color)}"` : '';
+      const folderIconHtml = f.icon ? icon(f.icon) : _s('<path d="M2 5a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5z"/>');
+      html += `<div class="as-folder${collapsed ? ' as-folder--collapsed' : ''}" data-folder-id="${esc(f.id)}" ${accent}>
+        <div class="as-folder-header" draggable="true" data-action="toggle-folder" data-id="${esc(f.id)}">
+          <span class="as-folder-chevron">${AS_ICONS.down}</span>
+          <span class="as-folder-icon">${folderIconHtml}</span>
+          <span class="as-folder-name">${esc(f.name)}</span>
+          <span class="as-folder-count">${items.length}</span>
+          <button class="as-folder-menu-btn" data-action="folder-menu" data-id="${esc(f.id)}" data-tooltip="Folder options">\u22EF</button>
+        </div>
+        <div class="as-folder-body">`;
+      if (items.length === 0) {
+        html += `<div class="as-folder-empty-hint">Drop templates here</div>`;
+      } else {
+        for (const t of items) html += renderSidebarItem(t);
+      }
+      html += `</div></div>`;
+    }
+  }
+
+  // 2. Unsorted (all custom templates without a folder). Always rendered when
+  // custom is permitted and something lives here.
+  if (showFolders && unassigned.length > 0) {
+    html += `<div class="as-folder as-folder--unsorted" data-folder-id="__unsorted__">
+      <div class="as-folder-header" data-action="toggle-folder" data-id="__unsorted__">
+        <span class="as-folder-chevron">${AS_ICONS.down}</span>
+        <span class="as-folder-icon">${icon('blank')}</span>
+        <span class="as-folder-name">Unsorted</span>
+        <span class="as-folder-count">${unassigned.length}</span>
+      </div>
+      <div class="as-folder-body">`;
+    for (const t of unassigned) html += renderSidebarItem(t);
+    html += `</div></div>`;
+  }
+
+  // 3. Presets grouped by hard-coded category, rendered BELOW user content.
+  const presetGroups = {};
+  for (const t of filteredPresets) {
+    const cat = t.category || 'custom';
+    (presetGroups[cat] ||= []).push(t);
+  }
+  for (const [cat, items] of Object.entries(presetGroups)) {
     html += `<div class="as-sidebar-group">
       <div class="as-sidebar-group-header">
-        ${CATEGORY_LABELS[cat] || cat}
+        ${esc(CATEGORY_LABELS[cat] || cat)}
         <span class="as-sidebar-group-count">${items.length}</span>
       </div>`;
-    for (const t of items) {
-      const active = _selected?.id === t.id ? ' active' : '';
-      const isPreset = t.id.startsWith('__preset_');
-      const dot = isPreset ? '<span class="as-item-preset-dot"></span>' : '<span class="as-item-custom-dot"></span>';
-      html += `<div class="as-sidebar-item${active}" data-action="open-detail" data-id="${t.id}">
-        <div class="as-sidebar-icon">${icon(t.icon)}</div>
-        <div class="as-sidebar-info">
-          <div class="as-sidebar-name">${dot}${esc(t.name)}</div>
-          <div class="as-sidebar-desc">${t.iterations}x \u00B7 ${t.maxMinutes}m${t.usesBrowser ? ' \u00B7 <span class="as-browser-dot"></span>' : ''}</div>
-        </div>
-      </div>`;
-    }
+    for (const t of items) html += renderSidebarItem(t);
     html += '</div>';
   }
 
-  if (!filtered.length) html = '<div class="as-empty">No templates match your filter.</div>';
+  if (!html) html = '<div class="as-empty">No templates match your filter.</div>';
   const scrollTop = list.scrollTop;
   list.innerHTML = html;
   list.scrollTop = scrollTop;
+
+  // Apply collapsed state for __unsorted__ (custom pseudo-folder that uses same
+  // localStorage key namespace as real folders).
+  if (isFolderCollapsed('__unsorted__')) {
+    list.querySelector('.as-folder--unsorted')?.classList.add('as-folder--collapsed');
+  }
 }
 
 // ── Welcome ──
@@ -1617,30 +2511,76 @@ function renderDetailMain() {
 
 function buildDetailMeta(t, isPreset) {
   const disabled = isPreset ? 'disabled readonly' : '';
+  const tProfile = t.profile || 'claude-code';
+  let tModelsList = getModelsForProfile(tProfile);
+  // For opencode with an unloaded cache, seed a single placeholder so the
+  // saved id is preserved in the select until the async refresh fires below.
+  if (tProfile === 'opencode' && !tModelsList.length && t.model) {
+    tModelsList = [{ id: t.model, label: t.model, desc: '' }];
+  }
+  const tDefaultModel = tModelsList.find(m => m.tier === 'default') || tModelsList[0];
+  const tModel = (t.model && tModelsList.some(m => m.id === t.model)) ? t.model : (tDefaultModel?.id || '');
+  const tEffort = t.effort || 'off';
+  const tMcp = t.mcpProfile || 'full';
   return `
     <div class="as-meta-section">
       <div class="as-field">
         <label>Name</label>
         <input type="text" class="as-input" id="as-f-name" value="${esc(t.name)}" ${disabled} />
       </div>
-      <div class="as-field">
-        <label>Category</label>
-        ${isPreset
-          ? `<span class="as-value-text">${esc(CATEGORY_LABELS[t.category] || t.category)}</span>`
-          : `<div class="as-cat-picker" id="as-cat-picker">
-              <input type="hidden" id="as-f-category" value="${esc(t.category || 'custom')}">
-              <button type="button" class="as-cat-picker-trigger" id="as-cat-trigger">
-                <span class="as-cat-picker-label">${esc(CATEGORY_LABELS[t.category] || t.category || 'Custom')}</span>
+      <div class="as-field-row">
+        <div class="as-field">
+          <label>Category</label>
+          ${isPreset
+            ? `<span class="as-value-text">${esc(CATEGORY_LABELS[t.category] || t.category)}</span>`
+            : `<div class="as-cat-picker" id="as-cat-picker">
+                <input type="hidden" id="as-f-category" value="${esc(t.category || 'custom')}">
+                <button type="button" class="as-cat-picker-trigger" id="as-cat-trigger">
+                  <span class="as-cat-picker-label">${esc(CATEGORY_LABELS[t.category] || t.category || 'Custom')}</span>
+                  <span class="as-icon-picker-chevron">${AS_ICONS.down}</span>
+                </button>
+                <div class="as-cat-picker-menu" id="as-cat-menu">
+                  ${Object.entries(CATEGORY_LABELS).map(([k, v]) =>
+                    `<button type="button" class="as-cat-picker-item${k === (t.category || 'custom') ? ' selected' : ''}" data-cat="${k}">${esc(v)}</button>`
+                  ).join('')}
+                </div>
+              </div>`
+          }
+        </div>
+        ${isPreset ? '' : `
+          <div class="as-field">
+            <label>Icon</label>
+            <div class="as-icon-picker" id="as-icon-picker">
+              <input type="hidden" id="as-f-icon" value="${esc(t.icon || 'refresh')}">
+              <button type="button" class="as-icon-picker-trigger" id="as-icon-trigger">
+                <span class="as-icon-picker-preview">${icon(t.icon || 'refresh')}</span>
+                <span class="as-icon-picker-label">${esc(t.icon || 'refresh')}</span>
                 <span class="as-icon-picker-chevron">${AS_ICONS.down}</span>
               </button>
-              <div class="as-cat-picker-menu" id="as-cat-menu">
-                ${Object.entries(CATEGORY_LABELS).map(([k, v]) =>
-                  `<button type="button" class="as-cat-picker-item${k === (t.category || 'custom') ? ' selected' : ''}" data-cat="${k}">${esc(v)}</button>`
+              <div class="as-icon-picker-menu" id="as-icon-menu">
+                ${ICON_KEYS.map(k =>
+                  `<button type="button" class="as-icon-picker-item${k === (t.icon || 'refresh') ? ' selected' : ''}" data-icon="${k}" data-tooltip="${k}">${icon(k)}</button>`
                 ).join('')}
               </div>
-            </div>`
-        }
+            </div>
+          </div>
+        `}
       </div>
+      ${isPreset ? '' : `
+        <div class="as-field">
+          <label>Folder</label>
+          <div class="as-folder-picker" id="as-folder-picker">
+            <input type="hidden" id="as-f-folder" value="${esc(t.folderId || '')}">
+            <select class="as-input" id="as-f-folder-select">
+              <option value=""${!t.folderId ? ' selected' : ''}>Unsorted</option>
+              ${[..._folders].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map(f =>
+                `<option value="${esc(f.id)}"${f.id === t.folderId ? ' selected' : ''}>${esc(f.name)}</option>`
+              ).join('')}
+              <option value="__new__">+ New folder\u2026</option>
+            </select>
+          </div>
+        </div>
+      `}
       <div class="as-field">
         <label>Description</label>
         <textarea class="as-textarea" id="as-f-desc" rows="3" ${disabled}>${esc(t.description || '')}</textarea>
@@ -1667,25 +2607,39 @@ function buildDetailMeta(t, isPreset) {
           <button class="as-inline-link" data-action="reconfigure">Re-run Wizard</button> to change parameters, or
           <button class="as-inline-link" data-action="customize">Customize</button> to create an editable copy.
         </div>
-      ` : `
-        <div class="as-meta-divider"></div>
-        <div class="as-field">
-          <label>Icon</label>
-          <div class="as-icon-picker" id="as-icon-picker">
-            <input type="hidden" id="as-f-icon" value="${esc(t.icon || 'refresh')}">
-            <button type="button" class="as-icon-picker-trigger" id="as-icon-trigger">
-              <span class="as-icon-picker-preview">${icon(t.icon || 'refresh')}</span>
-              <span class="as-icon-picker-label">${esc(t.icon || 'refresh')}</span>
-              <span class="as-icon-picker-chevron">${AS_ICONS.down}</span>
-            </button>
-            <div class="as-icon-picker-menu" id="as-icon-menu">
-              ${ICON_KEYS.map(k =>
-                `<button type="button" class="as-icon-picker-item${k === (t.icon || 'refresh') ? ' selected' : ''}" data-icon="${k}" data-tooltip="${k}">${icon(k)}</button>`
-              ).join('')}
-            </div>
+      ` : ''}
+      <div class="as-runtime-card">
+        <div class="as-runtime-card-header">
+          <span class="as-runtime-card-title">Runtime</span>
+          <span class="as-runtime-card-sub">For scheduled launches</span>
+        </div>
+        <div class="as-runtime-row">
+          <div class="as-runtime-field">
+            <label>CLI</label>
+            <select class="as-input as-select" id="as-f-profile">
+              ${CLI_PROFILES.map(p => `<option value="${esc(p.id)}"${p.id === tProfile ? ' selected' : ''}>${esc(p.label)} \u00B7 ${esc(p.desc)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="as-runtime-field">
+            <label>Model</label>
+            <select class="as-input as-select" id="as-f-model">
+              ${tModelsList.map(m => `<option value="${esc(m.id)}"${m.id === tModel ? ' selected' : ''}>${esc(m.label)}${m.desc ? ' \u2014 ' + esc(m.desc) : ''}</option>`).join('')}
+            </select>
+          </div>
+          <div class="as-runtime-field" id="as-f-effort-field" style="${tProfile === 'claude-code' ? '' : 'display:none'}">
+            <label>Think</label>
+            <select class="as-input as-select" id="as-f-effort">
+              ${EFFORT_LEVELS.map(e => `<option value="${esc(e.id)}"${e.id === tEffort ? ' selected' : ''}>${esc(e.label)} \u2014 ${esc(e.desc)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="as-runtime-field" id="as-f-mcp-field" style="${tProfile !== 'claude-code' ? '' : 'display:none'}">
+            <label>MCP</label>
+            <select class="as-input as-select" id="as-f-mcp">
+              <option value="${esc(tMcp)}" selected>${esc(tMcp)} (loading\u2026)</option>
+            </select>
           </div>
         </div>
-      `}
+      </div>
     </div>
   `;
 }
@@ -1739,6 +2693,10 @@ function wireDetailView(isPreset) {
   // Icon picker & category picker
   wireIconPicker(isPreset);
   wireCategoryPicker(isPreset);
+  wireFolderPicker(isPreset);
+
+  // Launch defaults (CLI profile / model / effort / MCP profile)
+  wireLaunchDefaults(isPreset);
 
   // Markdown toolbar
   wireMdToolbar();
@@ -1849,6 +2807,109 @@ function wireCategoryPicker(isPreset) {
   _docListeners.push(['click', closeCatPicker]);
 }
 
+function wireFolderPicker(isPreset) {
+  if (isPreset) return;
+  const sel = $('as-f-folder-select');
+  const hidden = $('as-f-folder');
+  if (!sel || !hidden) return;
+  sel.addEventListener('change', async () => {
+    if (sel.value === '__new__') {
+      // Temporarily revert selection while the popover is up
+      sel.value = hidden.value || '';
+      const created = await promptCreateFolder();
+      if (created) {
+        // Rebuild the option list and select the new folder
+        const existingIds = new Set(Array.from(sel.options).map(o => o.value));
+        if (!existingIds.has(created.id)) {
+          const opt = document.createElement('option');
+          opt.value = created.id;
+          opt.textContent = created.name;
+          // Insert before the "__new__" option
+          const newOpt = Array.from(sel.options).find(o => o.value === '__new__');
+          sel.insertBefore(opt, newOpt);
+        }
+        sel.value = created.id;
+        hidden.value = created.id;
+        markDirty();
+      }
+      return;
+    }
+    hidden.value = sel.value;
+    markDirty();
+  });
+}
+
+function wireLaunchDefaults(isPreset) {
+  const profileSel = $('as-f-profile');
+  const modelSel = $('as-f-model');
+  const effortSel = $('as-f-effort');
+  const mcpSel = $('as-f-mcp');
+  const effortField = $('as-f-effort-field');
+  const mcpField = $('as-f-mcp-field');
+  if (!profileSel) return;
+
+  effortSel?.addEventListener('change', () => { if (!isPreset) markDirty(); });
+
+  const loadMcpOptions = () => {
+    if (!mcpSel) return;
+    const current = mcpSel.value || 'full';
+    fetchMcpProfiles().then(presets => {
+      if (!presets || !Object.keys(presets).length) return;
+      const opts = Object.entries(presets).map(([id, p]) => {
+        const label = p.label || id;
+        const tools = p.tools != null ? ` — ${p.tools} tools` : '';
+        const sel = id === current ? ' selected' : '';
+        return `<option value="${esc(id)}"${sel}>${esc(label)}${esc(tools)}</option>`;
+      }).join('');
+      mcpSel.innerHTML = opts;
+      if (!presets[current]) {
+        const first = Object.keys(presets)[0];
+        if (first) mcpSel.value = first;
+      }
+    });
+  };
+
+  const renderModelOptions = (profileId, preferredId) => {
+    if (!modelSel) return;
+    const models = getModelsForProfile(profileId);
+    const def = models.find(m => m.tier === 'default') || models[0];
+    const selectedId = preferredId && models.some(m => m.id === preferredId) ? preferredId : def?.id;
+    modelSel.innerHTML = models.length
+      ? models.map(m =>
+          `<option value="${esc(m.id)}"${m.id === selectedId ? ' selected' : ''}>${esc(m.label)}${m.desc ? ' \u2014 ' + esc(m.desc) : ''}</option>`
+        ).join('')
+      : `<option value="">${profileId === 'opencode' ? 'No OpenCode models — check Settings → OpenCode' : 'No model selection available'}</option>`;
+  };
+
+  const refreshOpencodeOptionsIfNeeded = (preferredId) => {
+    if (profileSel.value !== 'opencode') return;
+    if (_opencodeModelsCache) return;
+    fetchOpencodeModels().then(() => {
+      if (profileSel.value !== 'opencode') return;
+      renderModelOptions('opencode', preferredId);
+    });
+  };
+
+  profileSel.addEventListener('change', () => {
+    const profileId = profileSel.value;
+    renderModelOptions(profileId, null);
+    refreshOpencodeOptionsIfNeeded(null);
+    if (effortField) effortField.style.display = profileId === 'claude-code' ? '' : 'none';
+    if (mcpField) {
+      mcpField.style.display = profileId !== 'claude-code' ? '' : 'none';
+      if (profileId !== 'claude-code') loadMcpOptions();
+    }
+    if (!isPreset) markDirty();
+  });
+
+  modelSel?.addEventListener('change', () => { if (!isPreset) markDirty(); });
+  mcpSel?.addEventListener('change', () => { if (!isPreset) markDirty(); });
+
+  if (profileSel.value !== 'claude-code') loadMcpOptions();
+  // Initial opencode refresh — preserves the currently selected model id.
+  refreshOpencodeOptionsIfNeeded(modelSel?.value || null);
+}
+
 function resetDirty() {
   _metaDirty = false;
   _detailDirty = false;
@@ -1877,11 +2938,17 @@ async function saveCurrentTemplate() {
   const maxMinutes = parseInt($('as-f-maxminutes')?.value || '30', 10);
   const usesBrowser = $('as-f-browser')?.checked || false;
   const task = $('as-cmd-editor')?.value?.trim() || '';
+  const profile = $('as-f-profile')?.value || null;
+  const model = $('as-f-model')?.value || null;
+  const effort = $('as-f-effort')?.value || null;
+  const mcpProfile = $('as-f-mcp')?.value || null;
+  const folderIdRaw = $('as-f-folder')?.value;
+  const folderId = folderIdRaw ? folderIdRaw : null;
 
   if (!name) { showToast('Name is required'); return; }
   if (!task) { showToast('Task description is required'); return; }
 
-  const payload = { name, icon: iconKey, category, task, context: '', description: description || task.slice(0, 120), iterations, maxMinutes, usesBrowser };
+  const payload = { name, icon: iconKey, category, task, context: '', description: description || task.slice(0, 120), iterations, maxMinutes, usesBrowser, profile, model, effort, mcpProfile, folderId };
 
   try {
     if (_selected.id) { await updateLoopTemplate(_selected.id, payload); }
@@ -1984,6 +3051,10 @@ async function customizePreset(preset) {
       maxMinutes: parseInt($('as-f-maxminutes')?.value || String(preset.maxMinutes), 10),
       usesBrowser: preset.usesBrowser || false,
       description: preset.description,
+      profile: $('as-f-profile')?.value || null,
+      model: $('as-f-model')?.value || null,
+      effort: $('as-f-effort')?.value || null,
+      mcpProfile: $('as-f-mcp')?.value || null,
     };
     const result = await createLoopTemplate(payload);
     if (result?.id) {
@@ -2006,11 +3077,16 @@ function handleTestRun() {
   const maxMinutes = parseInt($('as-f-maxminutes')?.value || '10', 10);
   const browserEl = $('as-f-browser');
   const usesBrowser = browserEl ? browserEl.checked : (_selected.usesBrowser || false);
+  const profile = $('as-f-profile')?.value || _selected.profile || null;
+  const model = $('as-f-model')?.value || _selected.model || null;
+  const effort = $('as-f-effort')?.value || _selected.effort || null;
+  const mcpProfile = $('as-f-mcp')?.value || _selected.mcpProfile || null;
   serverLaunchLoop({
     task: cmd,
     context: null,
     iterations: 1, maxMinutes: 10,
     usesBrowser,
+    profile, model, effort, mcpProfile,
   });
 }
 
@@ -2035,10 +3111,15 @@ function proceedWithLaunch() {
   const maxMinutes = parseInt($('as-f-maxminutes')?.value || String(_selected.maxMinutes), 10);
   const browserEl = $('as-f-browser');
   const usesBrowser = browserEl ? browserEl.checked : (_selected.usesBrowser || false);
+  const profile = $('as-f-profile')?.value || _selected.profile || null;
+  const model = $('as-f-model')?.value || _selected.model || null;
+  const effort = $('as-f-effort')?.value || _selected.effort || null;
+  const mcpProfile = $('as-f-mcp')?.value || _selected.mcpProfile || null;
   serverLaunchLoop({
     task: cmd,
     context: null,
     iterations, maxMinutes, usesBrowser,
+    profile, model, effort, mcpProfile,
   });
 }
 
@@ -2666,6 +3747,36 @@ async function handlePanelClick(e) {
       break;
     }
 
+    case 'toggle-folder': {
+      // Don't toggle when the click started on the menu button
+      if (e.target.closest('[data-action="folder-menu"]')) break;
+      toggleFolderCollapsed(id);
+      renderSidebar();
+      break;
+    }
+
+    case 'folder-menu': {
+      e.stopPropagation();
+      openFolderContextMenu(btn, id);
+      break;
+    }
+
+    case 'folder-popover-save': {
+      submitFolderPopover();
+      break;
+    }
+
+    case 'folder-popover-cancel': {
+      closeFolderPopover();
+      break;
+    }
+
+    case 'folder-popover-delete': {
+      const folderId = btn.dataset.id;
+      await confirmDeleteFolder(folderId);
+      break;
+    }
+
     case 'pick-preset': {
       const preset = PRESET_TEMPLATES.find(t => t.id === id);
       if (preset) openWizard(preset);
@@ -2928,7 +4039,7 @@ async function handlePanelClick(e) {
       _launchProfile = profileId;
       storage.setItem('as-launch-profile', profileId);
       // Update model to default for new profile
-      const models = CLI_MODELS[profileId] || [];
+      const models = getModelsForProfile(profileId);
       const defaultModel = models.find(m => m.tier === 'default') || models[0];
       _launchModel = defaultModel?.id || null;
       storage.setItem('as-launch-model', _launchModel);
@@ -2936,6 +4047,15 @@ async function handlePanelClick(e) {
       const qtEffortSec = $('as-qt-effort-section');
       if (qtEffortSec) qtEffortSec.style.display = profileId === 'claude-code' ? '' : 'none';
       renderSchedulesMain();
+      if (profileId === 'opencode' && !_opencodeModelsCache) {
+        fetchOpencodeModels().then(list => {
+          if (_launchProfile !== 'opencode') return;
+          const def = list.find(m => m.tier === 'default') || list[0];
+          _launchModel = def?.id || null;
+          storage.setItem('as-launch-model', _launchModel);
+          renderSchedulesMain();
+        });
+      }
       break;
     }
 
@@ -3274,8 +4394,8 @@ function renderSchedulesMain() {
     let timerCards = '';
     for (const qt of _quickTimers) {
       const profileLabel = CLI_PROFILES.find(p => p.id === qt.profile)?.label || qt.profile || 'Claude Code';
-      const modelObj = qt.model ? (CLI_MODELS[qt.profile || 'claude-code'] || []).find(m => m.id === qt.model) : null;
-      const modelLabel = modelObj?.label || '';
+      const modelObj = qt.model ? getModelsForProfile(qt.profile || 'claude-code').find(m => m.id === qt.model) : null;
+      const modelLabel = modelObj?.label || (qt.profile === 'opencode' ? qt.model : '');
       const metaParts = [profileLabel, modelLabel, qt.usesBrowser ? 'Browser' : ''].filter(Boolean);
       timerCards += `
         <div class="as-qt-active-card">
@@ -3303,9 +4423,15 @@ function renderSchedulesMain() {
 
   // CLI/Model/Browser settings for quick timer
   const qtProfile = _launchProfile || 'claude-code';
-  const qtModels = CLI_MODELS[qtProfile] || [];
+  const qtModels = getModelsForProfile(qtProfile);
   const qtDefaultModel = qtModels.find(m => m.tier === 'default') || qtModels[0];
   const qtCurrentModel = _launchModel && qtModels.some(m => m.id === _launchModel) ? _launchModel : qtDefaultModel?.id;
+  // Kick off async load for opencode and re-render when ready
+  if (qtProfile === 'opencode' && !_opencodeModelsCache) {
+    fetchOpencodeModels().then(() => {
+      if ((_launchProfile || 'claude-code') === 'opencode') renderSchedulesMain();
+    });
+  }
 
   const qtProfileChips = CLI_PROFILES.map(p => `
     <button class="as-launch-profile${p.id === qtProfile ? ' active' : ''}" data-action="qt-profile" data-profile="${p.id}">
@@ -3314,12 +4440,18 @@ function renderSchedulesMain() {
     </button>
   `).join('');
 
-  const qtModelChips = qtModels.map(m => `
-    <button class="as-launch-model${m.id === qtCurrentModel ? ' active' : ''}${m.tier ? ` as-launch-model--${m.tier}` : ''}" data-action="qt-model" data-model="${m.id}">
-      <span class="as-launch-model-name">${m.label}</span>
-      <span class="as-launch-model-desc">${m.desc}</span>
-    </button>
-  `).join('');
+  const qtModelChips = qtModels.length
+    ? (qtModels.length > LAUNCH_CHIP_MAX
+        ? renderLaunchSelect('qt-model', qtModels, qtCurrentModel, { groupByDesc: qtProfile === 'opencode' })
+        : qtModels.map(m => `
+        <button class="as-launch-model${m.id === qtCurrentModel ? ' active' : ''}${m.tier ? ` as-launch-model--${m.tier}` : ''}" data-action="qt-model" data-model="${m.id}">
+          <span class="as-launch-model-name">${m.label}</span>
+          <span class="as-launch-model-desc">${m.desc}</span>
+        </button>
+      `).join(''))
+    : (qtProfile === 'opencode'
+        ? '<span class="as-launch-no-models">Loading models from OpenCode… If empty, start the OpenCode server and connect a provider in Settings → OpenCode.</span>'
+        : '<span class="as-launch-no-models">No model selection available</span>');
 
   const qtEffortChips = EFFORT_LEVELS.map(e => `
     <button class="as-launch-effort${e.id === _launchEffort ? ' active' : ''}${e.tier ? ` as-launch-effort--${e.tier}` : ''}" data-action="qt-effort" data-effort="${e.id}">
@@ -3461,6 +4593,15 @@ function renderSchedulesMain() {
   if (browserCheckbox) {
     browserCheckbox.addEventListener('change', () => {
       _qtUsesBrowser = browserCheckbox.checked;
+    });
+  }
+
+  // Wire qt-model dropdown (when model list is long enough to render as select)
+  const qtModelsBox = $('as-qt-models');
+  if (qtModelsBox) {
+    wireLaunchSelect(qtModelsBox, 'qt-model', (value) => {
+      _launchModel = value;
+      storage.setItem('as-launch-model', _launchModel);
     });
   }
 }

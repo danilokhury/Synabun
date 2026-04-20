@@ -24,6 +24,11 @@ This is a **100% browser-based** workflow. Leonardo.ai runs in SynaBun's headed 
 
 **Critical workflow:** Always configure settings (model, style, dimensions, etc.) BEFORE calling `leonardo_browser_generate`. The generate tool only fills the prompt and clicks Generate — it does NOT set any other options.
 
+## Runtime Compatibility
+
+- **Interactive choice prompt** means: use `AskUserQuestion` in Claude Code, `request_user_input` in Codex when that tool is available, otherwise ask a concise plain-text multiple-choice question and wait for the user's reply.
+- **Load/read a module file** means: use whatever local file-reading mechanism exists in the current runtime. Do not depend on a tool literally being named `Read`.
+
 ---
 
 ## Step 1 — Route or Quick Mode
@@ -42,7 +47,7 @@ Parse `$ARGUMENTS` to determine the path:
 
 **Interactive menu** (args empty or unrecognized):
 
-Use `AskUserQuestion` with options:
+Use an interactive choice prompt with options:
 
 - **Create Video** — "Expert-guided video creation with full control over models, motion, styles, and prompt engineering"
 - **Create Image** — "Expert-guided image creation with model selection, style presets, dimensions, and prompt engineering"
@@ -53,21 +58,21 @@ Use `AskUserQuestion` with options:
 
 ## Step 2a — Video Prompter
 
-Read the video prompter module:
+Load/read the video prompter module:
 ```
-Read $SKILL_DIR/modules/video-prompter.md
+Load/read $SKILL_DIR/modules/video-prompter.md
 ```
-Follow that module's instructions completely. It will guide you through a comprehensive questionnaire using `AskUserQuestion`, covering: concept, model selection, motion controls, motion elements, style stacking (Vibe + Lighting + Color Theme), dimensions, prompt enhancement, negative prompt, and more. When the module produces final parameters, proceed to **Step 3: Execute**.
+Follow that module's instructions completely. It will guide you through a comprehensive questionnaire using interactive choice prompts, covering: concept, model selection, motion controls, motion elements, style stacking (Vibe + Lighting + Color Theme), dimensions, prompt enhancement, negative prompt, and more. When the module produces final parameters, proceed to **Step 3: Execute**.
 
 ---
 
 ## Step 2b — Image Prompter
 
-Read the image prompter module:
+Load/read the image prompter module:
 ```
-Read $SKILL_DIR/modules/image-prompter.md
+Load/read $SKILL_DIR/modules/image-prompter.md
 ```
-Follow that module's instructions completely. It will guide you through a comprehensive questionnaire using `AskUserQuestion`, covering: concept, model selection, style preset, dimensions, number of images, and prompt engineering. When the module produces final parameters, proceed to **Step 3: Execute**.
+Follow that module's instructions completely. It will guide you through a comprehensive questionnaire using interactive choice prompts, covering: concept, model selection, style preset, dimensions, number of images, and prompt engineering. When the module produces final parameters, proceed to **Step 3: Execute**.
 
 ---
 
@@ -101,9 +106,9 @@ browser_snapshot
 
 ### 3c. Configure ALL settings in the UI
 
-Read the browser guide module for detailed UI navigation instructions:
+Load/read the browser guide module for detailed UI navigation instructions:
 ```
-Read $SKILL_DIR/modules/browser-guide.md
+Load/read $SKILL_DIR/modules/browser-guide.md
 ```
 
 Follow the browser guide to set each parameter via `browser_click`, `browser_fill`, `browser_evaluate`, etc. The guide maps every setting to its UI element.
@@ -142,7 +147,7 @@ browser_wait timeout: 10000
 browser_screenshot
 ```
 
-Show the user the results and offer follow-up actions via `AskUserQuestion`:
+Show the user the results and offer follow-up actions via an interactive choice prompt:
 
 - **Generate Again** — "Same settings, new generation"
 - **Modify & Regenerate** — "Tweak the prompt or settings"

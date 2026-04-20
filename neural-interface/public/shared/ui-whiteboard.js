@@ -85,13 +85,19 @@ const MAX_UNDO = 50;
 const SNAP_DIST = 30;    // px for arrow anchor snapping
 const MAX_IMAGE_DIM = 1920;
 
-/** Cross-browser clipboard write with fallback for non-secure contexts. */
+/**
+ * Cross-browser clipboard write with fallback for non-secure contexts.
+ * Returns a Promise that resolves true on success, false on failure — callers
+ * need this to show accurate feedback (a silent failure is how the "Copy image
+ * path" button used to claim success while the OS clipboard was empty).
+ */
 function _clipboardWrite(text) {
   if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).catch(() => _clipboardFallback(text));
-  } else {
-    _clipboardFallback(text);
+    return navigator.clipboard.writeText(text)
+      .then(() => true)
+      .catch(() => _clipboardFallback(text));
   }
+  return Promise.resolve(_clipboardFallback(text));
 }
 function _clipboardFallback(text) {
   const ta = document.createElement('textarea');
@@ -99,8 +105,10 @@ function _clipboardFallback(text) {
   ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
   document.body.appendChild(ta);
   ta.select();
-  try { document.execCommand('copy'); } catch {}
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
   ta.remove();
+  return ok;
 }
 
 /** Snap a value to grid if grid snapping is enabled. */
@@ -444,13 +452,21 @@ function createElementDOM(el) {
           const msg = JSON.parse(evt.data);
           if (msg.type === 'image_saved' && msg.path) {
             _ws.removeEventListener('message', handler);
-            _clipboardWrite(msg.path);
-            copyBtn.dataset.tooltip = 'Copied!';
-            copyBtn.classList.add('wb-copied');
-            setTimeout(() => {
-              copyBtn.dataset.tooltip = 'Copy image path';
-              copyBtn.classList.remove('wb-copied');
-            }, 1500);
+            Promise.resolve(_clipboardWrite(msg.path)).then((ok) => {
+              if (ok) {
+                copyBtn.dataset.tooltip = 'Copied!';
+                copyBtn.classList.add('wb-copied');
+              } else {
+                // Clipboard write silently failed (usually: page not focused,
+                // non-secure context, or browser permission). Surface it so
+                // the user doesn't paste an empty clipboard into the CLI.
+                copyBtn.dataset.tooltip = 'Copy blocked — focus page & retry';
+              }
+              setTimeout(() => {
+                copyBtn.dataset.tooltip = 'Copy image path';
+                copyBtn.classList.remove('wb-copied');
+              }, 1800);
+            });
           }
         } catch {}
       };
@@ -1919,6 +1935,8 @@ function onMouseMove(e) {
     if (!_marquee.rect && (w > 4 || h > 4)) {
       _marquee.rect = document.createElement('div');
       _marquee.rect.className = 'wb-marquee';
+      // Keep the marquee overlay above promoted images/elements with runtime zIndex values.
+      _marquee.rect.style.zIndex = String(_nextZIndex + 100);
       _root.appendChild(_marquee.rect);
     }
     if (_marquee.rect) {
@@ -2348,9 +2366,12 @@ function isWhiteboardActive() {
 function onKeyDown(e) {
   if (!isWhiteboardActive()) return;
 
-  // Don't intercept keys when focus is in inputs outside the whiteboard (e.g. code editor)
-  const tag = document.activeElement?.tagName;
-  if ((tag === 'INPUT' || tag === 'TEXTAREA') && !document.activeElement.closest('#static-bg')) return;
+  // Don't intercept keys when focus is in inputs/contenteditables outside the whiteboard
+  // (e.g. code editor, floating CLI rename) — typing must produce characters, not trigger keybinds.
+  const ae = document.activeElement;
+  const tag = ae?.tagName;
+  const isTextField = tag === 'INPUT' || tag === 'TEXTAREA' || ae?.isContentEditable;
+  if (isTextField && !ae.closest('#static-bg')) return;
 
   const isEditingText = !!document.activeElement?.closest('.wb-text.editing');
   const editingListLi = document.activeElement?.closest('.wb-list.editing li') || null;

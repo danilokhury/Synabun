@@ -5,7 +5,7 @@
 
 import { storage } from './storage.js';
 import { state, emit, on } from './state.js';
-import { fetchClaudeSessions, fetchBrowserSessions } from './api.js';
+import { fetchClaudeSessions, fetchBrowserSessions, searchSessions } from './api.js';
 import { createFrameRenderer } from './utils.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { reserveRightPanelLayout, clearRightPanelLayout } from './ui-sidepanel-layout.js';
@@ -155,13 +155,46 @@ const STOR = {
 const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
 const EFFORT_LABELS = { off: 'Think', low: 'lo', medium: 'med', high: 'hi', max: 'max' };
 const EFFORT_TITLES = {
-  off: 'Extended thinking off — click to enable',
-  low: 'Thinking: low — minimal extended reasoning',
-  medium: 'Thinking: medium — balanced reasoning',
-  high: 'Thinking: high — deep reasoning',
-  max: 'Thinking: max — EXPERIMENTAL. Extended thinking can take 3-5 min with no visible output. May cause API timeouts.',
+  off: 'Thinking off',
+  low: 'Thinking: low',
+  medium: 'Thinking: medium',
+  high: 'Thinking: high',
+  max: 'Thinking: max',
 };
 const PANEL_OWNER = 'claude-sidepanel';
+
+// ── Built-in slash command registry (client-handled, Claude Code CLI parity) ──
+// Each entry: { name, desc, kind, run(ctx) }. kind is purely informational.
+// ctx = { tab, input, args, panel, appendStatus, appendInfoCard, autoResize, send }
+const SLASH_COMMANDS = [
+  { name: 'help', desc: 'Show available commands and keybinds', kind: 'info' },
+  { name: 'clear', desc: 'Clear all messages (keeps session)', kind: 'action' },
+  { name: 'compact', desc: 'Compress context — summarize and reload', kind: 'action' },
+  { name: 'model', desc: 'Open the model picker', kind: 'action' },
+  { name: 'resume', desc: 'Open the session history picker', kind: 'action' },
+  { name: 'rename', desc: 'Rename current session', kind: 'action' },
+  { name: 'agents', desc: 'Show subagents available in this session', kind: 'info' },
+  { name: 'mcp', desc: 'Show MCP server status', kind: 'info' },
+  { name: 'memory', desc: 'Open the memory editor', kind: 'action' },
+  { name: 'init', desc: 'Create or refresh CLAUDE.md for this project', kind: 'prompt' },
+  { name: 'doctor', desc: 'Diagnose session health', kind: 'info' },
+  { name: 'context', desc: 'Show context-window breakdown', kind: 'info' },
+  { name: 'config', desc: 'Open settings', kind: 'action' },
+  { name: 'permissions', desc: 'Show current tool permissions', kind: 'info' },
+  { name: 'add-dir', desc: 'Add a directory to allowed file access', kind: 'action' },
+  { name: 'theme', desc: 'Open the theme picker', kind: 'action' },
+  { name: 'plugin', desc: 'List active plugins and skills', kind: 'info' },
+  { name: 'status', desc: 'Show session status summary', kind: 'info' },
+  { name: 'cost', desc: 'Toggle the cost widget', kind: 'action' },
+  { name: 'login', desc: 'Open Claude account login', kind: 'action' },
+  { name: 'logout', desc: 'Open Claude account sign-out', kind: 'action' },
+  { name: 'plan', desc: 'Toggle plan mode', kind: 'action' },
+  { name: 'btw', desc: 'Add context while Claude is processing (Shift+Enter)', kind: 'info' },
+];
+
+// ── View modes (normal | transcript | focus) — Ctrl+O cycles ──
+const VIEW_MODES = ['normal', 'transcript', 'focus'];
+const VIEW_MODE_LABELS = { normal: 'Normal', transcript: 'Transcript', focus: 'Focus' };
 
 // ── Build panel DOM ──
 function buildPanel() {
@@ -196,7 +229,8 @@ function buildPanel() {
     </div>
     <div class="cp-context-bar" id="cp-context-bar">
       <div class="cp-gauge" id="cp-gauge">
-        <span class="cp-gauge-label" id="cp-gauge-label"></span>
+        <div class="cp-ctx-fill" id="cp-ctx-fill"></div>
+        <span class="cp-gauge-label" id="cp-gauge-label">context pending</span>
       </div>
       <button class="cp-compact-btn" id="cp-compact-btn" title="Compress conversation context to free up space">compact</button>
     </div>
@@ -234,8 +268,10 @@ function buildPanel() {
         <div class="cp-queue-items"></div>
       </div>
       <div class="cp-project-bar">
-        <div class="cp-dropdown" id="cp-project" data-placeholder="project..."><span class="cp-dd-label">project...</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
-        <div class="cp-dropdown cp-dropdown-sm" id="cp-branch" data-placeholder="branch"><span class="cp-dd-label">branch</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
+        <div class="cp-dropdown" id="cp-project" data-placeholder="project..." data-tooltip="Project"><span class="cp-dd-label">project...</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
+        <div class="cp-dropdown cp-dropdown-sm" id="cp-branch" data-placeholder="branch" data-tooltip="Branch"><span class="cp-dd-label">branch</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
+        <div class="cp-dropdown cp-dropdown-sm" id="cp-recall" data-placeholder="recall" data-tooltip="Recall profile"><span class="cp-dd-label">recall</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
+        <div class="cp-dropdown cp-dropdown-sm" id="cp-view" data-placeholder="view" data-tooltip="View mode (Ctrl+O)"><span class="cp-dd-label">view</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
         <div class="cp-bar-actions">
           <button class="cp-bar-action" id="cp-action-changelog" data-tooltip="Generate changelog"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h8.5v13H4a1.5 1.5 0 01-1.5-1.5V3A1.5 1.5 0 014 1.5z"/><path d="M5.5 5h5M5.5 7.5h3M5.5 10h4"/></svg></button>
         </div>
@@ -254,16 +290,16 @@ function buildPanel() {
       <div class="cp-toolbar">
         <div class="cp-toolbar-left">
           <svg class="cp-brand" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>
-          <button class="cp-attach" id="cp-attach" title="Attach file">
+          <button class="cp-attach" id="cp-attach" data-tooltip="Attach file">
             <svg viewBox="0 0 24 24" width="13" height="13"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.49" fill="none" stroke="currentColor" stroke-width="2"/></svg>
             <span class="cp-attach-badge" hidden></span>
           </button>
         </div>
         <div class="cp-toolbar-right">
-          <button class="cp-think-toggle" id="cp-think-toggle" data-effort="off" data-tooltip="Extended thinking off — click to enable"><span class="cp-think-icon"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L4 9h4l-1 5.5L12 7H8l1-5.5z"/></svg></span><span class="cp-think-label">Think</span><span class="cp-think-dots"></span></button>
-          <button class="cp-plan-toggle" id="cp-plan-toggle" data-tooltip="Toggle plan mode — think without acting"><svg class="cp-toggle-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12M2 7h8M2 11h10M2 15h6"/></svg><span>Plan</span></button>
-          <button class="cp-auto-toggle" id="cp-auto-toggle" data-tooltip="Auto-accept all tool permissions"><svg class="cp-toggle-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5 6.5-7"/></svg><span>Auto</span></button>
-          <div class="cp-dropdown cp-dropdown-sm" id="cp-model" data-placeholder="model"><span class="cp-dd-label">model</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
+          <button class="cp-think-toggle" id="cp-think-toggle" data-effort="off" data-tooltip="Thinking off"><span class="cp-think-icon"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L4 9h4l-1 5.5L12 7H8l1-5.5z"/></svg></span><span class="cp-think-label">Think</span><span class="cp-think-dots"></span></button>
+          <button class="cp-plan-toggle" id="cp-plan-toggle" data-tooltip="Plan mode"><svg class="cp-toggle-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12M2 7h8M2 11h10M2 15h6"/></svg><span>Plan</span></button>
+          <button class="cp-auto-toggle" id="cp-auto-toggle" data-tooltip="Auto-approve"><svg class="cp-toggle-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5 6.5-7"/></svg><span>Auto</span></button>
+          <div class="cp-dropdown cp-dropdown-sm" id="cp-model" data-placeholder="model" data-tooltip="Model"><span class="cp-dd-label">model</span><span class="cp-dd-arrow">&#x25BE;</span><div class="cp-dd-menu"></div></div>
           <span class="cp-cost" id="cp-cost">$0.00</span>
         </div>
       </div>
@@ -298,7 +334,7 @@ function injectStyles() {
         0 4px 8px rgba(0,0,0,0.12),
         0 12px 24px rgba(0,0,0,0.14),
         0 32px 64px rgba(0,0,0,0.18);
-      overflow: hidden;
+      overflow: visible;
       transform: translateX(calc(100% + 20px));
       transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1),
                   opacity 0.28s ease;
@@ -307,7 +343,11 @@ function injectStyles() {
     .claude-panel.open {
       transform: translateX(0);
       opacity: 1;
+      overflow: visible;
     }
+    /* Raise panel above floating terminal windows while a dropdown is open
+       so project/branch/recall menus aren't clipped behind them. */
+    .claude-panel:has(.cp-dropdown.open) { z-index: 99999; }
 
     /* ── Resize handle (left edge) ── */
     .cp-resize-handle {
@@ -358,6 +398,18 @@ function injectStyles() {
     .cp-messages::-webkit-scrollbar-track { background: transparent; }
     .cp-messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
     .cp-messages::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+
+    /* ── Empty state (blank panel — no messages yet) ── */
+    .cp-empty {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 100%; gap: 8px; padding: 40px 20px; text-align: center; pointer-events: none;
+    }
+    .cp-empty-logo { display: flex; align-items: center; justify-content: center; }
+    .cp-empty-logo svg { width: 32px; height: 32px; opacity: 0.25; fill: currentColor; }
+    .cp-empty-name { font-size: 13px; font-weight: 500; color: rgba(255,255,255,0.35); letter-spacing: 0.02em; }
+    .cp-empty-hint { font-size: 11px; color: rgba(255,255,255,0.2); }
+    .cp-messages:has(.msg) .cp-empty,
+    .cp-messages:has(.msg-status) .cp-empty { display: none; }
 
     /* ── Browser embed (live screencast inside panel) ── */
     .cp-browser-embed {
@@ -620,42 +672,49 @@ function injectStyles() {
     .ask-card {
       background: rgba(255,255,255,0.02);
       border: 1px solid rgba(255,255,255,0.07);
-      border-radius: 8px; padding: 10px 12px;
-      margin-top: 6px;
+      border-radius: 10px;
+      padding: 14px 16px 16px;
+      margin-top: 10px;
+      box-sizing: border-box;
     }
+    .ask-card + .ask-card { margin-top: 22px; }
     .ask-header {
-      font-size: 10px; font-weight: 600; color: rgba(255,255,255,0.45);
-      letter-spacing: 0.3px; margin-bottom: 6px;
+      font-size: 10px; font-weight: 600; color: rgba(255,255,255,0.5);
+      letter-spacing: 0.5px; margin-bottom: 10px;
+      text-transform: uppercase;
       font-family: 'JetBrains Mono', monospace;
-      display: flex; align-items: center; gap: 5px;
+      display: flex; align-items: center; gap: 6px;
     }
     .ask-question {
-      font-size: 12px; color: rgba(255,255,255,0.75); margin-bottom: 8px; line-height: 1.45;
+      font-size: 12px; color: rgba(255,255,255,0.78);
+      margin-bottom: 12px;
+      line-height: 1.5;
     }
-    .ask-options { display: flex; flex-direction: column; gap: 3px; }
+    .ask-options { display: flex; flex-direction: column; gap: 6px; }
     .ask-option {
-      display: flex; align-items: flex-start; gap: 8px;
-      padding: 6px 9px; border-radius: 6px; cursor: pointer;
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 9px 12px; border-radius: 7px; cursor: pointer;
       background: transparent;
-      border: 1px solid rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.06);
       text-align: left; transition: background 0.12s, border-color 0.12s;
+      width: 100%; box-sizing: border-box;
     }
     .ask-option::before {
       content: '';
-      width: 13px; height: 13px; flex-shrink: 0; margin-top: 1px;
-      border: 1.5px solid rgba(255,255,255,0.13); border-radius: 50%;
+      width: 13px; height: 13px; flex-shrink: 0; margin-top: 2px;
+      border: 1.5px solid rgba(255,255,255,0.14); border-radius: 50%;
       transition: border-color 0.12s, background 0.12s;
     }
     .ask-option:hover:not(:disabled) {
       background: rgba(255,255,255,0.04);
-      border-color: rgba(255,255,255,0.10);
+      border-color: rgba(255,255,255,0.11);
     }
     .ask-option:hover:not(:disabled)::before {
       border-color: rgba(255,255,255,0.3);
     }
     .ask-option.selected {
       background: rgba(255,255,255,0.05);
-      border-color: rgba(255,255,255,0.12);
+      border-color: rgba(255,255,255,0.14);
     }
     .ask-option.selected::before {
       border-color: rgba(255,255,255,0.6);
@@ -666,17 +725,18 @@ function injectStyles() {
     .ask-options.multi .ask-option::before { border-radius: 3px; }
     .ask-options.multi .ask-option.selected::before { border-radius: 3px; }
     .ask-multi-hint {
-      font-size: 9px; color: rgba(255,255,255,0.25);
+      font-size: 9px; color: rgba(255,255,255,0.3);
       font-family: 'JetBrains Mono', monospace;
-      font-style: italic; margin-bottom: 4px;
+      font-style: italic; margin-bottom: 8px;
     }
     .ask-option:disabled:not(.selected) { opacity: 0.3; cursor: default; }
-    .ask-option-wrap { display: flex; flex-direction: column; gap: 1px; }
+    .ask-option-wrap { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
     .ask-option-label {
-      font-size: 11.5px; font-weight: 500; color: rgba(255,255,255,0.8);
+      font-size: 11.5px; font-weight: 500; color: rgba(255,255,255,0.82);
+      line-height: 1.35;
     }
     .ask-option-desc {
-      font-size: 10px; color: rgba(255,255,255,0.3); line-height: 1.3;
+      font-size: 10px; color: rgba(255,255,255,0.38); line-height: 1.4;
     }
     .ask-hint {
       font-size: 10px; color: rgba(255,255,255,0.25);
@@ -685,33 +745,55 @@ function injectStyles() {
     /* ── Batched submit bar ── */
     .ask-submit-bar {
       display: flex; justify-content: flex-end; align-items: center;
-      margin-top: 10px; padding-top: 8px;
-      border-top: 1px solid rgba(255,255,255,0.04);
+      margin-top: 14px; padding-top: 12px;
+      border-top: 1px solid rgba(255,255,255,0.05);
     }
     .ask-submit {
       font-size: 10px; font-weight: 600; font-family: 'JetBrains Mono', monospace;
-      padding: 6px 14px; border-radius: 6px; cursor: pointer;
+      padding: 7px 16px; border-radius: 6px; cursor: pointer;
       background: rgba(255,255,255,0.06);
       border: 1px solid rgba(255,255,255,0.10);
       color: rgba(255,255,255,0.35);
-      transition: all 0.12s; letter-spacing: 0.3px;
+      transition: all 0.12s; letter-spacing: 0.5px;
+      text-transform: uppercase;
     }
     .ask-submit:disabled { opacity: 0.35; cursor: default; }
-    .ask-submit:not(:disabled) { color: rgba(255,255,255,0.8); }
+    .ask-submit:not(:disabled) { color: rgba(255,255,255,0.85); }
     .ask-submit:not(:disabled):hover {
       background: rgba(255,255,255,0.10);
-      border-color: rgba(255,255,255,0.18);
+      border-color: rgba(255,255,255,0.20);
     }
     .ask-text-input {
-      width: 100%; padding: 6px 8px; border-radius: 6px;
-      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+      width: 100%; padding: 8px 10px; border-radius: 6px;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
       color: rgba(255,255,255,0.85); font-size: 11px;
       font-family: 'JetBrains Mono', monospace; outline: none;
-      transition: border-color 0.12s;
+      transition: border-color 0.12s, background 0.12s;
+      box-sizing: border-box;
     }
-    .ask-text-input:focus { border-color: rgba(255,255,255,0.2); }
-    .ask-text-input::placeholder { color: rgba(255,255,255,0.15); }
+    .ask-text-input:focus {
+      border-color: rgba(255,255,255,0.22);
+      background: rgba(255,255,255,0.04);
+    }
+    .ask-text-input::placeholder { color: rgba(255,255,255,0.22); }
     .ask-text-input:disabled { opacity: 0.4; cursor: default; }
+    .ask-or-type {
+      font-size: 9px; color: rgba(255,255,255,0.3);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.6px; text-transform: uppercase;
+      margin: 14px 0 8px; padding-top: 10px;
+      border-top: 1px dashed rgba(255,255,255,0.06);
+      text-align: center;
+    }
+    /* Separate consecutive questions inside a single ask-card:
+       the previous question's custom-answer input sits directly above
+       the next question's header/text — push it down with a divider. */
+    .ask-text-input + .ask-header,
+    .ask-text-input + .ask-question {
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
 
     /* ── SynaBun-branded ask card ── */
     .ask-card.synabun-ask { position: relative; overflow: hidden; }
@@ -1272,33 +1354,30 @@ function injectStyles() {
     .cp-dropdown.open .cp-dd-arrow { transform: rotate(180deg); color: rgba(255,255,255,0.4); }
     .cp-dd-menu {
       display: none;
-      position: absolute; bottom: calc(100% + 4px); left: 0;
-      min-width: 100%; max-width: 200px;
-      background: rgba(12, 12, 14, 0.98);
-      backdrop-filter: blur(20px);
+      position: absolute; bottom: calc(100% + 4px);
+      left: auto; right: 0;
+      min-width: 200px; max-width: 320px;
+      max-height: 260px;
+      overflow-y: auto; overflow-x: hidden;
+      background: rgba(22,22,26,0.98);
       border: 1px solid rgba(255,255,255,0.08);
       border-radius: 8px;
       padding: 4px;
       z-index: 300;
-      box-shadow: var(--shadow-lg);
-      max-height: 200px; overflow-y: auto;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.06) transparent;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
     }
     .cp-dropdown.open .cp-dd-menu { display: block; }
     .cp-dd-item {
-      padding: 5px 8px;
-      font-size: 10.5px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.55);
+      padding: 6px 10px;
+      font-size: 11px; font-family: 'JetBrains Mono', monospace;
+      color: rgba(255,255,255,0.65);
       border-radius: 5px; cursor: pointer;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      transition: background 0.1s, color 0.1s;
+      overflow: hidden;
+      display: flex; align-items: center;
+      transition: background 0.1s;
     }
-    .cp-dd-item:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.8); }
-    .cp-dd-item.selected { color: rgba(255,255,255,0.85); background: rgba(255,255,255,0.08); }
-
-    /* Model dropdown: anchor menu to right edge to prevent off-screen overflow */
-    #cp-model .cp-dd-menu { left: auto; right: 0; }
+    .cp-dd-item:hover { background: rgba(255,255,255,0.07); }
+    .cp-dd-item.selected { color: rgba(232,224,220,0.95); background: rgba(232,224,220,0.08); }
     .cp-dd-model-item { display: flex; align-items: center; gap: 6px; }
     .cp-dd-model-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .cp-dd-model-star {
@@ -1414,6 +1493,254 @@ function injectStyles() {
       font-size: 9.5px; color: rgba(255,255,255,0.3);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+
+    /* ── Info cards (slash command output, diagnostics, hook feedback) ── */
+    .cp-messages .msg-info-card {
+      padding: 4px 14px;
+    }
+    .cp-messages .cp-info-body {
+      background: rgba(20,20,24,0.65);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-left: 3px solid rgba(140,160,200,0.45);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--t-primary);
+    }
+    .cp-messages .msg-info-card.cp-info-help .cp-info-body { border-left-color: rgba(255,195,0,0.5); }
+    .cp-messages .msg-info-card.cp-info-doctor .cp-info-body { border-left-color: rgba(100,220,140,0.5); }
+    .cp-messages .msg-info-card.cp-info-warn .cp-info-body { border-left-color: rgba(255,120,80,0.5); }
+    .cp-messages .cp-info-title {
+      font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em;
+      color: var(--t-bright); text-transform: uppercase;
+      margin-bottom: 6px; font-family: 'JetBrains Mono', monospace;
+    }
+    .cp-messages .cp-info-content { white-space: pre-wrap; font-family: 'Inter', -apple-system, sans-serif; }
+    .cp-messages .cp-info-row {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 2px 0; font-size: 11px; color: var(--t-primary);
+      border-bottom: 1px dashed rgba(255,255,255,0.04);
+    }
+    .cp-messages .cp-info-row:last-child { border-bottom: none; }
+    .cp-messages .cp-info-row.muted { color: var(--t-faint); font-size: 10.5px; }
+    .cp-messages .cp-info-row code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 3px; font-size: 0.9em; }
+    .cp-messages .cp-doctor-k { color: var(--t-secondary); min-width: 120px; font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+    .cp-messages .cp-doctor-v { color: var(--t-bright); font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+    .cp-messages .cp-info-ok { color: rgba(100,220,140,0.9); }
+    .cp-messages .cp-info-warn { color: rgba(255,180,80,0.9); }
+    .cp-messages .cp-help-section-label {
+      font-size: 9px; color: var(--t-faint); text-transform: uppercase; letter-spacing: 0.12em;
+      font-family: 'JetBrains Mono', monospace; font-weight: 700;
+      margin: 8px 0 2px; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.04);
+    }
+    .cp-messages .cp-help-row {
+      display: flex; align-items: baseline; gap: 10px; padding: 2px 0;
+      font-size: 10.5px;
+    }
+    .cp-messages .cp-help-cmd {
+      font-family: 'JetBrains Mono', monospace; color: rgba(255,210,100,0.85);
+      min-width: 100px; font-size: 10px;
+    }
+    .cp-messages .cp-help-desc { color: var(--t-secondary); flex: 1; font-size: 10.5px; }
+
+    /* ── Reverse-search modal ── */
+    .cp-rsearch {
+      position: absolute; inset: 0; z-index: 500;
+      background: rgba(0,0,0,0.55);
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px;
+    }
+    .cp-rsearch-inner {
+      width: 100%; max-width: 520px;
+      background: rgba(16,16,18,0.98);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px; padding: 8px;
+      box-shadow: 0 24px 48px rgba(0,0,0,0.5);
+    }
+    .cp-rsearch-header {
+      font-size: 9.5px; color: var(--t-faint); text-transform: uppercase;
+      letter-spacing: 0.1em; padding: 4px 6px 6px; font-family: 'JetBrains Mono', monospace;
+    }
+    .cp-rsearch-input {
+      width: 100%; background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 6px;
+      color: var(--t-bright); padding: 6px 10px; font-size: 12px;
+      font-family: 'JetBrains Mono', monospace; outline: none;
+    }
+    .cp-rsearch-input:focus { border-color: rgba(255,195,0,0.4); }
+    .cp-rsearch-results { margin-top: 6px; max-height: 260px; overflow-y: auto; }
+    .cp-rsearch-row {
+      padding: 5px 8px; border-radius: 5px; font-size: 11px;
+      font-family: 'JetBrains Mono', monospace; color: var(--t-primary);
+      cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .cp-rsearch-row.active, .cp-rsearch-row:hover { background: rgba(255,255,255,0.07); color: var(--t-bright); }
+    .cp-rsearch-empty { padding: 12px; text-align: center; color: var(--t-faint); font-size: 11px; }
+
+    /* ── TODO slide-out dock (sibling surface, matches panel glass aesthetic) ── */
+    .cp-todo-dock {
+      position: absolute; bottom: 0; right: calc(100% + 6px);
+      display: flex; flex-direction: row-reverse; align-items: flex-end;
+      z-index: 20; pointer-events: none;
+      max-height: 100%;
+    }
+    .cp-todo-tag {
+      pointer-events: auto;
+      display: flex; flex-direction: column; align-items: center; gap: 5px;
+      padding: 9px 6px;
+      background: rgba(18, 18, 20, 0.92);
+      backdrop-filter: blur(60px) saturate(1.5);
+      -webkit-backdrop-filter: blur(60px) saturate(1.5);
+      border: 0.5px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      color: rgba(255,210,60,0.78);
+      cursor: pointer; font-family: 'JetBrains Mono', monospace;
+      box-shadow:
+        0 0 0 0.5px rgba(0,0,0,0.3),
+        0 1px 2px rgba(0,0,0,0.15),
+        0 4px 8px rgba(0,0,0,0.12),
+        0 12px 24px rgba(0,0,0,0.14);
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .cp-todo-tag:hover { background: rgba(28, 26, 22, 0.94); border-color: rgba(255,195,0,0.22); color: rgba(255,210,60,0.95); }
+    .cp-todo-tag-ic { font-size: 13px; line-height: 1; }
+    .cp-todo-tag-count { font-size: 9.5px; writing-mode: vertical-rl; transform: rotate(180deg); letter-spacing: 0.04em; opacity: 0.85; }
+    .cp-todo-tag-pulse {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: rgba(100,160,255,0.95);
+      box-shadow: 0 0 6px rgba(100,160,255,0.7);
+      animation: cp-todo-pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes cp-todo-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+    .cp-todo-drawer {
+      pointer-events: auto;
+      width: 0; opacity: 0; overflow: hidden;
+      background: rgba(18, 18, 20, 0.92);
+      backdrop-filter: blur(60px) saturate(1.5);
+      -webkit-backdrop-filter: blur(60px) saturate(1.5);
+      border: 0.5px solid rgba(255,255,255,0.06);
+      border-radius: 14px;
+      box-shadow:
+        0 0 0 0.5px rgba(0,0,0,0.3),
+        0 1px 2px rgba(0,0,0,0.15),
+        0 4px 8px rgba(0,0,0,0.12),
+        0 12px 24px rgba(0,0,0,0.14),
+        0 32px 64px rgba(0,0,0,0.18);
+      display: flex; flex-direction: column;
+      transition: width 0.22s cubic-bezier(0.2,0,0.2,1), opacity 0.18s;
+      max-height: 100%;
+    }
+    .cp-todo-dock.is-open .cp-todo-drawer { width: 260px; opacity: 1; }
+    .cp-todo-dock.is-open .cp-todo-tag { display: none; }
+
+    .cp-todo-drawer .cp-todo-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px 8px;
+      background: transparent;
+      border-bottom: 0.5px solid rgba(255,255,255,0.04);
+    }
+    .cp-todo-drawer .cp-todo-title { font-size: 10px; font-weight: 600; color: rgba(255,210,60,0.78); letter-spacing: 0.12em; text-transform: uppercase; }
+    .cp-todo-drawer .cp-todo-count { font-size: 10px; color: var(--t-faint); font-family: 'JetBrains Mono', monospace; opacity: 0.7; }
+    .cp-todo-drawer .cp-todo-hide {
+      margin-left: auto; background: none; border: none;
+      color: var(--t-faint); cursor: pointer;
+      font-size: 15px; line-height: 1; padding: 2px 5px;
+      border-radius: 4px;
+      transition: background 0.12s, color 0.12s;
+    }
+    .cp-todo-drawer .cp-todo-hide:hover { color: var(--t-bright); background: rgba(255,255,255,0.06); }
+    .cp-todo-drawer .cp-todo-list { padding: 6px 4px; overflow-y: auto; max-height: 260px; }
+    .cp-todo-drawer .cp-todo-item {
+      display: flex; gap: 8px; padding: 5px 10px; font-size: 11.5px;
+      align-items: baseline; border-radius: 6px;
+    }
+    .cp-todo-drawer .cp-todo-ic { width: 12px; flex-shrink: 0; font-family: 'JetBrains Mono', monospace; }
+    .cp-todo-drawer .cp-todo-txt { flex: 1; line-height: 1.45; }
+    .cp-todo-drawer .cp-todo-pend .cp-todo-ic { color: var(--t-faint); }
+    .cp-todo-drawer .cp-todo-pend .cp-todo-txt { color: var(--t-secondary); }
+    .cp-todo-drawer .cp-todo-prog { background: rgba(100,160,255,0.06); }
+    .cp-todo-drawer .cp-todo-prog .cp-todo-ic { color: rgba(100,160,255,0.9); }
+    .cp-todo-drawer .cp-todo-prog .cp-todo-txt { color: var(--t-bright); font-weight: 500; }
+    .cp-todo-drawer .cp-todo-done .cp-todo-ic { color: rgba(100,220,140,0.75); }
+    .cp-todo-drawer .cp-todo-done .cp-todo-txt { color: var(--t-faint); text-decoration: line-through; text-decoration-color: rgba(255,255,255,0.2); }
+    .cp-todo-drawer .cp-todo-foot {
+      padding: 8px 12px; font-size: 10px;
+      background: rgba(255,255,255,0.02);
+      color: var(--t-secondary);
+      border-top: 0.5px solid rgba(255,255,255,0.04);
+      font-family: 'JetBrains Mono', monospace;
+      border-radius: 0 0 14px 14px;
+    }
+
+    /* ── Hook event activity strip ── */
+    .cp-hook-strip {
+      flex-shrink: 0; padding: 4px 10px; gap: 8px;
+      display: flex; align-items: center; overflow-x: auto;
+      background: rgba(0,0,0,0.25); border-top: 1px solid rgba(255,255,255,0.04);
+      font-family: 'JetBrains Mono', monospace;
+      scrollbar-width: thin;
+    }
+    .cp-hook-strip-title {
+      font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--t-faint); flex-shrink: 0;
+    }
+    .cp-hook-ev {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 6px; border-radius: 4px;
+      background: rgba(255,255,255,0.04); font-size: 9.5px;
+      color: var(--t-secondary); white-space: nowrap; flex-shrink: 0;
+    }
+    .cp-hook-dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(100,180,255,0.7); }
+    .cp-hook-name { color: var(--t-bright); font-weight: 600; }
+    .cp-hook-detail { color: var(--t-faint); font-size: 9px; }
+
+    /* ── Diff rendering (highlight +/- lines inside <pre><code class="language-diff">) ── */
+    .cp-messages pre code.language-diff,
+    .cp-messages pre code.lang-diff,
+    .cp-messages pre code[class*="diff"] {
+      display: block; white-space: pre;
+    }
+    .cp-messages pre:has(code[class*="diff"]) {
+      background: rgba(0,0,0,0.4);
+      border-color: rgba(140,160,200,0.15);
+    }
+    /* Highlight lines by first character using :has selector */
+    .cp-messages pre code[class*="diff"] { counter-reset: line; }
+    .cp-messages .cp-diff-add { display: inline-block; width: 100%; background: rgba(100,220,140,0.10); color: rgba(180,240,190,0.95); padding: 0 2px; border-left: 2px solid rgba(100,220,140,0.5); }
+    .cp-messages .cp-diff-del { display: inline-block; width: 100%; background: rgba(255,100,80,0.08); color: rgba(255,180,160,0.95); padding: 0 2px; border-left: 2px solid rgba(255,100,80,0.5); }
+    .cp-messages .cp-diff-hunk { color: rgba(100,180,255,0.8); font-weight: 600; }
+    .cp-messages .cp-diff-file { color: rgba(255,210,60,0.85); font-weight: 600; }
+
+    /* ── Cache-hit badge (in gauge label) ── */
+    .cp-gauge-label .cp-cache-hit {
+      display: inline-flex; align-items: center; gap: 2px;
+      margin-left: 8px;
+      color: rgba(150,200,220,0.55);
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+    .cp-gauge-label .cp-cache-hit svg {
+      width: 7px; height: 9px; flex-shrink: 0;
+      opacity: 0.85;
+    }
+    /* Slightly brighter when the cache hit ratio is high — signal value without shouting */
+    .cp-gauge-label .cp-cache-hit[data-ratio="high"] { color: rgba(170,215,230,0.75); }
+
+    /* ── MCP collapse markers ── */
+    .tool-mcp-badge {
+      margin-left: 6px; padding: 1px 6px; border-radius: 4px;
+      background: rgba(255,195,0,0.14); color: rgba(255,210,60,0.9);
+      font-size: 9px; font-family: 'JetBrains Mono', monospace; font-weight: 600;
+    }
+    .tool-card.cp-mcp-collapsed { display: none; }
+
+    /* ── View modes (Ctrl+O) ── */
+    .cp-messages.cp-view-transcript .msg-body { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; }
+    .cp-messages.cp-view-focus .msg { display: none; }
+    .cp-messages.cp-view-focus .msg:nth-last-child(-n+3) { display: flex; }
+    .cp-messages.cp-view-focus .msg-info-card { display: block; }
 
     /* ── Drag-drop overlay ── */
     .cp-drop-overlay {
@@ -1570,6 +1897,103 @@ function injectStyles() {
       padding: 2px 6px; width: 100%; outline: none;
     }
     .cp-rename-input:focus { border-color: rgba(100,160,255,0.5); }
+    .cp-dna-btn {
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 4px; color: rgba(255,255,255,0.4);
+      font-size: 10px; font-family: 'JetBrains Mono', monospace;
+      padding: 2px 6px; margin-left: 6px; cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+      white-space: nowrap;
+    }
+    .cp-dna-btn:hover { color: rgba(255,180,80,0.9); background: rgba(255,180,80,0.08); border-color: rgba(255,180,80,0.3); }
+    /* ── Name session modal ── */
+    .cp-name-modal-overlay {
+      position: absolute; inset: 0;
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 300; border-radius: 16px;
+      animation: cp-name-fade 0.16s ease-out;
+    }
+    @keyframes cp-name-fade { from { opacity: 0; } to { opacity: 1; } }
+    .cp-name-modal {
+      background: rgba(24,26,30,0.98);
+      border: 0.5px solid rgba(255,255,255,0.12);
+      border-radius: 12px; padding: 18px 18px 14px;
+      width: calc(100% - 48px); max-width: 380px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    .cp-name-modal-row {
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .cp-name-modal-label {
+      font-size: 10px; opacity: 0.55;
+      color: rgba(255,255,255,0.7);
+      text-transform: uppercase; letter-spacing: 0.04em;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .cp-name-modal-select {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px; padding: 8px 10px;
+      color: rgba(255,255,255,0.92);
+      font: inherit; font-size: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      outline: none;
+      appearance: none; -webkit-appearance: none;
+    }
+    .cp-name-modal-select:focus {
+      border-color: rgba(100,160,255,0.5);
+      background: rgba(255,255,255,0.08);
+    }
+    .cp-name-modal-select:disabled {
+      opacity: 0.5; cursor: not-allowed;
+    }
+    .cp-name-modal-title {
+      color: rgba(255,255,255,0.9); font-size: 13px; font-weight: 500;
+    }
+    .cp-name-modal-input {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px; padding: 8px 10px;
+      color: rgba(255,255,255,0.92);
+      font: inherit; font-size: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      outline: none;
+    }
+    .cp-name-modal-input:focus {
+      border-color: rgba(100,160,255,0.5);
+      background: rgba(255,255,255,0.08);
+    }
+    .cp-name-modal-actions {
+      display: flex; justify-content: flex-end; gap: 8px;
+    }
+    .cp-name-modal-btn {
+      padding: 6px 14px; border-radius: 6px;
+      font: inherit; font-size: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+      border: 1px solid transparent;
+    }
+    .cp-name-modal-btn.skip {
+      background: transparent;
+      color: rgba(255,255,255,0.5);
+      border-color: rgba(255,255,255,0.1);
+    }
+    .cp-name-modal-btn.skip:hover {
+      color: rgba(255,255,255,0.85);
+      background: rgba(255,255,255,0.04);
+    }
+    .cp-name-modal-btn.save {
+      background: rgba(100,160,255,0.18);
+      border-color: rgba(100,160,255,0.35);
+      color: rgba(160,200,255,0.95);
+    }
+    .cp-name-modal-btn.save:hover {
+      background: rgba(100,160,255,0.28);
+    }
     .cp-sess-rename {
       display: none; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
       background: none; border: none; cursor: pointer; padding: 2px 4px;
@@ -1749,7 +2173,7 @@ function injectStyles() {
 
     /* ── Context gauge bar ── */
     .cp-context-bar {
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: center; gap: 8px;
       padding: 6px 10px; flex-shrink: 0;
       margin: 6px 8px 0;
       background: rgba(22, 22, 26, 0.95);
@@ -1758,64 +2182,40 @@ function injectStyles() {
       box-shadow: var(--shadow-sm), 0 0 0 1px rgba(255,255,255,0.06);
     }
     .cp-gauge {
-      flex: 1; height: 16px; border-radius: 6px;
+      flex: 1; min-width: 0; height: 16px; border-radius: 6px;
       background: rgba(255,255,255,0.03);
-      display: flex; overflow: visible;
-      position: relative; cursor: default;
-      transition: background 0.5s, box-shadow 0.5s;
+      position: relative; overflow: hidden; cursor: default;
     }
-    .cp-gauge[data-urgency="warn"] { background: rgba(200,180,50,0.06); box-shadow: 0 0 6px rgba(200,180,50,0.08); }
-    .cp-gauge[data-urgency="high"] { background: rgba(220,130,50,0.08); box-shadow: 0 0 8px rgba(220,130,50,0.1); }
-    .cp-gauge[data-urgency="critical"] { background: rgba(220,60,60,0.1); box-shadow: 0 0 10px rgba(220,60,60,0.12); }
-    .cp-gauge-section {
-      height: 100%; min-width: 1px;
-      transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
-      position: relative; border-radius: 2px;
+    .cp-ctx-fill {
+      position: absolute; left: 0; top: 0; bottom: 0;
+      border-radius: 6px; width: 0%;
+      background: rgba(232,224,220,0.18);
+      transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1), background 0.5s;
     }
-    .cp-gauge-section:first-of-type { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
-    .cp-gauge-section:last-of-type { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
-    .cp-gauge-section[data-cat="cache-read"] { background: rgba(100,140,200,0.45); }
-    .cp-gauge-section[data-cat="cache-write"] { background: rgba(150,100,200,0.45); }
-    .cp-gauge-section[data-cat="input"] { background: rgba(100,200,150,0.45); }
-    .cp-gauge-section[data-cat="output"] { background: rgba(220,170,80,0.45); }
-    #cp-gauge-tooltip {
-      position: fixed;
-      background: rgba(8,8,10,0.95); border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 4px; padding: 2px 6px;
-      font-size: 8.5px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.6);
-      white-space: nowrap; pointer-events: none;
-      opacity: 0; transition: opacity 0.15s;
-      z-index: 999999;
-    }
-    #cp-gauge-tooltip.visible { opacity: 1; }
     .cp-gauge-label {
-      position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+      position: absolute; left: 6px; right: 6px; top: 50%; transform: translateY(-50%);
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      color: rgba(255,255,255,0.6); white-space: nowrap;
-      z-index: 2; pointer-events: none; letter-spacing: 0.3px;
-      transition: color 0.5s;
-      text-shadow: 0 0 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.5);
+      color: rgba(255,255,255,0.35); white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+      pointer-events: none;
     }
-    .cp-context-bar:has(.cp-gauge[data-urgency="warn"]) .cp-gauge-label { color: rgba(220,200,80,0.75); }
-    .cp-context-bar:has(.cp-gauge[data-urgency="high"]) .cp-gauge-label { color: rgba(220,150,60,0.8); }
-    .cp-context-bar:has(.cp-gauge[data-urgency="critical"]) .cp-gauge-label { color: rgba(220,80,60,0.85); }
     .cp-compact-btn {
       background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
-      color: rgba(255,255,255,0.35); cursor: pointer;
+      border-radius: 6px; color: rgba(255,255,255,0.35); cursor: pointer;
       font-size: 9px; font-family: 'JetBrains Mono', monospace;
-      padding: 2px 10px; border-radius: 10px;
-      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); flex-shrink: 0;
-      text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600;
-      position: relative; overflow: hidden;
+      letter-spacing: 0.05em; text-transform: uppercase;
+      padding: 2px 8px; height: 22px;
+      flex-shrink: 0; position: relative; overflow: hidden;
+      transition: all 0.15s;
     }
-    .cp-compact-btn:hover {
+    .cp-compact-btn:hover:not(:disabled) {
       color: rgba(255,255,255,0.65);
       background: rgba(255,255,255,0.08);
       border-color: rgba(255,255,255,0.14);
       transform: scale(1.03);
     }
-    .cp-compact-btn:active { transform: scale(0.96); }
+    .cp-compact-btn:active:not(:disabled) { transform: scale(0.96); }
+    .cp-compact-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .cp-compact-btn.compacting {
       color: rgba(140,130,220,0.7);
       border-color: rgba(140,130,220,0.2);
@@ -1833,23 +2233,7 @@ function injectStyles() {
       0% { transform: translateX(-100%); }
       100% { transform: translateX(100%); }
     }
-    @keyframes cp-gauge-flow {
-      0% { background-position: 100% 0; }
-      100% { background-position: -100% 0; }
-    }
-    .cp-gauge.compacting .cp-gauge-section {
-      background-image: linear-gradient(
-        90deg,
-        transparent 0%,
-        rgba(140,130,220,0.2) 30%,
-        rgba(140,130,220,0.35) 50%,
-        rgba(140,130,220,0.2) 70%,
-        transparent 100%
-      );
-      background-size: 200% 100%;
-      animation: cp-gauge-flow 2s ease-in-out infinite;
-    }
-    .cp-gauge.compacting { opacity: 0.6; box-shadow: 0 0 8px rgba(140,130,220,0.08); }
+    .cp-gauge.compacting { opacity: 0.6; }
     .cp-gauge-label.compacting { color: rgba(140,130,220,0.4) !important; }
 
     /* ── Think intensity toggle ── */
@@ -2197,10 +2581,18 @@ function ddPopulateModels(dd, items, selectedValue) {
 }
 
 // ── Model helpers (composite value = "modelId:contextWindow") ──
+// Claude Code CLI requires the `[1m]` suffix to switch to the 1M-token beta
+// context window. Without it, the CLI silently defaults to 200K even when
+// the selected model supports 1M — leaving the gauge denominator out of sync
+// with the true window. We append the suffix here so every spawn site
+// (WebSocket query, agent, loop, exec profile) gets a CLI-ready model id.
 function _getModelId() {
   const $model = _panel?.querySelector('#cp-model');
   const raw = ddGetValue($model);
-  return raw.split(':')[0] || '';
+  const [id, cwRaw] = raw.split(':');
+  if (!id) return '';
+  const cw = cwRaw ? parseInt(cwRaw, 10) : 0;
+  return cw > 200000 ? `${id}[1m]` : id;
 }
 function _getContextWindow() {
   const $model = _panel?.querySelector('#cp-model');
@@ -2268,6 +2660,7 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } =
     pendingAskRequestId: null,
     pillEl: null,
     draft: '',
+    pendingLabel: null,        // user-chosen label set before sessionId exists; applied when session starts
     usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 0, // 0 = use dropdown fallback; set from result.modelUsage or session history
     compacting: false,
@@ -2282,6 +2675,16 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } =
     queue: [],
     queuePaused: false,
     queueExpanded: false,
+    // ── CLI-parity additions ──
+    promptHistory: [],        // string[] — prompts typed in this tab (Up/Down recall)
+    promptHistoryIdx: -1,     // -1 means not navigating
+    viewMode: 'normal',       // 'normal' | 'transcript' | 'focus' (Ctrl+O cycles)
+    todos: [],                // current TodoWrite state for sticky widget
+    todosVisible: false,
+    hookEvents: [],           // recent synthetic hook events for activity strip
+    hookStripVisible: false,  // Ctrl+Shift+H toggles
+    lastEscAt: 0,             // for Esc+Esc undo detection
+    _fileRefs: [],            // @file references captured in the current prompt
   };
   // Create messages div
   const container = _panel.querySelector('#cp-messages-container');
@@ -2289,6 +2692,7 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } =
   msgDiv.className = 'cp-messages';
   msgDiv.dataset.tabId = tab.id;
   msgDiv.style.display = 'none';
+  msgDiv.innerHTML = `<div class="cp-empty"><div class="cp-empty-logo">${CLAUDE_ICON}</div><span class="cp-empty-name">Claude</span><span class="cp-empty-hint">Send a message to start</span></div>`;
   container.appendChild(msgDiv);
   tab.messagesEl = msgDiv;
   // Connect WebSocket
@@ -2403,12 +2807,18 @@ function switchTab(idx) {
   renderGauge(tab);
   renderPills();
   renderQueue(tab);
+  renderTodoWidget(tab);
+  renderHookStrip(tab);
+  _applyViewMode(tab);
+  _setCompactingUI(!!tab.compacting);
+  populateViewDropdown(_panel?.querySelector('#cp-view'), tab);
   saveTabs();
 }
 
 function closeTab(idx) {
   if (idx < 0 || idx >= _tabs.length) return;
   const tab = _tabs[idx];
+  recordHookEvent(tab, 'SessionEnd', tab.sessionId || '(new)');
   tab.closed = true;
   clearTimeout(tab.reconnectTimer);
   finishTab(tab, true);
@@ -2699,6 +3109,7 @@ function timeGroup(d) {
   if (diff <= 604800000) return 'This Week'; return 'Older';
 }
 function trunc(s, n) { return s.length > n ? s.slice(0, n) + '...' : s; }
+function fmtDate(d) { if (!d) return ''; const dt = new Date(d); if (isNaN(dt)) return ''; return dt.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) + ' at ' + dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); }
 function escH(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 // ── Session menu state ──
@@ -2748,6 +3159,13 @@ function cpSessRenderItem(s, projectPath, menu) {
   item.className = `cp-sess-item${active}${archivedClass}`;
   item.dataset.sid = s.sessionId;
   item.dataset.cwd = projectPath;
+
+  // Tooltip: full title + date, positioned left of the dropdown
+  if (label && label !== 'Empty session') {
+    const dateStr = fmtDate(s.modified || s.created);
+    item.setAttribute('data-tooltip', dateStr ? label + '\n' + dateStr : label);
+    item.setAttribute('data-tooltip-pos', 'left');
+  }
 
   let metaHtml = `<span>${relDate(s.modified || s.created)}</span>`;
   if (s.gitBranch) metaHtml += `<span class="cp-sess-branch">${escH(s.gitBranch)}</span>`;
@@ -2867,7 +3285,19 @@ async function cpSessLoadBatch(menu, listEl, refresh = false) {
     const opts = { limit: CP_SESS_PAGE, offset: _cpSessOffset, project: _cpSessProject || undefined };
     if (_cpSessSearch) opts.search = _cpSessSearch;
     if (refresh) opts.refresh = true;
-    const data = await fetchClaudeSessions(opts);
+    // Full-body hybrid (FTS5 + semantic) search when user types a query —
+    // falls back to fetchClaudeSessions for the plain paginated list.
+    let data;
+    if (_cpSessSearch && _cpSessSearch.trim().length >= 2 && _cpSessOffset === 0) {
+      data = await searchSessions({
+        q: _cpSessSearch,
+        provider: 'claude-code',
+        project: _cpSessProject || undefined,
+        limit: 100,
+      });
+    } else {
+      data = await fetchClaudeSessions(opts);
+    }
     const proj = data?.projects?.[0];
     if (!proj) {
       if (_cpSessOffset === 0 && listEl) listEl.innerHTML = '<div class="cp-sess-loading">no sessions found</div>';
@@ -3079,7 +3509,7 @@ async function selectSession(sid, label) {
   updatePillLabel(tab);
   const btn = _panel?.querySelector('.cp-session-label');
   if (btn) btn.textContent = tab.label;
-  tab.messagesEl.innerHTML = '';
+  tab.messagesEl.innerHTML = `<div class="cp-empty"><div class="cp-empty-logo">${CLAUDE_ICON}</div><span class="cp-empty-name">Claude</span><span class="cp-empty-hint">Send a message to start</span></div>`;
   if (sid) {
     loadSessionHistory(sid, tab.messagesEl);
     // Restore session cost from server
@@ -3130,9 +3560,11 @@ function renameSession(sid, currentLabel) {
     const effectiveSid = sid || tab?.sessionId;
     if (val) {
       if (effectiveSid) storage.setItem(LABEL_PREFIX + effectiveSid, val);
+      else if (tab) tab.pendingLabel = val;
       btn.textContent = val;
     } else {
       if (effectiveSid) storage.removeItem(LABEL_PREFIX + effectiveSid);
+      else if (tab) tab.pendingLabel = null;
       btn.textContent = effectiveSid ? (getLabel(effectiveSid) || effectiveSid.slice(0, 8) + '...') : 'New chat';
     }
     if (tab) {
@@ -3145,6 +3577,139 @@ function renameSession(sid, currentLabel) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
     if (e.key === 'Escape') { input.value = currentLabel || ''; input.blur(); }
+  });
+}
+
+function promptNameNewSession() {
+  if (!_panel) return;
+  if (_panel.querySelector('.cp-name-modal-overlay')) return;
+  const tab = activeTab();
+  if (!tab) return;
+
+  const projectOptions = (_projects || []).map(p => {
+    const path = p?.path || p || '';
+    const name = typeof path === 'string' ? (path.split(/[\\/]/).pop() || path) : '';
+    return { path, name };
+  }).filter(p => p.path);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'cp-name-modal-overlay';
+  overlay.innerHTML = `
+    <div class="cp-name-modal" role="dialog" aria-modal="true">
+      <div class="cp-name-modal-title">Name this session</div>
+      <div class="cp-name-modal-row">
+        <label class="cp-name-modal-label">Project</label>
+        <select class="cp-name-modal-select" data-role="project">
+          ${projectOptions.map(p => `<option value="${p.path.replace(/"/g, '&quot;')}">${p.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="cp-name-modal-row">
+        <label class="cp-name-modal-label">Branch</label>
+        <select class="cp-name-modal-select" data-role="branch" disabled>
+          <option value="">(loading...)</option>
+        </select>
+      </div>
+      <input type="text" class="cp-name-modal-input" placeholder="Session name..." maxlength="120" />
+      <div class="cp-name-modal-actions">
+        <button type="button" class="cp-name-modal-btn skip">Skip</button>
+        <button type="button" class="cp-name-modal-btn save">Save</button>
+      </div>
+    </div>
+  `;
+  _panel.appendChild(overlay);
+
+  const input = overlay.querySelector('.cp-name-modal-input');
+  const saveBtn = overlay.querySelector('.cp-name-modal-btn.save');
+  const skipBtn = overlay.querySelector('.cp-name-modal-btn.skip');
+  const projectSel = overlay.querySelector('select[data-role="project"]');
+  const branchSel = overlay.querySelector('select[data-role="branch"]');
+  const labelEl = _panel.querySelector('.cp-session-label');
+
+  const initialProject = tab.project || storage.getItem(STOR.project) || '';
+  if (projectSel && initialProject) projectSel.value = initialProject;
+
+  let branchOriginal = null;
+  async function fetchBranchesForModal(path) {
+    if (!path) return { branches: [], current: null };
+    try {
+      const res = await fetch(`/api/terminal/branches?path=${encodeURIComponent(path)}`);
+      return await res.json();
+    } catch { return { branches: [], current: null }; }
+  }
+  async function refreshBranches(path) {
+    branchSel.disabled = true;
+    branchSel.innerHTML = '<option value="">(loading...)</option>';
+    const data = await fetchBranchesForModal(path);
+    branchOriginal = data.current || null;
+    const branches = data.branches || [];
+    if (!branches.length) {
+      branchSel.innerHTML = '<option value="">(none)</option>';
+      branchSel.disabled = true;
+    } else {
+      branchSel.innerHTML = branches.map(b => `<option value="${b.replace(/"/g, '&quot;')}">${b}</option>`).join('');
+      if (branchOriginal) branchSel.value = branchOriginal;
+      branchSel.disabled = false;
+    }
+  }
+  refreshBranches(projectSel?.value || initialProject);
+
+  projectSel?.addEventListener('change', () => refreshBranches(projectSel.value));
+
+  setTimeout(() => { input.focus(); input.select(); }, 10);
+
+  let done = false;
+  const close = () => { if (!done) { done = true; overlay.remove(); } };
+
+  const commit = async (cancel) => {
+    if (done) return;
+    const val = input.value.trim();
+    const chosenProject = projectSel?.value || '';
+    const chosenBranch = branchSel?.value || '';
+    close();
+    if (cancel) return;
+
+    const t = activeTab();
+
+    if (t && chosenProject && chosenProject !== (t.project || '')) {
+      t.project = chosenProject;
+      storage.setItem(STOR.project, chosenProject);
+      saveTabs();
+      const $project = _panel?.querySelector('#cp-project');
+      if ($project) {
+        const items = (_projects || []).map(p => ({ value: p.path || p, label: (p.label || (p.path || p).split(/[\\/]/).pop()) }));
+        ddPopulate($project, items, chosenProject);
+      }
+      loadBranches(chosenProject);
+    }
+
+    if (chosenProject && chosenBranch && branchOriginal && chosenBranch !== branchOriginal) {
+      try {
+        await fetch('/api/terminal/checkout', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: chosenProject, branch: chosenBranch }),
+        });
+        loadBranches(chosenProject);
+      } catch (err) {
+        console.error('[claude-panel] checkout failed:', err);
+      }
+    }
+
+    if (!val) return;
+    const sid = t?.sessionId;
+    if (sid) storage.setItem(LABEL_PREFIX + sid, val);
+    else if (t) t.pendingLabel = val;
+    if (labelEl) labelEl.textContent = val;
+    if (t) { t.label = val; updatePillLabel(t); saveTabs(); }
+  };
+
+  saveBtn.addEventListener('click', () => commit(false));
+  skipBtn.addEventListener('click', () => commit(true));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(false); }
+    if (e.key === 'Escape') { e.preventDefault(); commit(true); }
+  });
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) commit(true);
   });
 }
 
@@ -3255,6 +3820,23 @@ function addCopyButtons(el) {
       });
     });
     pre.appendChild(btn);
+    // Colorize diff lines inline when the code block is a diff
+    const code = pre.querySelector('code');
+    if (code && /\bdiff\b/i.test(code.className) && !code.dataset.diffWrapped) {
+      const raw = code.textContent || '';
+      const lines = raw.split(/\r?\n/);
+      const html = lines.map(line => {
+        const c = line[0] || '';
+        let cls = '';
+        if (c === '+' && line[1] !== '+') cls = 'cp-diff-add';
+        else if (c === '-' && line[1] !== '-') cls = 'cp-diff-del';
+        else if (/^@@/.test(line)) cls = 'cp-diff-hunk';
+        else if (/^(\+\+\+|---)/.test(line)) cls = 'cp-diff-file';
+        return cls ? `<span class="${cls}">${esc(line)}</span>` : esc(line);
+      }).join('\n');
+      code.innerHTML = html;
+      code.dataset.diffWrapped = '1';
+    }
   });
 }
 
@@ -3351,9 +3933,9 @@ function _setCompactingUI(on) {
 }
 
 function renderGauge(tab) {
-  const $gauge = _panel?.querySelector('#cp-gauge');
+  const $fill = _panel?.querySelector('#cp-ctx-fill');
   const $label = _panel?.querySelector('#cp-gauge-label');
-  if (!$gauge) return;
+  if (!$fill) return;
 
   const u = tab.usage;
   const cacheRead = u.cacheRead || 0;
@@ -3361,93 +3943,41 @@ function renderGauge(tab) {
   const uncachedInput = u.inputTokens || 0;
   const total = uncachedInput + cacheRead + cacheWrite;
   const ctxWindow = tab.contextWindow || _getContextWindow();
-  const fmt = (v) => v >= 1000000 ? (v / 1000000).toFixed(v % 1000000 === 0 ? 0 : 1) + 'M' : v >= 1000 ? (v / 1000).toFixed(1) + 'K' : String(v);
+  const fmt = (v) => {
+    if (v >= 1_000_000) {
+      const m = v / 1_000_000;
+      return (Number.isInteger(m) ? m.toFixed(0) : m.toFixed(1)) + 'M';
+    }
+    if (v >= 1000) return Math.round(v / 1000) + 'k';
+    return String(v);
+  };
 
   if (total === 0) {
-    // Animate existing sections to 0 width before removing
-    const existing = $gauge.querySelectorAll('.cp-gauge-section');
-    if (existing.length) {
-      existing.forEach(el => { el.style.width = '0%'; });
-      setTimeout(() => { existing.forEach(el => el.remove()); }, 450);
-    }
-    $gauge.dataset.urgency = '';
-    if ($label) { $label.textContent = ''; $label.title = ''; }
+    $fill.style.width = '0%';
+    $fill.style.background = 'rgba(232,224,220,0.18)';
+    if ($label) { $label.textContent = 'context pending'; $label.title = ''; }
     return;
   }
 
-  const pct = (v) => { const p = (v / ctxWindow) * 100; return (p > 0 ? Math.max(0.5, p) : 0).toFixed(2) + '%'; };
-  const CATS = ['cache-read', 'cache-write', 'input'];
-  const data = {
-    'cache-read': { val: cacheRead, label: `Cached: ${fmt(cacheRead)} tokens` },
-    'cache-write': { val: cacheWrite, label: `New cache: ${fmt(cacheWrite)} tokens` },
-    'input': { val: uncachedInput, label: `Input: ${fmt(uncachedInput)} tokens` },
-  };
-
-  // Reuse existing section elements for smooth CSS transitions
-  for (const cat of CATS) {
-    const d = data[cat];
-    let el = $gauge.querySelector(`.cp-gauge-section[data-cat="${cat}"]`);
-    if (d.val > 0) {
-      if (!el) {
-        el = document.createElement('div');
-        el.className = 'cp-gauge-section';
-        el.dataset.cat = cat;
-        el.innerHTML = '';
-        // Insert in order: find the next sibling that should come after this cat
-        const catIdx = CATS.indexOf(cat);
-        let inserted = false;
-        for (let i = catIdx + 1; i < CATS.length; i++) {
-          const sibling = $gauge.querySelector(`.cp-gauge-section[data-cat="${CATS[i]}"]`);
-          if (sibling) { $gauge.insertBefore(el, sibling); inserted = true; break; }
-        }
-        if (!inserted) $gauge.appendChild(el);
-        // Force layout so initial width:0 is registered before transition
-        el.style.width = '0%';
-        el.offsetWidth; // force reflow
-      }
-      el.style.width = pct(d.val);
-      el.dataset.tipLabel = d.label;
-    } else if (el) {
-      // Animate to 0 then remove
-      el.style.width = '0%';
-      el.addEventListener('transitionend', () => el.remove(), { once: true });
-    }
-  }
-
-  // Shared tooltip on document.body (escapes panel overflow:hidden + backdrop-filter)
-  let $tip = document.getElementById('cp-gauge-tooltip');
-  if (!$tip) {
-    $tip = document.createElement('div');
-    $tip.id = 'cp-gauge-tooltip';
-    document.body.appendChild($tip);
-  }
-  $gauge.querySelectorAll('.cp-gauge-section').forEach(sec => {
-    if (sec._tipWired) return;
-    sec._tipWired = true;
-    sec.addEventListener('mouseenter', () => {
-      const label = sec.dataset.tipLabel;
-      if (!label) return;
-      const t = document.getElementById('cp-gauge-tooltip');
-      if (!t) return;
-      const r = sec.getBoundingClientRect();
-      t.textContent = label;
-      t.style.left = (r.left + r.width / 2) + 'px';
-      t.style.top = (r.top - 6) + 'px';
-      t.style.transform = 'translate(-50%, -100%)';
-      t.classList.add('visible');
-    });
-    sec.addEventListener('mouseleave', () => {
-      const t = document.getElementById('cp-gauge-tooltip');
-      if (t) t.classList.remove('visible');
-    });
-  });
-
-  const pctUsed = Math.round((total / ctxWindow) * 100);
-  $gauge.dataset.urgency = pctUsed < 50 ? '' : pctUsed < 75 ? 'warn' : pctUsed < 90 ? 'high' : 'critical';
+  const pct = Math.min(100, (total / ctxWindow) * 100);
+  $fill.style.width = pct > 0 ? pct + '%' : '0%';
+  $fill.style.background = pct > 80
+    ? 'rgba(220,80,60,0.45)'
+    : pct > 60
+      ? 'rgba(220,150,50,0.38)'
+      : 'rgba(232,224,220,0.18)';
 
   if ($label) {
-    $label.textContent = `${fmt(total)}/${fmt(ctxWindow)}`;
-    $label.title = `${pctUsed}% context · ${fmt(u.outputTokens || 0)} output · ${tab.turns} turn${tab.turns !== 1 ? 's' : ''}`;
+    const cacheRatio = total > 0 ? Math.round((cacheRead / total) * 100) : 0;
+    // Inline monochrome SVG (currentColor) keeps the badge on-theme with the
+    // muted gauge label instead of an emoji's hard-coded color/size.
+    const boltSvg = '<svg viewBox="0 0 7 9" aria-hidden="true"><path d="M4.2 0 0 5.3h2.1L1.5 9 7 3.5H4.8L5.6 0z" fill="currentColor"/></svg>';
+    const ratioClass = cacheRatio >= 80 ? ' data-ratio="high"' : '';
+    const cacheBadge = cacheRead > 0
+      ? ` <span class="cp-cache-hit"${ratioClass} title="Cache hit ratio · ${fmt(cacheRead)} of ${fmt(total)} context tokens served from Anthropic prompt cache">${boltSvg}${cacheRatio}%</span>`
+      : '';
+    $label.innerHTML = `${fmt(total)} / ${fmt(ctxWindow)} ctx${cacheBadge}`;
+    $label.title = `${Math.round(pct)}% context · ${fmt(u.outputTokens || 0)} output · cache read ${fmt(cacheRead)} / write ${fmt(cacheWrite)} · ${tab.turns} turn${tab.turns !== 1 ? 's' : ''}`;
   }
 }
 
@@ -3542,8 +4072,21 @@ function _processTabMsg(tab, msg) {
         saveTabs();
       }
       break;
-    case 'event': handleTabEvent(tab, msg.event); break;
-    case 'control_request': handleControlRequest(tab, msg); break;
+    case 'event':
+      // Synthetic hook events tied to CLI lifecycle
+      if (msg.event?.type === 'system' && msg.event?.subtype === 'init') {
+        recordHookEvent(tab, 'SessionStart', msg.event.session_id || '');
+        recordHookEvent(tab, 'InstructionsLoaded', 'CLAUDE.md + settings');
+      }
+      if (msg.event?.type === 'result') {
+        recordHookEvent(tab, 'Stop', msg.event.subtype || 'turn end');
+      }
+      handleTabEvent(tab, msg.event); break;
+    case 'control_request':
+      if (msg.request?.subtype === 'permission_request' || msg.request?.subtype === 'can_use_tool') {
+        recordHookEvent(tab, 'PermissionRequest', msg.request?.tool_name || '');
+      }
+      handleControlRequest(tab, msg); break;
     case 'stderr': if (msg.text?.trim()) appendStatus(tab, msg.text.trim()); break;
     case 'done':
       // Plan completion: check BEFORE finishTab clears flags (same pattern as result handler).
@@ -3553,7 +4096,11 @@ function _processTabMsg(tab, msg) {
         renderPostPlanActions(tab);
       }
       finishTab(tab, !tab.running);
-      if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
+      if (tab.compacting) {
+        recordHookEvent(tab, 'PostCompact', 'context compressed');
+        tab.compacting = false;
+        if (tab === activeTab()) _setCompactingUI(false);
+      }
       // Queue: auto-advance to next message
       if (tab.queue.length > 0 && !tab.queuePaused) {
         setTimeout(() => advanceQueue(tab), 300);
@@ -3575,7 +4122,7 @@ function _processTabMsg(tab, msg) {
         // Restore files from btw snapshot so buildPromptWithAttachments can process them
         if (btw.files) tab.attachedFiles = btw.files;
         let prompt = buildPromptWithAttachments(tab, btw.text);
-        if (tab.planMode && prompt) prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\n${prompt}`;
+        if (tab.planMode && prompt) prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\nSTRICT ORDERING — ExitPlanMode MUST be your FINAL action in the turn: do ALL research (Grep, Read, Glob) and write the full plan text BEFORE calling ExitPlanMode. Never emit any text or tool call AFTER ExitPlanMode — anything after is dropped and the user only sees the PLAN COMPLETE approval card.\n\n${prompt}`;
         const btwMsg = {
           type: 'query', prompt,
           cwd: ddGetValue($project) || undefined,
@@ -3668,7 +4215,12 @@ function handleTabEvent(tab, ev) {
   if (ev.type === 'system' && ev.subtype === 'init') {
     if (ev.session_id) {
       tab.sessionId = ev.session_id;
-      if (tab.label === 'New chat') {
+      if (tab.pendingLabel) {
+        storage.setItem(LABEL_PREFIX + ev.session_id, tab.pendingLabel);
+        tab.label = tab.pendingLabel;
+        tab.pendingLabel = null;
+        updatePillLabel(tab);
+      } else if (tab.label === 'New chat') {
         const label = getLabel(ev.session_id);
         tab.label = label || ev.session_id.slice(0, 8) + '...';
         updatePillLabel(tab);
@@ -3809,6 +4361,13 @@ function handleStreamDelta(tab, apiEvent) {
       linkifyFilePaths(tab._stream.bodyEl);
       addCopyButtons(tab._stream.bodyEl);
     }
+    if (tab._stream?.el) {
+      const removed = _cleanupEmptyAssistantRow(tab._stream.el);
+      if (removed) {
+        if (tab.currentMsgEl === tab._stream.el) { tab.currentMsgEl = null; tab.currentMsgId = null; }
+        tab._stream.el = null;
+      }
+    }
     tab._stream = null;
     return;
   }
@@ -3818,7 +4377,14 @@ function handleStreamDelta(tab, apiEvent) {
     tab._stream.blockIdx = apiEvent.index ?? (tab._stream.blockIdx + 1);
     tab._stream.blockType = apiEvent.content_block?.type || null;
 
-    // Create the message skeleton on first content block
+    // Only thinking blocks get a stream skeleton eagerly — they always have
+    // content. tool_use and thinking-with-effort-off are handled by
+    // renderAssistant. Text blocks defer row/body creation to content_block_delta
+    // so a model that opens a text block and pivots to a tool call without
+    // emitting visible text doesn't leave a blank avatar row behind.
+    const isThinkingRenderable = tab._stream.blockType === 'thinking' && _getEffort();
+    if (!isThinkingRenderable) return;
+
     if (!tab._stream.el) {
       const el = document.createElement('div');
       el.className = 'msg msg-assistant';
@@ -3838,22 +4404,12 @@ function handleStreamDelta(tab, apiEvent) {
 
     const wrap = tab._stream.el.querySelector('.msg-content');
 
-    if (tab._stream.blockType === 'thinking' && _getEffort()) {
-      // Create thinking details block
-      if (!tab._stream.thinkEl) {
-        const thinkEl = document.createElement('details');
-        thinkEl.className = 'msg-thinking';
-        thinkEl.innerHTML = `<summary><span class="msg-thinking-icon">${THINKING_ICON}</span><span class="msg-thinking-label">Thinking</span><span class="msg-thinking-chevron">&#x203A;</span></summary><div class="msg-thinking-content"></div>`;
-        wrap.insertBefore(thinkEl, wrap.firstChild);
-        tab._stream.thinkEl = thinkEl;
-      }
-    } else if (tab._stream.blockType === 'text') {
-      if (!tab._stream.bodyEl) {
-        const body = document.createElement('div');
-        body.className = 'msg-body';
-        wrap.appendChild(body);
-        tab._stream.bodyEl = body;
-      }
+    if (!tab._stream.thinkEl) {
+      const thinkEl = document.createElement('details');
+      thinkEl.className = 'msg-thinking';
+      thinkEl.innerHTML = `<summary><span class="msg-thinking-icon">${THINKING_ICON}</span><span class="msg-thinking-label">Thinking</span><span class="msg-thinking-chevron">&#x203A;</span></summary><div class="msg-thinking-content"></div>`;
+      wrap.insertBefore(thinkEl, wrap.firstChild);
+      tab._stream.thinkEl = thinkEl;
     }
     return;
   }
@@ -3869,8 +4425,32 @@ function handleStreamDelta(tab, apiEvent) {
       if (contentEl) contentEl.textContent = tab._stream.thinkBuf;
     } else if (delta.type === 'text_delta' && delta.text != null) {
       tab._stream.textBuf += delta.text;
+      // Lazy-create row + body on first visible text. Keeps empty/whitespace-only
+      // text blocks from leaving a blank row next to the avatar.
+      if (!tab._stream.bodyEl && tab._stream.textBuf.trim()) {
+        if (!tab._stream.el) {
+          const el = document.createElement('div');
+          el.className = 'msg msg-assistant';
+          const avatar = document.createElement('div');
+          avatar.className = 'msg-avatar';
+          avatar.innerHTML = CLAUDE_ICON;
+          el.appendChild(avatar);
+          const wrap = document.createElement('div');
+          wrap.className = 'msg-content';
+          el.appendChild(wrap);
+          $msgs.appendChild(el);
+          pruneMessages($msgs);
+          tab._stream.el = el;
+          if (tab._stream.msgId) { tab.currentMsgId = tab._stream.msgId; tab.currentMsgEl = el; }
+        }
+        const wrap = tab._stream.el.querySelector('.msg-content');
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        wrap.appendChild(body);
+        tab._stream.bodyEl = body;
+      }
       // Throttle markdown re-rendering to ~30fps for smooth streaming
-      if (!tab._stream.mdTimer) {
+      if (tab._stream.bodyEl && !tab._stream.mdTimer) {
         tab._stream.mdTimer = setTimeout(() => {
           tab._stream.mdTimer = null;
           if (tab._stream?.bodyEl) {
@@ -3892,13 +4472,27 @@ function handleStreamDelta(tab, apiEvent) {
       clearTimeout(tab._stream.mdTimer);
       tab._stream.mdTimer = null;
     }
-    if (tab._stream.bodyEl && tab._stream.textBuf) {
+    if (tab._stream.bodyEl && tab._stream.textBuf.trim()) {
       tab._stream.bodyEl._rawMd = tab._stream.textBuf;
       tab._stream.bodyEl.innerHTML = md(tab._stream.textBuf);
       linkifyFilePaths(tab._stream.bodyEl);
       addCopyButtons(tab._stream.bodyEl);
+    } else if (tab._stream.bodyEl) {
+      // Body exists but textBuf has no visible content — drop it so the avatar
+      // doesn't sit next to a blank bubble
+      tab._stream.bodyEl.remove();
+      tab._stream.bodyEl = null;
     }
     tab._stream.blockType = null;
+    // If this row has no visible content, drop it (avatar-next-to-blank guard)
+    if (tab._stream.el) {
+      const removed = _cleanupEmptyAssistantRow(tab._stream.el);
+      if (removed) {
+        if (tab.currentMsgEl === tab._stream.el) { tab.currentMsgEl = null; tab.currentMsgId = null; }
+        tab._stream.el = null;
+        tab._stream.thinkEl = null;
+      }
+    }
     if (tab === activeTab()) scrollEnd();
     return;
   }
@@ -3957,15 +4551,16 @@ function renderPostPlanActions(tab, headerText) {
         }
       } else if (a.action === 'plan') {
         // Open plan file in SynaBun code editor for direct editing
-        const openPlan = (path) => emit('open-plan-editor', { filePath: path, tabId: tab.id });
-        const noFile = () => { appendStatus(tab, 'No plan file found — send your edits in chat instead.'); card.style.opacity = '1'; card.style.pointerEvents = 'auto'; };
-        if (tab.planFilePath) {
-          openPlan(tab.planFilePath);
-        } else {
-          // Use eagerly captured plan content (captured at ExitPlanMode time before post-plan
-          // messages pollute the DOM), or extract from DOM as last resort
-          const planText = tab._planContent || extractPlanText(tab);
-          if (!planText) { noFile(); return; }
+        const openPlan = (path) => emit('open-plan-editor', { filePath: path, tabId: tab.id, source: 'claude' });
+        const noFile = (reason) => {
+          if (reason) console.warn('[claude-panel] Edit plan fallback:', reason);
+          if (!card._noFileShown) {
+            card._noFileShown = true;
+            appendStatus(tab, 'Plan text was empty — ask Claude to re-output the plan, or click Continue with implementation to proceed.');
+          }
+          card.style.opacity = '1'; card.style.pointerEvents = 'auto';
+        };
+        const materialize = (planText) => {
           fetch('/api/create-plan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3975,9 +4570,36 @@ function renderPostPlanActions(tab, headerText) {
               tab.planFilePath = result.path;
               saveTabs();
               openPlan(result.path);
-            } else { noFile(); }
-          }).catch(noFile);
-          return; // async — don't fall through
+            } else { noFile(result.error || 'create-plan returned non-ok'); }
+          }).catch(err => noFile(err?.message || 'create-plan request failed'));
+        };
+        const diskFallback = () => {
+          fetch('/api/latest-plan').then(r => r.ok ? r.json() : null).then(result => {
+            const p = result?.path;
+            const mtime = result?.mtime ? new Date(result.mtime).getTime() : 0;
+            const startedAt = tab._planModeStartedAt || 0;
+            if (p && mtime && mtime >= startedAt) {
+              tab.planFilePath = p;
+              saveTabs();
+              openPlan(p);
+            } else {
+              noFile('latest-plan not fresh (mtime < plan-mode start)');
+            }
+          }).catch(err => noFile(err?.message || 'latest-plan request failed'));
+        };
+        if (tab.planFilePath) {
+          openPlan(tab.planFilePath);
+        } else {
+          const planText = tab._planContent || extractPlanText(tab);
+          if (planText) { materialize(planText); return; }
+          // Late-stream DOM race: retry once on the next frame to catch content that
+          // was inserted just after the click fired.
+          requestAnimationFrame(() => {
+            const retry = tab._planContent || extractPlanText(tab);
+            if (retry) materialize(retry);
+            else diskFallback();
+          });
+          return;
         }
       } else if (a.prompt) {
         // Exit plan mode before sending implementation prompt
@@ -4008,6 +4630,26 @@ function renderPostPlanActions(tab, headerText) {
   if (tab === activeTab()) scrollEnd();
 }
 
+// Remove whitespace-only msg-body elements and the entire assistant row if its
+// msg-content ends up with nothing visible. Happens when a text block opens but
+// the model pivots to a tool call after emitting only whitespace — without this
+// the avatar sits next to a blank bubble.
+function _cleanupEmptyAssistantRow(el) {
+  if (!el || !el.isConnected) return false;
+  const wrap = el.querySelector('.msg-content');
+  if (!wrap) return false;
+  wrap.querySelectorAll('.msg-body').forEach(b => {
+    const raw = b._rawMd != null ? String(b._rawMd) : '';
+    const hasRaw = raw.trim().length > 0;
+    const hasRichChild = b.querySelector('img, video, canvas, svg, pre, code, table');
+    const hasText = (b.textContent || '').trim().length > 0;
+    if (!hasRaw && !hasRichChild && !hasText) b.remove();
+  });
+  const visible = wrap.querySelector('.msg-body, .msg-thinking, .tool-card, .plan-card, .ask-card, .post-plan-card, .perm-card');
+  if (!visible) { el.remove(); return true; }
+  return false;
+}
+
 function renderAssistant(tab, msg) {
   const $msgs = tab.messagesEl;
   if (!$msgs) return;
@@ -4034,18 +4676,50 @@ function renderAssistant(tab, msg) {
     return;
   }
 
-  // ExitPlanMode detection: --print mode doesn't emit tool_result events for
-  // built-in tools, so updateToolResult() never fires. Detect ExitPlanMode here
-  // when the tool_use block appears, set a flag, and let the done handler render
-  // post-plan actions. updateToolResult still handles it if tool_result ever fires.
-  // ExitPlanMode detection: detect regardless of current planMode state — planMode may have
-  // been toggled off mid-stream (tab switch, reconnect, race). Track whether it WAS active.
+  // EnterPlanMode detection: record message boundary so extractPlanText() only
+  // searches messages rendered DURING plan mode, not pre-plan preamble.
+  if (tools.some(t => t.name === 'EnterPlanMode')) {
+    tab.planMode = true;
+    tab._planContent = null;
+    tab._planContentCaptured = false;
+    tab.planFilePath = '';
+    tab._editedPlanContent = null;
+    tab._planModeStartedAt = Date.now();
+    tab._planModeStartMsgIndex = tab.messagesEl?.querySelectorAll('.msg.msg-assistant').length || 0;
+    const $plan = _panel?.querySelector('#cp-plan-toggle');
+    if ($plan) $plan.classList.add('active');
+    saveTabs();
+  }
+
+  // ExitPlanMode detection: render post-plan actions IMMEDIATELY when detected in the
+  // stream, before Claude streams any further implementation text. --print mode doesn't
+  // emit tool_result events for built-in tools, so updateToolResult() is only a fallback.
+  // Detect regardless of current planMode state — it may have been toggled off mid-stream
+  // (tab switch, reconnect, race). Track whether it WAS active.
   if (tools.some(t => t.name === 'ExitPlanMode') && !tab._exitPlanHandled) {
     tab._exitPlanWasPlanMode = tab._exitPlanWasPlanMode || tab.planMode;
     tab._exitPlanPending = true;
     tab.planMode = false;
     const $plan = _panel?.querySelector('#cp-plan-toggle');
     if ($plan) $plan.classList.remove('active');
+    // Capture plan content immediately before post-plan messages pollute the DOM.
+    // Prefer ExitPlanMode.input.plan (authoritative), then msg text, then DOM walk.
+    if (!tab._planContentCaptured) {
+      const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
+      const direct = (exitBlock?.input?.plan || '').trim();
+      const captured = direct || extractPlanTextFromMessage(msg) || extractPlanText(tab);
+      if (captured) {
+        tab._planContentCaptured = true;
+        tab._planContent = captured;
+        tab._exitPlanPending = false;
+        fetch('/api/create-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: captured }) })
+          .then(r => r.json()).then(result => { if (result.ok && !tab.planFilePath) { tab.planFilePath = result.path; saveTabs(); } })
+          .catch(err => console.warn('[claude-panel] create-plan failed:', err));
+      }
+    }
+    // Render post-plan actions IMMEDIATELY — don't wait for result/updateToolResult
+    tab._exitPlanHandled = true;
+    renderPostPlanActions(tab);
     saveTabs();
   }
 
@@ -4072,21 +4746,29 @@ function renderAssistant(tab, msg) {
       const existingBody = wrap.querySelector('.msg-body');
       if (texts.length) {
         const rawMd = texts.map(b => b.text).join('\n');
-        const html = md(rawMd);
-        if (existingBody) {
-          existingBody._rawMd = rawMd;
-          existingBody.innerHTML = html;
-          linkifyFilePaths(existingBody);
-          addCopyButtons(existingBody);
-        } else {
-          const body = document.createElement('div');
-          body.className = 'msg-body';
-          body.innerHTML = html;
-          linkifyFilePaths(body);
-          addCopyButtons(body);
-          const afterThink = wrap.querySelector('.msg-thinking');
-          if (afterThink) afterThink.after(body);
-          else wrap.insertBefore(body, wrap.firstChild);
+        // Skip whitespace-only text — prevents a blank bubble next to the avatar
+        // when the model opens a text block but pivots to a tool call.
+        if (rawMd.trim()) {
+          const html = md(rawMd);
+          if (existingBody) {
+            existingBody._rawMd = rawMd;
+            existingBody.innerHTML = html;
+            linkifyFilePaths(existingBody);
+            addCopyButtons(existingBody);
+          } else {
+            const body = document.createElement('div');
+            body.className = 'msg-body';
+            body._rawMd = rawMd;
+            body.innerHTML = html;
+            linkifyFilePaths(body);
+            addCopyButtons(body);
+            const afterThink = wrap.querySelector('.msg-thinking');
+            if (afterThink) afterThink.after(body);
+            else wrap.insertBefore(body, wrap.firstChild);
+          }
+        } else if (existingBody) {
+          // Existing body became whitespace-only — drop it
+          existingBody.remove();
         }
       }
       const existingToolIds = new Set([...wrap.querySelectorAll('.tool-card, .plan-card')].map(c => c.dataset.toolId));
@@ -4102,16 +4784,28 @@ function renderAssistant(tab, msg) {
     }
     // Eager capture plan content in dedup path — streaming creates the element via
     // handleStreamDelta, so renderAssistant always takes this dedup branch.
-    // The new-message capture at ~3767 is never reached during streaming.
     if (tab._exitPlanPending && !tab._planContentCaptured) {
-      tab._planContentCaptured = true;
-      const captured = extractPlanText(tab);
+      const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
+      const direct = (exitBlock?.input?.plan || '').trim();
+      const captured = direct || extractPlanTextFromMessage(msg) || extractPlanText(tab);
       if (captured) {
+        tab._planContentCaptured = true;
         tab._planContent = captured;
-        // Eagerly materialize the plan file so Edit button always has a file to open
+        tab._exitPlanPending = false;
         fetch('/api/create-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: captured }) })
-          .then(r => r.json()).then(result => { if (result.ok && !tab.planFilePath) { tab.planFilePath = result.path; saveTabs(); } }).catch(() => {});
+          .then(r => r.json()).then(result => { if (result.ok && !tab.planFilePath) { tab.planFilePath = result.path; saveTabs(); } })
+          .catch(err => console.warn('[claude-panel] create-plan failed:', err));
       }
+    }
+    // Ensure post-plan card stays at the bottom of the messages
+    const postPlanMsgD = $msgs.querySelector('.post-plan-card')?.closest('.msg');
+    if (postPlanMsgD && postPlanMsgD !== $msgs.lastElementChild) {
+      $msgs.appendChild(postPlanMsgD);
+    }
+    // Drop the row if the dedup update left it with nothing visible
+    if (_cleanupEmptyAssistantRow(tab.currentMsgEl)) {
+      tab.currentMsgEl = null;
+      tab.currentMsgId = null;
     }
     if (tab === activeTab()) scrollEnd();
     return;
@@ -4137,14 +4831,17 @@ function renderAssistant(tab, msg) {
     }
   }
   if (texts.length) {
-    const body = document.createElement('div');
-    body.className = 'msg-body';
     const rawMd = texts.map(b => b.text).join('\n');
-    body._rawMd = rawMd;
-    body.innerHTML = md(rawMd);
-    linkifyFilePaths(body);
-    addCopyButtons(body);
-    wrap.appendChild(body);
+    // Skip whitespace-only text — prevents a blank bubble next to the avatar.
+    if (rawMd.trim()) {
+      const body = document.createElement('div');
+      body.className = 'msg-body';
+      body._rawMd = rawMd;
+      body.innerHTML = md(rawMd);
+      linkifyFilePaths(body);
+      addCopyButtons(body);
+      wrap.appendChild(body);
+    }
   }
   for (const t of regularTools) wrap.appendChild(buildTool(t, tab));
   for (const t of askTools) wrap.appendChild(buildAskFromToolUse(tab, t));
@@ -4152,22 +4849,35 @@ function renderAssistant(tab, msg) {
   $msgs.appendChild(el);
   pruneMessages($msgs);
 
+  // Drop the row if it ended up with nothing visible (all text blocks were whitespace
+  // and no tools/thinking content was produced)
+  if (_cleanupEmptyAssistantRow(el)) {
+    if (msgId) { tab.currentMsgId = null; tab.currentMsgEl = null; }
+    return;
+  }
+
   if (msgId) { tab.currentMsgId = msgId; tab.currentMsgEl = el; }
 
   // Eagerly capture plan content the moment ExitPlanMode is detected.
-  // At this point the plan text is the last substantial .msg-body in the DOM —
-  // post-plan messages (remember, recall, stop hook) haven't been added yet.
   if (tab._exitPlanPending && !tab._planContentCaptured) {
-    tab._planContentCaptured = true;
-    const captured = extractPlanText(tab);
+    const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
+    const direct = (exitBlock?.input?.plan || '').trim();
+    const captured = direct || extractPlanTextFromMessage(msg) || extractPlanText(tab);
     if (captured) {
+      tab._planContentCaptured = true;
       tab._planContent = captured;
-      // Eagerly materialize the plan file so Edit button always has a file to open
+      tab._exitPlanPending = false;
       fetch('/api/create-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: captured }) })
-        .then(r => r.json()).then(result => { if (result.ok && !tab.planFilePath) { tab.planFilePath = result.path; saveTabs(); } }).catch(() => {});
+        .then(r => r.json()).then(result => { if (result.ok && !tab.planFilePath) { tab.planFilePath = result.path; saveTabs(); } })
+        .catch(err => console.warn('[claude-panel] create-plan failed:', err));
     }
   }
 
+  // Ensure post-plan card stays at the bottom of the messages
+  const postPlanMsg = $msgs.querySelector('.post-plan-card')?.closest('.msg');
+  if (postPlanMsg && postPlanMsg !== $msgs.lastElementChild) {
+    $msgs.appendChild(postPlanMsg);
+  }
   if (tab === activeTab()) scrollEnd();
 }
 
@@ -4221,7 +4931,9 @@ function buildAskFromToolUse(tab, block) {
     submitBtn.disabled = answered < totalQuestions;
   }
 
+  let qIndex = -1;
   for (const q of questions) {
+    qIndex++;
     const questionText = q.question || q.text || q.header || '';
     const isMultiSelect = q.multiSelect === true;
 
@@ -4303,6 +5015,9 @@ function buildAskFromToolUse(tab, block) {
             return;
           }
           // Batched selection — toggle freely, don't send yet
+          // Clicking an option clears any custom typed answer on this question
+          const qInput = container.querySelector(`.ask-text-input[data-qidx="${qIndex}"]`);
+          if (qInput) qInput.value = '';
           if (isMultiSelect) {
             btn.classList.toggle('selected');
             const selected = [];
@@ -4320,20 +5035,36 @@ function buildAskFromToolUse(tab, block) {
         });
         opts.appendChild(btn);
       }
+      opts.dataset.qidx = String(qIndex);
       container.appendChild(opts);
-    } else {
-      // Text input fallback — inline input within the card
-      const textInput = document.createElement('input');
-      textInput.type = 'text';
-      textInput.className = 'ask-text-input';
-      textInput.placeholder = 'Type your answer...';
-      textInput.addEventListener('input', () => {
-        if (textInput.value.trim()) pendingAnswers[questionText] = textInput.value.trim();
-        else delete pendingAnswers[questionText];
-        updateSubmitState();
-      });
-      container.appendChild(textInput);
     }
+    // Text input — always present. When options also exist, acts as "write your own" override.
+    const hasOptions = !!q.options?.length;
+    if (hasOptions) {
+      const divider = document.createElement('div');
+      divider.className = 'ask-or-type';
+      divider.textContent = 'Or type your own answer';
+      container.appendChild(divider);
+    }
+    const textInput = document.createElement('input');
+    textInput.type = 'text';
+    textInput.className = 'ask-text-input';
+    textInput.placeholder = hasOptions ? 'Custom answer\u2026' : 'Type your answer...';
+    textInput.dataset.qidx = String(qIndex);
+    textInput.addEventListener('input', () => {
+      const value = textInput.value.trim();
+      const optsEl = container.querySelector(`.ask-options[data-qidx="${qIndex}"]`);
+      if (value) {
+        if (optsEl) optsEl.querySelectorAll('.ask-option.selected').forEach(b => b.classList.remove('selected'));
+        pendingAnswers[questionText] = value;
+      } else {
+        const selectedLbl = optsEl?.querySelector('.ask-option.selected .ask-option-label');
+        if (selectedLbl) pendingAnswers[questionText] = selectedLbl.textContent;
+        else delete pendingAnswers[questionText];
+      }
+      updateSubmitState();
+    });
+    container.appendChild(textInput);
   }
 
   // Submit button — sends all answers as a batch
@@ -4406,18 +5137,29 @@ function isPlanFile(filePath) {
   return filePath && (/[/\\]data[/\\]plans[/\\]/.test(filePath) || /[/\\]\.claude[/\\]plans[/\\]/.test(filePath) || /(?:^|[/\\])PLAN\.md$/.test(filePath));
 }
 
-/** Extract plan text from the last assistant message(s) in the tab's messages container. */
+/** Extract plan text from assistant messages rendered DURING plan mode.
+ *  Uses _planModeStartMsgIndex as a lower bound so pre-plan preamble is never captured. */
 function extractPlanText(tab) {
   if (!tab.messagesEl) return '';
   const msgs = tab.messagesEl.querySelectorAll('.msg.msg-assistant');
-  // Walk backward — the plan is typically in the last few assistant messages before the post-plan card
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const body = msgs[i].querySelector('.msg-body');
+  const startIdx = tab._planModeStartMsgIndex || 0;
+  for (let i = msgs.length - 1; i >= startIdx; i--) {
+    const body = msgs[i].querySelector('.msg-body, .plan-body');
     if (!body) continue;
     const text = (body._rawMd || body.innerText)?.trim();
-    // Skip very short messages (status lines, greetings) — plan content is substantial
     if (text && text.length > 100) return text;
   }
+  return '';
+}
+
+function extractPlanTextFromMessage(msg) {
+  if (!msg || !Array.isArray(msg.content)) return '';
+  const texts = msg.content.filter(b => b && b.type === 'text');
+  const joined = texts.map(b => b.text || '').join('\n').trim();
+  if (joined && joined.length > 100) return joined;
+  const exitTool = msg.content.find(b => b && b.type === 'tool_use' && b.name === 'ExitPlanMode');
+  const planInput = (exitTool?.input?.plan || '').trim();
+  if (planInput) return planInput;
   return '';
 }
 
@@ -4685,6 +5427,23 @@ function updateSynaBunResult(card, ev) {
 }
 
 function buildTool(block, tab) {
+  // TodoWrite: update the sticky todo widget and keep the tool card
+  if (block.name === 'TodoWrite' && tab) {
+    try {
+      const todos = block.input?.todos || [];
+      if (Array.isArray(todos) && todos.length) {
+        tab.todos = todos.map(t => ({ content: t.content || '', activeForm: t.activeForm || '', status: t.status || 'pending' }));
+        if (typeof tab.todosVisible !== 'boolean') tab.todosVisible = false;
+        renderTodoWidget(tab);
+      }
+    } catch {}
+  }
+  // Fire synthetic hook events for the activity strip (PreToolUse + specialized)
+  if (tab) {
+    recordHookEvent(tab, 'PreToolUse', block.name || '');
+    if (block.name === 'Agent') recordHookEvent(tab, 'SubagentStart', block.input?.subagent_type || block.input?.description || '');
+    else if (['Edit', 'Write', 'NotebookEdit'].includes(block.name)) recordHookEvent(tab, 'FileChanged', (block.input?.file_path || '').split(/[/\\]/).pop() || '');
+  }
   // Plan files get a special rendered card — track path on tab for editor access
   if (block.name === 'Write' && isPlanFile(block.input?.file_path)) {
     if (tab) tab.planFilePath = block.input.file_path;
@@ -4733,6 +5492,12 @@ function updateToolResult(tab, ev) {
   const escapedId = CSS.escape(ev.tool_use_id);
   const card = $msgs.querySelector(`.tool-card[data-tool-id="${escapedId}"]`) || $msgs.querySelector(`.plan-card[data-tool-id="${escapedId}"]`);
   if (!card) return;
+  // Synthetic PostToolUse hook event + SubagentStop
+  const toolNm = card.dataset.toolName || '';
+  recordHookEvent(tab, ev.is_error ? 'PostToolUseFailure' : 'PostToolUse', toolNm);
+  if (toolNm === 'Agent') recordHookEvent(tab, 'SubagentStop', ev.is_error ? 'error' : 'ok');
+  // Collapse adjacent repeated MCP tool calls (post-insert) — cheap, DOM-local
+  try { collapseAdjacentMcpTools($msgs); } catch {}
   // Plan cards don't have result sections — just mark success/error via border
   if (card.classList.contains('plan-card')) {
     card.style.borderColor = ev.is_error ? 'rgba(255,82,82,0.3)' : 'rgba(100,200,120,0.3)';
@@ -4749,6 +5514,9 @@ function updateToolResult(tab, ev) {
   // either: ExitPlanMode succeeded (native) OR we were in simulated plan mode (error is expected).
   const toolName = card.dataset.toolName || '';
   if (toolName === 'ExitPlanMode') {
+    // Already handled at ExitPlanMode detection time in renderAssistant — skip to avoid double-render.
+    // This path is a fallback for native (non-simulated) plan mode where tool_result fires first.
+    if (tab._exitPlanHandled) return;
     const wasPlanMode = tab._exitPlanWasPlanMode || tab.planMode;
     tab.planMode = false;
     tab._exitPlanHandled = true;
@@ -5005,6 +5773,9 @@ function renderAskUserQuestion(tab, requestId, input) {
             return;
           }
           // Batched selection — toggle freely, don't send yet
+          // Clicking an option clears any custom typed answer
+          const cardTextInput = card.querySelector('.ask-text-input');
+          if (cardTextInput) cardTextInput.value = '';
           if (isMultiSelect) {
             btn.classList.toggle('selected');
             const selected = [];
@@ -5023,19 +5794,35 @@ function renderAskUserQuestion(tab, requestId, input) {
         opts.appendChild(btn);
       }
       card.appendChild(opts);
-    } else {
-      // Text input fallback — inline input within the card
-      const textInput = document.createElement('input');
-      textInput.type = 'text';
-      textInput.className = 'ask-text-input';
-      textInput.placeholder = 'Type your answer...';
-      textInput.addEventListener('input', () => {
-        if (textInput.value.trim()) pendingAnswers[questionText] = textInput.value.trim();
-        else delete pendingAnswers[questionText];
-        updateSubmitState();
-      });
-      card.appendChild(textInput);
     }
+    // Text input — always present. When options also exist, acts as "write your own" override.
+    const hasOptions = !!q.options?.length;
+    if (hasOptions) {
+      const divider = document.createElement('div');
+      divider.className = 'ask-or-type';
+      divider.textContent = 'Or type your own answer';
+      card.appendChild(divider);
+    }
+    const textInput = document.createElement('input');
+    textInput.type = 'text';
+    textInput.className = 'ask-text-input';
+    textInput.placeholder = hasOptions ? 'Custom answer\u2026' : 'Type your answer...';
+    textInput.addEventListener('input', () => {
+      const value = textInput.value.trim();
+      if (value) {
+        // Typing overrides any option selection
+        const optsEl = card.querySelector('.ask-options');
+        if (optsEl) optsEl.querySelectorAll('.ask-option.selected').forEach(b => b.classList.remove('selected'));
+        pendingAnswers[questionText] = value;
+      } else {
+        // Empty input — fall back to selected option if any
+        const selectedLbl = card.querySelector('.ask-options .ask-option.selected .ask-option-label');
+        if (selectedLbl) pendingAnswers[questionText] = selectedLbl.textContent;
+        else delete pendingAnswers[questionText];
+      }
+      updateSubmitState();
+    });
+    card.appendChild(textInput);
     wrap.appendChild(card);
   }
 
@@ -5145,6 +5932,7 @@ function renderPermissionPrompt(tab, requestId, req) {
     statusBadge.textContent = always ? 'Always' : (behavior === 'allow' ? 'Allowed' : 'Denied');
     statusBadge.hidden = false;
     sendPermissionResponse(tab, requestId, behavior, always);
+    recordHookEvent(tab, behavior === 'deny' ? 'PermissionDenied' : 'PermissionRequest', (behavior === 'deny' ? 'denied' : (always ? 'always' : 'allowed')));
     // On deny: clear queued permissions and buffered messages — process is being killed
     if (behavior === 'deny') {
       tab._permQueue.length = 0;
@@ -5324,8 +6112,248 @@ function _updateSendIcon($send, $input, forceShift) {
 
 function finishTab(tab, skipNotif) {
   const wasRunning = tab.running;
-  hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.askRenderedViaControl = false; tab.sendStartedAt = null; tab._exitPlanMsgId = null; tab._exitPlanPending = false; tab._exitPlanHandled = false; tab._exitPlanWasPlanMode = false; tab._planContentCaptured = false; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null; saveTabs();
+  hideThinking(tab); setRunning(tab, false); tab._wasRunning = false; tab.currentMsgEl = null; tab.currentMsgId = null; tab.pendingAskToolUseId = null; tab.pendingAskRequestId = null; tab.pendingAskBufferedAnswer = null; tab.askRenderedViaControl = false; tab.sendStartedAt = null; tab._exitPlanMsgId = null; tab._exitPlanPending = false; tab._exitPlanHandled = false; tab._exitPlanWasPlanMode = false; tab._planContentCaptured = false; if (tab._stream?.mdTimer) clearTimeout(tab._stream.mdTimer); tab._stream = null;
+  if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
+  saveTabs();
   if (wasRunning && !skipNotif) notify('panel', NOTIF_TYPE.DONE, tab.label || 'Claude Code', { tabId: tab.id });
+}
+
+// ── Info card renderer — for slash command output, hook events, and diagnostics ──
+function appendInfoCard(tab, { title = '', kind = 'info', body = '', html = null } = {}) {
+  const $msgs = tab?.messagesEl;
+  if (!$msgs) return null;
+  const el = document.createElement('div');
+  el.className = 'msg msg-info-card cp-info-' + esc(kind);
+  const inner = document.createElement('div');
+  inner.className = 'cp-info-body';
+  if (title) {
+    const h = document.createElement('div');
+    h.className = 'cp-info-title';
+    h.textContent = title;
+    inner.appendChild(h);
+  }
+  const content = document.createElement('div');
+  content.className = 'cp-info-content';
+  if (html) content.innerHTML = html;
+  else content.textContent = body;
+  inner.appendChild(content);
+  el.appendChild(inner);
+  $msgs.appendChild(el);
+  if (tab === activeTab()) scrollEnd();
+  return el;
+}
+
+// ── Slash command router ──
+// Returns true if handled (caller should short-circuit and not send to Claude).
+function runSlashCommand(tab, raw) {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('/')) return false;
+  const space = trimmed.indexOf(' ');
+  const cmd = (space === -1 ? trimmed.slice(1) : trimmed.slice(1, space)).toLowerCase();
+  const args = space === -1 ? '' : trimmed.slice(space + 1).trim();
+  const spec = SLASH_COMMANDS.find(c => c.name === cmd);
+  if (!spec) return false;
+  const $input = _panel?.querySelector('#cp-input');
+
+  const clearInput = () => { if ($input) { $input.value = ''; autoResize(); } };
+
+  switch (cmd) {
+    case 'help': {
+      clearInput();
+      const rows = SLASH_COMMANDS
+        .map(c => `<div class="cp-help-row"><span class="cp-help-cmd">/${esc(c.name)}</span><span class="cp-help-desc">${esc(c.desc)}</span></div>`)
+        .join('');
+      const keys = [
+        ['Enter', 'Send message'],
+        ['Shift+Enter', 'New line (while idle) — /btw interrupt (while running)'],
+        ['Shift+Tab', 'Toggle plan mode'],
+        ['Esc', 'Abort current response'],
+        ['Esc Esc', 'Undo last exchange (visual)'],
+        ['Ctrl+L', 'Clear messages'],
+        ['Ctrl+O', 'Cycle view: normal → transcript → focus'],
+        ['Ctrl+T', 'Toggle TODO panel'],
+        ['Ctrl+R', 'Reverse-search prompt history'],
+        ['Up / Down', 'Navigate prompt history (empty input)'],
+        ['Tab', 'Accept slash-hint / autocomplete'],
+        ['@file', 'Reference a file from project'],
+        ['!cmd', 'Run command in Bash and include output'],
+      ].map(([k, d]) => `<div class="cp-help-row"><span class="cp-help-cmd">${esc(k)}</span><span class="cp-help-desc">${esc(d)}</span></div>`).join('');
+      appendInfoCard(tab, { title: 'Commands & Keybinds', kind: 'help', html: `<div class="cp-help-section-label">Slash commands</div>${rows}<div class="cp-help-section-label">Keybinds</div>${keys}` });
+      return true;
+    }
+    case 'clear': { clearInput(); if (tab.messagesEl) tab.messagesEl.innerHTML = ''; return true; }
+    case 'compact': {
+      clearInput();
+      if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); return true; }
+      if (tab.ws?.readyState === WebSocket.OPEN) {
+        tab.compacting = true;
+        _setCompactingUI(true);
+        tab.ws.send(JSON.stringify({ type: 'compact' }));
+        appendStatus(tab, 'Compacting context...');
+      }
+      return true;
+    }
+    case 'model': {
+      clearInput();
+      const $model = _panel?.querySelector('#cp-model');
+      if ($model) { $model.click(); $model.querySelector('.cp-dd-menu')?.classList.add('open'); }
+      return true;
+    }
+    case 'resume': {
+      clearInput();
+      const $sessBtn = _panel?.querySelector('#cp-session-btn');
+      const $sessMenu = _panel?.querySelector('#cp-session-menu');
+      if ($sessMenu) { $sessMenu.classList.add('open'); renderSessionMenu(); }
+      else if ($sessBtn) $sessBtn.click();
+      return true;
+    }
+    case 'rename': {
+      clearInput();
+      const $sessLabel = _panel?.querySelector('.cp-session-label');
+      renameSession(tab.sessionId || null, $sessLabel?.textContent || tab.label || '');
+      return true;
+    }
+    case 'agents': {
+      clearInput();
+      const html = `
+        <div class="cp-info-row"><b>Built-in Agent tool</b> — Claude can spawn isolated subagents via the <code>Agent</code> tool. Each has its own context window, custom system prompt, and tool restrictions.</div>
+        <div class="cp-info-row"><b>Available via the Agent tool:</b><ul>
+          <li><code>general-purpose</code> — multi-step research and tasks</li>
+          <li><code>Explore</code> — fast codebase search</li>
+          <li><code>Plan</code> — architecture planning</li>
+          <li><code>claude-code-guide</code> — Claude Code / SDK / API docs</li>
+          <li><code>statusline-setup</code> — configure status line</li>
+        </ul></div>
+        <div class="cp-info-row muted">Define custom agents in <code>.claude/agents/</code> or <code>~/.claude/agents/</code>.</div>`;
+      appendInfoCard(tab, { title: 'Subagents', kind: 'info', html });
+      return true;
+    }
+    case 'mcp': {
+      clearInput();
+      fetch('/api/claude-code/mcp').then(r => r.json()).then(d => {
+        const installed = d?.installed ? '<span class="cp-info-ok">installed</span>' : '<span class="cp-info-warn">not installed</span>';
+        appendInfoCard(tab, { title: 'MCP — SynaBun', kind: 'info', html: `<div class="cp-info-row">Status: ${installed}</div><div class="cp-info-row muted">Tool naming: <code>mcp__SynaBun__&lt;tool&gt;</code></div>` });
+      }).catch(() => appendInfoCard(tab, { title: 'MCP', kind: 'info', body: 'Could not reach MCP status endpoint.' }));
+      return true;
+    }
+    case 'memory': {
+      clearInput();
+      emit('memory:open');
+      appendStatus(tab, 'Opening memory editor…');
+      return true;
+    }
+    case 'init': {
+      clearInput();
+      if ($input) $input.value = 'Please analyze this codebase and create a CLAUDE.md file with the architecture, key patterns, and build/test commands. Keep it concise (≤200 lines).';
+      send();
+      return true;
+    }
+    case 'doctor': {
+      clearInput();
+      const wsOk = tab.ws && tab.ws.readyState === WebSocket.OPEN;
+      const proj = tab.project || '(none)';
+      const model = _getModelId() || '(default)';
+      const effort = _getEffort() || 'off';
+      const ctxw = _getContextWindow() || 0;
+      const rows = [
+        ['WebSocket', wsOk ? 'connected' : 'disconnected', wsOk ? 'ok' : 'warn'],
+        ['Project', proj, proj === '(none)' ? 'warn' : 'ok'],
+        ['Model', model, 'ok'],
+        ['Thinking effort', effort, 'ok'],
+        ['Context window', ctxw ? `${(ctxw/1000).toFixed(0)}K tokens` : '(auto)', 'ok'],
+        ['Plan mode', tab.planMode ? 'on' : 'off', 'ok'],
+        ['Queue', String(tab.queue?.length || 0), 'ok'],
+        ['Running', tab.running ? 'yes' : 'no', 'ok'],
+      ];
+      const html = rows.map(([k, v, s]) => `<div class="cp-info-row"><span class="cp-doctor-k">${esc(k)}</span><span class="cp-doctor-v cp-info-${esc(s)}">${esc(v)}</span></div>`).join('');
+      appendInfoCard(tab, { title: 'Doctor', kind: 'doctor', html });
+      return true;
+    }
+    case 'context': {
+      clearInput();
+      const u = tab.usage || {};
+      // Context window consumption = uncached input + cached prefixes.
+      // Output tokens are generated, not part of the input context.
+      const total = (u.inputTokens || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0);
+      const cw = tab.contextWindow || _getContextWindow() || 200000;
+      const pct = Math.min(100, Math.round((total / cw) * 100));
+      const html = `
+        <div class="cp-info-row"><b>${total.toLocaleString()}</b> / ${cw.toLocaleString()} tokens used (${pct}%)</div>
+        <div class="cp-info-row"><span class="cp-doctor-k">Input</span><span class="cp-doctor-v">${(u.inputTokens||0).toLocaleString()}</span></div>
+        <div class="cp-info-row"><span class="cp-doctor-k">Output</span><span class="cp-doctor-v">${(u.outputTokens||0).toLocaleString()}</span></div>
+        <div class="cp-info-row"><span class="cp-doctor-k">Cache read</span><span class="cp-doctor-v">${(u.cacheRead||0).toLocaleString()}</span></div>
+        <div class="cp-info-row"><span class="cp-doctor-k">Cache write</span><span class="cp-doctor-v">${(u.cacheWrite||0).toLocaleString()}</span></div>`;
+      appendInfoCard(tab, { title: 'Context', kind: 'info', html });
+      return true;
+    }
+    case 'config': { clearInput(); emit('settings:open'); appendStatus(tab, 'Opening settings…'); return true; }
+    case 'permissions': {
+      clearInput();
+      fetch('/api/claude-code/tool-permissions').then(r => r.json()).then(d => {
+        const auto = _autoAcceptAll ? 'on (all tools auto-approve)' : 'off (prompt per tool)';
+        const allow = d?.permissions?.allow || d?.allow || [];
+        const html = `<div class="cp-info-row"><b>Auto-approve:</b> ${esc(auto)}</div>
+          <div class="cp-info-row muted">${allow.length ? `${allow.length} tool rule(s) allowed` : 'No pre-approved tools.'}</div>
+          <div class="cp-info-row"><em>Edit rules in <code>~/.claude/settings.json</code> under <code>permissions.allow</code>.</em></div>`;
+        appendInfoCard(tab, { title: 'Permissions', kind: 'info', html });
+      }).catch(() => appendInfoCard(tab, { title: 'Permissions', kind: 'info', body: 'Could not read permission settings.' }));
+      return true;
+    }
+    case 'add-dir': {
+      clearInput();
+      const dir = args || prompt('Enter directory path to add to allowed file access:');
+      if (!dir) return true;
+      appendStatus(tab, `Added directory: ${dir} (applies to next session spawn)`);
+      tab._addedDirs = tab._addedDirs || [];
+      tab._addedDirs.push(dir);
+      return true;
+    }
+    case 'theme': { clearInput(); emit('settings:open', { section: 'theme' }); return true; }
+    case 'plugin': {
+      clearInput();
+      (async () => {
+        try {
+          const res = await fetch('/api/claude-code/skills').then(r => r.json());
+          const skills = res.skills || [];
+          const html = skills.length
+            ? `<div class="cp-info-row"><b>${skills.length}</b> skills loaded</div>` + skills.slice(0, 20).map(s => `<div class="cp-info-row"><code>/${esc(s.name||s.dirName)}</code> — ${esc((s.description||'').slice(0,80))}</div>`).join('')
+            : '<div class="cp-info-row muted">No skills installed.</div>';
+          appendInfoCard(tab, { title: 'Plugins & Skills', kind: 'info', html });
+        } catch { appendInfoCard(tab, { title: 'Plugins', kind: 'info', body: 'Could not list plugins.' }); }
+      })();
+      return true;
+    }
+    case 'status': {
+      clearInput();
+      const lines = [
+        `Session: ${tab.sessionId || '(new)'} — "${tab.label}"`,
+        `Model: ${_getModelId() || '(default)'}  ·  Effort: ${_getEffort()}`,
+        `Plan mode: ${tab.planMode ? 'ON' : 'off'}  ·  Auto-approve: ${_autoAcceptAll ? 'ON' : 'off'}`,
+        `Queue: ${tab.queue?.length || 0}  ·  Turns: ${tab.turns || 0}  ·  Cost: $${(tab.sessionCost || 0).toFixed(4)}`,
+      ].join('\n');
+      appendInfoCard(tab, { title: 'Status', kind: 'info', body: lines });
+      return true;
+    }
+    case 'cost': { clearInput(); emit('cost:toggle'); return true; }
+    case 'login': { clearInput(); window.open('https://claude.ai/login', '_blank'); return true; }
+    case 'logout': { clearInput(); window.open('https://claude.ai/logout', '_blank'); return true; }
+    case 'plan': {
+      clearInput();
+      tab.planMode = !tab.planMode;
+      if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; tab._planModeStartedAt = Date.now(); tab._planModeStartMsgIndex = tab.messagesEl?.querySelectorAll('.msg.msg-assistant').length || 0; }
+      const $plan = _panel?.querySelector('#cp-plan-toggle');
+      if ($plan) $plan.classList.toggle('active', tab.planMode);
+      appendStatus(tab, tab.planMode ? 'Plan mode ON — Claude will plan without making changes' : 'Plan mode OFF');
+      return true;
+    }
+    case 'btw': {
+      // /btw is a Shift+Enter interrupt; treat typed form as a no-op nudge here.
+      clearInput();
+      appendStatus(tab, '/btw — press Shift+Enter while Claude is processing to add context mid-turn.');
+      return true;
+    }
+  }
+  return false;
 }
 
 function send({ shift = false } = {}) {
@@ -5372,25 +6400,34 @@ function send({ shift = false } = {}) {
   tab._exitPlanHandled = false;
   tab._exitPlanWasPlanMode = false;
 
-  if (text === '/clear') { $input.value = ''; tab.messagesEl.innerHTML = ''; hideSlashHints(); return; }
-  if (text === '/compact') {
-    $input.value = ''; hideSlashHints();
-    if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); return; }
-    if (tab.ws?.readyState === WebSocket.OPEN) {
-      tab.compacting = true;
-      _setCompactingUI(true);
-      tab.ws.send(JSON.stringify({ type: 'compact' }));
-      appendStatus(tab, 'Compacting context...');
+  // ── Client-side slash command router (CLI parity) ──
+  if (text.startsWith('/')) {
+    hideSlashHints();
+    if (runSlashCommand(tab, text)) {
+      _pushPromptHistory(tab, text);
+      return;
     }
-    return;
+    // Unknown slash command — fall through to send as prompt.
   }
-  if (text === '/plan') {
-    $input.value = ''; hideSlashHints();
-    tab.planMode = !tab.planMode;
-    if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; }
-    const $plan = _panel?.querySelector('#cp-plan-toggle');
-    if ($plan) $plan.classList.toggle('active', tab.planMode);
-    appendStatus(tab, tab.planMode ? 'Plan mode ON — Claude will plan without making changes' : 'Plan mode OFF');
+
+  // ── !bash shortcut — prefix a Bash-tool hint so Claude executes the command ──
+  if (text.startsWith('!') && text.length > 1) {
+    const cmd = text.slice(1).trim();
+    $input.value = '';
+    autoResize();
+    _pushPromptHistory(tab, text);
+    appendUser(tab, text, null); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
+    const bashPrompt = `Run this shell command in Bash and report the result. Do not explain, do not modify, just execute:\n\n\`\`\`bash\n${cmd}\n\`\`\``;
+    const msg = {
+      type: 'query', prompt: bashPrompt,
+      cwd: ddGetValue($project) || undefined,
+      sessionId: tab.sessionId || undefined,
+      model: _getModelId() || undefined,
+      effort: _getEffort() || undefined,
+      windowId: _windowId,
+    };
+    hideSlashHints();
+    tab.ws.send(JSON.stringify(msg));
     return;
   }
 
@@ -5419,7 +6456,7 @@ function send({ shift = false } = {}) {
   appendUser(tab, text, pendingImages, pendingFiles); tab.sendStartedAt = Date.now(); showThinking(tab); setRunning(tab, true);
   let prompt = buildPromptWithAttachments(tab, text);
   if (tab.planMode && prompt) {
-    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\n${prompt}`;
+    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\nSTRICT ORDERING — ExitPlanMode MUST be your FINAL action in the turn: do ALL research (Grep, Read, Glob) and write the full plan text BEFORE calling ExitPlanMode. Never emit any text or tool call AFTER ExitPlanMode — anything after is dropped and the user only sees the PLAN COMPLETE approval card.\n\n${prompt}`;
   }
 
   // Update pill label on first message
@@ -5447,6 +6484,9 @@ function send({ shift = false } = {}) {
     if (preview) preview.innerHTML = '';
   }
   hideSlashHints();
+  _pushPromptHistory(tab, text);
+  // Synthetic UserPromptSubmit hook event
+  recordHookEvent(tab, 'UserPromptSubmit', text.slice(0, 50));
   tab.ws.send(JSON.stringify(msg));
 }
 
@@ -5606,7 +6646,7 @@ function _sendQueued(tab, item) {
   if (item.files) tab.attachedFiles = item.files;
   let prompt = buildPromptWithAttachments(tab, item.text);
   if (tab.planMode && prompt) {
-    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\n${prompt}`;
+    prompt = `[PLAN MODE — think step by step, create a detailed plan, do NOT make code changes.]\n\nCRITICAL — When you have questions or need clarification during planning:\n1. First call ToolSearch with query "select:AskUserQuestion" to load the tool schema\n2. Then call AskUserQuestion to present your questions as interactive options (2-4 choices per question, max 4 questions)\n3. NEVER write questions as plain text — ALWAYS use the AskUserQuestion tool\n4. Use ExitPlanMode when the plan is ready for approval\n\nSTRICT ORDERING — ExitPlanMode MUST be your FINAL action in the turn: do ALL research (Grep, Read, Glob) and write the full plan text BEFORE calling ExitPlanMode. Never emit any text or tool call AFTER ExitPlanMode — anything after is dropped and the user only sees the PLAN COMPLETE approval card.\n\n${prompt}`;
   }
 
   // Update pill label if first message
@@ -5941,6 +6981,75 @@ async function loadBranches(path) {
   } catch {}
 }
 
+// ── Recall Profile ──
+
+const RECALL_PROFILES_META = [
+  { value: 'quick',    label: 'Quick',    hint: '3 results' },
+  { value: 'balanced', label: 'Balanced', hint: '5 results' },
+  { value: 'deep',     label: 'Deep',     hint: '10 results' },
+  { value: 'custom',   label: 'Custom',   hint: 'custom' },
+];
+const RECALL_PROFILE_DEFAULTS = {
+  quick:    { limit: 3,  minImportance: 5, minScore: 0.45, maxChars: 300,  includeSessions: 'never',  recencyBoost: false },
+  balanced: { limit: 5,  minImportance: 0, minScore: 0.30, maxChars: 0,    includeSessions: 'auto',   recencyBoost: false },
+  deep:    { limit: 10, minImportance: 0, minScore: 0.20, maxChars: 0,    includeSessions: 'always', recencyBoost: false },
+};
+
+let _recallProfile = 'balanced';
+
+async function loadRecallProfile() {
+  const $recall = _panel?.querySelector('#cp-recall');
+  if (!$recall) return;
+  try {
+    const data = await fetch('/api/display-settings').then(r => r.json());
+    if (data.profile) _recallProfile = data.profile;
+  } catch {}
+  populateRecallDropdown($recall);
+}
+
+function populateRecallDropdown($dd) {
+  const menu = $dd.querySelector('.cp-dd-menu');
+  const label = $dd.querySelector('.cp-dd-label');
+  if (!menu || !label) return;
+  menu.innerHTML = '';
+  const matched = RECALL_PROFILES_META.find(p => p.value === _recallProfile);
+  label.textContent = matched ? matched.label : _recallProfile;
+  $dd.classList.add('has-value');
+  $dd._value = _recallProfile;
+  for (const p of RECALL_PROFILES_META) {
+    const el = document.createElement('div');
+    el.className = 'cp-dd-item' + (p.value === _recallProfile ? ' selected' : '');
+    el.dataset.value = p.value;
+    el.innerHTML = `<span>${p.label}</span><span style="opacity:0.35;margin-left:auto;font-size:9px">${p.hint}</span>`;
+    el.style.display = 'flex'; el.style.gap = '6px';
+    el.addEventListener('click', () => {
+      if (p.value === _recallProfile) { $dd.classList.remove('open'); return; }
+      _recallProfile = p.value;
+      $dd._value = p.value;
+      label.textContent = p.label;
+      $dd.classList.remove('open');
+      menu.querySelectorAll('.cp-dd-item').forEach(o => o.classList.remove('selected'));
+      el.classList.add('selected');
+      saveRecallProfile(p.value);
+    });
+    menu.appendChild(el);
+  }
+}
+
+async function saveRecallProfile(profile) {
+  try {
+    const current = await fetch('/api/display-settings').then(r => r.json());
+    const defaults = RECALL_PROFILE_DEFAULTS[profile] || current.recallDefaults || RECALL_PROFILE_DEFAULTS.balanced;
+    await fetch('/api/display-settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...current, profile, recallDefaults: profile !== 'custom' ? defaults : current.recallDefaults }),
+    });
+  } catch (e) {
+    console.error('Failed to save recall profile:', e);
+  }
+}
+
 function syncReservedWidth() {
   if (_visible && _panel) {
     reserveRightPanelLayout(PANEL_OWNER, _panel, 20);
@@ -6095,22 +7204,21 @@ async function loadSkills() {
   try {
     const res = await fetch('/api/claude-code/skills').then(r => r.json());
     _skillsCache = (res.skills || []).map(s => ({ name: s.name || s.dirName, description: s.description || '' }));
-    // Dedup by name (server may return both bundled + global)
     const seen = new Set(_skillsCache.map(s => s.name));
-    // Add built-in client/Claude Code commands
-    const builtins = [
-      { name: 'btw', description: 'Add context while Claude is processing' },
-      { name: 'clear', description: 'Clear all messages' },
-      { name: 'compact', description: 'Compact context — reload session' },
+    // Merge every built-in slash command from the CLI-parity registry
+    for (const b of SLASH_COMMANDS) {
+      if (!seen.has(b.name)) { _skillsCache.push({ name: b.name, description: b.desc }); seen.add(b.name); }
+    }
+    // Extras beyond the SLASH_COMMANDS registry (skills that still appear as `/foo`)
+    const extras = [
       { name: 'commit', description: 'Stage and commit changes' },
-      { name: 'plan', description: 'Toggle plan mode' },
       { name: 'review-pr', description: 'Review a pull request' },
       { name: 'simplify', description: 'Review changed code for quality and efficiency' },
       { name: 'loop', description: 'Run a command on a recurring interval' },
     ];
-    for (const b of builtins) { if (!seen.has(b.name)) { _skillsCache.push(b); seen.add(b.name); } }
+    for (const b of extras) { if (!seen.has(b.name)) { _skillsCache.push(b); seen.add(b.name); } }
     _skillsCache.sort((a, b) => a.name.localeCompare(b.name));
-  } catch { _skillsCache = [{ name: 'clear', description: 'Clear all messages' }]; }
+  } catch { _skillsCache = SLASH_COMMANDS.map(c => ({ name: c.name, description: c.desc })); }
   return _skillsCache;
 }
 function showSlashHints(filter) {
@@ -6239,6 +7347,253 @@ function handleImageDrop(e) {
   }
 }
 
+// ── Prompt history (per-tab, Up/Down recall + Ctrl+R reverse search) ──
+function _pushPromptHistory(tab, text) {
+  if (!tab || !text) return;
+  const t = text.trim();
+  if (!t) return;
+  if (tab.promptHistory[tab.promptHistory.length - 1] === t) return; // dedup consecutive
+  tab.promptHistory.push(t);
+  if (tab.promptHistory.length > 200) tab.promptHistory.shift();
+  tab.promptHistoryIdx = -1;
+}
+function _navigatePromptHistory(tab, dir, $input) {
+  if (!tab?.promptHistory?.length || !$input) return false;
+  if (tab.promptHistoryIdx === -1 && dir < 0) {
+    tab.promptHistoryIdx = tab.promptHistory.length - 1;
+  } else {
+    tab.promptHistoryIdx = Math.min(tab.promptHistory.length - 1, Math.max(-1, tab.promptHistoryIdx + dir));
+  }
+  if (tab.promptHistoryIdx === -1) { $input.value = ''; }
+  else { $input.value = tab.promptHistory[tab.promptHistoryIdx] || ''; }
+  autoResize();
+  return true;
+}
+
+// ── Ctrl+R reverse-search modal ──
+function _openReverseSearch() {
+  const tab = activeTab(); if (!tab) return;
+  if (_panel.querySelector('.cp-rsearch')) return;
+  const $input = _panel.querySelector('#cp-input');
+  const modal = document.createElement('div');
+  modal.className = 'cp-rsearch';
+  modal.innerHTML = `
+    <div class="cp-rsearch-inner">
+      <div class="cp-rsearch-header">↑↓ navigate · Enter accept · Esc cancel</div>
+      <input class="cp-rsearch-input" placeholder="Reverse-i-search: type to search history" autofocus>
+      <div class="cp-rsearch-results"></div>
+    </div>`;
+  _panel.appendChild(modal);
+  const $q = modal.querySelector('.cp-rsearch-input');
+  const $list = modal.querySelector('.cp-rsearch-results');
+  let selected = 0;
+  const hist = tab.promptHistory.slice().reverse();
+  const render = (query) => {
+    const q = query.toLowerCase();
+    const matches = q ? hist.filter(h => h.toLowerCase().includes(q)) : hist;
+    $list.innerHTML = matches.slice(0, 30).map((h, i) => `<div class="cp-rsearch-row${i===selected?' active':''}" data-idx="${i}">${esc(h.slice(0,200))}</div>`).join('') || '<div class="cp-rsearch-empty">No matches</div>';
+    return matches;
+  };
+  let matches = render('');
+  $q.addEventListener('input', () => { selected = 0; matches = render($q.value); });
+  $q.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { modal.remove(); $input?.focus(); }
+    else if (e.key === 'Enter') { if (matches[selected]) { $input.value = matches[selected]; autoResize(); } modal.remove(); $input?.focus(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); selected = Math.min(matches.length - 1, selected + 1); render($q.value); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); selected = Math.max(0, selected - 1); render($q.value); }
+  });
+  $list.addEventListener('click', (e) => {
+    const row = e.target.closest('.cp-rsearch-row');
+    if (!row) return;
+    const i = +row.dataset.idx;
+    if (matches[i]) { $input.value = matches[i]; autoResize(); }
+    modal.remove(); $input?.focus();
+  });
+}
+
+// ── @file autocomplete (uses /api/project-files with recursive search) ──
+let _fileSuggestReq = 0;
+async function _fetchFileSuggest(projectPath, query) {
+  if (!projectPath) return [];
+  const q = (query || '').trim();
+  try {
+    const url = '/api/project-files?' + new URLSearchParams({ path: projectPath, search: q || 'a' });
+    const res = await fetch(url).then(r => r.ok ? r.json() : null);
+    if (!res?.items) return [];
+    return res.items
+      .filter(it => it.type === 'file')
+      .map(it => (it.path || it.name || '').replace(/^\//, ''))
+      .slice(0, 20);
+  } catch { return []; }
+}
+async function _showFileHints(query) {
+  const $hints = _panel?.querySelector('#cp-slash-hints');
+  const tab = activeTab();
+  if (!$hints || !tab?.project) { hideSlashHints(); return; }
+  const reqId = ++_fileSuggestReq;
+  const matches = await _fetchFileSuggest(tab.project, query);
+  if (reqId !== _fileSuggestReq) return; // stale
+  if (!matches.length) { hideSlashHints(); return; }
+  $hints.innerHTML = matches.map((p, i) => `<div class="cp-slash-item${i===0?' active':''}" data-file="${esc(p)}"><div class="cp-slash-name">@${esc(p.split('/').pop())}</div><div class="cp-slash-desc">${esc(p)}</div></div>`).join('');
+  $hints.querySelectorAll('.cp-slash-item').forEach(el => el.addEventListener('click', () => {
+    const $input = _panel?.querySelector('#cp-input');
+    if (!$input) return;
+    const val = $input.value;
+    const at = val.lastIndexOf('@');
+    if (at >= 0) $input.value = val.slice(0, at) + '@' + el.dataset.file + ' ';
+    $input.focus(); hideSlashHints(); autoResize();
+  }));
+  _slashHintIdx = 0;
+  $hints.classList.add('open');
+  $hints.dataset.mode = 'file';
+}
+
+// ── Todo slide-out dock (TodoWrite tool visualization) ──
+function renderTodoWidget(tab) {
+  if (!tab?.messagesEl || !_panel) return;
+  let dock = _panel.querySelector('.cp-todo-dock');
+
+  if (!tab.todos?.length) { dock?.remove(); return; }
+
+  if (!dock) {
+    dock = document.createElement('div');
+    dock.className = 'cp-todo-dock cp-todo-dock--left';
+    _panel.appendChild(dock);
+  }
+
+  const doneN  = tab.todos.filter(t => t.status === 'completed').length;
+  const totalN = tab.todos.length;
+  const inProg = tab.todos.find(t => t.status === 'in_progress');
+  const isOpen = !!tab.todosVisible;
+  dock.classList.toggle('is-open', isOpen);
+
+  dock.innerHTML = `
+    <button class="cp-todo-tag" title="${isOpen ? 'Hide' : 'Show'} TODOs (Ctrl+T)">
+      <span class="cp-todo-tag-ic">${inProg ? '◐' : '✓'}</span>
+      <span class="cp-todo-tag-count">${doneN}/${totalN}</span>
+      ${inProg ? '<span class="cp-todo-tag-pulse"></span>' : ''}
+    </button>
+    <div class="cp-todo-drawer">
+      <div class="cp-todo-head">
+        <span class="cp-todo-title">TODOs</span>
+        <span class="cp-todo-count">${doneN}/${totalN}</span>
+        <button class="cp-todo-hide" title="Collapse (Ctrl+T)">×</button>
+      </div>
+      <div class="cp-todo-list">
+        ${tab.todos.map(t => {
+          const ic = t.status === 'completed' ? '✓' : (t.status === 'in_progress' ? '◐' : '○');
+          const cls = t.status === 'completed' ? 'done' : (t.status === 'in_progress' ? 'prog' : 'pend');
+          const label = t.status === 'in_progress' ? (t.activeForm || t.content) : t.content;
+          return `<div class="cp-todo-item cp-todo-${cls}"><span class="cp-todo-ic">${ic}</span><span class="cp-todo-txt">${esc(label || '')}</span></div>`;
+        }).join('')}
+      </div>
+      ${inProg ? `<div class="cp-todo-foot">Active: ${esc(inProg.activeForm || inProg.content)}</div>` : ''}
+    </div>`;
+
+  dock.querySelector('.cp-todo-tag')?.addEventListener('click', () => {
+    tab.todosVisible = !tab.todosVisible;
+    renderTodoWidget(tab);
+  });
+  dock.querySelector('.cp-todo-hide')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    tab.todosVisible = false;
+    renderTodoWidget(tab);
+  });
+}
+
+// ── View mode cycling (normal / transcript / focus) ──
+function _applyViewMode(tab) {
+  if (!tab?.messagesEl) return;
+  const $msgs = tab.messagesEl;
+  $msgs.classList.remove('cp-view-transcript', 'cp-view-focus');
+  if (tab.viewMode === 'transcript') $msgs.classList.add('cp-view-transcript');
+  else if (tab.viewMode === 'focus') $msgs.classList.add('cp-view-focus');
+}
+
+function populateViewDropdown($dd, tab) {
+  if (!$dd || !tab) return;
+  const menu = $dd.querySelector('.cp-dd-menu');
+  const label = $dd.querySelector('.cp-dd-label');
+  if (!menu || !label) return;
+  const mode = tab.viewMode || 'normal';
+  menu.innerHTML = '';
+  label.textContent = VIEW_MODE_LABELS[mode] || mode;
+  $dd.classList.add('has-value');
+  $dd._value = mode;
+  for (const v of VIEW_MODES) {
+    const el = document.createElement('div');
+    el.className = 'cp-dd-item' + (v === mode ? ' selected' : '');
+    el.dataset.value = v;
+    el.textContent = VIEW_MODE_LABELS[v] || v;
+    el.addEventListener('click', () => {
+      const t = activeTab();
+      if (!t) return;
+      if (v === t.viewMode) { $dd.classList.remove('open'); return; }
+      t.viewMode = v;
+      _applyViewMode(t);
+      populateViewDropdown($dd, t);
+      $dd.classList.remove('open');
+    });
+    menu.appendChild(el);
+  }
+}
+
+// ── Hook event activity strip (synthetic hook events from stream) ──
+function recordHookEvent(tab, event, detail = '') {
+  if (!tab) return;
+  tab.hookEvents = tab.hookEvents || [];
+  tab.hookEvents.push({ event, detail, at: Date.now() });
+  if (tab.hookEvents.length > 30) tab.hookEvents.shift();
+  renderHookStrip(tab);
+}
+function renderHookStrip(tab) {
+  if (!tab?.messagesEl) return;
+  const parent = tab.messagesEl.parentElement?.parentElement;
+  if (!parent) return;
+  let strip = parent.querySelector('.cp-hook-strip');
+  if (!tab.hookStripVisible) { strip?.remove(); return; }
+  if (!strip) {
+    strip = document.createElement('div');
+    strip.className = 'cp-hook-strip';
+    tab.messagesEl.parentElement.after(strip);
+  }
+  const recent = tab.hookEvents.slice(-6);
+  strip.innerHTML = `<div class="cp-hook-strip-title">Hook events</div>` + recent.map(h =>
+    `<div class="cp-hook-ev" title="${esc(h.detail)}"><span class="cp-hook-dot"></span><span class="cp-hook-name">${esc(h.event)}</span>${h.detail ? `<span class="cp-hook-detail">${esc(h.detail.slice(0,60))}</span>` : ''}</div>`
+  ).join('');
+}
+
+// ── MCP call collapse (group adjacent same-name MCP tool cards) ──
+function collapseAdjacentMcpTools($msgs) {
+  if (!$msgs) return;
+  const cards = $msgs.querySelectorAll('.tool-card[data-tool-name^="mcp__"]');
+  if (cards.length < 2) return;
+  let group = [];
+  const flush = () => {
+    if (group.length < 2) { group = []; return; }
+    const first = group[0];
+    const name = first.dataset.toolName;
+    const existing = first.querySelector('.tool-mcp-badge');
+    if (!existing) {
+      const badge = document.createElement('span');
+      badge.className = 'tool-mcp-badge';
+      badge.textContent = `×${group.length}`;
+      first.querySelector('.tool-hdr')?.appendChild(badge);
+    } else {
+      existing.textContent = `×${group.length}`;
+    }
+    for (let i = 1; i < group.length; i++) group[i].classList.add('cp-mcp-collapsed');
+    group = [];
+  };
+  let prevName = null;
+  for (const c of cards) {
+    const n = c.dataset.toolName;
+    if (n === prevName) { group.push(c); }
+    else { flush(); group = [c]; prevName = n; }
+  }
+  flush();
+}
+
 function wireEvents() {
   const $input = _panel.querySelector('#cp-input');
   const $send = _panel.querySelector('#cp-send');
@@ -6253,23 +7608,35 @@ function wireEvents() {
   const $brand = _panel.querySelector('.cp-brand');
   if ($brand) $brand.addEventListener('click', () => window.open('https://claude.ai/settings/usage', '_blank'));
 
-  $input.addEventListener('input', () => {
+  $input.addEventListener('input', async () => {
     autoResize();
     const tab = activeTab();
     if (tab?.running) {
-      // While running, dynamically switch send icon based on text content
       _updateSendIcon($send, $input);
     } else {
       $send.disabled = !$input.value.trim() && !tab?.attachedImages.length && !tab?.attachedFiles.length;
     }
+    // Reset history navigation when user types
+    if (tab) tab.promptHistoryIdx = -1;
     // Slash command hints
     const text = $input.value;
     if (text.startsWith('/') && !text.includes('\n')) {
       const cmd = text.slice(1).split(/\s/)[0];
       if (!text.includes(' ')) { showSlashHints(cmd); } else { hideSlashHints(); }
-    } else { hideSlashHints(); }
+      return;
+    }
+    // @file autocomplete — trigger when caret is after an @token without space
+    const caret = $input.selectionStart ?? text.length;
+    const head = text.slice(0, caret);
+    const atMatch = head.match(/(^|\s)@([^\s]*)$/);
+    if (atMatch) {
+      _showFileHints(atMatch[2]);
+      return;
+    }
+    hideSlashHints();
   });
   $input.addEventListener('keydown', (e) => {
+    const tab = activeTab();
     // Slash hint navigation
     const $hints = _panel?.querySelector('#cp-slash-hints');
     if ($hints?.classList.contains('open')) {
@@ -6277,26 +7644,89 @@ function wireEvents() {
       if (e.key === 'ArrowUp') { e.preventDefault(); navigateSlashHints(-1); return; }
       if (e.key === 'Tab') { e.preventDefault(); acceptSlashHint(); return; }
       if (e.key === 'Escape') { e.preventDefault(); hideSlashHints(); return; }
+      if (e.key === 'Enter') {
+        // Accept hint on Enter when a slash match is visible and input is only "/cmd..."
+        const text = $input.value;
+        if (text.startsWith('/') && !text.includes(' ') && acceptSlashHint()) { e.preventDefault(); return; }
+      }
+    }
+    // Up/Down prompt history (only when input is empty or already navigating)
+    if (tab && (e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      const navigating = tab.promptHistoryIdx !== -1;
+      const emptyOrAtBoundary = !$input.value.trim() || navigating;
+      if (emptyOrAtBoundary) {
+        if (_navigatePromptHistory(tab, e.key === 'ArrowUp' ? -1 : 1, $input)) {
+          e.preventDefault();
+          return;
+        }
+      }
+    }
+    // Ctrl+R reverse search — disabled (conflicts with browser reload)
+    // if (e.key === 'r' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); _openReverseSearch(); return; }
+    // Ctrl+O cycle view mode
+    if (e.key === 'o' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (!tab) return;
+      const i = VIEW_MODES.indexOf(tab.viewMode || 'normal');
+      tab.viewMode = VIEW_MODES[(i + 1) % VIEW_MODES.length];
+      _applyViewMode(tab);
+      populateViewDropdown(_panel?.querySelector('#cp-view'), tab);
+      return;
+    }
+    // Ctrl+T toggle todo widget
+    if (e.key === 't' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+      e.preventDefault();
+      if (!tab) return;
+      tab.todosVisible = !tab.todosVisible;
+      renderTodoWidget(tab);
+      return;
+    }
+    // Ctrl+Shift+H toggle hook activity strip
+    if ((e.key === 'h' || e.key === 'H') && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+      e.preventDefault();
+      if (!tab) return;
+      tab.hookStripVisible = !tab.hookStripVisible;
+      renderHookStrip(tab);
+      return;
     }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); hideSlashHints(); send(); }
     // Shift+Enter while running = /btw interrupt (otherwise default newline behavior)
-    if (e.key === 'Enter' && e.shiftKey && activeTab()?.running && $input.value.trim()) { e.preventDefault(); hideSlashHints(); send({ shift: true }); return; }
+    if (e.key === 'Enter' && e.shiftKey && tab?.running && $input.value.trim()) { e.preventDefault(); hideSlashHints(); send({ shift: true }); return; }
     // Shift+Tab to toggle plan mode
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
-      const tab = activeTab();
       if (!tab) return;
       tab.planMode = !tab.planMode;
-      if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; }
+      if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; tab._planModeStartedAt = Date.now(); tab._planModeStartMsgIndex = tab.messagesEl?.querySelectorAll('.msg.msg-assistant').length || 0; }
       const $plan = _panel?.querySelector('#cp-plan-toggle');
       if ($plan) $plan.classList.toggle('active', tab.planMode);
       appendStatus(tab, tab.planMode ? 'Plan mode ON — Claude will plan without making changes' : 'Plan mode OFF');
       return;
     }
     // Ctrl+L to clear
-    if (e.key === 'l' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const tab = activeTab(); if (tab?.messagesEl) tab.messagesEl.innerHTML = ''; }
-    // Escape to abort — only if no btw text typed
-    if (e.key === 'Escape' && activeTab()?.running && !$input.value.trim()) { activeTab()?.ws?.send(JSON.stringify({ type: 'abort' })); }
+    if (e.key === 'l' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); if (tab?.messagesEl) tab.messagesEl.innerHTML = ''; }
+    // Escape — double-tap to undo last exchange; single-tap to abort (when running)
+    if (e.key === 'Escape') {
+      if (tab?.running && !$input.value.trim()) { tab.ws?.send(JSON.stringify({ type: 'abort' })); return; }
+      const now = Date.now();
+      if (tab && now - (tab.lastEscAt || 0) < 600) {
+        // Undo visually: remove trailing user + assistant pair from messages
+        const $msgs = tab.messagesEl;
+        if ($msgs) {
+          const kids = [...$msgs.children];
+          let removed = 0;
+          for (let i = kids.length - 1; i >= 0 && removed < 2; i--) {
+            const n = kids[i];
+            if (n.classList.contains('msg-user') || n.classList.contains('msg-assistant')) { n.remove(); removed++; }
+            else if (removed === 0) n.remove();
+          }
+          if (removed) appendStatus(tab, 'Undid last exchange (visual only — session memory unchanged).');
+        }
+        tab.lastEscAt = 0;
+      } else if (tab) {
+        tab.lastEscAt = now;
+      }
+    }
   });
   // Shift key visual hint: swap queue icon ↔ /btw arrow while shift held
   $input.addEventListener('keydown', (e) => {
@@ -6433,6 +7863,7 @@ function wireEvents() {
   $new.addEventListener('click', () => {
     if (_tabs.length >= MAX_TABS) { appendStatus(activeTab(), 'Max sessions reached — close one first.'); return; }
     createTab(null, 'New chat');
+    promptNameNewSession();
   });
 
   // Think intensity toggle
@@ -6462,7 +7893,7 @@ function wireEvents() {
       const tab = activeTab();
       if (!tab) return;
       tab.planMode = !tab.planMode;
-      if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; }
+      if (tab.planMode) { tab._planContent = null; tab._planContentCaptured = false; tab.planFilePath = ''; tab._editedPlanContent = null; tab._planModeStartedAt = Date.now(); tab._planModeStartMsgIndex = tab.messagesEl?.querySelectorAll('.msg.msg-assistant').length || 0; }
       $plan.classList.toggle('active', tab.planMode);
     });
   }
@@ -6546,6 +7977,7 @@ function wireEvents() {
       if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); return; }
       tab.compacting = true;
       _setCompactingUI(true);
+      recordHookEvent(tab, 'PreCompact', 'starting compaction');
       tab.ws.send(JSON.stringify({ type: 'compact' }));
       appendStatus(tab, 'Compacting context...');
     });
@@ -6620,20 +8052,40 @@ function wireEvents() {
     $cost.addEventListener('click', () => emit('cost:toggle'));
   }
 
-  ddSetup($project); ddSetup($model); ddSetup($branch);
+  const $recall = _panel.querySelector('#cp-recall');
+  const $view = _panel.querySelector('#cp-view');
+  ddSetup($project); ddSetup($model); ddSetup($branch); ddSetup($recall); ddSetup($view);
+  loadRecallProfile();
+  populateViewDropdown($view, activeTab());
   $project.addEventListener('change', () => {
     const val = ddGetValue($project);
     storage.setItem(STOR.project, val);
     const tab = activeTab();
-    if (tab) { tab.project = val; saveTabs(); }
+    if (tab) {
+      if (tab.project && tab.project !== val) recordHookEvent(tab, 'CwdChanged', val || '(none)');
+      tab.project = val;
+      saveTabs();
+    }
     loadBranches(val);
     // Reset session when switching projects
     selectSession(null, 'New chat');
   });
   $model.addEventListener('change', () => {
     const val = ddGetValue($model);
+    if (val) storage.setItem(STOR.defaultModel, val);
+    else storage.removeItem(STOR.defaultModel);
     const tab = activeTab();
     if (tab) { tab.model = val; renderGauge(tab); saveTabs(); }
+    // Opus 4.7 xhigh preset — auto-bump thinking to max when user picks this model
+    // and hasn't already set an effort. "xhigh" here maps to CLI --effort max.
+    const modelId = val.split(':')[0];
+    if (modelId === 'claude-opus-4-7') {
+      const $think = _panel?.querySelector('#cp-think-toggle');
+      if ($think && ($think.dataset.effort === 'off' || !$think.dataset.effort)) {
+        _setEffort($think, 'max');
+        if (tab) { tab.effort = 'max'; saveTabs(); }
+      }
+    }
   });
   $branch.addEventListener('change', async () => {
     if (!ddGetValue($branch) || !ddGetValue($project)) return;
@@ -6693,9 +8145,10 @@ function wireEvents() {
   });
 
   // ── Plan editor — receive edited plan, show updated plan + re-prompt with action buttons ──
-  on('plan-saved', ({ filePath, content }) => {
+  on('plan-saved', ({ filePath, content, source, tabId } = {}) => {
+    if (source && source !== 'claude') return;
     const tab = activeTab();
-    if (!tab) return;
+    if (!tab || (tabId && tab.id !== tabId)) return;
     const $msgs = tab.messagesEl;
     if (!$msgs) return;
 
@@ -6753,9 +8206,10 @@ function wireEvents() {
   });
 
   // ── Edit cancelled — re-enable options when editor closed without saving ──
-  on('plan-edit-cancelled', () => {
+  on('plan-edit-cancelled', ({ source, tabId } = {}) => {
+    if (source && source !== 'claude') return;
     const tab = activeTab();
-    if (!tab) return;
+    if (!tab || (tabId && tab.id !== tabId)) return;
     // Restore post-plan card interactivity
     tab.messagesEl?.querySelectorAll('.post-plan-card').forEach(card => {
       card.style.opacity = '1';

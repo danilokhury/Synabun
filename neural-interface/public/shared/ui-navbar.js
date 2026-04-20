@@ -16,6 +16,7 @@ import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel.js
 import { toggleSessionMonitor } from './ui-sessions.js';
 import { toggleImageGallery } from './ui-image-gallery.js';
 import { initUpdate } from './ui-update.js';
+import { initToolUpdates } from './ui-tool-updates.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -247,4 +248,5 @@ export function initNavbar() {
 
   // ── Update alert ──
   initUpdate();
+  initToolUpdates();
 }

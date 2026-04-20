@@ -12,6 +12,7 @@ import { openHelp } from './ui-help.js';
 import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { sendToPanel } from './ui-claude-panel.js';
+import { forceCheckToolUpdates } from './ui-tool-updates.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -345,6 +346,7 @@ function wireTerminalMenu() {
     'menu-terminal-codex':   () => emit('terminal:open', { profile: 'codex' }),
     'menu-terminal-gemini':   () => emit('terminal:open', { profile: 'gemini' }),
     'menu-terminal-opencode': () => emit('terminal:open', { profile: 'opencode' }),
+    'menu-check-cli-updates': () => forceCheckToolUpdates(),
     'menu-terminal-shell':   () => emit('terminal:open', { profile: 'shell' }),
     'menu-terminal-browser': () => emit('browser:open'),
     'menu-terminal-youtube': () => emit('browser:open', { url: 'https://www.youtube.com' }),

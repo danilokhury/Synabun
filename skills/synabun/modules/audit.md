@@ -16,6 +16,12 @@ You are now in **memory audit mode**. Your job is to systematically validate Syn
 - The `forget` tool also requires the full UUID.
 - The `memories` tool maxes out at 50 results per call. If a category has more than 50 memories, warn the user that only the 50 most recent will be audited.
 
+## Runtime Compatibility
+
+- **Interactive choice prompt** means: use `AskUserQuestion` in Claude Code, `request_user_input` in Codex when that tool is available, otherwise ask a concise plain-text multiple-choice question and wait for the user's reply.
+- **Category management** means: use the runtime's available category tool surface, whether that is split helpers such as `category_list` / `category_create` or a unified `category` tool with actions like `list` / `create`.
+- **Delegation/subagent tool** means: use the runtime's available delegation capability if it exists and is allowed. In Claude this may be `Task`; in Codex it may be `spawn_agent`/`wait_agent`. If delegation is unavailable, perform the verification locally with the same batching discipline and output format.
+
 ## Classification Definitions
 
 | Status | Meaning | Default Action |
@@ -39,7 +45,7 @@ This phase collects three pieces of information: audit scope, model choice, and 
 
 #### Step 1a: Landscape Survey
 
-1. Call `category_list` with format `tree` to get the full category hierarchy.
+1. List categories in `tree` format to get the full category hierarchy.
 2. Call `memories` with action `stats` to get total counts and per-category breakdowns.
 3. Internalize the results — you'll need them for every subsequent step.
 
@@ -56,25 +62,25 @@ This phase collects three pieces of information: audit scope, model choice, and 
 
 **If `$ARGUMENTS` is empty or did not match:**
 
-Use `AskUserQuestion` with these options:
+Use an interactive choice prompt with these options:
 
 - **Audit everything** — "Full audit of all [N] memories across all categories"
 - **Audit a parent category** — "Audit a parent and all its children"
 - **Audit a specific category** — "Audit just one category"
 
-If user picks **parent category**, follow up with another `AskUserQuestion` listing only parent categories with their total memory counts (sum of parent + all children). Let the user pick one.
+If user picks **parent category**, follow up with another interactive choice prompt listing only parent categories with their total memory counts (sum of parent + all children). Let the user pick one.
 
-If user picks **specific category**, follow up with another `AskUserQuestion` listing all categories (flat) with their memory counts. Let the user pick one.
+If user picks **specific category**, follow up with another interactive choice prompt listing all categories (flat) with their memory counts. Let the user pick one.
 
 #### Step 1c: Model Selection
 
-Use `AskUserQuestion` to ask which model should verify memories against code:
+Use an interactive choice prompt to ask which model should verify memories against code:
 
 - **Sonnet (Recommended)** — "Good balance of quality and cost"
 - **Opus** — "Most thorough analysis, highest token cost"
 - **Haiku** — "Fastest and cheapest, may miss subtle staleness"
 
-Store the selection. This will be used as the `model` parameter when calling the `Task` tool in Phase 4.
+Store the selection. Use it in Phase 4 when the runtime's delegation tool supports explicit model selection.
 
 #### Step 1d: Cost Warning and Confirmation
 
@@ -82,7 +88,7 @@ Calculate the estimated scope:
 - Count total memories in scope (from stats).
 - Count categories in scope.
 
-Use `AskUserQuestion`:
+Use an interactive choice prompt:
 
 - **Proceed** — "Start the audit"
 - **Abort** — "Cancel and return to normal mode"
@@ -99,7 +105,7 @@ If user aborts, end gracefully with a message.
 
 This phase uses the `sync` MCP tool for instant staleness detection on memories that have stored file checksums. This is essentially free — no LLM verification tokens needed.
 
-1. Call `sync` (with `project` parameter if scope is project-specific, otherwise without).
+1. Call `sync`, scoping it to the relevant project and/or categories when the current runtime requires explicit filters.
 2. Parse the results:
    - Memories flagged as stale by sync → **pre-classified as STALE** with HIGH confidence.
    - Note the specific files that changed for each stale memory.
@@ -151,23 +157,19 @@ Ready to verify:
 
 ---
 
-### Phase 4 — Semantic Verification (Task Agent Delegation)
+### Phase 4 — Semantic Verification (Delegated or Local)
 
 This is the most token-intensive phase. Only Bucket C and Bucket D memories need verification.
 
 **Skip this phase entirely** if Buckets C and D are both empty.
 
-#### Verification via Task Tool
+#### Verification via Delegation Tool
 
-Batch memories from Buckets C and D into groups of **5 memories** per Task call. Sort by importance descending so the most critical memories are verified first.
+Batch memories from Buckets C and D into groups of **5 memories** per verification pass. Sort by importance descending so the most critical memories are verified first.
 
-For each batch, call the `Task` tool with:
-- `description`: "Verify N SynaBun memories"
-- `subagent_type`: "general-purpose"
-- `model`: the model selected in Phase 1c (opus / sonnet / haiku)
-- `prompt`: A detailed prompt containing the verification instructions and memories (see template below)
+For each batch, use the runtime's available delegation/subagent capability when it exists and is allowed. Pass the selected model if the runtime supports explicit model selection. If no delegation tool is available, perform the same verification yourself in the current session and still follow the exact output format below.
 
-**Verification prompt template for each Task call:**
+**Verification prompt template for each delegated or local verification pass:**
 
 ```
 You are verifying stored memories against the current state of the codebase.
@@ -208,7 +210,7 @@ Content:
 ===
 ```
 
-After each Task completes, parse its structured output and add results to the master results list.
+After each verification pass completes, parse its structured output and add results to the master results list.
 
 **Progress reporting**: After each batch, output:
 "Verified batch X/Y — [count] VALID, [count] STALE, [count] INVALID, [count] UNVERIFIABLE so far..."
@@ -261,7 +263,7 @@ Suggested update (preview):
 ──────────────────────────────────────────
 ```
 
-Then use `AskUserQuestion` with these options:
+Then use an interactive choice prompt with these options:
 
 - **Update** — "Apply the suggested content update via reflect"
 - **Delete** — "Remove this memory entirely"
@@ -276,7 +278,7 @@ If there are more than 1 stale memory remaining after presenting the first one, 
 Actions:
 - **Update**: Call `reflect` with `memory_id` (full UUID) and `content` (suggested update).
 - **Delete**: Call `forget` with the full UUID.
-- **View full**: Show both full texts, then re-present the same `AskUserQuestion`.
+- **View full**: Show both full texts, then re-present the same interactive choice prompt.
 - **Update all**: Loop through remaining stale memories, call `reflect` for each sequentially.
 - **Skip / Skip all**: Move on.
 
@@ -298,7 +300,7 @@ Content (preview):
 ──────────────────────────────────────────
 ```
 
-Use `AskUserQuestion` with options:
+Use an interactive choice prompt with options:
 
 - **Delete** — "Remove this memory"
 - **Skip** — "Keep it for now"
@@ -346,7 +348,7 @@ These memories could not be verified from code alone:
 
 #### Save Report
 
-Use `AskUserQuestion`:
+Use an interactive choice prompt:
 
 - **Save report** — "Store this audit report in SynaBun for tracking memory health over time"
 - **No thanks** — "Skip saving"

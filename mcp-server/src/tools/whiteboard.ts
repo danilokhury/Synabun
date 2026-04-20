@@ -14,9 +14,11 @@ import {
  * the whiteboard in the Neural Interface Focus mode.
  */
 export function registerWhiteboardTools(server: McpServer) {
-  server.tool('whiteboard_read', whiteboardReadDescription, whiteboardReadSchema, handleWhiteboardRead);
-  server.tool('whiteboard_add', whiteboardAddDescription, whiteboardAddSchema, handleWhiteboardAdd);
-  server.tool('whiteboard_update', whiteboardUpdateDescription, whiteboardUpdateSchema, handleWhiteboardUpdate);
-  server.tool('whiteboard_remove', whiteboardRemoveDescription, whiteboardRemoveSchema, handleWhiteboardRemove);
-  server.tool('whiteboard_screenshot', whiteboardScreenshotDescription, whiteboardScreenshotSchema, handleWhiteboardScreenshot);
+  return [
+    server.tool('whiteboard_read', whiteboardReadDescription, whiteboardReadSchema, handleWhiteboardRead),
+    server.tool('whiteboard_add', whiteboardAddDescription, whiteboardAddSchema, handleWhiteboardAdd),
+    server.tool('whiteboard_update', whiteboardUpdateDescription, whiteboardUpdateSchema, handleWhiteboardUpdate),
+    server.tool('whiteboard_remove', whiteboardRemoveDescription, whiteboardRemoveSchema, handleWhiteboardRemove),
+    server.tool('whiteboard_screenshot', whiteboardScreenshotDescription, whiteboardScreenshotSchema, handleWhiteboardScreenshot),
+  ];
 }

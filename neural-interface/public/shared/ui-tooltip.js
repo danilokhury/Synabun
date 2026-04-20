@@ -25,16 +25,29 @@ export function initTooltip() {
     const gap = 8;
     const preferred = el.getAttribute('data-tooltip-pos');
 
-    // Right-side placement (explorer sidebar, whiteboard toolbar)
+    // Left-side placement (session dropdowns in sidepanels)
+    // Anchor to the left edge of the containing sidepanel so tooltip always appears fully outside
+    if (preferred === 'left') {
+      const panel = el.closest('.claude-panel, .codex-panel, .ocp-panel, .menubar-dropdown--resume');
+      const anchorLeft = panel ? panel.getBoundingClientRect().left : r.left;
+      if (anchorLeft - gap - tw > 4) {
+        tip.className = 'ui-tooltip left';
+        tip.style.top = (r.top + r.height / 2 - th / 2) + 'px';
+        tip.style.left = (anchorLeft - gap - tw) + 'px';
+        tip.style.setProperty('--arrow-y', (th / 2) + 'px');
+        return;
+      }
+    }
+
+    // Right-side placement (explorer sidebar, whiteboard toolbar, Resume dropdown)
     const inWbToolbar = !!el.closest('#wb-toolbar');
-    if ((preferred === 'right' || inWbToolbar) && r.right + gap + tw < window.innerWidth - 4) {
+    const rightAnchor = el.closest('.menubar-dropdown--resume');
+    const anchorRight = rightAnchor ? rightAnchor.getBoundingClientRect().right : r.right;
+    if ((preferred === 'right' || inWbToolbar) && anchorRight + gap + tw < window.innerWidth - 4) {
       tip.className = 'ui-tooltip right';
       tip.style.top = (r.top + r.height / 2 - th / 2) + 'px';
-      tip.style.left = (r.right + gap) + 'px';
-      const arrow = tip.querySelector('.ui-tooltip-arrow');
-      arrow.style.left = '';
-      arrow.style.top = (th / 2) + 'px';
-      arrow.style.transform = 'translateY(-50%)';
+      tip.style.left = (anchorRight + gap) + 'px';
+      tip.style.setProperty('--arrow-y', (th / 2) + 'px');
       return;
     }
 
@@ -53,16 +66,40 @@ export function initTooltip() {
     tip.style.top = top + 'px';
     tip.style.left = left + 'px';
     const arrowLeft = r.left + r.width / 2 - left;
-    const arrow = tip.querySelector('.ui-tooltip-arrow');
-    arrow.style.left = arrowLeft + 'px';
-    arrow.style.top = '';
-    arrow.style.transform = 'translateX(-50%)';
+    tip.style.setProperty('--arrow-x', arrowLeft + 'px');
+    tip.style.setProperty('--arrow-y', '');
+  }
+
+  function suppressTitle(el) {
+    // Remove native title from the element and its children to prevent double-tooltip
+    if (el.hasAttribute('title')) {
+      el._savedTitle = el.getAttribute('title');
+      el.removeAttribute('title');
+    }
+    el.querySelectorAll('[title]').forEach(child => {
+      child._savedTitle = child.getAttribute('title');
+      child.removeAttribute('title');
+    });
+  }
+
+  function restoreTitle(el) {
+    if (el._savedTitle !== undefined) {
+      el.setAttribute('title', el._savedTitle);
+      delete el._savedTitle;
+    }
+    el.querySelectorAll('*').forEach(child => {
+      if (child._savedTitle !== undefined) {
+        child.setAttribute('title', child._savedTitle);
+        delete child._savedTitle;
+      }
+    });
   }
 
   function show(el) {
     let text = el.getAttribute('data-tooltip');
     if (!text) return;
     clearTimeout(hideTimer);
+    suppressTitle(el);
     const textEl = tip.querySelector('.ui-tooltip-text');
     const nlIdx = text.indexOf('\n');
     if (nlIdx !== -1) {
@@ -82,15 +119,23 @@ export function initTooltip() {
     }
     currentTarget = el;
     tip.style.display = 'block';
-    tip.offsetHeight; // force reflow
+    tip.offsetHeight; // force reflow so dimensions are measurable
     positionTip(el);
     tip.classList.add('visible');
+    // Re-position on next frame — first show after display:none can mis-measure
+    requestAnimationFrame(() => {
+      if (currentTarget === el) {
+        positionTip(el);
+        tip.classList.add('visible');
+      }
+    });
   }
 
   function hide() {
     clearTimeout(showTimer);
     clearTimeout(hideTimer);
     showTimer = null;
+    if (currentTarget) restoreTitle(currentTarget);
     currentTarget = null;
     tip.classList.remove('visible');
     hideTimer = setTimeout(() => { tip.style.display = 'none'; }, 150);

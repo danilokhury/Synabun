@@ -12,6 +12,10 @@ If the input topic is empty, you are in **freeform mode** — explore the full m
 - `remember` accepts `tags` and `importance` directly and returns the full UUID.
 - `reflect` requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`). Use the UUID returned by `remember`, or `recall` to find existing memories.
 
+## Runtime Compatibility
+
+- **Category management** means: use the runtime's available category tool surface, whether that is split helpers such as `category_list` / `category_create` or a unified `category` tool with actions like `list` / `create`.
+
 ## Process
 
 Execute these phases in order. Do NOT skip phases or combine them.
@@ -20,8 +24,8 @@ Execute these phases in order. Do NOT skip phases or combine them.
 
 ### Phase 1 — Landscape Survey
 
-1. Call `category_list` with format `tree` to see all memory categories and their hierarchy.
-2. Call `memories` with mode `stats` to understand the memory landscape (counts, categories, projects).
+1. List categories in `tree` format to see the full memory hierarchy.
+2. Call `memories` with `action: "stats"` to understand the memory landscape (counts, categories, projects).
 3. If a topic was provided, identify which categories are most relevant AND which are most distant (distant = higher cross-pollination potential).
 4. If freeform mode, note the top 3 categories by memory count and the most underexplored category.
 
@@ -120,8 +124,8 @@ After presenting ideas, ask the user:
 
 If the user says yes:
 
-1. Call `category_list` (flat format) to check if an `ideas` category already exists
-2. If not, call `category_create` with:
+1. List categories in `flat` format to check if an `ideas` category already exists.
+2. If not, create it with the runtime's category-management tool using:
    - `name`: "ideas"
    - `description`: "Brainstormed features, experiments, and creative explorations"
    - `parent`: the current project's parent category (e.g., "criticalpixel") — or no parent if no project match
