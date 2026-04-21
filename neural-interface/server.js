@@ -13887,7 +13887,17 @@ app.get('/api/setup/status', (req, res) => {
     } catch {}
     codex.cliCommand = `codex --full-auto mcp add -- node "${mcpIndexPath}"`;
 
-    res.json({ ok: true, claude, gemini, codex, paths: { mcpIndexPath, envPath } });
+    // OpenCode
+    let opencode = { connected: false };
+    try {
+      const ocPath = getOpencodeConfigPath();
+      if (existsSync(ocPath)) {
+        const oc = JSON.parse(readFileSync(ocPath, 'utf-8'));
+        opencode.connected = !!(oc?.mcp && oc.mcp.SynaBun);
+      }
+    } catch {}
+
+    res.json({ ok: true, claude, gemini, codex, opencode, paths: { mcpIndexPath, envPath } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
