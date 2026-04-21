@@ -99,6 +99,7 @@ let _primaryAgents = new Set();
 let _sessions = [];
 const _userMsgIds = new Set(); // track user messageIDs to filter echoed SSE events
 const _partTypes = new Map(); // track partID → type (reasoning/text) from part.updated events
+const _renderedAssistantMsgIds = new Set(); // prevents double-render when message.updated re-fires after finalize (Windows timing)
 let _activeSendRequestId = null; // WS request id of the in-flight message:send (for abort cancellation)
 let _renderSeq = 0; // guard against stale async renders overwriting fresh ones
 let _activeQuestionToolId = null; // toolId of the currently active (unanswered) question card
@@ -1163,6 +1164,15 @@ export function handleSSEEvent(eventType, event) {
         if (mid) _userMsgIds.add(mid);
         break;
       }
+      // Guard: once we've rendered this assistant message's final payload, ignore
+      // re-emitted message.updated events (OpenCode on Windows sometimes fires a
+      // late duplicate after finalize, which would otherwise re-stream the whole
+      // response into a brand-new assistant bubble).
+      const assistantMid = info.id || event.messageID;
+      if (assistantMid && _renderedAssistantMsgIds.has(assistantMid)) {
+        update();
+        break;
+      }
       // If no streaming element was built by prior deltas, render the
       // assistant's content directly from the event (non-streaming path)
       const hasStreaming = container.querySelector('.ocp-msg-assistant.streaming');
@@ -1176,6 +1186,9 @@ export function handleSSEEvent(eventType, event) {
         removeThinking(container);
         finalizeStreamingMessage(container);
         _partTypes.clear();
+        if (assistantMid && (explicitTerminal || info.tokens || info.usage)) {
+          _renderedAssistantMsgIds.add(assistantMid);
+        }
         if (info.tokens || info.usage) {
           const raw = info.tokens || info.usage || {};
           tab.threadTokenUsage = normalizeThreadTokenUsage(raw);
@@ -1287,6 +1300,14 @@ export function handleSSEEvent(eventType, event) {
     }
     case 'message.completed': {
       removeThinking(container);
+      const completedMid = event.messageID || event.id;
+      if (completedMid && _renderedAssistantMsgIds.has(completedMid)) {
+        tab.running = false;
+        tab.turnStartedAt = 0;
+        setTurnStatus(tab);
+        update();
+        break;
+      }
       // Fallback: render content if no streaming element was built
       const hasStreamingLegacy = container.querySelector('.ocp-msg-assistant.streaming');
       renderAssistantPayload(container, event.content ?? event.parts ?? event.text ?? '', {
@@ -1294,6 +1315,7 @@ export function handleSSEEvent(eventType, event) {
       });
       finalizeStreamingMessage(container);
       _partTypes.clear();
+      if (completedMid) _renderedAssistantMsgIds.add(completedMid);
       tab.running = false;
       tab.turnStartedAt = 0;
       setTurnStatus(tab);
