@@ -10,13 +10,6 @@ import { emit } from './state.js';
 
 const $ = (id) => document.getElementById(id);
 
-const UPDATE_COMMANDS = {
-  'claude-code': 'npm install -g @anthropic-ai/claude-code@latest',
-  'codex':       'npm install -g @openai/codex@latest',
-  'gemini':      'npm install -g @google/gemini-cli@latest',
-  'opencode':    'opencode upgrade',
-};
-
 const TOOL_ELEMENTS = {
   'claude-code': { toolbar: 'claude-update-badge',   menu: 'claude-menu-update-badge' },
   'codex':       { toolbar: 'codex-update-badge',    menu: 'codex-menu-update-badge' },
@@ -32,10 +25,34 @@ const PARENT_ELEMENTS = {
   'gemini':      { toolbar: null,                         menu: 'menu-terminal-gemini' },
 };
 
+const TOOL_LABELS = {
+  'claude-code': 'Claude Code',
+  'codex':       'Codex',
+  'opencode':    'OpenCode',
+  'gemini':      'Gemini CLI',
+};
+
+// Cached server response so click handlers can read per-tool updateCommand
+// without re-fetching. Refreshed on every applyBadges() call.
+let _latestData = null;
+
 function runUpdate(key, badge) {
-  const cmd = UPDATE_COMMANDS[key];
-  if (!cmd) return;
-  emit('terminal:run-command', { command: cmd, label: `Update ${key}` });
+  const info = _latestData?.tools?.[key];
+  const cmd = info?.updateCommand;
+
+  if (!cmd) {
+    // Tool installed via a source we can't safely auto-update from
+    // (winget, native installer, etc.) and has no built-in self-updater.
+    const label = TOOL_LABELS[key] || key;
+    const src = info?.installSource;
+    const hint = src && src !== 'unknown' && src !== 'other'
+      ? `via your installer (${src})`
+      : 'using your original installer';
+    alert(`${label} update available (v${info?.installed} → v${info?.latest}).\n\nPlease update ${hint}.`);
+    return;
+  }
+
+  emit('terminal:run-command', { command: cmd, label: `Update ${TOOL_LABELS[key] || key}` });
   // Optimistically clear the badge and restore parent tooltip
   if (badge) {
     badge.textContent = '';
@@ -70,11 +87,17 @@ function wireParentIntercept(parentId, badgeId, key) {
 
 function applyBadges(data) {
   if (!data.tools) return;
+  _latestData = data;
 
   for (const [key, ids] of Object.entries(TOOL_ELEMENTS)) {
     const info = data.tools[key];
     const has = info && info.updateAvailable;
-    const tip = has ? `v${info.installed} → v${info.latest} — click to update` : '';
+    const canUpdate = has && info?.canUpdate;
+    const tip = has
+      ? (canUpdate
+          ? `v${info.installed} → v${info.latest} — click to update`
+          : `v${info.installed} → v${info.latest} — update via ${info.installSource || 'your installer'}`)
+      : '';
     const parents = PARENT_ELEMENTS[key];
 
     if (ids.toolbar) {
