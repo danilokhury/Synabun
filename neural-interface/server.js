@@ -2224,10 +2224,36 @@ function resolveLocalCodexBin() {
   }
 }
 
+function ensureBundledCodexExecutable(bundledJsPath) {
+  if (process.platform === 'win32') return;
+  try {
+    const st = statSync(bundledJsPath);
+    if (!(st.mode & 0o111)) chmodSync(bundledJsPath, st.mode | 0o755);
+  } catch {}
+  const PLATFORM_PACKAGE = {
+    'darwin-arm64': { pkg: '@openai/codex-darwin-arm64', triple: 'aarch64-apple-darwin' },
+    'darwin-x64':   { pkg: '@openai/codex-darwin-x64',   triple: 'x86_64-apple-darwin' },
+    'linux-x64':    { pkg: '@openai/codex-linux-x64',    triple: 'x86_64-unknown-linux-musl' },
+    'linux-arm64':  { pkg: '@openai/codex-linux-arm64',  triple: 'aarch64-unknown-linux-musl' },
+  };
+  const info = PLATFORM_PACKAGE[`${process.platform}-${process.arch}`];
+  if (!info) return;
+  try {
+    const requireFromHere = createRequire(import.meta.url);
+    const pkgJson = requireFromHere.resolve(`${info.pkg}/package.json`);
+    const nativeBin = join(dirname(pkgJson), 'vendor', info.triple, 'codex', 'codex');
+    if (existsSync(nativeBin)) {
+      const st = statSync(nativeBin);
+      if (!(st.mode & 0o111)) chmodSync(nativeBin, st.mode | 0o755);
+    }
+  } catch {}
+}
+
 function getCodexBin() {
   if (_codexBinPath) return _codexBinPath;
   const bundledBin = resolveLocalCodexBin();
   if (bundledBin && existsSync(bundledBin)) {
+    ensureBundledCodexExecutable(bundledBin);
     _codexBinPath = bundledBin;
     _codexBinSource = 'bundled';
     return _codexBinPath;
@@ -2879,7 +2905,7 @@ CRITICAL — When you need clarification during planning:
     if (child) return child;
     let codexBin = getCodexBin();
     const args = ['app-server'];
-    if (process.platform === 'win32' && /\.js$/i.test(codexBin)) {
+    if (/\.js$/i.test(codexBin)) {
       args.unshift(codexBin);
       codexBin = process.execPath;
     }
@@ -9744,7 +9770,7 @@ app.get('/api/system/tool-versions', async (req, res) => {
     try { await checkToolVersions(); } catch {}
   } else {
     const age = Date.now() - new Date(_toolVersionCache.checkedAt).getTime();
-    if (age > 3 * 60 * 60 * 1000) {
+    if (age > 15 * 60 * 1000) {
       try { await checkToolVersions(); } catch {}
     }
   }
