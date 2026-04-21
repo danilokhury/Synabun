@@ -13,7 +13,6 @@
     "postinstall": "node scripts/rebuild-pty.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.71",
     "@huggingface/transformers": "^3.0.0",
     "@openai/codex-sdk": "^0.121.0",
     "adm-zip": "^0.5.16",
