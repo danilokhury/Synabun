@@ -166,16 +166,22 @@ function buildMcpServer() {
     return;
   }
 
-  warn('MCP server dist/ not found — attempting build (requires TypeScript)');
+  info('Building MCP server from source...');
   try {
     execSync('npx tsc', {
       cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
-      stdio: 'pipe',
-      timeout: 60_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120_000,
     });
     ok('MCP server built');
   } catch (err) {
-    warn('MCP server build failed (TypeScript not available) — reinstall with: npm install -g synabun@latest');
+    fail('MCP server build failed:');
+    const stdout = err.stdout?.toString().trim();
+    const stderr = err.stderr?.toString().trim();
+    if (stdout) console.error(stdout);
+    if (stderr) console.error(stderr);
+    if (!stdout && !stderr) console.error(err.message);
+    console.error('\n  Report this at: https://github.com/danilokhury/Synabun/issues');
   }
 }
 
