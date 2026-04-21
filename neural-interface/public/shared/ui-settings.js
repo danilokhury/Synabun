@@ -1080,6 +1080,7 @@ function buildSetupTab(setupStatus) {
   const claudeConnected = setupStatus.claude?.connected || false;
   const geminiConnected = setupStatus.gemini?.connected || false;
   const codexConnected = setupStatus.codex?.connected || false;
+  const opencodeConnected = setupStatus.opencode?.connected || false;
 
   const statusBadge = (on) => `<span class="setup-status-badge ${on ? 'active' : 'inactive'}">${on ? 'Connected' : 'Off'}</span>`;
 
@@ -1179,6 +1180,40 @@ function buildSetupTab(setupStatus) {
               <div class="cc-greeting-label" style="margin-bottom:4px">AGENTS.md Ruleset</div>
               <div class="cc-ruleset-preview" id="setup-codex-ruleset-preview">Loading...</div>
               <button class="cc-copy-btn" id="setup-codex-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
+              <div class="setup-hint">Paste into your project's <code>AGENTS.md</code></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- OPENCODE -->
+        <div class="iface-section collapsed" data-collapsible id="setup-opencode">
+          <div class="gfx-group-title">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${CHEVRON_ICON}
+              ${OPENCODE_ICON}
+              <span>OpenCode</span>
+              ${statusBadge(opencodeConnected)}
+            </span>
+          </div>
+          <div class="cc-section-body">
+            <div class="cc-integration-item${opencodeConnected ? ' enabled' : ''}" id="setup-opencode-mcp-row">
+              <div class="cc-integration-info">
+                <div class="cc-integration-label">SynaBun MCP</div>
+                <div class="cc-integration-path" id="setup-opencode-mcp-status">${opencodeConnected ? 'Registered in ~/.config/opencode/config.json' : 'Not connected'}</div>
+              </div>
+              <button class="cc-toggle${opencodeConnected ? ' on' : ''}" id="setup-opencode-mcp-toggle"></button>
+            </div>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.config/opencode/config.json)</span></div>
+              <div class="cc-ruleset-preview" id="setup-opencode-config-preview" style="max-height:120px">Loading...</div>
+              <button class="cc-copy-btn" id="setup-opencode-config-copy" style="margin-top:4px">${COPY_ICON} Copy JSON Config</button>
+            </div>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">AGENTS.md Ruleset</div>
+              <div class="cc-ruleset-preview" id="setup-opencode-ruleset-preview">Loading...</div>
+              <button class="cc-copy-btn" id="setup-opencode-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
               <div class="setup-hint">Paste into your project's <code>AGENTS.md</code></div>
             </div>
           </div>
@@ -2855,7 +2890,7 @@ export async function openSettingsModal() {
   let greetingConfig = { defaults: {}, projects: {}, global: {} };
   let codexGreetingConfig = { enabled: true, defaults: {}, projects: {}, global: {} };
   let opencodeGreetingConfig = { enabled: false, defaults: {}, projects: {}, global: {} };
-  let setupStatus = { claude: {}, gemini: {}, codex: {}, paths: {} };
+  let setupStatus = { claude: {}, gemini: {}, codex: {}, opencode: {}, paths: {} };
   let cliConfig = {};
   let toolPermissions = {};
   let toolCategories = [];
@@ -2944,7 +2979,7 @@ export async function openSettingsModal() {
       <nav class="settings-nav">
         ${buildNavHTML(variantTabs, {
           server: settings.storage === 'sqlite' ? 'connected' : 'disconnected',
-          setup: (setupStatus.claude?.connected || setupStatus.gemini?.connected || setupStatus.codex?.connected) ? 'connected' : 'disconnected',
+          setup: (setupStatus.claude?.connected || setupStatus.gemini?.connected || setupStatus.codex?.connected || setupStatus.opencode?.connected) ? 'connected' : 'disconnected',
           discord: discordConfig.botToken ? 'connected' : 'disconnected',
         })}
       </nav>
@@ -4988,6 +5023,38 @@ export async function openSettingsModal() {
       wireCopyBtn('setup-codex-config-copy', () => cachedConfig, 'Copy TOML Config');
     }
     wireRulesetPreview('codex', 'codex');
+
+    // ── OpenCode ──
+    wireSetupMcpToggle('opencode', '/api/opencode/mcp', '~/.config/opencode/config.json');
+    // Config preview — OpenCode stores MCP servers under the "mcp" key of config.json
+    {
+      const preview = overlay.querySelector('#setup-opencode-config-preview');
+      let cachedConfig = '';
+      if (preview) {
+        const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs';
+        const ep = setupStatus.paths?.envPath || '<path-to>/synabun/.env';
+        fetch('/api/opencode/mcp').then(r => r.json()).then(data => {
+          if (data.ok && data.data && Object.keys(data.data).length) {
+            cachedConfig = JSON.stringify({ mcp: data.data }, null, 2);
+            preview.textContent = cachedConfig;
+          } else if (data.ok) {
+            cachedConfig = JSON.stringify({
+              mcp: {
+                SynaBun: {
+                  type: 'stdio',
+                  command: 'node',
+                  args: [mp],
+                  env: { DOTENV_PATH: ep },
+                },
+              },
+            }, null, 2);
+            preview.textContent = cachedConfig;
+          } else { preview.textContent = 'Could not load config.'; }
+        }).catch(() => { preview.textContent = 'Failed to load.'; });
+      }
+      wireCopyBtn('setup-opencode-config-copy', () => cachedConfig, 'Copy JSON Config');
+    }
+    wireRulesetPreview('opencode', 'generic');
 
     // ── Coexistence rules ──
     wireRulesetPreview('coexistence', 'coexistence');
