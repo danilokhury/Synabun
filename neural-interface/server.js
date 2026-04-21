@@ -95,7 +95,20 @@ dotenvConfig({ path: resolve(process.env.SYNABUN_DATA_HOME || resolve(__dirname,
 
 const app = express();
 const SERVER_BOOT_ID = randomUUID();
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '25mb' }));
+
+// Clean body-parser error handler: ui-state / whiteboard persist base64 images and can
+// exceed the JSON limit. Default Express handler dumps a 10-line raw-body stack with no
+// URL — this logs one line with context and responds 413 instead.
+app.use((err, req, res, next) => {
+  if (err && (err.type === 'entity.too.large' || err.type === 'entity.parse.failed')) {
+    const len = req.headers['content-length'] || '?';
+    console.warn(`[body-parser] ${err.type} ${req.method} ${req.originalUrl || req.url} content-length=${len} limit=${err.limit || '?'}`);
+    if (!res.headersSent) res.status(err.status || 413).json({ error: err.type, limit: err.limit });
+    return;
+  }
+  next(err);
+});
 
 // Block tunnel traffic from accessing anything except /mcp and /invite
 // Cloudflared adds CF-Connecting-IP header on proxied requests
@@ -3814,8 +3827,8 @@ let _ocpBootReconcileTried = false;
 let _ocpLastBootAt = 0;           // Date.now() when serve process last became ready
 let _ocpAuthReconciling = false;  // prevent concurrent reconciliation
 
-// ── Verbose trace logging (toggle with OCP_VERBOSE=0 to disable) ──
-const OCP_VERBOSE = process.env.OCP_VERBOSE !== '0';
+// ── Verbose trace logging (opt-in: OCP_VERBOSE=1 to enable) ──
+const OCP_VERBOSE = process.env.OCP_VERBOSE === '1';
 let _ocpTraceSeq = 0;
 function _ocpNow() { return Number(process.hrtime.bigint() / 1_000_000n); }
 function _ocpMs(start) { return _ocpNow() - start; }
@@ -17072,27 +17085,58 @@ app.get('/api/terminal/sessions/:id/claude-session', (req, res) => {
 
 // ── Terminal file tree ──
 
+const IS_WINDOWS = process.platform === 'win32';
+let _gitMissingLogged = false;
+
+// Cross-platform git invocation. On Windows, shell:true is required to resolve .cmd
+// shims (Scoop, winget); without it, spawnSync('git', ...) fails with ENOENT and git UI
+// silently disappears. Args with shell metacharacters are quoted so cmd.exe passes them
+// through verbatim (e.g. --format=%(refname:short)).
+function spawnGit(args, opts = {}) {
+  const baseOpts = { stdio: 'pipe', timeout: 5000, windowsHide: true, ...opts };
+  if (IS_WINDOWS) {
+    const quoted = args.map(a => /[\s()%&|<>^"']/.test(a) ? `"${String(a).replace(/"/g, '\\"')}"` : a);
+    return spawnSync('git', quoted, { ...baseOpts, shell: true });
+  }
+  return spawnSync('git', args, baseOpts);
+}
+
+function logGitFailure(where, err) {
+  const msg = err?.stderr?.toString?.() || err?.message || String(err);
+  if (!msg || /not a git repository/i.test(msg)) return;
+  if (/ENOENT/i.test(msg) || /is not recognized/i.test(msg) || /command not found/i.test(msg)) {
+    if (_gitMissingLogged) return;
+    _gitMissingLogged = true;
+    console.warn(`[git] '${where}' failed: git executable not found on PATH. Install Git and ensure it's on the Node process PATH.`);
+    return;
+  }
+  console.warn(`[git] '${where}' failed:`, msg.trim().split('\n')[0]);
+}
+
 /** Try to get git status for a directory. Returns { branch, statuses } or null. */
 function getGitInfo(dir) {
   try {
     // Check if inside a git work tree
-    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000, windowsHide: true });
 
     // Get branch name
     let branch = '';
     try {
-      branch = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+      branch = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000, windowsHide: true }).toString().trim();
       if (!branch) {
         // Detached HEAD — get short SHA
-        branch = execSync('git rev-parse --short HEAD', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
+        branch = execSync('git rev-parse --short HEAD', { cwd: dir, stdio: 'pipe', timeout: 3000, windowsHide: true }).toString().trim();
       }
-    } catch {}
+    } catch (err) { logGitFailure('branch --show-current', err); }
 
     // Get status for this directory (porcelain v1: XY <path>)
-    // spawnSync over execSync — execSync's 1MB default maxBuffer overflows on repos with very large
+    // spawnGit over execSync — execSync's 1MB default maxBuffer overflows on repos with very large
     // status output (e.g. tracked browser-profile caches), throwing ENOBUFS and silently disabling git UI.
-    const statusResult = spawnSync('git', ['status', '--porcelain', '-u', '.'], { cwd: dir, stdio: 'pipe', timeout: 5000, maxBuffer: 256 * 1024 * 1024 });
-    if (statusResult.status !== 0) return { branch, statuses: new Map() };
+    const statusResult = spawnGit(['status', '--porcelain', '-u', '.'], { cwd: dir, maxBuffer: 256 * 1024 * 1024 });
+    if (statusResult.status !== 0) {
+      logGitFailure('status --porcelain', statusResult.error || { stderr: statusResult.stderr });
+      return { branch, statuses: new Map() };
+    }
     const raw = statusResult.stdout.toString();
     const statuses = new Map(); // name → status code
 
@@ -17130,7 +17174,8 @@ function getGitInfo(dir) {
     }
 
     return { branch, statuses };
-  } catch {
+  } catch (err) {
+    logGitFailure('rev-parse --is-inside-work-tree', err);
     return null;
   }
 }
@@ -17214,8 +17259,9 @@ app.get('/api/terminal/branches', (req, res) => {
   if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
 
   try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
-  } catch {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000, windowsHide: true });
+  } catch (err) {
+    logGitFailure('branches: rev-parse', err);
     return res.json({ branches: [], current: null });
   }
 
@@ -17223,11 +17269,12 @@ app.get('/api/terminal/branches', (req, res) => {
     // Current branch
     let current = '';
     try {
-      current = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
-    } catch {}
+      current = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000, windowsHide: true }).toString().trim();
+    } catch (err) { logGitFailure('branches: show-current', err); }
 
-    // All local branches — spawnSync with argv so the %(...) format isn't mangled by cmd.exe variable expansion on Windows
-    const branchResult = spawnSync('git', ['branch', '--format=%(refname:short)'], { cwd: dir, stdio: 'pipe', timeout: 5000 });
+    // All local branches — spawnGit handles .cmd shim resolution and %(...) escaping on Windows.
+    const branchResult = spawnGit(['branch', '--format=%(refname:short)'], { cwd: dir });
+    if (branchResult.status !== 0) logGitFailure('branch --format', branchResult.error || { stderr: branchResult.stderr });
     const raw = branchResult.status === 0 ? branchResult.stdout.toString().trim() : '';
     const branches = raw ? raw.split('\n').map(b => b.trim()).filter(Boolean) : [];
 
@@ -17247,25 +17294,25 @@ app.post('/api/terminal/checkout', (req, res) => {
   }
 
   try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000 });
+    execSync('git rev-parse --is-inside-work-tree', { cwd: dir, stdio: 'pipe', timeout: 3000, windowsHide: true });
   } catch {
     return res.status(400).json({ error: 'Not a git repository' });
   }
 
-  // Use spawnSync to avoid shell injection — branch passed as argument, not interpolated
-  // No '--' separator — that would make git treat the branch name as a file pathspec
-  const result = spawnSync('git', ['checkout', branch], { cwd: dir, stdio: 'pipe', timeout: 10000 });
+  // Branch is validated against /^[\w.\-/]+$/ above, so shell:true on Windows is safe here.
+  // No '--' separator — that would make git treat the branch name as a file pathspec.
+  const result = spawnGit(['checkout', branch], { cwd: dir, timeout: 10000 });
 
   if (result.status !== 0) {
-    const stderr = result.stderr?.toString?.()?.trim() || 'Checkout failed';
+    const stderr = result.stderr?.toString?.()?.trim() || result.error?.message || 'Checkout failed';
     return res.status(500).json({ error: stderr });
   }
 
   // Return confirmed branch name + git's own output
   let current = '';
   try {
-    current = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000 }).toString().trim();
-  } catch {}
+    current = execSync('git branch --show-current', { cwd: dir, stdio: 'pipe', timeout: 3000, windowsHide: true }).toString().trim();
+  } catch (err) { logGitFailure('checkout: show-current', err); }
   const output = result.stderr?.toString?.()?.trim() || `Switched to branch '${current}'`;
   res.json({ ok: true, branch: current, output });
 });
