@@ -86,11 +86,19 @@ Use "category" with action "list" to see valid category names before using remem
     instructions += `\n\nLeonardo tools are 100% browser-based — no API key needed. Use leonardo_browser_navigate to go to the right page, then use generic browser tools (browser_click, browser_fill, browser_snapshot) to configure settings (model, style, dimensions, motion controls), and leonardo_browser_generate to fill the prompt and click Generate. Use the /leonardo skill for the full guided creation experience.`;
   }
 
+  // Dedupe this log — buildServerInstructions runs on every HTTP MCP request
+  // (fresh server per request), which would otherwise spam this line forever.
   const profileName = getActiveProfileName();
-  console.error(`[SynaBun] Profile: ${profileName} (${activeGroups.size} groups, instructions: ${instructions.length} chars)`);
+  const sig = `${profileName}|${activeGroups.size}|${instructions.length}`;
+  if (sig !== _lastInstructionsSig) {
+    _lastInstructionsSig = sig;
+    console.error(`[SynaBun] Profile: ${profileName} (${activeGroups.size} groups, instructions: ${instructions.length} chars)`);
+  }
 
   return instructions;
 }
+
+let _lastInstructionsSig: string | null = null;
 
 // Register ALL tools on a given McpServer instance.
 // All groups are always registered; applyProfile() enables/disables them.

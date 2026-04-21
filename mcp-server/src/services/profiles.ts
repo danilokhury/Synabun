@@ -116,21 +116,21 @@ export function applyProfile(profileName: string): { profile: string; enabled: s
     if (!shouldEnable && _activeGroups.has(group)) disabled.push(group);
   }
 
+  const prevProfileName = _activeProfileName;
   _activeGroups = newGroups;
   _activeProfileName = profileName.toLowerCase().trim();
 
   // Count enabled tools (core + enabled groups)
-  let totalTools = 10; // core memory tools + profile tool
-  for (const [, tools] of _toolGroups) {
-    if (_activeGroups.has([..._toolGroups].find(([, t]) => t === tools)?.[0] ?? '')) totalTools += tools.length;
-  }
-  // Simpler recount
-  totalTools = 10;
+  let totalTools = 10;
   for (const [group, tools] of _toolGroups) {
     if (_activeGroups.has(group)) totalTools += tools.length;
   }
 
-  console.error(`[SynaBun] Profile switched to "${_activeProfileName}" (${_activeGroups.size} groups, ${totalTools} tools, +${enabled.join(',') || 'none'}, -${disabled.join(',') || 'none'})`);
+  // Only log on an actual change — HTTP MCP creates a fresh server per request,
+  // which would otherwise spam this line twice per request forever.
+  if (prevProfileName !== _activeProfileName || enabled.length > 0 || disabled.length > 0) {
+    console.error(`[SynaBun] Profile switched to "${_activeProfileName}" (${_activeGroups.size} groups, ${totalTools} tools, +${enabled.join(',') || 'none'}, -${disabled.join(',') || 'none'})`);
+  }
   return { profile: _activeProfileName, enabled, disabled, totalTools };
 }
 
