@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2026.4.20-beta.4",
+  "version": "2026.4.20-beta.5",
   "description": "Persistent vector memory for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -59,8 +59,5 @@
   },
   "engines": {
     "node": ">=22.0.0"
-  },
-  "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.91"
   }
 }
