@@ -761,6 +761,10 @@ export async function sendMessage(content, options = {}) {
         removeThinking(container);
         finalizeStreamingMessage(container);
       }
+      // Mark this assistant message as rendered so late terminal SSE
+      // message.updated events (which arrive after POST resolves on some
+      // Windows/model combos) don't re-stream the full payload into a new bubble.
+      if (info.id) _renderedAssistantMsgIds.add(info.id);
       tab.running = false;
       tab.turnStartedAt = 0;
       if (info.tokens || info.usage) {
@@ -1186,6 +1190,10 @@ export function handleSSEEvent(eventType, event) {
         removeThinking(container);
         finalizeStreamingMessage(container);
         _partTypes.clear();
+        // Only mark the ID as rendered at the terminal signal (tokens/usage
+        // arrived or status is explicitly terminal). Mid-turn message.updated
+        // events may fire before streaming starts and shouldn't lock out later
+        // part.delta / part.updated events.
         if (assistantMid && (explicitTerminal || info.tokens || info.usage)) {
           _renderedAssistantMsgIds.add(assistantMid);
         }
@@ -1215,6 +1223,8 @@ export function handleSSEEvent(eventType, event) {
     // Streaming text delta — the primary streaming event from OpenCode
     case 'message.part.delta': {
       if (_userMsgIds.has(event.messageID)) break; // skip user message echoes
+      // Skip deltas for assistant messages already finalized (late echoes).
+      if (event.messageID && _renderedAssistantMsgIds.has(event.messageID)) break;
       if (event.delta) {
         const partType = String(event.part?.type || event.partType || _partTypes.get(event.partID) || '').trim().toLowerCase();
         const isReasoning = partType === 'reasoning' || partType === 'thinking' || partType === 'thought';
@@ -1249,7 +1259,11 @@ export function handleSSEEvent(eventType, event) {
         update();
       } else if (updatedType === 'text') {
         const hasStreaming = container.querySelector('.ocp-msg-assistant.streaming');
-        if (!hasStreaming) {
+        // Skip the fallback render if this assistant message has already been
+        // finalized by POST response or a prior message.updated — otherwise we
+        // create a duplicate bubble when late text part.updated events arrive.
+        const partMsgId = part.messageID || part.messageId;
+        if (!hasStreaming && !(partMsgId && _renderedAssistantMsgIds.has(partMsgId))) {
           renderAssistantPayload(container, part, { textMode: 'stream' });
         }
         setTurnStatus(tab, 'Writing response…', tabStatusDetail(tab));
