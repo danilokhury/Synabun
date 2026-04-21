@@ -9841,9 +9841,18 @@ function isInsideSynabun(binPath) {
   }
 }
 
+// Versions of @anthropic-ai/claude-code that SynaBun has historically shipped
+// as a bundled dependency. If a `claude --version` probe returns one of these,
+// it's almost certainly the stale bundle (a real user-global install would be
+// the current 2.1.116+). Reject hard regardless of where the binary path looks
+// to come from. Add new versions here if SynaBun ever ships claude-code again.
+const KNOWN_STALE_CLAUDE_VERSIONS = new Set(['2.1.71', '2.1.89', '2.1.91']);
+
 // Aggressively delete any stale bundled CLI tool packages left over in our
 // own node_modules. Idempotent — runs on every startup. Belt-and-suspenders
 // against `npm install` not auto-pruning packages removed from package.json.
+// Logs every found package (deleted or not) so Windows users can confirm the
+// prune is actually firing on their box.
 function pruneBundledCliTools() {
   const stalePkgs = ['@anthropic-ai/claude-code', '@openai/codex', 'opencode-ai', '@google/gemini-cli'];
   const moduleRoots = [
@@ -9895,6 +9904,20 @@ async function checkToolVersions() {
         const raw = execSync(`${tool.cmd} ${tool.versionArg}`, execOpts).trim();
         installed = parseVersion(raw);
       } catch { /* not installed or errored */ }
+    }
+
+    // Nuclear safety net for the recurring claude phantom-version bug:
+    // if the probe returned a known historical bundled version of claude-code,
+    // reject it even if the binary-path detection failed. A real user-global
+    // install of claude is always current (2.1.116+), so seeing 2.1.89 etc.
+    // means we're reading a stale bundle SynaBun shipped in a prior release.
+    if (tool.key === 'claude-code' && installed && KNOWN_STALE_CLAUDE_VERSIONS.has(installed)) {
+      console.warn(
+        `  [version-guard] Rejected claude v${installed} from ${probedBinPath || '(unknown path)'}` +
+        ` — matches known-stale SynaBun bundle. Treating as not installed. ` +
+        `If you actually have this version installed, remove it from KNOWN_STALE_CLAUDE_VERSIONS.`
+      );
+      installed = null;
     }
 
     let latest = null;
