@@ -13,6 +13,11 @@ You are now in **changelog mode**. Your job is to analyze the current session's 
 - `remember` accepts `tags` and `importance` directly and returns the full UUID.
 - `reflect` requires the **FULL UUID**. Use the UUID returned by `remember`, or `recall` to find existing memories.
 
+## Runtime Compatibility
+
+- **Interactive choice prompt** means: use `AskUserQuestion` in Claude Code, `request_user_input` in Codex when that tool is available, otherwise ask a concise plain-text multiple-choice question and wait for the user's reply.
+- **File operations** mean: use the runtime's available local file tools. In Claude environments that may be `Read` / `Write` / `Edit`; in Codex it may be shell reads plus `apply_patch` or equivalent editing tools.
+
 ---
 
 ## Process
@@ -106,7 +111,7 @@ Present the drafted entries to the user:
 
 Then output the full drafted entries exactly as they would appear in CHANGELOG.md — the `### Added/Fixed/Changed` sections with all bullet points.
 
-Then use `AskUserQuestion` with:
+Then use an interactive choice prompt with:
 
 - **Save as-is** — "Write these entries to CHANGELOG.md"
 - **Edit first** — "I want to adjust entries before saving"
@@ -124,11 +129,11 @@ Once the user confirms:
 
 1. Set the changelog path: `$PROJECT_ROOT/CHANGELOG.md`
 
-2. Check if the file exists by attempting to `Read` it.
+2. Check if the file exists by reading it with the runtime's available file tools.
 
 **If CHANGELOG.md does NOT exist:**
 
-Create a new file using the `Write` tool:
+Create a new file using the runtime's available file-editing tools:
 
 ```markdown
 # Project Changelog
@@ -151,7 +156,7 @@ Read the entire file, then determine the insertion point:
   - Insert a new `## YYYY-MM-DD` section immediately after the first `# ` title line (and any blank line after it), before any existing `## ` date entries.
   - Place all drafted entries under the new date header.
 
-Use the `Edit` tool for modifications to existing files.
+Use the runtime's available file-editing tools for modifications to existing files.
 
 After writing, confirm to the user:
 
@@ -176,7 +181,7 @@ Silently call `remember` with:
 - `tags`: `["changelog", "documentation", "session-summary"]`
 - `related_files`: `["CHANGELOG.md"]`
 
-Do NOT use `AskUserQuestion` here — auto-remember is mandatory per project rules.
+Do NOT use an interactive choice prompt here — auto-remember is mandatory per project rules.
 
 ---
 

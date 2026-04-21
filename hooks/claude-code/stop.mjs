@@ -99,15 +99,38 @@ function findUnstoredRecentPlan() {
 
     const now = Date.now();
     const allFiles = [];
-    for (const dir of [PLANS_DIR, PLANS_DIR_FALLBACK]) {
-      if (!existsSync(dir)) continue;
-      for (const f of readdirSync(dir).filter(f => f.endsWith('.md'))) {
+
+    // Primary: scan PLANS_DIR — date subdirectories (YYYY-MM-DD/) and legacy flat files
+    if (existsSync(PLANS_DIR)) {
+      for (const entry of readdirSync(PLANS_DIR)) {
+        if (entry.startsWith('.')) continue; // skip .migrated, .gitkeep, etc.
+        const entryPath = join(PLANS_DIR, entry);
+        const entryStat = statSync(entryPath);
+
+        if (entryStat.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(entry)) {
+          // Date folder — scan .md files inside
+          for (const f of readdirSync(entryPath).filter(f => f.endsWith('.md'))) {
+            const fullPath = join(entryPath, f);
+            const stat = statSync(fullPath);
+            allFiles.push({ name: f, path: fullPath, mtimeMs: stat.mtimeMs });
+          }
+        } else if (entry.endsWith('.md')) {
+          // Legacy flat file still in root of PLANS_DIR
+          allFiles.push({ name: entry, path: entryPath, mtimeMs: entryStat.mtimeMs });
+        }
+      }
+    }
+
+    // Fallback: scan ~/.claude/plans/ (flat only)
+    if (existsSync(PLANS_DIR_FALLBACK)) {
+      for (const f of readdirSync(PLANS_DIR_FALLBACK).filter(f => f.endsWith('.md'))) {
         if (allFiles.some(r => r.name === f)) continue; // skip duplicates
-        const fullPath = join(dir, f);
+        const fullPath = join(PLANS_DIR_FALLBACK, f);
         const stat = statSync(fullPath);
         allFiles.push({ name: f, path: fullPath, mtimeMs: stat.mtimeMs });
       }
     }
+
     allFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
     for (const file of allFiles) {
@@ -408,6 +431,13 @@ async function main() {
         } catch { continue; }
       }
     } catch { /* ok */ }
+  }
+
+  // Skip exec-driven loops (Codex, Gemini) — they are server-driven, not hook-driven.
+  // The exec loop driver in server.js handles iteration transitions directly.
+  if (loop?.active && loop.driverType === 'exec') {
+    process.stdout.write(JSON.stringify({}));
+    return;
   }
 
   if (loop?.active) {

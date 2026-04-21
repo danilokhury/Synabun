@@ -1,10 +1,40 @@
-# User runtime data
-data/
-mcp-data/
-mcp-server/data/
-
-# OS
-.DS_Store
-
 # Dependencies
 node_modules/
+
+# Build output
+mcp-server/dist/
+
+# Runtime data
+/data/
+mcp-data/
+mcp-server/data/
+neural-interface/data/
+!mcp-server/data/.gitkeep
+!mcp-server/data/custom-categories-default.json
+!data/.gitkeep
+
+# Test suite
+.tests/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.db.backup-*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+connections.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Cache
+.cache/

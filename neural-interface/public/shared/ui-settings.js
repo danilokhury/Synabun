@@ -35,11 +35,13 @@ const TAB_ICONS = {
   icons: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
   notifications: '<svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
   browser: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><ellipse cx="12" cy="12" rx="4" ry="10" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="2" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="1.5"/></svg>',
+  mcp: '<svg viewBox="0 0 24 24"><path d="M3.49994 11.7501L11.6717 3.57855C12.7762 2.47398 14.5672 2.47398 15.6717 3.57855C16.7762 4.68312 16.7762 6.47398 15.6717 7.57855M15.6717 7.57855L9.49994 13.7501M15.6717 7.57855C16.7762 6.47398 18.5672 6.47398 19.6717 7.57855C20.7762 8.68312 20.7762 10.474 19.6717 11.5785L12.7072 18.543C12.3167 18.9335 12.3167 19.5667 12.7072 19.9572L13.9999 21.2499" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17.4999 9.74921L11.3282 15.921C10.2237 17.0255 8.43272 17.0255 7.32823 15.921C6.22373 14.8164 6.22373 13.0255 7.32823 11.921L13.4999 5.74939" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   setup: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
   skins: '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-1 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9zM6.5 13c-.83 0-1.5-.67-1.5-1.5S5.67 10 6.5 10 8 10.67 8 11.5 7.33 13 6.5 13zm3-4C8.67 9 8 8.33 8 7.5S8.67 6 9.5 6s1.5.67 1.5 1.5S10.33 9 9.5 9zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 6 14.5 6s1.5.67 1.5 1.5S15.33 9 14.5 9zm3 4c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>',
   social: '<svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>',
   skills: '<svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
   permissions: '<svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3z"/></svg>',
+  opencode: '<svg viewBox="0 0 24 24"><rect x="3" y="2" width="18" height="20" rx="2"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>',
   discord: '<svg viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>',
 };
 
@@ -50,6 +52,7 @@ const CHEVRON_ICON = '<svg class="cc-section-chevron" viewBox="0 0 24 24"><polyl
 const ANTHROPIC_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z" fill="currentColor"/></svg>';
 const GEMINI_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="currentColor"/></svg>';
 const OPENAI_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z" fill="currentColor"/></svg>';
+const OPENCODE_ICON = '<svg viewBox="0 0 24 30" class="cc-provider-icon" fill="currentColor"><path d="M18 6H6V24H18V6ZM24 30H0V0H24V30Z"/></svg>';
 const BROWSER_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><ellipse cx="12" cy="12" rx="4" ry="10" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="2" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 7h15M4.5 17h15" fill="none" stroke="currentColor" stroke-width="1"/></svg>';
 
 // ── Toast helper ──
@@ -254,15 +257,17 @@ export function restoreInterfaceConfig() {
 
 // ── Shared tab order (variant tabs injected by order) ──
 
-const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'notifications', 'browser', 'collections', 'memory', 'projects', 'hooks', 'skills', 'discord', 'permissions', 'social', 'skins', 'interface', 'icons'];
+const SHARED_TAB_IDS = ['server', 'setup', 'terminal', 'opencode', 'notifications', 'browser', 'mcp', 'collections', 'memory', 'projects', 'hooks', 'skills', 'discord', 'permissions', 'social', 'skins', 'interface', 'icons'];
 
 // ── Tab descriptor map ──
 const TAB_META = {
   server:      { label: 'General',     desc: 'API keys & status',       group: 'System' },
   setup:       { label: 'Setup',       desc: 'Claude, Gemini, Codex',   group: 'System' },
   terminal:    { label: 'Terminal',    desc: 'CLI executables',          group: 'System' },
+  opencode:    { label: 'OpenCode',   desc: 'Server & providers',       group: 'System' },
   notifications: { label: 'Notifications', desc: 'Alerts & sounds',    group: 'System' },
   browser:     { label: 'Browser',    desc: 'Playwright config',       group: 'System' },
+  mcp:         { label: 'MCP',        desc: 'Servers & profiles',      group: 'System' },
   collections: { label: 'Database',    desc: 'SQLite storage',          group: 'Data' },
   memory:      { label: 'Recall',      desc: 'Token budget & sync',     group: 'Data' },
   projects:    { label: 'Projects',    desc: 'Workspace configs',       group: 'Data' },
@@ -534,11 +539,11 @@ function buildServerTab(settings) {
             </div>
             <div id="stg-db-browser" style="display:none;margin:4px 0 8px;border:1px solid var(--s-medium);border-radius:6px;background:var(--s-darker);max-height:220px;overflow-y:auto"></div>
             <div class="settings-hint" id="stg-db-hint">${settings.dbExists ? `File exists (${dbSizeMB} MB)` : 'Database not found'}</div>
-            <div id="stg-db-move-status" style="display:none;margin-top:8px;font-size:12px;align-items:center;gap:8px"></div>
-            <div id="stg-db-move-cleanup" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(109,213,140,0.08);border:1px solid rgba(109,213,140,0.2);border-radius:8px;font-size:12px;">
-              <div style="color:var(--green);margin-bottom:6px;font-weight:600">Move successful!</div>
-              <div style="color:var(--t-secondary);margin-bottom:6px">Old database files remain at the previous location.</div>
-              <div id="stg-db-mcp-notice" style="color:var(--t-muted);margin-bottom:8px;font-size:11px">Note: Restart the MCP server for the change to take effect.</div>
+            <div id="stg-db-move-status" class="stg-inline-status" style="display:none;margin-top:8px;align-items:center;gap:8px"></div>
+            <div id="stg-db-move-cleanup" class="stg-callout stg-callout-success" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(109,213,140,0.08);border:1px solid rgba(109,213,140,0.2);border-radius:8px;">
+              <div class="stg-callout-title">Move successful!</div>
+              <div class="stg-callout-copy">Old database files remain at the previous location.</div>
+              <div id="stg-db-mcp-notice" class="stg-callout-note">Note: Restart the MCP server for the change to take effect.</div>
               <div class="stg-action-row">
                 <button class="stg-action-btn" id="stg-db-delete-old">Delete Old Files</button>
                 <button class="stg-action-btn" id="stg-db-keep-old">Keep Them</button>
@@ -580,7 +585,7 @@ function buildServerTab(settings) {
             </button>
             <input type="file" id="sys-restore-file" accept=".zip" style="display:none">
           </div>
-          <div id="sys-backup-status" style="display:none;margin-top:10px;font-size:12px;align-items:center;gap:8px">
+          <div id="sys-backup-status" class="stg-inline-status" style="display:none;margin-top:10px;align-items:center;gap:8px">
             <div class="wiz-status-dot spin" id="sys-backup-dot"></div>
             <span id="sys-backup-text"></span>
           </div>
@@ -744,7 +749,7 @@ function buildBrowserTab() {
                   <span class="bc-profile-hint">Managed</span>
                 </div>
               </div>
-              <div id="bc-chrome-running-warn" style="display:none;margin:4px 0 2px;padding:4px 8px;border-radius:4px;background:rgba(255,180,0,0.12);color:#e0a800;font-size:11px;line-height:1.4"></div>
+              <div id="bc-chrome-running-warn" class="stg-callout stg-callout-warn" style="display:none;margin:4px 0 2px;padding:4px 8px;border-radius:4px;background:rgba(255,180,0,0.12);color:#e0a800"></div>
               <div class="bc-card-row" style="margin-top:6px">
                 <label class="bc-lbl">Path</label>
                 <div class="browser-cfg-input-row" style="flex:1">
@@ -1075,6 +1080,7 @@ function buildSetupTab(setupStatus) {
   const claudeConnected = setupStatus.claude?.connected || false;
   const geminiConnected = setupStatus.gemini?.connected || false;
   const codexConnected = setupStatus.codex?.connected || false;
+  const opencodeConnected = setupStatus.opencode?.connected || false;
 
   const statusBadge = (on) => `<span class="setup-status-badge ${on ? 'active' : 'inactive'}">${on ? 'Connected' : 'Off'}</span>`;
 
@@ -1179,6 +1185,40 @@ function buildSetupTab(setupStatus) {
           </div>
         </div>
 
+        <!-- OPENCODE -->
+        <div class="iface-section collapsed" data-collapsible id="setup-opencode">
+          <div class="gfx-group-title">
+            <span style="display:flex;align-items:center;gap:8px">
+              ${CHEVRON_ICON}
+              ${OPENCODE_ICON}
+              <span>OpenCode</span>
+              ${statusBadge(opencodeConnected)}
+            </span>
+          </div>
+          <div class="cc-section-body">
+            <div class="cc-integration-item${opencodeConnected ? ' enabled' : ''}" id="setup-opencode-mcp-row">
+              <div class="cc-integration-info">
+                <div class="cc-integration-label">SynaBun MCP</div>
+                <div class="cc-integration-path" id="setup-opencode-mcp-status">${opencodeConnected ? 'Registered in ~/.config/opencode/config.json' : 'Not connected'}</div>
+              </div>
+              <button class="cc-toggle${opencodeConnected ? ' on' : ''}" id="setup-opencode-mcp-toggle"></button>
+            </div>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">Manual Config <span style="color:var(--t-faint)">(~/.config/opencode/config.json)</span></div>
+              <div class="cc-ruleset-preview" id="setup-opencode-config-preview" style="max-height:120px">Loading...</div>
+              <button class="cc-copy-btn" id="setup-opencode-config-copy" style="margin-top:4px">${COPY_ICON} Copy JSON Config</button>
+            </div>
+
+            <div style="margin-top:12px">
+              <div class="cc-greeting-label" style="margin-bottom:4px">AGENTS.md Ruleset</div>
+              <div class="cc-ruleset-preview" id="setup-opencode-ruleset-preview">Loading...</div>
+              <button class="cc-copy-btn" id="setup-opencode-ruleset-copy" style="margin-top:4px">${COPY_ICON} Copy Ruleset</button>
+              <div class="setup-hint">Paste into your project's <code>AGENTS.md</code></div>
+            </div>
+          </div>
+        </div>
+
         <!-- COEXISTENCE RULES -->
         <div class="iface-section collapsed" data-collapsible id="setup-coexistence">
           <div class="gfx-group-title">
@@ -1205,6 +1245,7 @@ function buildTerminalTab(cliConfig) {
     { id: 'claude-code', label: 'Claude Code', icon: ANTHROPIC_ICON, color: '#D4A27F', default: 'claude' },
     { id: 'codex',       label: 'Codex CLI',   icon: OPENAI_ICON,   color: '#74c7a5', default: 'codex' },
     { id: 'gemini',      label: 'Gemini CLI',  icon: GEMINI_ICON,   color: '#669DF6', default: 'gemini' },
+    { id: 'opencode',    label: 'OpenCode',    icon: OPENCODE_ICON, color: '#E8E0DC', default: 'opencode' },
   ];
 
   return `
@@ -1274,12 +1315,181 @@ function buildTerminalTab(cliConfig) {
       </div>`;
 }
 
+function buildMcpTab() {
+  return `
+      <div class="settings-tab-body" data-tab="mcp">
+        <div class="stg-section">
+          <div class="gfx-group-title">MCP Profiles</div>
+          <div class="stg-mcp-intro">
+            <div class="settings-hint">Toggle tool groups per profile. Click a profile name to activate it.</div>
+            <div class="stg-mcp-note">
+              <strong>Tool-enabled modes only.</strong>
+              <span>Profiles reduce token usage and response times by loading only the tools each workflow needs.</span>
+            </div>
+          </div>
+          <div id="stg-mcp-matrix-wrap" class="stg-mcp-matrix-wrap stg-mcp-block">
+            <div class="stg-mcp-matrix-empty">Loading…</div>
+          </div>
+          <div id="stg-mcp-always-on" class="stg-mcp-subsection"></div>
+          <div class="stg-mcp-subsection stg-mcp-servers-section">
+            <div class="stg-mcp-section-head">
+              <div class="stg-mcp-section-header">External Servers</div>
+              <div class="settings-hint">Assign custom MCP servers per profile without expanding the tool-group matrix.</div>
+            </div>
+            <div id="stg-mcp-ext-servers" class="stg-mcp-servers-list"></div>
+            <button class="stg-action-btn compact stg-mcp-add-server-btn" id="stg-mcp-add-server">+ Add Server</button>
+            <div class="stg-mcp-add-form" id="stg-mcp-add-form" style="display:none" data-transport="stdio" data-source="paste">
+              <div class="stg-mcp-source-tabs" id="stg-mcp-source-tabs" role="tablist">
+                <button type="button" class="stg-mcp-source-tab active" data-source="github">From GitHub</button>
+                <button type="button" class="stg-mcp-source-tab" data-source="paste">From JSON / Command</button>
+              </div>
+              <div class="stg-mcp-source-panel" data-panel="github">
+                <div class="stg-mcp-form-label">GitHub repository</div>
+                <div class="stg-mcp-gh-row">
+                  <input type="text" class="stg-input stg-input-sm stg-mcp-gh-url" id="stg-mcp-gh-url" placeholder="github.com/owner/repo  or  https://github.com/owner/repo">
+                  <button type="button" class="stg-action-btn compact" id="stg-mcp-gh-install">Install</button>
+                </div>
+                <label class="stg-mcp-gh-optrun"><input type="checkbox" id="stg-mcp-gh-runinstall" checked> Run install + build after clone (runs package scripts — only install repos you trust)</label>
+                <div class="stg-mcp-gh-progress" id="stg-mcp-gh-progress" style="display:none">
+                  <div class="stg-mcp-gh-status" id="stg-mcp-gh-status"></div>
+                  <pre class="stg-mcp-gh-log" id="stg-mcp-gh-log"></pre>
+                </div>
+              </div>
+              <div class="stg-mcp-source-panel" data-panel="paste" style="display:none">
+                <div class="stg-mcp-form-label">Paste config JSON or command</div>
+                <textarea class="stg-mcp-paste-zone" id="stg-mcp-paste" rows="3" placeholder='{ "mcpServers": { "name": { "command": "npx", "args": ["-y", "pkg"] } } }  or  npx -y @scope/server /path'></textarea>
+              </div>
+              <div class="stg-mcp-form-grid" style="margin-top:10px">
+                <div class="stg-inline-field">
+                  <label>Name</label>
+                  <input type="text" class="stg-input stg-input-sm" id="stg-mcp-srv-name" placeholder="my-server">
+                </div>
+                <div class="stg-inline-field">
+                  <label>Type</label>
+                  <select class="stg-input stg-input-sm" id="stg-mcp-srv-type">
+                    <option value="stdio">stdio</option>
+                    <option value="sse">sse</option>
+                    <option value="http">http</option>
+                  </select>
+                </div>
+                <div class="stg-inline-field stg-mcp-field-wide stg-mcp-field-stdio">
+                  <label>Command</label>
+                  <input type="text" class="stg-input stg-input-sm" id="stg-mcp-srv-cmd" placeholder="node">
+                </div>
+                <div class="stg-inline-field stg-mcp-field-wide stg-mcp-field-stdio">
+                  <label>Args</label>
+                  <div class="stg-mcp-arg-chips" id="stg-mcp-arg-chips">
+                    <input type="text" class="stg-mcp-arg-input" id="stg-mcp-arg-input" placeholder="Add arg + Enter">
+                  </div>
+                </div>
+                <div class="stg-inline-field stg-mcp-field-wide stg-mcp-field-url">
+                  <label>URL</label>
+                  <input type="text" class="stg-input stg-input-sm" id="stg-mcp-srv-url" placeholder="https://…">
+                </div>
+              </div>
+              <div class="stg-mcp-form-label">Environment Variables</div>
+              <div class="stg-mcp-env-rows" id="stg-mcp-env-rows"></div>
+              <div class="stg-mcp-env-add" id="stg-mcp-env-add">+ Add variable</div>
+              <div class="stg-mcp-form-label">Register with</div>
+              <div class="stg-mcp-platform-checks" id="stg-mcp-platforms">
+                <label class="stg-mcp-platform-check" data-platform="claudeCode"><input type="checkbox" checked> Claude Code</label>
+                <label class="stg-mcp-platform-check" data-platform="opencode"><input type="checkbox" checked> OpenCode</label>
+                <label class="stg-mcp-platform-check" data-platform="codex"><input type="checkbox" checked> Codex</label>
+                <label class="stg-mcp-platform-check" data-platform="gemini"><input type="checkbox"> Gemini</label>
+              </div>
+              <div class="stg-action-row stg-mcp-form-actions" style="margin-top:10px">
+                <button class="stg-action-btn compact" id="stg-mcp-srv-save">Save</button>
+                <button class="stg-action-btn compact" id="stg-mcp-srv-cancel">Cancel</button>
+                <span id="stg-mcp-sync-feedback" style="margin-left:8px"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+}
+
+function buildOpencodeTab() {
+  return `
+      <div class="settings-tab-body" data-tab="opencode">
+
+        <!-- SERVER STATUS BAR -->
+        <div class="ocp-server-bar">
+          <span class="ocp-server-bar-left">
+            <span id="stg-ocp-dot" class="ocp-status-dot" data-state="dim"></span>
+            <span class="ocp-server-bar-label">Server</span>
+            <input type="number" class="ocp-port-input" id="stg-ocp-port" value="4096" min="1024" max="65535" title="Port">
+            <span id="stg-ocp-status" class="ocp-server-bar-status"></span>
+          </span>
+          <span class="ocp-server-bar-right">
+            <button class="ocp-srv-btn" id="stg-ocp-start" title="Start server">Start</button>
+            <button class="ocp-srv-btn ocp-srv-btn-stop" id="stg-ocp-stop" title="Stop server">Stop</button>
+            <button class="ocp-srv-btn ocp-srv-btn-icon" id="stg-ocp-refresh" title="Refresh status">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+            </button>
+          </span>
+        </div>
+
+        <!-- PROVIDERS -->
+        <div class="stg-section">
+          <div class="gfx-group-title">Providers</div>
+          <div class="ocp-provider-toolbar">
+            <input
+              type="text"
+              class="ocp-filter-input"
+              id="stg-ocp-provider-filter"
+              placeholder="Search providers…"
+              autocomplete="off"
+              spellcheck="false"
+            >
+            <div id="stg-ocp-provider-cap-filters" class="ocp-cap-bar"></div>
+          </div>
+          <div id="stg-ocp-providers" class="stg-list" style="min-height:32px">
+            <div class="settings-hint" style="opacity:0.4">Start the server to see providers</div>
+          </div>
+        </div>
+
+        <!-- COMPACTION -->
+        <div class="stg-section">
+          <div class="gfx-group-title">Compaction</div>
+          <div class="ocp-compact-group" style="border:none;margin:0;padding:0">
+            <label class="ocp-check-label">
+              <input type="checkbox" id="stg-ocp-compact-auto" checked>
+              <span>Auto-compact when context is full</span>
+            </label>
+            <label class="ocp-check-label">
+              <input type="checkbox" id="stg-ocp-compact-prune" checked>
+              <span>Prune old tool outputs</span>
+            </label>
+            <div class="ocp-reserved-row">
+              <input type="number" class="ocp-reserved-input" id="stg-ocp-compact-reserved" value="10000" min="1000" max="50000" step="1000">
+              <span class="ocp-reserved-hint">reserved tokens</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- TOOL PERMISSIONS -->
+        <div class="stg-section">
+          <div class="gfx-group-title">Tool Permissions</div>
+          <div id="stg-ocp-tools" style="min-height:20px">
+            <div class="settings-hint" style="opacity:0.4">Loading tools…</div>
+          </div>
+        </div>
+
+        <!-- CONFIG FOOTER -->
+        <div class="ocp-config-footer">
+          Config: <code class="stg-code">~/.config/opencode/config.json</code>
+          <button class="ocp-config-link" id="stg-ocp-open-config">Edit</button>
+        </div>
+
+      </div>`;
+}
+
 function buildNotificationsTab() {
   const s = getNotifSettings();
   const volume = parseInt(storage.getItem(KEYS.NOTIF_SOUND_VOLUME) || '50', 10);
   const soundType = storage.getItem(KEYS.NOTIF_SOUND_TYPE) || 'beep';
   const toastDur = parseInt(storage.getItem(KEYS.NOTIF_TOAST_DURATION) || '5', 10);
-  const toastPos = storage.getItem(KEYS.NOTIF_TOAST_POSITION) || 'top-right';
+  const toastPos = storage.getItem(KEYS.NOTIF_TOAST_POSITION) || 'bottom-center';
   const permState = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
   const permLabel = { granted: 'Granted', denied: 'Blocked', default: 'Not yet requested', unsupported: 'Not supported' }[permState] || permState;
   const permColor = { granted: 'var(--accent-green, #4ade80)', denied: 'var(--accent-red, #f87171)', default: 'var(--s-light, #888)' }[permState] || 'var(--s-light)';
@@ -1326,11 +1536,14 @@ function buildNotificationsTab() {
           <div class="settings-hint">
             Browser notification permission is required for OS banners.
           </div>
-          <div class="stg-status-row" style="display:flex;align-items:center;gap:10px;margin-top:4px">
-            <span class="stg-status-dot" style="width:8px;height:8px;border-radius:50%;background:${permColor};flex-shrink:0"></span>
-            <span style="font-size:13px;color:var(--s-lighter)">${permLabel}</span>
-            ${permState === 'default' ? '<button class="stg-action-btn compact" id="notif-request-perm">Request Permission</button>' : ''}
-            ${permState === 'denied' ? '<span style="font-size:12px;color:var(--s-light)">Unblock in System Settings &rarr; Notifications &rarr; your browser</span>' : ''}
+          <div class="stg-status-row" style="display:flex;align-items:center;gap:10px;margin-top:4px;flex-wrap:wrap">
+            <span class="stg-status-dot" id="notif-perm-dot" style="width:8px;height:8px;border-radius:50%;background:${permColor};flex-shrink:0"></span>
+            <span id="notif-perm-label" style="font-size:13px;color:var(--s-lighter)">${permLabel}</span>
+            <button class="stg-action-btn compact" id="notif-request-perm" style="${permState === 'default' ? '' : 'display:none'}">Request Permission</button>
+            <button class="stg-action-btn compact" id="notif-recheck-perm" title="Re-check permission status" style="${permState === 'denied' ? '' : 'display:none'}">Re-check</button>
+          </div>
+          <div id="notif-perm-hint" class="settings-hint" style="margin-top:6px;${permState === 'denied' ? '' : 'display:none'}">
+            Site notifications are blocked in your browser. Click the lock/site-info icon in the address bar &rarr; Notifications &rarr; Allow (or reset). Then click Re-check.
           </div>
         </div>
 
@@ -1610,20 +1823,36 @@ function buildSkillsTab(ccSkills) {
   const skills = ccSkills || [];
   if (!skills.length) return `<div class="settings-tab-body" data-tab="skills"><div class="cc-hint" style="padding:20px;color:var(--t-dim)">No skills registered.</div></div>`;
 
+  const targets = [
+    { id: 'claude', label: 'Claude' },
+    { id: 'codex', label: 'Codex' },
+    { id: 'opencode', label: 'OpenCode' },
+  ];
+
   return `
       <div class="settings-tab-body" data-tab="skills">
         <div class="cc-tool-permissions-hint" style="font-size:11px;color:var(--t-dim);margin-bottom:12px;padding:0 2px">
-          Slash commands that extend Claude Code with specialized capabilities.
+          Slash commands that extend Claude Code, Codex, and OpenCode with specialized capabilities.
         </div>
-        ${skills.map(skill => `
-          <div class="cc-skill-row${skill.installed ? ' installed' : ''}" data-skill-name="${skill.dirName}">
+        ${skills.map(skill => {
+          const installed = skill.installedTargets || { claude: !!skill.installed, codex: false, opencode: false };
+          const anyOn = targets.some(t => installed[t.id]);
+          const chips = targets.map(t => `
+              <button class="cc-skill-target${installed[t.id] ? ' on' : ''}"
+                      data-cc-skill="${skill.dirName}"
+                      data-cc-target="${t.id}"
+                      data-state="${installed[t.id] ? 'on' : 'off'}"
+                      title="Install /${skill.name} for ${t.label}">${t.label}</button>
+          `).join('');
+          return `
+          <div class="cc-skill-row${anyOn ? ' installed' : ''}" data-skill-name="${skill.dirName}">
             <div class="cc-skill-info">
               <span class="cc-skill-name">/${skill.name}</span>
               <span class="cc-skill-desc">${skill.description || ''}</span>
             </div>
-            <button class="cc-toggle${skill.installed ? ' on' : ''}" data-cc-skill="${skill.dirName}"></button>
-          </div>
-        `).join('')}
+            <div class="cc-skill-targets">${chips}</div>
+          </div>`;
+        }).join('')}
       </div>`;
 }
 
@@ -1671,7 +1900,7 @@ function buildPermissionsTab(toolCategories, toolPermissions) {
       </div>`;
 }
 
-function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, toolPermissions, toolCategories) {
+function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, codexGreetingConfig, opencodeGreetingConfig, toolPermissions, toolCategories) {
   const gh = ccIntegrations.global.hooks || {};
   const projs = ccIntegrations.projects || [];
   const ssOn = !!gh.SessionStart;
@@ -1698,31 +1927,6 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
     { key: 'PostToolUse', on: ptOn, label: 'Action Tracking', desc: 'Track file changes, enforce rules, and save plans on approval' },
   ];
 
-  // Build greeting project options
-  const gc = greetingConfig || { defaults: {}, projects: {}, global: {} };
-  const greetingProjects = Object.keys(gc.projects || {});
-  const firstKey = greetingProjects[0] || 'global';
-  const projectKeys = [...greetingProjects, 'global'];
-  const projectOptions = projectKeys.map(k => {
-    const label = k === 'global' ? 'Global (Default)' : (gc.projects[k]?.label || k);
-    return `<option value="${k}"${k === firstKey ? ' selected' : ''}>${escapeHtml(label)}</option>`;
-  }).join('');
-
-  // Get first project config for initial display
-  const firstCfg = firstKey === 'global'
-    ? { ...gc.defaults, ...gc.global }
-    : { ...gc.defaults, ...(gc.projects[firstKey] || {}) };
-
-  const buildReminderRow = (r) => `
-    <div class="cc-greeting-reminder-row">
-      <span class="cc-greeting-drag-handle" title="Drag to reorder">&#8942;&#8942;</span>
-      <input class="cc-greeting-reminder-input label" placeholder="Label" value="${escapeHtml(r.label || '')}">
-      <input class="cc-greeting-reminder-input cmd" placeholder="Command" value="${escapeHtml(r.command || '')}">
-      <button class="cc-greeting-reminder-remove" title="Remove">&times;</button>
-    </div>`;
-
-  const remindersHTML = (firstCfg.reminders || []).map(buildReminderRow).join('');
-
   const copyIcon = COPY_ICON;
   const chevron = CHEVRON_ICON;
   const anthropicIcon = ANTHROPIC_ICON;
@@ -1743,7 +1947,7 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
       { label: 'Gemini Web', on: false },
     ];
     const openaiItems = [
-      { label: 'Codex CLI', on: false },
+      { label: 'Codex CLI', on: true },
       { label: 'Cursor', on: false },
       { label: 'ChatGPT Web', on: false },
     ];
@@ -1783,93 +1987,151 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
     </div>`;
   };
 
-  return `
-      <div class="settings-tab-body" data-tab="hooks">
-
-        <!-- 1. GREETING (combined toggle + config) -->
-        <div class="iface-section collapsed" data-collapsible id="cc-greeting-config">
+  function buildGreetingSection({
+    title,
+    enabled,
+    config,
+    prefix,
+    bodyId,
+    toggleAttrs,
+    badgeHtml = '',
+    hint = '',
+  }) {
+    const gc = config || { defaults: {}, projects: {}, global: {} };
+    const greetingProjects = Object.keys(gc.projects || {});
+    const firstKey = greetingProjects[0] || 'global';
+    const projectKeys = [...greetingProjects, 'global'];
+    const firstCfg = firstKey === 'global'
+      ? { ...gc.defaults, ...gc.global }
+      : { ...gc.defaults, ...(gc.projects[firstKey] || {}) };
+    const buildReminderRow = (reminder) => `
+      <div class="cc-greeting-reminder-row">
+        <span class="cc-greeting-drag-handle" title="Drag to reorder">&#8942;&#8942;</span>
+        <input class="cc-greeting-reminder-input label" placeholder="Label" value="${escapeHtml(reminder.label || '')}">
+        <input class="cc-greeting-reminder-input cmd" placeholder="Command" value="${escapeHtml(reminder.command || '')}">
+        <button class="cc-greeting-reminder-remove" title="Remove">&times;</button>
+      </div>`;
+    const remindersHTML = (firstCfg.reminders || []).map(buildReminderRow).join('');
+    return `
+        <div class="iface-section collapsed" data-collapsible id="${prefix}-greeting-config">
           <div class="gfx-group-title" style="justify-content:space-between">
-            <span style="display:flex;align-items:center;gap:6px">${chevron} Greeting</span>
+            <span style="display:flex;align-items:center;gap:6px">${chevron} ${title}</span>
             <div style="display:flex;align-items:center;gap:8px">
-              ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
-              <button class="cc-toggle${grOn ? ' on' : ''}" data-cc-feature="greeting"></button>
+              ${badgeHtml}
+              <button class="cc-toggle${enabled ? ' on' : ''}" ${toggleAttrs}></button>
             </div>
           </div>
-          <div class="cc-section-body" id="cc-greeting-body" style="display:${grOn ? 'block' : 'none'}">
+          <div class="cc-section-body" id="${bodyId}" style="display:${enabled ? 'block' : 'none'}">
+            ${hint ? `<div class="settings-hint" style="margin-bottom:10px">${hint}</div>` : ''}
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-              <div class="cc-dropdown" id="cc-greeting-project-dropdown">
+              <div class="cc-dropdown" id="${prefix}-greeting-project-dropdown">
                 <button class="cc-dropdown-trigger" type="button">
-                  <span class="cc-dropdown-value" id="cc-greeting-project-label">${firstKey === 'global' ? 'Global (Default)' : escapeHtml((gc.projects[firstKey] || {}).label || firstKey)}</span>
+                  <span class="cc-dropdown-value" id="${prefix}-greeting-project-label">${firstKey === 'global' ? 'Global (Default)' : escapeHtml((gc.projects[firstKey] || {}).label || firstKey)}</span>
                   <svg class="cc-dropdown-arrow" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
-                <div class="cc-dropdown-menu" id="cc-greeting-project-menu">
-                  ${projectKeys.map(k => {
-                    const label = k === 'global' ? 'Global (Default)' : (gc.projects[k]?.label || k);
-                    return `<div class="cc-dropdown-item${k === firstKey ? ' active' : ''}" data-value="${k}">${escapeHtml(label)}</div>`;
+                <div class="cc-dropdown-menu" id="${prefix}-greeting-project-menu">
+                  ${projectKeys.map((key) => {
+                    const label = key === 'global' ? 'Global (Default)' : (gc.projects[key]?.label || key);
+                    return `<div class="cc-dropdown-item${key === firstKey ? ' active' : ''}" data-value="${key}">${escapeHtml(label)}</div>`;
                   }).join('')}
                 </div>
-                <input type="hidden" id="cc-greeting-project" value="${firstKey}">
+                <input type="hidden" id="${prefix}-greeting-project" value="${firstKey}">
               </div>
-              <span style="font-size:10px;color:var(--t-faint);margin-left:8px">Per-project or global</span>
+              <span style="font-size:11px;color:var(--t-faint);margin-left:8px">Per-project or global</span>
             </div>
             <div class="cc-greeting-field">
               <label class="cc-greeting-label">Template</label>
-              <textarea class="cc-greeting-textarea" id="cc-greeting-template" placeholder="{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.">${escapeHtml(firstCfg.greetingTemplate || '')}</textarea>
-              <div class="cc-greeting-cheatsheet-toggle" id="cc-greeting-cheatsheet-toggle">
+              <textarea class="cc-greeting-textarea" id="${prefix}-greeting-template" placeholder="{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.">${escapeHtml(firstCfg.greetingTemplate || '')}</textarea>
+              <div class="cc-greeting-cheatsheet-toggle" id="${prefix}-greeting-cheatsheet-toggle">
                 <svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:2;vertical-align:-1px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                 Variable Reference
               </div>
-              <div class="cc-greeting-cheatsheet" id="cc-greeting-cheatsheet" style="display:none">
+              <div class="cc-greeting-cheatsheet" id="${prefix}-greeting-cheatsheet" style="display:none">
                 <table class="cc-cheatsheet-table">
                   <thead><tr><th>Variable</th><th>Preview</th></tr></thead>
                   <tbody>
-                    <tr><td><code>{time_greeting}</code></td><td id="cc-cs-time"></td></tr>
-                    <tr><td><code>{project_label}</code></td><td id="cc-cs-label"></td></tr>
-                    <tr><td><code>{project_name}</code></td><td id="cc-cs-name"></td></tr>
-                    <tr><td><code>{branch}</code></td><td id="cc-cs-branch"></td></tr>
-                    <tr><td><code>{date}</code></td><td id="cc-cs-date"></td></tr>
+                    <tr><td><code>{time_greeting}</code></td><td id="${prefix}-cs-time"></td></tr>
+                    <tr><td><code>{project_label}</code></td><td id="${prefix}-cs-label"></td></tr>
+                    <tr><td><code>{project_name}</code></td><td id="${prefix}-cs-name"></td></tr>
+                    <tr><td><code>{branch}</code></td><td id="${prefix}-cs-branch"></td></tr>
+                    <tr><td><code>{date}</code></td><td id="${prefix}-cs-date"></td></tr>
                   </tbody>
                 </table>
                 <div class="cc-cheatsheet-example">
-                  <div class="cc-greeting-label" style="margin-bottom:3px;font-size:9px">Example output</div>
-                  <div class="cc-cheatsheet-preview" id="cc-cs-preview"></div>
+                  <div class="cc-greeting-label" style="margin-bottom:3px;font-size:10px">Example output</div>
+                  <div class="cc-cheatsheet-preview" id="${prefix}-cs-preview"></div>
                 </div>
               </div>
             </div>
-
             <div class="cc-greeting-checkboxes">
               <label class="iface-toggle-row">
-                <input type="checkbox" id="cc-greeting-show-reminders" ${firstCfg.showReminders ? 'checked' : ''}>
+                <input type="checkbox" id="${prefix}-greeting-show-reminders" ${firstCfg.showReminders ? 'checked' : ''}>
                 Show reminders
               </label>
               <label class="iface-toggle-row">
-                <input type="checkbox" id="cc-greeting-show-last-session" ${firstCfg.showLastSession ? 'checked' : ''}>
+                <input type="checkbox" id="${prefix}-greeting-show-last-session" ${firstCfg.showLastSession ? 'checked' : ''}>
                 Show last session
               </label>
             </div>
-
             <div class="cc-greeting-field">
               <label class="cc-greeting-label">Reminders</label>
-              <div class="cc-greeting-reminder-list" id="cc-greeting-reminders">${remindersHTML}</div>
-              <button class="conn-add-btn" id="cc-greeting-add-reminder" style="margin-top:6px;font-size:11px;padding:5px 10px">
+              <div class="cc-greeting-reminder-list" id="${prefix}-greeting-reminders">${remindersHTML}</div>
+              <button class="conn-add-btn" id="${prefix}-greeting-add-reminder" style="margin-top:6px;font-size:11.5px;padding:5px 10px">
                 <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                 Add Reminder
               </button>
             </div>
-
-            <button class="conn-add-btn" id="cc-greeting-save" style="width:100%;margin-top:4px;font-size:12px;padding:7px 10px;border-style:solid;background:rgba(79,195,247,0.08);border-color:rgba(79,195,247,0.25);color:rgba(79,195,247,0.9)">
+            <button class="conn-add-btn" id="${prefix}-greeting-save" style="width:100%;margin-top:4px;font-size:12px;padding:7px 10px;border-style:solid;background:rgba(79,195,247,0.08);border-color:rgba(79,195,247,0.25);color:rgba(79,195,247,0.9)">
               Save Greeting Config
             </button>
           </div>
-        </div>
+        </div>`;
+  }
 
-        <!-- 2. HOOKS -->
+  return `
+      <div class="settings-tab-body" data-tab="hooks">
+
+        <!-- 1. CLAUDE GREETING -->
+        ${buildGreetingSection({
+          title: 'Claude Code Greeting',
+          enabled: grOn,
+          config: greetingConfig,
+          prefix: 'cc',
+          bodyId: 'cc-greeting-body',
+          toggleAttrs: 'data-cc-feature="greeting"',
+          badgeHtml: '',
+        })}
+
+        <!-- 2. CODEX GREETING -->
+        ${buildGreetingSection({
+          title: 'Codex Panel Greeting',
+          enabled: codexGreetingConfig?.enabled === true,
+          config: codexGreetingConfig,
+          prefix: 'codex',
+          bodyId: 'codex-greeting-body',
+          toggleAttrs: 'data-codex-greeting-toggle="enabled"',
+          hint: 'Codex panel only. This configuration is isolated from Claude and stored separately.',
+        })}
+
+        <!-- 3. OPENCODE GREETING -->
+        ${buildGreetingSection({
+          title: 'OpenCode Panel Greeting',
+          enabled: opencodeGreetingConfig?.enabled === true,
+          config: opencodeGreetingConfig,
+          prefix: 'opencode',
+          bodyId: 'opencode-greeting-body',
+          toggleAttrs: 'data-opencode-greeting-toggle="enabled"',
+          hint: 'OpenCode panel only. Isolated from Claude and Codex; stored in opencode-greeting-config.json.',
+        })}
+
+        <!-- 3. HOOKS -->
         <div class="iface-section collapsed" data-collapsible data-cc-target="global">
           <div class="gfx-group-title" style="justify-content:space-between">
             <span style="display:flex;align-items:center;gap:6px">${chevron} Hooks <span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-hooks-badge">${onCount}/6</span></span>
             ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
           </div>
           <div class="cc-section-body">
+            <div class="cc-hint" style="margin-bottom:8px;font-size:11.5px">Claude Code hooks only &mdash; Codex and OpenCode panels use their own greeting system and do not read these toggles.</div>
             <div class="cc-hook-toggles">
               ${hookRows.map(h => `
               <div class="cc-integration-item${h.on ? ' enabled' : ''}" data-hook="${h.key}">
@@ -1883,13 +2145,14 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
           </div>
         </div>
 
-        <!-- 3. KNOWLEDGE -->
+        <!-- 4. KNOWLEDGE -->
         <div class="iface-section collapsed" data-collapsible>
           <div class="gfx-group-title" style="justify-content:space-between">
             <span style="display:flex;align-items:center;gap:6px">${chevron} Knowledge</span>
             ${providerBadge({ cli: true, vscode: true, web: false, cowork: false })}
           </div>
           <div class="cc-section-body">
+            <div class="cc-hint" style="margin-bottom:8px;font-size:11.5px">Claude Code hooks only &mdash; Codex and OpenCode panels do not use these toggles.</div>
             <div class="cc-hook-toggles">
               <div class="cc-integration-item${cmOn ? ' enabled' : ''}" data-feature="conversationMemory">
                 <div class="cc-integration-info">
@@ -1903,12 +2166,12 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
                   <div class="cc-integration-label">User Learning</div>
                   <div class="cc-integration-path">Learn your communication style and preferences over time</div>
                   <div class="cc-ul-threshold" id="cc-ul-threshold" style="display:${ulOn ? 'flex' : 'none'};align-items:center;gap:6px;margin-top:5px">
-                    <span style="font-size:10px;color:var(--t-dim);white-space:nowrap">Reflect every</span>
-                    <input type="number" id="cc-ul-threshold-input" min="3" max="30" value="${ulThreshold}" style="width:40px;padding:2px 4px;font-size:10px;background:rgba(255,255,255,0.04);border:1px solid var(--b-subtle);border-radius:4px;color:var(--t-bright);text-align:center;font-family:inherit">
-                    <span style="font-size:10px;color:var(--t-dim)">interactions</span>
-                    <span style="font-size:10px;color:var(--t-dim);white-space:nowrap;margin-left:8px">Max</span>
-                    <input type="number" id="cc-ul-max-nudges-input" min="1" max="10" value="${ulMaxNudges}" style="width:34px;padding:2px 4px;font-size:10px;background:rgba(255,255,255,0.04);border:1px solid var(--b-subtle);border-radius:4px;color:var(--t-bright);text-align:center;font-family:inherit">
-                    <span style="font-size:10px;color:var(--t-dim)">per session</span>
+                    <span style="font-size:11px;color:var(--t-dim);white-space:nowrap">Reflect every</span>
+                    <input type="number" id="cc-ul-threshold-input" min="3" max="30" value="${ulThreshold}" style="width:40px;padding:2px 4px;font-size:11px;background:rgba(255,255,255,0.04);border:1px solid var(--b-subtle);border-radius:4px;color:var(--t-bright);text-align:center;font-family:inherit">
+                    <span style="font-size:11px;color:var(--t-dim)">interactions</span>
+                    <span style="font-size:11px;color:var(--t-dim);white-space:nowrap;margin-left:8px">Max</span>
+                    <input type="number" id="cc-ul-max-nudges-input" min="1" max="10" value="${ulMaxNudges}" style="width:34px;padding:2px 4px;font-size:11px;background:rgba(255,255,255,0.04);border:1px solid var(--b-subtle);border-radius:4px;color:var(--t-bright);text-align:center;font-family:inherit">
+                    <span style="font-size:11px;color:var(--t-dim)">per session</span>
                   </div>
                 </div>
                 <button class="cc-toggle${ulOn ? ' on' : ''}" data-cc-feature="userLearning"></button>
@@ -1939,17 +2202,17 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
                   <div class="cc-integration-label">API Key</div>
                   <div class="cc-integration-path" id="cc-apikey-status">${mcpKeyInfo.hasKey ? mcpKeyInfo.maskedKey : 'No key \u2014 open'}</div>
                 </div>
-                <button class="conn-add-btn" id="cc-apikey-generate" style="margin:0;font-size:10px;padding:3px 8px;width:auto;border-style:solid;background:rgba(255,255,255,0.03)">${mcpKeyInfo.hasKey ? 'Regen' : 'Generate'}</button>
+                <button class="conn-add-btn" id="cc-apikey-generate" style="margin:0;font-size:11px;padding:3px 8px;width:auto;border-style:solid;background:rgba(255,255,255,0.03)">${mcpKeyInfo.hasKey ? 'Regen' : 'Generate'}</button>
               </div>
               <div id="cc-apikey-reveal" style="display:none;margin-top:6px">
-                <div style="background:rgba(255,255,255,0.04);padding:6px 8px;border-radius:6px;border:1px solid var(--b-subtle);font-family:'JetBrains Mono',monospace;font-size:10px;word-break:break-all;color:var(--t-bright);line-height:1.5" id="cc-apikey-value"></div>
-                <div class="cc-hint" style="margin-top:3px;color:var(--accent-orange);font-size:10px">Save now \u2014 won't show again.</div>
+                <div style="background:rgba(255,255,255,0.04);padding:6px 8px;border-radius:6px;border:1px solid var(--b-subtle);font-family:'JetBrains Mono',monospace;font-size:11px;word-break:break-all;color:var(--t-bright);line-height:1.5" id="cc-apikey-value"></div>
+                <div class="cc-hint" style="margin-top:3px;color:var(--accent-orange);font-size:11px">Save now \u2014 won't show again.</div>
                 <div style="margin-top:4px;display:flex;gap:4px">
                   <button class="cc-copy-btn" id="cc-apikey-copy" style="flex:1">${copyIcon} Copy</button>
                   <button class="cc-copy-btn" id="cc-apikey-revoke" style="width:auto;opacity:0.5;padding:4px 8px">Revoke</button>
                 </div>
               </div>
-              <div class="cc-hint" style="margin-top:4px;font-size:10px"><a href="https://claude.ai/settings/connectors" target="_blank" style="color:var(--accent-blue)">Claude web</a> &rarr; Connectors &rarr; Add MCP</div>
+              <div class="cc-hint" style="margin-top:4px;font-size:11px"><a href="https://claude.ai/settings/connectors" target="_blank" style="color:var(--accent-blue)">Claude web</a> &rarr; Connectors &rarr; Add MCP</div>
             </div>
           </div>
         </div>
@@ -2006,6 +2269,7 @@ function buildProjectsTab(ccIntegrations) {
                   </div>
                   <div class="cc-panel-actions">
                     <button class="cc-explore-btn" data-cc-explore="${i}" style="background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Learn it</button>
+                    <button class="cc-trust-btn" data-cc-trust="${i}" title="Add this workspace to git safe.directory (fixes 'dubious ownership' errors)" style="background:rgba(255,183,77,0.14);border:1px solid rgba(255,183,77,0.3);color:#ffcc80;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Trust workspace</button>
                     <button class="cc-enable-btn${p.installed ? ' on' : ''}" data-cc-project-toggle="${i}">${p.installed ? 'Enabled' : 'Enable'}</button>
                     <button class="cc-remove-panel-btn" data-cc-remove="${i}">Remove</button>
                   </div>
@@ -2186,7 +2450,7 @@ function buildDiscordTab(discordConfig) {
           <span style="display:flex;align-items:center;gap:6px">
             ${CHEVRON_ICON} Bot Connection
           </span>
-          <span id="discord-conn-status" style="font-size:11px;color:var(--t-muted)">${hasToken ? 'configured' : 'missing'}</span>
+          <span id="discord-conn-status" style="font-size:11.5px;color:var(--t-muted)">${hasToken ? 'configured' : 'missing'}</span>
         </div>
         <div class="cc-section-body">
           <div class="settings-field">
@@ -2239,7 +2503,7 @@ function buildDiscordTab(discordConfig) {
           <div class="settings-field" style="margin-top:12px">
             <label>Bot Invite Link</label>
             <div class="settings-key-row" style="display:flex;gap:6px">
-              <input type="text" id="discord-invite-link" value="" readonly style="flex:1;font-size:11px;opacity:0.7;cursor:default" autocomplete="off" spellcheck="false">
+              <input type="text" id="discord-invite-link" value="" readonly style="flex:1;font-size:11.5px;opacity:0.7;cursor:default" autocomplete="off" spellcheck="false">
               <button class="conn-add-btn" id="discord-invite-copy" style="margin:0;width:auto;flex:0 0 auto;padding:4px 8px" data-tooltip="Copy">${COPY_ICON}</button>
             </div>
             <div class="settings-hint">Permission integer: 8 (Administrator). Change to 1642825033974 for granular permissions.</div>
@@ -2417,7 +2681,7 @@ function buildInterfaceTab() {
             <input type="checkbox" id="iface-viz-toggle" ${cfg.visualizationEnabled !== false ? 'checked' : ''}>
             <span>Graph visualization</span>
           </label>
-          <div style="margin-top:4px;opacity:0.5;font-size:11px;color:var(--t-secondary);">
+          <div style="margin-top:4px;opacity:0.5;font-size:11.5px;color:var(--t-secondary);">
             Press V to toggle Focus Mode. Pauses GPU rendering and shows a calm background.
           </div>
         </div>
@@ -2625,7 +2889,9 @@ export async function openSettingsModal() {
   let mcpKeyInfo = { hasKey: false };
   let _bridgeResult = null;
   let greetingConfig = { defaults: {}, projects: {}, global: {} };
-  let setupStatus = { claude: {}, gemini: {}, codex: {}, paths: {} };
+  let codexGreetingConfig = { enabled: true, defaults: {}, projects: {}, global: {} };
+  let opencodeGreetingConfig = { enabled: false, defaults: {}, projects: {}, global: {} };
+  let setupStatus = { claude: {}, gemini: {}, codex: {}, opencode: {}, paths: {} };
   let cliConfig = {};
   let toolPermissions = {};
   let toolCategories = [];
@@ -2634,7 +2900,7 @@ export async function openSettingsModal() {
   let customIconsData = { extensions: {}, filenames: {} };
 
   try {
-    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes, iconsRes] = await Promise.allSettled([
+    const [settingsRes, connRes, ccRes, skillsRes, tunnelRes, keyRes, bridgeRes, greetRes, codexGreetRes, opencodeGreetRes, setupRes, cliRes, toolPermsRes, toolCatsRes, discordRes, skinsRes, iconsRes] = await Promise.allSettled([
       fetch('/api/settings').then(r => r.json()),
       fetch('/api/connections').then(r => r.json()),
       fetch('/api/claude-code/integrations').then(r => r.json()),
@@ -2643,6 +2909,8 @@ export async function openSettingsModal() {
       fetch('/api/mcp-key').then(r => r.json()),
       fetch('/api/bridges/openclaw').then(r => r.json()),
       fetch('/api/greeting/config').then(r => r.json()),
+      fetch('/api/codex-panel/greeting/config').then(r => r.json()),
+      fetch('/api/opencode-panel/greeting/config').then(r => r.json()),
       fetch('/api/setup/status').then(r => r.json()),
       fetch('/api/cli/config').then(r => r.json()),
       fetch('/api/claude-code/tool-permissions').then(r => r.json()),
@@ -2659,6 +2927,8 @@ export async function openSettingsModal() {
     if (keyRes.status === 'fulfilled' && keyRes.value.ok) mcpKeyInfo = keyRes.value;
     if (bridgeRes.status === 'fulfilled' && bridgeRes.value.ok) _bridgeResult = bridgeRes.value;
     if (greetRes.status === 'fulfilled' && greetRes.value.ok) greetingConfig = greetRes.value.config;
+    if (codexGreetRes.status === 'fulfilled' && codexGreetRes.value.ok) codexGreetingConfig = codexGreetRes.value.config;
+    if (opencodeGreetRes.status === 'fulfilled' && opencodeGreetRes.value.ok) opencodeGreetingConfig = opencodeGreetRes.value.config;
     if (setupRes.status === 'fulfilled' && setupRes.value.ok) setupStatus = setupRes.value;
     if (cliRes.status === 'fulfilled' && cliRes.value.ok) cliConfig = cliRes.value.config;
     if (toolPermsRes.status === 'fulfilled' && toolPermsRes.value.ok) toolPermissions = toolPermsRes.value.tools;
@@ -2710,16 +2980,18 @@ export async function openSettingsModal() {
       <nav class="settings-nav">
         ${buildNavHTML(variantTabs, {
           server: settings.storage === 'sqlite' ? 'connected' : 'disconnected',
-          setup: (setupStatus.claude?.connected || setupStatus.gemini?.connected || setupStatus.codex?.connected) ? 'connected' : 'disconnected',
+          setup: (setupStatus.claude?.connected || setupStatus.gemini?.connected || setupStatus.codex?.connected || setupStatus.opencode?.connected) ? 'connected' : 'disconnected',
           discord: discordConfig.botToken ? 'connected' : 'disconnected',
         })}
       </nav>
       <div class="settings-content">
         ${buildServerTab(settings)}
-        ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, toolPermissions, toolCategories)}
+        ${buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo, openclawBridge, greetingConfig, codexGreetingConfig, opencodeGreetingConfig, toolPermissions, toolCategories)}
         ${buildTerminalTab(cliConfig)}
+        ${buildOpencodeTab()}
         ${buildNotificationsTab()}
         ${buildBrowserTab()}
+        ${buildMcpTab()}
         ${buildSetupTab(setupStatus)}
         ${buildCollectionsTab(connections, settings)}
         ${buildProjectsTab(ccIntegrations)}
@@ -4054,23 +4326,71 @@ export async function openSettingsModal() {
     if (bannerToggle) bannerToggle.addEventListener('change', () => storage.setItem(KEYS.NOTIF_BANNER, bannerToggle.checked ? 'on' : 'off'));
     if (bannerFocused) bannerFocused.addEventListener('change', () => storage.setItem(KEYS.NOTIF_BANNER_FOCUSED, bannerFocused.checked ? 'on' : 'off'));
 
+    // ── Live permission status refresh ──
+    function refreshNotifPermRow() {
+      if (typeof Notification === 'undefined') return;
+      const state = Notification.permission;
+      const labels = { granted: 'Granted', denied: 'Blocked', default: 'Not yet requested' };
+      const colors = {
+        granted: 'var(--accent-green, #4ade80)',
+        denied: 'var(--accent-red, #f87171)',
+        default: 'var(--s-light, #888)',
+      };
+      const dot = overlay.querySelector('#notif-perm-dot');
+      const label = overlay.querySelector('#notif-perm-label');
+      const hint = overlay.querySelector('#notif-perm-hint');
+      const reqBtn = overlay.querySelector('#notif-request-perm');
+      const recheckBtn = overlay.querySelector('#notif-recheck-perm');
+      if (dot) dot.style.background = colors[state] || colors.default;
+      if (label) label.textContent = labels[state] || state;
+      if (hint) hint.style.display = state === 'denied' ? '' : 'none';
+      if (reqBtn) reqBtn.style.display = state === 'default' ? '' : 'none';
+      if (recheckBtn) recheckBtn.style.display = state === 'denied' ? '' : 'none';
+    }
+
+    refreshNotifPermRow();
+
+    // Subscribe to permission changes via Permissions API (reflects browser/OS unblocks live).
+    if (navigator.permissions?.query) {
+      navigator.permissions.query({ name: 'notifications' }).then(status => {
+        const handler = () => refreshNotifPermRow();
+        status.addEventListener('change', handler);
+        // Detach listener when overlay is removed from DOM.
+        const observer = new MutationObserver(() => {
+          if (!document.body.contains(overlay)) {
+            status.removeEventListener('change', handler);
+            observer.disconnect();
+            document.removeEventListener('visibilitychange', visHandler);
+          }
+        });
+        observer.observe(document.body, { childList: true, subtree: false });
+      }).catch(() => {});
+    }
+
+    // Re-poll when tab regains visibility (covers Permissions API gaps on Safari).
+    const visHandler = () => { if (!document.hidden) refreshNotifPermRow(); };
+    document.addEventListener('visibilitychange', visHandler);
+
     // Request permission
     if (requestPermBtn) {
       requestPermBtn.addEventListener('click', async () => {
         const result = await Notification.requestPermission();
-        const dot = overlay.querySelector('.stg-status-dot');
-        const label = dot?.nextElementSibling;
-        if (result === 'granted') {
-          if (dot) dot.style.background = 'var(--accent-green, #4ade80)';
-          if (label) label.textContent = 'Granted';
-          requestPermBtn.remove();
-          showCCToast('Notification permission granted');
-        } else {
-          if (dot) dot.style.background = 'var(--accent-red, #f87171)';
-          if (label) label.textContent = 'Blocked';
-          requestPermBtn.remove();
-          showCCToast('Permission denied — unblock in System Settings');
-        }
+        refreshNotifPermRow();
+        showCCToast(result === 'granted'
+          ? 'Notification permission granted'
+          : 'Permission denied — reset site notifications in your browser');
+      });
+    }
+
+    // Re-check (after user unblocks site permission in browser address bar)
+    const recheckBtn = overlay.querySelector('#notif-recheck-perm');
+    if (recheckBtn) {
+      recheckBtn.addEventListener('click', () => {
+        refreshNotifPermRow();
+        const state = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
+        if (state === 'granted') showCCToast('Permission granted');
+        else if (state === 'denied') showCCToast('Still blocked — reset the site permission in your browser, then try again');
+        else showCCToast('Status: ' + state);
       });
     }
 
@@ -4156,6 +4476,64 @@ export async function openSettingsModal() {
         else { alert(data.error || 'Failed to toggle feature'); }
       } catch (err) { alert('Failed: ' + err.message); }
       finally { toggle.style.opacity = ''; toggle.style.pointerEvents = ''; }
+    });
+  });
+
+  overlay.querySelectorAll('.cc-toggle[data-codex-greeting-toggle]').forEach(toggle => {
+    toggle.addEventListener('click', async () => {
+      const isOn = toggle.classList.contains('on');
+      try {
+        toggle.style.opacity = '0.4';
+        toggle.style.pointerEvents = 'none';
+        const res = await fetch('/api/codex-panel/greeting/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !isOn }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          alert(data.error || 'Failed to toggle Codex greeting');
+          return;
+        }
+        codexGreetingConfig.enabled = !isOn;
+        toggle.classList.toggle('on', !isOn);
+        const body = overlay.querySelector('#codex-greeting-body');
+        if (body) body.style.display = !isOn ? 'block' : 'none';
+      } catch (err) {
+        alert('Failed: ' + err.message);
+      } finally {
+        toggle.style.opacity = '';
+        toggle.style.pointerEvents = '';
+      }
+    });
+  });
+
+  overlay.querySelectorAll('.cc-toggle[data-opencode-greeting-toggle]').forEach(toggle => {
+    toggle.addEventListener('click', async () => {
+      const isOn = toggle.classList.contains('on');
+      try {
+        toggle.style.opacity = '0.4';
+        toggle.style.pointerEvents = 'none';
+        const res = await fetch('/api/opencode-panel/greeting/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !isOn }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          alert(data.error || 'Failed to toggle OpenCode greeting');
+          return;
+        }
+        opencodeGreetingConfig.enabled = !isOn;
+        toggle.classList.toggle('on', !isOn);
+        const body = overlay.querySelector('#opencode-greeting-body');
+        if (body) body.style.display = !isOn ? 'block' : 'none';
+      } catch (err) {
+        alert('Failed: ' + err.message);
+      } finally {
+        toggle.style.opacity = '';
+        toggle.style.pointerEvents = '';
+      }
     });
   });
 
@@ -4266,68 +4644,55 @@ export async function openSettingsModal() {
   }
 
   // ── Greeting editor handlers ──
-  {
-    const gcSelect = overlay.querySelector('#cc-greeting-project');
-    const gcTemplate = overlay.querySelector('#cc-greeting-template');
-    const gcShowReminders = overlay.querySelector('#cc-greeting-show-reminders');
-    const gcShowLastSession = overlay.querySelector('#cc-greeting-show-last-session');
-    const gcReminderList = overlay.querySelector('#cc-greeting-reminders');
-    const gcAddReminder = overlay.querySelector('#cc-greeting-add-reminder');
-    const gcSave = overlay.querySelector('#cc-greeting-save');
+  function wireGreetingEditor({ prefix, configRef, saveBaseUrl, onSave }) {
+    const gcSelect = overlay.querySelector(`#${prefix}-greeting-project`);
+    const gcTemplate = overlay.querySelector(`#${prefix}-greeting-template`);
+    const gcShowReminders = overlay.querySelector(`#${prefix}-greeting-show-reminders`);
+    const gcShowLastSession = overlay.querySelector(`#${prefix}-greeting-show-last-session`);
+    const gcReminderList = overlay.querySelector(`#${prefix}-greeting-reminders`);
+    const gcAddReminder = overlay.querySelector(`#${prefix}-greeting-add-reminder`);
+    const gcSave = overlay.querySelector(`#${prefix}-greeting-save`);
+    if (!gcSelect || !gcTemplate || !gcReminderList || !gcSave) return;
 
-    // Helper: get config for a project key
     function getGreetingCfg(key) {
-      const gc = greetingConfig || { defaults: {}, projects: {}, global: {} };
+      const gc = configRef() || { defaults: {}, projects: {}, global: {} };
       if (key === 'global') return { ...gc.defaults, ...gc.global };
       return { ...gc.defaults, ...(gc.projects[key] || {}) };
     }
 
-    // Helper: build reminder row HTML
-    function reminderRowHTML(r) {
+    function reminderRowHTML(reminder) {
       return `<div class="cc-greeting-reminder-row">
         <span class="cc-greeting-drag-handle" title="Drag to reorder">&#8942;&#8942;</span>
-        <input class="cc-greeting-reminder-input label" placeholder="Label" value="${escapeHtml(r.label || '')}">
-        <input class="cc-greeting-reminder-input cmd" placeholder="Command" value="${escapeHtml(r.command || '')}">
+        <input class="cc-greeting-reminder-input label" placeholder="Label" value="${escapeHtml(reminder.label || '')}">
+        <input class="cc-greeting-reminder-input cmd" placeholder="Command" value="${escapeHtml(reminder.command || '')}">
         <button class="cc-greeting-reminder-remove" title="Remove">&times;</button>
       </div>`;
     }
 
-    // Populate fields from a project key
-    function populateGreetingFields(key) {
-      const cfg = getGreetingCfg(key);
-      if (gcTemplate) gcTemplate.value = cfg.greetingTemplate || '';
-      if (gcShowReminders) gcShowReminders.checked = !!cfg.showReminders;
-      if (gcShowLastSession) gcShowLastSession.checked = !!cfg.showLastSession;
-      if (gcReminderList) gcReminderList.innerHTML = (cfg.reminders || []).map(r => reminderRowHTML(r)).join('');
-      wireReminderRemoveButtons();
-      wireReminderDragHandles();
-    }
-
-    // Wire remove buttons
     function wireReminderRemoveButtons() {
-      if (!gcReminderList) return;
-      gcReminderList.querySelectorAll('.cc-greeting-reminder-remove').forEach(btn => {
+      gcReminderList.querySelectorAll('.cc-greeting-reminder-remove').forEach((btn) => {
         btn.onclick = () => {
           const row = btn.closest('.cc-greeting-reminder-row');
-          if (row) { row.style.opacity = '0'; row.style.transition = 'opacity 0.15s'; setTimeout(() => row.remove(), 150); }
+          if (!row) return;
+          row.style.opacity = '0';
+          row.style.transition = 'opacity 0.15s';
+          setTimeout(() => row.remove(), 150);
         };
       });
     }
 
-    // Wire drag handles for reorder
     function wireReminderDragHandles() {
-      if (!gcReminderList) return;
-      gcReminderList.querySelectorAll('.cc-greeting-drag-handle').forEach(handle => {
-        handle.onmousedown = (e) => {
-          e.preventDefault();
+      gcReminderList.querySelectorAll('.cc-greeting-drag-handle').forEach((handle) => {
+        handle.onmousedown = (event) => {
+          event.preventDefault();
           const row = handle.closest('.cc-greeting-reminder-row');
           if (!row) return;
           row.style.opacity = '0.5';
           const rows = [...gcReminderList.querySelectorAll('.cc-greeting-reminder-row')];
-          const startY = e.clientY;
+          const startY = event.clientY;
           const startIdx = rows.indexOf(row);
-          const onMove = (me) => {
-            const dy = me.clientY - startY;
+          const onMove = (moveEvent) => {
+            const dy = moveEvent.clientY - startY;
             const rowH = row.offsetHeight + 4;
             const shift = Math.round(dy / rowH);
             const newIdx = Math.max(0, Math.min(rows.length - 1, startIdx + shift));
@@ -4348,112 +4713,110 @@ export async function openSettingsModal() {
       });
     }
 
-    // Custom dropdown behavior
-    const gcDropdown = overlay.querySelector('#cc-greeting-project-dropdown');
-    const gcDropdownLabel = overlay.querySelector('#cc-greeting-project-label');
-    const gcDropdownMenu = overlay.querySelector('#cc-greeting-project-menu');
+    function populateGreetingFields(key) {
+      const cfg = getGreetingCfg(key);
+      gcTemplate.value = cfg.greetingTemplate || '';
+      if (gcShowReminders) gcShowReminders.checked = !!cfg.showReminders;
+      if (gcShowLastSession) gcShowLastSession.checked = !!cfg.showLastSession;
+      gcReminderList.innerHTML = (cfg.reminders || []).map((reminder) => reminderRowHTML(reminder)).join('');
+      wireReminderRemoveButtons();
+      wireReminderDragHandles();
+    }
+
+    const gcDropdown = overlay.querySelector(`#${prefix}-greeting-project-dropdown`);
+    const gcDropdownLabel = overlay.querySelector(`#${prefix}-greeting-project-label`);
+    const gcDropdownMenu = overlay.querySelector(`#${prefix}-greeting-project-menu`);
     if (gcDropdown && gcDropdownMenu) {
-      gcDropdown.querySelector('.cc-dropdown-trigger').addEventListener('click', () => {
+      gcDropdown.querySelector('.cc-dropdown-trigger')?.addEventListener('click', () => {
         gcDropdown.classList.toggle('open');
       });
-      gcDropdownMenu.querySelectorAll('.cc-dropdown-item').forEach(item => {
+      gcDropdownMenu.querySelectorAll('.cc-dropdown-item').forEach((item) => {
         item.addEventListener('click', () => {
           const val = item.dataset.value;
-          if (gcSelect) { gcSelect.value = val; gcSelect.dispatchEvent(new Event('change')); }
+          gcSelect.value = val;
+          gcSelect.dispatchEvent(new Event('change'));
           if (gcDropdownLabel) gcDropdownLabel.textContent = item.textContent;
-          gcDropdownMenu.querySelectorAll('.cc-dropdown-item').forEach(i => i.classList.remove('active'));
+          gcDropdownMenu.querySelectorAll('.cc-dropdown-item').forEach((entry) => entry.classList.remove('active'));
           item.classList.add('active');
           gcDropdown.classList.remove('open');
           populateGreetingFields(val);
         });
       });
-      // Close on click outside
-      document.addEventListener('click', (e) => {
-        if (!gcDropdown.contains(e.target)) gcDropdown.classList.remove('open');
+      document.addEventListener('click', (event) => {
+        if (!gcDropdown.contains(event.target)) gcDropdown.classList.remove('open');
       });
     }
 
-    // Add reminder
-    if (gcAddReminder && gcReminderList) {
-      gcAddReminder.addEventListener('click', () => {
-        const tmp = document.createElement('div');
-        tmp.innerHTML = reminderRowHTML({ label: '', command: '' });
-        const newRow = tmp.firstElementChild;
-        gcReminderList.appendChild(newRow);
-        wireReminderRemoveButtons();
-        wireReminderDragHandles();
-        newRow.querySelector('.label')?.focus();
-      });
-    }
+    gcAddReminder?.addEventListener('click', () => {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = reminderRowHTML({ label: '', command: '' });
+      const newRow = tmp.firstElementChild;
+      gcReminderList.appendChild(newRow);
+      wireReminderRemoveButtons();
+      wireReminderDragHandles();
+      newRow.querySelector('.label')?.focus();
+    });
 
-    // Save greeting config
-    if (gcSave) {
-      gcSave.addEventListener('click', async () => {
-        const project = gcSelect?.value || 'global';
-        const reminders = [];
-        if (gcReminderList) {
-          gcReminderList.querySelectorAll('.cc-greeting-reminder-row').forEach(row => {
-            const label = row.querySelector('.label')?.value?.trim() || '';
-            const command = row.querySelector('.cmd')?.value?.trim() || '';
-            if (label || command) reminders.push({ label, command });
-          });
+    gcSave.addEventListener('click', async () => {
+      const project = gcSelect.value || 'global';
+      const reminders = [];
+      gcReminderList.querySelectorAll('.cc-greeting-reminder-row').forEach((row) => {
+        const label = row.querySelector('.label')?.value?.trim() || '';
+        const command = row.querySelector('.cmd')?.value?.trim() || '';
+        if (label || command) reminders.push({ label, command });
+      });
+      const body = {
+        greetingTemplate: gcTemplate.value || '',
+        showReminders: gcShowReminders?.checked ?? false,
+        showLastSession: gcShowLastSession?.checked ?? false,
+        reminders,
+      };
+      gcSave.style.opacity = '0.5';
+      gcSave.style.pointerEvents = 'none';
+      try {
+        const res = await fetch(`${saveBaseUrl}/${encodeURIComponent(project)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          alert(data.error || 'Failed to save');
+          return;
         }
-        const body = {
-          greetingTemplate: gcTemplate?.value || '',
-          showReminders: gcShowReminders?.checked ?? false,
-          showLastSession: gcShowLastSession?.checked ?? false,
-          reminders,
-        };
-        gcSave.style.opacity = '0.5'; gcSave.style.pointerEvents = 'none';
-        try {
-          const res = await fetch(`/api/greeting/config/${encodeURIComponent(project)}`, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-          });
-          const data = await res.json();
-          if (data.ok) {
-            // Update local cache
-            const gc = greetingConfig;
-            const target = project === 'global' ? (gc.global || (gc.global = {})) : (gc.projects[project] || (gc.projects[project] = {}));
-            Object.assign(target, body);
-            showCCToast('Greeting config saved');
-          } else { alert(data.error || 'Failed to save'); }
-        } catch (err) { alert('Failed: ' + err.message); }
-        finally { gcSave.style.opacity = ''; gcSave.style.pointerEvents = ''; }
-      });
-    }
+        onSave(project, body);
+        showCCToast('Greeting config saved');
+      } catch (err) {
+        alert('Failed: ' + err.message);
+      } finally {
+        gcSave.style.opacity = '';
+        gcSave.style.pointerEvents = '';
+      }
+    });
 
-    // Initial wiring
     wireReminderRemoveButtons();
     wireReminderDragHandles();
 
-    // Cheatsheet toggle + preview
-    const csToggle = overlay.querySelector('#cc-greeting-cheatsheet-toggle');
-    const csPanel = overlay.querySelector('#cc-greeting-cheatsheet');
+    const csToggle = overlay.querySelector(`#${prefix}-greeting-cheatsheet-toggle`);
+    const csPanel = overlay.querySelector(`#${prefix}-greeting-cheatsheet`);
     if (csToggle && csPanel) {
-      csToggle.addEventListener('click', () => {
-        const open = csPanel.style.display !== 'none';
-        csPanel.style.display = open ? 'none' : 'block';
-        csToggle.classList.toggle('open', !open);
-      });
-
-      function updateCheatsheetPreview() {
+      const updateCheatsheetPreview = () => {
         const hour = new Date().getHours();
         const timeGreeting = hour >= 5 && hour < 12 ? 'Good morning' : hour >= 12 && hour < 17 ? 'Good afternoon' : 'Good evening';
         const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-        const key = gcSelect?.value || 'global';
-        const gc = greetingConfig || {};
+        const key = gcSelect.value || 'global';
+        const gc = configRef() || {};
         const projCfg = key === 'global' ? gc.global : gc.projects?.[key];
         const label = projCfg?.label || key;
         const name = key === 'global' ? 'global' : key;
 
-        overlay.querySelector('#cc-cs-time').textContent = timeGreeting;
-        overlay.querySelector('#cc-cs-label').textContent = label;
-        overlay.querySelector('#cc-cs-name').textContent = name;
-        overlay.querySelector('#cc-cs-branch').textContent = 'dev';
-        overlay.querySelector('#cc-cs-date').textContent = dateStr;
+        overlay.querySelector(`#${prefix}-cs-time`).textContent = timeGreeting;
+        overlay.querySelector(`#${prefix}-cs-label`).textContent = label;
+        overlay.querySelector(`#${prefix}-cs-name`).textContent = name;
+        overlay.querySelector(`#${prefix}-cs-branch`).textContent = 'dev';
+        overlay.querySelector(`#${prefix}-cs-date`).textContent = dateStr;
 
-        // Render the template with resolved values as example
-        const tpl = gcTemplate?.value || '{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.';
+        const tpl = gcTemplate.value || '{time_greeting}! Working on **{project_label}** ({branch} branch). {date}.';
         const resolved = tpl
           .replace(/\{time_greeting\}/g, timeGreeting)
           .replace(/\{project_label\}/g, label)
@@ -4462,33 +4825,93 @@ export async function openSettingsModal() {
           .replace(/\{date\}/g, dateStr)
           .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
           .replace(/`(.+?)`/g, '<code>$1</code>');
-        overlay.querySelector('#cc-cs-preview').innerHTML = resolved;
-      }
+        overlay.querySelector(`#${prefix}-cs-preview`).innerHTML = resolved;
+      };
 
-      // Update on toggle open and on project/template change
-      csToggle.addEventListener('click', updateCheatsheetPreview);
-      if (gcSelect) gcSelect.addEventListener('change', () => { if (csPanel.style.display !== 'none') updateCheatsheetPreview(); });
-      if (gcTemplate) gcTemplate.addEventListener('input', () => { if (csPanel.style.display !== 'none') updateCheatsheetPreview(); });
+      csToggle.addEventListener('click', () => {
+        const open = csPanel.style.display !== 'none';
+        csPanel.style.display = open ? 'none' : 'block';
+        csToggle.classList.toggle('open', !open);
+        if (!open) updateCheatsheetPreview();
+      });
+      gcSelect.addEventListener('change', () => {
+        if (csPanel.style.display !== 'none') updateCheatsheetPreview();
+      });
+      gcTemplate.addEventListener('input', () => {
+        if (csPanel.style.display !== 'none') updateCheatsheetPreview();
+      });
     }
   }
+
+  wireGreetingEditor({
+    prefix: 'cc',
+    configRef: () => greetingConfig,
+    saveBaseUrl: '/api/greeting/config',
+    onSave: (project, body) => {
+      const target = project === 'global'
+        ? (greetingConfig.global || (greetingConfig.global = {}))
+        : (greetingConfig.projects[project] || (greetingConfig.projects[project] = {}));
+      Object.assign(target, body);
+    },
+  });
+
+  wireGreetingEditor({
+    prefix: 'codex',
+    configRef: () => codexGreetingConfig,
+    saveBaseUrl: '/api/codex-panel/greeting/config',
+    onSave: (project, body) => {
+      const target = project === 'global'
+        ? (codexGreetingConfig.global || (codexGreetingConfig.global = {}))
+        : (codexGreetingConfig.projects[project] || (codexGreetingConfig.projects[project] = {}));
+      Object.assign(target, body);
+    },
+  });
+
+  wireGreetingEditor({
+    prefix: 'opencode',
+    configRef: () => opencodeGreetingConfig,
+    saveBaseUrl: '/api/opencode-panel/greeting/config',
+    onSave: (project, body) => {
+      const target = project === 'global'
+        ? (opencodeGreetingConfig.global || (opencodeGreetingConfig.global = {}))
+        : (opencodeGreetingConfig.projects[project] || (opencodeGreetingConfig.projects[project] = {}));
+      Object.assign(target, body);
+    },
+  });
 
   // Per-project toggles
   overlay.querySelectorAll('.cc-enable-btn[data-cc-project-toggle]').forEach(btn => {
     btn.addEventListener('click', () => { const idx = btn.dataset.ccProjectToggle; const panel = overlay.querySelector(`.cc-panel[data-cc-idx="${idx}"]`); const projectPath = panel?.dataset.ccPath; if (projectPath) ccToggleHook('project', projectPath, btn, panel); });
   });
 
-  // Skill toggles
-  overlay.querySelectorAll('.cc-toggle[data-cc-skill]').forEach(toggle => {
-    toggle.addEventListener('click', async () => {
-      const skillName = toggle.dataset.ccSkill; const isOn = toggle.classList.contains('on');
+  // Skill target chips — one skill can be installed independently into Claude / Codex / OpenCode
+  const runtimeLabels = { claude: 'Claude Code', codex: 'Codex CLI', opencode: 'OpenCode CLI' };
+  overlay.querySelectorAll('.cc-skill-target[data-cc-skill]').forEach(chip => {
+    chip.addEventListener('click', async () => {
+      const skillName = chip.dataset.ccSkill;
+      const target = chip.dataset.ccTarget;
+      const isOn = chip.classList.contains('on');
       try {
-        toggle.style.opacity = '0.4'; toggle.style.pointerEvents = 'none';
-        const res = await fetch('/api/claude-code/skills', { method: isOn ? 'DELETE' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: skillName }) });
+        chip.style.opacity = '0.4'; chip.style.pointerEvents = 'none';
+        const res = await fetch('/api/skills/install', {
+          method: isOn ? 'DELETE' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: skillName, target }),
+        });
         const data = await res.json();
-        if (data.ok) { toggle.classList.toggle('on'); const row = toggle.closest('.cc-skill-row'); if (row) row.classList.toggle('installed', !isOn); showCCToast(isOn ? 'Skill uninstalled \u2014 restart Claude Code to apply' : 'Skill installed \u2014 restart Claude Code to apply'); }
-        else { alert(data.error || 'Failed to toggle skill'); }
+        if (data.ok) {
+          chip.classList.toggle('on');
+          chip.dataset.state = isOn ? 'off' : 'on';
+          const row = chip.closest('.cc-skill-row');
+          if (row) {
+            const anyOn = !!row.querySelector('.cc-skill-target.on');
+            row.classList.toggle('installed', anyOn);
+          }
+          const runtime = runtimeLabels[target] || target;
+          showCCToast(isOn ? `Skill uninstalled \u2014 restart ${runtime} to apply` : `Skill installed \u2014 restart ${runtime} to apply`);
+        } else { alert(data.error || 'Failed to toggle skill'); }
       } catch (err) { alert('Failed: ' + err.message); }
-      finally { toggle.style.opacity = ''; toggle.style.pointerEvents = ''; }
+      finally { chip.style.opacity = ''; chip.style.pointerEvents = ''; }
     });
   });
 
@@ -4601,6 +5024,38 @@ export async function openSettingsModal() {
       wireCopyBtn('setup-codex-config-copy', () => cachedConfig, 'Copy TOML Config');
     }
     wireRulesetPreview('codex', 'codex');
+
+    // ── OpenCode ──
+    wireSetupMcpToggle('opencode', '/api/opencode/mcp', '~/.config/opencode/config.json');
+    // Config preview — OpenCode stores MCP servers under the "mcp" key of config.json
+    {
+      const preview = overlay.querySelector('#setup-opencode-config-preview');
+      let cachedConfig = '';
+      if (preview) {
+        const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs';
+        const ep = setupStatus.paths?.envPath || '<path-to>/synabun/.env';
+        fetch('/api/opencode/mcp').then(r => r.json()).then(data => {
+          if (data.ok && data.data && Object.keys(data.data).length) {
+            cachedConfig = JSON.stringify({ mcp: data.data }, null, 2);
+            preview.textContent = cachedConfig;
+          } else if (data.ok) {
+            cachedConfig = JSON.stringify({
+              mcp: {
+                SynaBun: {
+                  type: 'stdio',
+                  command: 'node',
+                  args: [mp],
+                  env: { DOTENV_PATH: ep },
+                },
+              },
+            }, null, 2);
+            preview.textContent = cachedConfig;
+          } else { preview.textContent = 'Could not load config.'; }
+        }).catch(() => { preview.textContent = 'Failed to load.'; });
+      }
+      wireCopyBtn('setup-opencode-config-copy', () => cachedConfig, 'Copy JSON Config');
+    }
+    wireRulesetPreview('opencode', 'generic');
 
     // ── Coexistence rules ──
     wireRulesetPreview('coexistence', 'coexistence');
@@ -5693,6 +6148,43 @@ export async function openSettingsModal() {
     });
   });
 
+  // Trust workspace (adds to git safe.directory global config)
+  overlay.querySelectorAll('.cc-trust-btn[data-cc-trust]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const idx = btn.dataset.ccTrust;
+      const panel = overlay.querySelector(`.cc-panel[data-cc-idx="${idx}"]`);
+      const projectPath = panel?.dataset.ccPath;
+      if (!projectPath) return;
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Trusting...';
+      try {
+        const res = await fetch('/api/terminal/trust-workspace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: projectPath }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          btn.textContent = '✓ Trusted';
+          btn.style.background = 'rgba(109,213,140,0.14)';
+          btn.style.borderColor = 'rgba(109,213,140,0.3)';
+          btn.style.color = '#a5d6a7';
+          setTimeout(() => { btn.disabled = false; btn.textContent = 'Trust workspace'; btn.style.background = 'rgba(255,183,77,0.14)'; btn.style.borderColor = 'rgba(255,183,77,0.3)'; btn.style.color = '#ffcc80'; }, 2500);
+        } else {
+          btn.disabled = false;
+          btn.textContent = origText;
+          alert('Trust failed: ' + (data.error || 'unknown error'));
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = origText;
+        alert('Trust failed: ' + err.message);
+      }
+    });
+  });
+
   // Remove project
   overlay.querySelectorAll('.cc-remove-panel-btn[data-cc-remove]').forEach(btn => {
     btn.addEventListener('click', async (e) => {
@@ -5785,6 +6277,1627 @@ export async function openSettingsModal() {
       } catch (err) { alert('Failed: ' + err.message); const saveBtn = addOverlay.querySelector('#cc-proj-save'); saveBtn.textContent = 'Add & Enable'; saveBtn.disabled = false; }
     });
   });
+
+  // ── OpenCode tab: wire interaction ──
+  {
+    const ocpStatusEl = overlay.querySelector('#stg-ocp-status');
+    const ocpDotEl = overlay.querySelector('#stg-ocp-dot');
+    function setOcpStatus(text, state) {
+      if (ocpStatusEl) ocpStatusEl.textContent = text;
+      if (ocpDotEl) ocpDotEl.dataset.state = state || 'dim';
+    }
+    const ocpProvidersEl = overlay.querySelector('#stg-ocp-providers');
+    const ocpProviderFilterInput = overlay.querySelector('#stg-ocp-provider-filter');
+    const ocpToolsEl = overlay.querySelector('#stg-ocp-tools');
+    const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // ── Helpers ──
+    let _ocpConnected = new Set();
+    let _ocpStoredKeys = new Set();
+    let _ocpProviders = [];
+    let _ocpAuthMethods = {};
+    let _ocpShowAll = false;
+    let _ocpConfig = {};
+    let _ocpProviderFilter = '';
+    let _ocpProviderCapFilters = new Set();
+
+    // ── Ollama state ──
+    let _ollamaRunning = false;
+    let _ollamaVersion = null;
+    let _ollamaModels = [];
+    let _ollamaConfigured = false;
+    let _ollamaConfiguredCount = 0;
+    let _ollamaUserRemoved = false;
+    let _ollamaConfiguring = false;
+    let _ollamaPollTimer = null;
+    let _ollamaLastModelNames = '';
+
+    function formatBytes(bytes) {
+      if (!bytes) return '';
+      const gb = bytes / (1024 ** 3);
+      return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / (1024 ** 2)).toFixed(0)} MB`;
+    }
+
+    function renderOllamaCard() {
+      if (!ocpProvidersEl) return;
+      let existing = ocpProvidersEl.querySelector('.stg-ollama-card');
+      if (!existing) {
+        existing = document.createElement('div');
+        existing.className = 'stg-ollama-card';
+        ocpProvidersEl.prepend(existing);
+      }
+
+      let dotColor, statusText, statusCls, bodyHtml;
+
+      if (_ollamaConfiguring) {
+        dotColor = '#facc15';
+        statusText = 'Configuring…';
+        statusCls = 'stg-provider-status-key';
+        bodyHtml = '<div class="stg-provider-note">Writing provider config and restarting OpenCode…</div>';
+      } else if (!_ollamaRunning) {
+        dotColor = 'rgba(248,113,113,0.7)';
+        statusText = 'Not detected';
+        statusCls = 'stg-provider-status-disconnected';
+        bodyHtml = '<div class="stg-provider-note">Install from <code class="stg-code">ollama.com</code> or run <code class="stg-code">ollama serve</code></div>';
+      } else if (_ollamaModels.length === 0) {
+        dotColor = '#facc15';
+        statusText = `Running${_ollamaVersion ? ' v' + _ollamaVersion : ''}`;
+        statusCls = 'stg-provider-status-key';
+        bodyHtml = '<div class="stg-provider-note">No models — run <code class="stg-code">ollama pull &lt;model&gt;</code></div>';
+      } else if (_ollamaConfigured) {
+        dotColor = '#4ade80';
+        statusText = `Running${_ollamaVersion ? ' v' + _ollamaVersion : ''}`;
+        statusCls = 'stg-provider-status-connected';
+        bodyHtml = `<div class="stg-provider-toolbar">`
+          + `<span class="stg-provider-tag">Auto-configured</span>`
+          + `<span class="stg-provider-sep">·</span>`
+          + `<span class="stg-provider-submeta">${_ollamaModels.length} model${_ollamaModels.length !== 1 ? 's' : ''}</span>`
+          + `<button class="stg-action-btn compact stg-ollama-remove stg-ocp-remove-btn" style="color:#f87171">Remove</button>`
+          + `</div>`;
+      } else {
+        dotColor = '#facc15';
+        statusText = `Running${_ollamaVersion ? ' v' + _ollamaVersion : ''}`;
+        statusCls = 'stg-provider-status-key';
+        bodyHtml = `<div class="stg-provider-note">${_ollamaModels.length} model${_ollamaModels.length !== 1 ? 's' : ''} · Ready to configure…</div>`;
+      }
+
+      existing.innerHTML = `<div class="stg-provider-card" style="--prov-accent:${dotColor}">
+          <div class="stg-provider-head">
+            <span class="stg-provider-name">Ollama <span class="stg-provider-subname">(local)</span></span>
+            <span class="stg-provider-status ${statusCls}">${statusText}</span>
+          </div>
+          ${bodyHtml}
+      </div>`;
+
+      // Wire remove button
+      existing.querySelector('.stg-ollama-remove')?.addEventListener('click', async () => {
+        const btn = existing.querySelector('.stg-ollama-remove');
+        if (btn) { btn.disabled = true; btn.textContent = 'Removing…'; }
+        try {
+          await fetch('/api/ollama/configure', { method: 'DELETE' });
+          _ollamaConfigured = false;
+          _ollamaConfiguredCount = 0;
+          _ollamaUserRemoved = true;
+          renderOllamaCard();
+          showCCToast('Ollama provider removed — server restarting…');
+          // Poll for server restart then refresh providers
+          let polls = 0;
+          const pollId = setInterval(async () => {
+            polls++;
+            if (polls > 8) { clearInterval(pollId); return; }
+            try {
+              const sr = await fetch('/api/opencode/status');
+              const sd = await sr.json();
+              if (sd.running) {
+                clearInterval(pollId);
+                await refreshOcpProviders();
+                document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
+              }
+            } catch {}
+          }, 2000);
+        } catch (e) {
+          showCCToast('Error: ' + e.message);
+        }
+        if (btn) { btn.disabled = false; btn.textContent = 'Remove'; }
+      });
+    }
+
+    async function ollamaDetectAndConfigure() {
+      try {
+        // Fetch status, models, and config state in parallel
+        const [statusResp, modelsResp, configResp] = await Promise.all([
+          fetch('/api/ollama/status'),
+          fetch('/api/ollama/models'),
+          fetch('/api/ollama/configured'),
+        ]);
+        const statusData = await statusResp.json();
+        const modelsData = await modelsResp.json();
+        const configData = await configResp.json();
+
+        _ollamaRunning = statusData.running;
+        _ollamaVersion = statusData.version;
+        _ollamaModels = modelsData.models || [];
+        _ollamaConfigured = configData.configured;
+        _ollamaConfiguredCount = configData.modelCount;
+        if (configData.userRemoved) _ollamaUserRemoved = true;
+
+        // Check if model list changed since last poll
+        const currentModelNames = _ollamaModels.map(m => m.name).sort().join(',');
+        const modelsChanged = _ollamaLastModelNames && _ollamaLastModelNames !== currentModelNames;
+        _ollamaLastModelNames = currentModelNames;
+
+        // Auto-configure if: running + has models + not configured + not user-removed
+        // Also re-configure if models changed while already configured
+        const shouldConfigure = _ollamaRunning && _ollamaModels.length > 0 && !_ollamaUserRemoved
+          && (!_ollamaConfigured || modelsChanged);
+
+        if (shouldConfigure && !_ollamaConfiguring) {
+          _ollamaConfiguring = true;
+          renderOllamaCard();
+          try {
+            const cfgResp = await fetch('/api/ollama/configure', { method: 'POST' });
+            const cfgData = await cfgResp.json();
+            if (cfgData.ok) {
+              _ollamaConfigured = true;
+              _ollamaConfiguredCount = cfgData.modelsConfigured;
+              // Wait for OpenCode server restart then refresh providers
+              setTimeout(async () => {
+                let polls = 0;
+                const pollId = setInterval(async () => {
+                  polls++;
+                  if (polls > 8) { clearInterval(pollId); _ollamaConfiguring = false; renderOllamaCard(); return; }
+                  try {
+                    const sr = await fetch('/api/opencode/status');
+                    const sd = await sr.json();
+                    if (sd.running) {
+                      clearInterval(pollId);
+                      _ollamaConfiguring = false;
+                      await refreshOcpProviders();
+                      renderOllamaCard();
+                      document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
+                    }
+                  } catch {}
+                }, 2000);
+              }, 1000);
+            } else {
+              _ollamaConfiguring = false;
+            }
+          } catch {
+            _ollamaConfiguring = false;
+          }
+        }
+
+        renderOllamaCard();
+      } catch {
+        renderOllamaCard();
+      }
+    }
+
+    function startOllamaPoll() {
+      stopOllamaPoll();
+      ollamaDetectAndConfigure();
+      _ollamaPollTimer = setInterval(ollamaDetectAndConfigure, 10000);
+    }
+
+    function stopOllamaPoll() {
+      if (_ollamaPollTimer) { clearInterval(_ollamaPollTimer); _ollamaPollTimer = null; }
+    }
+
+    function modelDisplayName(fullId) {
+      if (!fullId) return '';
+      return fullId.includes('/') ? fullId.split('/').slice(1).join('/') : fullId;
+    }
+
+    function extractModels(p) {
+      const modelObj = p.models || {};
+      const arr = Array.isArray(modelObj) ? modelObj : Object.values(modelObj);
+      return arr.map(m => typeof m === 'string' ? m : (m.id || m.name || '')).filter(Boolean);
+    }
+
+    function extractModelObjects(p) {
+      const modelObj = p.models || {};
+      const arr = Array.isArray(modelObj) ? modelObj : Object.values(modelObj);
+      return arr.filter(m => m && typeof m === 'object' && (m.id || m.name));
+    }
+
+    // ── Hidden models (per-provider model visibility) ──
+    const HIDDEN_MODELS_KEY = 'ocp-hidden-models';
+    function getHiddenModels() {
+      try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_MODELS_KEY) || '[]')); } catch { return new Set(); }
+    }
+    function saveHiddenModels(set) {
+      try { localStorage.setItem(HIDDEN_MODELS_KEY, JSON.stringify([...set])); } catch {}
+    }
+
+    const STG_CAP_BADGES = [
+      { test: c => c?.reasoning,     label: 'Reason', abbr: 'R',  color: '#c084fc', bg: 'rgba(192,132,252,0.10)' },
+      { test: c => c?.toolcall,      label: 'Tools',  abbr: 'T',  color: '#60a5fa', bg: 'rgba(96,165,250,0.10)' },
+      { test: c => c?.input?.image,  label: 'Vision', abbr: 'V',  color: '#4ade80', bg: 'rgba(74,222,128,0.10)' },
+      { test: c => c?.input?.audio,  label: 'Audio',  abbr: 'A',  color: '#fb923c', bg: 'rgba(251,146,60,0.10)' },
+      { test: c => c?.input?.video,  label: 'Video',  abbr: 'Vi', color: '#f87171', bg: 'rgba(248,113,113,0.10)' },
+      { test: c => c?.input?.pdf,    label: 'PDF',    abbr: 'P',  color: '#fbbf24', bg: 'rgba(251,191,36,0.10)' },
+      { test: c => c?.output?.image, label: 'ImgGen', abbr: 'I',  color: '#f472b6', bg: 'rgba(244,114,182,0.10)' },
+      { test: c => c?.output?.audio, label: 'TTS',    abbr: 'S',  color: '#2dd4bf', bg: 'rgba(45,212,191,0.10)' },
+      { test: c => c?.attachment,    label: 'Files',  abbr: 'F',  color: '#94a3b8', bg: 'rgba(148,163,184,0.10)' },
+    ];
+
+    function stgCapBadgesHtml(modelObj) {
+      const caps = modelObj?.capabilities;
+      if (!caps) return '';
+      return STG_CAP_BADGES
+        .filter(b => b.test(caps))
+        .map(b => `<span class="stg-cap" title="${b.label}" style="--cap-c:${b.color}">${b.abbr}</span>`)
+        .join('');
+    }
+
+    function stgCapBadgesText(modelObj) {
+      const caps = modelObj?.capabilities;
+      if (!caps) return '';
+      const labels = STG_CAP_BADGES.filter(b => b.test(caps)).map(b => b.label);
+      return labels.length ? '  ' + labels.join(' ') : '';
+    }
+
+    const OCP_PROVIDER_NAME_OVERRIDES = {
+      anthropic: 'Anthropic',
+      copilot: 'GitHub Copilot',
+      'github-copilot': 'GitHub Copilot',
+      gitlab: 'GitLab',
+      google: 'Google',
+      openai: 'OpenAI',
+      openrouter: 'OpenRouter',
+      poe: 'Poe',
+      xai: 'xAI',
+      zai: 'Z.ai',
+      deepseek: 'DeepSeek',
+      'cloudflare-ai-gateway': 'Cloudflare AI Gateway',
+      'cloudflare-workers': 'Cloudflare Workers',
+      'cloudflare-workers-ai': 'Cloudflare Workers AI',
+    };
+
+    function authMethodsForProvider(id) {
+      const methods = _ocpAuthMethods[id];
+      return Array.isArray(methods) ? methods : [];
+    }
+
+    function hasOauthAuth(id) {
+      return authMethodsForProvider(id).some(m => m.type === 'oauth');
+    }
+
+    function hasApiAuth(id) {
+      return authMethodsForProvider(id).some(m => m.type === 'api' || m.type === 'key');
+    }
+
+    function humanizeProviderId(id) {
+      if (!id) return 'Unknown';
+      if (OCP_PROVIDER_NAME_OVERRIDES[id]) return OCP_PROVIDER_NAME_OVERRIDES[id];
+      return String(id)
+        .split(/[-_/]+/)
+        .filter(Boolean)
+        .map(part => {
+          const lower = part.toLowerCase();
+          if (lower === 'ai') return 'AI';
+          if (lower === 'api') return 'API';
+          if (lower === 'sdk') return 'SDK';
+          return part.charAt(0).toUpperCase() + part.slice(1);
+        })
+        .join(' ');
+    }
+
+    function buildProviderCardsCatalog() {
+      const catalog = new Map();
+      for (const provider of _ocpProviders) {
+        if (!provider?.id) continue;
+        catalog.set(provider.id, { ...provider });
+      }
+      for (const [id] of Object.entries(_ocpAuthMethods)) {
+        const existing = catalog.get(id);
+        if (existing) {
+          if (!existing.name) existing.name = humanizeProviderId(id);
+          continue;
+        }
+        catalog.set(id, {
+          id,
+          name: humanizeProviderId(id),
+          env: [],
+          models: [],
+        });
+      }
+      return Array.from(catalog.values());
+    }
+
+    function shouldShowProviderByDefault(id) {
+      return _ocpConnected.has(id) || _ocpStoredKeys.has(id) || hasOauthAuth(id);
+    }
+
+    // ── Provider card rendering ──
+    function renderProviderCards() {
+      if (!ocpProvidersEl) return;
+      const providerCatalog = buildProviderCardsCatalog();
+      if (!providerCatalog.length) {
+        ocpProvidersEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">No providers found</div>';
+        return;
+      }
+
+      // Exclude Ollama — it has its own dedicated card via renderOllamaCard()
+      const filtered = providerCatalog.filter(p => p.id !== 'ollama');
+
+      // Sort: connected first, then stored-key, then alphabetical
+      const sorted = [...filtered].sort((a, b) => {
+        const ac = _ocpConnected.has(a.id) ? 0 : _ocpStoredKeys.has(a.id) ? 1 : 2;
+        const bc = _ocpConnected.has(b.id) ? 0 : _ocpStoredKeys.has(b.id) ? 1 : 2;
+        if (ac !== bc) return ac - bc;
+        return (a.name || a.id || '').localeCompare(b.name || b.id || '');
+      });
+
+      // Filter: only show connected, stored, or OAuth-ready providers unless "show all" is toggled
+      const configured = sorted.filter(p => shouldShowProviderByDefault(p.id));
+      const unconfigured = sorted.filter(p => !shouldShowProviderByDefault(p.id));
+      const baseVisible = _ocpShowAll ? sorted : configured;
+      const providerTerm = _ocpProviderFilter.trim().toLowerCase();
+      const hasCapFilter = _ocpProviderCapFilters.size > 0;
+      // When searching or filtering by caps, search ALL providers (not just configured)
+      const searchPool = (providerTerm || hasCapFilter) ? sorted : baseVisible;
+      const visible = (!providerTerm && !hasCapFilter) ? baseVisible : searchPool.filter(p => {
+        // Text filter
+        if (providerTerm) {
+          const id = p.id || 'unknown';
+          const name = p.name || id;
+          const envVars = Array.isArray(p.env) ? p.env : [];
+          const models = extractModels(p);
+          const authMethods = authMethodsForProvider(id);
+          const authLabels = authMethods.map(m => [m.type, m.label, m.name].filter(Boolean).join(' '));
+          const haystack = [id, name, ...envVars, ...models, ...authLabels].join(' ').toLowerCase();
+          if (!haystack.includes(providerTerm)) return false;
+        }
+        // Capability filter (AND logic — provider must have at least one model with ALL selected caps)
+        if (hasCapFilter) {
+          const modelObjs = extractModelObjects(p);
+          const match = modelObjs.some(mo => {
+            const caps = mo.capabilities;
+            if (!caps) return false;
+            for (const key of _ocpProviderCapFilters) {
+              const badge = STG_CAP_BADGES.find(b => b.label === key);
+              if (badge && !badge.test(caps)) return false;
+            }
+            return true;
+          });
+          if (!match) return false;
+        }
+        return true;
+      });
+
+      const cardsHtml = visible.map(p => {
+        const id = p.id || 'unknown';
+        const name = p.name || id;
+        const connected = _ocpConnected.has(id);
+        const hasStoredKey = _ocpStoredKeys.has(id);
+        const allModels = extractModels(p);
+        const modelObjs = extractModelObjects(p);
+        const modelObjMap = {};
+        for (const mo of modelObjs) modelObjMap[mo.id || mo.name] = mo;
+        // When cap filter active, only show models matching ALL selected caps
+        const models = hasCapFilter ? allModels.filter(mId => {
+          const mo = modelObjMap[mId];
+          const caps = mo?.capabilities;
+          if (!caps) return false;
+          for (const key of _ocpProviderCapFilters) {
+            const badge = STG_CAP_BADGES.find(b => b.label === key);
+            if (badge && !badge.test(caps)) return false;
+          }
+          return true;
+        }) : allModels;
+        const authMethods = authMethodsForProvider(id);
+        const supportsApiAuth = hasApiAuth(id);
+        // Track original index so OAuth authorize gets the correct method number
+        const oauthMethods = authMethods.map((m, i) => ({ ...m, _idx: i })).filter(m => m.type === 'oauth');
+        const storedStatusText = oauthMethods.length && !supportsApiAuth ? 'Auth saved' : 'Key saved';
+
+        const dotColor = connected ? '#4ade80' : hasStoredKey ? '#facc15' : 'rgba(255,255,255,0.18)';
+        const statusCls = connected ? 'stg-provider-status-connected' : hasStoredKey ? 'stg-provider-status-key' : 'stg-provider-status-disconnected';
+        const statusText = connected ? 'Connected' : hasStoredKey ? storedStatusText : 'Not connected';
+        const nameCls = connected ? '' : hasStoredKey ? '' : 'style="opacity:0.55"';
+
+        // Auth actions
+        const envVars = p.env || [];
+        const primaryEnv = envVars.length ? envVars[0] : '';
+        let authHtml = '';
+        if (connected || hasStoredKey) {
+          // Connected/stored — show the actions that match the available auth methods
+          const btns = [];
+          if (supportsApiAuth) {
+            btns.push(`<button class="stg-action-btn compact stg-ocp-apikey-btn" data-provider="${esc(id)}">Change Key</button>`);
+          }
+          for (const om of oauthMethods) {
+            const label = om.label || om.name || `Reconnect ${name}`;
+            btns.push(`<button class="stg-action-btn compact stg-ocp-oauth-btn" data-provider="${esc(id)}" data-method="${om._idx}">${esc(label)} →</button>`);
+          }
+          btns.push(`<button class="stg-action-btn compact stg-ocp-remove-btn" data-provider="${esc(id)}" data-env="${esc(primaryEnv)}" style="color:#f87171">Remove</button>`);
+          authHtml = btns.join('');
+        } else {
+          // Not configured — show only the auth methods this provider actually supports
+          const btns = [];
+          const envHint = envVars.length ? ` (${envVars[0]})` : '';
+          if (supportsApiAuth || !authMethods.length) {
+            btns.push(`<button class="stg-action-btn compact stg-ocp-apikey-btn" data-provider="${esc(id)}">Enter API Key${esc(envHint)}</button>`);
+          }
+          for (const om of oauthMethods) {
+            const label = om.label || om.name || `Login with ${name}`;
+            btns.push(`<button class="stg-action-btn compact stg-ocp-oauth-btn" data-provider="${esc(id)}" data-method="${om._idx}">${esc(label)} →</button>`);
+          }
+          authHtml = btns.join('');
+        }
+
+        // API key inline form (hidden via inline style — JS removes it to show)
+        const keyFormHtml = `<div class="stg-ocp-key-form" data-provider="${esc(id)}" data-env="${esc(primaryEnv)}" style="display:none">
+          <div class="stg-ocp-key-row">
+            <input type="password" class="stg-input stg-input-sm stg-ocp-key-input" placeholder="Paste API key…" style="flex:1">
+            <button class="stg-action-btn compact stg-ocp-key-save">Save</button>
+            <button class="stg-action-btn compact stg-ocp-key-cancel" style="opacity:0.5">✕</button>
+          </div>
+          <div class="stg-ocp-key-error"></div>
+        </div>`;
+
+        // OAuth wait indicator (hidden via inline style — JS removes it to show)
+        const oauthWaitHtml = `<div class="stg-ocp-oauth-wait" data-provider="${esc(id)}" style="display:none">
+          Waiting for authorization…
+          <span class="stg-ocp-oauth-code" style="display:none"></span>
+        </div>`;
+
+        const hiddenSet = getHiddenModels();
+        const enabledCount = models.filter(mId => !hiddenSet.has(`${id}/${mId}`)).length;
+        const modelCountLabel = models.length
+          ? `${enabledCount}/${models.length} model${models.length !== 1 ? 's' : ''} enabled`
+          : '';
+
+        // Build expandable model list with toggles
+        const modelListHtml = models.length ? models.map(mId => {
+          const fullId = `${id}/${mId}`;
+          const isHidden = hiddenSet.has(fullId);
+          const badges = stgCapBadgesHtml(modelObjMap[mId]);
+          return `<label class="stg-model-toggle${isHidden ? ' disabled' : ''}" data-full-id="${esc(fullId)}">
+            <input type="checkbox" ${isHidden ? '' : 'checked'} data-model-full-id="${esc(fullId)}">
+            <span class="stg-model-toggle-name">${esc(mId)}</span>
+            ${badges ? `<span class="stg-model-toggle-caps">${badges}</span>` : ''}
+          </label>`;
+        }).join('') : '';
+
+        const accentColor = connected ? '#4ade80' : hasStoredKey ? '#facc15' : 'rgba(255,255,255,0.06)';
+
+        return `<div class="stg-provider-card" style="--prov-accent:${accentColor}">
+          <div class="stg-provider-head">
+            <span class="stg-provider-name" ${nameCls}>${esc(name)}</span>
+            <span class="stg-provider-status ${statusCls}">${statusText}</span>
+          </div>
+          <div class="stg-provider-toolbar">
+            ${models.length ? `<button class="stg-model-expand-btn" data-provider="${esc(id)}">
+              <span class="stg-model-expand-icon">&#x25B8;</span>
+              <span class="stg-model-count-badge">${enabledCount}<span class="stg-model-count-sep">/</span>${models.length}</span>
+              models
+            </button>` : ''}
+            ${authHtml}
+          </div>
+          ${models.length ? `<div class="stg-model-list" data-provider="${esc(id)}" style="display:none">
+            <div class="stg-model-list-actions">
+              <button class="stg-action-btn compact stg-model-all-btn" data-provider="${esc(id)}">Enable all</button>
+              <button class="stg-action-btn compact stg-model-none-btn" data-provider="${esc(id)}">Disable all</button>
+            </div>
+            ${modelListHtml}
+          </div>` : ''}
+          ${keyFormHtml}${oauthWaitHtml}
+        </div>`;
+      }).join('');
+
+      const emptyHtml = (providerTerm || hasCapFilter)
+        ? '<div class="settings-hint" style="opacity:0.4">No providers match this filter</div>'
+        : '<div class="settings-hint" style="opacity:0.4">No providers found</div>';
+
+      // "Show all / Show configured" toggle
+      if (unconfigured.length) {
+        const toggleLabel = _ocpShowAll
+          ? `Show configured only (${configured.length})`
+          : `Show all providers (${unconfigured.length} more)`;
+        ocpProvidersEl.innerHTML = (cardsHtml || emptyHtml) + `<button class="stg-ocp-toggle-all">${toggleLabel}</button>`;
+      } else {
+        ocpProvidersEl.innerHTML = cardsHtml || emptyHtml;
+      }
+
+      // Wire model capability tooltips
+      ocpProvidersEl.querySelectorAll('.stg-model-hover[data-model-id]').forEach(span => {
+        span.addEventListener('mouseenter', (e) => {
+          const mId = span.dataset.modelId;
+          // Find the model object across all visible providers
+          let mo = null;
+          for (const p of visible) {
+            const objs = extractModelObjects(p);
+            mo = objs.find(o => (o.id || o.name) === mId);
+            if (mo) break;
+          }
+          if (!mo) return;
+          const html = stgCapBadgesHtml(mo);
+          if (!html) return;
+          let tip = document.getElementById('stg-cap-tooltip');
+          if (!tip) {
+            tip = document.createElement('div');
+            tip.id = 'stg-cap-tooltip';
+            tip.style.cssText = 'position:fixed;z-index:999999;background:rgba(20,20,28,0.95);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:4px 6px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.4);pointer-events:none;display:flex;gap:3px;';
+            document.body.appendChild(tip);
+          }
+          tip.innerHTML = html;
+          tip.style.display = 'flex';
+          const rect = span.getBoundingClientRect();
+          tip.style.left = rect.left + 'px';
+          tip.style.top = (rect.top - tip.offsetHeight - 6) + 'px';
+        });
+        span.addEventListener('mouseleave', () => {
+          const tip = document.getElementById('stg-cap-tooltip');
+          if (tip) tip.style.display = 'none';
+        });
+      });
+
+      // Wire toggle
+      ocpProvidersEl.querySelector('.stg-ocp-toggle-all')?.addEventListener('click', () => {
+        _ocpShowAll = !_ocpShowAll;
+        renderProviderCards();
+      });
+
+      // Card click-to-expand — set cursor on cards that have models
+      ocpProvidersEl.querySelectorAll('.stg-provider-card').forEach(card => {
+        if (card.querySelector('.stg-model-list')) card.style.cursor = 'pointer';
+      });
+
+      // Wire individual model toggles
+      ocpProvidersEl.querySelectorAll('.stg-model-toggle input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const fullId = cb.dataset.modelFullId;
+          if (!fullId) return;
+          const hidden = getHiddenModels();
+          if (cb.checked) hidden.delete(fullId); else hidden.add(fullId);
+          saveHiddenModels(hidden);
+          cb.closest('.stg-model-toggle')?.classList.toggle('disabled', !cb.checked);
+          // Update the enabled count in the header
+          const card = cb.closest('.stg-provider-card') || cb.closest('.stg-provider-row');
+          if (card) {
+            const allCbs = card.querySelectorAll('.stg-model-toggle input[type="checkbox"]');
+            const total = allCbs.length;
+            const enabled = [...allCbs].filter(c => c.checked).length;
+            const badge = card.querySelector('.stg-model-count-badge');
+            if (badge) badge.innerHTML = `${enabled}<span class="stg-model-count-sep">/</span>${total}`;
+          }
+          document.dispatchEvent(new CustomEvent('ocp-hidden-models-changed'));
+        });
+      });
+
+      // Wire enable all / disable all buttons
+      ocpProvidersEl.querySelectorAll('.stg-model-all-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const provId = btn.dataset.provider;
+          const list = btn.closest('.stg-model-list');
+          if (!list) return;
+          const hidden = getHiddenModels();
+          list.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            const fullId = cb.dataset.modelFullId;
+            if (fullId) hidden.delete(fullId);
+            cb.checked = true;
+            cb.closest('.stg-model-toggle')?.classList.remove('disabled');
+          });
+          saveHiddenModels(hidden);
+          renderProviderCards();
+          // Re-open this provider's list after re-render
+          const newList = ocpProvidersEl.querySelector(`.stg-model-list[data-provider="${provId}"]`);
+          const newExpandBtn = ocpProvidersEl.querySelector(`.stg-model-expand-btn[data-provider="${provId}"]`);
+          if (newList) newList.style.display = '';
+          if (newExpandBtn) newExpandBtn.setAttribute('aria-expanded', 'true');
+          document.dispatchEvent(new CustomEvent('ocp-hidden-models-changed'));
+        });
+      });
+      ocpProvidersEl.querySelectorAll('.stg-model-none-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const provId = btn.dataset.provider;
+          const list = btn.closest('.stg-model-list');
+          if (!list) return;
+          const hidden = getHiddenModels();
+          list.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            const fullId = cb.dataset.modelFullId;
+            if (fullId) hidden.add(fullId);
+            cb.checked = false;
+            cb.closest('.stg-model-toggle')?.classList.add('disabled');
+          });
+          saveHiddenModels(hidden);
+          renderProviderCards();
+          const newList = ocpProvidersEl.querySelector(`.stg-model-list[data-provider="${provId}"]`);
+          const newExpandBtn = ocpProvidersEl.querySelector(`.stg-model-expand-btn[data-provider="${provId}"]`);
+          if (newList) newList.style.display = '';
+          if (newExpandBtn) newExpandBtn.setAttribute('aria-expanded', 'true');
+          document.dispatchEvent(new CustomEvent('ocp-hidden-models-changed'));
+        });
+      });
+
+      // Wire API key buttons
+      ocpProvidersEl.querySelectorAll('.stg-ocp-apikey-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const provId = btn.dataset.provider;
+          const form = ocpProvidersEl.querySelector(`.stg-ocp-key-form[data-provider="${provId}"]`);
+          if (form) { form.style.display = ''; form.querySelector('input')?.focus(); }
+        });
+      });
+
+      // Wire API key save
+      ocpProvidersEl.querySelectorAll('.stg-ocp-key-save').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const form = btn.closest('.stg-ocp-key-form');
+          const provId = form?.dataset.provider;
+          const input = form?.querySelector('.stg-ocp-key-input');
+          const errEl = form?.querySelector('.stg-ocp-key-error');
+          const key = input?.value?.trim();
+          if (!key || !provId) return;
+          btn.disabled = true; btn.textContent = 'Saving…';
+          try {
+            const resp = await fetch(`/api/opencode/auth/${encodeURIComponent(provId)}`, {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ type: 'api', key }),
+            });
+            const data = await resp.json();
+            if (resp.ok && data.ok !== false) {
+              form.style.display = 'none';
+              input.value = '';
+              showCCToast(`API key saved for ${provId} — server restarting…`);
+              // Poll until server is back (takeover kills + respawns, ~5-6s)
+              let polls = 0;
+              const pollId = setInterval(async () => {
+                polls++;
+                if (polls > 8) { clearInterval(pollId); return; }
+                try {
+                  const sr = await fetch('/api/opencode/status');
+                  const sd = await sr.json();
+                  if (sd.running) {
+                    clearInterval(pollId);
+                    await refreshOcpProviders();
+                    document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
+                  }
+                } catch {}
+              }, 2000);
+            } else {
+              const msg = data.error || 'Failed to save key';
+              if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
+              showCCToast(msg);
+            }
+          } catch (e) {
+            if (errEl) { errEl.textContent = e.message; errEl.style.display = ''; }
+            showCCToast('Error: ' + e.message);
+          }
+          btn.disabled = false; btn.textContent = 'Save';
+        });
+      });
+
+      // Wire API key cancel
+      ocpProvidersEl.querySelectorAll('.stg-ocp-key-cancel').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const form = btn.closest('.stg-ocp-key-form');
+          if (form) { form.style.display = 'none'; form.querySelector('input').value = ''; }
+        });
+      });
+
+      // Wire Remove buttons
+      ocpProvidersEl.querySelectorAll('.stg-ocp-remove-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const provId = btn.dataset.provider;
+          if (!confirm(`Remove API key for ${provId}?`)) return;
+          btn.disabled = true; btn.textContent = 'Removing…';
+          try {
+            const resp = await fetch(`/api/opencode/auth/${encodeURIComponent(provId)}`, {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+            });
+            const data = await resp.json();
+            if (resp.ok && data.ok !== false) {
+              showCCToast(`API key removed for ${provId} — server restarting…`);
+              // Poll until server is back (takeover kills + respawns, ~5-6s)
+              let polls = 0;
+              const pollId = setInterval(async () => {
+                polls++;
+                if (polls > 8) { clearInterval(pollId); return; }
+                try {
+                  const sr = await fetch('/api/opencode/status');
+                  const sd = await sr.json();
+                  if (sd.running) {
+                    clearInterval(pollId);
+                    await refreshOcpProviders();
+                    document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
+                  }
+                } catch {}
+              }, 2000);
+            } else {
+              showCCToast(data.error || 'Failed to remove key');
+            }
+          } catch (e) {
+            showCCToast('Error: ' + e.message);
+          }
+          btn.disabled = false; btn.textContent = 'Remove';
+        });
+      });
+
+      // Wire OAuth buttons
+      ocpProvidersEl.querySelectorAll('.stg-ocp-oauth-btn').forEach(btn => {
+        const origLabel = btn.textContent;
+        btn.addEventListener('click', async () => {
+          const provId = btn.dataset.provider;
+          const methodIdx = parseInt(btn.dataset.method, 10);
+          btn.disabled = true; btn.textContent = 'Connecting…';
+          const waitEl = ocpProvidersEl.querySelector(`.stg-ocp-oauth-wait[data-provider="${provId}"]`);
+          const codeEl = waitEl?.querySelector('.stg-ocp-oauth-code');
+          try {
+            const resp = await fetch(`/api/opencode/oauth/${encodeURIComponent(provId)}/authorize`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ method: isNaN(methodIdx) ? 0 : methodIdx }),
+            });
+            const data = await resp.json();
+            const authData = data.data || data;
+            if (authData.url) {
+              window.open(authData.url, '_blank');
+              if (waitEl) waitEl.style.display = '';
+              if (authData.code && codeEl) { codeEl.textContent = authData.code; codeEl.style.display = ''; }
+              if (authData.instructions) showCCToast(authData.instructions);
+              // Poll for completion
+              let attempts = 0;
+              const poll = setInterval(async () => {
+                attempts++;
+                if (attempts > 60) { clearInterval(poll); if (waitEl) waitEl.style.display = 'none'; return; }
+                try {
+                  const pr = await fetch('/api/opencode/providers/full');
+                  const pd = await pr.json();
+                  const connected = pd.data?.connected || [];
+                  if (connected.includes(provId)) {
+                    clearInterval(poll);
+                    if (waitEl) waitEl.style.display = 'none';
+                    showCCToast(`${provId} connected`);
+                    await refreshOcpProviders();
+                    document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
+                  }
+                } catch {}
+              }, 2000);
+            } else {
+              showCCToast(authData.error || data.error || 'OAuth failed — no authorization URL returned');
+            }
+          } catch (e) {
+            showCCToast('OAuth error: ' + e.message);
+          }
+          btn.disabled = false; btn.textContent = origLabel;
+        });
+      });
+    }
+
+    // ── Delegated card click-to-expand (survives re-renders) ──
+    if (ocpProvidersEl) {
+      ocpProvidersEl.addEventListener('click', (e) => {
+        // Skip clicks on action buttons, inputs, expanded content
+        if (e.target.closest('.stg-ocp-remove-btn, .stg-ocp-apikey-btn, .stg-ocp-oauth-btn, .stg-model-all-btn, .stg-model-none-btn, input, label, .stg-model-list, .stg-ocp-key-form, .stg-ocp-oauth-wait, .stg-ocp-toggle-all')) return;
+        const card = e.target.closest('.stg-provider-card');
+        if (!card) return;
+        const list = card.querySelector('.stg-model-list');
+        if (!list) return;
+        const isOpen = list.style.display !== 'none';
+        list.style.display = isOpen ? 'none' : '';
+        const expandBtn = card.querySelector('.stg-model-expand-btn');
+        if (expandBtn) expandBtn.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+      });
+    }
+
+    // ── Tools/Permissions rendering ──
+    async function renderToolPermissions() {
+      if (!ocpToolsEl) return;
+      try {
+        const [toolsResp, configResp] = await Promise.all([
+          fetch('/api/opencode/tools'),
+          fetch('/api/opencode/config'),
+        ]);
+        const toolsData = await toolsResp.json();
+        const configData = await configResp.json();
+        _ocpConfig = configData.data || {};
+        const toolIds = Array.isArray(toolsData.data) ? toolsData.data : (toolsData.data?.ids || []);
+        const permissions = _ocpConfig.permission || {};
+        const tools = _ocpConfig.tools || {};
+
+        if (!toolIds.length) {
+          ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">No tools available</div>';
+          return;
+        }
+
+        ocpToolsEl.innerHTML = `<div class="stg-tool-grid">${toolIds.map(t => {
+          const tid = typeof t === 'string' ? t : (t.id || t.name || '');
+          if (!tid) return '';
+          let currentVal = 'allow';
+          if (tools[tid] === false) currentVal = 'deny';
+          else if (permissions[tid] === 'ask') currentVal = 'ask';
+          return `<span class="stg-tool-name">${esc(tid)}</span>
+            <select class="stg-tool-select stg-ocp-tool-perm" data-tool="${esc(tid)}">
+              <option value="allow"${currentVal === 'allow' ? ' selected' : ''}>allow</option>
+              <option value="ask"${currentVal === 'ask' ? ' selected' : ''}>ask</option>
+              <option value="deny"${currentVal === 'deny' ? ' selected' : ''}>deny</option>
+            </select>`;
+        }).join('')}</div>`;
+
+        // Wire change events
+        ocpToolsEl.querySelectorAll('.stg-ocp-tool-perm').forEach(sel => {
+          sel.addEventListener('change', async () => {
+            const tid = sel.dataset.tool;
+            const val = sel.value;
+            const patchBody = {};
+            const newPerms = { ...(_ocpConfig.permission || {}) };
+            const newTools = { ...(_ocpConfig.tools || {}) };
+            if (val === 'deny') { newTools[tid] = false; delete newPerms[tid]; }
+            else if (val === 'ask') { delete newTools[tid]; newPerms[tid] = 'ask'; }
+            else { delete newTools[tid]; delete newPerms[tid]; }
+            patchBody.permission = newPerms;
+            patchBody.tools = newTools;
+            try {
+              await fetch('/api/opencode/config', {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(patchBody),
+              });
+              _ocpConfig.permission = newPerms;
+              _ocpConfig.tools = newTools;
+            } catch {}
+          });
+        });
+      } catch {
+        ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">Failed to load tools</div>';
+      }
+    }
+
+    // ── MCP Tab: Registry rendering & drag-and-drop ──
+    let _mcpRegistry = null;
+
+    async function fetchMcpRegistry() {
+      try {
+        const resp = await fetch('/api/mcp/registry');
+        const data = await resp.json();
+        if (data.ok) { _mcpRegistry = data; return data; }
+      } catch {}
+      return null;
+    }
+
+    function renderMcpMatrix() {
+      const wrap = overlay.querySelector('#stg-mcp-matrix-wrap');
+      if (!wrap || !_mcpRegistry) return;
+      const tg = _mcpRegistry.toolGroups || {};
+      const profiles = _mcpRegistry.profiles || {};
+      const active = _mcpRegistry.activeProfile || '';
+      const profEntries = Object.entries(profiles);
+      const switchable = Object.entries(tg).filter(([, info]) => !info.alwaysOn);
+
+      if (!profEntries.length) {
+        wrap.innerHTML = '<div class="stg-mcp-matrix-empty">No profiles</div>';
+        return;
+      }
+
+      // Build table header
+      let thead = '<tr><th class="stg-mx-label-th"><div class="stg-mx-corner-head">Tool Groups</div></th>';
+      for (const [name, prof] of profEntries) {
+        const isActive = name === active;
+        thead += `<th class="stg-mx-profile-th${isActive ? ' active' : ''}" data-profile="${esc(name)}">
+          <div class="stg-mx-profile-head" data-profile="${esc(name)}">
+            <span class="stg-mx-profile-dot${isActive ? ' on' : ''}"></span>
+            <span class="stg-mx-profile-name">${esc(prof.label || name)}</span>
+            ${isActive ? '' : `<button class="stg-mx-profile-del" data-profile="${esc(name)}" title="Delete profile">\u00d7</button>`}
+          </div>
+        </th>`;
+      }
+      thead += '<th class="stg-mx-add-th"><button class="stg-mx-add-btn" title="New profile">+</button></th></tr>';
+
+      // Build table body — switchable groups
+      let tbody = '';
+      for (const [key, info] of switchable) {
+        tbody += `<tr>`;
+        tbody += `<td class="stg-mx-label-td"><div class="stg-mx-label-inner">
+          <span class="stg-mx-grp-name">${esc(info.label)}</span>
+          <span class="stg-mx-grp-count">${info.tools}</span>
+        </div></td>`;
+        for (const [profName, prof] of profEntries) {
+          const isOn = (prof.groups || []).includes(key);
+          tbody += `<td class="stg-mx-cell" data-profile="${esc(profName)}" data-group="${esc(key)}" data-kind="group">
+            <span class="stg-mx-toggle${isOn ? ' on' : ''}"></span>
+          </td>`;
+        }
+        tbody += '<td class="stg-mx-add-spacer"></td></tr>';
+      }
+
+      wrap.innerHTML = `<div class="stg-mcp-matrix-scroll"><table id="stg-mcp-matrix"><thead>${thead}</thead><tbody>${tbody}</tbody></table></div>`;
+
+      // --- Event handlers ---
+
+      // Toggle cells
+      wrap.querySelectorAll('.stg-mx-cell').forEach(cell => {
+        cell.addEventListener('click', async () => {
+          const profName = cell.dataset.profile;
+          const prof = _mcpRegistry.profiles[profName];
+          if (!prof) return;
+          const kind = cell.dataset.kind;
+          if (kind === 'group') {
+            const g = cell.dataset.group;
+            if ((prof.groups || []).includes(g)) {
+              prof.groups = prof.groups.filter(x => x !== g);
+            } else {
+              prof.groups = [...(prof.groups || []), g];
+            }
+          } else {
+            const s = cell.dataset.server;
+            if ((prof.servers || []).includes(s)) {
+              prof.servers = prof.servers.filter(x => x !== s);
+            } else {
+              prof.servers = [...(prof.servers || []), s];
+            }
+          }
+          await fetch(`/api/mcp/registry/profiles/${encodeURIComponent(profName)}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(prof),
+          });
+          await refreshMcpTab();
+        });
+      });
+
+      // Activate profile on name click
+      wrap.querySelectorAll('.stg-mx-profile-head').forEach(head => {
+        head.addEventListener('click', async (e) => {
+          if (e.target.closest('.stg-mx-profile-del')) return;
+          const name = head.dataset.profile;
+          if (name === _mcpRegistry.activeProfile) return;
+          await fetch('/api/mcp/registry/activate', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ profile: name }),
+          });
+          showCCToast(`Profile switched to ${name}`);
+          await refreshMcpTab();
+        });
+      });
+
+      // Delete profile
+      wrap.querySelectorAll('.stg-mx-profile-del').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          await fetch(`/api/mcp/registry/profiles/${encodeURIComponent(btn.dataset.profile)}`, { method: 'DELETE' });
+          await refreshMcpTab();
+        });
+      });
+
+      // Inline add profile
+      const addBtn = wrap.querySelector('.stg-mx-add-btn');
+      if (addBtn) {
+        addBtn.addEventListener('click', () => {
+          const th = addBtn.closest('th');
+          th.innerHTML = `<input class="stg-mx-inline-input" type="text" placeholder="name" autofocus>`;
+          const input = th.querySelector('input');
+          input.focus();
+          const create = async () => {
+            const name = input.value.trim();
+            if (!name) { await refreshMcpTab(); return; }
+            await fetch(`/api/mcp/registry/profiles/${encodeURIComponent(name)}`, {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ label: name, groups: [], servers: [] }),
+            });
+            await refreshMcpTab();
+          };
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); create(); }
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); refreshMcpTab(); }
+          });
+          input.addEventListener('blur', create);
+        });
+      }
+    }
+
+    function renderAlwaysOn() {
+      const el = overlay.querySelector('#stg-mcp-always-on');
+      if (!el || !_mcpRegistry) return;
+      const tg = _mcpRegistry.toolGroups || {};
+      const alwaysOn = Object.entries(tg).filter(([, info]) => info.alwaysOn);
+      if (!alwaysOn.length) { el.innerHTML = ''; return; }
+      el.innerHTML = `
+        <div class="stg-mcp-section-header">Always On</div>
+        <div class="stg-mx-always-on-row">
+          ${alwaysOn.map(([, info]) =>
+            `<span class="stg-mx-always-chip">${esc(info.label)}<span class="stg-mx-grp-count">${info.tools}</span></span>`
+          ).join('')}
+        </div>`;
+    }
+
+    function renderExtServerList() {
+      const el = overlay.querySelector('#stg-mcp-ext-servers');
+      if (!el || !_mcpRegistry) return;
+      const servers = _mcpRegistry.servers || {};
+      const profiles = Object.entries(_mcpRegistry.profiles || {});
+      const entries = Object.entries(servers).filter(([, info]) => !info.builtin);
+      if (!entries.length) {
+        el.innerHTML = '<div class="stg-mcp-empty-note">No external servers configured</div>';
+        return;
+      }
+      el.innerHTML = entries.map(([name, info]) =>
+        `<div class="stg-mx-ext-row">
+          <div class="stg-mx-ext-main">
+            <span class="stg-mx-ext-dot"></span>
+            <div class="stg-mx-ext-copy">
+              <div class="stg-mx-ext-head">
+                <span class="stg-mx-ext-name">${esc(name)}</span>
+                <span class="stg-mx-ext-type">${esc(info.type || '?')}</span>
+              </div>
+              <div class="stg-mx-ext-sub">Available to any profile you enable below.</div>
+            </div>
+            <button class="stg-mx-srv-del stg-mx-ext-remove" data-server="${esc(name)}" title="Remove server">\u00d7</button>
+          </div>
+          <div class="stg-mx-ext-profiles">
+            ${profiles.map(([profName, prof]) => {
+              const isOn = (prof.servers || []).includes(name);
+              return `<button class="stg-mx-ext-toggle${isOn ? ' on' : ''}" data-profile="${esc(profName)}" data-server="${esc(name)}" title="${isOn ? 'Disable' : 'Enable'} ${esc(name)} for ${esc(prof.label || profName)}">
+                <span class="stg-mx-ext-toggle-name">${esc(prof.label || profName)}</span>
+              </button>`;
+            }).join('')}
+          </div>
+        </div>`
+      ).join('');
+
+      el.querySelectorAll('.stg-mx-ext-toggle').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const profName = btn.dataset.profile;
+          const srvName = btn.dataset.server;
+          const prof = _mcpRegistry.profiles[profName];
+          if (!prof || !srvName) return;
+          if ((prof.servers || []).includes(srvName)) {
+            prof.servers = prof.servers.filter(x => x !== srvName);
+          } else {
+            prof.servers = [...(prof.servers || []), srvName];
+          }
+          await fetch(`/api/mcp/registry/profiles/${encodeURIComponent(profName)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(prof),
+          });
+          await refreshMcpTab();
+        });
+      });
+
+      el.querySelectorAll('.stg-mx-srv-del').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const srvName = btn.dataset.server;
+          await fetch(`/api/mcp/registry/servers/${encodeURIComponent(srvName)}`, { method: 'DELETE' });
+          // Also remove from all detected platforms
+          try {
+            const pl = await fetch('/api/mcp/platforms').then(r => r.json());
+            const platforms = Object.entries(pl).filter(([k, v]) => k !== 'ok' && v).map(([k]) => k);
+            if (platforms.length) {
+              await fetch('/api/mcp/sync', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: srvName, platforms }),
+              });
+            }
+          } catch {}
+          await refreshMcpTab();
+        });
+      });
+    }
+
+    async function refreshMcpTab() {
+      await fetchMcpRegistry();
+      renderMcpMatrix();
+      renderAlwaysOn();
+      renderExtServerList();
+    }
+
+    // Initial load
+    refreshMcpTab();
+
+    // ── Paste parser ──
+    function parseMcpPaste(text) {
+      const t = text.trim();
+      if (!t) return null;
+      // Try JSON
+      let obj;
+      try { obj = JSON.parse(t); } catch {}
+      if (obj && typeof obj === 'object') {
+        // Format 1: { mcpServers: { name: { command, ... } } }
+        if (obj.mcpServers && typeof obj.mcpServers === 'object') {
+          const entries = Object.entries(obj.mcpServers);
+          if (entries.length) {
+            const [name, cfg] = entries[0];
+            return normalizeParsed(name, cfg);
+          }
+        }
+        // Format 3: bare { command, args, ... }
+        if (obj.command || obj.url) {
+          return normalizeParsed(null, obj);
+        }
+        // Format 4: OpenCode { type: "local", command: [...], environment: {} }
+        if (obj.type === 'local' && Array.isArray(obj.command)) {
+          const cmd = obj.command[0] || '';
+          const args = obj.command.slice(1);
+          const env = obj.environment || obj.env || undefined;
+          return { name: null, type: 'stdio', command: cmd, args, env, url: undefined };
+        }
+        // Format 2: { name: { command, ... } }
+        const keys = Object.keys(obj);
+        if (keys.length === 1 && typeof obj[keys[0]] === 'object' && (obj[keys[0]].command || obj[keys[0]].url)) {
+          return normalizeParsed(keys[0], obj[keys[0]]);
+        }
+      }
+      // Format 5: plain command string
+      const parts = t.split(/\s+/).filter(Boolean);
+      if (parts.length) {
+        const cmd = parts[0];
+        const args = parts.slice(1);
+        let name = null;
+        // Derive name from npm scope package
+        const pkgMatch = t.match(/@[\w-]+\/([\w-]+)/);
+        if (pkgMatch) {
+          name = pkgMatch[1].replace(/^server-/, '');
+        }
+        return { name, type: 'stdio', command: cmd, args, env: undefined, url: undefined };
+      }
+      return null;
+    }
+    function normalizeParsed(name, cfg) {
+      const type = (cfg.type === 'local' ? 'stdio' : cfg.type) || 'stdio';
+      let command = cfg.command, args = cfg.args, env = cfg.env || cfg.environment;
+      if (Array.isArray(command)) {
+        args = command.slice(1);
+        command = command[0] || '';
+      }
+      return { name: name || null, type, command: command || undefined, args: args || undefined, env: env || undefined, url: cfg.url || undefined };
+    }
+
+    // ── Form helpers ──
+    const addForm = overlay.querySelector('#stg-mcp-add-form');
+    const pasteZone = overlay.querySelector('#stg-mcp-paste');
+    const nameEl = overlay.querySelector('#stg-mcp-srv-name');
+    const typeEl = overlay.querySelector('#stg-mcp-srv-type');
+    const cmdEl = overlay.querySelector('#stg-mcp-srv-cmd');
+    const urlEl = overlay.querySelector('#stg-mcp-srv-url');
+    const argChips = overlay.querySelector('#stg-mcp-arg-chips');
+    const argInput = overlay.querySelector('#stg-mcp-arg-input');
+    const envRows = overlay.querySelector('#stg-mcp-env-rows');
+    const envAdd = overlay.querySelector('#stg-mcp-env-add');
+    const platformsEl = overlay.querySelector('#stg-mcp-platforms');
+    const feedbackEl = overlay.querySelector('#stg-mcp-sync-feedback');
+
+    function resetAddForm() {
+      if (pasteZone) pasteZone.value = '';
+      if (nameEl) nameEl.value = '';
+      if (cmdEl) cmdEl.value = '';
+      if (urlEl) urlEl.value = '';
+      if (typeEl) typeEl.value = 'stdio';
+      if (addForm) addForm.dataset.transport = 'stdio';
+      // Clear arg chips
+      if (argChips) argChips.querySelectorAll('.stg-mcp-arg-chip').forEach(c => c.remove());
+      // Clear env rows
+      if (envRows) envRows.innerHTML = '';
+      if (feedbackEl) feedbackEl.innerHTML = '';
+    }
+
+    function addArgChip(val) {
+      if (!argChips || !val) return;
+      const chip = document.createElement('span');
+      chip.className = 'stg-mcp-arg-chip';
+      chip.innerHTML = `<span class="stg-mcp-chip-text">${esc(val)}</span><span class="stg-mcp-chip-x">\u00d7</span>`;
+      chip.querySelector('.stg-mcp-chip-x').addEventListener('click', () => chip.remove());
+      argChips.insertBefore(chip, argInput);
+    }
+
+    function addEnvRow(key, val, opts = {}) {
+      if (!envRows) return;
+      const row = document.createElement('div');
+      row.className = 'stg-mcp-env-row';
+      const sensitive = !!opts.sensitive || (typeof key === 'string' && /token|secret|key|password|api_key/i.test(key));
+      const valType = sensitive ? 'password' : 'text';
+      row.innerHTML = `<input type="text" class="stg-input stg-input-sm stg-mcp-env-key" placeholder="KEY" value="${esc(key || '')}"><input type="${valType}" class="stg-input stg-input-sm stg-mcp-env-val" placeholder="value" value="${esc(val || '')}"><button type="button" class="stg-mcp-env-eye" title="Toggle reveal">\u{1F441}</button><span class="stg-mcp-env-remove">\u00d7</span>`;
+      const valInput = row.querySelector('.stg-mcp-env-val');
+      row.querySelector('.stg-mcp-env-eye')?.addEventListener('click', () => {
+        valInput.type = valInput.type === 'password' ? 'text' : 'password';
+      });
+      row.querySelector('.stg-mcp-env-remove').addEventListener('click', () => row.remove());
+      envRows.appendChild(row);
+    }
+
+    function collectArgs() {
+      if (!argChips) return [];
+      return Array.from(argChips.querySelectorAll('.stg-mcp-chip-text')).map(el => el.textContent);
+    }
+
+    function collectEnv() {
+      if (!envRows) return {};
+      const env = {};
+      envRows.querySelectorAll('.stg-mcp-env-row').forEach(row => {
+        const k = row.querySelector('.stg-mcp-env-key')?.value?.trim();
+        const v = row.querySelector('.stg-mcp-env-val')?.value?.trim();
+        if (k) env[k] = v || '';
+      });
+      return env;
+    }
+
+    function populateAddForm(parsed) {
+      if (!parsed) return;
+      if (parsed.name && nameEl) nameEl.value = parsed.name;
+      if (parsed.type && typeEl) {
+        typeEl.value = parsed.type;
+        if (addForm) addForm.dataset.transport = parsed.type;
+      }
+      if (parsed.command && cmdEl) cmdEl.value = parsed.command;
+      if (parsed.url && urlEl) urlEl.value = parsed.url;
+      if (parsed.args && parsed.args.length) {
+        parsed.args.forEach(a => addArgChip(a));
+      }
+      if (parsed.env && typeof parsed.env === 'object') {
+        Object.entries(parsed.env).forEach(([k, v]) => addEnvRow(k, v));
+      }
+    }
+
+    // ── Paste zone handler ──
+    pasteZone?.addEventListener('input', () => {
+      const val = pasteZone.value;
+      if (!val || val.length < 3) return;
+      const parsed = parseMcpPaste(val);
+      if (parsed) {
+        // Clear existing chips/env before populating
+        argChips?.querySelectorAll('.stg-mcp-arg-chip').forEach(c => c.remove());
+        envRows && (envRows.innerHTML = '');
+        populateAddForm(parsed);
+      }
+    });
+
+    // ── Type toggle ──
+    typeEl?.addEventListener('change', () => {
+      if (addForm) addForm.dataset.transport = typeEl.value;
+    });
+
+    // ── Arg chip input ──
+    argInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const v = argInput.value.trim();
+        if (v) { addArgChip(v); argInput.value = ''; }
+      }
+    });
+
+    // ── Env add button ──
+    envAdd?.addEventListener('click', () => addEnvRow('', ''));
+
+    // ── Platform detection ──
+    (async () => {
+      try {
+        const pl = await fetch('/api/mcp/platforms').then(r => r.json());
+        if (platformsEl) {
+          platformsEl.querySelectorAll('.stg-mcp-platform-check').forEach(label => {
+            const key = label.dataset.platform;
+            const cb = label.querySelector('input[type="checkbox"]');
+            if (!cb) return;
+            if (pl[key]) {
+              cb.checked = true;
+              label.classList.remove('stg-mcp-platform-dim');
+            } else {
+              cb.checked = false;
+              label.classList.add('stg-mcp-platform-dim');
+            }
+          });
+        }
+      } catch {}
+    })();
+
+    // ── Show/hide form ──
+    overlay.querySelector('#stg-mcp-add-server')?.addEventListener('click', () => {
+      if (addForm) addForm.style.display = addForm.style.display === 'none' ? '' : 'none';
+    });
+    overlay.querySelector('#stg-mcp-srv-cancel')?.addEventListener('click', () => {
+      if (addForm) { addForm.style.display = 'none'; resetAddForm(); }
+    });
+
+    // ── Source-tab switcher (GitHub / JSON) ──
+    const sourceTabs = overlay.querySelectorAll('.stg-mcp-source-tab');
+    const sourcePanels = overlay.querySelectorAll('.stg-mcp-source-panel');
+    sourceTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const src = tab.dataset.source;
+        sourceTabs.forEach(t => t.classList.toggle('active', t === tab));
+        sourcePanels.forEach(p => { p.style.display = (p.dataset.panel === src) ? '' : 'none'; });
+        if (addForm) addForm.dataset.source = src;
+      });
+    });
+
+    // ── GitHub Install handler ──
+    const ghUrlEl = overlay.querySelector('#stg-mcp-gh-url');
+    const ghInstallBtn = overlay.querySelector('#stg-mcp-gh-install');
+    const ghRunInstallEl = overlay.querySelector('#stg-mcp-gh-runinstall');
+    const ghProgress = overlay.querySelector('#stg-mcp-gh-progress');
+    const ghStatus = overlay.querySelector('#stg-mcp-gh-status');
+    const ghLog = overlay.querySelector('#stg-mcp-gh-log');
+
+    function applyDetected(name, detected) {
+      if (!detected) return;
+      if (nameEl && name) nameEl.value = name;
+      if (typeEl) typeEl.value = detected.type || 'stdio';
+      if (cmdEl) cmdEl.value = detected.command || '';
+      // Rebuild arg chips
+      if (argChips && argInput) {
+        argChips.querySelectorAll('.stg-mcp-arg-chip').forEach(el => el.remove());
+        (detected.args || []).forEach(a => {
+          const chip = document.createElement('span');
+          chip.className = 'stg-mcp-arg-chip';
+          chip.textContent = a;
+          const x = document.createElement('button');
+          x.type = 'button'; x.className = 'stg-mcp-arg-chip-x'; x.textContent = '×';
+          x.addEventListener('click', () => chip.remove());
+          chip.appendChild(x);
+          argChips.insertBefore(chip, argInput);
+        });
+      }
+      // Rebuild env rows
+      if (envRows) {
+        envRows.innerHTML = '';
+        for (const [k, v] of Object.entries(detected.env || {})) {
+          const row = document.createElement('div');
+          row.className = 'stg-mcp-env-row';
+          row.innerHTML = `<input type="text" class="stg-input stg-input-sm stg-mcp-env-key" value="${esc(k)}"><input type="text" class="stg-input stg-input-sm stg-mcp-env-val" value="${esc(String(v))}"><button class="stg-mcp-env-del" type="button">×</button>`;
+          row.querySelector('.stg-mcp-env-del')?.addEventListener('click', () => row.remove());
+          envRows.appendChild(row);
+        }
+      }
+      // Toggle stdio/url fields
+      if (addForm) addForm.dataset.transport = detected.type || 'stdio';
+    }
+
+    ghInstallBtn?.addEventListener('click', async () => {
+      const url = ghUrlEl?.value?.trim();
+      if (!url) return;
+      if (ghProgress) ghProgress.style.display = '';
+      if (ghStatus) ghStatus.textContent = 'Cloning repository…';
+      if (ghLog) ghLog.textContent = '';
+      ghInstallBtn.disabled = true;
+      try {
+        const res = await fetch('/api/mcp/install/github', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, runInstall: !!ghRunInstallEl?.checked }),
+        }).then(r => r.json());
+        if (ghLog && Array.isArray(res.log)) ghLog.textContent = res.log.join('\n');
+        if (!res.ok) {
+          if (ghStatus) ghStatus.textContent = `Error: ${res.error || 'install failed'}`;
+          return;
+        }
+        if (ghStatus) ghStatus.textContent = `Detected via ${res.detected?.source || res.detectSource || 'heuristic'} — review below and click Save.`;
+        applyDetected(res.name, res.detected);
+      } catch (err) {
+        if (ghStatus) ghStatus.textContent = `Error: ${err.message || err}`;
+      } finally {
+        ghInstallBtn.disabled = false;
+      }
+    });
+
+    // ── Save handler ──
+    overlay.querySelector('#stg-mcp-srv-save')?.addEventListener('click', async () => {
+      const name = nameEl?.value?.trim();
+      const type = typeEl?.value || 'stdio';
+      if (!name) return;
+      const config = { type };
+      if (type === 'stdio') {
+        config.command = cmdEl?.value?.trim() || '';
+        const args = collectArgs();
+        if (args.length) config.args = args;
+      } else {
+        config.url = urlEl?.value?.trim() || '';
+      }
+      const env = collectEnv();
+      if (Object.keys(env).length) config.env = env;
+      if (!config.command && !config.url) return;
+
+      // Save to registry
+      await fetch(`/api/mcp/registry/servers/${encodeURIComponent(name)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+
+      // Sync to checked platforms
+      const platforms = [];
+      platformsEl?.querySelectorAll('.stg-mcp-platform-check').forEach(label => {
+        const cb = label.querySelector('input[type="checkbox"]');
+        if (cb?.checked) platforms.push(label.dataset.platform);
+      });
+      if (platforms.length && feedbackEl) {
+        feedbackEl.innerHTML = 'Syncing…';
+        try {
+          const res = await fetch('/api/mcp/sync', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, config, platforms }),
+          }).then(r => r.json());
+          if (res.results) {
+            feedbackEl.innerHTML = Object.entries(res.results).map(([p, s]) => {
+              const cls = s === 'ok' ? 'ok' : s === 'skipped' ? 'skip' : 'err';
+              const icon = s === 'ok' ? '\u2713' : s === 'skipped' ? '\u2014' : '\u2717';
+              return `<span class="stg-mcp-sync-result ${cls}">${icon} ${esc(p)}</span>`;
+            }).join(' ');
+          }
+        } catch { feedbackEl.innerHTML = '<span class="stg-mcp-sync-result err">Sync failed</span>'; }
+      }
+
+      // Hide form after brief delay so user sees feedback
+      setTimeout(() => {
+        if (addForm) addForm.style.display = 'none';
+        resetAddForm();
+      }, platforms.length ? 1500 : 0);
+      await refreshMcpTab();
+    });
+
+    // ── Config save helpers ──
+    async function saveOcpConfig(patch) {
+      try {
+        await fetch('/api/opencode/config', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        });
+      } catch {}
+    }
+
+    // ── Compaction handlers ──
+    const compactAutoEl = overlay.querySelector('#stg-ocp-compact-auto');
+    const compactPruneEl = overlay.querySelector('#stg-ocp-compact-prune');
+    const compactReservedEl = overlay.querySelector('#stg-ocp-compact-reserved');
+
+    function saveCompaction() {
+      saveOcpConfig({
+        compaction: {
+          auto: compactAutoEl?.checked ?? true,
+          prune: compactPruneEl?.checked ?? true,
+          reserved: Number(compactReservedEl?.value) || 10000,
+        },
+      });
+    }
+    compactAutoEl?.addEventListener('change', saveCompaction);
+    compactPruneEl?.addEventListener('change', saveCompaction);
+    compactReservedEl?.addEventListener('change', saveCompaction);
+
+    // Capability filter pills — use CSS vars, not inline color
+    function buildCapPills(container, filterSet, onChange) {
+      if (!container) return;
+      for (const b of STG_CAP_BADGES) {
+        const pill = document.createElement('span');
+        pill.className = 'stg-cap-filter';
+        pill.innerHTML = `<span class="stg-cap-filter-letter" style="--cap-c:${b.color}">${b.abbr}</span>${b.label}`;
+        pill.style.setProperty('--cap-c', b.color);
+        pill.addEventListener('click', () => {
+          if (filterSet.has(b.label)) {
+            filterSet.delete(b.label);
+            pill.classList.remove('active');
+          } else {
+            filterSet.add(b.label);
+            pill.classList.add('active');
+          }
+          onChange();
+        });
+        container.appendChild(pill);
+      }
+    }
+
+    ocpProviderFilterInput?.addEventListener('input', () => {
+      _ocpProviderFilter = ocpProviderFilterInput.value || '';
+      renderProviderCards();
+    });
+
+    buildCapPills(overlay.querySelector('#stg-ocp-provider-cap-filters'), _ocpProviderCapFilters, () => {
+      renderProviderCards();
+    });
+
+    // ── Open config file in Synabun's editor ──
+    overlay.querySelector('#stg-ocp-open-config')?.addEventListener('click', async () => {
+      try {
+        let filePath = '';
+
+        const revealResp = await fetch('/api/opencode/config/reveal', { method: 'POST' });
+        let revealData = null;
+        try { revealData = await revealResp.json(); } catch {}
+
+        if (revealResp.ok && revealData?.path) {
+          const basePath = String(revealData.path).replace(/\\/g, '/').replace(/\/+$/, '');
+          filePath = basePath.endsWith('/config.json') ? basePath : `${basePath}/config.json`;
+        } else {
+          const fileResp = await fetch('/api/opencode/config/file');
+          const fileData = await fileResp.json();
+          if (!fileResp.ok || !fileData?.path) {
+            showCCToast(fileData?.error || revealData?.error || 'Failed to open OpenCode config');
+            return;
+          }
+          filePath = fileData.path;
+        }
+
+        emit('open-file-editor', { filePath });
+      } catch (err) {
+        console.error('[settings] Failed to open OpenCode config:', err);
+        showCCToast('Failed to open OpenCode config');
+      }
+    });
+
+    // ── Provider refresh (full data) ──
+    async function refreshOcpProviders() {
+      try {
+        const [provResp, authResp, storedResp] = await Promise.all([
+          fetch('/api/opencode/providers/full'),
+          fetch('/api/opencode/providers/auth'),
+          fetch('/api/opencode/auth/stored'),
+        ]);
+        const provData = await provResp.json();
+        const authData = await authResp.json();
+        const storedData = await storedResp.json();
+        const raw = provData.data || {};
+        _ocpProviders = raw.all || (Array.isArray(raw) ? raw : []);
+        _ocpConnected = new Set(raw.connected || []);
+        _ocpStoredKeys = new Set(storedData.data || []);
+        _ocpAuthMethods = authData.data || {};
+        renderProviderCards();
+      } catch {}
+    }
+
+    // ── Load config values into UI ──
+    async function loadOcpConfig() {
+      try {
+        const resp = await fetch('/api/opencode/config');
+        const data = await resp.json();
+        _ocpConfig = data.data || {};
+        const comp = _ocpConfig.compaction || {};
+        if (compactAutoEl) compactAutoEl.checked = comp.auto !== false;
+        if (compactPruneEl) compactPruneEl.checked = comp.prune !== false;
+        if (compactReservedEl) compactReservedEl.value = comp.reserved || 10000;
+      } catch {}
+    }
+
+    // ── Master refresh ──
+    async function refreshOcpStatus() {
+      setOcpStatus('Checking…', 'dim');
+      try {
+        const resp = await fetch('/api/opencode/status');
+        const data = await resp.json();
+        if (data.running) {
+          setOcpStatus(`Running${data.version ? ' v' + data.version : ''}`, 'ok');
+          await Promise.all([
+            refreshOcpProviders(),
+            loadOcpConfig(),
+            renderToolPermissions(),
+          ]);
+        } else {
+          setOcpStatus('Offline', 'dim');
+          if (ocpProvidersEl) ocpProvidersEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">Start the server to see providers</div>';
+          if (ocpToolsEl) ocpToolsEl.innerHTML = '<div class="settings-hint" style="opacity:0.4">Start the server to load tools</div>';
+        }
+      } catch (err) {
+        setOcpStatus('Error', 'err');
+      }
+    }
+
+    // ── Server start/stop/refresh ──
+    overlay.querySelector('#stg-ocp-start')?.addEventListener('click', async () => {
+      const port = overlay.querySelector('#stg-ocp-port')?.value || 4096;
+      setOcpStatus('Starting…', 'warn');
+      try {
+        await fetch('/api/opencode/serve/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ port: Number(port) }) });
+      } catch {}
+      setTimeout(refreshOcpStatus, 1500);
+    });
+
+    overlay.querySelector('#stg-ocp-stop')?.addEventListener('click', async () => {
+      try { await fetch('/api/opencode/serve/stop', { method: 'POST' }); } catch {}
+      setTimeout(refreshOcpStatus, 500);
+    });
+
+    overlay.querySelector('#stg-ocp-refresh')?.addEventListener('click', refreshOcpStatus);
+
+    // Auto-refresh on tab open + start Ollama detection
+    refreshOcpStatus();
+    startOllamaPoll();
+
+    // Clean up Ollama polling when settings overlay closes
+    const settingsOverlay = overlay.closest('.settings-overlay') || overlay;
+    const ollamaCleanupObserver = new MutationObserver(() => {
+      if (!document.body.contains(settingsOverlay)) {
+        stopOllamaPoll();
+        ollamaCleanupObserver.disconnect();
+      }
+    });
+    ollamaCleanupObserver.observe(document.body, { childList: true, subtree: true });
+  }
 
   // ── Skins tab: wire interaction ──
   wireSkinsTab(overlay, skinsData.skins, skinsData.active);

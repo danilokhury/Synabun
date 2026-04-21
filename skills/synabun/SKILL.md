@@ -18,6 +18,12 @@ You are the SynaBun assistant hub. The user has invoked `/synabun`.
 - `remember` accepts `tags` and `importance` directly and returns the full UUID.
 - `reflect` requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`). Use the UUID returned by `remember`, or `recall` to find existing memories.
 
+## Runtime Compatibility
+
+- **Interactive choice prompt** means: use `AskUserQuestion` in Claude Code, `request_user_input` in Codex when that tool is available, otherwise ask a concise plain-text multiple-choice question and wait for the user's reply.
+- **Load/read a module file** means: use whatever local file-reading mechanism exists in the current runtime. Do not depend on a tool literally being named `Read`.
+- **Category management** means: use the runtime's available category tool surface, whether that is split helpers such as `category_list` / `category_create` or a unified `category` tool with actions like `list` / `create`.
+
 ---
 
 ## Step 1 — Route or Menu
@@ -40,7 +46,7 @@ Output a single line:
 
 The menu is paginated (3 features + 1 navigation slot per page). Start on **Page 1**.
 
-**Page 1** — use `AskUserQuestion` with:
+**Page 1** — use an interactive choice prompt with:
 
 - **Brainstorm Ideas** — "Cross-pollinate memories to spark creative ideas and novel connections"
 - **Audit Memories** — "Validate stored memories against the current codebase for staleness"
@@ -49,7 +55,7 @@ The menu is paginated (3 features + 1 navigation slot per page). Start on **Page
 
 If user picks **More...** → show **Page 2**.
 
-**Page 2** — use `AskUserQuestion` with:
+**Page 2** — use an interactive choice prompt with:
 
 - **Memory Health** — "Quick stats overview and staleness check of your memory system"
 - **Search Memories** — "Find something specific across your entire memory bank"
@@ -64,7 +70,7 @@ Based on the user's selection, proceed to the matching step below.
 
 ## Step 2a: Brainstorm Ideas
 
-Use `AskUserQuestion` to ask:
+Use an interactive choice prompt to ask:
 
 > "What topic should we brainstorm around?"
 
@@ -77,25 +83,25 @@ Based on the user's answer, set `$ARGUMENTS` to:
 - Current project → the detected project name
 - Custom text via "Other" → their text
 
-**Then**: Use the `Read` tool to read the file at `$SKILL_DIR/modules/idea.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value. That file is your complete brainstorming procedure — execute it fully.
+**Then**: Load/read the file at `$SKILL_DIR/modules/idea.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value. That file is your complete brainstorming procedure — execute it fully.
 
 ---
 
 ## Step 2b: Audit Memories
 
-**Directly**: Use the `Read` tool to read the file at `$SKILL_DIR/modules/audit.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value. That file is your complete audit procedure — execute it fully.
+**Directly**: Load/read the file at `$SKILL_DIR/modules/audit.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value. That file is your complete audit procedure — execute it fully.
 
 ---
 
 ## Step 2c: Memorize Context
 
-**Directly**: Use the `Read` tool to read the file at `$SKILL_DIR/modules/memorize.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value (the focus hint, if any). That file is your complete memorization procedure — execute it fully.
+**Directly**: Load/read the file at `$SKILL_DIR/modules/memorize.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value (the focus hint, if any). That file is your complete memorization procedure — execute it fully.
 
 ---
 
 ## Step 2d: Changelog
 
-**Directly**: Use the `Read` tool to read the file at `$SKILL_DIR/modules/changelog.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value. That file is your complete changelog procedure — execute it fully.
+**Directly**: Load/read the file at `$SKILL_DIR/modules/changelog.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value. That file is your complete changelog procedure — execute it fully.
 
 ---
 
@@ -104,7 +110,7 @@ Based on the user's answer, set `$ARGUMENTS` to:
 This is handled inline (no module needed).
 
 1. Call `memories` with `action: "stats"`.
-2. Call `sync` (no parameters) to check for stale memories with changed files.
+2. Call `sync` to check for stale memories with changed files, scoping it to relevant categories if the current runtime requires an explicit category filter.
 3. Present a formatted dashboard:
 
 ```
@@ -126,7 +132,7 @@ This is handled inline (no module needed).
 ══════════════════════════════════════
 ```
 
-4. If stale memories were found, use `AskUserQuestion`:
+4. If stale memories were found, use an interactive choice prompt:
    - **Run full audit** — "Launch the audit module to verify and fix stale memories"
    - **View details** — "Show which files changed for each stale memory"
    - **Done** — "Thanks, just wanted the overview"
@@ -140,7 +146,7 @@ This is handled inline (no module needed).
 
 This is handled inline (no module needed).
 
-1. If no query was provided from args, use `AskUserQuestion`:
+1. If no query was provided from args, use an interactive choice prompt:
    > "What are you looking for?"
    - **Architecture decisions** — "Past architectural choices and their reasoning"
    - **Bug fixes** — "Previously solved bugs and their solutions"
@@ -165,7 +171,7 @@ This is handled inline (no module needed).
    ...
    ```
 
-4. Use `AskUserQuestion`:
+4. Use an interactive choice prompt:
    - **View full** — "Show the complete content of a specific memory (enter the number)"
    - **Search again** — "Try a different query"
    - **Done** — "Found what I needed"
@@ -180,6 +186,6 @@ This is handled inline (no module needed).
 ## Guidelines
 
 - Keep the interaction snappy — don't over-explain. SynaBun should feel like a fast, responsive assistant.
-- When loading a module file via `Read`, follow its instructions completely as if they were inline in this skill. The module IS the skill — execute it, don't summarize it.
+- When loading a module file, follow its instructions completely as if they were inline in this skill. The module IS the skill — execute it, don't summarize it.
 - For inline actions (health, search), handle everything within this skill's flow.
 - Always make SynaBun MCP calls sequentially, never in parallel.

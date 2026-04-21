@@ -1,15 +1,26 @@
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — Resume Sessions
 // Toolbar dropdown for browsing and resuming
-// past Claude Code sessions across projects.
+// past CLI sessions across projects.
+// Supports: Claude Code, Codex CLI, Gemini CLI, OpenCode.
 // ═══════════════════════════════════════════
 
 import { emit, on } from './state.js';
-import { fetchClaudeSessions, searchMemories, startSessionIndexing, cancelSessionIndexing, fetchIndexingStatus } from './api.js';
+import { fetchClaudeSessions, fetchCodexSessions, fetchOpencodeSessions, fetchGeminiSessions, searchMemories, searchSessions, startSessionIndexing, cancelSessionIndexing, fetchIndexingStatus } from './api.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { storage } from './storage.js';
+import { getProviderMeta, PROVIDER_META } from './provider-icons.js';
 
 const $ = (id) => document.getElementById(id);
+
+// ── CLI providers for Resume ──
+const RESUME_PROVIDERS = ['claude-code', 'codex', 'gemini', 'opencode'];
+const PROVIDER_FETCH = {
+  'claude-code': fetchClaudeSessions,
+  'codex':       fetchCodexSessions,
+  'opencode':    fetchOpencodeSessions,
+  'gemini':      fetchGeminiSessions,
+};
 
 // ── State ──
 let _cachedProjects = null;   // null = never loaded
@@ -17,6 +28,7 @@ let _searchDebounce = null;
 let _currentSearch = '';
 let _expandedProject = null;  // path of currently expanded project
 let _loading = false;
+let _selectedProvider = storage.getItem('synabun-resume-provider') || 'claude-code';
 
 // ── Indexing state ──
 let _indexing = false;
@@ -141,8 +153,20 @@ async function renderResume() {
 async function loadAllProjects(search = '') {
   _loading = true;
   try {
-    const data = await fetchClaudeSessions({ limit: 50, search });
-    _cachedProjects = data.projects || [];
+    // When actively searching, route through the FTS5 + semantic hybrid endpoint
+    // so we match the full session body, not just the first prompt.
+    if (search && search.trim().length >= 2 && _selectedProvider !== 'gemini') {
+      const data = await searchSessions({
+        q: search,
+        provider: _selectedProvider,
+        limit: 50,
+      });
+      _cachedProjects = (data.projects || []).filter(p => p.sessions && p.sessions.length > 0);
+    } else {
+      const fetchFn = PROVIDER_FETCH[_selectedProvider] || fetchClaudeSessions;
+      const data = await fetchFn({ limit: 50, search });
+      _cachedProjects = data.projects || [];
+    }
   } catch (err) {
     console.error('[resume] Failed to load sessions:', err);
     _cachedProjects = [];
@@ -150,22 +174,70 @@ async function loadAllProjects(search = '') {
   _loading = false;
 }
 
+// ── Provider selector ──
+
+function renderProviderBar(container) {
+  let bar = container.querySelector('.resume-provider-bar');
+  if (bar) return; // already rendered
+
+  bar = document.createElement('div');
+  bar.className = 'resume-provider-bar';
+
+  for (const id of RESUME_PROVIDERS) {
+    const meta = getProviderMeta(id);
+    const btn = document.createElement('button');
+    btn.className = 'resume-provider-btn' + (id === _selectedProvider ? ' resume-provider-btn--active' : '');
+    btn.setAttribute('data-provider', id);
+    btn.title = meta.label;
+    btn.innerHTML = `<span class="resume-provider-icon">${meta.icon}</span>`;
+    if (id === _selectedProvider) btn.style.setProperty('--provider-color', meta.color);
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (_selectedProvider === id) return;
+      _selectedProvider = id;
+      storage.setItem('synabun-resume-provider', id);
+      _cachedProjects = null;
+      _expandedProject = null;
+      _indexingStatusLoaded = false;
+
+      // Update button states
+      bar.querySelectorAll('.resume-provider-btn').forEach(b => {
+        const pid = b.getAttribute('data-provider');
+        b.classList.toggle('resume-provider-btn--active', pid === id);
+        if (pid === id) b.style.setProperty('--provider-color', getProviderMeta(pid).color);
+        else b.style.removeProperty('--provider-color');
+      });
+
+      // Reload sessions for new provider
+      renderResume();
+    });
+
+    bar.appendChild(btn);
+  }
+
+  // Insert after search box
+  const searchBox = container.querySelector('.resume-search');
+  if (searchBox) searchBox.after(bar);
+  else container.prepend(bar);
+}
+
 // ── Render ──
 
 function renderProjectList(container) {
-  // Preserve existing search input across re-renders to keep cursor position
+  // Preserve existing search input and provider bar across re-renders
   let searchBox = container.querySelector('.resume-search');
+  let providerBar = container.querySelector('.resume-provider-bar');
 
-  // Remove everything except the search box
+  // Remove everything except the search box and provider bar
   [...container.children].forEach(el => {
-    if (!el.classList.contains('resume-search')) el.remove();
+    if (!el.classList.contains('resume-search') && !el.classList.contains('resume-provider-bar')) el.remove();
   });
 
-  // Load indexing status on first render
-  if (!_indexingStatusLoaded) {
+  // Load indexing status on first render (only for Claude Code — indexing is Claude-only)
+  if (!_indexingStatusLoaded && _selectedProvider === 'claude-code') {
     loadIndexingStatus().then(() => {
       updateIndexingUI();
-      // Re-render session list to show indexed badges
       const list = container.querySelector('.resume-session-list');
       if (list && _indexedSessionIds.size > 0) renderProjectList(container);
     });
@@ -208,7 +280,8 @@ function renderProjectList(container) {
       e.stopPropagation();
       refreshBtn.classList.add('resume-refresh-spinning');
       try {
-        const data = await fetchClaudeSessions({ limit: 50, search: _currentSearch, refresh: true });
+        const fetchFn = PROVIDER_FETCH[_selectedProvider] || fetchClaudeSessions;
+        const data = await fetchFn({ limit: 50, search: _currentSearch, refresh: true });
         _cachedProjects = data.projects || [];
       } catch (err) {
         console.error('[resume] Refresh failed:', err);
@@ -217,13 +290,12 @@ function renderProjectList(container) {
       renderProjectList(container);
     });
 
-    // Index button handler
+    // Index button handler (Claude Code only)
     const indexBtn = searchBox.querySelector('.resume-index-btn');
     indexBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (_indexing) return;
       try {
-        // Get the currently expanded project, or index all
         const project = _expandedProject || undefined;
         await startSessionIndexing({ project });
         _indexing = true;
@@ -237,10 +309,17 @@ function renderProjectList(container) {
     requestAnimationFrame(() => input.focus());
   }
 
+  // Show/hide index button based on provider (indexing is Claude-only)
+  const indexBtn = searchBox.querySelector('.resume-index-btn');
+  if (indexBtn) indexBtn.style.display = _selectedProvider === 'claude-code' ? '' : 'none';
+
+  // Render provider bar
+  renderProviderBar(container);
+
   if (!_cachedProjects || _cachedProjects.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'resume-empty';
-    empty.textContent = _loading ? 'Loading...' : 'No projects registered.';
+    empty.textContent = _loading ? 'Loading...' : 'No sessions found.';
     container.appendChild(empty);
     return;
   }
@@ -284,8 +363,8 @@ function renderProjectList(container) {
     container.appendChild(sep());
   }
 
-  // Memory search results (only when actively searching)
-  if (_currentSearch) {
+  // Memory search results (only when actively searching and on Claude Code)
+  if (_currentSearch && _selectedProvider === 'claude-code') {
     const memSlot = document.createElement('div');
     memSlot.id = 'resume-memory-results';
     container.appendChild(memSlot);
@@ -344,7 +423,8 @@ function renderProjectList(container) {
             e.stopPropagation();
             more.textContent = 'Loading...';
             try {
-              const data = await fetchClaudeSessions({
+              const fetchFn = PROVIDER_FETCH[_selectedProvider] || fetchClaudeSessions;
+              const data = await fetchFn({
                 project: proj.path,
                 limit: 30,
                 offset: proj.sessions.length,
@@ -380,6 +460,14 @@ function renderSession(s, projectPath) {
   const promptClass = isEmpty ? 'resume-session-prompt resume-session-prompt--empty' : 'resume-session-prompt';
   const promptText = isEmpty ? 'Empty session' : escHtml(displayText);
 
+  // Tooltip: full title + date, positioned right of the dropdown
+  const fullTitle = customLabel || cleaned || '';
+  if (fullTitle) {
+    const dateStr = fmtDate(s.modified);
+    item.setAttribute('data-tooltip', dateStr ? fullTitle + '\n' + dateStr : fullTitle);
+    item.setAttribute('data-tooltip-pos', 'right');
+  }
+
   // Pencil icon (rename) — appears on hover via CSS
   const renameBtn = `<button class="resume-rename-btn" title="Rename session"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></button>`;
 
@@ -387,18 +475,32 @@ function renderSession(s, projectPath) {
   const msgLabel = s.messageCount === 0 ? '' :
     `<span class="resume-meta resume-msg-count">${s.messageCount} msg${s.messageCount !== 1 ? 's' : ''}</span>`;
 
-  // Indexed badge
-  const indexedBadge = _indexedSessionIds.has(s.sessionId)
+  // Indexed badge (Claude Code only)
+  const indexedBadge = (_selectedProvider === 'claude-code' && _indexedSessionIds.has(s.sessionId))
     ? '<span class="resume-indexed-badge" title="Indexed for deep search">indexed</span>'
+    : '';
+
+  // Match pills for hybrid session search
+  const matchBadge = s.match_kind === 'semantic-only'
+    ? '<span class="resume-match-badge resume-match-semantic" title="Matched by meaning, not exact words">related</span>'
+    : s.match_kind === 'both'
+      ? '<span class="resume-match-badge resume-match-both" title="Matched both keywords and meaning">strong match</span>'
+      : '';
+
+  // Snippet row (only shown for FTS/both hits — sanitized server-side with <mark>)
+  const snippetHtml = s.fts_snippet
+    ? `<div class="resume-session-snippet">${sanitizeSnippet(s.fts_snippet)}</div>`
     : '';
 
   item.innerHTML = `
     <div class="${promptClass}" data-prompt-display>${promptText}</div>
+    ${snippetHtml}
     <div class="resume-session-meta">
       ${branchHtml}
       <span class="resume-meta">${relDate(s.modified)}</span>
       ${msgLabel}
       ${indexedBadge}
+      ${matchBadge}
     </div>
     ${renameBtn}
   `;
@@ -408,10 +510,10 @@ function renderSession(s, projectPath) {
     item.classList.add('resume-session-item--empty');
   }
 
-  // Dim deleted sessions (file removed by Claude Code, cached in SynaBun)
+  // Dim deleted sessions (file removed by CLI, cached in SynaBun)
   if (s.deleted) {
     item.classList.add('resume-session-item--deleted');
-    item.title = 'Session file was cleaned up by Claude Code — no longer resumable';
+    item.title = 'Session file was cleaned up — no longer resumable';
   }
 
   // Rename button handler
@@ -574,12 +676,12 @@ async function performSearch(query, container) {
 
 // ── Terminal launch ──
 
-async function launchResume(claudeSessionId, projectPath) {
-  const label = getSessionLabel(claudeSessionId);
+async function launchResume(sessionId, projectPath) {
+  const label = getSessionLabel(sessionId);
   emit('terminal:open-resume', {
-    profile: 'claude-code',
+    profile: _selectedProvider,
     cwd: projectPath,
-    resume: claudeSessionId,
+    resume: sessionId,
     label: label || '',
   });
 }
@@ -600,6 +702,15 @@ function escHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/** Escape HTML in an FTS snippet while preserving the server-emitted <mark> wrappers. */
+function sanitizeSnippet(str) {
+  if (!str) return '';
+  const escaped = escHtml(str);
+  return escaped
+    .replace(/&lt;mark&gt;/g, '<mark>')
+    .replace(/&lt;\/mark&gt;/g, '</mark>');
+}
+
 /** Strip XML-like tags (ide_opened_file, system-reminder, ide_selection, etc.) and clean up prompt text */
 function cleanPrompt(raw) {
   if (!raw) return '';
@@ -612,6 +723,14 @@ function cleanPrompt(raw) {
     .replace(/\s+/g, ' ')
     .trim();
   return s;
+}
+
+function fmtDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (isNaN(d)) return '';
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+    + ' at ' + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
 function relDate(dateStr) {

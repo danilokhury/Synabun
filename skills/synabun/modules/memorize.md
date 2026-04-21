@@ -13,6 +13,11 @@ You are now in **memorize mode**. Your job is to analyze the full conversation c
 - `remember` accepts `tags` and `importance` directly and returns the full UUID.
 - `reflect` requires the **FULL UUID**. Use the UUID returned by `remember`, or `recall` to find existing memories.
 
+## Runtime Compatibility
+
+- **Interactive choice prompt** means: use `AskUserQuestion` in Claude Code, `request_user_input` in Codex when that tool is available, otherwise ask a concise plain-text multiple-choice question and wait for the user's reply.
+- **Category management** means: use the runtime's available category tool surface, whether that is split helpers such as `category_list` / `category_create` or a unified `category` tool with actions like `list` / `create`.
+
 ---
 
 ## Process
@@ -88,7 +93,7 @@ Compose the memory as a structured markdown document. Follow this template preci
 Determine the appropriate metadata for this memory:
 
 #### Category Selection
-1. Check if the conversation topic fits an existing child category under `conversations` by calling `category_list` with format `tree`.
+1. Check if the conversation topic fits an existing child category under `conversations` by listing categories in `tree` format.
 2. If the conversation has a clear specialized topic that doesn't fit existing children, consider creating a new child category under `conversations` — but only if it represents a genuinely distinct recurring topic (not a one-off).
 3. **Default**: Use `conversations` as the category. Most context memories belong here.
 
@@ -134,14 +139,14 @@ Then output the metadata:
 ──────────────────────────────────────────
 ```
 
-Then use `AskUserQuestion`:
+Then use an interactive choice prompt:
 
 - **Save as-is** — "Store this memory exactly as drafted"
 - **Edit first** — "I want to adjust the content or metadata before saving"
 - **Cancel** — "Don't save anything"
 
 **If user picks "Edit first":**
-Use `AskUserQuestion` to ask what they want to change:
+Use an interactive choice prompt to ask what they want to change:
 
 - **Edit content** — "Change the memory text (tell me what to modify)"
 - **Change importance** — "Adjust the importance level"

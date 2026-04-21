@@ -43,6 +43,9 @@ export const state = {
 
   // ── Terminal links ──
   linkedSessionIds: new Set(),  // session IDs currently in an active link
+
+  // ── Side panel routing ──
+  lastActivePanel: 'claude',   // 'claude' | 'codex' | 'opencode' — used by whiteboard "Send to Panel"
 };
 
 

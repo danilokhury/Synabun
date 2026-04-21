@@ -15,9 +15,13 @@ import { isGuest, hasPermission } from './ui-sync.js';
 import { getWhiteboardElementById } from './ui-whiteboard.js';
 import { createFrameRenderer } from './utils.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
+import { getProviderMeta } from './provider-icons.js';
 
 const $ = (id) => document.getElementById(id);
 const CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini']);
+const NOTIF_TRACKED_CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
+const CLI_PROFILES_NEED_PROFILER = new Set(['codex', 'gemini']); // Claude Code has tool search — no profiler needed
+const CLI_PROFILES_NEED_RECALL = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
 
 /** Cross-browser clipboard write with fallback for non-secure contexts. */
 function _clipCopy(text) {
@@ -37,11 +41,28 @@ function _clipFallback(text) {
   ta.remove();
 }
 
+/**
+ * Inject a file path into a terminal as if the user pasted it.
+ * Uses xterm/htmlTerm `.paste()` so bracketed-paste mode is honored when the
+ * running CLI (Claude Code, Codex, etc.) enables it — raw `ws.send({input})`
+ * bypasses that wrapping and the CLI silently drops or misinterprets the input.
+ * Falls back to raw input only if no terminal paste method is available.
+ */
+function _injectPathIntoTerm(term, ws, path) {
+  try {
+    if (term && typeof term.paste === 'function') { term.paste(path); return; }
+  } catch {}
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'input', data: path }));
+  }
+}
+
 // ── Profiles ──
 
 const SVG_CLAUDE = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
 const SVG_OPENAI = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z"/></svg>';
 const SVG_GEMINI = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"/></svg>';
+const SVG_OPENCODE = '<svg viewBox="0 0 240 300" fill="currentColor"><path fill-rule="evenodd" d="M0 0h240v300H0V0zm60 60v180h120V60H60z"/><rect x="60" y="120" width="120" height="120" opacity=".45"/></svg>';
 const SVG_SHELL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>';
 const SVG_GIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>';
 
@@ -50,8 +71,9 @@ const SVG_BROWSER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 const PROFILES = [
   { id: 'claude-code', label: 'Claude Code', svg: SVG_CLAUDE,  color: '#D4A27F' },
   { id: 'codex',       label: 'Codex CLI',   svg: SVG_OPENAI,  color: '#74c7a5' },
-  { id: 'gemini',      label: 'Gemini CLI',  svg: SVG_GEMINI,  color: '#669DF6' },
-  { id: 'shell',       label: 'Shell',       svg: SVG_SHELL,   color: '#aaaaaa' },
+  { id: 'gemini',      label: 'Gemini CLI',  svg: SVG_GEMINI,    color: '#669DF6' },
+  { id: 'opencode',    label: 'OpenCode',    svg: SVG_OPENCODE, color: '#E8E0DC' },
+  { id: 'shell',       label: 'Shell',       svg: SVG_SHELL,    color: '#aaaaaa' },
   { id: 'browser',     label: 'Browser',     svg: SVG_BROWSER, color: '#4fc3f7' },
 ];
 
@@ -165,43 +187,68 @@ const _CLI_LABELS = { idle: 'Idle', working: 'Working', action: 'Action', done: 
 const SVG_CHECK_DONE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 8 7 12 13 4"/></svg>';
 
 // ── Notification engine (delegates to shared ui-notifications.js) ──
-const _prevStatus = new Map(); // sessionId → previous status
+const _prevStatus = new Map();      // sessionId → previous status
+const _lastNotified = new Map();    // sessionId → last NOTIF_TYPE fired (ACTION/DONE), cleared on IDLE/WORKING-with-real-work
 
 function _notifyStatusChange(sessionId, newStatus) {
   const enabled = storage.getItem(KEYS.TERMINAL_NOTIFICATIONS) !== 'off';
   if (!enabled) { _prevStatus.set(sessionId, newStatus); return; }
   const prev = _prevStatus.get(sessionId);
   _prevStatus.set(sessionId, newStatus);
+
+  // Reset dedup guard when session leaves a notified state (back to IDLE).
+  // WORKING is not a reset — transient output bursts during an ACTION prompt
+  // re-flip to WORKING in _scheduleCliStatusCheck, and we must not re-notify.
+  if (newStatus === CLI_STATUS.IDLE) _lastNotified.delete(sessionId);
+
   if (!prev || prev !== CLI_STATUS.WORKING) return; // only notify on Working → X
   if (newStatus === CLI_STATUS.WORKING) return;
 
+  // Dedup: don't re-fire the same notification type until the session has
+  // visited IDLE (i.e., user resolved / prompt cleared).
+  if (newStatus === CLI_STATUS.ACTION && _lastNotified.get(sessionId) === NOTIF_TYPE.ACTION) return;
+  if (newStatus === CLI_STATUS.DONE && _lastNotified.get(sessionId) === NOTIF_TYPE.DONE) return;
+
   const session = _sessions.find(s => s.id === sessionId);
-  const label = session?.label || 'Claude Code';
+  const providerMeta = getProviderMeta(session?.profile || 'claude-code');
+  const label = session?.label || providerMeta.label;
 
   if (newStatus === CLI_STATUS.ACTION) {
-    notify('cli', NOTIF_TYPE.ACTION, label, { sessionId });
+    notify('cli', NOTIF_TYPE.ACTION, label, { sessionId, provider: session?.profile || 'claude-code' });
+    _lastNotified.set(sessionId, NOTIF_TYPE.ACTION);
   } else if (newStatus === CLI_STATUS.DONE) {
-    notify('cli', NOTIF_TYPE.DONE, label, { sessionId });
+    notify('cli', NOTIF_TYPE.DONE, label, { sessionId, provider: session?.profile || 'claude-code' });
+    _lastNotified.set(sessionId, NOTIF_TYPE.DONE);
   }
 }
 
-function _getBufferText(buffer, row) {
-  const rowData = buffer.getRow(row);
-  if (!rowData) return '';
-  let line = '';
-  for (let c = 0; c < buffer.cols; c++) line += rowData[c]?.char || ' ';
-  return line.trimEnd();
+function _getSessionBuffer(session) {
+  const xtermBuffer = session?.term?.buffer?.active;
+  if (xtermBuffer) {
+    return {
+      buffer: xtermBuffer,
+      rows: session.term.rows,
+      cursorY: xtermBuffer.cursorY,
+    };
+  }
+  return null;
+}
+
+function _getBufferText(bufferState, row) {
+  if (!bufferState?.buffer) return '';
+  const line = bufferState.buffer.getLine(row);
+  return line?.translateToString(true) || '';
 }
 
 function _detectSessionStatus(session) {
-  if (!session?._htmlTerm?.buffer || session.dead) return CLI_STATUS.OFF;
-  const buf = session._htmlTerm.buffer;
-  const cursorY = buf.cursorY;
+  const bufferState = _getSessionBuffer(session);
+  if (!bufferState || session.dead) return CLI_STATUS.OFF;
+  const cursorY = bufferState.cursorY;
 
   // Read full visible buffer for context (TUI apps use entire screen)
   const lines = [];
-  for (let r = 0; r < buf.rows; r++) {
-    lines.push(_getBufferText(buf, r));
+  for (let r = 0; r < bufferState.rows; r++) {
+    lines.push(_getBufferText(bufferState, r));
   }
   const recent = lines.join('\n');
 
@@ -216,11 +263,11 @@ function _detectSessionStatus(session) {
   // TUI idle: prompt char between box-drawing vertical borders (Claude Code input box)
   // e.g. "│ >  │" or "│  ❯  │"
   for (let r = cursorY; r >= Math.max(0, cursorY - 3); r--) {
-    const line = _getBufferText(buf, r);
+    const line = _getBufferText(bufferState, r);
     if (/[\u2502\u2503\u2551]\s*[❯>\u276F]\s*[\u2502\u2503\u2551]/.test(line)) {
       let gapEmpty = true;
       for (let g = r + 1; g <= cursorY; g++) {
-        const gl = _getBufferText(buf, g).trim();
+        const gl = _getBufferText(bufferState, g).trim();
         if (gl.length > 0 && !/^[\u2500-\u257F\s]+$/.test(gl)) { gapEmpty = false; break; }
       }
       if (gapEmpty) return CLI_STATUS.IDLE;
@@ -229,12 +276,12 @@ function _detectSessionStatus(session) {
 
   // Shell idle: check cursor line AND a few lines above for prompt characters
   for (let r = cursorY; r >= Math.max(0, cursorY - 3); r--) {
-    const line = _getBufferText(buf, r);
+    const line = _getBufferText(bufferState, r);
     if (/[❯>\u276F$%]\s*$/.test(line) && line.trim().length < 80) {
       // If prompt found above cursor, verify lines between are empty
       let gapEmpty = true;
       for (let g = r + 1; g <= cursorY; g++) {
-        if (_getBufferText(buf, g).trim().length > 0) { gapEmpty = false; break; }
+        if (_getBufferText(bufferState, g).trim().length > 0) { gapEmpty = false; break; }
       }
       if (gapEmpty) return CLI_STATUS.IDLE;
     }
@@ -355,6 +402,7 @@ function _untrackCliSession(sessionId) {
   if (tracked?.pollInterval) clearInterval(tracked.pollInterval);
   _cliSessionStatus.delete(sessionId);
   _prevStatus.delete(sessionId);
+  _lastNotified.delete(sessionId);
 }
 
 /** Returns badge HTML for a session if it's a tracked CLI, or empty string */
@@ -362,6 +410,159 @@ function _cliBadgeHtml(sessionId) {
   return _cliSessionStatus.has(sessionId)
     ? `<span class="cli-status-badge" data-status="${_cliSessionStatus.get(sessionId).status}"><span class="cli-status-dot"></span><span class="cli-status-label">${_CLI_LABELS[_cliSessionStatus.get(sessionId).status] || ''}</span></span>`
     : '';
+}
+
+// ── Floating terminal MCP profile dropdown ──
+
+let _floatProfileCache = null;
+let _floatProfileCacheTime = 0;
+
+async function _fetchFloatProfiles() {
+  const now = Date.now();
+  if (_floatProfileCache && now - _floatProfileCacheTime < 10000) return _floatProfileCache;
+  try {
+    const resp = await fetch('/api/mcp/profile');
+    const data = await resp.json();
+    if (data.ok) {
+      _floatProfileCache = { current: data.profile || 'full', presets: data.presets || {} };
+      _floatProfileCacheTime = now;
+    }
+  } catch {}
+  return _floatProfileCache || { current: 'full', presets: {} };
+}
+
+function _initFloatProfileDropdown(dd) {
+  const btn = dd.querySelector('.term-float-profile-btn');
+  const menu = dd.querySelector('.term-float-profile-menu');
+  const label = dd.querySelector('.term-float-profile-label');
+
+  // Load current profile label
+  _fetchFloatProfiles().then(data => {
+    const p = data.presets[data.current];
+    label.textContent = p?.label || data.current;
+  });
+
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const wasOpen = menu.classList.contains('open');
+    // Close all other open profile menus
+    document.querySelectorAll('.term-float-profile-menu.open').forEach(m => m.classList.remove('open'));
+    if (wasOpen) return;
+
+    const data = await _fetchFloatProfiles();
+    menu.innerHTML = '';
+    for (const [id, preset] of Object.entries(data.presets)) {
+      const opt = document.createElement('div');
+      opt.className = 'term-float-profile-option' + (id === data.current ? ' selected' : '');
+      opt.innerHTML = `<span class="tfp-name">${preset.label || id}</span><span class="tfp-hint">${preset.tools} tools</span>`;
+      opt.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        menu.classList.remove('open');
+        if (id === data.current) return;
+        label.textContent = preset.label || id;
+        try {
+          await fetch('/api/mcp/profile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ profile: id }),
+          });
+          _floatProfileCache = null; // bust cache
+          // Update all other floating profile dropdowns
+          document.querySelectorAll('.term-float-profile-label').forEach(lbl => {
+            lbl.textContent = preset.label || id;
+          });
+        } catch {}
+      });
+      menu.appendChild(opt);
+    }
+    menu.classList.add('open');
+
+    // Close on outside click
+    const close = (ev) => {
+      if (!dd.contains(ev.target)) { menu.classList.remove('open'); document.removeEventListener('mousedown', close); }
+    };
+    setTimeout(() => document.addEventListener('mousedown', close), 0);
+  });
+}
+
+// ── Floating terminal Recall profile dropdown ──
+
+const FLOAT_RECALL_META = [
+  { value: 'quick',    label: 'Quick',    hint: '3 results' },
+  { value: 'balanced', label: 'Balanced', hint: '5 results' },
+  { value: 'deep',     label: 'Deep',     hint: '10 results' },
+  { value: 'custom',   label: 'Custom',   hint: 'custom' },
+];
+const FLOAT_RECALL_DEFAULTS = {
+  quick:    { limit: 3,  minImportance: 5, minScore: 0.45, maxChars: 300,  includeSessions: 'never',  recencyBoost: false },
+  balanced: { limit: 5,  minImportance: 0, minScore: 0.30, maxChars: 0,    includeSessions: 'auto',   recencyBoost: false },
+  deep:     { limit: 10, minImportance: 0, minScore: 0.20, maxChars: 0,    includeSessions: 'always', recencyBoost: false },
+};
+
+let _floatRecallCache = null;
+let _floatRecallCacheTime = 0;
+
+async function _fetchFloatRecallProfile() {
+  const now = Date.now();
+  if (_floatRecallCache && now - _floatRecallCacheTime < 10000) return _floatRecallCache;
+  try {
+    const data = await fetch('/api/display-settings').then(r => r.json());
+    _floatRecallCache = { profile: data.profile || 'balanced', recallDefaults: data.recallDefaults };
+    _floatRecallCacheTime = now;
+  } catch {}
+  return _floatRecallCache || { profile: 'balanced', recallDefaults: FLOAT_RECALL_DEFAULTS.balanced };
+}
+
+function _initFloatRecallDropdown(dd) {
+  const btn = dd.querySelector('.term-float-recall-btn');
+  const menu = dd.querySelector('.term-float-recall-menu');
+  const label = dd.querySelector('.term-float-recall-label');
+
+  _fetchFloatRecallProfile().then(data => {
+    const matched = FLOAT_RECALL_META.find(p => p.value === data.profile);
+    label.textContent = matched ? matched.label : data.profile;
+  });
+
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const wasOpen = menu.classList.contains('open');
+    document.querySelectorAll('.term-float-recall-menu.open').forEach(m => m.classList.remove('open'));
+    if (wasOpen) return;
+
+    const data = await _fetchFloatRecallProfile();
+    menu.innerHTML = '';
+    for (const p of FLOAT_RECALL_META) {
+      const opt = document.createElement('div');
+      opt.className = 'term-float-recall-option' + (p.value === data.profile ? ' selected' : '');
+      opt.innerHTML = `<span class="tfr-name">${p.label}</span><span class="tfr-hint">${p.hint}</span>`;
+      opt.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        menu.classList.remove('open');
+        if (p.value === data.profile) return;
+        label.textContent = p.label;
+        try {
+          const current = await fetch('/api/display-settings').then(r => r.json());
+          const defaults = FLOAT_RECALL_DEFAULTS[p.value] || current.recallDefaults || FLOAT_RECALL_DEFAULTS.balanced;
+          await fetch('/api/display-settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...current, profile: p.value, recallDefaults: p.value !== 'custom' ? defaults : current.recallDefaults }),
+          });
+          _floatRecallCache = null;
+          document.querySelectorAll('.term-float-recall-label').forEach(lbl => {
+            lbl.textContent = p.label;
+          });
+        } catch {}
+      });
+      menu.appendChild(opt);
+    }
+    menu.classList.add('open');
+
+    const close = (ev) => {
+      if (!dd.contains(ev.target)) { menu.classList.remove('open'); document.removeEventListener('mousedown', close); }
+    };
+    setTimeout(() => document.addEventListener('mousedown', close), 0);
+  });
 }
 
 // ── rAF-throttled fit + debounced PTY resize ──
@@ -387,8 +588,17 @@ function _touchXY(e) {
 }
 
 function _scheduleFit(session, _retries) {
-  if (!session?.fitAddon || session.dead || session._isBrowser || session._isHtmlTerm) return;
+  if (!session?.fitAddon || session.dead || session._isBrowser) return;
   if (_fitPending.has(session.id)) return;
+  // During edge-drag, coalesce visual fit to 1 per ~4 rAF (~64ms). Without this
+  // each drag frame triggers a full DOM re-measure over the entire scrollback,
+  // which is the single biggest glitch source on long sessions. PTY resize is
+  // already debounced below via _resizeTimers.
+  if (_draggingResize && !_retries) {
+    const tick = (session._dragFitTick || 0) + 1;
+    session._dragFitTick = tick;
+    if (tick % 4 !== 0) return;
+  }
   const handle = requestAnimationFrame(() => {
     _fitPending.delete(session.id);
     try {
@@ -413,20 +623,31 @@ function _scheduleFit(session, _retries) {
 
       if (session.ws?.readyState !== WebSocket.OPEN) return;
 
+      // Snap-to-cell: only notify PTY when we cross a cell boundary.
+      // Sub-cell pixel changes during drag are swallowed here, so TUIs
+      // (Claude Code, Ink, vim) don't get spammed with SIGWINCH per frame.
+      const last = session._lastSentResize;
+      if (last && last.cols === cols && last.rows === rows) return;
+
+      const send = () => {
+        if (session.ws?.readyState !== WebSocket.OPEN) return;
+        const c = session.term.cols, r = session.term.rows;
+        const l = session._lastSentResize;
+        if (l && l.cols === c && l.rows === r) return;
+        session._lastSentResize = { cols: c, rows: r };
+        session.ws.send(JSON.stringify({ type: 'resize', cols: c, rows: r }));
+      };
+
       if (_draggingResize) {
-        // During drag: debounce PTY resize to prevent per-frame floods,
-        // but still send periodically so TUI apps stay in sync.
+        // During drag: coalesce cell-boundary crossings into one resize per window.
         if (!_resizeTimers.has(session.id)) {
           _resizeTimers.set(session.id, setTimeout(() => {
             _resizeTimers.delete(session.id);
-            if (session.ws?.readyState === WebSocket.OPEN) {
-              session.ws.send(JSON.stringify({ type: 'resize', cols: session.term.cols, rows: session.term.rows }));
-            }
+            send();
           }, DRAG_RESIZE_DEBOUNCE_MS));
         }
       } else {
-        // Not dragging — send immediately
-        session.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+        send();
       }
     } catch { session._fitInProgress = false; }
   });
@@ -448,8 +669,16 @@ function _sendResize(session) {
     const cols = session.term.cols;
     const rows = session.term.rows;
     if (cols >= 2 && rows >= 2) {
-      session.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+      const l = session._lastSentResize;
+      if (!l || l.cols !== cols || l.rows !== rows) {
+        session._lastSentResize = { cols, rows };
+        session.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+      }
     }
+    // Final refresh on drag end — repaints the whole visible grid into the new
+    // cell geometry so any sub-cell glitches from coalesced drag fits are gone.
+    session._dragFitTick = 0;
+    try { session.term.refresh(0, Math.max(0, (session.term.rows || 1) - 1)); } catch {}
   } catch {}
 }
 
@@ -607,7 +836,7 @@ async function openSessionWithPicker(profile) {
   if (CLI_PROFILES.has(profile)) {
     const cwd = await pickProject(profile);
     if (cwd === undefined) return; // cancelled
-    openHtmlTermSession(profile, cwd);
+    openSession(profile, cwd);
   } else {
     openSession(profile);
   }
@@ -793,6 +1022,8 @@ function ensurePanel() {
         else session.term?.focus();
         return;
       }
+      // Missed close-×/detach on active tab → no-op (don't trigger redundant switch).
+      if (idx === _activeIdx) return;
       switchToSession(idx);
     }
   });
@@ -1000,10 +1231,7 @@ function showPanel() {
   if (toggle) toggle.classList.add('active');
 
   // Refit terminals after morph transition completes (500ms)
-  setTimeout(() => _sessions.forEach(s => {
-    if (s._isHtmlTerm) s._htmlTerm?.fit();
-    else _scheduleFit(s);
-  }), 520);
+  setTimeout(() => _sessions.forEach(s => _scheduleFit(s)), 520);
 }
 
 function hidePanel() {
@@ -1044,14 +1272,20 @@ function detachPanel() {
   // Save docked height before switching
   const dockedH = _panel.getBoundingClientRect().height;
 
-  // Load saved float position or compute default (centered, 60% width)
+  // Load saved float position or compute default (centered in usable area,
+  // so left margin matches right margin — accounts for left sidebars and right sidepanel)
   let pos;
   try { pos = JSON.parse(storage.getItem(KEYS.TERMINAL_FLOAT_POS)); } catch {}
   if (!pos) {
-    const w = Math.min(800, window.innerWidth * 0.6);
+    const cs = getComputedStyle(document.documentElement);
+    const leftEdge = (parseFloat(cs.getPropertyValue('--explorer-width')) || 0)
+                   + (parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0);
+    const rightEdge = window.innerWidth - getRightPanelReservedWidth(cs);
+    const usableW = Math.max(0, rightEdge - leftEdge);
+    const w = Math.min(800, usableW * 0.6);
     const h = Math.min(500, dockedH);
     pos = {
-      left: (window.innerWidth - w) / 2,
+      left: leftEdge + (usableW - w) / 2,
       top: Math.max(48, (window.innerHeight - h) / 2),
       width: w, height: h,
     };
@@ -1316,16 +1550,20 @@ function initResizeHandle() {
 
 // ── Session lifecycle ──
 
-async function openSession(profile, cwd, existingSessionId) {
+async function openSession(profile, cwd, existingSessionId, options = {}) {
   if (_opening) return;
   _opening = true;
   try {
   await loadXterm();
   ensurePanel();
 
-  // Use pre-created session or create a new one
-  const sessionId = existingSessionId || (await createTerminalSession(profile, 120, 30, cwd)).sessionId;
-  _pendingSessionIds.add(sessionId);
+  // PTY spawn is deferred for new sessions: spawning at hardcoded 120×30 then
+  // sending a startup SIGWINCH causes Ink TUIs (Claude Code, OpenCode) to
+  // re-render their splash banner and trips zsh's PROMPT_EOL_MARK (visible
+  // floating %). For existing sessions (resume/detach) the PTY is already
+  // alive, so we use the id immediately.
+  let sessionId = existingSessionId || null;
+  if (sessionId) _pendingSessionIds.add(sessionId);
 
   // Create xterm instance
   const term = new _Terminal({
@@ -1335,27 +1573,30 @@ async function openSession(profile, cwd, existingSessionId) {
     lineHeight: 1.3,
     cursorBlink: true,
     cursorStyle: 'bar',
-    scrollback: 5000,
+    scrollback: 1500,
     smoothScrollDuration: 0,
     scrollOnUserInput: true,
     overviewRuler: false,
     allowProposedApi: true,
+    rescaleOverlappingGlyphs: true,
+    drawBoldTextInBrightColors: false,
+    windowsPty: (typeof navigator !== 'undefined') && (navigator.userAgentData?.platform === 'Windows' || (navigator.platform || '').startsWith('Win')),
   });
 
   const fitAddon = new _FitAddon();
   term.loadAddon(fitAddon);
   term.loadAddon(new _WebLinksAddon());
 
-  // Create viewport element
+  // Create viewport element (sessionId attached after spawn)
   const viewport = document.createElement('div');
   viewport.className = 'term-viewport';
-  viewport.dataset.sessionId = sessionId;
 
-  // Route viewport to correct pane (or container root)
+  // Route viewport to correct pane (or container root). Pane assignment is
+  // recorded after the sessionId is known.
+  let _targetPane = null;
   if (_splitMode) {
-    const targetPane = _focusedPane;
-    _paneAssignments.set(sessionId, targetPane);
-    const paneBody = _panel?.querySelector(`.term-pane[data-pane="${targetPane}"] .term-pane-body`);
+    _targetPane = _focusedPane;
+    const paneBody = _panel?.querySelector(`.term-pane[data-pane="${_targetPane}"] .term-pane-body`);
     if (paneBody) paneBody.appendChild(viewport);
     else $('term-container').appendChild(viewport);
   } else {
@@ -1381,22 +1622,17 @@ async function openSession(profile, cwd, existingSessionId) {
     term.unicode.activeVersion = '11';
   }
 
-  // GPU-accelerated renderer with fallback
+  // GPU-accelerated renderer with fallback. Handle is captured for the atlas
+  // lifecycle hooks below and for ordered dispose on session close.
   let renderer = null;
+  let webgl = null;
   if (_WebglAddon) {
     try {
-      const webgl = new _WebglAddon();
-      webgl.onContextLoss(() => {
-        webgl.dispose();
-        // Fall back to Canvas renderer instead of DOM
-        if (_CanvasAddon) {
-          try { term.loadAddon(new _CanvasAddon()); } catch {}
-        }
-      });
+      webgl = new _WebglAddon();
       term.loadAddon(webgl);
       renderer = 'webgl';
     } catch {
-      // WebGL failed, try Canvas
+      webgl = null;
       if (_CanvasAddon) {
         try { term.loadAddon(new _CanvasAddon()); renderer = 'canvas'; } catch {}
       }
@@ -1405,9 +1641,86 @@ async function openSession(profile, cwd, existingSessionId) {
     try { term.loadAddon(new _CanvasAddon()); renderer = 'canvas'; } catch {}
   }
 
+  // Snap xterm to its real cell grid before spawning the PTY. Spawning at
+  // measured cols/rows means zsh prints its first prompt at column 0 with
+  // the right width, and Claude Code/Ink doesn't see a startup SIGWINCH
+  // that would re-render its splash banner.
+  let _initCols = 120;
+  let _initRows = 30;
+  try {
+    fitAddon.fit();
+    if (term.cols >= 2 && term.rows >= 2) {
+      _initCols = term.cols;
+      _initRows = term.rows;
+    }
+  } catch {}
+
+  if (!sessionId) {
+    const created = await createTerminalSession(profile, _initCols, _initRows, cwd);
+    sessionId = created.sessionId;
+    _pendingSessionIds.add(sessionId);
+  }
+  viewport.dataset.sessionId = sessionId;
+  if (_targetPane) _paneAssignments.set(sessionId, _targetPane);
+
   // Connect WebSocket
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
+
+  // ── WebGL atlas lifecycle ──
+  // Long-running Ink/React TUIs (Claude Code) rewrite the screen thousands of
+  // times per session. Each unique glyph×attr combo allocates an atlas entry
+  // until GPU memory pressure triggers a context loss. We prune the atlas at
+  // two safe points: when the TUI leaves the alt-screen (menus, /help exit)
+  // and every 1500 parsed writes for long streaming sessions. Pruning mid
+  // alt-screen frame causes a one-frame flicker, so the periodic prune only
+  // fires when the buffer is on the normal screen.
+  if (webgl) {
+    let _atlasRedraws = 0;
+    const _pruneAtlas = () => {
+      try { webgl?.clearTextureAtlas?.(); term.refresh(0, term.rows - 1); } catch {}
+    };
+    try {
+      term.buffer?.onBufferChange?.(buf => {
+        if (buf?.type === 'normal') _pruneAtlas();
+      });
+    } catch {}
+    try {
+      term.onWriteParsed?.(() => {
+        if (++_atlasRedraws >= 1500) {
+          _atlasRedraws = 0;
+          if (term.buffer?.active?.type === 'normal') _pruneAtlas();
+        }
+      });
+    } catch {}
+
+    // Context loss → dispose WebGL, swap to Canvas, refit, refresh, and force
+    // a PTY resize (bypass _lastSentResize dedup) so Ink redraws into the
+    // fresh cell grid instead of the stale WebGL one.
+    let _webglDisposed = false;
+    webgl.onContextLoss(() => {
+      if (_webglDisposed) return;
+      _webglDisposed = true;
+      try { webgl.dispose(); } catch {}
+      webgl = null;
+      if (_CanvasAddon) {
+        try { term.loadAddon(new _CanvasAddon()); } catch {}
+      }
+      requestAnimationFrame(() => {
+        try { fitAddon.fit(); term.refresh(0, term.rows - 1); } catch {}
+        if (ws.readyState === WebSocket.OPEN) {
+          const s = _sessions.find(x => x.term === term);
+          if (s) s._lastSentResize = null;
+          try { ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch {}
+        }
+      });
+    });
+  }
+
+  // One clean fit+refresh on next frame after all addons have loaded. Locks in
+  // correct cell metrics against the freshly-loaded WebGL atlas so frame 1
+  // doesn't paint with a stale measurement from font-swap or addon ordering.
+  requestAnimationFrame(() => { try { fitAddon.fit(); term.refresh(0, term.rows - 1); } catch {} });
 
   // ── Keyboard shortcuts (after ws is declared) ──
   term.attachCustomKeyEventHandler((e) => {
@@ -1514,11 +1827,14 @@ async function openSession(profile, cwd, existingSessionId) {
     // else: PTY stays at safe 120×30 default until _scheduleFit sends the real size
   };
 
+  if (NOTIF_TRACKED_CLI_PROFILES.has(profile)) _trackCliSession(sessionId);
+
   ws.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
       if (msg.type === 'output' || msg.type === 'replay') {
         term.write(msg.data);
+        if (NOTIF_TRACKED_CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
         // Accumulate output for _sendOnceReady replay buffer check
         const sess = _sessions.find(s => s.id === sessionId);
         if (sess) {
@@ -1538,16 +1854,15 @@ async function openSession(profile, cwd, existingSessionId) {
       }
       if (msg.type === 'image_saved' && msg.path) {
         _clipCopy(msg.path);
-        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        _injectPathIntoTerm(term, ws, msg.path);
         showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
-        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        _injectPathIntoTerm(term, ws, msg.path);
         showTermToast(`Image dropped — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'memory_saved' && msg.path) {
-        // Write file path into PTY so CLI picks it up as a file reference
-        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        _injectPathIntoTerm(term, ws, msg.path);
         showTermToast(`Memory dropped — ${msg.path.split(/[\\/]/).pop()}`);
       }
     } catch {};
@@ -1586,12 +1901,19 @@ async function openSession(profile, cwd, existingSessionId) {
     id: sessionId,
     profile,
     cwd: cwd || null,
-    label: cwdLabel ? `${profileDef?.label || profile} · ${cwdLabel}` : (profileDef?.label || profile),
+    label: options.label || (cwdLabel ? `${profileDef?.label || profile} · ${cwdLabel}` : (profileDef?.label || profile)),
     term, fitAddon, searchAddon, ws, viewport, ro,
     renderer,
+    _webgl: webgl, // GPU renderer handle — disposed before term.dispose() on close
     dead: false,
-    pinned: false,
+    pinned: !!options.pinned,
+    _userRenamed: !!options.label || !!options.userRenamed,
+    _claudeSessionId: options.claudeSessionId || null,
+    _floatColor: options.floatColor || null,
     _fitInProgress: false,
+    // Seed with the spawn dimensions so _scheduleFit's first fire (which will
+    // measure the same cells) is a no-op rather than an extra resize roundtrip.
+    _lastSentResize: { cols: _initCols, rows: _initRows },
   };
   _pushSession(session);
   _pendingSessionIds.delete(sessionId);
@@ -1604,331 +1926,26 @@ async function openSession(profile, cwd, existingSessionId) {
   renderTabBar();
   switchToSession(_activeIdx);
   saveSessionRegistry();
-  } finally { _opening = false; }
-}
 
-// ═══════════════════════════════════════════
-// HTML TERM — Custom renderer for CLI profiles
-// ═══════════════════════════════════════════
-
-let _HtmlTermRenderer = null;
-
-async function loadHtmlTermRenderer() {
-  if (_HtmlTermRenderer) return;
-  const mod = await import('./html-term-renderer.js');
-  _HtmlTermRenderer = mod.HtmlTermRenderer;
-}
-
-/**
- * Open a CLI tool session using the custom HTML terminal renderer
- * instead of xterm.js. Mirrors openSession() but lighter.
- */
-async function openHtmlTermSession(profile, cwd, existingSessionId, options = {}) {
-  if (_opening) return;
-  _opening = true;
-  try {
-    await loadHtmlTermRenderer();
-    ensurePanel();
-
-    // Use pre-created session (e.g. from resume) or create a new one
-    const sessionId = existingSessionId || (await createTerminalSession(profile, 120, 30, cwd)).sessionId;
-    _pendingSessionIds.add(sessionId);
-
-    // Create viewport element
-    const viewport = document.createElement('div');
-    viewport.className = 'term-viewport';
-    viewport.dataset.sessionId = sessionId;
-
-    // Route viewport to correct pane (or container root)
-    if (_splitMode) {
-      const targetPane = _focusedPane;
-      _paneAssignments.set(sessionId, targetPane);
-      const paneBody = _panel?.querySelector(`.term-pane[data-pane="${targetPane}"] .term-pane-body`);
-      if (paneBody) paneBody.appendChild(viewport);
-      else $('term-container').appendChild(viewport);
-    } else {
-      $('term-container').appendChild(viewport);
-    }
-
-    // Wait for fonts
-    if (document.fonts?.ready) await document.fonts.ready;
-
-    // Connect WebSocket
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
-
-    // Create HTML renderer (deferred WS — set on open)
-    const profileDef = PROFILES.find(p => p.id === profile);
-    const cwdLabel = cwd ? cwd.split(/[\\/]/).pop() : '';
-
-    // PTY resize debounce — prevents Claude Code/Ink from re-rendering
-    // its TUI multiple times during a resize drag (250ms coalescing)
-    let _ptyResizeTimer = null;
-    const PTY_RESIZE_DEBOUNCE = 250;
-
-    const htmlTerm = new _HtmlTermRenderer(viewport, null, {
-      onTitle: (title) => {
-        const sess = _sessions.find(s => s.id === sessionId);
-        if (sess && title && !sess._userRenamed) {
-          sess.label = title;
-          renderTabBar();
-        }
-      },
-      onResize: (cols, rows) => {
-        if (ws.readyState !== WebSocket.OPEN) return;
-        if (_ptyResizeTimer) clearTimeout(_ptyResizeTimer);
-        _ptyResizeTimer = setTimeout(() => {
-          _ptyResizeTimer = null;
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-          }
-        }, PTY_RESIZE_DEBOUNCE);
-      },
-    });
-
-    ws.onopen = () => {
-      htmlTerm.setWebSocket(ws);
-      // Send correct size to PTY (immediate — not debounced for initial connect)
-      htmlTerm.fit();
-      if (htmlTerm.cols >= 2 && htmlTerm.rows >= 2) {
-        ws.send(JSON.stringify({ type: 'resize', cols: htmlTerm.cols, rows: htmlTerm.rows }));
-      }
-    };
-
-    // Track CLI status for Claude Code / Codex / Gemini sessions
-    if (CLI_PROFILES.has(profile)) _trackCliSession(sessionId);
-
-    ws.onmessage = (e) => {
+  // Auto-detect Claude session UUID for fresh CLI sessions (enables resume label sync)
+  if (CLI_PROFILES.has(profile) && !options.claudeSessionId) {
+    setTimeout(async () => {
       try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === 'output' || msg.type === 'replay') {
-          htmlTerm.write(msg.data);
-          if (CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
-        }
-        if (msg.type === 'exit') {
-          const _s = _sessions.find(s => s.id === sessionId);
-          if (_s) _s._exitReceived = true;
-          markSessionDead(sessionId);
-        }
-        if (msg.type === 'error') {
-          if (msg.message === 'Session not found') { markSessionDead(sessionId); return; }
-          htmlTerm.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
-        }
-        if (msg.type === 'image_saved' && msg.path) {
-          _clipCopy(msg.path);
-          ws.send(JSON.stringify({ type: 'input', data: msg.path }));
-          showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
-        }
-        if (msg.type === 'image_dropped' && msg.path) {
-          ws.send(JSON.stringify({ type: 'input', data: msg.path }));
-          showTermToast(`Image dropped — ${msg.path.split(/[\\/]/).pop()}`);
-        }
-        if (msg.type === 'memory_saved' && msg.path) {
-          ws.send(JSON.stringify({ type: 'input', data: msg.path }));
-          showTermToast(`Memory dropped — ${msg.path.split(/[\\/]/).pop()}`);
+        const r = await detectClaudeSession(sessionId);
+        if (r?.claudeSessionId) {
+          const sess = _sessions.find(s => s.id === sessionId);
+          if (sess && !sess._claudeSessionId) {
+            sess._claudeSessionId = r.claudeSessionId;
+            saveSessionRegistry();
+            if (sess._userRenamed && sess.label) syncResumeLabel(sess);
+          }
         }
       } catch {}
-    };
-
-    ws.onclose = () => {
-      const session = _sessions.find(s => s.id === sessionId);
-      if (session && !session.dead && !session._exitReceived) _reconnectTerminalWs(session);
-    };
-
-    // Register session
-    const session = {
-      id: sessionId,
-      profile,
-      cwd: cwd || null,
-      label: options.label || (cwdLabel ? `${profileDef?.label || profile} · ${cwdLabel}` : (profileDef?.label || profile)),
-      term: null,
-      fitAddon: null,
-      searchAddon: null,
-      ws,
-      viewport,
-      ro: null, // ResizeObserver is inside HtmlTermRenderer
-      renderer: 'html',
-      dead: false,
-      pinned: false,
-      _userRenamed: !!options.label,
-      _claudeSessionId: options.claudeSessionId || null,
-      _isHtmlTerm: true,
-      _htmlTerm: htmlTerm,
-      _fitInProgress: false,
-    };
-    _pushSession(session);
-    _pendingSessionIds.delete(sessionId);
-    _activeIdx = _sessions.indexOf(session);
-
-    // Right-click context menu (term=null for HTML term — handler uses session)
-    initContextMenu(viewport, null, ws);
-
-    // Slide panel up so user sees the session immediately
-    ensurePanel();
-    showPanel();
-    if (_splitMode) renderSplitTabBars();
-    renderTabBar();
-    switchToSession(_activeIdx);
-    saveSessionRegistry();
-
-    // Auto-detect Claude session UUID for fresh CLI sessions (enables resume label sync)
-    if (CLI_PROFILES.has(profile) && !options.claudeSessionId) {
-      setTimeout(async () => {
-        try {
-          const r = await detectClaudeSession(sessionId);
-          if (r?.claudeSessionId) {
-            const sess = _sessions.find(s => s.id === sessionId);
-            if (sess && !sess._claudeSessionId) {
-              sess._claudeSessionId = r.claudeSessionId;
-              saveSessionRegistry();
-              if (sess._userRenamed && sess.label) syncResumeLabel(sess);
-            }
-          }
-        } catch {}
-      }, 4000);
-    }
+    }, 4000);
+  }
   } finally { _opening = false; }
 }
 
-/**
- * Reconnect to an existing CLI tool session using the HTML renderer.
- * Mirrors reconnectSession() but creates HtmlTermRenderer instead of xterm.
- */
-async function reconnectHtmlTermSession(sessionId, profile, options = {}) {
-  // Only await if not yet loaded — avoids yielding to microtask queue when
-  // renderer is already cached, preventing race conditions with attachDetached.
-  if (!_HtmlTermRenderer) await loadHtmlTermRenderer();
-  ensurePanel();
-
-  const viewport = document.createElement('div');
-  viewport.className = 'term-viewport';
-  viewport.dataset.sessionId = sessionId;
-  $('term-container').appendChild(viewport);
-  if (_restoringLayout) viewport.style.display = 'none';
-
-  if (document.fonts?.ready) await document.fonts.ready;
-
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
-
-  // PTY resize debounce (reconnect path)
-  let _ptyResizeTimer2 = null;
-
-  const htmlTerm = new _HtmlTermRenderer(viewport, null, {
-    onTitle: (title) => {
-      const sess = _sessions.find(s => s.id === sessionId);
-      if (sess && title && !sess._userRenamed) {
-        sess.label = title;
-        renderTabBar();
-      }
-    },
-    onResize: (cols, rows) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      if (_ptyResizeTimer2) clearTimeout(_ptyResizeTimer2);
-      _ptyResizeTimer2 = setTimeout(() => {
-        _ptyResizeTimer2 = null;
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-        }
-      }, 250);
-    },
-  });
-
-  ws.onopen = () => {
-    htmlTerm.setWebSocket(ws);
-    htmlTerm.fit();
-    if (htmlTerm.cols >= 2 && htmlTerm.rows >= 2) {
-      ws.send(JSON.stringify({ type: 'resize', cols: htmlTerm.cols, rows: htmlTerm.rows }));
-    }
-  };
-
-  // Track CLI status on reconnect
-  if (CLI_PROFILES.has(profile)) _trackCliSession(sessionId);
-
-  ws.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'output' || msg.type === 'replay') {
-        htmlTerm.write(msg.data);
-        // Accumulate all output (including replay) so _sendOnceReady can detect
-        // CLI ready patterns even when it attaches after replay already fired.
-        const sess = _sessions.find(s => s.id === sessionId);
-        if (sess) {
-          if (!sess._replayBuf) sess._replayBuf = '';
-          sess._replayBuf += msg.data;
-          if (sess._replayBuf.length > 16384) sess._replayBuf = sess._replayBuf.slice(-8192);
-        }
-        if (CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
-      }
-      if (msg.type === 'exit') {
-        const _s = _sessions.find(s => s.id === sessionId);
-        if (_s) _s._exitReceived = true;
-        markSessionDead(sessionId);
-      }
-      if (msg.type === 'error') {
-        if (msg.message === 'Session not found') {
-          markSessionDead(sessionId);
-          return;
-        }
-        htmlTerm.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
-      }
-      if (msg.type === 'image_saved' && msg.path) {
-        _clipCopy(msg.path);
-        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
-        showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
-      }
-      if (msg.type === 'image_dropped' && msg.path) {
-        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
-        showTermToast(`Image dropped — ${msg.path.split(/[\\/]/).pop()}`);
-      }
-      if (msg.type === 'memory_saved' && msg.path) {
-        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
-        showTermToast(`Memory dropped — ${msg.path.split(/[\\/]/).pop()}`);
-      }
-    } catch {}
-  };
-
-  ws.onclose = () => {
-    const s = _sessions.find(s => s.id === sessionId);
-    if (s && !s.dead && !s._exitReceived) _reconnectTerminalWs(s);
-  };
-
-  const profileDef = PROFILES.find(p => p.id === profile);
-  const session = {
-    id: sessionId,
-    profile,
-    cwd: options.cwd || null,
-    label: options.label || (profileDef?.label || profile),
-    term: null,
-    fitAddon: null,
-    searchAddon: null,
-    ws,
-    viewport,
-    ro: null,
-    renderer: 'html',
-    dead: false,
-    pinned: options.pinned || false,
-    _userRenamed: options.userRenamed || false,
-    _claudeSessionId: options.claudeSessionId || null,
-    _floatColor: options.floatColor || null,
-    _isHtmlTerm: true,
-    _htmlTerm: htmlTerm,
-    _fitInProgress: false,
-  };
-  _pushSession(session);
-  _activeIdx = _sessions.indexOf(session);
-
-  // Right-click context menu (term=null for HTML term — handler uses session)
-  initContextMenu(viewport, null, ws);
-
-  ensurePanel();
-  if (_panel.classList.contains('hidden')) {
-    showPeekDock();
-  }
-  renderTabBar();
-  if (!_restoringLayout) switchToSession(_activeIdx);
-  saveSessionRegistry();
-}
 
 // ═══════════════════════════════════════════
 // BROWSER TAB — CDP screencast in a tab
@@ -2009,7 +2026,7 @@ async function openBrowserSession(url, fresh, _unused, force) {
   // Screencast disabled — browser launched headfully on desktop, no floating window needed
   if (_streamOff) {
     console.log('[browser] Headful browser launched:', sessionId, '→', startUrl);
-    notify('cli', NOTIF_TYPE.DONE, `Browser opened → ${new URL(startUrl).hostname}`);
+    notify('cli', NOTIF_TYPE.DONE, `Browser opened → ${new URL(startUrl).hostname}`, { provider: 'browser' });
     _opening = false;
     return;
   }
@@ -2445,11 +2462,14 @@ async function reconnectSession(sessionId, profile, options = {}) {
     lineHeight: 1.3,
     cursorBlink: true,
     cursorStyle: 'bar',
-    scrollback: 5000,
+    scrollback: 1500,
     smoothScrollDuration: 0,
     scrollOnUserInput: true,
     overviewRuler: false,
     allowProposedApi: true,
+    rescaleOverlappingGlyphs: true,
+    drawBoldTextInBrightColors: false,
+    windowsPty: false,
   });
 
   const fitAddon = new _FitAddon();
@@ -2478,18 +2498,14 @@ async function reconnectSession(sessionId, profile, options = {}) {
   }
 
   let renderer = null;
+  let webgl = null;
   if (_WebglAddon) {
     try {
-      const webgl = new _WebglAddon();
-      webgl.onContextLoss(() => {
-        webgl.dispose();
-        if (_CanvasAddon) {
-          try { term.loadAddon(new _CanvasAddon()); } catch {}
-        }
-      });
+      webgl = new _WebglAddon();
       term.loadAddon(webgl);
       renderer = 'webgl';
     } catch {
+      webgl = null;
       if (_CanvasAddon) {
         try { term.loadAddon(new _CanvasAddon()); renderer = 'canvas'; } catch {}
       }
@@ -2501,6 +2517,50 @@ async function reconnectSession(sessionId, profile, options = {}) {
   // Connect WebSocket to EXISTING session — server replays buffered output
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${sessionId}`);
+
+  // WebGL atlas lifecycle (mirrors openSession). Keep in sync with that block.
+  if (webgl) {
+    let _atlasRedraws = 0;
+    const _pruneAtlas = () => {
+      try { webgl?.clearTextureAtlas?.(); term.refresh(0, term.rows - 1); } catch {}
+    };
+    try {
+      term.buffer?.onBufferChange?.(buf => {
+        if (buf?.type === 'normal') _pruneAtlas();
+      });
+    } catch {}
+    try {
+      term.onWriteParsed?.(() => {
+        if (++_atlasRedraws >= 1500) {
+          _atlasRedraws = 0;
+          if (term.buffer?.active?.type === 'normal') _pruneAtlas();
+        }
+      });
+    } catch {}
+
+    let _webglDisposed = false;
+    webgl.onContextLoss(() => {
+      if (_webglDisposed) return;
+      _webglDisposed = true;
+      try { webgl.dispose(); } catch {}
+      webgl = null;
+      if (_CanvasAddon) {
+        try { term.loadAddon(new _CanvasAddon()); } catch {}
+      }
+      requestAnimationFrame(() => {
+        try { fitAddon.fit(); term.refresh(0, term.rows - 1); } catch {}
+        if (ws.readyState === WebSocket.OPEN) {
+          const s = _sessions.find(x => x.term === term);
+          if (s) s._lastSentResize = null;
+          try { ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows })); } catch {}
+        }
+      });
+    });
+  }
+
+  // Resumed sessions get the same post-open fit+refresh as fresh sessions —
+  // fixes measurement desync when xterm rehydrates a long scrollback on reconnect.
+  requestAnimationFrame(() => { try { fitAddon.fit(); term.refresh(0, term.rows - 1); } catch {} });
 
   term.attachCustomKeyEventHandler((e) => {
     // Shift+Enter → insert literal newline (multi-line command editing)
@@ -2623,15 +2683,15 @@ async function reconnectSession(sessionId, profile, options = {}) {
       }
       if (msg.type === 'image_saved' && msg.path) {
         _clipCopy(msg.path);
-        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        _injectPathIntoTerm(term, ws, msg.path);
         showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
-        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        _injectPathIntoTerm(term, ws, msg.path);
         showTermToast(`Image dropped — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'memory_saved' && msg.path) {
-        ws.send(JSON.stringify({ type: 'input', data: msg.path }));
+        _injectPathIntoTerm(term, ws, msg.path);
         showTermToast(`Memory dropped — ${msg.path.split(/[\\/]/).pop()}`);
       }
     } catch {}
@@ -2667,6 +2727,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
     label: options.label || (profileDef?.label || profile),
     term, fitAddon, searchAddon, ws, viewport, ro,
     renderer,
+    _webgl: webgl, // GPU renderer handle — disposed before term.dispose() on close
     dead: false,
     pinned: options.pinned || false,
     _userRenamed: options.userRenamed || false,
@@ -2698,6 +2759,18 @@ function switchToSession(idx) {
     return;
   }
 
+  // Already active — just ensure focus, skip viewport swap + tab-bar rerender.
+  // Prevents the missed-close-×-switches-same-tab-then-rerenders feedback loop
+  // that makes follow-up clicks on the close/detach icons land on stale DOM.
+  if (idx === _activeIdx) {
+    const s = _sessions[idx];
+    if (s && !_detachedTabs.has(s.id)) {
+      if (s._isBrowser) s._browserCanvas?.focus();
+      else s.term?.focus();
+    }
+    return;
+  }
+
   _activeIdx = idx;
 
   // Close docked file tree on tab switch
@@ -2716,9 +2789,6 @@ function switchToSession(idx) {
         if (s._isBrowser) {
           // Focus canvas for keyboard input
           s._browserCanvas?.focus();
-        } else if (s._isHtmlTerm) {
-          s._htmlTerm.fit();
-          s._htmlTerm.focus();
         } else {
           _scheduleFit(s);
           s.term.focus();
@@ -2755,7 +2825,9 @@ async function closeSession(idx) {
   if (session.ro) session.ro.disconnect();
   if (session._frameRenderer) session._frameRenderer.destroy();
   if (session.ws) session.ws.close();
-  if (session._isHtmlTerm && session._htmlTerm) session._htmlTerm.dispose();
+  // Dispose WebGL addon BEFORE term.dispose() so the GPU texture atlas is
+  // released — otherwise the atlas leaks across session close → new session.
+  if (session._webgl) { try { session._webgl.dispose(); } catch {} session._webgl = null; }
   if (session.term) session.term.dispose();
   if (session._visibilityHandler) document.removeEventListener('visibilitychange', session._visibilityHandler);
   session.viewport.remove();
@@ -2858,7 +2930,7 @@ export function disconnectAllSessions() {
     session.dead = true;
     if (session.ro) session.ro.disconnect();
     session.ws.close();
-    if (session._isHtmlTerm && session._htmlTerm) session._htmlTerm.dispose();
+    if (session._webgl) { try { session._webgl.dispose(); } catch {} session._webgl = null; }
     if (session.term) session.term.dispose();
     session.viewport.remove();
   }
@@ -2915,13 +2987,13 @@ function _reconnectTerminalWs(session, attempt = 0) {
   ws.onopen = () => {
     session._reconnecting = false;
     session.ws = ws;
-    if (session._isHtmlTerm && session._htmlTerm) {
-      session._htmlTerm.setWebSocket(ws);
-      session._htmlTerm.fit();
-      if (session._htmlTerm.cols >= 2 && session._htmlTerm.rows >= 2) {
-        ws.send(JSON.stringify({ type: 'resize', cols: session._htmlTerm.cols, rows: session._htmlTerm.rows }));
-      }
-    } else if (session.term) {
+    // Server replays the full PTY outputBuffer on every connect. xterm.write()
+    // appends at cursor — without a reset, the prior render stacks under the
+    // replay, producing a visibly duplicated banner. Clear the screen and
+    // scrollback so the replay paints onto a clean slate.
+    session._needsReplayReset = true;
+    session._replayBuf = '';
+    if (session.term) {
       const dims = session.fitAddon?.proposeDimensions();
       if (dims?.cols >= 2 && dims?.rows >= 2) {
         session.fitAddon.fit();
@@ -2936,11 +3008,15 @@ function _reconnectTerminalWs(session, attempt = 0) {
     try {
       const msg = JSON.parse(e.data);
       if (msg.type === 'output' || msg.type === 'replay') {
-        if (session._isHtmlTerm) {
-          session._htmlTerm?.write(msg.data);
-          if (CLI_PROFILES.has(session.profile)) _scheduleCliStatusCheck(session.id);
-        } else if (session.term) {
+        if (msg.type === 'replay' && session._needsReplayReset) {
+          session._needsReplayReset = false;
+          if (session.term) {
+            try { session.term.reset(); } catch {}
+          }
+        }
+        if (session.term) {
           session.term.write(msg.data);
+          if (NOTIF_TRACKED_CLI_PROFILES.has(session.profile)) _scheduleCliStatusCheck(session.id);
         }
       }
       if (msg.type === 'exit') {
@@ -2949,20 +3025,19 @@ function _reconnectTerminalWs(session, attempt = 0) {
       }
       if (msg.type === 'error') {
         if (msg.message === 'Session not found') { markSessionDead(session.id); return; }
-        if (session._isHtmlTerm) session._htmlTerm?.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
-        else if (session.term) session.term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
+        if (session.term) session.term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
         _clipCopy(msg.path);
-        session.ws?.send(JSON.stringify({ type: 'input', data: msg.path }));
+        _injectPathIntoTerm(session.term, session.ws, msg.path);
         showTermToast(`Image pasted — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'image_dropped' && msg.path) {
-        session.ws?.send(JSON.stringify({ type: 'input', data: msg.path }));
+        _injectPathIntoTerm(session.term, session.ws, msg.path);
         showTermToast(`Image dropped — ${msg.path.split(/[\\/]/).pop()}`);
       }
       if (msg.type === 'memory_saved' && msg.path) {
-        session.ws?.send(JSON.stringify({ type: 'input', data: msg.path }));
+        _injectPathIntoTerm(session.term, session.ws, msg.path);
         showTermToast(`Memory dropped — ${msg.path.split(/[\\/]/).pop()}`);
       }
     } catch {}
@@ -3060,8 +3135,7 @@ function _createTouchToolbar(session) {
           sendToSession(key.seq);
         }
         // Refocus terminal input
-        if (session._isHtmlTerm) session._htmlTerm?.focus();
-        else session.term?.focus();
+        session.term?.focus();
       };
       btn.addEventListener('touchstart', handler, { passive: false });
       btn.addEventListener('mousedown', handler);
@@ -3138,9 +3212,7 @@ function initContextMenu(viewport, term, ws) {
 
       switch (action) {
         case 'copy': {
-          const sel = session?._isHtmlTerm
-            ? session._htmlTerm?.getSelection()
-            : term?.getSelection();
+          const sel = term?.getSelection();
           if (sel) _clipCopy(sel);
           break;
         }
@@ -3164,28 +3236,20 @@ function initContextMenu(viewport, term, ws) {
             }
             // No image — text paste
             navigator.clipboard.readText().then(text => {
-              if (text) {
-                if (session?._isHtmlTerm) session._htmlTerm?.paste(text);
-                else if (session?.term) session.term.paste(text);
-              }
+              if (text && session?.term) session.term.paste(text);
             }).catch(() => {});
           }).catch(() => {
             // Fallback if clipboard.read() not available
             navigator.clipboard.readText().then(text => {
-              if (text) {
-                if (session?._isHtmlTerm) session._htmlTerm?.paste(text);
-                else if (session?.term) session.term.paste(text);
-              }
+              if (text && session?.term) session.term.paste(text);
             }).catch(() => {});
           });
           break;
         case 'select-all':
-          if (session?._isHtmlTerm) { /* HtmlTermRenderer doesn't support selectAll */ }
-          else if (term) term.selectAll();
+          if (term) term.selectAll();
           break;
         case 'clear':
-          if (session?._isHtmlTerm) session._htmlTerm?.clear?.();
-          else if (term) term.clear();
+          if (term) term.clear();
           break;
         case 'find':
           if (session && _detachedTabs.has(session.id)) {
@@ -3418,9 +3482,7 @@ function bringTabToFront(sessionId) {
   // Pinned tabs stay at 10002
   if (session?.pinned) {
     // Focus the terminal for keyboard input — skip if already focused (preserves selection)
-    if (session._isHtmlTerm) {
-      requestAnimationFrame(() => session._htmlTerm?.focus());
-    } else if (session.term && !session._isBrowser) {
+    if (session.term && !session._isBrowser) {
       const ta = session.viewport?.querySelector('.xterm-helper-textarea');
       if (document.activeElement !== ta) {
         requestAnimationFrame(() => session.term.focus());
@@ -3433,9 +3495,7 @@ function bringTabToFront(sessionId) {
   _floatZCounter++;
   tabState.el.style.zIndex = _floatZCounter;
   // Focus the terminal for immediate keyboard input — skip if already focused (preserves selection)
-  if (session?._isHtmlTerm) {
-    requestAnimationFrame(() => session._htmlTerm?.focus());
-  } else if (session?.term && !session._isBrowser) {
+  if (session?.term && !session._isBrowser) {
     const ta = session.viewport?.querySelector('.xterm-helper-textarea');
     if (document.activeElement !== ta) {
       requestAnimationFrame(() => session.term.focus());
@@ -3481,6 +3541,12 @@ function _applyFloatColor(win, colorId) {
   }
 }
 
+function getRightPanelReservedWidth(cs = getComputedStyle(document.documentElement)) {
+  return parseFloat(cs.getPropertyValue('--right-panel-width'))
+    || parseFloat(cs.getPropertyValue('--claude-panel-width'))
+    || 0;
+}
+
 /** Update snapped-edge classes on all floating tabs based on adjacency */
 function _updateSnappedEdges() {
   const TOLERANCE = 2;
@@ -3495,8 +3561,8 @@ function _updateSnappedEdges() {
   const explorerW = parseFloat(cs.getPropertyValue('--explorer-width')) || 0;
   const fileExplorerW = parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0;
   const leftPanelEdge = explorerW + fileExplorerW;
-  const claudeW = parseFloat(cs.getPropertyValue('--claude-panel-width')) || 0;
-  const rightPanelEdge = window.innerWidth - claudeW;
+  const rightPanelW = getRightPanelReservedWidth(cs);
+  const rightPanelEdge = window.innerWidth - rightPanelW;
   const topEdge = parseFloat(cs.getPropertyValue('--navbar-height')) || 48;
   const bottomEdge = window.innerHeight;
 
@@ -3555,14 +3621,14 @@ export function tileFloatingTerminals() {
   const explorerW = parseFloat(cs.getPropertyValue('--explorer-width')) || 0;
   const fileExplorerW = parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0;
   const sidebarW = explorerW + fileExplorerW;
-  const claudeW = parseFloat(cs.getPropertyValue('--claude-panel-width')) || 0;
+  const rightPanelW = getRightPanelReservedWidth(cs);
   const termPanel = document.getElementById('terminal-panel');
   const termH = (termPanel && !termPanel.classList.contains('hidden') && !termPanel.classList.contains('detached'))
     ? termPanel.getBoundingClientRect().height : 0;
   const TOP_PAD = parseFloat(cs.getPropertyValue('--navbar-height')) || 48;
   const areaL = sidebarW;
   const areaT = TOP_PAD;
-  const areaW = window.innerWidth - sidebarW - claudeW;
+  const areaW = window.innerWidth - sidebarW - rightPanelW;
   const areaH = window.innerHeight - TOP_PAD - termH;
 
   // Calculate grid: find best cols/rows to fill the space
@@ -3599,8 +3665,7 @@ export function tileFloatingTerminals() {
       for (const { sid } of entries) {
         const session = _sessions.find(s => s.id === sid);
         if (!session) continue;
-        if (session._isHtmlTerm) session._htmlTerm?.fit();
-        else _scheduleFit(session);
+        _scheduleFit(session);
       }
       _updateSnappedEdges();
       saveTerminalLayout();
@@ -3624,6 +3689,14 @@ function detachTab(idx) {
       <span class="term-float-tab-icon">${prof?.svg || SVG_SHELL}</span>
       <button class="term-float-color-strip" data-tooltip="Change color"></button>
       <span class="term-float-tab-title">${session.label}</span>${_cliBadgeHtml(session.id)}
+      ${CLI_PROFILES_NEED_PROFILER.has(session.profile) ? `<div class="term-float-profile-dd" data-tooltip="Tool profile">
+        <button class="term-float-profile-btn"><span class="term-float-profile-label">...</span><span class="term-float-profile-arrow">&#x25BE;</span></button>
+        <div class="term-float-profile-menu"></div>
+      </div>` : ''}
+      ${CLI_PROFILES_NEED_RECALL.has(session.profile) ? `<div class="term-float-recall-dd" data-tooltip="Recall profile">
+        <button class="term-float-recall-btn"><span class="term-float-recall-label">...</span><span class="term-float-recall-arrow">&#x25BE;</span></button>
+        <div class="term-float-recall-menu"></div>
+      </div>` : ''}
       <div class="term-float-tab-actions">
         <button class="term-float-tab-btn files-btn" data-tooltip="Toggle file tree">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -3661,12 +3734,18 @@ function detachTab(idx) {
     <div class="float-resize float-resize-tl" data-resize="nw"></div>
   `;
 
-  // Default position: offset from center based on how many are already detached
+  // Default position: centered in usable area (between left sidebars and right sidepanel)
+  // so left margin matches right margin, offset from center based on how many are already detached
   const offset = _detachedTabs.size * 30;
   const isBrowser = session.profile === 'browser';
-  const w = Math.min(isBrowser ? 960 : 700, window.innerWidth * (isBrowser ? 0.65 : 0.5));
+  const cs = getComputedStyle(document.documentElement);
+  const leftEdge = (parseFloat(cs.getPropertyValue('--explorer-width')) || 0)
+                 + (parseFloat(cs.getPropertyValue('--file-explorer-width')) || 0);
+  const rightEdge = window.innerWidth - getRightPanelReservedWidth(cs);
+  const usableW = Math.max(0, rightEdge - leftEdge);
+  const w = Math.min(isBrowser ? 960 : 700, usableW * (isBrowser ? 0.65 : 0.5));
   const h = Math.min(isBrowser ? 640 : 420, window.innerHeight * (isBrowser ? 0.6 : 0.5));
-  win.style.left = ((window.innerWidth - w) / 2 + offset) + 'px';
+  win.style.left = (leftEdge + (usableW - w) / 2 + offset) + 'px';
   win.style.top = Math.max(48, (window.innerHeight - h) / 2 + offset) + 'px';
   win.style.width = w + 'px';
   win.style.height = h + 'px';
@@ -3835,16 +3914,33 @@ function detachTab(idx) {
     });
   }
 
+  // Wire MCP profile dropdown (CLI profiles only)
+  const profileDd = win.querySelector('.term-float-profile-dd');
+  if (profileDd) {
+    _initFloatProfileDropdown(profileDd);
+  }
+
+  // Wire recall profile dropdown
+  const recallDd = win.querySelector('.term-float-recall-dd');
+  if (recallDd) _initFloatRecallDropdown(recallDd);
+
   // Store in map
   const tabState = { el: win, cleanup: null };
   _detachedTabs.set(session.id, tabState);
 
   // Ctrl+C fallback for floating window — covers cases where xterm textarea loses focus
   win.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !e.target.closest('button, input, textarea, select, [contenteditable]')) {
+      if (session.ws?.readyState === WebSocket.OPEN) {
+        session.ws.send(JSON.stringify({ type: 'input', data: '\x1b' }));
+        e.preventDefault();
+        e.stopPropagation();
+        requestAnimationFrame(() => session.term?.focus());
+      }
+      return;
+    }
     if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
-      const sel = session._isHtmlTerm
-        ? session._htmlTerm?.getSelection()
-        : session.term?.getSelection();
+      const sel = session.term?.getSelection();
       if (sel) {
         _clipCopy(sel);
         e.preventDefault();
@@ -3858,8 +3954,7 @@ function detachTab(idx) {
     bringTabToFront(session.id);
     // Re-focus terminal unless user clicked a button/input
     if (!e.target.closest('button, input, [contenteditable]')) {
-      if (session._isHtmlTerm) session._htmlTerm?.focus();
-      else if (session.term) session.term?.focus();
+      session.term?.focus();
     }
   });
 
@@ -3887,10 +3982,7 @@ function detachTab(idx) {
 
   // Refit terminal in new container — double-rAF so browser completes layout
   // of the newly-appended floating window before measuring dimensions
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (session._isHtmlTerm) session._htmlTerm?.fit();
-    else _scheduleFit(session);
-  }));
+  requestAnimationFrame(() => requestAnimationFrame(() => _scheduleFit(session)));
 }
 
 function attachTab(sessionId) {
@@ -3927,10 +4019,7 @@ function attachTab(sessionId) {
   renderTabBar();
   saveTerminalLayout();
   _updateSnappedEdges(); // neighbors may no longer be snapped
-  requestAnimationFrame(() => {
-    if (session._isHtmlTerm) session._htmlTerm?.fit();
-    else _scheduleFit(session);
-  });
+  requestAnimationFrame(() => _scheduleFit(session));
 }
 
 // ── Minimize / Restore floating tabs ──
@@ -4085,10 +4174,7 @@ function restoreTab(sessionId) {
     el.style.opacity = '';
     // Refit terminal after animation
     const session = _sessions.find(s => s.id === sessionId);
-    if (session) requestAnimationFrame(() => {
-      if (session._isHtmlTerm) session._htmlTerm?.fit();
-      else _scheduleFit(session);
-    });
+    if (session) requestAnimationFrame(() => _scheduleFit(session));
   };
   el.addEventListener('transitionend', onEnd, { once: true });
   setTimeout(() => {
@@ -4107,7 +4193,7 @@ function initTabFloatDrag(win, sessionId) {
 
   function _checkHeader(target) {
     const header = target.closest('.term-float-tab-header');
-    if (!header || target.closest('button')) return false;
+    if (!header || target.closest('button, .term-float-profile-dd')) return false;
     const session = _sessions.find(s => s.id === sessionId);
     return !session?.pinned;
   }
@@ -4513,17 +4599,15 @@ export async function initTerminal() {
     // Only act when a terminal textarea has focus
     const ta = document.activeElement;
     const isXterm = ta?.classList.contains('xterm-helper-textarea');
-    const isHtmlTerm = ta?.classList.contains('html-term-input');
-    if (!isXterm && !isHtmlTerm) return;
-    const vp = ta.closest('.term-viewport') || ta.closest('.html-term')?.closest('.term-viewport');
+    if (!isXterm) return;
+    const vp = ta.closest('.term-viewport');
     if (!vp) return;
     const sid = vp.dataset.sessionId;
     const session = _sessions.find(s => s.id === sid);
     if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) return;
 
     session.ws.send(JSON.stringify({ type: 'input', data: '\x1b' }));
-    if (session._isHtmlTerm) session._htmlTerm?.blur();
-    else session.term?.blur();
+    session.term?.blur();
     ta.blur();
   }, true); // capture phase — fires before xterm's handlers
 
@@ -4596,8 +4680,6 @@ export async function initTerminal() {
       requestAnimationFrame(() => {
         if (session._isBrowser) {
           session._browserCanvas?.focus();
-        } else if (session._isHtmlTerm) {
-          session._htmlTerm?.focus();
         } else if (session.term) {
           session.term.focus();
         }
@@ -4607,8 +4689,7 @@ export async function initTerminal() {
     for (const [id] of _detachedTabs) {
       const s = _sessions.find(s => s.id === id);
       if (!s || s.dead) continue;
-      if (s._isHtmlTerm) s._htmlTerm?.focus();
-      else if (s.term) s.term.focus();
+      s.term?.focus();
     }
   });
 
@@ -4623,7 +4704,7 @@ export async function initTerminal() {
     if (isGuest() && !hasPermission('terminal')) return;
     try {
       const { sessionId } = await createTerminalSession(profile, 120, 30, cwd, { resume });
-      await openHtmlTermSession(profile, cwd, sessionId, {
+      await openSession(profile, cwd, sessionId, {
         label: label || '',
         claudeSessionId: resume,
       });
@@ -4684,10 +4765,11 @@ export async function initTerminal() {
   });
 
   // Register CLI launch keybind actions (open as detached floating tab)
-  registerAction('launch-claude', () => launchDetached('claude-code'));
-  registerAction('launch-codex',  () => launchDetached('codex'));
-  registerAction('launch-gemini', () => launchDetached('gemini'));
-  registerAction('launch-browser', () => openBrowserSession());
+  registerAction('launch-claude',   () => launchDetached('claude-code'));
+  registerAction('launch-codex',    () => launchDetached('codex'));
+  registerAction('launch-gemini',   () => launchDetached('gemini'));
+  registerAction('launch-opencode', () => launchDetached('opencode'));
+  registerAction('launch-browser',  () => openBrowserSession());
   registerAction('launch-youtube', () => openBrowserSession('https://www.youtube.com'));
 
   // ── Guest permission visual feedback ──
@@ -4713,7 +4795,7 @@ export async function initTerminal() {
     if (msg.sessionId && !_sessions.find(s => s.id === msg.sessionId)) {
       const p = msg.profile || 'shell';
       if (CLI_PROFILES.has(p)) {
-        await reconnectHtmlTermSession(msg.sessionId, p);
+        await reconnectSession(msg.sessionId, p);
       } else {
         await reconnectSession(msg.sessionId, p);
       }
@@ -4827,7 +4909,7 @@ export async function initTerminal() {
           await reconnectBrowserSession(saved.id, liveBrowserMap.get(saved.id), saved);
         } else if (CLI_PROFILES.has(saved.profile)) {
           const live = liveMap.get(saved.id);
-          await reconnectHtmlTermSession(saved.id, saved.profile, {
+          await reconnectSession(saved.id, saved.profile, {
             label: saved.label,
             pinned: saved.pinned,
             cwd: live?.cwd || null,
@@ -4921,7 +5003,8 @@ export function openTerminalPanel(profile) {
 async function launchDetached(profile, initialMessage, autoSubmit) {
   const cwd = await pickProject(profile);
   if (cwd === undefined) return; // cancelled
-  await openSession(profile, cwd);
+  if (CLI_PROFILES.has(profile)) await openSession(profile, cwd);
+  else await openSession(profile, cwd);
   // Detach the session we just created (it's always the last one)
   const idx = _sessions.length - 1;
   if (idx >= 0) detachTab(idx);
@@ -4962,13 +5045,10 @@ async function attachDetached(terminalSessionId, profile, initialMessage, autoSu
     const existingIdx = _sessions.findIndex(s => s.id === terminalSessionId);
     console.log('[SynaBun] attachDetached: existingIdx =', existingIdx, ', _sessions.length =', _sessions.length);
     if (existingIdx < 0) {
-      // No existing session — create one.
-      // CLI profiles (claude-code, codex, gemini) use the HTML term renderer,
-      // not xterm.js. Route through reconnectHtmlTermSession to match the
-      // renderer used by normal CLI opens and reconnects.
+      // No existing session — create one. CLI profiles go through xterm.js (WebGL/Canvas).
       if (CLI_PROFILES.has(p)) {
-        console.log('[SynaBun] attachDetached: creating via reconnectHtmlTermSession');
-        await reconnectHtmlTermSession(terminalSessionId, p);
+        console.log('[SynaBun] attachDetached: creating via reconnectSession (xterm)');
+        await reconnectSession(terminalSessionId, p);
       } else {
         console.log('[SynaBun] attachDetached: creating via openSession');
         await openSession(p, null, terminalSessionId);
@@ -4983,11 +5063,11 @@ async function attachDetached(terminalSessionId, profile, initialMessage, autoSu
     console.log('[SynaBun] attachDetached: post-create idx =', idx, ', alreadyDetached =', _detachedTabs.has(terminalSessionId));
     if (idx >= 0 && !_detachedTabs.has(terminalSessionId)) detachTab(idx);
 
-    // If snapToPanel requested, position the floating tab next to the Claude panel
+    // If snapToPanel requested, position the floating tab next to the active right-side panel
     if (snapToPanel && idx >= 0) {
       const dt = _detachedTabs.get(terminalSessionId);
       if (dt?.el) {
-        const panelWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--claude-panel-width')) || 0;
+        const panelWidth = getRightPanelReservedWidth();
         if (panelWidth > 0) {
           const availWidth = window.innerWidth - panelWidth - 16;
           const w = Math.min(700, availWidth * 0.6);
@@ -5018,7 +5098,7 @@ async function attachDetached(terminalSessionId, profile, initialMessage, autoSu
  *  shell (cmd.exe) before the CLI is ready. Falls back to 15s timeout.
  *
  *  KEY FIX: Also checks session._replayBuf for output that arrived BEFORE this
- *  function was called (e.g. replay data from reconnectHtmlTermSession's ws.onopen).
+ *  function was called (e.g. replay data from reconnectSession's ws.onopen).
  *  Without this, the CLI prompt is missed when the PTY boots faster than the
  *  automation studio's browser-open + launchLoop HTTP round-trip. */
 function _sendOnceReady(session, message, autoSubmit) {
@@ -5122,7 +5202,7 @@ function _sendOnceReady(session, message, autoSubmit) {
   function attach() {
     // Before adding a listener for future messages, check what already arrived.
     // The replay from ws.onopen fires synchronously before this function runs
-    // (reconnectHtmlTermSession awaits, replay lands in ws.onmessage, accumulates
+    // (reconnectSession awaits, replay lands in ws.onmessage, accumulates
     // in session._replayBuf). If the CLI prompt is already there, send now.
     if (checkReplayBuffer()) return;
 
@@ -5336,7 +5416,7 @@ export async function restoreTerminalSnapshot(snap) {
         const live = liveMap.get(saved.id);
         const opts = { label: saved.label, pinned: saved.pinned, cwd: live?.cwd || null, userRenamed: saved.userRenamed, claudeSessionId: saved.claudeSessionId };
         if (CLI_PROFILES.has(saved.profile)) {
-          await reconnectHtmlTermSession(saved.id, saved.profile, opts);
+          await reconnectSession(saved.id, saved.profile, opts);
         } else {
           await reconnectSession(saved.id, saved.profile, opts);
         }
@@ -6043,11 +6123,7 @@ function refitActiveSession(session) {
 function refitAllDockedSessions() {
   _sessions.forEach(s => {
     if (_detachedTabs.has(s.id) || s.dead || s._isBrowser) return;
-    if (s._isHtmlTerm) {
-      s._htmlTerm?.fit();
-    } else {
-      _scheduleFit(s);
-    }
+    _scheduleFit(s);
   });
 }
 
@@ -6208,9 +6284,6 @@ function switchToSessionInPane(idx, pane) {
   requestAnimationFrame(() => {
     if (session._isBrowser) {
       session._browserCanvas?.focus();
-    } else if (session._isHtmlTerm) {
-      session._htmlTerm?.fit();
-      session._htmlTerm?.focus();
     } else {
       _scheduleFit(session);
       session.term?.focus();

@@ -673,10 +673,9 @@ async function autoRecall(prompt, cwd) {
     const lines = data.results.map((r, i) => {
       const score = (r.score * 100).toFixed(0);
       const age = formatAge(r.created_at);
-      const tags = r.tags?.length ? `Tags: ${r.tags.join(', ')}` : '';
-      const files = r.related_files?.length ? `Files: ${r.related_files.slice(0, 3).join(', ')}` : '';
-      const details = [tags, files].filter(Boolean).join(' | ');
-      return `${i + 1}. [${r.category} | importance ${r.importance}, ${age}, ${score}% match] ${r.content}${details ? `\n   ${details}` : ''}`;
+      const tags = r.tags?.length ? r.tags.join(', ') : 'none';
+      const files = r.related_files?.length ? r.related_files.slice(0, 3).join(', ') : 'none';
+      return `${i + 1}. [${r.category} | importance ${r.importance}, ${age}, ${score}% match] ${r.content}\n   Tags: ${tags} | Files: ${files}`;
     });
 
     return [
@@ -993,8 +992,12 @@ async function main() {
   }
 
   // --- Auto-recall: inject relevant memories from NI server ---
+  // When greeting is enabled, message 1 gets recall via the boot sequence in buildGreetingContext().
+  // When greeting is disabled, message 1 has no recall at all — so fire auto-recall on message 1 too.
   let autoRecallContext = '';
-  if (!activeLoopNotice && currentMessageCount >= 2) {
+  const greetingEnabled = features.greeting === true;
+  const autoRecallMinMessage = greetingEnabled ? 2 : 1;
+  if (!activeLoopNotice && currentMessageCount >= autoRecallMinMessage) {
     autoRecallContext = await autoRecall(trimmed, cwd);
   }
 

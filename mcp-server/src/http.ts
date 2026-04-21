@@ -6,19 +6,32 @@
  * Mount on any Express app or run standalone.
  */
 
-import express from 'express';
+import express, { type Router } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ensureDatabase } from './services/sqlite.js';
 import { initCategoryCache } from './services/categories.js';
+import { warmupEmbeddings } from './services/local-embeddings.js';
 import { createMcpServer } from './index.js';
 
 let initialized = false;
+let initPromise: Promise<void> | null = null;
 
-async function ensureInit() {
+/**
+ * Initialize DB, categories, and warm up the embedding model.
+ * Safe to call multiple times — only runs once.
+ * Exported so the Neural Interface can eagerly init at startup.
+ */
+export async function ensureInit() {
   if (initialized) return;
-  try { await ensureDatabase(); } catch {}
-  await initCategoryCache();
-  initialized = true;
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    try { await ensureDatabase(); } catch {}
+    await initCategoryCache();
+    await warmupEmbeddings();
+    initialized = true;
+  })();
+  await initPromise;
+  initPromise = null;
 }
 
 /**
@@ -26,7 +39,7 @@ async function ensureInit() {
  * Auth is handled externally (URL-embedded key in server.js).
  * Can be mounted on an existing Express app: app.use('/mcp', createMcpRoutes());
  */
-export function createMcpRoutes() {
+export function createMcpRoutes(): Router {
   const router = express.Router();
   router.use(express.json());
 

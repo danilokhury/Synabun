@@ -16,6 +16,8 @@ export interface BrowserSessionInfo {
   title: string;
   createdAt: number;
   clients: number;
+  loopOwned?: boolean;
+  agentOwned?: boolean;
 }
 
 interface NiResponse {
@@ -59,6 +61,15 @@ async function request(
   }
 }
 
+// Recovery cache: when a pinned session dies, auto-create a replacement and cache its ID
+// so subsequent tool calls in the same MCP process reuse the recovered session.
+let _recoveredSessionId: string | null = null;
+
+// Session affinity: once this MCP process uses or creates a browser session, remember it.
+// Prevents a second Claude Code instance (e.g. sidepanel) from grabbing the CLI's session
+// when both are running without explicit sessionId or SYNABUN_BROWSER_SESSION pinning.
+let _affinitySessionId: string | null = null;
+
 /**
  * Resolve which session ID to use.
  * - If sessionId provided, return it immediately (server returns 404 if invalid).
@@ -74,29 +85,73 @@ export async function resolveSession(
   // Resolve tab ID from explicit param or environment variable
   const resolvedTabId = tabId || process.env.SYNABUN_BROWSER_TAB || undefined;
 
-  // Agent-scoped browser session — set by the agent orchestrator to pin
-  // this MCP instance to a specific browser session (multi-agent isolation).
-  // Verify the pinned session still exists; fall through to auto-select if gone.
+  // Agent/loop-scoped browser session — set by the orchestrator to pin
+  // this MCP instance to a specific browser session (multi-session isolation).
+  // If pinned session died, check recovery cache first, then auto-create.
   const pinnedSession = process.env.SYNABUN_BROWSER_SESSION;
   if (pinnedSession && !sessionId) {
+    // Check recovery cache first — avoids re-creating on every call after recovery
+    if (_recoveredSessionId) {
+      const recheck = await request('GET', '/api/browser/sessions');
+      const alive = ((recheck.sessions || []) as BrowserSessionInfo[]).find(s => s.id === _recoveredSessionId);
+      if (alive) return { sessionId: _recoveredSessionId, tabId: resolvedTabId };
+      _recoveredSessionId = null; // recovered session also died — try fresh recovery
+    }
+
     const check = await request('GET', '/api/browser/sessions');
     const active = ((check.sessions || []) as BrowserSessionInfo[]).find(s => s.id === pinnedSession);
     if (active) return { sessionId: pinnedSession, tabId: resolvedTabId };
-    return { error: `Pinned browser session ${pinnedSession} is no longer available. Launch the automation again so SynaBun can open the selected browser profile.` };
+
+    // Pinned session is gone — auto-recover by creating a new one
+    console.error(`[MCP] Pinned browser session ${pinnedSession} is gone — recovering with new session`);
+    const recovered = await request('POST', '/api/browser/sessions', {
+      url: 'about:blank',
+    }, SESSION_CREATE_TIMEOUT);
+    if (recovered.error) {
+      return { error: `Pinned browser session ${pinnedSession} is no longer available and recovery failed: ${recovered.error}` };
+    }
+    _recoveredSessionId = recovered.sessionId as string;
+    return { sessionId: _recoveredSessionId, tabId: resolvedTabId };
   }
 
   if (sessionId) {
     // Trust the server — it will 404 if the session doesn't exist.
     // Skipping the extra GET /api/browser/sessions verification call saves a full round-trip.
+    _affinitySessionId = sessionId;
     return { sessionId, tabId: resolvedTabId };
   }
 
-  // List sessions
+  // List sessions (single GET used for both affinity check and auto-selection)
   const data = await request('GET', '/api/browser/sessions');
   if (data.error) return { error: data.error };
-  const sessions = (data.sessions || []) as BrowserSessionInfo[];
+  const allSessions = (data.sessions || []) as BrowserSessionInfo[];
+
+  // Check affinity — reuse session this MCP process previously used/created
+  if (_affinitySessionId) {
+    const affinityAlive = allSessions.find(s => s.id === _affinitySessionId);
+    if (affinityAlive) return { sessionId: _affinitySessionId, tabId: resolvedTabId };
+    _affinitySessionId = null; // session gone, clear affinity
+  }
+
+  // Interactive sessions (no pinned env var) must not grab loop/agent-owned sessions.
+  // Pinned sessions already returned above; explicit sessionId trusted above.
+  const sessions = allSessions.filter(s => !s.loopOwned && !s.agentOwned);
+
+  // If autoCreate is available (browser_navigate) and unowned sessions exist but none
+  // are ours (no affinity), create a new session instead of hijacking another caller's.
+  // This prevents sidepanel from grabbing the CLI's session and vice versa.
+  if (sessions.length > 0 && autoCreate) {
+    const created = await request('POST', '/api/browser/sessions', {
+      url: autoCreate.url || 'about:blank',
+    }, SESSION_CREATE_TIMEOUT);
+    if (created.error) return { error: `Failed to auto-create session: ${created.error}` };
+    _affinitySessionId = created.sessionId as string;
+    return { sessionId: _affinitySessionId, tabId: resolvedTabId };
+  }
 
   if (sessions.length === 1) {
+    // No autoCreate — caller wants to interact with the existing session (click, snapshot, etc.)
+    _affinitySessionId = sessions[0].id;
     return { sessionId: sessions[0].id, tabId: resolvedTabId };
   }
 
@@ -106,12 +161,17 @@ export async function resolveSession(
         url: autoCreate.url || 'about:blank',
       }, SESSION_CREATE_TIMEOUT);
       if (created.error) return { error: `Failed to auto-create session: ${created.error}` };
-      return { sessionId: created.sessionId as string, tabId: resolvedTabId };
+      _affinitySessionId = created.sessionId as string;
+      return { sessionId: _affinitySessionId, tabId: resolvedTabId };
+    }
+    const ownedCount = allSessions.length - sessions.length;
+    if (ownedCount > 0) {
+      return { error: `${ownedCount} browser session(s) exist but are owned by active automations. Use browser_navigate with a URL to open your own session.` };
     }
     return { error: 'No browser sessions open. Use browser_session to create one first, or use browser_navigate with a URL to auto-create.' };
   }
 
-  // Multiple sessions — require explicit ID
+  // Multiple available sessions — require explicit ID
   const list = sessions.map(s => `  ${s.id} — ${s.title || s.url}`).join('\n');
   return { error: `Multiple browser sessions open. Specify sessionId:\n${list}` };
 }
@@ -144,8 +204,17 @@ export async function closeSession(sessionId: string): Promise<NiResponse> {
 
 // ── Navigation ──
 
-export async function navigate(sessionId: string, url: string, tabId?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/navigate`, { url, ...(tabId && { tabId }) }, LONG_TIMEOUT);
+export async function navigate(
+  sessionId: string,
+  url: string,
+  tabId?: string,
+  returnSnapshot?: { mode?: string; selector?: string; viewport?: boolean }
+): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/navigate`, {
+    url,
+    ...(returnSnapshot && { returnSnapshot }),
+    ...(tabId && { tabId }),
+  }, LONG_TIMEOUT);
 }
 
 export async function goBack(sessionId: string, tabId?: string): Promise<NiResponse> {
@@ -162,20 +231,33 @@ export async function reload(sessionId: string, tabId?: string): Promise<NiRespo
 
 // ── Interaction (selector-based) ──
 
-export async function click(sessionId: string, selector: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/click`, { selector, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
+export async function click(
+  sessionId: string,
+  selector: string,
+  nthMatch?: number,
+  tabId?: string,
+  textHint?: string,
+  returnSnapshot?: { mode?: string; selector?: string; viewport?: boolean }
+): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/click`, {
+    selector,
+    ...(nthMatch !== undefined && { nthMatch }),
+    ...(textHint && { textHint }),
+    ...(returnSnapshot && { returnSnapshot }),
+    ...(tabId && { tabId }),
+  });
 }
 
-export async function fill(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
+export async function fill(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string, textHint?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(tabId && { tabId }) });
 }
 
-export async function type(sessionId: string, selector: string | null, text: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
+export async function type(sessionId: string, selector: string | null, text: string, nthMatch?: number, tabId?: string, textHint?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(tabId && { tabId }) });
 }
 
-export async function hover(sessionId: string, selector: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
+export async function hover(sessionId: string, selector: string, nthMatch?: number, tabId?: string, textHint?: string): Promise<NiResponse> {
+  return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(tabId && { tabId }) });
 }
 
 export async function selectOption(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
@@ -188,7 +270,7 @@ export async function pressKey(sessionId: string, key: string, tabId?: string): 
 
 export async function scroll(
   sessionId: string,
-  opts: { direction: string; distance?: number; selector?: string },
+  opts: { direction: string; distance?: number; selector?: string; returnSnapshot?: { mode?: string; selector?: string; viewport?: boolean } },
   tabId?: string
 ): Promise<NiResponse> {
   return request('POST', `/api/browser/sessions/${sessionId}/scroll`, { ...opts, ...(tabId && { tabId }) } as Record<string, unknown>);
@@ -206,8 +288,22 @@ export async function upload(
 
 // ── Observation ──
 
-export async function snapshot(sessionId: string, selector?: string, tabId?: string): Promise<NiResponse> {
-  if (selector) return request('POST', `/api/browser/sessions/${sessionId}/snapshot`, { selector, ...(tabId && { tabId }) });
+export async function snapshot(
+  sessionId: string,
+  selector?: string,
+  tabId?: string,
+  opts?: { mode?: string; viewport?: boolean }
+): Promise<NiResponse> {
+  const hasOpts = !!(opts && (opts.mode || opts.viewport));
+  // Always POST when selector OR opts present (POST supports a body); GET only for bare defaults.
+  if (selector || hasOpts) {
+    return request('POST', `/api/browser/sessions/${sessionId}/snapshot`, {
+      ...(selector && { selector }),
+      ...(opts?.mode && { mode: opts.mode }),
+      ...(opts?.viewport && { viewport: true }),
+      ...(tabId && { tabId }),
+    });
+  }
   const qs = tabId ? `?tabId=${tabId}` : '';
   return request('GET', `/api/browser/sessions/${sessionId}/snapshot${qs}`);
 }

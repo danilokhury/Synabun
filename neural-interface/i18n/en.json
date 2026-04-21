@@ -92,6 +92,7 @@
       "claudeCode": "Claude Code",
       "codexCli": "Codex CLI",
       "geminiCli": "Gemini CLI",
+      "openCode": "OpenCode",
       "shell": "Shell",
       "browser": "Browser",
       "youtube": "YouTube",

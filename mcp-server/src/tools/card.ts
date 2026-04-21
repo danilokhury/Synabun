@@ -14,9 +14,11 @@ import {
  * and screenshot memory cards in the Neural Interface.
  */
 export function registerCardTools(server: McpServer) {
-  server.tool('card_list', cardListDescription, cardListSchema, handleCardList);
-  server.tool('card_open', cardOpenDescription, cardOpenSchema, handleCardOpen);
-  server.tool('card_close', cardCloseDescription, cardCloseSchema, handleCardClose);
-  server.tool('card_update', cardUpdateDescription, cardUpdateSchema, handleCardUpdate);
-  server.tool('card_screenshot', cardScreenshotDescription, cardScreenshotSchema, handleCardScreenshot);
+  return [
+    server.tool('card_list', cardListDescription, cardListSchema, handleCardList),
+    server.tool('card_open', cardOpenDescription, cardOpenSchema, handleCardOpen),
+    server.tool('card_close', cardCloseDescription, cardCloseSchema, handleCardClose),
+    server.tool('card_update', cardUpdateDescription, cardUpdateSchema, handleCardUpdate),
+    server.tool('card_screenshot', cardScreenshotDescription, cardScreenshotSchema, handleCardScreenshot),
+  ];
 }

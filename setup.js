@@ -15,7 +15,7 @@
  */
 
 import { execSync, spawn, exec } from 'node:child_process';
-import { existsSync, readFileSync, cpSync, readdirSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, cpSync, readdirSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
@@ -166,16 +166,22 @@ function buildMcpServer() {
     return;
   }
 
-  warn('MCP server dist/ not found — attempting build (requires TypeScript)');
+  info('Building MCP server from source...');
   try {
     execSync('npx tsc', {
       cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
-      stdio: 'pipe',
-      timeout: 60_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120_000,
     });
     ok('MCP server built');
   } catch (err) {
-    warn('MCP server build failed (TypeScript not available) — reinstall with: npm install -g synabun@latest');
+    fail('MCP server build failed:');
+    const stdout = err.stdout?.toString().trim();
+    const stderr = err.stderr?.toString().trim();
+    if (stdout) console.error(stdout);
+    if (stderr) console.error(stderr);
+    if (!stdout && !stderr) console.error(err.message);
+    console.error('\n  Report this at: https://github.com/danilokhury/Synabun/issues');
   }
 }
 
@@ -257,10 +263,168 @@ function startServer() {
   process.on('SIGTERM', () => { child.kill('SIGTERM'); process.exit(0); });
 }
 
+// ── CLI: profile subcommand ──
+
+const TOOL_GROUPS = {
+  memory:            { label: 'Memory',     tools: 6, alwaysOn: true },
+  category:          { label: 'Categories', tools: 1, alwaysOn: true },
+  sync:              { label: 'Sync',       tools: 1, alwaysOn: true },
+  loop:              { label: 'Loop',       tools: 1, alwaysOn: true },
+  profile:           { label: 'Profile',    tools: 1, alwaysOn: true },
+  git:               { label: 'Git',        tools: 1  },
+  image:             { label: 'Images',     tools: 1  },
+  whiteboard:        { label: 'Whiteboard', tools: 5  },
+  card:              { label: 'Cards',      tools: 5  },
+  tictactoe:         { label: 'TicTacToe',  tools: 1  },
+  browser:           { label: 'Browser',    tools: 18 },
+  browser_twitter:   { label: 'Twitter/X',  tools: 1  },
+  browser_facebook:  { label: 'Facebook',   tools: 1  },
+  browser_tiktok:    { label: 'TikTok',     tools: 4  },
+  browser_whatsapp:  { label: 'WhatsApp',   tools: 2  },
+  browser_instagram: { label: 'Instagram',  tools: 5  },
+  browser_linkedin:  { label: 'LinkedIn',   tools: 8  },
+  leonardo:          { label: 'Leonardo',   tools: 5  },
+  discord:           { label: 'Discord',    tools: 8  },
+};
+
+function readRegistry(dataHome) {
+  const registryPath = resolve(dataHome, 'data', 'mcp-registry.json');
+  try {
+    if (existsSync(registryPath)) return JSON.parse(readFileSync(registryPath, 'utf-8'));
+  } catch {}
+  return null;
+}
+
+function getProfiles(dataHome) {
+  const registry = readRegistry(dataHome);
+  if (registry?.profiles) return registry.profiles;
+  // Fallback defaults
+  return {
+    core:       { label: 'Core',       groups: ['git', 'image'] },
+    standard:   { label: 'Standard',   groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe'] },
+    twitter:    { label: 'Twitter/X',  groups: ['git', 'image', 'browser', 'browser_twitter'] },
+    facebook:   { label: 'Facebook',   groups: ['git', 'image', 'browser', 'browser_facebook'] },
+    tiktok:     { label: 'TikTok',     groups: ['git', 'image', 'browser', 'browser_tiktok'] },
+    whatsapp:   { label: 'WhatsApp',   groups: ['git', 'image', 'browser', 'browser_whatsapp'] },
+    instagram:  { label: 'Instagram',  groups: ['git', 'image', 'browser', 'browser_instagram'] },
+    linkedin:   { label: 'LinkedIn',   groups: ['git', 'image', 'browser', 'browser_linkedin'] },
+    discord:    { label: 'Discord',    groups: ['git', 'image', 'discord'] },
+    browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo'] },
+    full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'discord'] },
+    leonardoai: { label: 'LeonardoAI', groups: ['leonardo'] },
+  };
+}
+
+function countProfileTools(groups) {
+  const alwaysOn = Object.values(TOOL_GROUPS).filter(g => g.alwaysOn).reduce((s, g) => s + g.tools, 0);
+  const groupTools = (groups || []).reduce((s, g) => s + (TOOL_GROUPS[g]?.tools || 0), 0);
+  return alwaysOn + groupTools;
+}
+
+function getCurrentProfile(dataHome) {
+  const profilePath = resolve(dataHome, 'data', 'active-profile.json');
+  try {
+    if (existsSync(profilePath)) {
+      const data = JSON.parse(readFileSync(profilePath, 'utf-8'));
+      if (data.profile) return data.profile;
+    }
+  } catch {}
+  return 'full';
+}
+
+function writeProfile(dataHome, profileName) {
+  const payload = JSON.stringify({ profile: profileName }, null, 2) + '\n';
+
+  // Write to data/active-profile.json (Neural Interface reads this)
+  const niPath = resolve(dataHome, 'data', 'active-profile.json');
+  const niDir = resolve(niPath, '..');
+  if (!existsSync(niDir)) mkdirSync(niDir, { recursive: true });
+  writeFileSync(niPath, payload, 'utf-8');
+
+  // Write to mcp-server/data/active-profile.json (MCP server watches this)
+  const mcpPath = resolve(PACKAGE_ROOT, 'mcp-server', 'data', 'active-profile.json');
+  const mcpDir = resolve(mcpPath, '..');
+  if (!existsSync(mcpDir)) mkdirSync(mcpDir, { recursive: true });
+  writeFileSync(mcpPath, payload, 'utf-8');
+}
+
+function handleProfileCommand(dataHome) {
+  const sub = process.argv[3];
+  const profiles = getProfiles(dataHome);
+  const current = getCurrentProfile(dataHome);
+
+  // synabun profile  OR  synabun profile list
+  if (!sub || sub === 'list') {
+    console.log('');
+    console.log(`  ${c.bold}Available MCP Profiles${c.reset}`);
+    console.log('');
+    for (const [name, prof] of Object.entries(profiles)) {
+      const label = prof.label || name;
+      const tools = countProfileTools(prof.groups);
+      const active = name === current ? ` ${c.green}← active${c.reset}` : '';
+      const groups = (prof.groups || []).join(', ');
+      console.log(`  ${c.cyan}${name.padEnd(14)}${c.reset} ${c.dim}${label.padEnd(12)}${c.reset} ~${String(tools).padStart(2)} tools  ${c.dim}[${groups}]${c.reset}${active}`);
+    }
+    console.log('');
+    console.log(`  ${c.dim}Usage: synabun profile set <name>${c.reset}`);
+    console.log('');
+    return;
+  }
+
+  // synabun profile get
+  if (sub === 'get') {
+    const prof = profiles[current];
+    const tools = prof ? countProfileTools(prof.groups) : '?';
+    console.log('');
+    console.log(`  ${c.bold}Current Profile:${c.reset} ${c.cyan}${current}${c.reset}  (~${tools} tools)`);
+    if (prof?.groups) console.log(`  ${c.dim}Groups: ${prof.groups.join(', ')}${c.reset}`);
+    console.log('');
+    return;
+  }
+
+  // synabun profile set <name>
+  if (sub === 'set') {
+    const name = process.argv[4]?.toLowerCase().trim();
+    if (!name) {
+      fail('Missing profile name. Usage: synabun profile set <name>');
+      console.log(`  ${c.dim}Run "synabun profile list" to see available profiles.${c.reset}`);
+      process.exit(1);
+    }
+    if (!profiles[name]) {
+      fail(`Unknown profile "${name}"`);
+      console.log('');
+      console.log(`  ${c.dim}Available profiles:${c.reset} ${Object.keys(profiles).join(', ')}`);
+      process.exit(1);
+    }
+    writeProfile(dataHome, name);
+    const prof = profiles[name];
+    const tools = countProfileTools(prof.groups);
+    ok(`Profile set to ${c.cyan}${name}${c.reset} (${prof.label}, ~${tools} tools)`);
+    console.log(`  ${c.dim}Groups: ${prof.groups.join(', ')}${c.reset}`);
+    console.log('');
+    console.log(`  ${c.dim}Running MCP servers will pick up the change automatically.${c.reset}`);
+    return;
+  }
+
+  fail(`Unknown subcommand "${sub}". Usage: synabun profile [list|get|set <name>]`);
+  process.exit(1);
+}
+
 // ── Main ──
 
 function main() {
   const version = JSON.parse(readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf-8')).version;
+
+  // ── Subcommand routing (before setup flow) ──
+  const cmd = process.argv[2];
+  if (cmd === 'profile') {
+    handleProfileCommand(DATA_HOME);
+    process.exit(0);
+  }
+  if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
+    console.log(`synabun v${version}`);
+    process.exit(0);
+  }
 
   // Banner
   console.log('');
