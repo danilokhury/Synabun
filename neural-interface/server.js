@@ -5226,30 +5226,74 @@ app.get('/api/opencode/config/providers', async (req, res) => {
   }
 });
 
-// List MCP server statuses
+// GET /api/opencode/mcp — config.json is the source of truth. OpenCode doesn't
+// need to be running for the toggle to reflect a persisted install.
 app.get('/api/opencode/mcp', async (req, res) => {
   try {
-    if (!_ocpReady) return res.json({ ok: false, error: 'OpenCode server not running', data: {} });
-    const r = await ocpProxy('GET', '/mcp');
-    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+    const configPath = getOpencodeConfigPath();
+    let connected = false;
+    let data = {};
+    try {
+      if (existsSync(configPath)) {
+        const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+        connected = !!(cfg?.mcp && cfg.mcp.SynaBun);
+        data = cfg?.mcp || {};
+      }
+    } catch {}
+    res.json({ ok: true, connected, runtimeReady: !!_ocpReady, data });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Add MCP server dynamically and persist to config so it survives restarts
+// POST /api/opencode/mcp — persist to config.json always; register with the
+// running server too if it happens to be up. No body → installs SynaBun with
+// canonical config (parity with the other provider endpoints).
 app.post('/api/opencode/mcp', async (req, res) => {
   try {
-    if (!_ocpReady) return res.status(503).json({ ok: false, error: 'OpenCode server not running' });
-    const { name, config: mcpConfig } = req.body || {};
-    // Persist to ~/.config/opencode/config.json before registering with the running server
-    if (name && mcpConfig) {
-      try { persistMcpToOpencodeConfig(name, mcpConfig); } catch (e) {
-        console.warn(`[opencode] Failed to persist MCP config: ${e.message}`);
+    let { name, config: mcpConfig } = req.body || {};
+    if (!name) {
+      name = 'SynaBun';
+      const { mcpIndexPath, envPath } = getMcpPaths();
+      mcpConfig = {
+        command: 'node',
+        args: [mcpIndexPath],
+        env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
+      };
+    }
+    try { persistMcpToOpencodeConfig(name, mcpConfig); } catch (e) {
+      return res.status(500).json({ ok: false, error: `Persist failed: ${e.message}` });
+    }
+    if (_ocpReady) {
+      try { await ocpProxy('POST', '/mcp', { name, config: { type: 'stdio', ...mcpConfig } }); } catch (e) {
+        console.warn(`[opencode] Runtime register failed (config persisted): ${e.message}`);
       }
     }
-    const r = await ocpProxy('POST', '/mcp', req.body);
-    res.status(r.status).json({ ok: r.status === 200, data: r.data });
+    res.json({ ok: true, message: 'SynaBun MCP registered. Restart OpenCode to connect.' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// DELETE /api/opencode/mcp — remove SynaBun entry from config.json.
+app.delete('/api/opencode/mcp', async (req, res) => {
+  try {
+    const name = (req.body && req.body.name) || req.query?.name || 'SynaBun';
+    const configPath = getOpencodeConfigPath();
+    if (existsSync(configPath)) {
+      try {
+        const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+        if (cfg?.mcp && cfg.mcp[name]) {
+          delete cfg.mcp[name];
+          if (Object.keys(cfg.mcp).length === 0) delete cfg.mcp;
+          writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+          console.log(`[opencode] Removed MCP server "${name}" from ${configPath}`);
+        }
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: `Config rewrite failed: ${e.message}` });
+      }
+    }
+    res.json({ ok: true, message: 'SynaBun MCP removed from OpenCode config.json.' });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

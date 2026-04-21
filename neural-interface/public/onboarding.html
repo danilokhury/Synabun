@@ -443,6 +443,98 @@
     white-space: nowrap;
   }
 
+  /* ── MCP Toggle List (Step 5) — 2×2 grid ── */
+  .mcp-toggle-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .mcp-toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    transition: border-color 0.25s ease, background 0.25s ease;
+    min-width: 0; /* allow grid cell to shrink below intrinsic width */
+  }
+  .mcp-toggle-row.connected {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+  }
+  .mcp-toggle-row .mtr-body { flex: 1 1 0; min-width: 0; overflow: hidden; }
+  .mcp-toggle-row .mtr-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--t-bright);
+    margin-bottom: 2px;
+  }
+  .mcp-toggle-row .mtr-path {
+    font-size: 11px;
+    color: var(--t-muted);
+    font-family: var(--mono, monospace);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mcp-toggle-row .mtr-toggle {
+    flex-shrink: 0;
+    width: 36px; height: 20px;
+    border-radius: 10px;
+    background: var(--s-hover);
+    border: 1px solid var(--b-light);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+    padding: 0;
+  }
+  .mcp-toggle-row .mtr-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--t-secondary);
+    transition: left 0.2s ease, background 0.2s ease;
+  }
+  .mcp-toggle-row .mtr-toggle.on {
+    background: var(--accent-border);
+    border-color: var(--accent-border);
+  }
+  .mcp-toggle-row .mtr-toggle.on::after {
+    left: 18px;
+    background: var(--t-bright);
+  }
+  .mcp-toggle-row .mtr-toggle:disabled,
+  .mcp-toggle-row .mtr-toggle.busy {
+    opacity: 0.4;
+    cursor: wait;
+  }
+  .mcp-other-section {
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    overflow: hidden;
+  }
+  .mcp-other-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--t-secondary);
+    user-select: none;
+    transition: background 0.2s ease;
+  }
+  .mcp-other-header:hover { background: var(--s-hover); }
+  .mcp-other-chevron { transition: transform 0.2s ease; }
+  .mcp-other-section.open .mcp-other-chevron { transform: rotate(180deg); }
+  .mcp-other-body { padding: 0 14px 12px; }
+
   /* ── Dependency List ── */
   .dep-list {
     list-style: none;
@@ -1040,15 +1132,21 @@
         <span class="mascot-toast" id="mascotToast"></span>
       </div>
       <h2>AI Tool Integration</h2>
-      <p class="subtitle">Select your AI coding tool to get setup instructions.</p>
-      <div class="tool-grid" id="toolGrid"></div>
-      <div id="mcpSetupPanel" style="display:none;">
-        <div id="mcpSetupLabel" style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;"></div>
-        <div class="code-copy-wrap" id="mcpCodeWrap">
-          <div class="instructions-preview" id="mcpSetupCode"></div>
-          <span class="code-copy-label">copy</span>
+      <p class="subtitle">Toggle on the AI coding tools you use. SynaBun registers itself with each one automatically.</p>
+      <div class="mcp-toggle-list" id="mcpToggleList"></div>
+      <div class="mcp-other-section" id="mcpOtherSection">
+        <div class="mcp-other-header" id="mcpOtherHeader">
+          <span>Other providers (Cursor, Windsurf, etc.)</span>
+          <svg class="mcp-other-chevron" viewBox="0 0 24 24" width="14" height="14"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
         </div>
-        <div id="mcpSetupHint" style="margin-top:6px;font-size:11px;color:var(--t-muted);"></div>
+        <div class="mcp-other-body" id="mcpOtherBody" style="display:none;">
+          <div style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;">Add this MCP server JSON to your tool's config file:</div>
+          <div class="code-copy-wrap" id="mcpCodeWrap">
+            <div class="instructions-preview" id="mcpSetupCode"></div>
+            <span class="code-copy-label">copy</span>
+          </div>
+          <div style="margin-top:6px;font-size:11px;color:var(--t-muted);">Cursor: Settings &rarr; MCP Servers, or <code>.cursor/mcp.json</code>. Windsurf: <code>~/.codeium/windsurf/mcp_config.json</code>.</div>
+        </div>
       </div>
     </div>
 
@@ -1195,6 +1293,7 @@ const wizardState = {
   collectionDisplayName: 'Claude Memory',
   dbLocationPath: null,
   selectedTool: null,
+  enabledTools: [],    // tool ids toggled on via Step 5 install toggles
   projectRoot: '',
   packageRoot: '',
   buildReady: false,
@@ -1202,12 +1301,13 @@ const wizardState = {
   projects: [],
 };
 
+// Tools with server-side MCP install/uninstall endpoints. Each row maps a
+// toggle to the POST/DELETE endpoint that writes the provider's config file.
 const TOOLS = [
-  { id: 'claude',   name: 'Claude Code',  instrFile: 'CLAUDE.md' },
-  { id: 'cursor',   name: 'Cursor',       instrFile: '.cursorrules' },
-  { id: 'windsurf', name: 'Windsurf',     instrFile: '.windsurfrules' },
-  { id: 'codex',    name: 'Codex',        instrFile: 'AGENTS.md' },
-  { id: 'other',    name: 'Other',        instrFile: 'AGENTS.md' },
+  { id: 'claude',   name: 'Claude Code', instrFile: 'CLAUDE.md', format: 'claude',  api: '/api/claude-code/mcp', configPath: '~/.claude.json' },
+  { id: 'gemini',   name: 'Gemini CLI',  instrFile: 'GEMINI.md', format: 'gemini',  api: '/api/setup/gemini/mcp', configPath: '~/.gemini/settings.json' },
+  { id: 'codex',    name: 'Codex CLI',   instrFile: 'AGENTS.md', format: 'codex',   api: '/api/setup/codex/mcp',  configPath: '~/.codex/config.toml' },
+  { id: 'opencode', name: 'OpenCode',    instrFile: 'AGENTS.md', format: 'generic', api: '/api/opencode/mcp',     configPath: '~/.config/opencode/config.json' },
 ];
 
 // ═══════════════════════════════════════════
@@ -1330,7 +1430,13 @@ function validateStep(n) {
       return true;
     }
     case 5: {
-      if (!wizardState.selectedTool) return false;
+      // Allow advancing once any tool is toggled on OR the user copied the generic JSON.
+      if (wizardState.enabledTools.length === 0 && !wizardState.mcpWritten) return false;
+      // Default the ruleset preview (Step 6) + restart hint (Step 7) to the first
+      // toggled-on tool; fall back to Claude if only the generic JSON was copied.
+      if (!wizardState.selectedTool) {
+        wizardState.selectedTool = wizardState.enabledTools[0] || 'claude';
+      }
       return true;
     }
     default:
@@ -1358,6 +1464,7 @@ async function onStepEnter(n) {
     }
   }
   if (n === 3) await onBuildStep();
+  if (n === 5) await onToolIntegrationStep();
   if (n === 6) await onRulesetStep();
   if (n === 7) await onCompleteStep();
   // Re-measure after async content loads — but only if user is still on this step
@@ -2133,73 +2240,110 @@ document.getElementById('buildBtn').addEventListener('click', async () => {
 }
 
 // ═══════════════════════════════════════════
-// STEP 5: Tool Selection
+// STEP 5: Tool Integration (install toggles + generic JSON fallback)
 // ═══════════════════════════════════════════
 
-const $toolGrid = document.getElementById('toolGrid');
+const $toggleList = document.getElementById('mcpToggleList');
+
+// Render one toggle row per installable tool. Statuses populate on enter.
 TOOLS.forEach(t => {
-  const card = document.createElement('div');
-  card.className = 'tool-card';
-  card.dataset.id = t.id;
-  card.innerHTML = `<div class="tname">${t.name}</div>`;
-  card.addEventListener('click', () => selectTool(t.id));
-  $toolGrid.appendChild(card);
+  const row = document.createElement('div');
+  row.className = 'mcp-toggle-row';
+  row.dataset.id = t.id;
+  row.innerHTML = `
+    <div class="mtr-body">
+      <div class="mtr-name">${t.name}</div>
+      <div class="mtr-path" data-role="path">${t.configPath}</div>
+    </div>
+    <button class="mtr-toggle" data-role="toggle" aria-label="Toggle ${t.name}"></button>
+  `;
+  row.querySelector('[data-role="toggle"]').addEventListener('click', () => toggleTool(t.id));
+  $toggleList.appendChild(row);
 });
 
-function getMcpSetup(id) {
+async function onToolIntegrationStep() {
+  // Fetch each provider's install state so toggles reflect reality.
+  await Promise.all(TOOLS.map(async (t) => {
+    try {
+      const res = await fetch(t.api);
+      const data = await res.json();
+      const connected = !!data.connected;
+      updateToggleRow(t.id, { connected });
+      if (connected && !wizardState.enabledTools.includes(t.id)) {
+        wizardState.enabledTools.push(t.id);
+      }
+    } catch { updateToggleRow(t.id, { connected: false }); }
+  }));
+}
+
+function updateToggleRow(id, { connected, busy }) {
+  const row = $toggleList.querySelector(`[data-id="${id}"]`);
+  if (!row) return;
+  const toggle = row.querySelector('[data-role="toggle"]');
+  const path = row.querySelector('[data-role="path"]');
+  const tool = TOOLS.find(t => t.id === id);
+  if (typeof connected === 'boolean') {
+    row.classList.toggle('connected', connected);
+    toggle.classList.toggle('on', connected);
+    path.textContent = connected ? `Registered in ${tool.configPath}` : tool.configPath;
+  }
+  if (typeof busy === 'boolean') {
+    toggle.classList.toggle('busy', busy);
+    toggle.disabled = busy;
+  }
+}
+
+async function toggleTool(id) {
+  const tool = TOOLS.find(t => t.id === id);
+  if (!tool) return;
+  const row = $toggleList.querySelector(`[data-id="${id}"]`);
+  const toggle = row.querySelector('[data-role="toggle"]');
+  const wasOn = toggle.classList.contains('on');
+  updateToggleRow(id, { busy: true });
+  try {
+    const res = await fetch(tool.api, { method: wasOn ? 'DELETE' : 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      showMascotToast(data.error || `${tool.name} ${wasOn ? 'uninstall' : 'install'} failed`);
+      updateToggleRow(id, { busy: false });
+      return;
+    }
+    const nowOn = !wasOn;
+    updateToggleRow(id, { connected: nowOn, busy: false });
+    if (nowOn) {
+      if (!wizardState.enabledTools.includes(id)) wizardState.enabledTools.push(id);
+      wizardState.mcpWritten = true;
+      showMascotToast(`${tool.name} connected`);
+    } else {
+      wizardState.enabledTools = wizardState.enabledTools.filter(x => x !== id);
+      showMascotToast(`${tool.name} disconnected`);
+    }
+  } catch (err) {
+    showMascotToast(`Failed: ${err.message}`);
+    updateToggleRow(id, { busy: false });
+  }
+}
+
+// Generic MCP JSON for tools without a server integration (Cursor, Windsurf, other).
+function getGenericMcpJson() {
   const dataHome = (wizardState.projectRoot || '').replace(/\\/g, '/');
   const pkgRoot = (wizardState.packageRoot || dataHome).replace(/\\/g, '/');
   const mcpPath = pkgRoot + '/mcp-server/run.mjs';
   const envPath = dataHome + '/.env';
   const env = { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: dataHome, MEMORY_DATA_DIR: dataHome + '/mcp-data' };
-
-  if (id === 'claude') {
-    const envFlags = Object.entries(env).map(([k, v]) => `-e "${k}=${v}"`).join(' ');
-    return {
-      label: 'Run this in your terminal to register SynaBun globally:',
-      code: `claude mcp add SynaBun node "${mcpPath}" -s user ${envFlags}`,
-      hint: 'Registers SynaBun globally. Restart Claude Code after running.',
-    };
-  }
-  if (id === 'cursor') {
-    const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env } } }, null, 2);
-    return {
-      label: 'Add to Cursor Settings > MCP Servers, or paste into .cursor/mcp.json:',
-      code: json,
-      hint: 'Settings > MCP > Add Server, or save as .cursor/mcp.json',
-    };
-  }
-  if (id === 'windsurf') {
-    const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env } } }, null, 2);
-    return {
-      label: 'Add to ~/.codeium/windsurf/mcp_config.json:',
-      code: json,
-      hint: 'Cascade sidebar > hammer icon > Configure',
-    };
-  }
-  // codex, other
-  const json = JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env } } }, null, 2);
-  return {
-    label: 'Add to your project\'s .mcp.json:',
-    code: json,
-    hint: 'Save as .mcp.json in your project root.',
-  };
+  return JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env } } }, null, 2);
 }
 
-function selectTool(id) {
-  wizardState.selectedTool = id;
-  $toolGrid.querySelectorAll('.tool-card').forEach(c => {
-    c.classList.toggle('selected', c.dataset.id === id);
-  });
-
-  const setup = getMcpSetup(id);
-  document.getElementById('mcpSetupLabel').textContent = setup.label;
-  document.getElementById('mcpSetupCode').textContent = setup.code;
-  document.getElementById('mcpSetupHint').textContent = setup.hint;
-  document.getElementById('mcpSetupPanel').style.display = '';
-
+// "Other providers" collapsible — shows the generic MCP JSON for paste-based setups.
+const $otherHeader = document.getElementById('mcpOtherHeader');
+const $otherBody = document.getElementById('mcpOtherBody');
+const $otherSection = document.getElementById('mcpOtherSection');
+$otherHeader.addEventListener('click', () => {
+  const isOpen = $otherSection.classList.toggle('open');
+  $otherBody.style.display = isOpen ? '' : 'none';
+  if (isOpen) document.getElementById('mcpSetupCode').textContent = getGenericMcpJson();
   requestAnimationFrame(() => resizeViewport(currentStep));
-}
+});
 
 function showMascotToast(msg, duration = 2000) {
   const toast = document.getElementById('mascotToast');
@@ -2211,6 +2355,7 @@ function showMascotToast(msg, duration = 2000) {
 
 document.getElementById('mcpCodeWrap').addEventListener('click', () => {
   const code = document.getElementById('mcpSetupCode').textContent;
+  if (!code) return;
   navigator.clipboard.writeText(code);
   wizardState.mcpWritten = true;
   const label = document.querySelector('#mcpCodeWrap .code-copy-label');
@@ -2227,10 +2372,7 @@ document.getElementById('mcpCodeWrap').addEventListener('click', () => {
 async function onRulesetStep() {
   const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
   document.getElementById('rulesetFileName').textContent = tool.instrFile;
-
-  // Map tool to API format
-  const formatMap = { claude: 'claude', cursor: 'cursor', windsurf: 'generic', codex: 'codex', other: 'generic' };
-  const format = formatMap[tool.id] || 'generic';
+  const format = tool.format || 'generic';
 
   const $code = document.getElementById('rulesetCode');
   if ($code.dataset.loadedFormat === format) return; // already loaded
@@ -2270,11 +2412,14 @@ document.getElementById('rulesetCodeWrap').addEventListener('click', () => {
 async function onCompleteStep() {
   renderHappyBun();
 
-  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
-  document.getElementById('restartToolName').textContent = tool.name;
+  // List every tool the user toggled on; fall back to the ruleset tool if none.
+  const enabled = wizardState.enabledTools.length
+    ? wizardState.enabledTools.map(id => TOOLS.find(t => t.id === id)).filter(Boolean)
+    : [TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0]];
+  document.getElementById('restartToolName').textContent = enabled.map(t => t.name).join(', ');
 
-  // Auto-register hooks globally for Claude Code users
-  if (tool.id === 'claude') {
+  // Auto-register hooks globally when Claude Code was toggled on
+  if (enabled.some(t => t.id === 'claude')) {
     try {
       await fetch('/api/claude-code/integrations', {
         method: 'POST',
@@ -2289,7 +2434,7 @@ async function onCompleteStep() {
     { label: 'Memory name set', done: !!wizardState.collectionName },
     { label: 'Dependencies installed & MCP built', done: wizardState.buildReady },
     { label: 'Projects registered', done: (wizardState.projects || []).length > 0 },
-    { label: 'MCP config copied', done: wizardState.mcpWritten },
+    { label: 'AI tool integration enabled', done: wizardState.enabledTools.length > 0 || wizardState.mcpWritten },
     { label: 'Ruleset copied', done: !!wizardState.rulesetCopied },
   ];
 
