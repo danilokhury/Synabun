@@ -17145,6 +17145,17 @@ function logGitFailure(where, err) {
   console.warn(`[git] '${where}' failed:`, msg.trim().split('\n')[0]);
 }
 
+// Startup probe — always logs git status so Windows users can see whether git works at all.
+setImmediate(() => {
+  const probe = spawnGit(['--version'], { timeout: 3000 });
+  if (probe.status === 0) {
+    console.log(`[git] ${probe.stdout.toString().trim()} — OK`);
+  } else {
+    const msg = probe.stderr?.toString?.()?.trim() || probe.error?.message || 'unknown error';
+    console.warn(`[git] startup probe FAILED: ${msg}. File explorer git UI will be hidden.`);
+  }
+});
+
 /** Try to get git status for a directory. Returns { branch, statuses } or null. */
 function getGitInfo(dir) {
   // Check if inside a git work tree (spawnGit for consistent path resolution)
@@ -17154,18 +17165,27 @@ function getGitInfo(dir) {
     return null;
   }
 
-  // Get branch name
+  // Get branch name — try --show-current first (git 2.22+), then fall back to
+  // --abbrev-ref HEAD (works on older git; detached HEAD returns the literal "HEAD"),
+  // then short SHA for detached HEAD. The chained fallback is essential for Windows users
+  // with older Git for Windows installs where --show-current exits non-zero.
   let branch = '';
   const showCurrent = spawnGit(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
   if (showCurrent.status === 0) {
     branch = showCurrent.stdout.toString().trim();
-    if (!branch) {
-      // Detached HEAD — get short SHA
-      const shortSha = spawnGit(['rev-parse', '--short', 'HEAD'], { cwd: dir, timeout: 3000 });
-      if (shortSha.status === 0) branch = shortSha.stdout.toString().trim();
-    }
   } else {
     logGitFailure('branch --show-current', showCurrent.error || { stderr: showCurrent.stderr });
+  }
+  if (!branch) {
+    const abbrev = spawnGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3000 });
+    if (abbrev.status === 0) {
+      const b = abbrev.stdout.toString().trim();
+      if (b && b !== 'HEAD') branch = b;
+    }
+  }
+  if (!branch) {
+    const shortSha = spawnGit(['rev-parse', '--short', 'HEAD'], { cwd: dir, timeout: 3000 });
+    if (shortSha.status === 0) branch = shortSha.stdout.toString().trim();
   }
 
   try {
@@ -17303,17 +17323,29 @@ app.get('/api/terminal/branches', (req, res) => {
   }
 
   try {
-    // Current branch
+    // Current branch — chained fallback (older git may not support --show-current)
     let current = '';
     const showCurrent = spawnGit(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
     if (showCurrent.status === 0) current = showCurrent.stdout.toString().trim();
     else logGitFailure('branches: show-current', showCurrent.error || { stderr: showCurrent.stderr });
+    if (!current) {
+      const abbrev = spawnGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3000 });
+      if (abbrev.status === 0) {
+        const b = abbrev.stdout.toString().trim();
+        if (b && b !== 'HEAD') current = b;
+      }
+    }
 
-    // All local branches
-    const branchResult = spawnGit(['branch', '--format=%(refname:short)'], { cwd: dir });
-    if (branchResult.status !== 0) logGitFailure('branch --format', branchResult.error || { stderr: branchResult.stderr });
-    const raw = branchResult.status === 0 ? branchResult.stdout.toString().trim() : '';
-    const branches = raw ? raw.split('\n').map(b => b.trim()).filter(Boolean) : [];
+    // All local branches — plain `git branch` parsed manually; avoids --format=%(refname:short)
+    // which can get mangled by cmd.exe variable expansion on Windows even with proper quoting.
+    const branchResult = spawnGit(['branch'], { cwd: dir });
+    if (branchResult.status !== 0) logGitFailure('branch list', branchResult.error || { stderr: branchResult.stderr });
+    const raw = branchResult.status === 0 ? branchResult.stdout.toString() : '';
+    // Plain `git branch` output: each line is "  branch" or "* branch" (current). Strip
+    // marker + whitespace. Skip detached-HEAD lines like "* (HEAD detached at abc1234)".
+    const branches = raw.split('\n')
+      .map(l => l.replace(/^[\s*]+/, '').trim())
+      .filter(b => b && !b.startsWith('(') && !b.includes(' -> '));
 
     res.json({ branches, current });
   } catch (err) {
