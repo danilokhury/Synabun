@@ -18,7 +18,7 @@ import express from 'express';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { basename, delimiter, dirname, extname, join, resolve, sep } from 'path';
 import { config as dotenvConfig } from 'dotenv';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, copyFileSync, appendFileSync, openSync, readSync, closeSync, chmodSync, watch as fsWatch, createWriteStream } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync, statSync, fstatSync, renameSync, cpSync, copyFileSync, appendFileSync, openSync, readSync, closeSync, chmodSync, watch as fsWatch, createWriteStream, realpathSync } from 'fs';
 import { randomBytes, randomUUID, createHash, pbkdf2Sync, createDecipheriv } from 'crypto';
 import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
@@ -9758,6 +9758,66 @@ function semverNewer(a, b) {
     || (pb[0] === pa[0] && pb[1] === pa[1] && pb[2] > pa[2]);
 }
 
+function resolveBinPath(cmd, env) {
+  try {
+    const isWin = process.platform === 'win32';
+    const finder = isWin ? `where ${cmd}` : `command -v ${cmd}`;
+    const opts = { encoding: 'utf-8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], env };
+    if (!isWin) opts.shell = '/bin/sh';
+    const raw = execSync(finder, opts).trim();
+    const first = raw.split(/\r?\n/)[0] || null;
+    if (!first) return null;
+    // Follow symlinks so install-source detection sees the real install dir
+    // (e.g. /usr/local/bin/claude → /usr/local/lib/node_modules/.../bin/claude).
+    try { return realpathSync(first); } catch { return first; }
+  } catch { return null; }
+}
+
+function detectInstallSource(binPath) {
+  if (!binPath) return 'unknown';
+  const p = binPath.replace(/\\/g, '/').toLowerCase();
+  if (/\/node_modules\//.test(p) || /\/npm\/node_modules\//.test(p)) return 'npm';
+  if (p.includes('/opt/homebrew/') || p.includes('/usr/local/cellar/') || /\/homebrew\//.test(p)) return 'brew';
+  if (p.includes('/.claude/local/') || p.includes('/anthropicclaude/')) return 'native';
+  if (/\/program files( \(x86\))?\//.test(p) || /\/localappdata\/.*anthropicclaude/.test(p)) return 'native';
+  if (p.includes('/winget/') || p.includes('/microsoft/winget/')) return 'winget';
+  if (/\/usr\/local\/lib\/node_modules\//.test(p)) return 'npm';
+  return 'other';
+}
+
+const NPM_PKGS = {
+  'claude-code': '@anthropic-ai/claude-code',
+  'codex': '@openai/codex',
+  'gemini': '@google/gemini-cli',
+  'opencode': 'opencode-ai',
+};
+
+const BREW_FORMULAE = {
+  'claude-code': 'claude-code',
+  'codex': 'codex',
+  'gemini': 'gemini-cli',
+  'opencode': 'opencode',
+};
+
+// Pick the smoothest update command for each tool given its install source.
+// Tools with native self-updaters (claude, opencode) handle install-source
+// detection internally — prefer those everywhere. Other tools fall back to
+// install-source-specific package managers (npm/brew). Returns null when no
+// safe automated update path exists (e.g., winget/native installer with no
+// self-updater) — caller should show a "use your installer" hint instead.
+function buildUpdateCommand(toolKey, installSource) {
+  if (toolKey === 'claude-code') return 'claude update';
+  if (toolKey === 'opencode')    return 'opencode upgrade';
+
+  const npmPkg = NPM_PKGS[toolKey];
+  if (!npmPkg) return null;
+
+  if (installSource === 'npm')  return `npm install -g ${npmPkg}@latest`;
+  if (installSource === 'brew') return `brew upgrade ${BREW_FORMULAE[toolKey] || toolKey}`;
+  if (installSource === 'native' || installSource === 'winget') return null;
+  return `npm install -g ${npmPkg}@latest`;
+}
+
 async function checkToolVersions() {
   // Strip node_modules/.bin entries so the version check reflects the user's
   // global install rather than any copy bundled with SynaBun itself.
@@ -9765,7 +9825,8 @@ async function checkToolVersions() {
     .split(delimiter)
     .filter(p => !/[\\/]node_modules[\\/]\.bin[\\/]?$/i.test(p))
     .join(delimiter);
-  const execOpts = { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: augPath } };
+  const cleanEnv = { ...process.env, PATH: augPath };
+  const execOpts = { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], env: cleanEnv };
 
   const results = {};
 
@@ -9791,10 +9852,18 @@ async function checkToolVersions() {
       }
     } catch { /* network error */ }
 
+    const binPath = installed ? resolveBinPath(tool.cmd, cleanEnv) : null;
+    const installSource = detectInstallSource(binPath);
+    const updateCommand = installed ? buildUpdateCommand(tool.key, installSource) : null;
+
     results[tool.key] = {
       installed,
       latest,
       updateAvailable: !!(installed && latest && semverNewer(installed, latest)),
+      installSource,
+      binPath,
+      updateCommand,
+      canUpdate: !!updateCommand,
     };
   }
 
