@@ -1620,20 +1620,24 @@ export function renderToolActivityDock(tab, panelRoot, callbacks = {}) {
           Agents
         </span>
         <span class="ocp-activity-header-count">${runningCount ? `${runningCount}/` : ''}${totalCount}</span>
+        <button class="ocp-activity-header-hide" type="button" title="Collapse (Ctrl+Shift+A)" aria-label="Close agents drawer">×</button>
       </div>
       <div class="ocp-activity-list">
         ${entries.map(e => activityRowHtml(e, { expanded: !!expandedMap[e.key] })).join('')}
       </div>
     </div>
     <button class="${tagClass}" title="${escAttr(tagTitle)}" type="button">
-      <span class="ocp-activity-tag-dot"></span>
-      <span class="ocp-activity-tag-count">${tagCount}</span>
-      <span class="ocp-activity-tag-label">${runningCount > 0 ? 'Running' : 'Agents'}</span>
+      ${runningCount > 0 ? '<span class="ocp-activity-tag-dot"></span>' : ''}
+      <span class="ocp-activity-tag-count">${tagCount} ${runningCount > 0 ? 'RUN' : 'AGT'}</span>
     </button>
   `;
 
   dock.querySelector('.ocp-activity-tag')?.addEventListener('click', () => {
     if (typeof onToggle === 'function') onToggle(!isOpen);
+  });
+  dock.querySelector('.ocp-activity-header-hide')?.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if (typeof onToggle === 'function') onToggle(false);
   });
 
   dock.querySelectorAll('.ocp-activity-row').forEach((row) => {

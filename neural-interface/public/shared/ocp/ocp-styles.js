@@ -2024,72 +2024,64 @@ export function injectStyles() {
       border-color: rgba(232,224,220,0.35);
     }
 
-    /* ── Tool activity dock (left edge, bottom-anchored) ── */
+    /* ── Tool activity dock (sibling surface, matches Claude todo dock aesthetic) ── */
     .ocp-activity-dock {
       position: absolute;
-      bottom: 72px;
+      bottom: 0;
       right: calc(100% + 6px);
       display: flex;
+      flex-direction: row-reverse;
       align-items: flex-end;
-      z-index: 3;
+      z-index: 20;
       pointer-events: none;
+      max-height: 100%;
     }
     .ocp-activity-tag {
       pointer-events: auto;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
-      gap: 4px;
-      padding: 10px 8px;
-      min-height: 64px;
-      border: none;
-      border-radius: 10px 0 0 10px;
-      background: linear-gradient(180deg, rgba(26, 26, 32, 0.88), rgba(16, 16, 20, 0.92));
-      backdrop-filter: blur(14px);
-      -webkit-backdrop-filter: blur(14px);
-      box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.06), -2px 0 10px rgba(0, 0, 0, 0.18);
+      gap: 5px;
+      padding: 9px 6px;
+      background: rgba(18, 18, 20, 0.92);
+      backdrop-filter: blur(60px) saturate(1.5);
+      -webkit-backdrop-filter: blur(60px) saturate(1.5);
+      border: 0.5px solid rgba(255, 255, 255, 0.06);
+      border-radius: 10px;
       color: rgba(232, 224, 220, 0.78);
-      font-size: 11px;
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
       cursor: pointer;
-      transition: background 0.2s ease, color 0.2s ease;
+      font-family: 'JetBrains Mono', monospace;
+      font-variant-numeric: tabular-nums;
+      box-shadow:
+        0 0 0 0.5px rgba(0, 0, 0, 0.3),
+        0 1px 2px rgba(0, 0, 0, 0.15),
+        0 4px 8px rgba(0, 0, 0, 0.12),
+        0 12px 24px rgba(0, 0, 0, 0.14);
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
     }
     .ocp-activity-tag:hover {
-      background: linear-gradient(180deg, rgba(32, 32, 40, 0.92), rgba(22, 22, 28, 0.94));
-      color: rgba(232, 224, 220, 1);
+      background: rgba(28, 26, 22, 0.94);
+      border-color: rgba(255, 255, 255, 0.12);
+      color: rgba(232, 224, 220, 0.98);
     }
-    .ocp-activity-tag.running {
-      color: #b5edc1;
-    }
+    .ocp-activity-tag.running { color: #b5edc1; }
     .ocp-activity-tag-dot {
-      width: 7px;
-      height: 7px;
+      width: 5px;
+      height: 5px;
       border-radius: 50%;
       background: rgba(232, 224, 220, 0.45);
     }
     .ocp-activity-tag.running .ocp-activity-tag-dot {
       background: #6fd18a;
-      box-shadow: 0 0 8px rgba(111, 209, 138, 0.7);
+      box-shadow: 0 0 6px rgba(111, 209, 138, 0.7);
       animation: ocp-activity-pulse 1.4s ease-in-out infinite;
     }
     .ocp-activity-tag-count {
-      font-size: 12px;
-      font-weight: 700;
-    }
-    .ocp-activity-tag-label {
-      font-size: 9px;
-      font-weight: 600;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
+      font-size: 9.5px;
       writing-mode: vertical-rl;
       transform: rotate(180deg);
-      color: rgba(232, 224, 220, 0.5);
-      margin-top: 2px;
-    }
-    .ocp-activity-tag.running .ocp-activity-tag-label {
-      color: rgba(181, 237, 193, 0.8);
+      letter-spacing: 0.04em;
+      opacity: 0.85;
     }
 
     .ocp-activity-drawer {
@@ -2098,18 +2090,44 @@ export function injectStyles() {
       max-width: 0;
       overflow: hidden;
       opacity: 0;
-      background: linear-gradient(180deg, rgba(22, 22, 28, 0.92), rgba(14, 14, 18, 0.94));
-      backdrop-filter: blur(18px);
-      -webkit-backdrop-filter: blur(18px);
-      border-radius: 12px 0 0 12px;
-      box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.06), -6px 6px 22px rgba(0, 0, 0, 0.3);
-      margin-right: -1px;
-      transition: width 0.24s cubic-bezier(0.22, 1, 0.36, 1), max-width 0.24s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s ease;
+      background: rgba(18, 18, 20, 0.92);
+      backdrop-filter: blur(60px) saturate(1.5);
+      -webkit-backdrop-filter: blur(60px) saturate(1.5);
+      border: 0.5px solid rgba(255, 255, 255, 0.06);
+      border-radius: 14px;
+      box-shadow:
+        0 0 0 0.5px rgba(0, 0, 0, 0.3),
+        0 1px 2px rgba(0, 0, 0, 0.15),
+        0 4px 8px rgba(0, 0, 0, 0.12),
+        0 12px 24px rgba(0, 0, 0, 0.14),
+        0 32px 64px rgba(0, 0, 0, 0.18);
+      display: flex;
+      flex-direction: column;
+      margin-right: 6px;
+      max-height: 100%;
+      transition: width 0.22s cubic-bezier(0.2, 0, 0.2, 1), max-width 0.22s cubic-bezier(0.2, 0, 0.2, 1), opacity 0.18s ease;
     }
     .ocp-activity-dock.open .ocp-activity-drawer {
       width: 320px;
       max-width: 320px;
       opacity: 1;
+    }
+    .ocp-activity-dock.open .ocp-activity-tag { display: none; }
+    .ocp-activity-header-hide {
+      margin-left: 6px;
+      background: none;
+      border: none;
+      color: rgba(232, 224, 220, 0.55);
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      padding: 2px 5px;
+      border-radius: 4px;
+      transition: background 0.12s, color 0.12s;
+    }
+    .ocp-activity-header-hide:hover {
+      color: rgba(232, 224, 220, 1);
+      background: rgba(255, 255, 255, 0.06);
     }
     .ocp-activity-header {
       padding: 12px 14px 8px;
@@ -2119,14 +2137,15 @@ export function injectStyles() {
       text-transform: uppercase;
       color: rgba(232, 224, 220, 0.55);
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      gap: 8px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     }
     .ocp-activity-header-title {
       display: inline-flex;
       align-items: center;
       gap: 7px;
+      margin-right: auto;
     }
     .ocp-activity-header-dot {
       width: 6px;
