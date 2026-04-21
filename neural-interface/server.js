@@ -12755,6 +12755,18 @@ app.post('/api/claude-code/integrations', (req, res) => {
       // Create default category tree for the project (parent + children)
       try { ensureProjectCategories(); } catch {}
 
+      // Probe for git "dubious ownership" — signals the UI to show an explicit trust prompt.
+      // Only relevant on Windows when the project dir is owned by a different SID than the
+      // account running Node (external drives, copied repos, etc.). No-op on Mac/Linux.
+      let dubiousOwnership = false;
+      let trustPath = null;
+      try {
+        if (detectDubiousOwnership(normalized)) {
+          dubiousOwnership = true;
+          trustPath = normalizeGitPath(normalized);
+        }
+      } catch { /* non-critical */ }
+
       // Auto-create greeting config entry for the new project
       try {
         const greetingKey = projectLabel.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -12774,7 +12786,7 @@ app.post('/api/claude-code/integrations', (req, res) => {
         }
       } catch { /* non-critical */ }
 
-      return res.json({ ok: true, message: `Hook enabled for ${basename(normalized)}.` });
+      return res.json({ ok: true, message: `Hook enabled for ${basename(normalized)}.`, dubiousOwnership, trustPath });
     }
 
     res.status(400).json({ error: 'Invalid target. Use "global" or "project".' });
@@ -17156,6 +17168,22 @@ setImmediate(() => {
   }
 });
 
+// Git "dubious ownership" detection — CVE-2022-24765 safety check refuses to operate on
+// repos owned by a different OS user/SID. Common on Windows external drives or repos
+// copied from another machine. Returns true only when git emits the specific error.
+function detectDubiousOwnership(dir) {
+  const r = spawnGit(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
+  if (r.status === 0) return false;
+  const stderr = r.stderr?.toString?.() || '';
+  return /dubious ownership|safe\.directory/i.test(stderr);
+}
+
+// Normalize a filesystem path for `git config --add safe.directory` — forward-slashed
+// absolute path, no trailing slash.
+function normalizeGitPath(dir) {
+  return String(dir).replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
 /** Try to get git status for a directory. Returns { branch, statuses } or null. */
 function getGitInfo(dir) {
   // Check if inside a git work tree (spawnGit for consistent path resolution)
@@ -17351,6 +17379,38 @@ app.get('/api/terminal/branches', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Trust a workspace path with git — runs `git config --global --add safe.directory <path>`
+// so git stops refusing to operate on it (CVE-2022-24765 dubious-ownership protection).
+// Triggered by the add-project UI flows when the server detects the dubious-ownership error.
+app.post('/api/terminal/trust-workspace', (req, res) => {
+  const { path: dir } = req.body || {};
+  if (!dir || typeof dir !== 'string') return res.status(400).json({ ok: false, error: 'path required' });
+  if (/[\x00-\x1f]/.test(dir) || dir === '*' || dir === '/' || dir === '\\') {
+    return res.status(400).json({ ok: false, error: 'Invalid path' });
+  }
+  let abs;
+  try {
+    abs = resolve(dir);
+    if (!existsSync(abs)) return res.status(400).json({ ok: false, error: `Directory not found: ${abs}` });
+    if (!statSync(abs).isDirectory()) return res.status(400).json({ ok: false, error: 'Path is not a directory' });
+  } catch (err) {
+    return res.status(400).json({ ok: false, error: err.message });
+  }
+
+  const gitPath = normalizeGitPath(abs);
+  const r = spawnGit(['config', '--global', '--add', 'safe.directory', gitPath]);
+  if (r.status !== 0) {
+    const stderr = r.stderr?.toString?.()?.trim() || r.error?.message || 'git config failed';
+    logGitFailure('config --add safe.directory', r.error || { stderr: r.stderr });
+    return res.status(500).json({ ok: false, error: stderr });
+  }
+
+  // Confirm by re-probing
+  const stillDubious = detectDubiousOwnership(abs);
+  console.log(`[git] trusted workspace: ${gitPath}${stillDubious ? ' (but still flagged — check permissions)' : ''}`);
+  res.json({ ok: true, path: gitPath, stillDubious });
 });
 
 app.post('/api/terminal/checkout', (req, res) => {
