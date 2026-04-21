@@ -45,6 +45,13 @@ function runUpdate(key, badge) {
       if (btn?.dataset.tooltipOriginal) btn.dataset.tooltip = btn.dataset.tooltipOriginal;
     }
   }
+  // Poll for the new installed version after the install completes.
+  // npm-global installs typically take 5–45s; opencode upgrade similar.
+  // Re-check a few times, bail once the badge is cleared or retries run out.
+  const delays = [20000, 45000, 90000];
+  for (const ms of delays) {
+    setTimeout(() => { forceCheckToolUpdates(); }, ms);
+  }
 }
 
 function wireParentIntercept(parentId, badgeId, key) {
