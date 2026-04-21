@@ -9818,6 +9818,57 @@ function buildUpdateCommand(toolKey, installSource) {
   return `npm install -g ${npmPkg}@latest`;
 }
 
+// Resolve SynaBun's own install roots so we can reject any tool binary that
+// lives inside our bundled node_modules — bulletproof guard for the recurring
+// phantom-version bug (e.g. stale @anthropic-ai/claude-code left over from
+// prior SynaBun installs that shipped it as a dependency, which `npm install`
+// does not auto-prune when removed from package.json).
+const SYNABUN_ROOTS = (() => {
+  const roots = new Set();
+  try { roots.add(realpathSync(__dirname).replace(/\\/g, '/').toLowerCase()); } catch {}
+  try { roots.add(realpathSync(resolve(__dirname, '..')).replace(/\\/g, '/').toLowerCase()); } catch {}
+  return [...roots];
+})();
+
+function isInsideSynabun(binPath) {
+  if (!binPath) return false;
+  try {
+    const resolved = realpathSync(binPath).replace(/\\/g, '/').toLowerCase();
+    return SYNABUN_ROOTS.some(root => resolved.startsWith(root + '/'));
+  } catch {
+    const norm = binPath.replace(/\\/g, '/').toLowerCase();
+    return SYNABUN_ROOTS.some(root => norm.startsWith(root + '/'));
+  }
+}
+
+// Aggressively delete any stale bundled CLI tool packages left over in our
+// own node_modules. Idempotent — runs on every startup. Belt-and-suspenders
+// against `npm install` not auto-pruning packages removed from package.json.
+function pruneBundledCliTools() {
+  const stalePkgs = ['@anthropic-ai/claude-code', '@openai/codex', 'opencode-ai', '@google/gemini-cli'];
+  const moduleRoots = [
+    join(__dirname, 'node_modules'),
+    join(__dirname, '..', 'node_modules'),
+  ];
+  for (const root of moduleRoots) {
+    for (const pkg of stalePkgs) {
+      const target = join(root, pkg);
+      try {
+        if (existsSync(target)) {
+          rmSync(target, { recursive: true, force: true });
+          console.log(`  Pruned stale bundled CLI: ${target}`);
+        }
+      } catch { /* permission or in-use — ignore */ }
+      // Also remove .bin shims that point at the deleted package
+      const binBase = pkg.split('/').pop().replace(/-cli$|-ai$/, '');
+      for (const ext of ['', '.cmd', '.ps1', '.exe']) {
+        const shim = join(root, '.bin', binBase + ext);
+        try { if (existsSync(shim)) rmSync(shim, { force: true }); } catch {}
+      }
+    }
+  }
+}
+
 async function checkToolVersions() {
   // Strip node_modules/.bin entries so the version check reflects the user's
   // global install rather than any copy bundled with SynaBun itself.
@@ -9831,11 +9882,20 @@ async function checkToolVersions() {
   const results = {};
 
   for (const tool of TOOL_DEFS) {
+    // Resolve binary path FIRST. If it lives inside SynaBun's own install
+    // dir (stale bundled copy), treat the tool as not installed — do NOT
+    // run --version against it, since that would report the bundled
+    // version and trigger a false-positive update badge.
+    const probedBinPath = resolveBinPath(tool.cmd, cleanEnv);
+    const isStaleBundle = isInsideSynabun(probedBinPath);
+
     let installed = null;
-    try {
-      const raw = execSync(`${tool.cmd} ${tool.versionArg}`, execOpts).trim();
-      installed = parseVersion(raw);
-    } catch { /* not installed or errored */ }
+    if (!isStaleBundle) {
+      try {
+        const raw = execSync(`${tool.cmd} ${tool.versionArg}`, execOpts).trim();
+        installed = parseVersion(raw);
+      } catch { /* not installed or errored */ }
+    }
 
     let latest = null;
     try {
@@ -9852,7 +9912,7 @@ async function checkToolVersions() {
       }
     } catch { /* network error */ }
 
-    const binPath = installed ? resolveBinPath(tool.cmd, cleanEnv) : null;
+    const binPath = installed ? probedBinPath : null;
     const installSource = detectInstallSource(binPath);
     const updateCommand = installed ? buildUpdateCommand(tool.key, installSource) : null;
 
@@ -21081,6 +21141,12 @@ const httpServer = app.listen(PORT, async () => {
 
   // Check for npm updates
   try { await checkNpmUpdate(); } catch {}
+
+  // Aggressively prune any stale bundled CLI tools left in our node_modules
+  // before the version check runs — defends against `npm install` not auto-
+  // pruning packages that were removed from package.json (recurring source of
+  // phantom-version badges, e.g. v2.1.89 from a stale @anthropic-ai/claude-code).
+  try { pruneBundledCliTools(); } catch {}
 
   // Check for CLI tool updates
   try { await checkToolVersions(); } catch {}
