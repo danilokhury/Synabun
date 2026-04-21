@@ -236,14 +236,15 @@ function buildBrowserNote(state) {
     '=== BROWSER ENFORCEMENT (MANDATORY) ===',
     'This automation REQUIRES the SynaBun internal browser. You MUST:',
   ];
-  // Session and tab are auto-routed via SYNABUN_BROWSER_SESSION / SYNABUN_BROWSER_TAB env vars.
-  // Display IDs for debugging visibility but no manual pass-through needed.
+  // HTTP MCP is shared across all loops — env-var pinning does NOT route tool calls.
+  // Claude must pass sessionId/tabId explicitly on every browser tool call, or a
+  // concurrent loop will hijack the tab.
   if (state.browserSessionId) {
     lines.push(`YOUR BROWSER SESSION: ${state.browserSessionId}`);
     if (state.browserTabId) {
       lines.push(`YOUR BROWSER TAB: ${state.browserTabId}`);
     }
-    lines.push('Your session and tab are auto-configured via environment. All browser tool calls will target your dedicated tab automatically — no need to pass sessionId or tabId manually.');
+    lines.push(`CRITICAL: Pass sessionId: "${state.browserSessionId}"${state.browserTabId ? ` and tabId: "${state.browserTabId}"` : ''} to EVERY browser tool call (browser_navigate, browser_click, browser_snapshot, browser_extract_*, etc.). Omitting them will cause your tool calls to hijack another loop's tab. No exceptions.`);
   }
   lines.push(
     '1. Call `browser_navigate` with your target URL to create or reuse a browser session',
