@@ -95,17 +95,21 @@ function buildMcpServer() {
     return;
   }
 
-  // dist/ ships pre-built in the npm package — build is a fallback only
-  warn('MCP server dist/ not found — attempting build (requires TypeScript)');
+  info('Building MCP server from source...');
   try {
     execSync('npx tsc', {
       cwd: resolve(__dirname, 'mcp-server'),
-      stdio: 'pipe',
-      timeout: 60_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120_000,
     });
     ok('MCP server built');
   } catch (err) {
-    warn('MCP server build failed (TypeScript not available) — this is OK if dist/ was shipped');
+    fail('MCP server build failed:');
+    const stdout = err.stdout?.toString().trim();
+    const stderr = err.stderr?.toString().trim();
+    if (stdout) console.error(stdout);
+    if (stderr) console.error(stderr);
+    if (!stdout && !stderr) console.error(err.message);
   }
 }
 

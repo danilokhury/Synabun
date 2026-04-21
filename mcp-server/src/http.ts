@@ -6,7 +6,7 @@
  * Mount on any Express app or run standalone.
  */
 
-import express from 'express';
+import express, { type Router } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ensureDatabase } from './services/sqlite.js';
 import { initCategoryCache } from './services/categories.js';
@@ -39,7 +39,7 @@ export async function ensureInit() {
  * Auth is handled externally (URL-embedded key in server.js).
  * Can be mounted on an existing Express app: app.use('/mcp', createMcpRoutes());
  */
-export function createMcpRoutes() {
+export function createMcpRoutes(): Router {
   const router = express.Router();
   router.use(express.json());
 
