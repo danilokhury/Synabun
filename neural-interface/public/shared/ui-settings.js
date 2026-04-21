@@ -2269,6 +2269,7 @@ function buildProjectsTab(ccIntegrations) {
                   </div>
                   <div class="cc-panel-actions">
                     <button class="cc-explore-btn" data-cc-explore="${i}" style="background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Learn it</button>
+                    <button class="cc-trust-btn" data-cc-trust="${i}" title="Add this workspace to git safe.directory (fixes 'dubious ownership' errors)" style="background:rgba(255,183,77,0.14);border:1px solid rgba(255,183,77,0.3);color:#ffcc80;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Trust workspace</button>
                     <button class="cc-enable-btn${p.installed ? ' on' : ''}" data-cc-project-toggle="${i}">${p.installed ? 'Enabled' : 'Enable'}</button>
                     <button class="cc-remove-panel-btn" data-cc-remove="${i}">Remove</button>
                   </div>
@@ -6144,6 +6145,43 @@ export async function openSettingsModal() {
       const projectPath = panel?.dataset.ccPath;
       const projectLabel = panel?.querySelector('.cc-panel-title')?.textContent || 'Project';
       if (projectPath) openExploreModal(projectPath, projectLabel);
+    });
+  });
+
+  // Trust workspace (adds to git safe.directory global config)
+  overlay.querySelectorAll('.cc-trust-btn[data-cc-trust]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const idx = btn.dataset.ccTrust;
+      const panel = overlay.querySelector(`.cc-panel[data-cc-idx="${idx}"]`);
+      const projectPath = panel?.dataset.ccPath;
+      if (!projectPath) return;
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Trusting...';
+      try {
+        const res = await fetch('/api/terminal/trust-workspace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: projectPath }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          btn.textContent = '✓ Trusted';
+          btn.style.background = 'rgba(109,213,140,0.14)';
+          btn.style.borderColor = 'rgba(109,213,140,0.3)';
+          btn.style.color = '#a5d6a7';
+          setTimeout(() => { btn.disabled = false; btn.textContent = 'Trust workspace'; btn.style.background = 'rgba(255,183,77,0.14)'; btn.style.borderColor = 'rgba(255,183,77,0.3)'; btn.style.color = '#ffcc80'; }, 2500);
+        } else {
+          btn.disabled = false;
+          btn.textContent = origText;
+          alert('Trust failed: ' + (data.error || 'unknown error'));
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = origText;
+        alert('Trust failed: ' + err.message);
+      }
     });
   });
 
