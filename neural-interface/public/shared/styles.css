@@ -13868,6 +13868,23 @@
   }
   .fe-modal-confirm:hover { background: rgba(229,115,115,0.35); color: #ffab91; }
 
+  /* ── Trust-workspace modal (amber accent, different from destructive red) ── */
+  .fe-trust-modal .fe-modal-title { color: #ffb74d; }
+  .fe-trust-modal .fe-modal-confirm { background: rgba(255,183,77,0.18); color: #ffcc80; }
+  .fe-trust-modal .fe-modal-confirm:hover { background: rgba(255,183,77,0.3); color: #ffe0b2; }
+  .fe-trust-modal .fe-modal-confirm:disabled { opacity: 0.5; cursor: default; }
+  .fe-trust-path {
+    margin-top: 10px;
+    padding: 8px 10px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    color: rgba(255,255,255,0.6);
+    word-break: break-all;
+  }
+
   /* ── Color palette popup ── */
   .fe-color-palette {
     position: absolute;

@@ -648,7 +648,13 @@ async function addProjectFlow() {
 
     // Register as a project
     const label = data.path.split(/[\\/]/).pop() || data.path;
-    await fetch('/api/claude-code/integrations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: 'project', projectPath: data.path, label }) });
+    const integRes = await fetch('/api/claude-code/integrations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: 'project', projectPath: data.path, label }) });
+    const integData = await integRes.json().catch(() => ({}));
+
+    // Windows git CVE-2022-24765 safe.directory prompt — only fires when server detected the specific error.
+    if (integData && integData.dubiousOwnership && integData.trustPath) {
+      await promptTrustWorkspace(integData.trustPath);
+    }
 
     // Refresh projects list and select the new one
     await fetchProjects();
@@ -663,6 +669,67 @@ async function addProjectFlow() {
   } catch (err) {
     showToast('Failed to add project');
   }
+}
+
+function promptTrustWorkspace(trustPath) {
+  return new Promise((resolve) => {
+    const existing = document.getElementById('fe-trust-modal');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'fe-trust-modal';
+    overlay.className = 'fe-modal-overlay';
+
+    const modal = document.createElement('div');
+    modal.className = 'fe-modal fe-trust-modal';
+    modal.innerHTML = `
+      <div class="fe-modal-title">Git ownership mismatch</div>
+      <div class="fe-modal-body">
+        Git is refusing to read this workspace because it's owned by a different user account. Trusting it adds the directory to your global <code>safe.directory</code> config so Synabun's git UI can show the branch and changes.
+        <div class="fe-trust-path" id="fe-trust-path"></div>
+      </div>
+      <div class="fe-modal-actions">
+        <button class="fe-modal-btn fe-modal-cancel" id="fe-trust-skip">Skip</button>
+        <button class="fe-modal-btn fe-modal-confirm" id="fe-trust-confirm">Trust workspace</button>
+      </div>
+    `;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    modal.querySelector('#fe-trust-path').textContent = trustPath;
+
+    requestAnimationFrame(() => overlay.classList.add('fe-modal-overlay--in'));
+
+    const done = () => {
+      overlay.classList.remove('fe-modal-overlay--in');
+      setTimeout(() => overlay.remove(), 150);
+      document.removeEventListener('keydown', onKey);
+      resolve();
+    };
+    const onKey = (ev) => { if (ev.key === 'Escape') done(); };
+    document.addEventListener('keydown', onKey);
+
+    modal.querySelector('#fe-trust-skip').addEventListener('click', done);
+    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) done(); });
+
+    modal.querySelector('#fe-trust-confirm').addEventListener('click', async () => {
+      const btn = modal.querySelector('#fe-trust-confirm');
+      btn.disabled = true;
+      btn.textContent = 'Trusting...';
+      try {
+        const res = await fetch('/api/terminal/trust-workspace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: trustPath }),
+        });
+        const data = await res.json();
+        if (data.ok) showToast('Workspace trusted');
+        else showToast(data.error || 'Trust failed');
+      } catch {
+        showToast('Trust failed');
+      }
+      done();
+    });
+  });
 }
 
 function initProjectSelector() {
