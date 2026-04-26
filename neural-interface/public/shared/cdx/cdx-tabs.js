@@ -9,7 +9,7 @@ import { isClaudePanelOpen, toggleClaudePanel } from '../ui-claude-panel.js';
 import { reserveRightPanelLayout, clearRightPanelLayout } from '../ui-sidepanel-layout.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import {
-  STOR, EFFORT_LEVELS, MAX_TABS, MAX_THREAD_SNAPSHOTS, MAX_THREAD_SNAPSHOT_CHARS,
+  STOR, EFFORT_LEVELS, MAX_THREAD_SNAPSHOTS, MAX_THREAD_SNAPSHOT_CHARS,
   CODEX_GREETING_MARKER_START, CODEX_GREETING_MARKER_END, CODEX_PLAN_MODE_PREFIXES,
   STATUS_TONE, PANEL_OWNER, windowId, STALL_WARN_MS, STALL_KILL_MS,
   OPENAI_ICON, ICON_SPARK, ICON_TERMINAL, ICON_TOOL, ICON_FILES, ICON_PLUS,
@@ -73,7 +73,12 @@ function scrollEnd() { _onScrollEnd?.(); }
 function autosizeInput() { _onAutosizeInput?.(); }
 function emit(...args) { _onEmit?.(...args); }
 
-function sendSocket(msg) { return wsSendSocket(msg, _ws); }
+function sendSocket(msg) {
+  const packet = msg && _boundTab?.id && !msg.sessionId
+    ? { sessionId: _boundTab.id, ...msg }
+    : msg;
+  return wsSendSocket(packet, _ws);
+}
 
 // ── connectTab / disconnectTab wrappers (build callbacks for cdx-ws) ──
 
@@ -111,8 +116,14 @@ function buildWsCallbacks(tab) {
     onClose(tab, ws, { intentional }) {
       _connected = false;
       _bootstrapped = false;
+      _pendingReattach = !intentional;
       _ws = null;
-      if (_boundTab) { _boundTab.connected = false; _boundTab.bootstrapped = false; _boundTab.ws = null; }
+      if (_boundTab) {
+        _boundTab.connected = false;
+        _boundTab.bootstrapped = false;
+        _boundTab.pendingReattach = _pendingReattach;
+        _boundTab.ws = null;
+      }
       syncInputEnabled();
       syncSessionControls();
       if (!intentional && !tab.closed) {
@@ -124,6 +135,8 @@ function buildWsCallbacks(tab) {
     },
 
     onReattachResult(msg) {
+      _pendingReattach = false;
+      if (_boundTab) _boundTab.pendingReattach = false;
       if (msg.ok) {
         _threadId = msg.threadId || _threadId;
         if (_boundTab) _boundTab.threadId = _threadId;
@@ -244,7 +257,14 @@ function buildWsCallbacks(tab) {
     onInterruptAck(msg) {
       _running = false;
       _activeTurnId = null;
-      if (_boundTab) { _boundTab.running = false; _boundTab.activeTurnId = null; }
+      if (_boundTab) {
+        _boundTab.running = false;
+        _boundTab.activeTurnId = null;
+        if (_boundTab._abortRetry) {
+          clearTimeout(_boundTab._abortRetry);
+          _boundTab._abortRetry = null;
+        }
+      }
       clearInterruptTimer();
       stopStallTimer();
       setStatus('Interrupted', 'muted');
@@ -265,7 +285,7 @@ function buildWsCallbacks(tab) {
       if (window.__cxpModelListResolve) {
         window.__cxpModelListResolve(models);
       } else {
-        populateModelDropdown(models.length ? models : CODEX_DEFAULT_MODELS);
+        populateModelDropdown(mergeCodexModelList(models));
       }
     },
 
@@ -355,6 +375,9 @@ let _planContent = '';
 let _editedPlanContent = '';
 let _showPostPlanActions = false;
 let _postPlanHeader = 'PLAN COMPLETE';
+let _planTurnActive = false;
+let _planApprovalPending = false;
+let _lastPlanTurnId = '';
 let _showPostCompactionPrompt = false;
 let _postCompactionPending = false;
 let _stallTimer = null;
@@ -529,6 +552,9 @@ function applySocketError(msg) {
   if (_compacting) setCompactingUI(false);
   appendSystem(text, 'error');
   setStatus(text, 'error');
+  if (/Codex CLI not found|ENOENT|app-server exited before responding|app-server spawn/i.test(text)) {
+    import('./cdx-panel.js').then((m) => m.flagCdxCliInstallFailure?.()).catch(() => {});
+  }
   if (msg.requestId) {
     if (_sessionListRequest?.requestId === msg.requestId) {
       _sessionListRequest.reject?.(new Error(text));
@@ -746,6 +772,12 @@ export function flushThreadSnapshotSave(tab = _boundTab) {
   writeThreadSnapshot(tab);
 }
 
+export function flushAllThreadSnapshots() {
+  for (const tab of _tabs) {
+    try { flushThreadSnapshotSave(tab); } catch {}
+  }
+}
+
 function normalizeTokenUsageBreakdown(value) {
   if (!value || typeof value !== 'object') return null;
   return {
@@ -822,18 +854,65 @@ let _hljs = null;
 
 
 // ── Plan state functions (lines 886-938) ──
+function isPlanModePromptText(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  return /^\[PLAN MODE\b/i.test(value)
+    || CODEX_PLAN_MODE_PREFIXES.some((prefix) => value.startsWith(prefix));
+}
+
+function syncPlanHandoffFlags(tab = _boundTab) {
+  if (!tab || !isActiveTab(tab)) return;
+  _planTurnActive = !!tab.planTurnActive;
+  _planApprovalPending = !!tab.planApprovalPending;
+  _lastPlanTurnId = tab.lastPlanTurnId || '';
+}
+
+function setPlanTurnActive(tab = _boundTab, value, turnId = '') {
+  if (!tab) return;
+  tab.planTurnActive = !!value;
+  if (turnId !== undefined) tab.lastPlanTurnId = turnId || '';
+  syncPlanHandoffFlags(tab);
+}
+
+function setPlanApprovalPending(tab = _boundTab, value) {
+  if (!tab) return;
+  tab.planApprovalPending = !!value;
+  syncPlanHandoffFlags(tab);
+}
+
+function shouldHoldForPlanApproval(tab = activeTab()) {
+  return !!(tab?.showPostPlanActions || tab?.planApprovalPending);
+}
+
+function captureCompletedPlanItem(tab = _boundTab, item = null) {
+  if (!tab || !tab.planTurnActive || !item) return '';
+  const itemType = item.type || '';
+  if (itemType !== 'plan' && itemType !== 'agentMessage') return '';
+  const state = item.id ? tab.items?.get?.(item.id) : null;
+  const text = String(state?.buffer || item.text || '').trim();
+  if (text.length <= 80) return '';
+  return capturePlanContent(tab, text);
+}
+
 export function clearPlanHandoffState(tab = _boundTab, { keepFilePath = false } = {}) {
   if (!tab) return;
   tab.planContent = '';
   tab.editedPlanContent = '';
   tab.showPostPlanActions = false;
   tab.postPlanHeader = 'PLAN COMPLETE';
+  tab.planTurnActive = false;
+  tab.planApprovalPending = false;
+  tab.lastPlanTurnId = '';
   if (!keepFilePath) tab.planFilePath = '';
   if (isActiveTab(tab)) {
     _planContent = '';
     _editedPlanContent = '';
     _showPostPlanActions = false;
     _postPlanHeader = 'PLAN COMPLETE';
+    _planTurnActive = false;
+    _planApprovalPending = false;
+    _lastPlanTurnId = '';
     if (!keepFilePath) _planFilePath = '';
   }
   removePostPlanCards(tab.messagesEl);
@@ -914,6 +993,39 @@ export function capturePlanContent(tab = _boundTab, explicitText = '') {
   return next;
 }
 
+export async function ensurePlanFile(tab = _boundTab) {
+  if (!tab) return '';
+  if (tab.planFilePath) return tab.planFilePath;
+  if (tab._planFilePromise) return tab._planFilePromise;
+  const planText = capturePlanContent(tab);
+  if (!planText) return '';
+
+  tab._planFilePromise = fetch('/api/create-plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: planText, cwd: tab.project || _project || '' }),
+  })
+    .then(async (res) => {
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok || !result?.ok || !result.path) {
+        throw new Error(result?.error || 'create-plan failed');
+      }
+      tab.planFilePath = result.path;
+      if (isActiveTab(tab)) _planFilePath = result.path;
+      saveTabs();
+      return result.path;
+    })
+    .catch((err) => {
+      console.warn('[codex-panel] create-plan failed:', err);
+      return '';
+    })
+    .finally(() => {
+      tab._planFilePromise = null;
+    });
+
+  return tab._planFilePromise;
+}
+
 // ── Formatting & helpers (lines 1148-1421) ──
 export function formatStatus(status) {
   if (!status) return 'pending';
@@ -966,6 +1078,7 @@ function formatContextTrackerState(meta) {
 }
 
 const CODEX_MODEL_PRICING = {
+  'gpt-5.5': { input: 5.00, cachedInput: 5.00, output: 30.00 },
   'gpt-5.4': { input: 2.50, cachedInput: 0.25, output: 15.00 },
   'gpt-5.4-mini': { input: 0.75, cachedInput: 0.075, output: 4.50 },
 };
@@ -1000,10 +1113,15 @@ function itemHeadline(item) {
           : 'Preparing file changes',
       };
     case 'reasoning':
-      return {
-        title: 'Reasoning',
-        detail: cleanPreview(Array.isArray(item.summary) ? item.summary.join(' ') : 'Working through the next step'),
-      };
+      {
+        const summaryText = Array.isArray(item.summary)
+          ? item.summary.map((part) => typeof part === 'string' ? part : (part?.text || part?.summaryText || '')).filter(Boolean).join(' ')
+          : (item.summaryText || item.summary_text || item.text || '');
+        return {
+          title: 'Reasoning summary',
+          detail: cleanPreview(summaryText || 'Working through the next step'),
+        };
+      }
     case 'plan':
       return {
         title: 'Updating plan',
@@ -1269,6 +1387,9 @@ export function snapshotBoundState() {
     editedPlanContent: _editedPlanContent,
     showPostPlanActions: _showPostPlanActions,
     postPlanHeader: _postPlanHeader,
+    planTurnActive: _planTurnActive,
+    planApprovalPending: _planApprovalPending,
+    lastPlanTurnId: _lastPlanTurnId,
     showPostCompactionPrompt: _showPostCompactionPrompt,
     postCompactionPending: _postCompactionPending,
     blockingServerRequests: _blockingServerRequests,
@@ -1319,6 +1440,9 @@ export function restoreBoundState(state) {
   _editedPlanContent = state.editedPlanContent || '';
   _showPostPlanActions = !!state.showPostPlanActions;
   _postPlanHeader = state.postPlanHeader || 'PLAN COMPLETE';
+  _planTurnActive = !!state.planTurnActive;
+  _planApprovalPending = !!state.planApprovalPending;
+  _lastPlanTurnId = state.lastPlanTurnId || '';
   _showPostCompactionPrompt = !!state.showPostCompactionPrompt;
   _postCompactionPending = !!state.postCompactionPending;
   _blockingServerRequests = state.blockingServerRequests || new Map();
@@ -1368,6 +1492,9 @@ export function commitBoundState() {
   _boundTab.editedPlanContent = _editedPlanContent;
   _boundTab.showPostPlanActions = _showPostPlanActions;
   _boundTab.postPlanHeader = _postPlanHeader;
+  _boundTab.planTurnActive = _planTurnActive;
+  _boundTab.planApprovalPending = _planApprovalPending;
+  _boundTab.lastPlanTurnId = _lastPlanTurnId;
   _boundTab.showPostCompactionPrompt = _showPostCompactionPrompt;
   _boundTab.postCompactionPending = _postCompactionPending;
   _boundTab.blockingServerRequests = _blockingServerRequests;
@@ -1417,6 +1544,9 @@ export function bindTabState(tab) {
   _editedPlanContent = tab?.editedPlanContent || '';
   _showPostPlanActions = !!tab?.showPostPlanActions;
   _postPlanHeader = tab?.postPlanHeader || 'PLAN COMPLETE';
+  _planTurnActive = !!tab?.planTurnActive;
+  _planApprovalPending = !!tab?.planApprovalPending;
+  _lastPlanTurnId = tab?.lastPlanTurnId || '';
   _showPostCompactionPrompt = !!tab?.showPostCompactionPrompt;
   _postCompactionPending = !!tab?.postCompactionPending;
   _blockingServerRequests = tab?.blockingServerRequests || new Map();
@@ -1484,6 +1614,7 @@ function hasMeaningfulTrayState(tab) {
   const draft = normalizeSessionLabel(tab.draft || '');
   return !!(
     tab.threadId
+    || hasCustomSessionLabel(tab)
     || tab.running
     || tab.startingThread
     || draft
@@ -1491,6 +1622,76 @@ function hasMeaningfulTrayState(tab) {
     || tab.pendingPaths?.length
     || tab.queue?.length
   );
+}
+
+function hasCustomSessionLabel(tab) {
+  const label = normalizeSessionLabel(tab?.pendingSessionLabel || tab?.sessionLabel || '');
+  if (!label) return false;
+  return !['new session', 'saved session', 'untitled session', 'codex'].includes(label.toLowerCase());
+}
+
+function hasMeaningfulTabState(tab) {
+  if (!tab) return false;
+  return !!(
+    hasMeaningfulTrayState(tab)
+    || tab.planContent
+    || tab.editedPlanContent
+    || tab.showPostPlanActions
+    || tab.planApprovalPending
+    || tab.postCompactionPending
+    || tab.items?.size
+    || tab.activeItems?.size
+    || tab.blockingServerRequests?.size
+  );
+}
+
+function isDiscardableBlankTab(tab) {
+  return !!tab && !hasMeaningfulTabState(tab);
+}
+
+function disposeDiscardedTab(tab) {
+  if (!tab) return;
+  flushThreadSnapshotSave(tab);
+  disconnectTab(tab);
+  tab.closed = true;
+  if (tab.snapshotTimer) {
+    clearTimeout(tab.snapshotTimer);
+    tab.snapshotTimer = null;
+  }
+  tab.messagesEl?.remove();
+  tab.pillEl?.remove();
+}
+
+function pruneDiscardableTabs({ keepTab = activeTab(), persist = false } = {}) {
+  // Blank tabs are provisional composer state; inactive blanks have no tray affordance.
+  let pruned = false;
+  for (let idx = _tabs.length - 1; idx >= 0; idx -= 1) {
+    const tab = _tabs[idx];
+    if (tab === keepTab || !isDiscardableBlankTab(tab)) continue;
+    disposeDiscardedTab(tab);
+    _tabs.splice(idx, 1);
+    if (_activeTabIdx > idx) _activeTabIdx -= 1;
+    else if (_activeTabIdx >= _tabs.length) _activeTabIdx = _tabs.length - 1;
+    pruned = true;
+  }
+  if (_activeTabIdx < 0 && _tabs.length) _activeTabIdx = 0;
+  if (pruned) {
+    renderPills();
+    if (persist) saveTabs();
+  }
+  return pruned;
+}
+
+function isBlankTabRequest(saved = {}) {
+  return !saved.threadId
+    && !normalizeSessionLabel(saved.title || '')
+    && !normalizeSessionLabel(saved.draft || '')
+    && !saved.planContent
+    && !saved.editedPlanContent
+    && !saved.showPostPlanActions
+    && !saved.planApprovalPending
+    && !saved.showPostCompactionPrompt
+    && !saved.postCompactionPending;
 }
 
 function createTrayPill(tab) {
@@ -1588,7 +1789,10 @@ export function switchTab(idx) {
 }
 
 export function createTab(saved = {}, { autoSwitch = true } = {}) {
-  if (_tabs.length >= MAX_TABS) return null;
+  if (autoSwitch && isBlankTabRequest(saved) && isDiscardableBlankTab(activeTab())) {
+    return activeTab();
+  }
+  pruneDiscardableTabs({ keepTab: activeTab(), persist: false });
   const inheritedProject = saved.project ?? activeTab()?.project ?? (storage.getItem(STOR.project) || '');
   const threadId = saved.threadId || null;
   const title = normalizeSessionLabel(saved.title || '');
@@ -1653,6 +1857,9 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     editedPlanContent: saved.editedPlanContent || '',
     showPostPlanActions: !!saved.showPostPlanActions,
     postPlanHeader: saved.postPlanHeader || 'PLAN COMPLETE',
+    planTurnActive: !!saved.planTurnActive,
+    planApprovalPending: !!saved.planApprovalPending,
+    lastPlanTurnId: saved.lastPlanTurnId || '',
     pendingSessionLabel: saved.pendingSessionLabel || null,  // user-named before thread exists; sent via thread_rename once ready
     showPostCompactionPrompt: !!saved.showPostCompactionPrompt,
     postCompactionPending: !!saved.postCompactionPending,
@@ -1736,6 +1943,7 @@ export function closeTab(idx) {
 export function saveTabs() {
   try {
     commitBoundState();
+    pruneDiscardableTabs({ keepTab: activeTab(), persist: false });
     const payload = JSON.stringify({
       tabs: _tabs.map((tab) => {
         const persistedTokenUsage = normalizeThreadTokenUsage(tab.threadTokenUsage);
@@ -1760,6 +1968,9 @@ export function saveTabs() {
           editedPlanContent: tab.editedPlanContent || '',
           showPostPlanActions: !!tab.showPostPlanActions,
           postPlanHeader: tab.postPlanHeader || 'PLAN COMPLETE',
+          planTurnActive: !!tab.planTurnActive,
+          planApprovalPending: !!tab.planApprovalPending,
+          lastPlanTurnId: tab.lastPlanTurnId || '',
           showPostCompactionPrompt: !!tab.showPostCompactionPrompt,
           postCompactionPending: !!tab.postCompactionPending,
         };
@@ -1779,6 +1990,8 @@ export function restoreTabs() {
       if (Array.isArray(data?.tabs) && data.tabs.length) {
         for (const saved of data.tabs) createTab(saved, { autoSwitch: false });
         _activeTabIdx = Math.min(Math.max(Number(data.activeIdx) || 0, 0), _tabs.length - 1);
+        pruneDiscardableTabs({ keepTab: activeTab(), persist: false });
+        if (!_tabs.length) throw new Error('No restorable Codex tabs');
         updateActiveTabView();
         saveTabs();
         return;
@@ -1831,6 +2044,7 @@ function startupEmptyText() {
 export function clearTranscript(emptyText = freshThreadText()) {
   if (!_messagesEl) return;
   _messagesEl.innerHTML = `<div class="cxp-empty"><div class="cxp-empty-logo">${OPENAI_ICON}</div><span class="cxp-empty-name">Codex</span><span class="cxp-empty-status"></span></div>`;
+  document.dispatchEvent(new CustomEvent('cdx-empty-rebuilt'));
   _items.clear();
   _requestCards.clear();
   _blockingServerRequests = new Map();
@@ -3061,15 +3275,18 @@ export function syncInputEnabled() {
   const hasPaths = !!(tab?.pendingPaths?.length);
   const blockedByRequest = hasBlockingServerRequests();
   if (input) input.disabled = !_connected || !_bootstrapped || _startingThread || blockedByRequest;
+  const cliBlocked = document.getElementById('codex-panel')?.classList.contains('cxp-cli-blocked');
   if (send) {
-    // Stop button shows when any tab in the panel is running, so the user can
-    // abort the whole panel regardless of which tab is focused.
-    const isStopMode = _running || _tabs.some((t) => t?.running);
+    const isStopMode = !!(tab?.running || _running);
     send.classList.toggle('cxp-send-stopping', !!isStopMode);
-    send.title = isStopMode ? 'Stop' : 'Send';
-    send.disabled = isStopMode ? false : (!_connected || !_bootstrapped || _running || _startingThread || blockedByRequest || (!hasText && !hasImages && !hasPaths));
+    send.title = cliBlocked ? 'Codex CLI not installed' : (isStopMode ? 'Stop' : 'Send');
+    send.disabled = cliBlocked || (isStopMode ? false : (!_connected || !_bootstrapped || _running || _startingThread || blockedByRequest || (!hasText && !hasImages && !hasPaths)));
   }
-  if (fresh) fresh.disabled = _tabs.length >= MAX_TABS;
+  if (fresh) {
+    pruneDiscardableTabs({ keepTab: tab, persist: true });
+    fresh.disabled = false;
+    fresh.title = 'New Codex tab';
+  }
   if (close) close.disabled = false;
   if (compact) {
     compact.disabled = !_connected || !_bootstrapped || !_threadId || _running || _startingThread || _compacting;
@@ -3108,7 +3325,9 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
     finalPrompt += `${finalPrompt ? '\n\n' : ''}Referenced files:\n${pathList.map((path) => `- ${path}`).join('\n')}`;
   }
 
+  const explicitPlanPrompt = isPlanModePromptText(finalPrompt);
   const usePlanModePrefix = forcePlanModePrefix == null ? !!tab?.planMode : !!forcePlanModePrefix;
+  const sentAsPlanMode = !!usePlanModePrefix || explicitPlanPrompt;
   if (usePlanModePrefix) {
     finalPrompt = `${CODEX_PLAN_MODE_PREFIXES[0]}\n\n${finalPrompt}`;
   }
@@ -3117,6 +3336,8 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
     type: 'query',
     requestId: crypto.randomUUID(),
     prompt: finalPrompt,
+    planMode: sentAsPlanMode,
+    autoAccept: !!tab?.autoAccept,
     threadId: _threadId || null,
     fresh: _freshThread || !_threadId,
     cwd: _project || null,
@@ -3132,6 +3353,16 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
   if (!sendSocket(msg)) {
     setStatus('Codex is not connected', 'error');
     return false;
+  }
+  if (tab) {
+    tab.planTurnActive = sentAsPlanMode;
+    tab.planApprovalPending = false;
+    tab.lastPlanTurnId = msg.requestId;
+    if (isActiveTab(tab)) {
+      _planTurnActive = sentAsPlanMode;
+      _planApprovalPending = false;
+      _lastPlanTurnId = msg.requestId;
+    }
   }
   clearPostCompactionState(tab, { updateTranscript: !_freshThread });
   if (_freshThread) clearTranscript('Starting fresh Codex thread…');
@@ -3194,29 +3425,47 @@ export function handleNotify(method, params) {
       break;
     case 'turn/completed':
       if (_compacting) setCompactingUI(false);
-      setRunning(false);
-      if (params.turn?.error?.message) {
-        appendSystem(params.turn.error.message, 'error');
-        setStatus(params.turn.error.message, 'error');
-        notifyCodexTurnOutcome(NOTIF_TYPE.ERROR, _boundTab, params.turn?.id || _activeTurnId);
-      } else if (_boundTab?.planMode) {
-        const capturedPlan = capturePlanContent(_boundTab);
-        if (capturedPlan) {
-          _boundTab.showPostPlanActions = true;
-          _boundTab.postPlanHeader = 'PLAN COMPLETE';
-          _showPostPlanActions = true;
-          _postPlanHeader = 'PLAN COMPLETE';
-          renderPostPlanActions(_boundTab);
-          saveTabs();
+      {
+        const tab = _boundTab;
+        const wasPlanTurn = !!(tab?.planTurnActive || _planTurnActive || tab?.planMode);
+        setRunning(false);
+        if (params.turn?.error?.message) {
+          setPlanTurnActive(_boundTab, false, '');
+          setPlanApprovalPending(_boundTab, false);
+          appendSystem(params.turn.error.message, 'error');
+          setStatus(params.turn.error.message, 'error');
+          notifyCodexTurnOutcome(NOTIF_TYPE.ERROR, _boundTab, params.turn?.id || _activeTurnId);
+        } else if (wasPlanTurn && tab) {
+          const capturedPlan = capturePlanContent(tab);
+          if (capturedPlan) {
+            tab.planMode = false;
+            tab.showPostPlanActions = true;
+            tab.postPlanHeader = 'PLAN COMPLETE';
+            tab.planApprovalPending = true;
+            tab.planTurnActive = false;
+            _showPostPlanActions = true;
+            _postPlanHeader = 'PLAN COMPLETE';
+            _planApprovalPending = true;
+            _planTurnActive = false;
+            _lastPlanTurnId = '';
+            tab.lastPlanTurnId = '';
+            ensurePlanFile(tab);
+            renderPostPlanActions(tab);
+            syncToolbarState();
+            saveTabs();
+          } else {
+            setPlanTurnActive(tab, false, '');
+            setPlanApprovalPending(tab, false);
+          }
+          notifyCodexTurnOutcome(NOTIF_TYPE.DONE, tab, params.turn?.id || _activeTurnId);
+        } else {
+          notifyCodexTurnOutcome(NOTIF_TYPE.DONE, _boundTab, params.turn?.id || _activeTurnId);
         }
-        notifyCodexTurnOutcome(NOTIF_TYPE.DONE, _boundTab, params.turn?.id || _activeTurnId);
-      } else {
-        notifyCodexTurnOutcome(NOTIF_TYPE.DONE, _boundTab, params.turn?.id || _activeTurnId);
+        if (_boundTab?.postCompactionPending && !_boundTab?.showPostPlanActions) {
+          flushPostCompactionPrompt(_boundTab);
+        }
+        if (!shouldHoldForPlanApproval(_boundTab)) advanceQueue();
       }
-      if (_boundTab?.postCompactionPending && !_boundTab?.showPostPlanActions) {
-        flushPostCompactionPrompt(_boundTab);
-      }
-      advanceQueue();
       break;
     case 'thread/compacted':
       setCompactingUI(false);
@@ -3266,25 +3515,30 @@ export function handleNotify(method, params) {
     case 'item/autoApprovalReview/completed':
       setGuardianReviewState(params.targetItemId, params.review);
       break;
-    case 'item/completed':
+    case 'item/completed': {
+      const completedItem = params.item?.type === 'reasoning' && params.item.status == null
+        ? { ...params.item, status: 'complete' }
+        : params.item;
       // Inject pending images into userMessage if not consumed at item/started
-      if (params.item?.type === 'userMessage' && _boundTab?._pendingSendImages?.length) {
+      if (completedItem?.type === 'userMessage' && _boundTab?._pendingSendImages?.length) {
         const imgItems = _boundTab._pendingSendImages.map((img) => ({
           type: 'localImage',
           name: img.name || 'image',
           dataUrl: img.dataUrl,
         }));
-        params.item.content = [...imgItems, ...(params.item.content || [])];
+        completedItem.content = [...imgItems, ...(completedItem.content || [])];
         _boundTab._pendingSendImages = null;
       }
-      updateItemFromData(params.item);
-      trackActiveItemCompletion(params.item);
-      if (params.item?.type === 'contextCompaction') {
+      updateItemFromData(completedItem);
+      trackActiveItemCompletion(completedItem);
+      captureCompletedPlanItem(_boundTab, completedItem);
+      if (completedItem?.type === 'contextCompaction') {
         markPostCompactionPrompt(_boundTab, { defer: _running });
       }
       // Re-show thinking — Codex is processing between items
       if (_running) showThinking();
       break;
+    }
     case 'item/agentMessage/delta':
       appendAgentDelta(params.itemId, params.delta);
       repositionThinking();
@@ -3294,14 +3548,19 @@ export function handleNotify(method, params) {
       repositionThinking();
       break;
     case 'item/reasoning/textDelta':
+      hideThinking();
       appendReasoningDelta(params.itemId, params.delta, false);
-      repositionThinking();
+      syncWorkStatus();
       break;
     case 'item/reasoning/summaryTextDelta':
+      hideThinking();
       appendReasoningDelta(params.itemId, params.delta, true, params.summaryIndex);
+      syncWorkStatus();
       break;
     case 'item/reasoning/summaryPartAdded':
+      hideThinking();
       appendReasoningSummaryPart(params.itemId, params.summaryIndex);
+      syncWorkStatus();
       break;
     case 'item/commandExecution/outputDelta':
       appendOutputDelta(params.itemId, params.delta, 'commandExecution');
@@ -3451,7 +3710,7 @@ export function syncToolbarState() {
     effortBtn.title = `Effort level: ${effort}`;
     effortBtn.classList.toggle('active', effort !== 'off');
     const dots = effortBtn.querySelectorAll('.cxp-effort-dots i');
-    const litCount = effort === 'off' ? 0 : effort === 'low' ? 1 : effort === 'medium' ? 2 : 3;
+    const litCount = Math.max(0, EFFORT_LEVELS.indexOf(effort));
     dots.forEach((d, i) => d.classList.toggle('lit', i < litCount));
   }
   if (planBtn) {
@@ -3472,9 +3731,27 @@ export function syncToolbarState() {
   }
 }
 
-const CODEX_DEFAULT_MODELS = ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'];
+const CODEX_DEFAULT_MODELS = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'];
 let _modelListCache = null;
 let _modelListRequest = null;
+
+function getCodexModelName(model) {
+  const name = typeof model === 'string' ? model : (model?.id || model?.model || model?.name || '');
+  return String(name || '').trim();
+}
+
+function mergeCodexModelList(models) {
+  const merged = [];
+  const seen = new Set();
+  for (const model of [...CODEX_DEFAULT_MODELS, ...(Array.isArray(models) ? models : [])]) {
+    const name = getCodexModelName(model);
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(name);
+  }
+  return merged;
+}
 
 export function requestModelList() {
   if (_modelListCache) return Promise.resolve(_modelListCache);
@@ -3482,14 +3759,14 @@ export function requestModelList() {
   _modelListRequest = new Promise((resolve) => {
     const requestId = crypto.randomUUID();
     if (!sendSocket({ type: 'model_list', requestId })) {
-      _modelListCache = CODEX_DEFAULT_MODELS;
+      _modelListCache = mergeCodexModelList([]);
       populateModelDropdown(_modelListCache);
       resolve(_modelListCache);
       _modelListRequest = null;
       return;
     }
     window.__cxpModelListResolve = (models) => {
-      _modelListCache = models?.length ? models : CODEX_DEFAULT_MODELS;
+      _modelListCache = mergeCodexModelList(models);
       populateModelDropdown(_modelListCache);
       resolve(_modelListCache);
       _modelListRequest = null;
@@ -3511,7 +3788,7 @@ export function populateModelDropdown(models) {
   if (!menu) return;
   menu.innerHTML = '';
   for (const m of models) {
-    const name = typeof m === 'string' ? m : (m?.id || m?.model || m?.name || '');
+    const name = getCodexModelName(m);
     if (!name) continue;
     const item = document.createElement('div');
     item.className = 'cxp-dd-item';
@@ -3576,22 +3853,35 @@ export function stopStallTimer() {
   _stallTimer = null;
 }
 
+export function interruptTab(tab = activeTab()) {
+  if (!tab?.running) return false;
+
+  return withTab(tab, () => {
+    const threadId = _threadId || tab.threadId || null;
+
+    // Reset UI immediately; the server interrupt/kill is best-effort cleanup.
+    setRunning(false);
+    setStatus('Stopped', 'info');
+    appendSystem('Stopped.', 'muted');
+
+    clearInterruptTimer();
+    if (tab._abortRetry) {
+      clearTimeout(tab._abortRetry);
+      tab._abortRetry = null;
+    }
+    sendSocket({ type: 'interrupt', sessionId: tab.id, threadId });
+    tab._abortRetry = setTimeout(() => {
+      tab._abortRetry = null;
+      const ws = tab.ws;
+      if (ws?.readyState !== 1) return;
+      try { ws.send(JSON.stringify({ type: 'force_kill', sessionId: tab.id, threadId })); } catch {}
+    }, 2500);
+    return true;
+  });
+}
+
 export function interruptTurn() {
-  if (!_running) return;
-
-  // Reset UI immediately — don't wait for server round-trip
-  setRunning(false);
-  setStatus('Stopped', 'info');
-  appendSystem('Stopped.', 'muted');
-
-  clearInterruptTimer();
-  sendSocket({ type: 'interrupt', threadId: _threadId || null });
-  _interruptTimer = setTimeout(() => {
-    _interruptTimer = null;
-    if (_interruptRetried) return;
-    _interruptRetried = true;
-    sendSocket({ type: 'force_kill', threadId: _threadId || null });
-  }, 2500);
+  return interruptTab(activeTab());
 }
 
 export function interruptAllTabs() {
@@ -3602,12 +3892,12 @@ export function interruptAllTabs() {
     const ws = tab.ws;
     const threadId = tab.threadId || null;
     if (ws && ws.readyState === 1) {
-      try { ws.send(JSON.stringify({ type: 'interrupt', threadId })); } catch {}
+      try { ws.send(JSON.stringify({ type: 'interrupt', sessionId: tab.id, threadId })); } catch {}
       if (tab._abortRetry) clearTimeout(tab._abortRetry);
       tab._abortRetry = setTimeout(() => {
         tab._abortRetry = null;
         try {
-          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'force_kill', threadId }));
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'force_kill', sessionId: tab.id, threadId }));
         } catch {}
       }, 2000);
     }
@@ -3778,6 +4068,8 @@ function formatStatusSnapshotMarkdown(snapshot, tab = activeTab()) {
     `- Thread: \`${runtime.activeThreadId || tab?.threadId || 'none'}\`${runtime.activeTurnId ? ` (active turn \`${runtime.activeTurnId}\`)` : ''}`,
     `- Model: \`${tab?.model || effective.model || 'default'}\``,
     `- Reasoning effort: \`${tab?.effort && tab.effort !== 'off' ? tab.effort : (effective.model_reasoning_effort || 'default')}\``,
+    `- Reasoning summary: \`${effective.model_reasoning_summary || 'default'}\``,
+    `- Response verbosity: \`${effective.model_verbosity || 'default'}\``,
     `- Personality: \`${effective.personality || 'pragmatic'}\``,
     `- Fast mode: \`${effective.service_tier || 'default'}\``,
     `- Approval policy: \`${effective.approval_policy || 'never'}\``,
@@ -3911,11 +4203,18 @@ function setModelForTab(tab, model) {
 }
 
 function setEffortForTab(tab, effort) {
-  if (!tab || !effort) return;
-  tab.effort = effort;
-  storage.setItem(STOR.effort, effort);
+  if (!tab) return false;
+  const normalized = String(effort || '').trim().toLowerCase();
+  const nextEffort = normalized === 'default' || normalized === 'none' ? 'off' : normalized;
+  if (!EFFORT_LEVELS.includes(nextEffort)) {
+    appendSystem(`Unknown reasoning effort: ${effort}. Use off, minimal, low, medium, high, or xhigh.`, 'error');
+    return false;
+  }
+  tab.effort = nextEffort;
+  storage.setItem(STOR.effort, nextEffort);
   syncToolbarState();
   saveTabs();
+  return true;
 }
 
 async function handleLocalSlashCommand(payload = currentComposerPayload()) {
@@ -4093,8 +4392,7 @@ async function handleLocalSlashCommand(payload = currentComposerPayload()) {
         cycleEffort();
         break;
       }
-      setEffortForTab(tab, args);
-      appendMarkdown(`Reasoning effort set to \`${args}\`.`);
+      if (setEffortForTab(tab, args)) appendMarkdown(`Reasoning effort set to \`${tab.effort || 'off'}\`.`);
       break;
     case 'mcp':
       consumeComposer(input, tab, { clearAttachments: false });
@@ -4235,11 +4533,21 @@ export function sendPrompt() {
   const { input, tab, prompt, images, paths } = payload;
   if (!input || !_connected || !_bootstrapped) return;
   if (!prompt && !images.length && !paths.length) return;
+  // Block when CLI binary missing — banner already informs user.
+  const panel = document.getElementById('codex-panel');
+  if (panel?.classList.contains('cxp-cli-blocked')) {
+    appendSystem('Codex CLI not installed. Install it first, then click Re-check.', 'error');
+    return;
+  }
   handleLocalSlashCommand(payload).then((handled) => {
     if (handled) return;
     if (_running && tab) {
       enqueuePayload({ tab, prompt, images, paths });
       consumeComposer(input, tab);
+      return;
+    }
+    if (shouldHoldForPlanApproval(tab)) {
+      appendSystem('Choose Continue with implementation, Compact context, or Edit plan before sending another message.', 'working');
       return;
     }
     if (tab?.planMode) {
@@ -4382,7 +4690,7 @@ export function clearQueue() {
 
 export function advanceQueue() {
   const tab = activeTab();
-  if (!tab || _running || tab.queuePaused || !tab.queue.length || hasBlockingServerRequests()) return;
+  if (!tab || _running || tab.queuePaused || !tab.queue.length || hasBlockingServerRequests() || shouldHoldForPlanApproval(tab)) return;
   const next = tab.queue.shift();
   if (!next) return;
   if (tab.planMode) {
@@ -4903,7 +5211,7 @@ export async function openSettingsPanel() {
       // Get dynamic model list (fall back to hardcoded defaults)
       let models;
       try { models = await requestModelList(); } catch { models = null; }
-      const modelList = models?.length ? models : CODEX_DEFAULT_MODELS;
+      const modelList = mergeCodexModelList(models);
 
       configEl.innerHTML = '';
       const fieldDefs = [
@@ -4937,6 +5245,19 @@ export async function openSettingsPanel() {
           { value: 'medium', label: 'Medium' },
           { value: 'high', label: 'High' },
           { value: 'xhigh', label: 'Extra High' },
+        ]},
+        { key: 'model_reasoning_summary', label: 'Reasoning Summary', type: 'select', options: [
+          { value: '', label: '(default)' },
+          { value: 'auto', label: 'Auto' },
+          { value: 'concise', label: 'Concise' },
+          { value: 'detailed', label: 'Detailed' },
+          { value: 'none', label: 'None' },
+        ]},
+        { key: 'model_verbosity', label: 'Response Verbosity', type: 'select', options: [
+          { value: '', label: '(default)' },
+          { value: 'low', label: 'Low' },
+          { value: 'medium', label: 'Medium' },
+          { value: 'high', label: 'High' },
         ]},
         { key: 'model_context_window', label: 'Context Window', type: 'number', placeholder: 'tokens' },
         { key: 'model_auto_compact_token_limit', label: 'Auto-Compact', type: 'number', placeholder: 'token limit' },
@@ -5063,6 +5384,7 @@ export function initContextBridge() {
     isActiveTab,
     dispatchPrompt,
     capturePlanContent,
+    ensurePlanFile,
     saveTabs,
     hideEmpty,
     showEmpty,
@@ -5101,6 +5423,9 @@ export function initContextBridge() {
     onBlockingServerRequestAnswered: (requestId) => clearBlockingServerRequest(requestId),
     setPostPlanHeader: (v) => { _postPlanHeader = v; },
     setShowPostPlanActions: (v) => { _showPostPlanActions = v; },
+    setPlanTurnActive: (v) => { _planTurnActive = !!v; },
+    setPlanApprovalPending: (v) => { _planApprovalPending = !!v; },
+    setLastPlanTurnId: (v) => { _lastPlanTurnId = v || ''; },
     setShowPostCompactionPrompt: (v) => { _showPostCompactionPrompt = !!v; },
     setPostCompactionPending: (v) => { _postCompactionPending = !!v; },
     setPlanFilePath: (v) => { _planFilePath = v; },

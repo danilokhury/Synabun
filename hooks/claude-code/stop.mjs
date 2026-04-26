@@ -31,7 +31,7 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync, appendFileSync, readdirSync, renameSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cleanupStaleLoops, detectProject, DATA_DIR } from './shared.mjs';
+import { cleanupStaleLoops, detectProject, DATA_DIR, appendLoopLog } from './shared.mjs';
 
 // Cross-platform safety: catch uncaught errors and output valid hook JSON
 process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
@@ -282,6 +282,7 @@ async function main() {
   // loops owned by THIS terminal — prevents other automations from suppressing
   // compaction in unrelated sessions.
   const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION || '';
+  appendLoopLog(terminalSessionEnv || null, 'stop:enter', 'Stop hook fired', { sessionId, hasEnv: !!terminalSessionEnv });
   let hasActiveLoop = false;
   try {
     if (existsSync(LOOP_DIR)) {
@@ -290,8 +291,16 @@ async function main() {
         try {
           const candidate = JSON.parse(readFileSync(join(LOOP_DIR, f), 'utf-8'));
           if (candidate.active && (candidate.currentIteration || 0) > 0) {
-            // When running inside a loop terminal, only match OUR loop
-            if (terminalSessionEnv && candidate.terminalSessionId && candidate.terminalSessionId !== terminalSessionEnv) continue;
+            // STRICT isolation. Before: `terminalSessionEnv &&` gated the
+            // mismatch check, so a session with no env would pick up ANY
+            // loop and wrongly suppress its own compaction. Now:
+            //   - env set → require exact terminalSessionId match
+            //   - env unset → only count loops WITHOUT terminalSessionId
+            if (terminalSessionEnv) {
+              if (candidate.terminalSessionId !== terminalSessionEnv) continue;
+            } else {
+              if (candidate.terminalSessionId) continue;
+            }
             hasActiveLoop = true;
             break;
           }
@@ -410,9 +419,17 @@ async function main() {
             loop = candidate;
             const newPath = join(LOOP_DIR, `${sessionId}.json`);
             if (fp !== newPath) {
-              try { renameSync(fp, newPath); loopFlagPath = newPath; } catch { loopFlagPath = fp; }
+              try {
+                renameSync(fp, newPath);
+                loopFlagPath = newPath;
+                appendLoopLog(terminalSessionEnv, 'stop:claim', 'matched loop via Strategy A (env), renamed', { from: f, to: `${sessionId}.json`, currentIteration: candidate.currentIteration });
+              } catch (err) {
+                loopFlagPath = fp;
+                appendLoopLog(terminalSessionEnv, 'stop:claim', 'matched loop via Strategy A (env), rename FAILED', { from: f, err: err.message });
+              }
             } else {
               loopFlagPath = fp;
+              appendLoopLog(terminalSessionEnv, 'stop:claim', 'matched loop via Strategy A (env), already named correctly', { file: f, currentIteration: candidate.currentIteration });
             }
             break;
           }
@@ -505,7 +522,12 @@ async function main() {
 
       // Signal server loop driver to send /clear + next iteration prompt
       loop.awaitingNext = true;
-      try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
+      try {
+        writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2));
+        appendLoopLog(loop.terminalSessionId || terminalSessionEnv, 'stop:awaitingNext', 'set awaitingNext=true', { iter: loop.currentIteration, total: loop.totalIterations, file: loopFlagPath });
+      } catch (err) {
+        appendLoopLog(loop.terminalSessionId || terminalSessionEnv, 'stop:awaitingNext', 'write FAILED', { err: err.message });
+      }
 
       // Reset edit tracking for fresh iteration context
       const rememberFlagForReset = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
@@ -530,7 +552,12 @@ async function main() {
       }
 
       loop.awaitingNext = true;
-      try { writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2)); } catch { /* ok */ }
+      try {
+        writeFileSync(loopFlagPath, JSON.stringify(loop, null, 2));
+        appendLoopLog(loop.terminalSessionId || terminalSessionEnv, 'stop:awaitingNext', 'set awaitingNext=true', { iter: loop.currentIteration, total: loop.totalIterations, file: loopFlagPath });
+      } catch (err) {
+        appendLoopLog(loop.terminalSessionId || terminalSessionEnv, 'stop:awaitingNext', 'write FAILED', { err: err.message });
+      }
 
       const rememberFlagForReset = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
       if (existsSync(rememberFlagForReset)) {

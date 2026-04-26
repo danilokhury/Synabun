@@ -82,6 +82,10 @@ const SYNC_HANDLERS = {
   'schedule:timer-set':       (msg) => emit('sync:schedule:timer-set', msg),
   'schedule:timer-fired':     (msg) => emit('sync:schedule:timer-fired', msg),
   'schedule:timer-cancelled': (msg) => emit('sync:schedule:timer-cancelled', msg),
+  'schedule-group:created':   (msg) => emit('sync:schedule-group:created', msg),
+  'schedule-group:updated':   (msg) => emit('sync:schedule-group:updated', msg),
+  'schedule-group:deleted':   (msg) => emit('sync:schedule-group:deleted', msg),
+  'schedule-group:reordered': (msg) => emit('sync:schedule-group:reordered', msg),
 
   // Quick timer events
   'quick-timer:set':       (msg) => emit('sync:quick-timer:set', msg),

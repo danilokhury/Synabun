@@ -331,6 +331,115 @@ export function detectServer(repoPath) {
   return { ok: true, detected, attempts };
 }
 
+// OS-aware install hints for self-fetching runtime binaries the detected
+// command depends on. Used by the preflight check in checkSelfFetcherAvailable().
+const SELF_FETCHER_INSTALL_HINTS = {
+  uvx:  { mac: 'brew install uv', linux: 'curl -LsSf https://astral.sh/uv/install.sh | sh', win: 'winget install astral-sh.uv  or  powershell -c "irm https://astral.sh/uv/install.ps1 | iex"' },
+  uv:   { mac: 'brew install uv', linux: 'curl -LsSf https://astral.sh/uv/install.sh | sh', win: 'winget install astral-sh.uv  or  powershell -c "irm https://astral.sh/uv/install.ps1 | iex"' },
+  pipx: { mac: 'brew install pipx', linux: 'python3 -m pip install --user pipx && pipx ensurepath', win: 'python -m pip install --user pipx && pipx ensurepath' },
+  npx:  { mac: 'brew install node', linux: 'install Node.js (https://nodejs.org)', win: 'winget install OpenJS.NodeJS' },
+  bunx: { mac: 'brew install oven-sh/bun/bun', linux: 'curl -fsSL https://bun.sh/install | bash', win: 'powershell -c "irm bun.sh/install.ps1 | iex"' },
+  bun:  { mac: 'brew install oven-sh/bun/bun', linux: 'curl -fsSL https://bun.sh/install | bash', win: 'powershell -c "irm bun.sh/install.ps1 | iex"' },
+  pnpm: { mac: 'brew install pnpm', linux: 'npm install -g pnpm', win: 'npm install -g pnpm' },
+  yarn: { mac: 'brew install yarn', linux: 'npm install -g yarn', win: 'npm install -g yarn' },
+};
+
+function installHintFor(cmd) {
+  const h = SELF_FETCHER_INSTALL_HINTS[cmd];
+  if (!h) return null;
+  const platform = process.platform; // 'darwin' | 'linux' | 'win32'
+  if (platform === 'darwin') return h.mac;
+  if (platform === 'win32') return h.win;
+  return h.linux;
+}
+
+// Probe whether a command exists on the user's PATH. OS-agnostic.
+// On Windows uses `where`, elsewhere `command -v`. Handles .exe resolution on
+// Windows (`where uvx` finds `uvx.exe`).
+export function checkCommandOnPath(cmd) {
+  if (!cmd) return false;
+  const isWin = process.platform === 'win32';
+  const probeCmd = isWin ? 'where' : 'sh';
+  const probeArgs = isWin ? [cmd] : ['-c', `command -v ${cmd}`];
+  try {
+    const r = spawnSync(probeCmd, probeArgs, { stdio: 'ignore', timeout: 5000 });
+    return r.status === 0;
+  } catch { return false; }
+}
+
+// For self-fetching commands (uvx/npx/pipx/...) verify the runtime is available.
+// Returns { available, command, installHint } so the install endpoint can warn
+// the user before registering something that will fail at launch.
+export function checkSelfFetcherAvailable(detected) {
+  if (!detected || !detected.command) return { available: true, command: null, installHint: null };
+  const cmd = String(detected.command).toLowerCase();
+  const available = checkCommandOnPath(detected.command);
+  return {
+    available,
+    command: detected.command,
+    installHint: available ? null : installHintFor(cmd),
+  };
+}
+
+// Returns true if the detected command fetches its package at runtime
+// (uvx / uv run / npx / pipx / bunx / dlx) so local dependency install is unnecessary.
+export function commandSelfFetches(detected) {
+  if (!detected || !detected.command) return false;
+  const cmd = String(detected.command).toLowerCase();
+  const args = Array.isArray(detected.args) ? detected.args.map(a => String(a).toLowerCase()) : [];
+  if (cmd === 'uvx' || cmd === 'pipx' || cmd === 'bunx') return true;
+  if (cmd === 'npx') return true;
+  if (cmd === 'uv' && args[0] === 'run') return true;
+  if (cmd === 'pnpm' && args[0] === 'dlx') return true;
+  if (cmd === 'yarn' && args[0] === 'dlx') return true;
+  return false;
+}
+
+function detectClaudePlugin(repoPath) {
+  const manifestPath = join(repoPath, '.claude-plugin', 'plugin.json');
+  if (!existsSync(manifestPath)) return null;
+  const manifest = tryReadJson(manifestPath);
+  if (!manifest || !manifest.name) return null;
+  const marketplacePath = join(repoPath, '.claude-plugin', 'marketplace.json');
+  const marketplace = existsSync(marketplacePath) ? tryReadJson(marketplacePath) : null;
+  const hooks = manifest.hooks && typeof manifest.hooks === 'object' ? Object.keys(manifest.hooks) : [];
+  return { manifest, marketplace, hooks };
+}
+
+function scanHints(repoPath) {
+  const hints = [];
+  if (existsSync(join(repoPath, '.claude-plugin', 'plugin.json'))) hints.push('claude-plugin');
+  if (existsSync(join(repoPath, '.codex'))) hints.push('codex');
+  if (existsSync(join(repoPath, 'gemini-extension.json'))) hints.push('gemini');
+  if (existsSync(join(repoPath, '.cursor'))) hints.push('cursor');
+  if (existsSync(join(repoPath, '.windsurf'))) hints.push('windsurf');
+  return hints;
+}
+
+// Classify a cloned repo. MCP wins if both present (preserves existing behavior).
+export function classifyRepo(repoPath) {
+  if (!existsSync(repoPath)) return { ok: false, kind: 'unknown', error: `Repo path does not exist: ${repoPath}` };
+  const hints = scanHints(repoPath);
+  const mcp = detectServer(repoPath);
+  if (mcp.ok) {
+    const out = { ok: true, kind: 'mcp', detected: mcp.detected, attempts: mcp.attempts, hints };
+    const plugin = detectClaudePlugin(repoPath);
+    if (plugin) out.alsoClaudePlugin = { manifest: plugin.manifest, marketplace: plugin.marketplace };
+    return out;
+  }
+  const plugin = detectClaudePlugin(repoPath);
+  if (plugin) {
+    return { ok: true, kind: 'claude-plugin', plugin: { manifest: plugin.manifest, marketplace: plugin.marketplace, hooks: plugin.hooks }, hints };
+  }
+  return {
+    ok: false,
+    kind: 'unknown',
+    error: "Couldn't identify the repo type. Looked for: mcp.json / smithery.*, package.json, pyproject.toml, README mcpServers block, and .claude-plugin/plugin.json.",
+    hints,
+    mcpError: mcp.error,
+  };
+}
+
 export async function installDependencies({ dataHome, name, repoPath, onLine }) {
   const pm = detectPackageManager(repoPath);
   const hasPkg = existsSync(join(repoPath, 'package.json'));

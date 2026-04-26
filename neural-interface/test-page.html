@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SynaBun Browser Tools Test Page</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .section { margin: 30px 0; padding: 20px; border: 1px solid #ccc; border-radius: 8px; }
+        h1 { color: #333; }
+        h2 { color: #666; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+        input, textarea, select { padding: 8px; margin: 5px; width: 200px; }
+        #counter { font-size: 24px; font-weight: bold; color: #007bff; }
+        .hidden { display: none; }
+        #hover-target { padding: 20px; background: #f0f0f0; border: 2px dashed #999; }
+        #hover-target:hover { background: #e0e0e0; border-color: #666; }
+        #tooltip { display: none; position: absolute; background: #333; color: white; padding: 5px 10px; border-radius: 4px; }
+        #hover-target:hover #tooltip { display: block; }
+        .scroll-container { height: 200px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; }
+        .scroll-content { height: 600px; background: linear-gradient(to bottom, #f0f0f0, #e0e0e0); }
+        #dynamic-content { margin-top: 20px; padding: 15px; background: #f9f9f9; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>SynaBun Browser Tools Test Page</h1>
+    <p>This page is designed to test all browser MCP tools systematically.</p>
+
+    <div class="section">
+        <h2>Navigation Test</h2>
+        <p>Current URL should be testable with browser_navigate, browser_go_back, browser_go_forward, browser_reload</p>
+        <a href="#section2" id="nav-link">Go to Section 2</a>
+    </div>
+
+    <div class="section" id="section2">
+        <h2>Click Test</h2>
+        <button id="click-btn" onclick="document.getElementById('click-result').textContent='Clicked!'">Click Me</button>
+        <span id="click-result"></span>
+        <br><br>
+        <button id="counter-btn" onclick="incrementCounter()">Increment Counter</button>
+        <div id="counter">0</div>
+    </div>
+
+    <div class="section">
+        <h2>Fill & Type Test</h2>
+        <input type="text" id="text-input" placeholder="Text input">
+        <br>
+        <textarea id="textarea-input" placeholder="Textarea input" rows="3"></textarea>
+        <br>
+        <div id="type-result"></div>
+    </div>
+
+    <div class="section">
+        <h2>Select Test</h2>
+        <select id="test-select">
+            <option value="option1">Option 1</option>
+            <option value="option2">Option 2</option>
+            <option value="option3">Option 3</option>
+        </select>
+        <div id="select-result"></div>
+    </div>
+
+    <div class="section">
+        <h2>Hover Test</h2>
+        <div id="hover-target">
+            Hover over me
+            <div id="tooltip">Tooltip visible!</div>
+        </div>
+        <div id="hover-result"></div>
+    </div>
+
+    <div class="section">
+        <h2>Upload Test</h2>
+        <input type="file" id="file-input" accept=".txt,.pdf,.jpg">
+        <div id="upload-result"></div>
+    </div>
+
+    <div class="section">
+        <h2>Scroll Test</h2>
+        <div class="scroll-container" id="scroll-container">
+            <div class="scroll-content">
+                <p>Scroll down to see more content...</p>
+                <p style="margin-top: 500px">Bottom of scrollable area</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Dynamic Content</h2>
+        <button id="load-dynamic" onclick="loadDynamicContent()">Load Dynamic Content</button>
+        <div id="dynamic-content">Dynamic content will appear here...</div>
+    </div>
+
+    <div class="section">
+        <h2>Form Test</h2>
+        <form id="test-form" onsubmit="event.preventDefault(); document.getElementById('form-result').textContent='Form submitted!';">
+            <input type="text" id="form-name" placeholder="Name" required>
+            <input type="email" id="form-email" placeholder="Email" required>
+            <button type="submit">Submit Form</button>
+        </form>
+        <div id="form-result"></div>
+    </div>
+
+    <script>
+        let count = 0;
+        function incrementCounter() {
+            count++;
+            document.getElementById('counter').textContent = count;
+        }
+
+        function loadDynamicContent() {
+            setTimeout(() => {
+                document.getElementById('dynamic-content').innerHTML = `
+                    <h3>Loaded Content</h3>
+                    <p>This content was loaded dynamically after 1 second.</p>
+                    <button id="dynamic-btn">Dynamic Button</button>
+                `;
+            }, 1000);
+        }
+
+        document.getElementById('test-select').addEventListener('change', function(e) {
+            document.getElementById('select-result').textContent = 'Selected: ' + e.target.value;
+        });
+
+        document.getElementById('file-input').addEventListener('change', function(e) {
+            const files = e.target.files;
+            if (files.length > 0) {
+                document.getElementById('upload-result').textContent = 'Uploaded: ' + files[0].name;
+            }
+        });
+
+        document.getElementById('hover-target').addEventListener('mouseenter', function() {
+            document.getElementById('hover-result').textContent = 'Hovered!';
+        });
+    </script>
+</body>
+</html>

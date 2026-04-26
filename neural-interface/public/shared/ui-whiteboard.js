@@ -11,6 +11,7 @@ import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
 import { isGuest, hasPermission } from './ui-sync.js';
+import { openSettingsModal } from './ui-settings.js';
 
 // ── Helpers ──
 
@@ -122,6 +123,8 @@ const IMAGE_QUALITY = 0.8;
 // DOM refs (set in init)
 let _root, _toolbar, _canvas, _arrowsSvg, _elementsDiv, _arrowPreview, _arrowHint;
 
+const RULESET_SETUP_SECTIONS = ['setup-claude', 'setup-codex', 'setup-opencode'];
+
 
 // ═══════════════════════════════════════════
 // COORDINATE TRANSFORMS
@@ -215,6 +218,44 @@ function updateUndoButtons() {
   const redoBtn = $('wb-redo');
   if (undoBtn) undoBtn.classList.toggle('disabled', !_undoStack.length);
   if (redoBtn) redoBtn.classList.toggle('disabled', !_redoStack.length);
+}
+
+function isRulesetAlertDismissed() {
+  return storage.getItem(KEYS.WHITEBOARD_RULESET_ALERT_DISMISSED) === '1';
+}
+
+function syncRulesetAlertVisibility() {
+  const alert = $('wb-ruleset-alert');
+  if (!alert) return;
+  const logo = document.querySelector('#static-bg .static-bg-logo');
+  const logoHidden = logo?.style.display === 'none';
+  alert.classList.toggle('hidden', isRulesetAlertDismissed() || logoHidden);
+}
+
+function initRulesetAlert() {
+  const alert = $('wb-ruleset-alert');
+  if (!alert) return;
+
+  const setupBtn = $('wb-ruleset-settings');
+  const dismissBtn = $('wb-ruleset-dismiss');
+
+  setupBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openSettingsModal({
+      tab: 'setup',
+      expand: RULESET_SETUP_SECTIONS,
+      highlight: RULESET_SETUP_SECTIONS,
+      scrollTo: 'setup-claude-ruleset-preview',
+    });
+  });
+
+  dismissBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    storage.setItem(KEYS.WHITEBOARD_RULESET_ALERT_DISMISSED, '1');
+    syncRulesetAlertVisibility();
+  });
+
+  syncRulesetAlertVisibility();
 }
 
 
@@ -2758,6 +2799,7 @@ function onToolbarClick(e) {
     if (breathe) breathe.style.display = hidden ? 'none' : '';
     btn.classList.toggle('active', hidden);
     sessionStorage.setItem('wb-logo-hidden', hidden ? '1' : '');
+    syncRulesetAlertVisibility();
     return;
   }
 }
@@ -2919,6 +2961,9 @@ export function initWhiteboard() {
   // Section picker
   initSectionPicker();
 
+  // Logo-adjacent ruleset reminder
+  initRulesetAlert();
+
   // Prevent context menu on whiteboard
   _root.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -2935,8 +2980,11 @@ export function initWhiteboard() {
       const breathe = document.querySelector('#static-bg .focus-breathe');
       if (logo) logo.style.display = 'none';
       if (breathe) breathe.style.display = 'none';
+      syncRulesetAlertVisibility();
       const btn = document.getElementById('wb-toggle-logo');
       if (btn) btn.classList.add('active');
+    } else {
+      syncRulesetAlertVisibility();
     }
   });
 

@@ -49,13 +49,12 @@ export const STOR = {
 };
 
 // ── Effort Levels ──
-export const EFFORT_LEVELS = ['off', 'low', 'medium', 'high'];
+export const EFFORT_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
 // ── Panel Identity ──
 export const PANEL_OWNER = 'codex-sidepanel';
 
-// ── Limits ──
-export const MAX_TABS = 10;
+// ── Snapshot Limits ──
 export const MAX_THREAD_SNAPSHOTS = 18;
 export const MAX_THREAD_SNAPSHOT_CHARS = 2_000_000;
 
@@ -69,7 +68,9 @@ CRITICAL — When you need clarification during planning:
 1. Use request_user_input to ask concise multiple-choice questions.
 2. After calling request_user_input, stop and wait for the user's reply before continuing.
 3. Do NOT ask clarification questions as plain text.
-4. Do NOT make code changes until the plan is approved.`,
+4. Do NOT make code changes until the plan is approved.
+5. When the plan is ready, stop after the plan. Do NOT continue into implementation.
+6. The sidepanel will ask the user whether to Edit plan, Compact context, or Continue with implementation.`,
 ];
 
 // ── Stall Detection ──

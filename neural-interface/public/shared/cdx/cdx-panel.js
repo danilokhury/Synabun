@@ -4,9 +4,10 @@
 import { storage } from '../storage.js';
 import { state, emit, on } from '../state.js';
 import { reserveRightPanelLayout, clearRightPanelLayout } from '../ui-sidepanel-layout.js';
+import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel } from '../cli-status.js';
 import { isClaudePanelOpen, toggleClaudePanel } from '../ui-claude-panel.js';
 import { injectStyles } from './cdx-styles.js';
-import { flushCardBody } from './cdx-render.js';
+import { appendAssistantMarkdownMessage, flushCardBody, renderPostPlanActions } from './cdx-render.js';
 import {
   OPENAI_ICON, ICON_SPARK, ICON_PLUS, ICON_MINIMIZE, ICON_X, ICON_STOP,
   ICON_EDIT, ICON_SHIELD, ICON_PLAN, ICON_BRAIN, SYNABUN_LOGO_ICON,
@@ -17,7 +18,7 @@ import {
   createTab, switchTab, closeTab, closeActiveTab, saveTabs, restoreTabs,
   initContextBridge,
   renderPills, renderProjects, updateActiveTabView,
-  sendPrompt, dispatchPrompt, interruptTurn, interruptAllTabs, anyTabRunning, queueCurrentDraft, steerActiveTurn,
+  sendPrompt, dispatchPrompt, interruptTurn, queueCurrentDraft, steerActiveTurn,
   cycleEffort, togglePlanMode, toggleAutoAccept, syncToolbarState,
   requestModelList, populateModelDropdown,
   setSessionLabel, renameActiveSession, promptNameNewSession, openSettingsPanel, renderSessionMenu,
@@ -27,10 +28,17 @@ import {
   syncQueueTray, editQueueItem, toggleQueuePause, clearQueue,
   startCompaction,
   syncInputEnabled, syncReservedWidth, scheduleThreadSnapshotSave,
+  flushAllThreadSnapshots,
   resetStallTimer, stopStallTimer,
   withTab,
   ensureProjectsLoaded,
 } from './cdx-tabs.js';
+
+window.addEventListener('beforeunload', () => { try { flushAllThreadSnapshots(); } catch {} });
+window.addEventListener('pagehide', () => { try { flushAllThreadSnapshots(); } catch {} });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { try { flushAllThreadSnapshots(); } catch {} }
+});
 
 // ═══════════════════════════════════════════
 //  Module-level State (panel owns)
@@ -39,6 +47,8 @@ import {
 let _panel = null;
 let _visible = false;
 let _resizeBound = false;
+let _cliInstalled = null;
+let _cliUnsub = null;
 
 // ═══════════════════════════════════════════
 //  Bound State (mirrors active tab — managed by cdx-tabs)
@@ -68,6 +78,9 @@ let _planContent = '';
 let _editedPlanContent = '';
 let _showPostPlanActions = false;
 let _postPlanHeader = 'PLAN COMPLETE';
+let _planTurnActive = false;
+let _planApprovalPending = false;
+let _lastPlanTurnId = '';
 let _planFilePath = '';
 
 // ═══════════════════════════════════════════
@@ -85,8 +98,6 @@ let _host = {};
  *   flushCardBody(itemState)
  *   resetThreadState(opts)
  *   appendSystem(text, tone)
- *   appendAssistantMarkdownMessage(tab, markdown)
- *   renderPostPlanActions(tab, headerText)
  *   sendServerRequestReply(requestId, opts)
  *   getRequestCardEntry(requestId) -> object|null
  *   restoreChangelogButtons(buttons)
@@ -133,6 +144,9 @@ export function syncBoundState(s) {
   _editedPlanContent = s.editedPlanContent ?? _editedPlanContent;
   _showPostPlanActions = s.showPostPlanActions ?? _showPostPlanActions;
   _postPlanHeader = s.postPlanHeader ?? _postPlanHeader;
+  _planTurnActive = s.planTurnActive ?? _planTurnActive;
+  _planApprovalPending = s.planApprovalPending ?? _planApprovalPending;
+  _lastPlanTurnId = s.lastPlanTurnId ?? _lastPlanTurnId;
   _planFilePath = s.planFilePath ?? _planFilePath;
 }
 
@@ -319,7 +333,7 @@ function buildPanel() {
           </button>
         </div>
         <div class="cxp-footer-right">
-          <button class="cxp-toolbar-toggle" id="cxp-effort-toggle" title="Effort level: off" data-effort="off">${ICON_BRAIN}<span class="cxp-btn-label">Effort</span><span class="cxp-effort-dots"><i></i><i></i><i></i></span></button>
+          <button class="cxp-toolbar-toggle" id="cxp-effort-toggle" title="Effort level: off" data-effort="off">${ICON_BRAIN}<span class="cxp-btn-label">Effort</span><span class="cxp-effort-dots"><i></i><i></i><i></i><i></i><i></i></span></button>
           <button class="cxp-toolbar-toggle" id="cxp-plan-toggle" title="Plan mode: off">${ICON_PLAN}<span class="cxp-btn-label">Plan</span></button>
           <button class="cxp-toolbar-toggle" id="cxp-autoaccept-toggle" title="Auto-accept: off">${ICON_SHIELD}<span class="cxp-btn-label">Auto</span></button>
           <div class="cxp-dropdown" id="cxp-model" data-placeholder="model...">
@@ -379,6 +393,82 @@ function startupEmptyText() {
   return '';
 }
 
+// ── CLI installation status (banner + send-block) ──
+let _cliInstallFailureForced = false;
+
+function ensureCliBannerEl() {
+  if (!_panel) return null;
+  const container = panelEl('#cxp-messages-container');
+  if (!container) return null;
+  let banner = container.querySelector(':scope > .cxp-cli-banner');
+  if (banner) return banner;
+  const label = getCliLabel('codex');
+  const cmd = getCliInstallCommand('codex');
+  const url = getCliDocUrl('codex');
+  banner = document.createElement('div');
+  banner.className = 'cxp-cli-banner';
+  banner.innerHTML = `
+    <div class="cxp-cli-banner-icon">!</div>
+    <div class="cxp-cli-banner-text">
+      <div class="cxp-cli-banner-title">${label} CLI not installed</div>
+      <div class="cxp-cli-banner-body">Run <code>${cmd}</code> or follow the install guide.</div>
+    </div>
+    <div class="cxp-cli-banner-actions">
+      <a class="cxp-cli-banner-link" href="${url}" target="_blank" rel="noopener noreferrer">Install guide</a>
+      <button class="cxp-cli-banner-recheck" type="button">Re-check</button>
+    </div>
+  `;
+  container.insertBefore(banner, container.firstChild);
+  const btn = banner.querySelector('.cxp-cli-banner-recheck');
+  btn?.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    try { await recheckCliStatus('codex'); }
+    finally {
+      if (btn.isConnected) {
+        btn.disabled = false;
+        btn.textContent = 'Re-check';
+      }
+    }
+  });
+  return banner;
+}
+
+function removeCliBannerEl() {
+  if (!_panel) return;
+  const container = panelEl('#cxp-messages-container');
+  const banner = container?.querySelector(':scope > .cxp-cli-banner');
+  banner?.remove();
+}
+
+function refreshCliBanner() {
+  if (!_panel) return;
+  const missing = _cliInstalled === null || _cliInstallFailureForced;
+  _panel.classList.toggle('cxp-cli-blocked', missing);
+  if (missing) ensureCliBannerEl();
+  else removeCliBannerEl();
+  try { syncInputEnabled(); } catch {}
+}
+
+export function isCdxCliInstalled() {
+  return _cliInstalled !== null && !_cliInstallFailureForced;
+}
+
+export function flagCdxCliInstallFailure() {
+  _cliInstallFailureForced = true;
+  refreshCliBanner();
+  recheckCliStatus('codex').catch(() => {});
+}
+
+function ensureCliSubscription() {
+  if (_cliUnsub) return;
+  _cliUnsub = subscribeCliStatus('codex', (info) => {
+    _cliInstalled = info?.installed || null;
+    if (_cliInstalled) _cliInstallFailureForced = false;
+    refreshCliBanner();
+  });
+}
+
 // ═══════════════════════════════════════════
 //  setVisible — Show / Hide Panel
 // ═══════════════════════════════════════════
@@ -386,12 +476,12 @@ function startupEmptyText() {
 function _cdxDocEscHandler(event) {
   if (event.key !== 'Escape') return;
   if (!_visible) return;
-  if (!anyTabRunning()) return;
+  if (!activeTab()?.running) return;
   const hintsEl = panelEl('#cxp-slash-hints');
   if (hintsEl && !hintsEl.hidden) return; // let input-level handler dismiss hints first
   event.preventDefault();
   event.stopImmediatePropagation();
-  interruptAllTabs();
+  interruptTurn();
 }
 
 function setVisible(nextVisible) {
@@ -415,6 +505,7 @@ function setVisible(nextVisible) {
     loadCurrentProfile();
     loadRecallProfile();
     panelEl('#cxp-input')?.focus();
+    refreshCliBanner();
   } else {
     document.removeEventListener('keydown', _cdxDocEscHandler, { capture: true });
   }
@@ -629,7 +720,7 @@ function wireEvents() {
     if (event.key === 'Escape') {
       const hintsEl = panelEl('#cxp-slash-hints');
       if (hintsEl && !hintsEl.hidden) { hintsEl.hidden = true; _slashActiveIdx = -1; event.preventDefault(); return; }
-      if (anyTabRunning()) { event.preventDefault(); interruptAllTabs(); return; }
+      if (activeTab()?.running) { event.preventDefault(); interruptTurn(); return; }
     }
     if (event.key === 'Tab' && activeTab()?.running) {
       const tab = activeTab();
@@ -673,15 +764,16 @@ function wireEvents() {
     fileInput.value = '';
   });
   send?.addEventListener('click', () => {
-    if (anyTabRunning()) {
-      interruptAllTabs();
+    if (activeTab()?.running) {
+      interruptTurn();
       return;
     }
     sendPrompt();
   });
   minimizeBtn?.addEventListener('click', () => setVisible(false));
   newBtn?.addEventListener('click', () => {
-    createTab({ project: activeTab()?.project || storage.getItem(STOR.project) || '' });
+    const tab = createTab({ project: activeTab()?.project || storage.getItem(STOR.project) || '' });
+    if (!tab) return;
     promptNameNewSession();
   });
   closeBtn?.addEventListener('click', () => closeActiveTab());
@@ -855,16 +947,22 @@ function wireEvents() {
     tab.editedPlanContent = content || tab.editedPlanContent || '';
     tab.showPostPlanActions = true;
     tab.postPlanHeader = 'PLAN UPDATED';
+    tab.planApprovalPending = true;
+    tab.planTurnActive = false;
+    tab.lastPlanTurnId = '';
     if (filePath) tab.planFilePath = filePath;
     if (isActiveTab(tab)) {
       _planContent = tab.planContent;
       _editedPlanContent = tab.editedPlanContent;
       _showPostPlanActions = true;
       _postPlanHeader = 'PLAN UPDATED';
+      _planApprovalPending = true;
+      _planTurnActive = false;
+      _lastPlanTurnId = '';
       if (filePath) _planFilePath = filePath;
     }
-    _host.appendAssistantMarkdownMessage?.(tab, content || '');
-    _host.renderPostPlanActions?.(tab, 'PLAN UPDATED');
+    appendAssistantMarkdownMessage(tab, content || '');
+    renderPostPlanActions(tab, 'PLAN UPDATED');
     saveTabs();
   });
 
@@ -896,7 +994,18 @@ function wireEvents() {
     if (source && source !== 'codex') return;
     const tab = _tabs.find((entry) => entry.id === tabId) || activeTab();
     if (!tab) return;
-    _host.renderPostPlanActions?.(tab);
+    tab.showPostPlanActions = true;
+    tab.planApprovalPending = true;
+    tab.planTurnActive = false;
+    tab.postPlanHeader = tab.postPlanHeader || 'PLAN COMPLETE';
+    if (isActiveTab(tab)) {
+      _showPostPlanActions = true;
+      _planApprovalPending = true;
+      _planTurnActive = false;
+      _postPlanHeader = tab.postPlanHeader;
+    }
+    renderPostPlanActions(tab, tab.postPlanHeader);
+    saveTabs();
   });
 
   on('changelog-edit-cancelled', () => {
@@ -942,6 +1051,8 @@ function ensurePanel() {
   autosizeInput();
   restoreTabs();
   syncInputEnabled();
+  ensureCliSubscription();
+  window.dispatchEvent(new CustomEvent('sidepanel-tray:provider-loaded', { detail: { provider: 'codex' } }));
   // Close Codex when a Claude/OpenCode pill is clicked (mutual exclusion)
   const tray = document.getElementById('term-minimized-tray');
   if (tray) {

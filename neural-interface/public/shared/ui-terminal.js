@@ -682,6 +682,41 @@ function _sendResize(session) {
   } catch {}
 }
 
+const TERMINAL_WRITE_CHUNK = 64 * 1024;
+
+function _createTerminalWriter(term) {
+  const queue = [];
+  let writing = false;
+  let disposed = false;
+
+  const pump = () => {
+    if (disposed || writing || !queue.length) return;
+    let chunk = queue.shift();
+    if (chunk.length > TERMINAL_WRITE_CHUNK) {
+      queue.unshift(chunk.slice(TERMINAL_WRITE_CHUNK));
+      chunk = chunk.slice(0, TERMINAL_WRITE_CHUNK);
+    }
+    writing = true;
+    try {
+      term.write(chunk, () => {
+        writing = false;
+        queueMicrotask(pump);
+      });
+    } catch {
+      writing = false;
+    }
+  };
+
+  const write = (data) => {
+    if (disposed || data == null || data === '') return;
+    queue.push(String(data));
+    pump();
+  };
+  write.clear = () => { queue.length = 0; writing = false; };
+  write.dispose = () => { disposed = true; queue.length = 0; };
+  return write;
+}
+
 
 // ── Session registry (persists across page refresh) ──
 
@@ -856,23 +891,24 @@ async function loadXterm() {
     _xtermCSS = true;
   }
 
-  // Dynamic ESM imports from CDN
+  // Dynamic ESM imports from CDN. Intentionally avoid addon-webgl/addon-canvas
+  // for CLI/TUI sessions: multiple long-lived terminals can exhaust/corrupt
+  // glyph atlases or WebGL contexts. xterm's DOM renderer is slower, but it is
+  // the most deterministic renderer for agent TUIs.
   try {
-    const [xtermMod, fitMod, linksMod, searchMod, webglMod, canvasMod, unicodeMod] = await Promise.all([
+    const [xtermMod, fitMod, linksMod, searchMod, unicodeMod] = await Promise.all([
       import('https://esm.sh/@xterm/xterm@5.5.0'),
       import('https://esm.sh/@xterm/addon-fit@0.10.0'),
       import('https://esm.sh/@xterm/addon-web-links@0.11.0'),
       import('https://esm.sh/@xterm/addon-search@0.15.0'),
-      import('https://esm.sh/@xterm/addon-webgl@0.18.0').catch(() => null),
-      import('https://esm.sh/@xterm/addon-canvas@0.7.0').catch(() => null),
       import('https://esm.sh/@xterm/addon-unicode11@0.8.0'),
     ]);
     _Terminal = xtermMod.Terminal;
     _FitAddon = fitMod.FitAddon;
     _WebLinksAddon = linksMod.WebLinksAddon;
     _SearchAddon = searchMod.SearchAddon;
-    _WebglAddon = webglMod?.WebglAddon || null;
-    _CanvasAddon = canvasMod?.CanvasAddon || null;
+    _WebglAddon = null;
+    _CanvasAddon = null;
     _Unicode11Addon = unicodeMod.Unicode11Addon;
   } catch (err) {
     // Show error in terminal container if it exists, or throw
@@ -1608,6 +1644,7 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
   // and TUI layouts (box-drawing, spinners) are permanently misaligned.
   if (document.fonts?.ready) await document.fonts.ready;
   term.open(viewport);
+  const writeTerminal = _createTerminalWriter(term);
 
   // Find xterm's internal textarea (used for paste handler below, after ws is created)
   const xtermTextarea = viewport.querySelector('.xterm-helper-textarea');
@@ -1832,14 +1869,15 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
   ws.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'output' || msg.type === 'replay') {
-        term.write(msg.data);
+      if (msg.type === 'output' || msg.type === 'replay' || msg.type === 'snapshot') {
+        writeTerminal(msg.data);
+        const replayData = (msg.type === 'snapshot' && msg.plain) ? msg.plain : msg.data;
         if (NOTIF_TRACKED_CLI_PROFILES.has(profile)) _scheduleCliStatusCheck(sessionId);
         // Accumulate output for _sendOnceReady replay buffer check
         const sess = _sessions.find(s => s.id === sessionId);
         if (sess) {
           if (!sess._replayBuf) sess._replayBuf = '';
-          sess._replayBuf += msg.data;
+          sess._replayBuf += replayData;
           if (sess._replayBuf.length > 16384) sess._replayBuf = sess._replayBuf.slice(-8192);
         }
       }
@@ -1850,7 +1888,7 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
       }
       if (msg.type === 'error') {
         if (msg.message === 'Session not found') { markSessionDead(sessionId); return; }
-        term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
+        writeTerminal(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
         _clipCopy(msg.path);
@@ -1903,6 +1941,7 @@ async function openSession(profile, cwd, existingSessionId, options = {}) {
     cwd: cwd || null,
     label: options.label || (cwdLabel ? `${profileDef?.label || profile} · ${cwdLabel}` : (profileDef?.label || profile)),
     term, fitAddon, searchAddon, ws, viewport, ro,
+    _terminalWriter: writeTerminal,
     renderer,
     _webgl: webgl, // GPU renderer handle — disposed before term.dispose() on close
     dead: false,
@@ -2485,6 +2524,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
   // Wait for fonts before opening (same FOUT fix as openSession)
   if (document.fonts?.ready) await document.fonts.ready;
   term.open(viewport);
+  const writeTerminal = _createTerminalWriter(term);
 
   // Find xterm's internal textarea (used for paste handler below, after ws is created)
   const xtermTextarea = viewport.querySelector('.xterm-helper-textarea');
@@ -2659,13 +2699,14 @@ async function reconnectSession(sessionId, profile, options = {}) {
   ws.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'output' || msg.type === 'replay') {
-        term.write(msg.data);
+      if (msg.type === 'output' || msg.type === 'replay' || msg.type === 'snapshot') {
+        writeTerminal(msg.data);
+        const replayData = (msg.type === 'snapshot' && msg.plain) ? msg.plain : msg.data;
         // Accumulate output for _sendOnceReady replay buffer check
         const sess = _sessions.find(s => s.id === sessionId);
         if (sess) {
           if (!sess._replayBuf) sess._replayBuf = '';
-          sess._replayBuf += msg.data;
+          sess._replayBuf += replayData;
           if (sess._replayBuf.length > 16384) sess._replayBuf = sess._replayBuf.slice(-8192);
         }
       }
@@ -2679,7 +2720,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
           markSessionDead(sessionId);
           return;
         }
-        term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
+        writeTerminal(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
         _clipCopy(msg.path);
@@ -2726,6 +2767,7 @@ async function reconnectSession(sessionId, profile, options = {}) {
     cwd: options.cwd || null,
     label: options.label || (profileDef?.label || profile),
     term, fitAddon, searchAddon, ws, viewport, ro,
+    _terminalWriter: writeTerminal,
     renderer,
     _webgl: webgl, // GPU renderer handle — disposed before term.dispose() on close
     dead: false,
@@ -2825,8 +2867,9 @@ async function closeSession(idx) {
   if (session.ro) session.ro.disconnect();
   if (session._frameRenderer) session._frameRenderer.destroy();
   if (session.ws) session.ws.close();
-  // Dispose WebGL addon BEFORE term.dispose() so the GPU texture atlas is
-  // released — otherwise the atlas leaks across session close → new session.
+  if (session._terminalWriter) session._terminalWriter.dispose();
+  // Historical sessions may still have a WebGL addon handle from older code;
+  // dispose it before term.dispose() so GPU resources are released.
   if (session._webgl) { try { session._webgl.dispose(); } catch {} session._webgl = null; }
   if (session.term) session.term.dispose();
   if (session._visibilityHandler) document.removeEventListener('visibilitychange', session._visibilityHandler);
@@ -2930,6 +2973,7 @@ export function disconnectAllSessions() {
     session.dead = true;
     if (session.ro) session.ro.disconnect();
     session.ws.close();
+    if (session._terminalWriter) session._terminalWriter.dispose();
     if (session._webgl) { try { session._webgl.dispose(); } catch {} session._webgl = null; }
     if (session.term) session.term.dispose();
     session.viewport.remove();
@@ -2987,10 +3031,8 @@ function _reconnectTerminalWs(session, attempt = 0) {
   ws.onopen = () => {
     session._reconnecting = false;
     session.ws = ws;
-    // Server replays the full PTY outputBuffer on every connect. xterm.write()
-    // appends at cursor — without a reset, the prior render stacks under the
-    // replay, producing a visibly duplicated banner. Clear the screen and
-    // scrollback so the replay paints onto a clean slate.
+    // Server restores reconnects with a terminal-state snapshot. Clear any
+    // stale queued writes so the snapshot becomes the new canonical screen.
     session._needsReplayReset = true;
     session._replayBuf = '';
     if (session.term) {
@@ -3007,15 +3049,16 @@ function _reconnectTerminalWs(session, attempt = 0) {
     if (session.ws !== ws) return;
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'output' || msg.type === 'replay') {
-        if (msg.type === 'replay' && session._needsReplayReset) {
+      if (msg.type === 'output' || msg.type === 'replay' || msg.type === 'snapshot') {
+        if ((msg.type === 'replay' || msg.type === 'snapshot') && session._needsReplayReset) {
           session._needsReplayReset = false;
           if (session.term) {
-            try { session.term.reset(); } catch {}
+            try { session._terminalWriter?.clear?.(); session.term.reset(); } catch {}
           }
         }
         if (session.term) {
-          session.term.write(msg.data);
+          if (session._terminalWriter) session._terminalWriter(msg.data);
+          else session.term.write(msg.data);
           if (NOTIF_TRACKED_CLI_PROFILES.has(session.profile)) _scheduleCliStatusCheck(session.id);
         }
       }
@@ -3025,7 +3068,8 @@ function _reconnectTerminalWs(session, attempt = 0) {
       }
       if (msg.type === 'error') {
         if (msg.message === 'Session not found') { markSessionDead(session.id); return; }
-        if (session.term) session.term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
+        if (session._terminalWriter) session._terminalWriter(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
+        else if (session.term) session.term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
       }
       if (msg.type === 'image_saved' && msg.path) {
         _clipCopy(msg.path);
@@ -5089,6 +5133,11 @@ async function attachDetached(terminalSessionId, profile, initialMessage, autoSu
     _pendingSessionIds.delete(terminalSessionId);
     console.error('[SynaBun] attachDetached failed:', err);
     showTermToast(`Failed to attach terminal: ${err.message || 'unknown error'}`);
+    const termContainer = $('term-container');
+    const termHidden = !termContainer || termContainer.offsetParent === null;
+    if (termHidden) {
+      try { alert(`[SynaBun] Launch failed: ${err.message || 'unknown error'}\n\nOpen DevTools Console for stack trace.`); } catch {}
+    }
   }
 }
 
@@ -5187,8 +5236,8 @@ function _sendOnceReady(session, message, autoSubmit) {
   function onMessage(e) {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'output' || msg.type === 'replay') {
-        _outputBuf += msg.data;
+      if (msg.type === 'output' || msg.type === 'replay' || msg.type === 'snapshot') {
+        _outputBuf += (msg.type === 'snapshot' && msg.plain) ? msg.plain : msg.data;
         // Strip ANSI codes before matching — CLI prompts are colorized
         const clean = _outputBuf.replace(ANSI_RE, '');
         if (READY_PATTERNS.some(p => p.test(clean))) {

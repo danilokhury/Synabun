@@ -26,7 +26,11 @@ This is a **100% browser-based** workflow. Leonardo.ai runs in SynaBun's headed 
 
 ## Runtime Compatibility
 
-- **Interactive choice prompt** means: use `AskUserQuestion` in Claude Code, `request_user_input` in Codex when that tool is available, otherwise ask a concise plain-text multiple-choice question and wait for the user's reply.
+- **Interactive choice prompt** means an interactive option card the user clicks — not plain text choices.
+  - **Claude Code (REQUIRED path):** `AskUserQuestion` is a deferred tool — its schema is not loaded by default. Before the first prompt in this skill, call `ToolSearch` with query `select:AskUserQuestion` to load it, then call `AskUserQuestion` with 2-4 options. NEVER write the choices as plain text — the sidepanel will render text as static markdown, not an interactive card.
+  - **OpenCode (REQUIRED path):** call the native `question` tool — the sidepanel renders it as an interactive card via the `/question.asked` event. NEVER write the choices as plain text.
+  - **Codex (REQUIRED path):** call `request_user_input` — the sidepanel renders it as an interactive card. NEVER write the choices as plain text.
+  - **Other runtimes:** only when no interactive tool exists, fall back to a concise plain-text multiple-choice question and wait for the user's reply.
 - **Load/read a module file** means: use whatever local file-reading mechanism exists in the current runtime. Do not depend on a tool literally being named `Read`.
 
 ---

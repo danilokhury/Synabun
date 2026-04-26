@@ -109,7 +109,7 @@ function extractCompactAssistantSummary(text) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!value) return 'Working through the next step';
-  return value.length > 160 ? `${value.slice(0, 157).trimEnd()}…` : value;
+  return value;
 }
 
 // ═══════════════════════════════════════════
@@ -1091,8 +1091,8 @@ export function createMessageShell(kind, label, { phase = '' } = {}) {
   head.appendChild(labelEl);
   const phaseEl = document.createElement('div');
   phaseEl.className = 'cxp-msg-phase';
-  phaseEl.hidden = !normalizedPhase;
-  phaseEl.textContent = normalizedPhase === 'commentary' ? 'Commentary' : 'Final';
+  phaseEl.hidden = normalizedPhase !== 'final_answer';
+  phaseEl.textContent = normalizedPhase === 'final_answer' ? 'Final' : '';
   head.appendChild(phaseEl);
   card.appendChild(head);
 
@@ -1181,18 +1181,19 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
 
   const note = document.createElement('div');
   note.className = 'cxp-post-plan-note';
-  note.textContent = 'Plan ready. Continue into implementation, compact before proceeding, or reopen the plan in the editor.';
+  note.textContent = 'Plan ready. Continue into implementation, keep planning, compact, or reopen the plan in the editor.';
   card.appendChild(note);
 
   const actions = document.createElement('div');
   actions.className = 'cxp-post-plan-actions';
 
   const continueBtn = _ctx.createRequestButton('Continue with implementation', 'primary');
+  const continuePlanningBtn = _ctx.createRequestButton('Continue planning', 'secondary');
   const compactBtn = _ctx.createRequestButton('Compact context', 'secondary');
   const editBtn = _ctx.createRequestButton('Edit plan', 'secondary');
 
   const setBusy = (busy) => {
-    [continueBtn, compactBtn, editBtn].forEach((btn) => { btn.disabled = busy; });
+    [continueBtn, continuePlanningBtn, compactBtn, editBtn].forEach((btn) => { btn.disabled = busy; });
     card.style.opacity = busy ? '0.55' : '1';
     card.style.pointerEvents = busy ? 'none' : 'auto';
   };
@@ -1205,21 +1206,45 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
         : 'Continue with the implementation based on the approved plan.';
       tab.planMode = false;
       tab.showPostPlanActions = false;
+      tab.planApprovalPending = false;
+      tab.planTurnActive = false;
+      tab.lastPlanTurnId = '';
       tab.postPlanHeader = 'PLAN COMPLETE';
       if (typeof _ctx.setShowPostPlanActions === 'function') _ctx.setShowPostPlanActions(false);
+      if (typeof _ctx.setPlanApprovalPending === 'function') _ctx.setPlanApprovalPending(false);
+      if (typeof _ctx.setPlanTurnActive === 'function') _ctx.setPlanTurnActive(false);
+      if (typeof _ctx.setLastPlanTurnId === 'function') _ctx.setLastPlanTurnId('');
       if (typeof _ctx.setPostPlanHeader === 'function') _ctx.setPostPlanHeader('PLAN COMPLETE');
       _ctx.syncToolbarState();
       const sent = _ctx.dispatchPrompt(finalPrompt, { tab, forcePlanModePrefix: false });
       if (!sent) {
         tab.planMode = true;
         tab.showPostPlanActions = true;
+        tab.planApprovalPending = true;
         if (typeof _ctx.setShowPostPlanActions === 'function') _ctx.setShowPostPlanActions(true);
+        if (typeof _ctx.setPlanApprovalPending === 'function') _ctx.setPlanApprovalPending(true);
         _ctx.syncToolbarState();
         renderPostPlanActions(tab);
         return;
       }
       removePostPlanCards(tab.messagesEl);
       updatePostPlanTranscriptMeta(tab);
+    });
+  });
+
+  continuePlanningBtn.addEventListener('click', () => {
+    _ctx.withTab(tab, () => {
+      if (_ctx.running) return;
+      tab.showPostPlanActions = false;
+      if (typeof _ctx.setShowPostPlanActions === 'function') _ctx.setShowPostPlanActions(false);
+      _ctx.syncToolbarState();
+      removePostPlanCards(tab.messagesEl);
+      updatePostPlanTranscriptMeta(tab);
+      const planText = tab.planContent || '';
+      const prompt = planText
+        ? `Continue refining the plan below based on new requirements or feedback:\n\n${planText}`
+        : 'Continue planning. Please extend or revise the current plan based on new requirements or feedback.';
+      _ctx.dispatchPrompt(prompt, { tab, forcePlanModePrefix: true });
     });
   });
 
@@ -1240,22 +1265,29 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
     try {
       let filePath = tab.planFilePath || '';
       if (!filePath) {
-        const planText = _ctx.capturePlanContent(tab);
-        if (!planText) {
+        filePath = typeof _ctx.ensurePlanFile === 'function' ? await _ctx.ensurePlanFile(tab) : '';
+        if (!filePath) {
+          const planText = _ctx.capturePlanContent(tab);
+          if (!planText) {
+            noFile();
+            return;
+          }
+          const res = await fetch('/api/create-plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: planText, cwd: tab.project || _ctx.project || '' }),
+          });
+          const result = await res.json();
+          if (!res.ok || !result?.ok || !result.path) {
+            noFile();
+            return;
+          }
+          filePath = result.path;
+        }
+        if (!filePath) {
           noFile();
           return;
         }
-        const res = await fetch('/api/create-plan', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: planText }),
-        });
-        const result = await res.json();
-        if (!res.ok || !result?.ok || !result.path) {
-          noFile();
-          return;
-        }
-        filePath = result.path;
         tab.planFilePath = filePath;
         if (_ctx.isActiveTab(tab)) {
           if (typeof _ctx.setPlanFilePath === 'function') _ctx.setPlanFilePath(filePath);
@@ -1268,7 +1300,7 @@ export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
     }
   });
 
-  actions.append(continueBtn, compactBtn, editBtn);
+  actions.append(continueBtn, continuePlanningBtn, compactBtn, editBtn);
   card.appendChild(actions);
   body.appendChild(card);
   cardWrap.appendChild(body);
@@ -1490,6 +1522,76 @@ export function isCardBodyHidden(state) {
 
 function hasOwnField(value, key) {
   return !!value && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function normalizeReasoningText(value) {
+  if (typeof value === 'string') return value;
+  if (value == null) return '';
+  if (Array.isArray(value)) {
+    return value.map(normalizeReasoningText).filter(Boolean).join('\n');
+  }
+  if (typeof value === 'object') {
+    for (const key of ['text', 'summaryText', 'summary_text', 'content', 'message']) {
+      if (typeof value[key] === 'string') return value[key];
+    }
+    return extractStructuredText(value);
+  }
+  return String(value);
+}
+
+function normalizeReasoningLines(value) {
+  if (value == null) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .map((entry) => normalizeReasoningText(entry).trim())
+    .filter(Boolean);
+}
+
+function reasoningTextFromKeys(item, keys) {
+  if (!item || typeof item !== 'object') return [];
+  for (const key of keys) {
+    if (!hasOwnField(item, key)) continue;
+    const lines = normalizeReasoningLines(item[key]);
+    if (lines.length) return lines;
+  }
+  return [];
+}
+
+function isCompleteStatus(status) {
+  if (!status) return false;
+  if (typeof status === 'string') {
+    return /^(complete|completed|done|success|failed|errored)$/i.test(status.trim());
+  }
+  if (typeof status === 'object') {
+    return Object.keys(status).some((key) => isCompleteStatus(key));
+  }
+  return false;
+}
+
+function isReasoningComplete(item, hasIncomingText = false) {
+  return isCompleteStatus(item?.status)
+    || !!item?.completedAt
+    || !!item?.completed_at
+    || item?.durationMs != null
+    || item?.duration_ms != null
+    || (hasIncomingText && !_ctx.running);
+}
+
+function getReasoningPreviewText(state) {
+  const summaryText = Array.isArray(state?.summaryLines)
+    ? state.summaryLines.map((line) => String(line || '').trim()).filter(Boolean).join(' ')
+    : '';
+  const contentText = Array.isArray(state?.contentLines)
+    ? state.contentLines.map((line) => String(line || '').trim()).filter(Boolean).join(' ')
+    : '';
+  return _ctx.cleanPreview(summaryText || contentText || 'Working through the next step');
+}
+
+function updateReasoningChrome(state, { complete = false } = {}) {
+  if (!state) return;
+  if (state.summaryEl) state.summaryEl.textContent = getReasoningPreviewText(state);
+  if (state.pillEl) state.pillEl.textContent = complete ? 'complete' : 'live';
+  if (state.el) state.el.classList.toggle('cxp-reasoning-done', !!complete);
 }
 
 function cacheCollapsedCardState(state, item, itemType) {
@@ -1774,8 +1876,8 @@ export function ensureReasoningState(item) {
   summary.innerHTML = `
     <span class="cxp-card-icon">${ICON_SPARK}</span>
     <span class="cxp-card-titles">
-      <span class="cxp-card-title">Reasoning</span>
-      <span class="cxp-card-subtitle">Intermediate thought stream</span>
+      <span class="cxp-card-title">Reasoning Summary</span>
+      <span class="cxp-card-subtitle">Working through the next step</span>
     </span>
     <span class="cxp-think-dots"><span></span><span></span><span></span></span>
     <span class="cxp-status-pill">live</span>
@@ -1789,6 +1891,7 @@ export function ensureReasoningState(item) {
   details.open = true;
   details.addEventListener('toggle', () => {
     details.dataset.expanded = details.open ? '1' : '0';
+    if (state && !state.suppressToggleTracking) state.userToggled = true;
     _ctx.scheduleThreadSnapshotSave(_ctx.boundTab);
   });
 
@@ -1797,9 +1900,12 @@ export function ensureReasoningState(item) {
     type: 'reasoning',
     el: details,
     bodyEl: body,
-    summaryEl: summary.querySelector('.cxp-status-pill'),
+    summaryEl: summary.querySelector('.cxp-card-subtitle'),
+    pillEl: summary.querySelector('.cxp-status-pill'),
     summaryLines: [],
     contentLines: [],
+    userToggled: false,
+    suppressToggleTracking: false,
   };
   _ctx.items.set(item.id, state);
   return state;
@@ -2146,30 +2252,36 @@ export function updateItemFromData(item) {
         if (phase) state.el.dataset.phase = phase;
         else delete state.el.dataset.phase;
       }
-      if (state.labelEl) state.labelEl.textContent = phase === 'commentary' ? 'Codex Commentary' : 'Codex';
+      if (state.labelEl) state.labelEl.textContent = 'Codex';
       if (state.phaseEl) {
-        state.phaseEl.hidden = !phase;
-        state.phaseEl.textContent = phase === 'commentary' ? 'Commentary' : 'Final';
+        state.phaseEl.hidden = phase !== 'final_answer';
+        state.phaseEl.textContent = phase === 'final_answer' ? 'Final' : '';
       }
       setMarkdownBuffer(state, resolveFinalMarkdownText(state, item.text), true);
       break;
     }
     case 'reasoning': {
-      const nextSummaryLines = Array.isArray(item.summary) && item.summary.length
-        ? [...item.summary]
-        : state.summaryLines;
-      const nextContentLines = Array.isArray(item.content) && item.content.length
-        ? [...item.content]
-        : state.contentLines;
-      state.summaryLines = Array.isArray(nextSummaryLines) ? nextSummaryLines : [];
-      state.contentLines = Array.isArray(nextContentLines) ? nextContentLines : [];
-      const summaryText = state.summaryLines.join(' • ');
-      if (state.summaryEl) state.summaryEl.textContent = summaryText || 'done';
-      state.bodyEl.textContent = getReasoningBodyText(state);
-      if (state.el) {
-        state.el.classList.add('cxp-reasoning-done');
+      const incomingSummaryLines = reasoningTextFromKeys(item, ['summary', 'summaryText', 'summary_text']);
+      const incomingContentLines = reasoningTextFromKeys(item, ['content', 'text']);
+      const hasIncomingText = incomingSummaryLines.length > 0 || incomingContentLines.length > 0;
+      if (incomingSummaryLines.length) state.summaryLines = incomingSummaryLines;
+      if (incomingContentLines.length) state.contentLines = incomingContentLines;
+      const complete = isReasoningComplete(item, hasIncomingText);
+      updateReasoningChrome(state, { complete });
+      if (state.bodyEl) state.bodyEl.textContent = getReasoningBodyText(state, { complete });
+      if (state.el && complete && !state.userToggled) {
+        state.suppressToggleTracking = true;
         state.el.open = false;
         state.el.dataset.expanded = '0';
+        setTimeout(() => { state.suppressToggleTracking = false; }, 0);
+      } else if (state.el && !complete) {
+        state.el.classList.remove('cxp-reasoning-done');
+        if (!state.userToggled) {
+          state.suppressToggleTracking = true;
+          state.el.open = true;
+          state.el.dataset.expanded = '1';
+          setTimeout(() => { state.suppressToggleTracking = false; }, 0);
+        }
       }
       break;
     }
@@ -2346,25 +2458,33 @@ export function appendPlanDelta(itemId, delta) {
   setMarkdownBuffer(state, state.buffer, false);
 }
 
-export function getReasoningBodyText(state) {
-  if (!state) return '(reasoning complete)';
+export function getReasoningBodyText(state, { complete = false } = {}) {
+  if (!state) return complete ? '(reasoning complete)' : 'Waiting for reasoning summary...';
   const contentText = Array.isArray(state.contentLines) ? state.contentLines.join('').trim() : '';
   if (contentText) return contentText;
   const summaryText = Array.isArray(state.summaryLines)
     ? state.summaryLines.map((line) => String(line || '').trim()).filter(Boolean).join('\n')
     : '';
-  return summaryText || '(reasoning complete)';
+  return summaryText || (complete ? '(reasoning complete)' : 'Waiting for reasoning summary...');
 }
 
 export function appendReasoningDelta(itemId, delta, isSummary = false, summaryIndex = null) {
   const state = ensureReasoningState({ id: itemId });
+  state.el?.classList.remove('cxp-reasoning-done');
+  if (state.pillEl) state.pillEl.textContent = 'live';
+  if (!state.userToggled && state.el && !state.el.open) {
+    state.suppressToggleTracking = true;
+    state.el.open = true;
+    state.el.dataset.expanded = '1';
+    setTimeout(() => { state.suppressToggleTracking = false; }, 0);
+  }
   if (isSummary) {
     const idx = Number.isFinite(summaryIndex) ? Math.max(0, summaryIndex) : state.summaryLines.length;
     state.summaryLines[idx] = (state.summaryLines[idx] || '') + (delta || '');
-    if (state.summaryEl) state.summaryEl.textContent = state.summaryLines.join('').trim() || 'live';
   } else {
     state.contentLines.push(delta || '');
   }
+  updateReasoningChrome(state, { complete: false });
   state.bodyEl.textContent = getReasoningBodyText(state);
   _ctx.scrollEnd();
   _ctx.scheduleThreadSnapshotSave(_ctx.boundTab);
@@ -2374,6 +2494,7 @@ export function appendReasoningSummaryPart(itemId, summaryIndex) {
   const state = ensureReasoningState({ id: itemId });
   const idx = Number.isFinite(summaryIndex) ? Math.max(0, summaryIndex) : state.summaryLines.length;
   if (state.summaryLines[idx] == null) state.summaryLines[idx] = '';
+  updateReasoningChrome(state, { complete: false });
   state.bodyEl.textContent = getReasoningBodyText(state);
 }
 
@@ -2452,9 +2573,15 @@ export function resolveHistoryRenderSource(thread, fallbackItems = null, storedS
   const snapshotAtLeastAsComplete = !!snapshot
     && snapshot.itemCount > 0
     && snapshot.itemCount >= structuredItemCount;
-  const snapshotTrusted = snapshotSourceType === 'sdk' || snapshotSourceType === 'live';
+  // Trust the snapshot regardless of original source: SDK rebuild path was
+  // observed to lose live render fidelity (streaming partials, MCP card state,
+  // post-plan/post-compaction overlays). The snapshot is the most faithful
+  // record of what the user saw, so prefer it when it's complete and fresh.
+  const snapshotTrusted = !!snapshotSourceType;
+  // Active threads still get the snapshot when no live SSE stream is reattaching
+  // — covers the fresh-browser-load case where the thread was previously
+  // running but the page reloaded before completion.
   const canPreferSnapshot = !!snapshot
-    && thread?.status?.type !== 'active'
     && snapshotTrusted
     && snapshotFreshEnough
     && snapshotAtLeastAsComplete;

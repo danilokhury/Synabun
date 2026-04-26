@@ -483,8 +483,10 @@ export const TUTORIAL_STEPS = [
           { id: 'claude-haiku-4-5',  label: 'Haiku 4.5',   desc: 'Fastest',       tier: 'light' },
         ],
         'codex': [
-          { id: 'o3',      label: 'o3',      desc: 'Deep reasoning',  tier: 'top' },
-          { id: 'o4-mini', label: 'o4-mini', desc: 'Fast reasoning',  tier: 'default' },
+          { id: 'gpt-5.5',       label: 'GPT-5.5',       desc: 'Most capable',   tier: 'top' },
+          { id: 'gpt-5.4',       label: 'GPT-5.4',       desc: 'Strong general' },
+          { id: 'gpt-5.4-mini',  label: 'GPT-5.4 Mini',  desc: 'Fast & cheap',   tier: 'default' },
+          { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', desc: 'Codex-tuned' },
         ],
         'gemini': [
           { id: 'gemini-2.5-pro',   label: '2.5 Pro',   desc: 'Most capable',  tier: 'default' },

@@ -1318,26 +1318,42 @@ function buildTerminalTab(cliConfig) {
 function buildMcpTab() {
   return `
       <div class="settings-tab-body" data-tab="mcp">
-        <div class="stg-section">
-          <div class="gfx-group-title">MCP Profiles</div>
-          <div class="stg-mcp-intro">
-            <div class="settings-hint">Toggle tool groups per profile. Click a profile name to activate it.</div>
-            <div class="stg-mcp-note">
-              <strong>Tool-enabled modes only.</strong>
-              <span>Profiles reduce token usage and response times by loading only the tools each workflow needs.</span>
+        <div class="stg-mcp-page-tabs" role="tablist">
+          <button type="button" class="stg-mcp-page-tab active" data-pane="profiles">Profiles</button>
+          <button type="button" class="stg-mcp-page-tab" data-pane="installed">Installed</button>
+        </div>
+        <div class="stg-mcp-pane" data-pane="profiles">
+          <div class="stg-section">
+            <div class="gfx-group-title">MCP Profiles</div>
+            <div class="stg-mcp-intro">
+              <div class="settings-hint">Toggle tool groups per profile. Click a profile name to activate it.</div>
+              <div class="stg-mcp-note">
+                <strong>Tool-enabled modes only.</strong>
+                <span>Profiles reduce token usage and response times by loading only the tools each workflow needs.</span>
+              </div>
+            </div>
+            <div id="stg-mcp-matrix-wrap" class="stg-mcp-matrix-wrap stg-mcp-block">
+              <div class="stg-mcp-matrix-empty">Loading…</div>
+            </div>
+            <div id="stg-mcp-always-on" class="stg-mcp-subsection"></div>
+            <div class="stg-mcp-subsection stg-mcp-servers-section">
+              <div class="stg-mcp-section-head">
+                <div class="stg-mcp-section-header">External Servers</div>
+                <div class="settings-hint">Assign custom MCP servers per profile without expanding the tool-group matrix.</div>
+              </div>
+              <div id="stg-mcp-ext-servers" class="stg-mcp-servers-list"></div>
             </div>
           </div>
-          <div id="stg-mcp-matrix-wrap" class="stg-mcp-matrix-wrap stg-mcp-block">
-            <div class="stg-mcp-matrix-empty">Loading…</div>
-          </div>
-          <div id="stg-mcp-always-on" class="stg-mcp-subsection"></div>
-          <div class="stg-mcp-subsection stg-mcp-servers-section">
-            <div class="stg-mcp-section-head">
-              <div class="stg-mcp-section-header">External Servers</div>
-              <div class="settings-hint">Assign custom MCP servers per profile without expanding the tool-group matrix.</div>
-            </div>
-            <div id="stg-mcp-ext-servers" class="stg-mcp-servers-list"></div>
-            <button class="stg-action-btn compact stg-mcp-add-server-btn" id="stg-mcp-add-server">+ Add Server</button>
+        </div>
+        <div class="stg-mcp-pane" data-pane="installed" style="display:none">
+          <div class="stg-section">
+            <div class="gfx-group-title">Installed MCPs</div>
+            <div class="settings-hint">Every third-party MCP server registered with Claude Code, OpenCode, Codex, Gemini, or SynaBun — plus installed Claude Code plugins. SynaBun's built-in tool groups are not shown.</div>
+            <div id="stg-mcp-installed-all" class="stg-mcp-servers-list"></div>
+            <div class="stg-mcp-section-header" style="margin-top:16px">Claude Code Plugins</div>
+            <div class="settings-hint">Plugins installed from GitHub repos that ship a .claude-plugin/ manifest. Symlinked into ~/.claude/plugins/.</div>
+            <div id="stg-mcp-ext-plugins" class="stg-mcp-servers-list"></div>
+            <button class="stg-action-btn compact stg-mcp-add-server-btn" id="stg-mcp-add-server">+ Install from GitHub</button>
             <div class="stg-mcp-add-form" id="stg-mcp-add-form" style="display:none" data-transport="stdio" data-source="paste">
               <div class="stg-mcp-source-tabs" id="stg-mcp-source-tabs" role="tablist">
                 <button type="button" class="stg-mcp-source-tab active" data-source="github">From GitHub</button>
@@ -2871,14 +2887,59 @@ async function refreshIconsTab(panel) {
   } catch {}
 }
 
+function activateSettingsTab(overlay, tabId = 'server') {
+  const nav = overlay.querySelector(`.settings-nav-item[data-tab="${tabId}"]`);
+  const body = overlay.querySelector(`.settings-tab-body[data-tab="${tabId}"]`);
+  if (!nav || !body) return false;
+
+  overlay.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
+  overlay.querySelectorAll('.settings-tab-body').forEach(b => b.classList.remove('active'));
+  nav.classList.add('active');
+  body.classList.add('active');
+  return true;
+}
+
+function applySettingsOpenOptions(overlay, options = {}) {
+  if (!overlay || !options) return;
+
+  if (options.tab) activateSettingsTab(overlay, options.tab);
+
+  const expand = Array.isArray(options.expand) ? options.expand : (options.expand ? [options.expand] : []);
+  for (const id of expand) {
+    const section = overlay.querySelector(`#${id}`);
+    if (section) section.classList.remove('collapsed');
+  }
+
+  overlay.querySelectorAll('.settings-focus-target').forEach(el => {
+    el.classList.remove('settings-focus-target');
+  });
+
+  const highlight = Array.isArray(options.highlight) ? options.highlight : (options.highlight ? [options.highlight] : []);
+  for (const id of highlight) {
+    const section = overlay.querySelector(`#${id}`);
+    if (!section) continue;
+    section.classList.add('settings-focus-target');
+    setTimeout(() => section.classList.remove('settings-focus-target'), 2600);
+  }
+
+  const scrollTarget = options.scrollTo ? overlay.querySelector(`#${options.scrollTo}`) : null;
+  if (scrollTarget) {
+    setTimeout(() => scrollTarget.scrollIntoView({ block: 'center', behavior: 'smooth' }), 80);
+  }
+}
+
 // ═══════════════════════════════════════════
 // MAIN ENTRY — openSettingsModal
 // ═══════════════════════════════════════════
 
-export async function openSettingsModal() {
+export async function openSettingsModal(options = {}) {
   // If already open, just bring it to front
   const existing = document.getElementById('settings-panel');
-  if (existing) { existing.style.zIndex = '300001'; return; }
+  if (existing) {
+    existing.style.zIndex = '300001';
+    applySettingsOpenOptions(existing, options);
+    return;
+  }
 
   // ── Fetch all data in parallel ──
   let settings = {};
@@ -3035,12 +3096,11 @@ export async function openSettingsModal() {
   // ── Nav switching ──
   overlay.querySelectorAll('.settings-nav-item').forEach(nav => {
     nav.addEventListener('click', () => {
-      overlay.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
-      overlay.querySelectorAll('.settings-tab-body').forEach(b => b.classList.remove('active'));
-      nav.classList.add('active');
-      overlay.querySelector(`.settings-tab-body[data-tab="${nav.dataset.tab}"]`).classList.add('active');
+      activateSettingsTab(overlay, nav.dataset.tab);
     });
   });
+
+  applySettingsOpenOptions(overlay, options);
 
   // ── Interface customization suite ──
   {
@@ -5016,7 +5076,8 @@ export async function openSettingsModal() {
           } else if (data.ok) {
             const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs';
             const ep = setupStatus.paths?.envPath || '<path-to>/synabun/.env';
-            cachedConfig = `[mcp_servers.SynaBun]\ncommand = "node"\nargs = ["${mp}"]\n\n[mcp_servers.SynaBun.env]\nDOTENV_PATH = "${ep}"`;
+            const dataHome = setupStatus.paths?.dataHome || '<path-to>/synabun';
+            cachedConfig = `[mcp_servers.SynaBun]\ncommand = "node"\nargs = ["${mp}"]\nenv = { DOTENV_PATH = "${ep}", SYNABUN_DATA_HOME = "${dataHome}", MEMORY_DATA_DIR = "${dataHome}/mcp-data", SYNABUN_PROFILE = "codex-browser", SYNABUN_BROWSER_FAST = "1", SYNABUN_BROWSER_COMPACT = "1" }`;
             preview.textContent = cachedConfig;
           } else { preview.textContent = 'Could not load config.'; }
         }).catch(() => { preview.textContent = 'Failed to load.'; });
@@ -6010,8 +6071,10 @@ export async function openSettingsModal() {
         { id: 'claude-haiku-4-5',  label: 'Haiku 4.5',   desc: 'Fastest',       tier: 'light' },
       ],
       'codex': [
-        { id: 'o3',      label: 'o3',      desc: 'Deep reasoning',  tier: 'top' },
-        { id: 'o4-mini', label: 'o4-mini', desc: 'Fast reasoning',  tier: 'default' },
+        { id: 'gpt-5.5',       label: 'GPT-5.5',       desc: 'Most capable',   tier: 'top' },
+        { id: 'gpt-5.4',       label: 'GPT-5.4',       desc: 'Strong general' },
+        { id: 'gpt-5.4-mini',  label: 'GPT-5.4 Mini',  desc: 'Fast & cheap',   tier: 'default' },
+        { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', desc: 'Codex-tuned' },
       ],
       'gemini': [
         { id: 'gemini-2.5-pro',   label: '2.5 Pro',   desc: 'Most capable',  tier: 'default' },
@@ -7377,11 +7440,139 @@ export async function openSettingsModal() {
       });
     }
 
+    // ── Top-level page tabs (Profiles / Installed) ──
+    const mcpPageTabs = overlay.querySelectorAll('.stg-mcp-page-tab');
+    const mcpPanes = overlay.querySelectorAll('.stg-mcp-pane');
+    mcpPageTabs.forEach(tabBtn => {
+      tabBtn.addEventListener('click', () => {
+        const targetPane = tabBtn.dataset.pane;
+        mcpPageTabs.forEach(t => t.classList.toggle('active', t === tabBtn));
+        mcpPanes.forEach(p => { p.style.display = (p.dataset.pane === targetPane) ? '' : 'none'; });
+        if (targetPane === 'installed') renderInstalledAll();
+      });
+    });
+
+    const CLI_BADGES = {
+      synabun:    { label: 'SB', title: 'SynaBun registry' },
+      claudeCode: { label: 'CC', title: 'Claude Code (~/.claude.json)' },
+      opencode:   { label: 'OC', title: 'OpenCode' },
+      codex:      { label: 'CX', title: 'Codex (~/.codex/config.toml)' },
+      gemini:     { label: 'GE', title: 'Gemini (~/.gemini/settings.json)' },
+    };
+
+    async function renderInstalledAll() {
+      const el = overlay.querySelector('#stg-mcp-installed-all');
+      if (!el) return;
+      el.innerHTML = '<div class="stg-mcp-empty-note">Loading…</div>';
+      let servers = [];
+      try {
+        const r = await fetch('/api/mcp/installed-all').then(r => r.json());
+        if (r?.ok) servers = r.servers || [];
+      } catch {}
+      if (!servers.length) {
+        el.innerHTML = '<div class="stg-mcp-empty-note">No external MCP servers installed</div>';
+        return;
+      }
+      el.innerHTML = servers.map(s => {
+        const badges = (s.registeredWith || []).map(k => {
+          const b = CLI_BADGES[k];
+          if (!b) return '';
+          return `<span class="stg-mx-ext-cli-badge" title="${esc(b.title)}">${esc(b.label)}</span>`;
+        }).join('');
+        const cmd = s.command ? `${esc(s.command)}${Array.isArray(s.args) && s.args.length ? ' ' + esc(s.args.join(' ')) : ''}` : (s.url ? esc(s.url) : '');
+        const regAttr = esc((s.registeredWith || []).join(','));
+        return `<div class="stg-mx-ext-row">
+          <div class="stg-mx-ext-main">
+            <span class="stg-mx-ext-dot"></span>
+            <div class="stg-mx-ext-copy">
+              <div class="stg-mx-ext-head">
+                <span class="stg-mx-ext-name">${esc(s.name)}</span>
+                <span class="stg-mx-ext-type">${esc(s.transport || '?')}</span>
+                <span class="stg-mx-ext-clis">${badges}</span>
+              </div>
+              <div class="stg-mx-ext-sub">${cmd || '—'}</div>
+            </div>
+            <button class="stg-mx-srv-del stg-mx-installed-del" data-server="${esc(s.name)}" data-registered="${regAttr}" title="Uninstall from all CLIs">×</button>
+          </div>
+        </div>`;
+      }).join('');
+
+      el.querySelectorAll('.stg-mx-installed-del').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const name = btn.dataset.server;
+          const registered = (btn.dataset.registered || '').split(',').filter(Boolean);
+          if (!name) return;
+          const cliList = registered.filter(k => k !== 'synabun');
+          const summary = registered.map(k => CLI_BADGES[k]?.label || k).join(', ');
+          if (!confirm(`Remove "${name}" from ${summary}? This unregisters it from each CLI's config.`)) return;
+          btn.disabled = true;
+          try {
+            if (registered.includes('synabun')) {
+              await fetch(`/api/mcp/registry/servers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            }
+            if (cliList.length) {
+              await fetch('/api/mcp/sync', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, platforms: cliList }),
+              });
+            }
+          } catch {}
+          await refreshMcpTab();
+          await renderInstalledAll();
+        });
+      });
+    }
+
+    async function renderPluginsList() {
+      const el = overlay.querySelector('#stg-mcp-ext-plugins');
+      if (!el) return;
+      let plugins = [];
+      try {
+        const r = await fetch('/api/plugins/list').then(r => r.json());
+        if (r?.ok) plugins = r.plugins || [];
+      } catch {}
+      if (!plugins.length) {
+        el.innerHTML = '<div class="stg-mcp-empty-note">No plugins installed</div>';
+        return;
+      }
+      el.innerHTML = plugins.map(p => {
+        const brokenBadge = p.broken ? '<span class="stg-mx-ext-type" style="color:var(--t-err,#f55)">broken</span>' : '';
+        const sha = p.gitCommitSha && p.gitCommitSha !== 'unknown' ? p.gitCommitSha.slice(0, 7) : '';
+        return `<div class="stg-mx-ext-row">
+          <div class="stg-mx-ext-main">
+            <span class="stg-mx-ext-dot"></span>
+            <div class="stg-mx-ext-copy">
+              <div class="stg-mx-ext-head">
+                <span class="stg-mx-ext-name">${esc(p.pluginName)}</span>
+                <span class="stg-mx-ext-type">claude-plugin</span>
+                ${brokenBadge}
+              </div>
+              <div class="stg-mx-ext-sub">${esc(p.marketplaceName)}${sha ? ' · ' + sha : ''} · ${esc(p.repoPath || '')}</div>
+            </div>
+            <button class="stg-mx-srv-del stg-mx-ext-plugin-del" data-marketplace="${esc(p.marketplaceName)}" data-plugin="${esc(p.pluginName)}" title="Uninstall plugin">×</button>
+          </div>
+        </div>`;
+      }).join('');
+      el.querySelectorAll('.stg-mx-ext-plugin-del').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const mk = btn.dataset.marketplace;
+          const pn = btn.dataset.plugin;
+          if (!mk) return;
+          await fetch(`/api/plugins/${encodeURIComponent(mk)}?pluginName=${encodeURIComponent(pn || '')}&purgeFiles=1`, { method: 'DELETE' });
+          await refreshMcpTab();
+        });
+      });
+    }
+
     async function refreshMcpTab() {
       await fetchMcpRegistry();
       renderMcpMatrix();
       renderAlwaysOn();
       renderExtServerList();
+      renderPluginsList();
     }
 
     // Initial load
@@ -7587,6 +7778,9 @@ export async function openSettingsModal() {
     });
     overlay.querySelector('#stg-mcp-srv-cancel')?.addEventListener('click', () => {
       if (addForm) { addForm.style.display = 'none'; resetAddForm(); }
+      setFormMode('mcp');
+      if (ghProgress) ghProgress.style.display = 'none';
+      if (ghStatus) ghStatus.textContent = '';
     });
 
     // ── Source-tab switcher (GitHub / JSON) ──
@@ -7643,9 +7837,24 @@ export async function openSettingsModal() {
       if (addForm) addForm.dataset.transport = detected.type || 'stdio';
     }
 
+    // Toggle form between 'mcp' and 'plugin' modes.
+    // In plugin mode we hide MCP-specific fields (Type/Command/Args/URL/env/platforms/Save)
+    // and show a single Done button because the plugin is already activated server-side.
+    function setFormMode(mode) {
+      if (addForm) addForm.dataset.kind = mode;
+      const isPlugin = mode === 'plugin';
+      const mcpOnly = addForm?.querySelectorAll('.stg-mcp-form-grid, #stg-mcp-env-rows, #stg-mcp-env-add, #stg-mcp-platforms') || [];
+      mcpOnly.forEach(el => { el.style.display = isPlugin ? 'none' : ''; });
+      const envLabels = addForm?.querySelectorAll('.stg-mcp-form-label') || [];
+      envLabels.forEach(el => { el.style.display = isPlugin ? 'none' : ''; });
+      const saveBtn = overlay.querySelector('#stg-mcp-srv-save');
+      if (saveBtn) saveBtn.style.display = isPlugin ? 'none' : '';
+    }
+
     ghInstallBtn?.addEventListener('click', async () => {
       const url = ghUrlEl?.value?.trim();
       if (!url) return;
+      setFormMode('mcp'); // reset so form is in a clean state before classification
       if (ghProgress) ghProgress.style.display = '';
       if (ghStatus) ghStatus.textContent = 'Cloning repository…';
       if (ghLog) ghLog.textContent = '';
@@ -7657,10 +7866,25 @@ export async function openSettingsModal() {
         }).then(r => r.json());
         if (ghLog && Array.isArray(res.log)) ghLog.textContent = res.log.join('\n');
         if (!res.ok) {
-          if (ghStatus) ghStatus.textContent = `Error: ${res.error || 'install failed'}`;
+          const hintStr = Array.isArray(res.hints) && res.hints.length ? ` (hints: ${res.hints.join(', ')})` : '';
+          if (ghStatus) ghStatus.textContent = `${res.error || 'install failed'}${hintStr}`;
           return;
         }
-        if (ghStatus) ghStatus.textContent = `Detected via ${res.detected?.source || res.detectSource || 'heuristic'} — review below and click Save.`;
+        if (res.kind === 'claude-plugin') {
+          setFormMode('plugin');
+          const p = res.plugin || {};
+          const hooks = (p.hooks || []).join(', ') || 'none';
+          if (ghStatus) {
+            ghStatus.innerHTML = `Installed Claude Code plugin <b>${esc(p.pluginName || res.name)}</b> @ <b>${esc(p.marketplaceName || '')}</b>. Hooks: ${esc(hooks)}. Symlinked to <code>${esc(p.installPath || '')}</code>.`;
+          }
+          await refreshMcpTab();
+          return;
+        }
+        // MCP (existing behavior)
+        setFormMode('mcp');
+        const sourceHint = res.alsoClaudePlugin ? ' (repo also ships a Claude Code plugin — install separately if desired)' : '';
+        const warnLine = res.installWarning ? `\n⚠ ${res.installWarning}` : (res.install?.skipped && res.install?.reason ? `\n⚙ Skipped local deps — ${res.install.reason}` : '');
+        if (ghStatus) ghStatus.textContent = `Detected via ${res.detected?.source || res.detectSource || 'heuristic'} — review below and click Save.${sourceHint}${warnLine}`;
         applyDetected(res.name, res.detected);
       } catch (err) {
         if (ghStatus) ghStatus.textContent = `Error: ${err.message || err}`;

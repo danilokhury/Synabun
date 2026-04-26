@@ -14,13 +14,31 @@ export const profileSchema = {
 export const profileDescription =
   'Switch MCP tool profiles at runtime without restarting. Use "get" to see current profile and available presets. Use "set" to enable/disable tool groups dynamically — the client will be notified of the tool list change.';
 
+const ALWAYS_ON_TOOL_COUNT = 10;
+const GROUP_TOOL_ESTIMATES: Record<string, number> = {
+  git: 1,
+  image: 1,
+  whiteboard: 3,
+  card: 4,
+  tictactoe: 2,
+  browser: 20,
+  browser_twitter: 1,
+  browser_facebook: 1,
+  browser_tiktok: 4,
+  browser_whatsapp: 2,
+  browser_instagram: 5,
+  browser_linkedin: 8,
+  leonardo: 5,
+  discord: 8,
+};
+
 export async function handleProfile(args: { action: string; profile?: string }) {
   if (args.action === 'get') {
     const { profile, activeGroups } = getActiveProfile();
     const presets = Object.entries(PROFILE_PRESETS).map(([name, groups]) => ({
       name,
       groups,
-      toolEstimate: name === 'core' ? '~11' : name === 'standard' ? '~22' : name === 'browser' ? '~61' : '~74',
+      toolEstimate: `~${ALWAYS_ON_TOOL_COUNT + groups.reduce((sum, group) => sum + (GROUP_TOOL_ESTIMATES[group] || 0), 0)}`,
     }));
     return text(JSON.stringify({
       currentProfile: profile,

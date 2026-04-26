@@ -128,6 +128,9 @@ export function initMenubar() {
     'menu-skills-new': 'skills',
     'menu-skills-import': 'skills',
     'menu-open-automation-studio': 'automations',
+    'menu-automations-schedule-new': 'automations',
+    'menu-automations-quick-timer': 'automations',
+    'menu-automations-schedule-groups': 'automations',
     'menu-automations-new': 'automations',
     'menu-automations-import': 'automations',
     'menu-terminal-claude': 'terminal',
@@ -318,6 +321,27 @@ function wireAutomationsMenu() {
     schedulesItem.addEventListener('click', () => {
       closeAll();
       emit('automations:open-schedules');
+    });
+  }
+  const newScheduleItem = $('menu-automations-schedule-new');
+  if (newScheduleItem) {
+    newScheduleItem.addEventListener('click', () => {
+      closeAll();
+      emit('automations:open-schedules', { action: 'new-schedule' });
+    });
+  }
+  const quickTimerItem = $('menu-automations-quick-timer');
+  if (quickTimerItem) {
+    quickTimerItem.addEventListener('click', () => {
+      closeAll();
+      emit('automations:open-schedules', { action: 'quick-timer' });
+    });
+  }
+  const scheduleGroupsItem = $('menu-automations-schedule-groups');
+  if (scheduleGroupsItem) {
+    scheduleGroupsItem.addEventListener('click', () => {
+      closeAll();
+      emit('automations:open-schedules', { tab: 'groups' });
     });
   }
   const newItem = $('menu-automations-new');

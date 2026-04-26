@@ -8,6 +8,7 @@ import { state, emit, on } from '../state.js';
 import { storage } from '../storage.js';
 import { fetchProjects } from '../api.js';
 import { reserveRightPanelLayout, clearRightPanelLayout } from '../ui-sidepanel-layout.js';
+import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel } from '../cli-status.js';
 
 import { injectStyles } from './ocp-styles.js';
 import {
@@ -21,11 +22,18 @@ import {
   setPanelEl, setOnUpdate, setPanelVisible, setOnShow, setOnHide, setOnEditPlan,
   createTab, switchTab, closeTab, renderPills, saveTabs, restoreTabs,
   loadSessions, createSession, renameSession, loadProviders, loadAgents, populateModelDropdown,
-  sendMessage, abortMessage, abortAllTabs, anyTabRunning, handleSSEEvent,
+  sendMessage, abortMessage, handleSSEEvent,
   revertSession, compactSession, shareSession, executeCommand, renderTabMessages,
   getActiveTabMode, setTabMode, resolveContextInputTokens, setActivityVisible,
-  toggleActivityExpanded, abortAgent,
+  toggleActivityExpanded, abortAgent, ensurePlanFile, showPostPlanUI, applySavedPlan,
+  flushAllSessionSnapshots,
 } from './ocp-tabs.js';
+
+window.addEventListener('beforeunload', () => { try { flushAllSessionSnapshots(); } catch {} });
+window.addEventListener('pagehide', () => { try { flushAllSessionSnapshots(); } catch {} });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { try { flushAllSessionSnapshots(); } catch {} }
+});
 import { isClaudePanelOpen, toggleClaudePanel } from '../ui-claude-panel.js';
 import { isCodexPanelOpen, toggleCodexPanel } from '../ui-codex-panel.js';
 
@@ -57,8 +65,14 @@ let _serverVersion = null;
 let _serverManaged = false;
 let _projects = [];
 let _projectsLoaded = false;
+let _cliInstalled = null;
+let _cliUnsub = null;
 
 function panelEl(sel) { return _panel?.querySelector(sel) || null; }
+
+function activeTabRunning() {
+  return !!activeTab()?.running;
+}
 
 function sessionTitleFor(sessionOrTab) {
   const sid = sessionOrTab?.id || sessionOrTab?.sessionID || sessionOrTab?.sessionId || '';
@@ -496,10 +510,10 @@ function wireEvents() {
       }
       if (e.key === 'Escape') {
         hideSlashHints();
-        if (anyTabRunning()) {
+        if (activeTabRunning()) {
           e.preventDefault();
           e.stopPropagation();
-          abortAllTabs();
+          abortMessage();
         }
       }
       // Navigate slash hints with arrow keys
@@ -543,17 +557,17 @@ function wireEvents() {
         || _panel.querySelector('#ocp-slash-hints:not([hidden])')
         || _panel.querySelector('.ocp-rename-input')
         || _panel.querySelector('#ocp-session-menu.open');
-      if (!ownsEsc && anyTabRunning()) {
+      if (!ownsEsc && activeTabRunning()) {
         e.preventDefault();
         e.stopPropagation();
-        abortAllTabs();
+        abortMessage();
       }
     }
   });
   if (sendBtn) {
     sendBtn.addEventListener('click', () => {
-      if (anyTabRunning()) {
-        abortAllTabs();
+      if (activeTabRunning()) {
+        abortMessage();
       } else {
         handleSend();
       }
@@ -896,9 +910,17 @@ async function handleSend() {
   if (!input) return;
   const tab = activeTab();
   if (!tab) return;
+  if (_cliInstalled === null || _cliInstallFailureForced) {
+    setStatus('offline', 'OpenCode CLI not installed. Install it first, then click Re-check.');
+    return;
+  }
   let text = input.value.trim();
   const images = Array.isArray(tab.attachedImages) ? [...tab.attachedImages] : [];
   if (!text && !images.length) return;
+  if (tab.showPostPlanActions) {
+    setStatus('working', 'Choose Continue, Compact, or Edit plan first.');
+    return;
+  }
 
   // Parse and execute slash commands. If executeSlashCommand returns false
   // (e.g. a SynaBun skill that the server will expand), keep `text` in flight
@@ -991,14 +1013,26 @@ function syncSendButton() {
   const tab = activeTab();
   if (!sendBtn) return;
 
-  // Stop button shows if any tab in the panel is running, so the user can
-  // abort the whole panel regardless of which tab is focused.
-  const panelRunning = anyTabRunning();
-  if (panelRunning) {
+  const cliBlocked = _cliInstalled === null || _cliInstallFailureForced;
+
+  if (cliBlocked) {
+    sendBtn.classList.remove('running');
+    sendBtn.disabled = true;
+    sendBtn.setAttribute('data-tooltip', 'OpenCode CLI not installed');
+    sendBtn.setAttribute('aria-label', 'OpenCode CLI not installed');
+    return;
+  }
+
+  if (tab?.running) {
     sendBtn.disabled = false;
     sendBtn.classList.add('running');
     sendBtn.setAttribute('data-tooltip', 'Stop turn (Esc)');
     sendBtn.setAttribute('aria-label', 'Stop turn');
+  } else if (tab?.showPostPlanActions) {
+    sendBtn.classList.remove('running');
+    sendBtn.disabled = true;
+    sendBtn.setAttribute('data-tooltip', 'Choose a plan action first');
+    sendBtn.setAttribute('aria-label', 'Choose a plan action first');
   } else {
     sendBtn.classList.remove('running');
     sendBtn.disabled = (!input?.value.trim() && !(tab?.attachedImages?.length)) || !_serverReady;
@@ -1478,12 +1512,83 @@ function syncReservedWidth() {
 function _ocpDocEscHandler(event) {
   if (event.key !== 'Escape') return;
   if (!_visible) return;
-  if (!anyTabRunning()) return;
+  if (!activeTabRunning()) return;
   const hintsEl = panelEl('#ocp-slash-hints');
   if (hintsEl && hintsEl.classList.contains('open')) return; // let input handler dismiss hints first
   event.preventDefault();
   event.stopImmediatePropagation();
-  abortAllTabs();
+  abortMessage();
+}
+
+// ── CLI installation status (banner + send-block) ──
+let _cliInstallFailureForced = false;
+
+function ensureCliBannerEl() {
+  if (!_panel) return null;
+  const container = _panel.querySelector('.ocp-messages-container');
+  if (!container) return null;
+  let banner = container.querySelector(':scope > .ocp-cli-banner');
+  if (banner) return banner;
+  const label = getCliLabel('opencode');
+  const cmd = getCliInstallCommand('opencode');
+  const url = getCliDocUrl('opencode');
+  banner = document.createElement('div');
+  banner.className = 'ocp-cli-banner';
+  banner.innerHTML = `
+    <div class="ocp-cli-banner-icon">!</div>
+    <div class="ocp-cli-banner-text">
+      <div class="ocp-cli-banner-title">${label} CLI not installed</div>
+      <div class="ocp-cli-banner-body">Run <code>${cmd}</code> or follow the install guide.</div>
+    </div>
+    <div class="ocp-cli-banner-actions">
+      <a class="ocp-cli-banner-link" href="${url}" target="_blank" rel="noopener noreferrer">Install guide</a>
+      <button class="ocp-cli-banner-recheck" type="button">Re-check</button>
+    </div>
+  `;
+  container.insertBefore(banner, container.firstChild);
+  const btn = banner.querySelector('.ocp-cli-banner-recheck');
+  btn?.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    try { await recheckCliStatus('opencode'); }
+    finally {
+      if (btn.isConnected) {
+        btn.disabled = false;
+        btn.textContent = 'Re-check';
+      }
+    }
+  });
+  return banner;
+}
+
+function removeCliBannerEl() {
+  if (!_panel) return;
+  const banner = _panel.querySelector('.ocp-messages-container > .ocp-cli-banner');
+  banner?.remove();
+}
+
+function refreshCliBanner() {
+  if (!_panel) return;
+  const missing = _cliInstalled === null || _cliInstallFailureForced;
+  _panel.classList.toggle('ocp-cli-blocked', missing);
+  if (missing) ensureCliBannerEl();
+  else removeCliBannerEl();
+  syncSendButton();
+}
+
+export function flagOcpCliInstallFailure() {
+  _cliInstallFailureForced = true;
+  refreshCliBanner();
+  recheckCliStatus('opencode').catch(() => {});
+}
+
+function ensureCliSubscription() {
+  if (_cliUnsub) return;
+  _cliUnsub = subscribeCliStatus('opencode', (info) => {
+    _cliInstalled = info?.installed || null;
+    if (_cliInstalled) _cliInstallFailureForced = false;
+    refreshCliBanner();
+  });
 }
 
 function setVisible(nextVisible) {
@@ -1511,6 +1616,7 @@ function setVisible(nextVisible) {
     if (_curProject) loadBranches(_curProject);
     loadCurrentProfile();
     loadRecallProfile();
+    refreshCliBanner();
   } else {
     document.removeEventListener('keydown', _ocpDocEscHandler, { capture: true });
   }
@@ -1566,6 +1672,9 @@ function wsCallbacks() {
     },
     onError(msg) {
       console.error('[ocp] Error:', msg.message);
+      if (typeof msg.message === 'string' && /opencode.*(not.*found|ENOENT|spawn)|opencode CLI/i.test(msg.message)) {
+        flagOcpCliInstallFailure();
+      }
     },
   };
 }
@@ -1599,30 +1708,29 @@ function ensurePanel() {
     if (tab.planFilePath) { openPlan(tab.planFilePath); return; }
     if (!tab.planContent) return;
     try {
-      const res = await fetch('/api/create-plan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: tab.planContent }),
-      });
-      const result = await res.json();
-      if (result.ok && result.path) {
-        tab.planFilePath = result.path;
-        saveTabs();
-        openPlan(result.path);
-      }
+      const planPath = await ensurePlanFile(tab);
+      if (planPath) openPlan(planPath);
     } catch (e) {
       console.error('[ocp-panel] Edit plan failed:', e);
+      showPostPlanUI(tab);
     }
   });
 
   // Listen for edited plan content from file explorer
-  on('plan-saved', ({ content, source, tabId }) => {
+  on('plan-saved', ({ filePath, content, source, tabId }) => {
     if (source !== 'opencode') return;
     const tab = getTabs().find(t => t.id === tabId) || activeTab();
     if (tab && content) {
-      tab.editedPlanContent = content;
-      saveTabs();
+      applySavedPlan(tab, content, filePath);
     }
+  });
+
+  on('plan-edit-cancelled', ({ source, tabId } = {}) => {
+    if (source !== 'opencode') return;
+    const tab = getTabs().find(t => t.id === tabId) || activeTab();
+    if (!tab) return;
+    tab.showPostPlanActions = true;
+    showPostPlanUI(tab, tab.postPlanHeader || 'PLAN COMPLETE');
   });
 
   wireEvents();
@@ -1632,8 +1740,10 @@ function ensurePanel() {
   if (!restoreTabs()) {
     createTab({ project: storage.getItem(STOR.project) || '' });
   }
+  window.dispatchEvent(new CustomEvent('sidepanel-tray:provider-loaded', { detail: { provider: 'opencode' } }));
 
   syncSendButton();
+  ensureCliSubscription();
 
   // Connect WebSocket
   connectWs(wsCallbacks());

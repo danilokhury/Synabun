@@ -975,6 +975,24 @@ export async function launchLoop(params) {
   });
 }
 
+export async function fetchLoopLog(terminalSessionId) {
+  const res = await fetch(`/api/loop/log/${encodeURIComponent(terminalSessionId)}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  return res.text();
+}
+
+export async function sendClientLoopLog(terminalSessionId, tag, msg, meta) {
+  try {
+    return await jsonFetch('/api/loop/client-log', {
+      method: 'POST',
+      ...jsonBody({ terminalSessionId: terminalSessionId || null, tag, msg, meta }),
+    });
+  } catch { /* logging best-effort */ }
+}
+
 export async function stopLoop(terminalSessionId) {
   return jsonFetch('/api/loop/stop', {
     method: 'POST',
@@ -1005,6 +1023,37 @@ export async function searchMemoriesByCategory(query, category, limit = 15) {
 }
 
 // ── Loop Schedules ──
+
+export async function fetchScheduleGroups() {
+  return jsonFetch('/api/schedule-groups');
+}
+
+export async function createScheduleGroup(payload) {
+  return jsonFetch('/api/schedule-groups', {
+    method: 'POST',
+    ...jsonBody(payload),
+  });
+}
+
+export async function updateScheduleGroup(id, payload) {
+  return jsonFetch(`/api/schedule-groups/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    ...jsonBody(payload),
+  });
+}
+
+export async function deleteScheduleGroup(id) {
+  return jsonFetch(`/api/schedule-groups/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function reorderScheduleGroups(orderedIds) {
+  return jsonFetch('/api/schedule-groups/reorder', {
+    method: 'POST',
+    ...jsonBody({ orderedIds }),
+  });
+}
 
 export async function fetchSchedules() {
   return jsonFetch('/api/schedules');
@@ -1059,10 +1108,10 @@ export async function fetchScheduleTimers() {
 
 // ── Quick Timers ──
 
-export async function createQuickTimer(templateId, minutes, { profile, model, usesBrowser } = {}) {
+export async function createQuickTimer(templateId, minutes, { profile, model, effort, usesBrowser } = {}) {
   return jsonFetch('/api/quick-timer', {
     method: 'POST',
-    ...jsonBody({ templateId, minutes, profile, model, usesBrowser }),
+    ...jsonBody({ templateId, minutes, profile, model, effort, usesBrowser }),
   });
 }
 
@@ -1076,10 +1125,10 @@ export async function cancelQuickTimer(id) {
   });
 }
 
-export async function triggerQuickTimerNow(templateId, { profile, model, usesBrowser } = {}) {
+export async function triggerQuickTimerNow(templateId, { profile, model, effort, usesBrowser } = {}) {
   return jsonFetch('/api/quick-timer/now', {
     method: 'POST',
-    ...jsonBody({ templateId, profile, model, usesBrowser }),
+    ...jsonBody({ templateId, profile, model, effort, usesBrowser }),
   });
 }
 

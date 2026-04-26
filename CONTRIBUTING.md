@@ -48,7 +48,7 @@ You are free to fork SynaBun and modify it for any purpose under the [Apache 2.0
 ### Quick Start
 
 ```bash
-git clone https://github.com/your-username/synabun.git
+git clone --depth=1 https://github.com/your-username/synabun.git
 cd synabun
 npm start
 ```

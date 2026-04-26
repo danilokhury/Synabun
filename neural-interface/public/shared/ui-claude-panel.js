@@ -9,6 +9,7 @@ import { fetchClaudeSessions, fetchBrowserSessions, searchSessions } from './api
 import { createFrameRenderer } from './utils.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { reserveRightPanelLayout, clearRightPanelLayout } from './ui-sidepanel-layout.js';
+import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel } from './cli-status.js';
 
 const CLAUDE_ICON = '<svg fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
 
@@ -120,6 +121,10 @@ function activeTab() { return _tabs[_activeTabIdx] || null; }
 let _browserEmbed = null;   // { sessionId, ws, canvas, ctx, urlBar, container }
 let _browserEmbedVisible = false;
 
+// ── CLI-installed status (claude binary detection) ──
+let _cliInstalled = null;   // null = unknown / missing, version string = installed
+let _cliUnsub = null;
+
 // Marked.js (lazy loaded)
 let _marked = null;
 (async () => {
@@ -150,7 +155,23 @@ const STOR = {
   windowRegistry: 'synabun-claude-panel-windows',   // JSON map of windowId → lastSeen timestamp
   bootId: 'synabun-claude-panel-boot-id',           // server boot ID — detect restarts
   defaultModel: 'synabun-claude-panel-default-model', // user's preferred default model
+  sessionSnapshots: 'synabun-claude-panel-session-snapshots', // global, per-sessionId rendered HTML cache
 };
+
+// ── Session HTML snapshot cache ──
+// Global per-sessionId cache of rendered transcript HTML so resume on a fresh
+// browser load mirrors the exact render that was produced during the live run.
+// Falls back to upstream JSONL rebuild when no snapshot exists or it is stale.
+const MAX_SESSION_SNAPSHOTS = 24;
+const MAX_SESSION_SNAPSHOT_CHARS = 2_500_000;
+let _sessionSnapshots = (() => {
+  try {
+    const raw = storage.getItem(STOR.sessionSnapshots);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch { return {}; }
+})();
 
 const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
 const EFFORT_LABELS = { off: 'Think', low: 'lo', medium: 'med', high: 'hi', max: 'max' };
@@ -410,6 +431,73 @@ function injectStyles() {
     .cp-empty-hint { font-size: 11px; color: rgba(255,255,255,0.2); }
     .cp-messages:has(.msg) .cp-empty,
     .cp-messages:has(.msg-status) .cp-empty { display: none; }
+
+    /* ── CLI-not-installed banner (sticky top of messages container) ── */
+    .cp-cli-banner {
+      flex-shrink: 0;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 10px;
+      align-items: center;
+      margin: 8px 12px 0;
+      padding: 10px 12px;
+      border: 1px solid rgba(255,180,80,0.45);
+      border-radius: 8px;
+      background: rgba(255,180,80,0.08);
+      color: rgba(255,235,200,0.92);
+      font-size: 11px;
+      line-height: 1.4;
+      pointer-events: auto;
+      position: relative;
+      z-index: 5;
+    }
+    .cp-cli-banner-icon {
+      width: 22px; height: 22px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      background: rgba(255,180,80,0.25);
+      color: rgba(255,210,140,1);
+      font-weight: 700;
+    }
+    .cp-cli-banner-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .cp-cli-banner-title {
+      font-size: 12px; font-weight: 600;
+      color: rgba(255,210,140,0.95);
+    }
+    .cp-cli-banner-body {
+      font-size: 11px;
+      color: rgba(255,255,255,0.7);
+      word-break: break-word;
+    }
+    .cp-cli-banner-body code {
+      padding: 1px 5px;
+      background: rgba(0,0,0,0.35);
+      border-radius: 3px;
+      font-size: 10.5px;
+      color: rgba(255,255,255,0.85);
+    }
+    .cp-cli-banner-actions { display: flex; gap: 6px; }
+    .cp-cli-banner-link, .cp-cli-banner-recheck {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 500;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.9);
+      text-decoration: none;
+      cursor: pointer;
+      user-select: none;
+      font-family: inherit;
+    }
+    .cp-cli-banner-link:hover, .cp-cli-banner-recheck:hover {
+      background: rgba(255,255,255,0.12);
+      border-color: rgba(255,255,255,0.4);
+    }
+    .cp-cli-banner-recheck:disabled { opacity: 0.5; cursor: default; }
+    .claude-panel.cp-cli-blocked .cp-send { opacity: 0.4 !important; cursor: not-allowed !important; }
+    .claude-panel.cp-cli-blocked .cp-input { opacity: 0.7; }
 
     /* ── Browser embed (live screencast inside panel) ── */
     .cp-browser-embed {
@@ -1076,7 +1164,7 @@ function injectStyles() {
       padding: 1px;
       background: rgba(255,255,255,0.05);
       transition: background 0.4s;
-      min-width: 0; overflow: hidden;
+      min-width: 0;
     }
     .cp-input-wrap::before {
       content: '';
@@ -1476,7 +1564,8 @@ function injectStyles() {
       backdrop-filter: blur(20px);
       border: 1px solid rgba(255,255,255,0.08);
       border-radius: 10px; padding: 4px;
-      z-index: 310; max-height: 200px; overflow-y: auto;
+      z-index: 310; max-height: 320px; overflow-y: auto;
+      overscroll-behavior: contain;
       box-shadow: var(--shadow-lg);
     }
     .cp-slash-hints.open { display: block; }
@@ -2632,14 +2721,14 @@ document.addEventListener('click', (e) => {
 });
 
 // ── Tab lifecycle ──
-function createTab(sessionId = null, label = 'New chat', { autoSwitch = true } = {}) {
+function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id = null } = {}) {
   if (_tabs.length >= MAX_TABS) return null;
   // Capture current dropdown state for the new tab's project/model/effort
   const _$proj = _panel?.querySelector('#cp-project');
   const _$mod = _panel?.querySelector('#cp-model');
   const _$think = _panel?.querySelector('#cp-think-toggle');
   const tab = {
-    id: crypto.randomUUID(),
+    id: id || crypto.randomUUID(),
     sessionId,
     label,
     project: ddGetValue(_$proj) || '',       // per-tab project isolation
@@ -2729,6 +2818,7 @@ function switchTab(idx) {
   if (idx < 0 || idx >= _tabs.length) return;
   const prev = activeTab();
   if (prev && prev !== _tabs[idx]) {
+    flushSessionSnapshotSave(prev);
     const $input = _panel?.querySelector('#cp-input');
     if ($input) prev.draft = $input.value;
     // Animate out
@@ -2818,6 +2908,7 @@ function switchTab(idx) {
 function closeTab(idx) {
   if (idx < 0 || idx >= _tabs.length) return;
   const tab = _tabs[idx];
+  flushSessionSnapshotSave(tab);
   recordHookEvent(tab, 'SessionEnd', tab.sessionId || '(new)');
   tab.closed = true;
   clearTimeout(tab.reconnectTimer);
@@ -2956,7 +3047,7 @@ function restoreTabs() {
       const data = JSON.parse(raw);
       if (data.tabs?.length) {
         for (const saved of data.tabs) {
-          const t = createTab(saved.sessionId, saved.label, { autoSwitch: false });
+          const t = createTab(saved.sessionId, saved.label, { autoSwitch: false, id: saved.id });
           if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
           if (t && saved.running) t._wasRunning = true; // trigger reattach on WS open
           if (t && saved.project) t.project = saved.project;
@@ -2979,7 +3070,7 @@ function restoreTabs() {
       const data = JSON.parse(legacyRaw);
       if (data.tabs?.length) {
         for (const saved of data.tabs) {
-          const t = createTab(saved.sessionId, saved.label, { autoSwitch: false });
+          const t = createTab(saved.sessionId, saved.label, { autoSwitch: false, id: saved.id });
           if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
           if (t && saved.running) t._wasRunning = true;
           if (t && saved.project) t.project = saved.project;
@@ -3055,12 +3146,18 @@ async function _releaseAllSessionLocks() {
 
 // Release locks when window closes
 window.addEventListener('beforeunload', () => {
+  flushAllSessionSnapshots();
   _stopHeartbeat();
   // Use sendBeacon for reliable delivery on close
   navigator.sendBeacon(
     '/api/claude-skin/session-lock',
     new Blob([JSON.stringify({ action: 'release', windowId: _windowId })], { type: 'application/json' })
   );
+});
+
+window.addEventListener('pagehide', flushAllSessionSnapshots);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) flushAllSessionSnapshots();
 });
 
 // Re-sync UI state when window regains focus (catches stale running states from background tabs)
@@ -3713,9 +3810,151 @@ function promptNameNewSession() {
   });
 }
 
+// ── Session HTML snapshot helpers ──
+function _normalizeSnapshotEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const html = typeof entry.html === 'string' ? entry.html : '';
+  if (!html) return null;
+  return {
+    html,
+    updatedAt: Number(entry.updatedAt) || 0,
+    label: typeof entry.label === 'string' ? entry.label : '',
+    usage: (entry.usage && typeof entry.usage === 'object') ? entry.usage : null,
+    contextWindow: Number(entry.contextWindow) || 0,
+    turns: Number(entry.turns) || 0,
+    sessionCost: Number(entry.sessionCost) || 0,
+    itemCount: Number(entry.itemCount) || 0,
+  };
+}
+
+function _persistSessionSnapshots() {
+  try {
+    const source = (_sessionSnapshots && typeof _sessionSnapshots === 'object' && !Array.isArray(_sessionSnapshots))
+      ? _sessionSnapshots : {};
+    const entries = Object.entries(source)
+      .map(([sid, e]) => [sid, _normalizeSnapshotEntry(e)])
+      .filter(([, e]) => !!e)
+      .sort(([, a], [, b]) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const next = {};
+    let totalChars = 0;
+    for (const [sid, entry] of entries) {
+      const size = entry.html.length;
+      if (Object.keys(next).length >= MAX_SESSION_SNAPSHOTS) break;
+      if (totalChars + size > MAX_SESSION_SNAPSHOT_CHARS && Object.keys(next).length) continue;
+      totalChars += size;
+      next[sid] = entry;
+    }
+    _sessionSnapshots = next;
+    storage.setItem(STOR.sessionSnapshots, JSON.stringify(next));
+  } catch {}
+}
+
+function getSessionSnapshot(sid) {
+  if (!sid) return null;
+  return _normalizeSnapshotEntry(_sessionSnapshots?.[sid]);
+}
+
+function writeSessionSnapshot(tab) {
+  const sid = tab?.sessionId || null;
+  const $msgs = tab?.messagesEl || null;
+  if (!sid || !$msgs) return;
+  const html = $msgs.innerHTML || '';
+  if (!html.trim()) return;
+  // Skip snapshot if the transcript only contains the empty-state placeholder
+  if ($msgs.children.length === 1 && $msgs.firstElementChild?.classList?.contains('cp-empty')) return;
+  if (!_sessionSnapshots || typeof _sessionSnapshots !== 'object' || Array.isArray(_sessionSnapshots)) {
+    _sessionSnapshots = {};
+  }
+  const itemCount = [...$msgs.children].filter(n =>
+    !n.classList?.contains('cp-empty') && !n.classList?.contains('thinking')
+  ).length;
+  _sessionSnapshots[sid] = {
+    html,
+    updatedAt: Date.now(),
+    label: tab.label || '',
+    usage: tab.usage ? { ...tab.usage } : null,
+    contextWindow: tab.contextWindow || 0,
+    turns: tab.turns || 0,
+    sessionCost: tab.sessionCost || 0,
+    itemCount,
+  };
+  _persistSessionSnapshots();
+}
+
+function scheduleSessionSnapshotSave(tab, ms = 350) {
+  if (!tab?.sessionId || !tab?.messagesEl) return;
+  if (tab._snapshotTimer) clearTimeout(tab._snapshotTimer);
+  tab._snapshotTimer = setTimeout(() => {
+    tab._snapshotTimer = null;
+    writeSessionSnapshot(tab);
+  }, ms);
+}
+
+function flushSessionSnapshotSave(tab) {
+  if (!tab) return;
+  if (tab._snapshotTimer) { clearTimeout(tab._snapshotTimer); tab._snapshotTimer = null; }
+  writeSessionSnapshot(tab);
+}
+
+function flushAllSessionSnapshots() {
+  for (const tab of _tabs) flushSessionSnapshotSave(tab);
+}
+
+function renderStoredSession(snapshot, $msgs, tab) {
+  const norm = _normalizeSnapshotEntry(snapshot);
+  if (!norm || !$msgs) return false;
+  $msgs.innerHTML = norm.html;
+  // Disable interactive controls — restored DOM has no event handlers and
+  // any pending state (permission prompts, plan cards, ask cards) is stale.
+  $msgs.querySelectorAll('button, input, select, textarea').forEach(node => { node.disabled = true; });
+  // Drop transient overlays that should never resurrect after a fresh load
+  $msgs.querySelectorAll('.thinking, .msg-permission-prompt, .post-plan-card').forEach(n => n.remove());
+  // Re-attach copy buttons + file path links — innerHTML wipes their listeners
+  $msgs.querySelectorAll('pre .cp-copy-btn').forEach(btn => btn.remove());
+  addCopyButtons($msgs);
+  linkifyFilePaths($msgs);
+  if (tab) {
+    if (norm.usage) {
+      tab.usage.inputTokens = norm.usage.inputTokens || 0;
+      tab.usage.outputTokens = norm.usage.outputTokens || 0;
+      tab.usage.cacheRead = norm.usage.cacheRead || 0;
+      tab.usage.cacheWrite = norm.usage.cacheWrite || 0;
+    }
+    if (norm.contextWindow) tab.contextWindow = norm.contextWindow;
+    if (norm.turns) tab.turns = norm.turns;
+    if (norm.sessionCost) tab.sessionCost = norm.sessionCost;
+    renderGauge(tab);
+  }
+  return true;
+}
+
 async function loadSessionHistory(sid, $msgs) {
   if (!$msgs) $msgs = activeTab()?.messagesEl;
   if (!$msgs) return;
+  // Try local snapshot first — exact replay of the live render, lossless.
+  const snap = getSessionSnapshot(sid);
+  if (snap && snap.html) {
+    const tab = _tabs.find(t => t.messagesEl === $msgs) || activeTab();
+    if (renderStoredSession(snap, $msgs, tab)) {
+      scrollEnd();
+      // Background refresh: pull latest JSONL in case the session continued in
+      // another window. If upstream has more turns than the snapshot, fall back
+      // to the rebuild path below so the resumed view is current.
+      try {
+        const $project = _panel?.querySelector('#cp-project');
+        const project = ddGetValue($project) || undefined;
+        const params = new URLSearchParams({ limit: '1' });
+        if (project) params.set('project', project);
+        const probe = await fetch(`/api/claude-code/sessions/${encodeURIComponent(sid)}/messages?${params}`);
+        const probeData = await probe.json();
+        if ((probeData?.total || 0) > (snap.itemCount || 0) + 2) {
+          // Upstream has materially more content — fall through to full rebuild
+        } else {
+          return;
+        }
+      } catch { return; }
+    }
+  }
   const $project = _panel?.querySelector('#cp-project');
   const project = ddGetValue($project) || undefined;
   const params = new URLSearchParams({ limit: '500' });
@@ -3737,6 +3976,13 @@ async function loadSessionHistory(sid, $msgs) {
         const avatar = document.createElement('div'); avatar.className = 'msg-avatar';
         avatar.innerHTML = CLAUDE_ICON; el.appendChild(avatar);
         const wrap = document.createElement('div'); wrap.className = 'msg-content';
+        if (m.thinking) {
+          const thinkEl = document.createElement('details');
+          thinkEl.className = 'msg-thinking';
+          thinkEl.innerHTML = `<summary><span class="msg-thinking-icon">${THINKING_ICON}</span><span class="msg-thinking-label">Thinking</span><span class="msg-thinking-chevron">&#x203A;</span></summary><div class="msg-thinking-content"></div>`;
+          thinkEl.querySelector('.msg-thinking-content').textContent = m.thinking;
+          wrap.appendChild(thinkEl);
+        }
         if (m.text) {
           const body = document.createElement('div'); body.className = 'msg-body';
           body._rawMd = m.text;
@@ -3788,7 +4034,7 @@ async function loadSessionHistory(sid, $msgs) {
       $msgs.prepend(note);
     }
     // Populate context gauge from session history usage
-    const tab = activeTab();
+    const tab = _tabs.find(t => t.messagesEl === $msgs) || activeTab();
     if (tab && data.usage) {
       tab.usage.inputTokens = data.usage.input_tokens || 0;
       tab.usage.outputTokens = data.usage.output_tokens || 0;
@@ -3799,6 +4045,9 @@ async function loadSessionHistory(sid, $msgs) {
       renderGauge(tab);
     }
     scrollEnd();
+    // Cache the rebuilt transcript so the next resume on a fresh browser hits
+    // the snapshot path and avoids paying the JSONL → DOM cost again.
+    if (tab && tab.sessionId === sid) writeSessionSnapshot(tab);
   } catch {
     $msgs.innerHTML = '<div class="msg-status">Failed to load history</div>';
   }
@@ -4152,6 +4401,9 @@ function _processTabMsg(tab, msg) {
       if (tab.compacting) { tab.compacting = false; if (tab === activeTab()) _setCompactingUI(false); }
       appendError(tab, msg.message);
       notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code', { tabId: tab.id });
+      if (typeof msg.message === 'string' && /Claude CLI not found|ENOENT/i.test(msg.message)) {
+        flagClaudeCliInstallFailure();
+      }
       break;
   }
 }
@@ -4261,6 +4513,7 @@ function handleTabEvent(tab, ev) {
   }
   if (ev.type === 'tool_result') {
     updateToolResult(tab, ev);
+    scheduleSessionSnapshotSave(tab);
     // Re-show thinking — Claude is processing the tool result
     if (tab.running && !tab.pendingAsk) showThinking(tab);
     return;
@@ -4527,6 +4780,7 @@ function renderPostPlanActions(tab, headerText) {
 
   const actions = [
     { label: 'Continue with implementation', prompt: 'Continue with the implementation based on the approved plan.', primary: true },
+    { label: 'Continue planning', action: 'continue-planning' },
     { label: 'Compact context', action: 'compact' },
     { label: 'Edit plan', action: 'plan' },
   ];
@@ -4537,7 +4791,11 @@ function renderPostPlanActions(tab, headerText) {
     btn.addEventListener('click', () => {
       card.style.opacity = '0.45';
       card.style.pointerEvents = 'none';
-      if (a.action === 'compact') {
+      if (a.action === 'continue-planning') {
+        tab.showPostPlanActions = false;
+        saveTabs();
+        return;
+      } else if (a.action === 'compact') {
         // Guard: cannot compact while running
         if (tab.running) { appendStatus(tab, 'Cannot compact while Claude is processing.'); card.style.opacity = '1'; card.style.pointerEvents = 'auto'; return; }
         if (tab.ws?.readyState === WebSocket.OPEN) {
@@ -4879,6 +5137,7 @@ function renderAssistant(tab, msg) {
     $msgs.appendChild(postPlanMsg);
   }
   if (tab === activeTab()) scrollEnd();
+  scheduleSessionSnapshotSave(tab);
 }
 
 /** Build an interactive AskUserQuestion card from a tool_use block */
@@ -5993,6 +6252,7 @@ function appendUser(tab, text, images, files) {
   if (text) { const txt = document.createTextNode(text); bubble.appendChild(txt); }
   el.appendChild(bubble); $msgs.appendChild(el);
   if (tab === activeTab()) scrollEnd();
+  scheduleSessionSnapshotSave(tab);
 }
 
 function showThinking(tab) {
@@ -6022,11 +6282,13 @@ function appendStatus(tab, text) {
   const $msgs = tab.messagesEl; if (!$msgs) return;
   const el = document.createElement('div'); el.className = 'msg-status'; el.textContent = text;
   $msgs.appendChild(el); pruneMessages($msgs); if (tab === activeTab()) scrollEnd();
+  scheduleSessionSnapshotSave(tab);
 }
 function appendError(tab, text) {
   const $msgs = tab.messagesEl; if (!$msgs) return;
   const el = document.createElement('div'); el.className = 'msg-error'; el.textContent = text;
   $msgs.appendChild(el); pruneMessages($msgs); if (tab === activeTab()) scrollEnd();
+  scheduleSessionSnapshotSave(tab);
 }
 
 function scrollEnd() {
@@ -6357,6 +6619,10 @@ function runSlashCommand(tab, raw) {
 }
 
 function send({ shift = false } = {}) {
+  if (_cliInstalled === null || _cliInstallFailureForced) {
+    notify({ type: NOTIF_TYPE.WARN, title: 'Claude CLI not installed', body: 'Install the Claude Code CLI before sending a message.' });
+    return;
+  }
   const tab = activeTab();
   if (!tab) return;
   const $input = _panel?.querySelector('#cp-input');
@@ -7059,6 +7325,78 @@ function syncReservedWidth() {
   }
 }
 
+// ── CLI installation status (banner + send-block) ──
+let _cliInstallFailureForced = false;
+
+function _ensureCliBannerEl() {
+  if (!_panel) return null;
+  const container = _panel.querySelector('#cp-messages-container');
+  if (!container) return null;
+  let banner = container.querySelector(':scope > .cp-cli-banner');
+  if (banner) return banner;
+  const label = getCliLabel('claude-code');
+  const cmd = getCliInstallCommand('claude-code');
+  const url = getCliDocUrl('claude-code');
+  banner = document.createElement('div');
+  banner.className = 'cp-cli-banner';
+  banner.innerHTML = `
+    <div class="cp-cli-banner-icon">!</div>
+    <div class="cp-cli-banner-text">
+      <div class="cp-cli-banner-title">${label} CLI not installed</div>
+      <div class="cp-cli-banner-body">Run <code>${cmd}</code> or follow the install guide.</div>
+    </div>
+    <div class="cp-cli-banner-actions">
+      <a class="cp-cli-banner-link" href="${url}" target="_blank" rel="noopener noreferrer">Install guide</a>
+      <button class="cp-cli-banner-recheck" type="button">Re-check</button>
+    </div>
+  `;
+  container.insertBefore(banner, container.firstChild);
+  const btn = banner.querySelector('.cp-cli-banner-recheck');
+  btn?.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    try { await recheckCliStatus('claude-code'); }
+    finally {
+      if (btn.isConnected) {
+        btn.disabled = false;
+        btn.textContent = 'Re-check';
+      }
+    }
+  });
+  return banner;
+}
+
+function _removeCliBannerEl() {
+  if (!_panel) return;
+  const banner = _panel.querySelector('#cp-messages-container > .cp-cli-banner');
+  banner?.remove();
+}
+
+function _refreshCliBanners() {
+  if (!_panel) return;
+  const missing = _cliInstalled === null || _cliInstallFailureForced;
+  _panel.classList.toggle('cp-cli-blocked', missing);
+  if (missing) _ensureCliBannerEl();
+  else _removeCliBannerEl();
+  const $send = _panel.querySelector('#cp-send');
+  if ($send && missing) $send.disabled = true;
+}
+
+export function flagClaudeCliInstallFailure() {
+  _cliInstallFailureForced = true;
+  _refreshCliBanners();
+  recheckCliStatus('claude-code').catch(() => {});
+}
+
+function _ensureCliSubscription() {
+  if (_cliUnsub) return;
+  _cliUnsub = subscribeCliStatus('claude-code', (info) => {
+    _cliInstalled = info?.installed || null;
+    if (_cliInstalled) _cliInstallFailureForced = false;
+    _refreshCliBanners();
+  });
+}
+
 // ── Public API ──
 export async function toggleClaudePanel() {
   if (!_panel) {
@@ -7073,6 +7411,8 @@ export async function toggleClaudePanel() {
     syncSessionCosts();
     _wireBrowserSync();
     _startHeartbeat();
+    window.dispatchEvent(new CustomEvent('sidepanel-tray:provider-loaded', { detail: { provider: 'claude' } }));
+    _ensureCliSubscription();
   }
   _visible = !_visible;
   if (_visible) {
@@ -7081,6 +7421,7 @@ export async function toggleClaudePanel() {
     _panel.classList.add('open');
     syncReservedWidth();
     _panel.querySelector('#cp-input')?.focus();
+    _refreshCliBanners();
   } else {
     const tab = activeTab();
     const $input = _panel?.querySelector('#cp-input');
@@ -7217,13 +7558,24 @@ async function loadSkills() {
       { name: 'loop', description: 'Run a command on a recurring interval' },
     ];
     for (const b of extras) { if (!seen.has(b.name)) { _skillsCache.push(b); seen.add(b.name); } }
+    try {
+      const pc = await fetch('/api/claude-code/plugin-commands').then(r => r.json());
+      for (const c of (pc?.commands || [])) {
+        if (!c?.name || seen.has(c.name)) continue;
+        const label = c.plugin ? `${c.description || ''}${c.description ? ' · ' : ''}(plugin: ${c.plugin})` : (c.description || '');
+        _skillsCache.push({ name: c.name, description: label });
+        seen.add(c.name);
+      }
+    } catch {}
     _skillsCache.sort((a, b) => a.name.localeCompare(b.name));
   } catch { _skillsCache = SLASH_COMMANDS.map(c => ({ name: c.name, description: c.desc })); }
   return _skillsCache;
 }
-function showSlashHints(filter) {
+async function showSlashHints(filter) {
   const $hints = _panel?.querySelector('#cp-slash-hints');
-  if (!$hints || !_skillsCache) return;
+  if (!$hints) return;
+  if (!_skillsCache) await loadSkills();
+  if (!_skillsCache) return;
   const q = filter.toLowerCase();
   const matches = _skillsCache.filter(s => s.name.toLowerCase().startsWith(q));
   if (!matches.length || !filter) { hideSlashHints(); return; }
@@ -8210,11 +8562,7 @@ function wireEvents() {
     if (source && source !== 'claude') return;
     const tab = activeTab();
     if (!tab || (tabId && tab.id !== tabId)) return;
-    // Restore post-plan card interactivity
-    tab.messagesEl?.querySelectorAll('.post-plan-card').forEach(card => {
-      card.style.opacity = '1';
-      card.style.pointerEvents = 'auto';
-    });
+    renderPostPlanActions(tab, tab._editedPlanContent ? 'PLAN UPDATED' : 'PLAN COMPLETE');
   });
 
   on('changelog-edit-cancelled', () => {

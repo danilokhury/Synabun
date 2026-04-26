@@ -68,6 +68,7 @@ export const KEYS = {
   GRID_SNAP:           'neural-grid-snap',
   CATEGORIES_VISIBLE:  'neural-categories-visible',
   WHITEBOARD:          'neural-whiteboard',
+  WHITEBOARD_RULESET_ALERT_DISMISSED: 'neural-whiteboard-ruleset-alert-dismissed',
   TUTORIAL_COMPLETED:  'neural-tutorial-completed',
   TUTORIAL_SKIPPED:    'neural-tutorial-skipped',
   TUTORIAL_STEP:       'neural-tutorial-step',

@@ -14,6 +14,7 @@ const ALL_BROWSER_GROUPS = ['browser', 'browser_twitter', 'browser_facebook', 'b
 export const PROFILE_PRESETS: Record<string, string[]> = {
   core:       ['git', 'image'],
   standard:   ['git', 'image', 'whiteboard', 'card', 'tictactoe'],
+  'codex-browser': ['git', 'image', 'browser', 'browser_twitter'],
   twitter:    ['git', 'image', 'browser', 'browser_twitter'],
   facebook:   ['git', 'image', 'browser', 'browser_facebook'],
   tiktok:     ['git', 'image', 'browser', 'browser_tiktok'],

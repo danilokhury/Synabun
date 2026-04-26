@@ -13,6 +13,14 @@ const returnSnapshotField = z.object({
   format: z.enum(['text', 'json']).optional(),
 }).optional().describe('If set, the server also captures a snapshot after the action and returns it in the same response — one round-trip instead of two. Matches browser_snapshot params.');
 
+function formatBrowserLocation(result: Record<string, unknown>, action: string): string {
+  if (ni.isBrowserCompactMode()) {
+    const title = typeof result.title === 'string' && result.title ? ` "${result.title}"` : '';
+    return `${action}${title}`;
+  }
+  return `${action} ${result.url} — "${result.title}"`;
+}
+
 // ── browser_navigate ──
 
 export const browserNavigateSchema = {
@@ -42,7 +50,7 @@ export async function handleBrowserNavigate(args: {
   const result = await ni.navigate(resolved.sessionId, args.url, resolved.tabId, rs);
   if (result.error) return text(`Navigation failed: ${result.error}`);
 
-  let msg = `Navigated to ${result.url} — "${result.title}"`;
+  let msg = formatBrowserLocation(result, 'Navigated');
   if (args.returnSnapshot) {
     const snap = formatInlineSnapshot(result, {
       mode: args.returnSnapshot.mode,
@@ -70,7 +78,7 @@ export async function handleBrowserGoBack(args: { sessionId?: string; tabId?: st
   const result = await ni.goBack(resolved.sessionId, resolved.tabId);
   if (result.error) return text(`Go back failed: ${result.error}`);
 
-  return text(`Went back to ${result.url} — "${result.title}"`);
+  return text(formatBrowserLocation(result, 'Went back to'));
 }
 
 // ── browser_go_forward ──
@@ -89,7 +97,7 @@ export async function handleBrowserGoForward(args: { sessionId?: string; tabId?:
   const result = await ni.goForward(resolved.sessionId, resolved.tabId);
   if (result.error) return text(`Go forward failed: ${result.error}`);
 
-  return text(`Went forward to ${result.url} — "${result.title}"`);
+  return text(formatBrowserLocation(result, 'Went forward to'));
 }
 
 // ── browser_reload ──
@@ -108,5 +116,5 @@ export async function handleBrowserReload(args: { sessionId?: string; tabId?: st
   const result = await ni.reload(resolved.sessionId, resolved.tabId);
   if (result.error) return text(`Reload failed: ${result.error}`);
 
-  return text(`Reloaded — now at ${result.url} "${result.title}"`);
+  return text(formatBrowserLocation(result, 'Reloaded'));
 }

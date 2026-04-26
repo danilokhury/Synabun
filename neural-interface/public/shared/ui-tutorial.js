@@ -177,8 +177,10 @@ function _destroyWhiteboardLayers() {
 function _hideStaticBgLogo(hide) {
   const logo = document.querySelector('#static-bg .static-bg-logo');
   const breathe = document.querySelector('#static-bg .focus-breathe');
+  const rulesetAlert = document.getElementById('wb-ruleset-alert');
   if (logo) logo.classList.toggle('tutorial-hidden', hide);
   if (breathe) breathe.classList.toggle('tutorial-hidden', hide);
+  if (rulesetAlert) rulesetAlert.classList.toggle('tutorial-hidden', hide);
 }
 
 function _hideWhiteboardToolbar(hide) {
@@ -313,6 +315,7 @@ async function _animateCompletion() {
   // ── 2. Reveal logo with scale + fade entrance ──
   const logo = document.querySelector('#static-bg .static-bg-logo');
   const breathe = document.querySelector('#static-bg .focus-breathe');
+  const rulesetAlert = document.getElementById('wb-ruleset-alert');
 
   if (logo) {
     logo.style.transition = 'none';
@@ -331,6 +334,9 @@ async function _animateCompletion() {
     breathe.offsetHeight;
     breathe.style.transition = 'opacity 1.2s ease 0.3s';
     breathe.style.opacity = '';
+  }
+  if (rulesetAlert) {
+    rulesetAlert.classList.remove('tutorial-hidden');
   }
 
   // ── 3. Slide toolbar in from left (staggered) ──

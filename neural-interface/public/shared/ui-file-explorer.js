@@ -47,6 +47,23 @@ let _changelogEditFilePath = null; // path of the changelog draft being edited
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 500;
 
+function planEditorSourceLabel(source) {
+  if (source === 'codex') return 'Codex';
+  if (source === 'opencode') return 'OpenCode';
+  return 'Claude';
+}
+
+function cancelPlanEditMode() {
+  if (!_planEditMode) return;
+  const source = _planEditSource;
+  const tabId = _planEditTabId;
+  _planEditMode = false;
+  _planEditFilePath = null;
+  _planEditSource = null;
+  _planEditTabId = null;
+  emit('plan-edit-cancelled', { source, tabId });
+}
+
 // ─── SVG icons ────────────────────────
 const FOLDER_SVG = '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
 const FILE_SVG = '<svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><polyline points="13 2 13 7 18 7"/></svg>';
@@ -1781,9 +1798,11 @@ async function openFileEditor(filePath, opts = {}) {
       const isAllowlistMiss = res.status === 403 && data?.error === 'Path outside registered project roots';
       if (isOpencodeConfig && isAllowlistMiss) {
         showToast('Restart Synabun to apply OpenCode config editor support');
+        cancelPlanEditMode();
         return;
       }
       showToast(data.error || 'Cannot open file');
+      cancelPlanEditMode();
       return;
     }
 
@@ -1846,7 +1865,7 @@ async function openFileEditor(filePath, opts = {}) {
     if (_planEditMode) {
       const banner = document.createElement('div');
       banner.className = 'fe-plan-banner';
-      banner.textContent = 'Editing plan — save to send to Claude';
+      banner.textContent = `Editing plan — save to send to ${planEditorSourceLabel(_planEditSource)}`;
       edPanel?.prepend(banner);
     } else if (_changelogEditMode) {
       const banner = document.createElement('div');
@@ -1867,6 +1886,7 @@ async function openFileEditor(filePath, opts = {}) {
       syncHighlightScroll();
     });
   } catch (err) {
+    cancelPlanEditMode();
     showToast('Failed to open file');
   }
 }

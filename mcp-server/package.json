@@ -24,15 +24,21 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "chalk": "^5.6.2",
     "express": "^4.21.0",
-    "uuid": "^11.1.0",
+    "uuid": "^14.0.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.12.0",
-    "@types/uuid": "^10.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
+  },
+  "overrides": {
+    "protobufjs": "^7.5.5",
+    "hono": "^4.12.14",
+    "@hono/node-server": "^1.19.13",
+    "postcss": "^8.5.10",
+    "vite": "^8.0.10"
   }
 }

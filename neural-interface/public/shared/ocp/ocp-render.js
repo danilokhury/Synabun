@@ -229,27 +229,6 @@ function linkifyFilePaths(container) {
   attachFileLinkHandlers(container);
 }
 
-// ── Throttle helper for streaming ──
-function throttle(fn, ms) {
-  let last = 0;
-  let timer = null;
-  return function (...args) {
-    const now = Date.now();
-    const remaining = ms - (now - last);
-    if (remaining <= 0) {
-      if (timer) { clearTimeout(timer); timer = null; }
-      last = now;
-      fn.apply(this, args);
-    } else if (!timer) {
-      timer = setTimeout(() => {
-        last = Date.now();
-        timer = null;
-        fn.apply(this, args);
-      }, remaining);
-    }
-  };
-}
-
 function thinkBlockHtml(content, partial) {
   const label = partial ? 'Thinking…' : 'Thought';
   return `<details class="ocp-think-block"${partial ? ' open' : ''}><summary><span class="ocp-think-icon">${THINK_ICON_SVG}</span><span class="ocp-think-label">${label}</span><span class="ocp-think-chevron">&#x203A;</span></summary><div class="ocp-think-content">${esc(content)}</div></details>`;
@@ -842,19 +821,46 @@ export function getOrCreateStreamingEl(container) {
   return el;
 }
 
+function renderStreamingElement(container, el, { partialThinking = true } = {}) {
+  if (!el) return;
+  let html = '';
+  let hasContent = false;
+  if (el.dataset.thinkText) {
+    html += thinkBlockHtml(el.dataset.thinkText, partialThinking);
+    hasContent = true;
+  }
+  if (el.dataset.rawText) {
+    const rendered = renderAssistantMarkdown(el.dataset.rawText);
+    if (rendered.hasContent) {
+      html += rendered.html;
+      hasContent = true;
+    }
+  }
+  el.innerHTML = html;
+  clearThinkingTimer(el);
+  el.classList.toggle('ocp-msg-empty', !hasContent);
+  postProcessRenderedHtml(el);
+  scrollToBottom(container);
+}
+
+function scheduleStreamingRender(container, el) {
+  if (el._ocpStreamRaf) return;
+  const schedule = typeof requestAnimationFrame === 'function'
+    ? requestAnimationFrame
+    : (fn) => setTimeout(fn, 16);
+  el._ocpStreamRaf = schedule(() => {
+    el._ocpStreamRaf = null;
+    renderStreamingElement(container, el, { partialThinking: true });
+  });
+}
+
 /** Append a text chunk to the streaming element. */
 export function appendStreamChunk(container, text) {
   const chunk = normalizeTextContent(text, { stringifyObjects: false });
   if (!chunk) return getOrCreateStreamingEl(container);
   const el = getOrCreateStreamingEl(container);
   el.dataset.rawText = (el.dataset.rawText || '') + chunk;
-  const doRender = throttle(() => {
-    if (el.dataset.rawText != null) {
-      setAssistantHtml(el, el.dataset.rawText);
-      scrollToBottom(container);
-    }
-  }, 32);
-  doRender();
+  scheduleStreamingRender(container, el);
   return el;
 }
 
@@ -864,12 +870,7 @@ export function appendThinkChunk(container, text) {
   if (!chunk) return getOrCreateStreamingEl(container);
   const el = getOrCreateStreamingEl(container);
   el.dataset.thinkText = (el.dataset.thinkText || '') + chunk;
-  // Re-render: think block first, then any accumulated response text
-  const thinkHtml = thinkBlockHtml(el.dataset.thinkText, true);
-  const responseHtml = el.dataset.rawText ? renderAssistantMarkdown(el.dataset.rawText).html : '';
-  el.innerHTML = thinkHtml + responseHtml;
-  clearThinkingTimer(el);
-  scrollToBottom(container);
+  scheduleStreamingRender(container, el);
   return el;
 }
 
@@ -878,10 +879,9 @@ export function finalizeStreamingMessage(container) {
   const el = container.querySelector('.ocp-msg-assistant.streaming');
   if (el) {
     el.classList.remove('streaming');
-    if (el.dataset.rawText != null) {
-      setAssistantHtml(el, el.dataset.rawText);
-    }
+    renderStreamingElement(container, el, { partialThinking: false });
     delete el.dataset.rawText;
+    delete el.dataset.thinkText;
   }
   const pending = container.querySelector('.ocp-msg-assistant.pending');
   if (pending) {
@@ -985,9 +985,10 @@ export function renderEmptyState(container) {
     <div class="ocp-empty">
       <svg viewBox="0 0 240 300"><path fill-rule="evenodd" d="M0 0h240v300H0V0zm30 30v240h180V30H30z" fill="currentColor"/><rect x="30" y="150" width="180" height="120" opacity=".45" fill="currentColor"/></svg>
       <span>OpenCode</span>
-      <span style="font-size:10px;opacity:0.5">Send a message to start</span>
+      <span class="ocp-empty-hint" style="font-size:10px;opacity:0.5">Send a message to start</span>
     </div>
   `;
+  document.dispatchEvent(new CustomEvent('ocp-empty-rebuilt'));
 }
 
 // ── Render full history from messages:list response ──
@@ -1137,6 +1138,7 @@ function extractAllQuestions(input) {
     : (input.question || input.text || input.options) ? [input]
     : [input];
   return questions.map(q => ({
+    id: q.id || q.key || q.name || '',
     question: q.question || q.text || q.message || '',
     header: q.header || '',
     options: normalizeOptions(q.options || q.choices),
@@ -1192,7 +1194,7 @@ export function renderQuestionCard(container, toolName, toolInput, toolId, { onA
   // Render each question block
   for (let qi = 0; qi < questions.length; qi++) {
     const q = questions[qi];
-    const questionKey = q.question || q.header || `question_${qi}`;
+    const questionKey = q.id || q.question || q.header || `question_${qi}`;
     const block = document.createElement('div');
     block.className = 'ocp-question-block';
 
@@ -1255,6 +1257,7 @@ export function renderQuestionCard(container, toolName, toolInput, toolId, { onA
         const isOther = opt.value === '__other__' || /^other$/i.test(opt.label);
         const btn = document.createElement('button');
         btn.className = `ocp-question-option${q.multiSelect ? ' multi' : ''}`;
+        btn.dataset.value = opt.value;
         btn.innerHTML = `
           <span class="ocp-question-option-radio"></span>
           <span>
@@ -1268,9 +1271,9 @@ export function renderQuestionCard(container, toolName, toolInput, toolId, { onA
             const selected = [];
             optsEl.querySelectorAll('.ocp-question-option.selected').forEach(b => {
               const lbl = b.querySelector('.ocp-question-option-label');
-              if (lbl && !/^other$/i.test(lbl.textContent)) selected.push(lbl.textContent);
+              if (lbl && !/^other$/i.test(lbl.textContent)) selected.push(b.dataset.value || lbl.textContent);
             });
-            if (selected.length > 0) pendingAnswers[questionKey] = selected.join(', ');
+            if (selected.length > 0) pendingAnswers[questionKey] = selected;
             else delete pendingAnswers[questionKey];
           } else {
             optsEl.querySelectorAll('.ocp-question-option').forEach(b => b.classList.remove('selected'));
@@ -1283,7 +1286,7 @@ export function renderQuestionCard(container, toolName, toolInput, toolId, { onA
               queueMicrotask(() => otherInput.focus());
             } else {
               otherWrap.hidden = true;
-              pendingAnswers[questionKey] = opt.label;
+              pendingAnswers[questionKey] = opt.value;
             }
           }
           updateSubmitState();
@@ -1339,7 +1342,7 @@ export function lockQuestionCard(container, toolId) {
 
 // ── Post-plan action card ──
 
-export function renderPostPlanCard(container, { onContinue, onCompact, onEditPlan } = {}) {
+export function renderPostPlanCard(container, { headerText = 'PLAN COMPLETE', onContinue, onCompact, onEditPlan, onContinuePlanning } = {}) {
   const card = document.createElement('div');
   card.className = 'ocp-post-plan-card';
   card.innerHTML = `
@@ -1347,11 +1350,12 @@ export function renderPostPlanCard(container, { onContinue, onCompact, onEditPla
       <svg class="ocp-post-plan-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
       </svg>
-      PLAN COMPLETE
+      ${esc(headerText || 'PLAN COMPLETE')}
     </div>
     <div class="ocp-post-plan-note">Review the plan above, then choose how to proceed.</div>
     <div class="ocp-post-plan-actions">
       <button class="ocp-post-plan-btn primary" data-action="continue">Continue with implementation</button>
+      <button class="ocp-post-plan-btn" data-action="continue-planning">Continue planning</button>
       <button class="ocp-post-plan-btn" data-action="compact">Compact context</button>
       <button class="ocp-post-plan-btn" data-action="edit">Edit plan</button>
     </div>
@@ -1366,6 +1370,10 @@ export function renderPostPlanCard(container, { onContinue, onCompact, onEditPla
   });
   card.querySelector('[data-action="edit"]').addEventListener('click', () => {
     if (typeof onEditPlan === 'function') onEditPlan();
+  });
+  card.querySelector('[data-action="continue-planning"]').addEventListener('click', () => {
+    card.remove();
+    if (typeof onContinuePlanning === 'function') onContinuePlanning();
   });
 
   container.appendChild(card);

@@ -151,7 +151,7 @@ synabun
 ### Or clone from GitHub
 
 ```bash
-git clone https://github.com/danilokhury/Synabun.git
+git clone --depth=1 https://github.com/danilokhury/Synabun.git
 cd Synabun
 npm start
 ```

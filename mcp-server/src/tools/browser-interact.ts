@@ -27,6 +27,11 @@ function formatClickHints(result: Record<string, unknown>): string {
   return msg;
 }
 
+function locationSuffix(result: Record<string, unknown>): string {
+  if (ni.isBrowserCompactMode()) return '';
+  return result.url ? ` — ${result.url} "${result.title}"` : '';
+}
+
 // ── browser_click ──
 
 export const browserClickSchema = {
@@ -61,7 +66,7 @@ export async function handleBrowserClick(args: {
   if (result.error) return text(`Click failed: ${result.error}${formatClickHints(result)}`);
 
   const healed = result.healed ? ' (auto-healed via textHint)' : '';
-  let msg = `Clicked "${args.selector}"${healed} — now at ${result.url} "${result.title}"`;
+  let msg = `Clicked "${args.selector}"${healed}${locationSuffix(result)}`;
   if (args.returnSnapshot) {
     const snap = formatInlineSnapshot(result, {
       mode: args.returnSnapshot.mode,
@@ -94,9 +99,8 @@ export async function handleBrowserFill(args: { selector: string; value: string;
   const result = await ni.fill(resolved.sessionId, args.selector, args.value, args.nthMatch, resolved.tabId, args.textHint);
   if (result.error) return text(`Fill failed: ${result.error}${formatClickHints(result)}`);
 
-  const location = result.url ? ` — ${result.url} "${result.title}"` : '';
   const healed = result.healed ? ' (auto-healed via textHint)' : '';
-  return text(`Filled "${args.selector}"${healed} with "${args.value.slice(0, 100)}"${location}`);
+  return text(`Filled "${args.selector}"${healed} with "${args.value.slice(0, 100)}"${locationSuffix(result)}`);
 }
 
 // ── browser_type ──
@@ -106,6 +110,7 @@ export const browserTypeSchema = {
   text: z.string().describe('The text to type character by character (appends to existing content).'),
   nthMatch: z.coerce.number().int().min(0).optional().describe('If the selector matches multiple elements, type into the Nth (0-indexed).'),
   textHint: z.string().optional().describe('Optional auto-heal hint. If the primary selector matches 0 elements, server retries once with role=*[name~="<textHint>"] before failing.'),
+  mode: z.enum(['sequential', 'insert']).optional().describe('Typing strategy. "sequential" sends key events. "insert" bulk-inserts text faster but may skip keydown handlers. Codex fast mode defaults to insert.'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
   tabId: tabIdField,
 };
@@ -113,17 +118,16 @@ export const browserTypeSchema = {
 export const browserTypeDescription =
   'Type text character-by-character (simulates real keystrokes; appends). Provide a selector to target, or omit to type into the focused element. Prefer over browser_fill for contenteditable/rich-text editors. Call browser_cheatsheet for per-platform compose selectors.';
 
-export async function handleBrowserType(args: { selector?: string; text: string; nthMatch?: number; textHint?: string; sessionId?: string; tabId?: string }) {
+export async function handleBrowserType(args: { selector?: string; text: string; nthMatch?: number; textHint?: string; mode?: 'sequential' | 'insert'; sessionId?: string; tabId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.type(resolved.sessionId, args.selector ?? null, args.text, args.nthMatch, resolved.tabId, args.textHint);
+  const result = await ni.type(resolved.sessionId, args.selector ?? null, args.text, args.nthMatch, resolved.tabId, args.textHint, args.mode);
   if (result.error) return text(`Type failed: ${result.error}${formatClickHints(result)}`);
 
   const target = args.selector ? `"${args.selector}"` : 'focused element';
-  const location = result.url ? ` — ${result.url} "${result.title}"` : '';
   const healed = result.healed ? ' (auto-healed via textHint)' : '';
-  return text(`Typed "${args.text.slice(0, 100)}" into ${target}${healed}${location}`);
+  return text(`Typed "${args.text.slice(0, 100)}" into ${target}${healed}${locationSuffix(result)}`);
 }
 
 // ── browser_hover ──
@@ -146,9 +150,8 @@ export async function handleBrowserHover(args: { selector: string; nthMatch?: nu
   const result = await ni.hover(resolved.sessionId, args.selector, args.nthMatch, resolved.tabId, args.textHint);
   if (result.error) return text(`Hover failed: ${result.error}${formatClickHints(result)}`);
 
-  const location = result.url ? ` — ${result.url} "${result.title}"` : '';
   const healed = result.healed ? ' (auto-healed via textHint)' : '';
-  return text(`Hovered over "${args.selector}"${healed}${location}`);
+  return text(`Hovered over "${args.selector}"${healed}${locationSuffix(result)}`);
 }
 
 // ── browser_select ──
@@ -171,8 +174,7 @@ export async function handleBrowserSelect(args: { selector: string; value: strin
   const result = await ni.selectOption(resolved.sessionId, args.selector, args.value, args.nthMatch, resolved.tabId);
   if (result.error) return text(`Select failed: ${result.error}${formatClickHints(result)}`);
 
-  const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-  return text(`Selected "${args.value}" in "${args.selector}"${location}`);
+  return text(`Selected "${args.value}" in "${args.selector}"${locationSuffix(result)}`);
 }
 
 // ── browser_press ──
@@ -193,8 +195,7 @@ export async function handleBrowserPress(args: { key: string; sessionId?: string
   const result = await ni.pressKey(resolved.sessionId, args.key, resolved.tabId);
   if (result.error) return text(`Press failed: ${result.error}`);
 
-  const location = result.url ? ` — ${result.url} "${result.title}"` : '';
-  return text(`Pressed "${args.key}"${location}`);
+  return text(`Pressed "${args.key}"${locationSuffix(result)}`);
 }
 
 // ── browser_scroll ──
@@ -236,7 +237,7 @@ export async function handleBrowserScroll(args: {
   if (result.error) return text(`Scroll failed: ${result.error}`);
 
   const target = args.selector ? `"${args.selector}"` : 'page';
-  let msg = `Scrolled ${args.direction} ${args.distance ?? 500}px in ${target} — now at ${result.url} "${result.title}"`;
+  let msg = `Scrolled ${args.direction} ${args.distance ?? 500}px in ${target}${locationSuffix(result)}`;
   if (args.returnSnapshot) {
     const snap = formatInlineSnapshot(result, {
       mode: args.returnSnapshot.mode,
@@ -268,5 +269,5 @@ export async function handleBrowserUpload(args: { selector: string; filePaths: s
   const result = await ni.upload(resolved.sessionId, args.selector, args.filePaths, args.nthMatch, resolved.tabId);
   if (result.error) return text(`Upload failed: ${result.error}${formatClickHints(result)}`);
 
-  return text(`Uploaded ${args.filePaths.length} file(s) via "${args.selector}" — now at ${result.url} "${result.title}"`);
+  return text(`Uploaded ${args.filePaths.length} file(s) via "${args.selector}"${locationSuffix(result)}`);
 }

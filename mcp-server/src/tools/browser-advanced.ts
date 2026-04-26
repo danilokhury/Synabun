@@ -74,11 +74,13 @@ export async function handleBrowserWait(args: {
   if (result.error) return text(`Wait failed: ${result.error}`);
 
   if (args.loadState) {
+    if (ni.isBrowserCompactMode()) return text(`Page reached "${args.loadState}"`);
     return text(`Page reached "${args.loadState}" — now at ${result.url} "${result.title}"`);
   }
   if (args.selector) {
     return text(`"${args.selector}" is now ${result.state}`);
   }
+  if (ni.isBrowserCompactMode()) return text(`Waited ${args.timeout || 1000}ms`);
   return text(`Waited ${args.timeout || 1000}ms — now at ${result.url} "${result.title}"`);
 }
 

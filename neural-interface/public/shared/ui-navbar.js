@@ -17,6 +17,7 @@ import { toggleSessionMonitor } from './ui-sessions.js';
 import { toggleImageGallery } from './ui-image-gallery.js';
 import { initUpdate } from './ui-update.js';
 import { initToolUpdates } from './ui-tool-updates.js';
+import { initSidepanelTrayPlaceholders } from './ui-sidepanel-tray.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -47,6 +48,7 @@ export function initNavbar() {
   const claudePanelBtn = $('topright-claude-panel-btn');
   const codexPanelBtn = $('topright-codex-panel-btn');
   const opencodePanelBtn = $('topright-opencode-panel-btn');
+  initSidepanelTrayPlaceholders();
   if (claudePanelBtn) {
     claudePanelBtn.addEventListener('click', (e) => {
       e.preventDefault();

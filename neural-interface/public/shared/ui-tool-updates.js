@@ -53,22 +53,56 @@ function runUpdate(key, badge) {
   }
 
   emit('terminal:run-command', { command: cmd, label: `Update ${TOOL_LABELS[key] || key}` });
-  // Optimistically clear the badge and restore parent tooltip
-  if (badge) {
-    badge.textContent = '';
-    const parents = PARENT_ELEMENTS[key];
-    if (parents?.toolbar) {
-      const btn = $(parents.toolbar);
-      if (btn?.dataset.tooltipOriginal) btn.dataset.tooltip = btn.dataset.tooltipOriginal;
+  // Optimistically clear BOTH toolbar + menu badges and restore parent tooltips.
+  const ids = TOOL_ELEMENTS[key];
+  const parents = PARENT_ELEMENTS[key];
+  for (const which of ['toolbar', 'menu']) {
+    const b = ids?.[which] && $(ids[which]);
+    if (b) b.textContent = '';
+    const pBtn = parents?.[which] && $(parents[which]);
+    if (pBtn?.dataset.tooltipOriginal) pBtn.dataset.tooltip = pBtn.dataset.tooltipOriginal;
+  }
+  // Poll repeatedly until the server confirms the new version is installed
+  // (updateAvailable flips to false for this tool) or we hit the max window.
+  // Native installer updates can take 1–3min; npm-global 5–60s.
+  schedulePostUpdatePolling(key);
+}
+
+// Poll /api/system/tool-versions?force=1 until the specified tool reports
+// updateAvailable=false, or a max window elapses. Safe to call repeatedly —
+// latest call supersedes any prior poll loop for the same tool.
+const _pollTimers = new Map();
+function schedulePostUpdatePolling(key) {
+  const prior = _pollTimers.get(key);
+  if (prior) clearTimeout(prior);
+
+  const startedAt = Date.now();
+  const maxMs = 10 * 60 * 1000;
+  const initialDelay = 10000;
+  const interval = 10000;
+
+  const tick = async () => {
+    try {
+      const res = await fetch('/api/system/tool-versions?force=1');
+      if (res.ok) {
+        const data = await res.json();
+        applyBadges(data);
+        const info = data?.tools?.[key];
+        if (info && !info.updateAvailable) {
+          _pollTimers.delete(key);
+          return;
+        }
+      }
+    } catch { /* ignore, will retry */ }
+
+    if (Date.now() - startedAt >= maxMs) {
+      _pollTimers.delete(key);
+      return;
     }
-  }
-  // Poll for the new installed version after the install completes.
-  // npm-global installs typically take 5–45s; opencode upgrade similar.
-  // Re-check a few times, bail once the badge is cleared or retries run out.
-  const delays = [20000, 45000, 90000];
-  for (const ms of delays) {
-    setTimeout(() => { forceCheckToolUpdates(); }, ms);
-  }
+    _pollTimers.set(key, setTimeout(tick, interval));
+  };
+
+  _pollTimers.set(key, setTimeout(tick, initialDelay));
 }
 
 function wireParentIntercept(parentId, badgeId, key) {

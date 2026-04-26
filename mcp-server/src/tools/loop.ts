@@ -53,13 +53,17 @@ function resolveSessionId(explicit?: string): string | null {
     } catch { /* dir read failed */ }
   }
 
-  // Fallback: scan for any active loop file (legacy — no terminal scoping)
+  // Fallback: STRICT — only match legacy loops without terminalSessionId.
+  // Previously this scanned ALL active loops and returned the first, which
+  // let one Claude session claim another's scheduled loop when env was unset.
+  // Server-launched loops always set terminalSessionId; manual/legacy loops
+  // (created without server) don't, so they remain claimable here.
   try {
-    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json'));
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
     for (const file of files) {
       try {
         const data = JSON.parse(readFileSync(join(LOOP_DIR, file), 'utf-8'));
-        if (data?.active) return file.replace('.json', '');
+        if (data?.active && !data.terminalSessionId) return file.replace('.json', '');
       } catch { /* skip corrupt files */ }
     }
   } catch { /* dir read failed */ }

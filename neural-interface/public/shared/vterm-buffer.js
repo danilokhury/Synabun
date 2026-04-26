@@ -114,7 +114,7 @@ export class VTermBuffer {
    * @param {number} cols
    * @param {number} rows
    */
-  constructor(cols, rows) {
+  constructor(cols, rows, maxScrollback = MAX_SCROLLBACK) {
     this.cols = cols;
     this.rows = rows;
 
@@ -130,7 +130,7 @@ export class VTermBuffer {
     this._buffer = this._mainBuffer;
 
     // Scrollback (main buffer only) — circular buffer for O(1) operations
-    this._scrollback = new CircularBuffer(MAX_SCROLLBACK);
+    this._scrollback = new CircularBuffer(maxScrollback);
 
     // Cursor state
     this._cursorX = 0;
@@ -221,6 +221,7 @@ export class VTermBuffer {
   get cursorX() { return this._cursorX; }
   get cursorY() { return this._cursorY; }
   get cursorVisible() { return this._cursorVisible; }
+  get useAltBuffer() { return this._useAlt; }
   get title() { return this._title; }
   get bracketedPaste() { return this._bracketedPaste; }
   get appCursorKeys() { return this._appCursorKeys; }

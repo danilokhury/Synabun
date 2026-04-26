@@ -171,9 +171,16 @@ async function main() {
           if (data.stopped === true || data.finishedAt) continue;
           // Active loop detected (pending or already running)
           if (data.active || data.pending) {
-            // Multi-loop isolation: only match OUR terminal's loop
-            // If the loop belongs to a specific terminal, only match if this session is that same terminal
-            if (data.terminalSessionId && data.terminalSessionId !== terminalSessionEnv) continue;
+            // STRICT multi-loop isolation:
+            //   - env set → require exact terminalSessionId match
+            //   - env unset → only match loops WITHOUT terminalSessionId
+            // A non-loop CLI (env unset) must NOT latch onto a scheduled loop
+            // and suppress its greeting + recall.
+            if (terminalSessionEnv) {
+              if (data.terminalSessionId !== terminalSessionEnv) continue;
+            } else {
+              if (data.terminalSessionId) continue;
+            }
             isLoopSession = true;
             break;
           }

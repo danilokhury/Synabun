@@ -20,7 +20,11 @@ You are the SynaBun assistant hub. The user has invoked `/synabun`.
 
 ## Runtime Compatibility
 
-- **Interactive choice prompt** means: use `AskUserQuestion` in Claude Code, `request_user_input` in Codex when that tool is available, otherwise ask a concise plain-text multiple-choice question and wait for the user's reply.
+- **Interactive choice prompt** means an interactive option card the user clicks — not plain text choices.
+  - **Claude Code (REQUIRED path):** `AskUserQuestion` is a deferred tool — its schema is not loaded by default. Before the first prompt in this skill, call `ToolSearch` with query `select:AskUserQuestion` to load it, then call `AskUserQuestion` with 2-4 options. NEVER write the choices as plain text — the sidepanel will render text as static markdown, not an interactive card.
+  - **OpenCode (REQUIRED path):** call the native `question` tool — the sidepanel renders it as an interactive card via the `/question.asked` event. NEVER write the choices as plain text.
+  - **Codex (REQUIRED path):** call `request_user_input` — the sidepanel renders it as an interactive card. NEVER write the choices as plain text.
+  - **Other runtimes:** only when no interactive tool exists, fall back to a concise plain-text multiple-choice question and wait for the user's reply.
 - **Load/read a module file** means: use whatever local file-reading mechanism exists in the current runtime. Do not depend on a tool literally being named `Read`.
 - **Category management** means: use the runtime's available category tool surface, whether that is split helpers such as `category_list` / `category_create` or a unified `category` tool with actions like `list` / `create`.
 
@@ -35,6 +39,7 @@ Parse `$ARGUMENTS` to determine the path:
 - If args start with `audit` → extract the rest as the scope, set `$ARGUMENTS` to that scope, then jump to **Step 2b: Audit Memories**.
 - If args start with `memorize` or `remember` or `store` or `save` → extract the rest as the focus hint, set `$ARGUMENTS` to that hint, then jump to **Step 2c: Memorize Context**.
 - If args start with `changelog` or `changes` or `log` → extract the rest as the focus hint, set `$ARGUMENTS` to that hint, then jump to **Step 2d: Changelog**.
+- If args start with `schedule` or `schedules` or `cron` → extract the rest as the goal hint, set `$ARGUMENTS` to that hint, then jump to **Step 2e: Schedule Wizard**.
 - If args start with `health` or `stats` → jump to **Step 3: Memory Health**.
 - If args start with `search` or `recall` or `find` → jump to **Step 4: Search Memories**, using the rest as the initial query.
 
@@ -51,14 +56,21 @@ The menu is paginated (3 features + 1 navigation slot per page). Start on **Page
 - **Brainstorm Ideas** — "Cross-pollinate memories to spark creative ideas and novel connections"
 - **Audit Memories** — "Validate stored memories against the current codebase for staleness"
 - **Memorize Context** — "Convert the current conversation into a structured, tagged memory"
-- **More...** — "Memory Health, Search Memories, Auto Changelog"
+- **More...** — "Schedule Wizard, Memory Health, Search Memories, Auto Changelog"
 
 If user picks **More...** → show **Page 2**.
 
 **Page 2** — use an interactive choice prompt with:
 
+- **Schedule Wizard** — "Create a recurring schedule via guided interactive prompts (loop-template + cron)"
 - **Memory Health** — "Quick stats overview and staleness check of your memory system"
 - **Search Memories** — "Find something specific across your entire memory bank"
+- **More...** — "Auto Changelog, Back"
+
+If user picks **More...** → show **Page 3**.
+
+**Page 3** — use an interactive choice prompt with:
+
 - **Auto Changelog** — "Analyze this session's work and generate CHANGELOG.md entries"
 - **Back** — "Return to page 1"
 
@@ -102,6 +114,12 @@ Based on the user's answer, set `$ARGUMENTS` to:
 ## Step 2d: Changelog
 
 **Directly**: Load/read the file at `$SKILL_DIR/modules/changelog.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value. That file is your complete changelog procedure — execute it fully.
+
+---
+
+## Step 2e: Schedule Wizard
+
+**Directly**: Load/read the file at `$SKILL_DIR/modules/schedule.md`. Follow the instructions in that file exactly, passing through the `$ARGUMENTS` value (the goal hint, if any). That file is your complete schedule wizard procedure — execute it fully.
 
 ---
 

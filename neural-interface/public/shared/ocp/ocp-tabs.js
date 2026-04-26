@@ -42,7 +42,28 @@ export const STOR = {
   agent:    'synabun-ocp-agent',
   project:  'synabun-ocp-project',
   activity: 'synabun-ocp-activity-open',
+  sessionSnapshots: 'synabun-ocp-session-snapshots', // global, per-sessionId rendered HTML cache
 };
+
+// ── Session HTML snapshot cache ──
+// Mirrors the Codex/Claude snapshot pattern: every render fills a per-session
+// HTML cache so a fresh browser load can blit the exact transcript back into
+// the DOM instead of rebuilding from upstream `messages:list`, which loses
+// streaming state, MCP card formatting, and intermediate UI cards.
+const MAX_OCP_SESSION_SNAPSHOTS = 24;
+const MAX_OCP_SESSION_SNAPSHOT_CHARS = 2_500_000;
+let _sessionSnapshots = (() => {
+  try {
+    const raw = storage.getItem('synabun-ocp-session-snapshots');
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch { return {}; }
+})();
+let _snapshotObserver = null;
+let _snapshotObserverContainer = null;
+let _snapshotDebounceTimer = null;
+let _snapshotRestoring = false;
 
 const ACTIVITY_MAX = 500;
 
@@ -110,6 +131,7 @@ let _onUpdate = null;   // callback to refresh UI
 let _panelVisible = false;
 let _showPanel = null;  // callback to show panel from tray pill click
 let _hidePanel = null;  // callback to close panel (last-tab-close)
+let _activeChildSessionId = null; // sessionId of the currently active child agent's subprocess
 
 export function getTabs() { return _tabs; }
 export function getActiveTabIdx() { return _activeTabIdx; }
@@ -176,6 +198,140 @@ function getModelContextWindow(modelStr) {
 }
 
 function panelEl(sel) { return _panelEl?.querySelector(sel) || null; }
+
+function runtimeSet(tab, key) {
+  if (!tab) return new Set();
+  if (!(tab[key] instanceof Set)) tab[key] = new Set();
+  return tab[key];
+}
+
+function runtimeMap(tab, key) {
+  if (!tab) return new Map();
+  if (!(tab[key] instanceof Map)) tab[key] = new Map();
+  return tab[key];
+}
+
+function userMsgIds(tab) {
+  return runtimeSet(tab, '_userMsgIds');
+}
+
+function partTypes(tab) {
+  return runtimeMap(tab, '_partTypes');
+}
+
+function renderedAssistantMsgIds(tab) {
+  return runtimeSet(tab, '_renderedAssistantMsgIds');
+}
+
+function currentTurn(tab) {
+  if (!tab) return null;
+  if (!tab._currentTurn) {
+    tab._currentTurn = {
+      id: '',
+      startAssistantCount: 0,
+      streamedText: false,
+      assistantIds: new Set(),
+    };
+  }
+  if (!(tab._currentTurn.assistantIds instanceof Set)) {
+    tab._currentTurn.assistantIds = new Set(tab._currentTurn.assistantIds || []);
+  }
+  return tab._currentTurn;
+}
+
+function beginTurn(tab, container) {
+  const turn = currentTurn(tab);
+  turn.id = (globalThis.crypto?.randomUUID?.() || `turn-${Date.now()}-${Math.random()}`);
+  turn.startAssistantCount = container?.querySelectorAll('.ocp-msg-assistant').length || 0;
+  turn.streamedText = false;
+  turn.assistantIds.clear();
+  return turn;
+}
+
+function markAssistantRendered(tab, messageId) {
+  if (!tab || !messageId) return;
+  renderedAssistantMsgIds(tab).add(messageId);
+  _renderedAssistantMsgIds.add(messageId);
+}
+
+function hasAssistantRendered(tab, messageId) {
+  if (!messageId) return false;
+  return renderedAssistantMsgIds(tab).has(messageId) || _renderedAssistantMsgIds.has(messageId);
+}
+
+function tagLatestAssistant(container, tab, messageId = '') {
+  if (!container || !tab) return null;
+  const els = container.querySelectorAll('.ocp-msg-assistant');
+  const el = els[els.length - 1] || null;
+  if (!el) return null;
+  const turn = currentTurn(tab);
+  if (turn?.id) el.dataset.turnId = turn.id;
+  if (messageId) el.dataset.messageId = String(messageId);
+  return el;
+}
+
+function cssEscape(value) {
+  if (globalThis.CSS?.escape) return globalThis.CSS.escape(String(value));
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function markCurrentTurnAssistantContent(tab, container, messageId = '') {
+  const turn = currentTurn(tab);
+  if (!turn) return;
+  turn.streamedText = true;
+  if (messageId) turn.assistantIds.add(messageId);
+  tagLatestAssistant(container, tab, messageId);
+}
+
+function currentTurnHasAssistantContent(tab, container, messageId = '') {
+  const turn = currentTurn(tab);
+  if (!turn) return false;
+  if (messageId && turn.assistantIds.has(messageId)) return true;
+  if (turn.streamedText) return true;
+  if (!container) return false;
+  if (turn.id && container.querySelector(`.ocp-msg-assistant[data-turn-id="${cssEscape(turn.id)}"]`)) return true;
+  const count = container.querySelectorAll('.ocp-msg-assistant').length;
+  return count > (turn.startAssistantCount || 0);
+}
+
+function endTurn(tab) {
+  if (!tab) return;
+  const turn = currentTurn(tab);
+  turn.id = '';
+  turn.startAssistantCount = 0;
+  turn.streamedText = false;
+  turn.assistantIds.clear();
+}
+
+function eventSessionId(event) {
+  return event?.sessionID || event?.sessionId || event?.session?.id || event?.part?.sessionID || event?.part?.sessionId || '';
+}
+
+function payloadHasAssistantText(value) {
+  if (value == null) return false;
+  if (typeof value === 'string') return Boolean(value.trim());
+  if (typeof value === 'number' || typeof value === 'boolean') return true;
+  if (Array.isArray(value)) return value.some(payloadHasAssistantText);
+  if (typeof value !== 'object') return false;
+  const type = String(value.type || '').toLowerCase();
+  if (type.includes('tool')) return false;
+  if (['text', 'reasoning', 'thinking', 'thought'].includes(type)) {
+    return payloadHasAssistantText(value.text ?? value.content ?? value.value ?? value.message ?? value.reasoning ?? '');
+  }
+  return payloadHasAssistantText(value.content)
+    || payloadHasAssistantText(value.parts)
+    || payloadHasAssistantText(value.text)
+    || payloadHasAssistantText(value.value)
+    || payloadHasAssistantText(value.message);
+}
+
+function findTabBySessionId(sessionId) {
+  if (!sessionId) return null;
+  const sid = String(sessionId);
+  return _tabs.find((tab) => tab?.sessionId === sid)
+    || _tabs.find((tab) => tab?.toolActivityChildSessions && tab.toolActivityChildSessions[sid])
+    || null;
+}
 
 function hasActiveQuestion() {
   return _activeQuestionToolId !== null;
@@ -336,6 +492,7 @@ export function createTab(opts = {}) {
     planFilePath: opts.planFilePath || '',
     editedPlanContent: opts.editedPlanContent || '',
     showPostPlanActions: opts.showPostPlanActions || false,
+    postPlanHeader: opts.postPlanHeader || 'PLAN COMPLETE',
     pendingTitle: opts.pendingTitle || null,  // user-named before server session exists; applied via renameSession once sessionId assigned
     toolActivity: [],
     toolActivityChildSessions: {},
@@ -358,6 +515,7 @@ export function switchTab(idx) {
   const prev = activeTab();
   const input = panelEl('#ocp-input');
   if (prev && input) prev.draft = input.value;
+  if (prev) flushSessionSnapshotSave(prev);
 
   _activeTabIdx = idx;
 
@@ -375,6 +533,7 @@ export function switchTab(idx) {
 export function closeTab(idx) {
   if (idx < 0 || idx >= _tabs.length) return;
   const tab = _tabs[idx];
+  flushSessionSnapshotSave(tab);
   if (tab.pillEl) tab.pillEl.remove();
   if (tab.trayPillEl) tab.trayPillEl.remove();
   _tabs.splice(idx, 1);
@@ -470,7 +629,8 @@ export function saveTabs() {
     const data = _tabs.map(t => ({
       id: t.id, sessionId: t.sessionId, sessionTitle: t.sessionTitle,
       model: t.model, mode: t.mode, agent: t.agent, project: t.project, draft: t.draft,
-      planContent: t.planContent, planFilePath: t.planFilePath, showPostPlanActions: t.showPostPlanActions,
+      planContent: t.planContent, planFilePath: t.planFilePath, editedPlanContent: t.editedPlanContent,
+      showPostPlanActions: t.showPostPlanActions, postPlanHeader: t.postPlanHeader,
       threadTokenUsage: t.threadTokenUsage,
     }));
     storage.setItem(STOR.tabs, JSON.stringify({ activeIdx: _activeTabIdx, tabs: data }));
@@ -509,8 +669,7 @@ export async function createSession() {
     const tab = activeTab();
     reconcileTabMode(tab);
     const body = {};
-    if (tab?.model) body.model = modelObj(tab.model);
-    if (tab?.agent) body.agent = tab.agent;
+    if (tab?.pendingTitle) body.title = tab.pendingTitle;
     const cwd = tab?.project || '';
     const resp = await requestWs('session:create', { body, ...(cwd ? { cwd } : {}) });
     const session = resp.data;
@@ -622,25 +781,61 @@ export async function executeCommand(sessionId, command, args = '') {
 // ── Plan mode helpers ──
 
 function capturePlanContent(tab) {
-  if (!tab || tab.mode !== 'plan') return;
+  if (!tab || tab.mode !== 'plan') return tab?.planContent || '';
   const container = panelEl('#ocp-messages');
-  if (!container) return;
+  if (!container) return tab.planContent || '';
   const assistantEls = container.querySelectorAll('.ocp-msg-assistant');
-  if (!assistantEls.length) return;
+  if (!assistantEls.length) return tab.planContent || '';
   const lastEl = assistantEls[assistantEls.length - 1];
   const text = (lastEl.textContent || '').trim();
   if (text.length > 80) tab.planContent = text;
+  return tab.planContent || '';
 }
 
-function showPostPlanUI(tab) {
+export async function ensurePlanFile(tab) {
+  if (!tab) return '';
+  if (tab.planFilePath) return tab.planFilePath;
+  if (tab._planFilePromise) return tab._planFilePromise;
+  const planText = tab.planContent || capturePlanContent(tab);
+  if (!planText) return '';
+
+  tab._planFilePromise = fetch('/api/create-plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: planText, cwd: tab.project || '' }),
+  })
+    .then(async (res) => {
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok || !result?.ok || !result.path) {
+        throw new Error(result?.error || 'create-plan failed');
+      }
+      tab.planFilePath = result.path;
+      saveTabs();
+      return result.path;
+    })
+    .catch((err) => {
+      console.error('[ocp-tabs] create-plan failed:', err);
+      return '';
+    })
+    .finally(() => {
+      tab._planFilePromise = null;
+    });
+
+  return tab._planFilePromise;
+}
+
+export function showPostPlanUI(tab, headerText = null) {
   if (!tab) return;
   const container = panelEl('#ocp-messages');
   if (!container) return;
   // Remove any existing post-plan cards before appending a new one
   removePostPlanCards(container);
   tab.showPostPlanActions = true;
+  tab.postPlanHeader = headerText || tab.postPlanHeader || 'PLAN COMPLETE';
+  ensurePlanFile(tab);
   saveTabs();
   renderPostPlanCard(container, {
+    headerText: tab.postPlanHeader,
     onContinue: () => {
       tab.showPostPlanActions = false;
       saveTabs();
@@ -656,7 +851,30 @@ function showPostPlanUI(tab) {
     onEditPlan: () => {
       if (typeof _onEditPlan === 'function') _onEditPlan(tab);
     },
+    onContinuePlanning: () => {
+      tab.showPostPlanActions = false;
+      saveTabs();
+      update();
+    },
   });
+}
+
+export function applySavedPlan(tab, content, filePath = '') {
+  if (!tab || !content) return;
+  tab.planContent = content;
+  tab.editedPlanContent = content;
+  tab.showPostPlanActions = true;
+  tab.postPlanHeader = 'PLAN UPDATED';
+  if (filePath) tab.planFilePath = filePath;
+
+  const container = panelEl('#ocp-messages');
+  if (container && tab === activeTab()) {
+    removePostPlanCards(container);
+    renderAssistantPayload(container, content, { textMode: 'render' });
+    showPostPlanUI(tab, 'PLAN UPDATED');
+  } else {
+    saveTabs();
+  }
 }
 
 // ── Send message ──
@@ -666,6 +884,11 @@ export async function sendMessage(content, options = {}) {
   const text = String(content || '').trim();
   const images = Array.isArray(options.images) ? options.images.filter(Boolean) : [];
   if (!tab || tab.running || (!text && !images.length)) return false;
+  if (tab.showPostPlanActions) {
+    const container = panelEl('#ocp-messages');
+    if (container) renderErrorMessage(container, 'Choose Continue with implementation, Continue planning, Compact context, or Edit plan before sending another message.');
+    return false;
+  }
   reconcileTabMode(tab);
   // Clear any pending question queue when user sends a new message
   clearQuestionQueue();
@@ -683,6 +906,7 @@ export async function sendMessage(content, options = {}) {
   update();
 
   const container = panelEl('#ocp-messages');
+  beginTurn(tab, container);
   if (container) {
     const userParts = [];
     if (text) userParts.push({ type: 'text', text });
@@ -713,6 +937,7 @@ export async function sendMessage(content, options = {}) {
       }
       tab.running = false;
       tab.turnStartedAt = 0;
+      endTurn(tab);
       setTurnStatus(tab);
       update();
       return false;
@@ -750,21 +975,26 @@ export async function sendMessage(content, options = {}) {
     if (tab.running && resp?.data) {
       const info = resp.data.info || resp.data;
       const parts = resp.data.parts || info.parts || info.content;
-      // Only render from POST if SSE didn't already stream content
-      const hasStreamed = container?.querySelector('.ocp-msg-assistant.streaming')
-        || container?.querySelector('.ocp-msg-assistant');
-      if (parts && !hasStreamed) {
-        removeThinking(container);
-        renderAssistantPayload(container, parts, { textMode: 'stream' });
-        finalizeStreamingMessage(container);
-      } else {
-        removeThinking(container);
-        finalizeStreamingMessage(container);
+      const assistantMid = info.id || resp.data.messageID || resp.data.messageId || '';
+      const hasCurrentTurnContent = currentTurnHasAssistantContent(tab, container, assistantMid);
+      if (container) {
+        if (parts && !hasCurrentTurnContent) {
+          removeThinking(container);
+          renderAssistantPayload(container, parts, { textMode: 'stream' });
+          if (payloadHasAssistantText(parts)) markCurrentTurnAssistantContent(tab, container, assistantMid);
+          finalizeStreamingMessage(container);
+        } else {
+          removeThinking(container);
+          finalizeStreamingMessage(container);
+        }
+      } else if (parts) {
+        tab._needsHistoryRefresh = true;
       }
       // Mark this assistant message as rendered so late terminal SSE
       // message.updated events (which arrive after POST resolves on some
       // Windows/model combos) don't re-stream the full payload into a new bubble.
-      if (info.id) _renderedAssistantMsgIds.add(info.id);
+      if (assistantMid) markAssistantRendered(tab, assistantMid);
+      partTypes(tab).clear();
       tab.running = false;
       tab.turnStartedAt = 0;
       if (info.tokens || info.usage) {
@@ -774,7 +1004,12 @@ export async function sendMessage(content, options = {}) {
         tab.outputTokens = raw.output || raw.outputTokens || raw.output_tokens || 0;
       }
       setTurnStatus(tab);
+      if (tab.mode === 'plan' && !tab._exitPlanDetected) {
+        capturePlanContent(tab);
+        showPostPlanUI(tab);
+      }
       notifyOpenCodeOutcome(NOTIF_TYPE.DONE, tab, info.id || tab.sessionId || tab.id);
+      endTurn(tab);
       update();
     }
     return true;
@@ -790,8 +1025,10 @@ export async function sendMessage(content, options = {}) {
     if (!isAbort) {
       tab.running = false;
       tab.turnStartedAt = 0;
+      endTurn(tab);
       setTurnStatus(tab);
       notifyOpenCodeOutcome(NOTIF_TYPE.ERROR, tab, tab.sessionId || tab.id);
+      _activeChildSessionId = null;
       update();
     }
     return false;
@@ -803,7 +1040,33 @@ export function anyTabRunning() {
 }
 
 export async function abortMessage() {
-  return abortAllTabs();
+  const tab = activeTab();
+  if (!tab?.running) return false;
+  const container = panelEl('#ocp-messages');
+  const stopped = abortTab(tab, container);
+  if (stopped) update();
+  return stopped;
+}
+
+function abortTab(tab, container = null) {
+  if (!tab?.running) return false;
+  if (tab.sessionId) {
+    try { sendWs({ type: 'message:abort', sessionId: tab.sessionId }); } catch {}
+  }
+  if (tab._activeSendRequestId) {
+    rejectPending(tab._activeSendRequestId, 'Aborted by user');
+    if (_activeSendRequestId === tab._activeSendRequestId) _activeSendRequestId = null;
+    tab._activeSendRequestId = null;
+  }
+  if (container) {
+    removeThinking(container);
+    finalizeStreamingMessage(container);
+  }
+  tab.running = false;
+  tab.turnStartedAt = 0;
+  endTurn(tab);
+  setTurnStatus(tab);
+  return true;
 }
 
 export async function abortAllTabs() {
@@ -811,24 +1074,10 @@ export async function abortAllTabs() {
   const activeContainer = panelEl('#ocp-messages');
   const active = activeTab();
   for (const tab of _tabs) {
-    if (!tab?.running) continue;
-    stoppedAny = true;
-    if (tab.sessionId) {
-      try { sendWs({ type: 'message:abort', sessionId: tab.sessionId }); } catch {}
-    }
-    if (tab._activeSendRequestId) {
-      rejectPending(tab._activeSendRequestId, 'Aborted by user');
-      tab._activeSendRequestId = null;
-    }
-    if (tab === active && activeContainer) {
-      removeThinking(activeContainer);
-      finalizeStreamingMessage(activeContainer);
-    }
-    tab.running = false;
-    tab.turnStartedAt = 0;
-    setTurnStatus(tab);
+    stoppedAny = abortTab(tab, tab === active ? activeContainer : null) || stoppedAny;
   }
   _activeSendRequestId = null;
+  _activeChildSessionId = null;
   if (stoppedAny) update();
   return stoppedAny;
 }
@@ -910,6 +1159,11 @@ export function findAgentEntryByChildSession(tab, sessionId) {
   return findActivityEntry(tab, key);
 }
 
+export function findAgentEntryByToolId(tab, toolId) {
+  if (!tab || !toolId || !Array.isArray(tab.toolActivity)) return null;
+  return tab.toolActivity.find(e => e.toolId === String(toolId) && e.status === 'running') || null;
+}
+
 export function recordToolStart(tab, rawName, toolId, toolInput) {
   if (!tab) return;
   const name = String(rawName || 'tool');
@@ -979,6 +1233,7 @@ export function recordToolResult(tab, rawName, toolId, toolInput, result, isErro
         step.updatedAt = now;
       }
     }
+    _activeChildSessionId = null;
     return;
   }
   const entry = {
@@ -1001,6 +1256,7 @@ export function recordToolResult(tab, rawName, toolId, toolInput, result, isErro
   };
   tab.toolActivity.push(entry);
   if (childSid) linkChildSession(tab, entry, childSid);
+  if (isError) _activeChildSessionId = null;
 }
 
 export function recordAgentChildEvent(tab, entry, eventType, event) {
@@ -1080,6 +1336,87 @@ export function recordAgentChildEvent(tab, entry, eventType, event) {
   return false;
 }
 
+function toolStatusDetail(rawName, toolInput) {
+  const name = String(rawName || 'tool');
+  const desc = describeTool(name, toolInput) || {};
+  const display = desc.displayName || name;
+  const summary = desc.summary || '';
+  return summary && summary !== display ? `${display} · ${summary}` : display;
+}
+
+function activeAgentStep(tab) {
+  const entries = Array.isArray(tab?.toolActivity) ? tab.toolActivity : [];
+  let latest = null;
+  for (const entry of entries) {
+    if (entry?.status !== 'running') continue;
+    const steps = Array.isArray(entry.steps) ? entry.steps : [];
+    const activeKey = entry.activeStep || '';
+    const active = activeKey ? steps.find((step) => step.key === activeKey && step.status === 'running') : null;
+    const fallback = active || [...steps].reverse().find((step) => step.status === 'running');
+    if (!fallback) continue;
+    const latestAt = latest ? (latest.updatedAt || latest.startedAt || 0) : 0;
+    const fallbackAt = fallback.updatedAt || fallback.startedAt || 0;
+    if (!latest || fallbackAt >= latestAt) latest = fallback;
+  }
+  return latest;
+}
+
+function agentStepStatusDetail(step) {
+  if (!step) return '';
+  const name = step.name || step.rawName || 'tool';
+  const summary = step.summary || '';
+  return summary && summary !== name ? `${name} · ${summary}` : name;
+}
+
+function syncActingIndicator(container, tab, options = {}) {
+  if (!container || !tab?.running) return;
+  if (hasActiveQuestion() || _activePermissionId) return;
+  const step = options.ignoreActiveStep ? null : activeAgentStep(tab);
+  const title = options.title || (step ? 'Using tool…' : (tab.statusText || 'Thinking…'));
+  const detail = options.detail !== undefined
+    ? options.detail
+    : (step ? agentStepStatusDetail(step) : (tab.statusDetail || tabStatusDetail(tab)));
+  updateThinking(container, {
+    title,
+    detail,
+    startedAt: tab.turnStartedAt || Date.now(),
+    waiting: options.waiting !== undefined ? !!options.waiting : title !== 'Using tool…',
+  });
+}
+
+function syncAgentChildIndicator(container, tab, eventType, event) {
+  if (!tab?.running) return;
+  if (eventType === 'tool.result') {
+    setTurnStatus(tab, 'Thinking…', 'Processing tool result');
+    syncActingIndicator(container, tab, {
+      title: 'Thinking…',
+      detail: 'Processing tool result',
+      waiting: true,
+      ignoreActiveStep: true,
+    });
+    return;
+  }
+  if (eventType === 'session.idle'
+      || (eventType === 'session.status' && (event?.status?.type || event?.type) === 'idle')) {
+    setTurnStatus(tab, 'Thinking…', 'Agent completed');
+    syncActingIndicator(container, tab, {
+      title: 'Thinking…',
+      detail: 'Agent completed',
+      waiting: true,
+      ignoreActiveStep: true,
+    });
+    return;
+  }
+  const step = activeAgentStep(tab);
+  if (!step) return;
+  const detail = agentStepStatusDetail(step);
+  setTurnStatus(tab, 'Using tool…', detail);
+  syncActingIndicator(container, tab, {
+    title: 'Using tool…',
+    detail,
+  });
+}
+
 export function markStuckActivityAsAborted(tab) {
   if (!tab || !Array.isArray(tab.toolActivity)) return;
   const now = Date.now();
@@ -1097,6 +1434,7 @@ export function markStuckActivityAsAborted(tab) {
       }
     }
   }
+  _activeChildSessionId = null;
 }
 
 export function setActivityVisible(tab, visible) {
@@ -1132,29 +1470,115 @@ export function abortAgent(tab, key) {
       step.updatedAt = now;
     }
   }
+  _activeChildSessionId = null;
   update();
   return true;
 }
 
 // ── SSE Event handling ──
 
+function isIdleEvent(eventType, event) {
+  return eventType === 'session.idle'
+    || (eventType === 'session.status' && (event?.status?.type || event?.type) === 'idle');
+}
+
+function handleBackgroundEvent(tab, eventType, event) {
+  if (!tab) return;
+  tab._needsHistoryRefresh = true;
+  if (eventType === 'message.updated') {
+    const info = event.info || event;
+    const mid = info.id || event.messageID;
+    if (info.role === 'user') {
+      if (mid) {
+        userMsgIds(tab).add(mid);
+        _userMsgIds.add(mid);
+      }
+    } else if (info.tokens || info.usage) {
+      const raw = info.tokens || info.usage || {};
+      tab.threadTokenUsage = normalizeThreadTokenUsage(raw);
+      tab.inputTokens = raw.input || raw.inputTokens || raw.input_tokens || 0;
+      tab.outputTokens = raw.output || raw.outputTokens || raw.output_tokens || 0;
+      if (mid) markAssistantRendered(tab, mid);
+    }
+  } else if (eventType === 'session.updated') {
+    if (event.session?.title || event.title) {
+      const sid = event.session?.id || event.sessionID || event.sessionId || tab.sessionId;
+      updateSessionTitleState(sid, event.session?.title || event.title);
+      renderPills();
+      saveTabs();
+    }
+  } else if (isIdleEvent(eventType, event)) {
+    tab.running = false;
+    tab.turnStartedAt = 0;
+    endTurn(tab);
+    setTurnStatus(tab);
+    markStuckActivityAsAborted(tab);
+    if (tab.mode === 'plan' && !tab._exitPlanDetected) {
+      tab._pendingPostPlanCheck = true;
+      tab.showPostPlanActions = true;
+    }
+    notifyOpenCodeOutcome(NOTIF_TYPE.DONE, tab, tab.sessionId || tab.id);
+  } else if (eventType === 'session.error' || eventType === 'error') {
+    tab.running = false;
+    tab.turnStartedAt = 0;
+    endTurn(tab);
+    setTurnStatus(tab, 'Error', '');
+    notifyOpenCodeOutcome(NOTIF_TYPE.ERROR, tab, event.id || event.messageID || tab.sessionId || tab.id);
+  }
+  update();
+}
+
 export function handleSSEEvent(eventType, event) {
-  const tab = activeTab();
+  let tab = eventSessionId(event) ? findTabBySessionId(eventSessionId(event)) : activeTab();
+  if (!tab) tab = activeTab();
   if (!tab) return;
 
-  const container = panelEl('#ocp-messages');
-  if (!container) return;
+  const isActiveTab = tab === activeTab();
+  const container = isActiveTab ? panelEl('#ocp-messages') : null;
 
   // Filter events to current session (OpenCode uses sessionID). When the active
   // tab has no sessionId yet (freshly created via "+"), drop any session-scoped
   // event so the still-running previous session doesn't render into it.
-  const eventSessionId = event?.sessionID || event?.sessionId || event?.session?.id;
-  if (eventSessionId && eventSessionId !== tab.sessionId) {
-    // Route events from tracked subagent child sessions into their parent agent entry.
-    const agentEntry = findAgentEntryByChildSession(tab, eventSessionId);
-    if (agentEntry && recordAgentChildEvent(tab, agentEntry, eventType, event)) {
-      update();
+  const eventSid = eventSessionId(event);
+  const isAgentEvent = (eventType === 'tool.start' || eventType === 'tool.result' || eventType === 'message.part.updated');
+  const isAgentLifecycleEvent = eventType === 'session.idle' || eventType === 'session.status';
+
+  // Helper to extract toolId from event or its part field
+  function extractToolId(evt) {
+    return evt?.toolCallId || evt?.id ||
+      (evt?.part ? (evt.part?.toolCallId || evt.part?.callID || evt.part?.tool_use_id || evt.part?.id) : '');
+  }
+
+  // Route agent tool events to the running agent entry by toolId — events may arrive
+  // under the parent session ID even when they're for the child agent's tool loop.
+  if (isAgentEvent) {
+    const toolId = extractToolId(event);
+    if (toolId) {
+      const agentEntry = findAgentEntryByToolId(tab, toolId);
+      if (agentEntry && recordAgentChildEvent(tab, agentEntry, eventType, event)) {
+        if (container) syncAgentChildIndicator(container, tab, eventType, event);
+        update();
+        return;
+      }
     }
+    // eventSid is falsy or matches tab.sessionId — fall through to normal switch
+  }
+  if (eventSid && eventSid !== tab.sessionId) {
+    // Route tracked child-agent events, then drop all other session-scoped
+    // events so another OpenCode session cannot mutate the active render area.
+    if (isAgentEvent || isAgentLifecycleEvent) {
+      const agentEntry = findAgentEntryByChildSession(tab, eventSid);
+      if (agentEntry && recordAgentChildEvent(tab, agentEntry, eventType, event)) {
+        if (container) syncAgentChildIndicator(container, tab, eventType, event);
+        update();
+        return;
+      }
+    }
+    return;
+  }
+
+  if (!container) {
+    handleBackgroundEvent(tab, eventType, event);
     return;
   }
 
@@ -1165,7 +1589,10 @@ export function handleSSEEvent(eventType, event) {
       // Track user messages so their parts don't echo in the chat
       if (info.role === 'user') {
         const mid = info.id || event.messageID;
-        if (mid) _userMsgIds.add(mid);
+        if (mid) {
+          userMsgIds(tab).add(mid);
+          _userMsgIds.add(mid);
+        }
         break;
       }
       // Guard: once we've rendered this assistant message's final payload, ignore
@@ -1173,7 +1600,7 @@ export function handleSSEEvent(eventType, event) {
       // late duplicate after finalize, which would otherwise re-stream the whole
       // response into a brand-new assistant bubble).
       const assistantMid = info.id || event.messageID;
-      if (assistantMid && _renderedAssistantMsgIds.has(assistantMid)) {
+      if (assistantMid && hasAssistantRendered(tab, assistantMid)) {
         update();
         break;
       }
@@ -1186,16 +1613,19 @@ export function handleSSEEvent(eventType, event) {
       const rendered = renderAssistantPayload(container, info.content ?? info.parts ?? info.text ?? '', {
         textMode: hasStreaming ? 'skip' : 'stream',
       });
+      if (rendered && !hasStreaming && payloadHasAssistantText(info.content ?? info.parts ?? info.text ?? '')) {
+        markCurrentTurnAssistantContent(tab, container, assistantMid);
+      }
       if (rendered || hasStreaming || (explicitTerminal && hasToolCards) || (info.tokens && hasToolCards)) {
         removeThinking(container);
         finalizeStreamingMessage(container);
-        _partTypes.clear();
+        partTypes(tab).clear();
         // Only mark the ID as rendered at the terminal signal (tokens/usage
         // arrived or status is explicitly terminal). Mid-turn message.updated
         // events may fire before streaming starts and shouldn't lock out later
         // part.delta / part.updated events.
         if (assistantMid && (explicitTerminal || info.tokens || info.usage)) {
-          _renderedAssistantMsgIds.add(assistantMid);
+          markAssistantRendered(tab, assistantMid);
         }
         if (info.tokens || info.usage) {
           const raw = info.tokens || info.usage || {};
@@ -1208,12 +1638,12 @@ export function handleSSEEvent(eventType, event) {
         // running here hides the Stop button while OpenCode is still working.
         // Authoritative end-of-turn: session.idle, session.status:idle, or the
         // synchronous POST /message response returning.
+        syncActingIndicator(container, tab);
       } else if (tab.running) {
         setTurnStatus(tab, 'Waiting for response…', tabStatusDetail(tab));
-        updateThinking(container, {
+        syncActingIndicator(container, tab, {
           title: 'Waiting for response…',
           detail: tabStatusDetail(tab),
-          startedAt: tab.turnStartedAt || Date.now(),
           waiting: true,
         });
       }
@@ -1222,17 +1652,18 @@ export function handleSSEEvent(eventType, event) {
     }
     // Streaming text delta — the primary streaming event from OpenCode
     case 'message.part.delta': {
-      if (_userMsgIds.has(event.messageID)) break; // skip user message echoes
+      if (userMsgIds(tab).has(event.messageID) || _userMsgIds.has(event.messageID)) break; // skip user message echoes
       // Skip deltas for assistant messages already finalized (late echoes).
-      if (event.messageID && _renderedAssistantMsgIds.has(event.messageID)) break;
+      if (event.messageID && hasAssistantRendered(tab, event.messageID)) break;
       if (event.delta) {
-        const partType = String(event.part?.type || event.partType || _partTypes.get(event.partID) || '').trim().toLowerCase();
+        const partType = String(event.part?.type || event.partType || partTypes(tab).get(event.partID) || '').trim().toLowerCase();
         const isReasoning = partType === 'reasoning' || partType === 'thinking' || partType === 'thought';
         if (isReasoning) {
           appendThinkChunk(container, event.delta);
           setTurnStatus(tab, 'Thinking…', tabStatusDetail(tab));
         } else {
           appendStreamChunk(container, event.delta);
+          markCurrentTurnAssistantContent(tab, container, event.messageID || '');
           setTurnStatus(tab, 'Writing response…', tabStatusDetail(tab));
         }
         if (tab.running) repositionThinking(container);
@@ -1243,10 +1674,10 @@ export function handleSSEEvent(eventType, event) {
     // Part updated — full part state (text finalized, tool state change, etc.)
     case 'message.part.updated': {
       const part = event.part || event;
-      if (_userMsgIds.has(part.messageID)) break; // skip user message echoes
+      if (userMsgIds(tab).has(part.messageID) || _userMsgIds.has(part.messageID)) break; // skip user message echoes
       const updatedType = String(part?.type || '').trim().toLowerCase();
       // Track part type so message.part.delta can look it up by partID
-      if (part.id && updatedType) _partTypes.set(part.id, updatedType);
+      if (part.id && updatedType) partTypes(tab).set(part.id, updatedType);
       if (updatedType === 'reasoning' || updatedType === 'thinking' || updatedType === 'thought') {
         // Reasoning part finalized — mark think block as complete (not partial)
         const streamingEl = container.querySelector('.ocp-msg-assistant.streaming');
@@ -1263,8 +1694,9 @@ export function handleSSEEvent(eventType, event) {
         // finalized by POST response or a prior message.updated — otherwise we
         // create a duplicate bubble when late text part.updated events arrive.
         const partMsgId = part.messageID || part.messageId;
-        if (!hasStreaming && !(partMsgId && _renderedAssistantMsgIds.has(partMsgId))) {
+        if (!hasStreaming && !(partMsgId && hasAssistantRendered(tab, partMsgId))) {
           renderAssistantPayload(container, part, { textMode: 'stream' });
+          markCurrentTurnAssistantContent(tab, container, partMsgId || '');
         }
         setTurnStatus(tab, 'Writing response…', tabStatusDetail(tab));
         if (tab.running) {
@@ -1294,11 +1726,11 @@ export function handleSSEEvent(eventType, event) {
 
         renderAssistantPayload(container, part, { textMode: 'skip' });
         recordToolStart(tab, toolName, toolId, toolInput);
-        setTurnStatus(tab, 'Using tool…', toolName);
-        updateThinking(container, {
+        const detail = toolStatusDetail(toolName, toolInput);
+        setTurnStatus(tab, 'Using tool…', detail);
+        syncActingIndicator(container, tab, {
           title: 'Using tool…',
-          detail: toolName,
-          startedAt: tab.turnStartedAt || Date.now(),
+          detail,
         });
         update();
       }
@@ -1315,9 +1747,10 @@ export function handleSSEEvent(eventType, event) {
     case 'message.completed': {
       removeThinking(container);
       const completedMid = event.messageID || event.id;
-      if (completedMid && _renderedAssistantMsgIds.has(completedMid)) {
+      if (completedMid && hasAssistantRendered(tab, completedMid)) {
         tab.running = false;
         tab.turnStartedAt = 0;
+        endTurn(tab);
         setTurnStatus(tab);
         update();
         break;
@@ -1327,11 +1760,13 @@ export function handleSSEEvent(eventType, event) {
       renderAssistantPayload(container, event.content ?? event.parts ?? event.text ?? '', {
         textMode: hasStreamingLegacy ? 'skip' : 'stream',
       });
+      if (!hasStreamingLegacy) markCurrentTurnAssistantContent(tab, container, completedMid || '');
       finalizeStreamingMessage(container);
-      _partTypes.clear();
-      if (completedMid) _renderedAssistantMsgIds.add(completedMid);
+      partTypes(tab).clear();
+      if (completedMid) markAssistantRendered(tab, completedMid);
       tab.running = false;
       tab.turnStartedAt = 0;
+      endTurn(tab);
       setTurnStatus(tab);
       if (event.usage) {
         const raw = event.usage || {};
@@ -1393,11 +1828,11 @@ export function handleSSEEvent(eventType, event) {
         capturePlanContent(tab);
         showPostPlanUI(tab);
       }
-      setTurnStatus(tab, 'Using tool…', toolName);
-      updateThinking(container, {
+      const detail = toolStatusDetail(toolName, toolInput);
+      setTurnStatus(tab, 'Using tool…', detail);
+      syncActingIndicator(container, tab, {
         title: 'Using tool…',
-        detail: toolName,
-        startedAt: tab.turnStartedAt || Date.now(),
+        detail,
       });
       update();
       break;
@@ -1425,11 +1860,11 @@ export function handleSSEEvent(eventType, event) {
       recordToolResult(tab, toolName, toolId, event.input ?? event.args, event.result ?? event.output ?? event.error, !!event.error);
       if (tab.running) {
         setTurnStatus(tab, 'Thinking…', 'Processing tool result');
-        updateThinking(container, {
+        syncActingIndicator(container, tab, {
           title: 'Thinking…',
           detail: 'Processing tool result',
-          startedAt: tab.turnStartedAt || Date.now(),
           waiting: true,
+          ignoreActiveStep: true,
         });
         update();
       }
@@ -1448,8 +1883,10 @@ export function handleSSEEvent(eventType, event) {
     case 'session.status': {
       const statusType = event.status?.type || event.type || '';
       if (statusType === 'idle') {
+        finalizeStreamingMessage(container);
         tab.running = false;
         tab.turnStartedAt = 0;
+        endTurn(tab);
         setTurnStatus(tab);
         removeThinking(container);
         markStuckActivityAsAborted(tab);
@@ -1464,8 +1901,10 @@ export function handleSSEEvent(eventType, event) {
       break;
     }
     case 'session.idle': {
+      finalizeStreamingMessage(container);
       tab.running = false;
       tab.turnStartedAt = 0;
+      endTurn(tab);
       setTurnStatus(tab);
       removeThinking(container);
       markStuckActivityAsAborted(tab);
@@ -1498,9 +1937,16 @@ export function handleSSEEvent(eventType, event) {
       }
       break;
     }
-    case 'permission.asked': {
+    case 'permission.asked':
+    case 'permission.updated': {
       const permId = event.id || event.permissionID || '';
       if (!permId) break;
+      const status = String(event.status || event.state || '').toLowerCase();
+      if (status === 'replied' || status === 'resolved' || status === 'approved' || status === 'rejected') {
+        lockPermissionCard(container, permId);
+        if (_activePermissionId === permId) _activePermissionId = null;
+        break;
+      }
       if (_activePermissionId === permId) break;
       renderOpencodePermission(tab, container, event, permId);
       break;
@@ -1523,8 +1969,10 @@ export function handleSSEEvent(eventType, event) {
       renderErrorMessage(container, msg);
       tab.running = false;
       tab.turnStartedAt = 0;
+      endTurn(tab);
       setTurnStatus(tab, 'Error', msg);
       notifyOpenCodeOutcome(NOTIF_TYPE.ERROR, tab, event.id || event.messageID || tab.sessionId || tab.id);
+      _activeChildSessionId = null;
       update();
       break;
     }
@@ -1544,6 +1992,12 @@ function renderOpencodeQuestion(tab, container, event, requestID) {
       lockQuestionCard(container, requestID);
       const payload = buildQuestionReplyPayload(questions, answers);
       requestWs('question:reply', { requestID, body: payload }, 15000)
+        .then(() => {
+          if (_activeQuestionToolId === requestID) {
+            _activeQuestionToolId = null;
+            processQuestionQueue(tab, container);
+          }
+        })
         .catch((err) => console.error('[ocp-tabs] question:reply failed:', err));
     },
   });
@@ -1723,7 +2177,12 @@ function lockPermissionCard(container, permissionID) {
 // Convert the question card's answer payload (string | {questionText: answerString})
 // into OpenCode's expected shape: { answers: string[][] } with one string[] per question.
 function buildQuestionReplyPayload(questions, answers) {
-  const asArray = (val) => (val == null ? [] : String(val).split(',').map((s) => s.trim()).filter(Boolean));
+  const asArray = (val) => {
+    if (val == null) return [];
+    if (Array.isArray(val)) return val.map((entry) => String(entry).trim()).filter(Boolean);
+    const text = String(val).trim();
+    return text ? [text] : [];
+  };
   if (typeof answers === 'string') {
     const list = [asArray(answers)];
     while (list.length < questions.length) list.push([]);
@@ -1731,9 +2190,9 @@ function buildQuestionReplyPayload(questions, answers) {
   }
   if (answers && typeof answers === 'object') {
     return {
-      answers: questions.map((q) => {
-        const key = q.question || q.header || '';
-        const v = answers[key] ?? answers[q.header] ?? '';
+      answers: questions.map((q, idx) => {
+        const key = q.id || q.question || q.header || `question_${idx}`;
+        const v = answers[key] ?? answers[q.question] ?? answers[q.header] ?? answers[q.id] ?? answers[`question_${idx}`] ?? '';
         return asArray(v);
       }),
     };
@@ -1783,6 +2242,14 @@ export function setTabMode(mode) {
   if (!tab) return;
   const nextMode = normalizeMode(mode) || DEFAULT_MODE;
   if (nextMode === 'plan') tab._exitPlanDetected = false;
+  // Leaving plan mode invalidates any pending post-plan card — clear the flag
+  // so a later renderTabMessages (tab switch, WS reconnect) can't resurrect it.
+  if (tab.mode === 'plan' && nextMode !== 'plan') {
+    tab.showPostPlanActions = false;
+    tab._pendingPostPlanCheck = false;
+    const container = panelEl('#ocp-messages');
+    if (container) removePostPlanCards(container);
+  }
   tab.mode = nextMode;
   tab.agent = resolveAgentForMode(nextMode);
   storage.setItem(STOR.mode, nextMode);
@@ -2044,11 +2511,130 @@ export function populateModelDropdown(ddEl) {
   }
 }
 
+// ── Session HTML snapshot helpers ──
+
+function _normalizeSnapshotEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const html = typeof entry.html === 'string' ? entry.html : '';
+  if (!html) return null;
+  return {
+    html,
+    updatedAt: Number(entry.updatedAt) || 0,
+    title: typeof entry.title === 'string' ? entry.title : '',
+    itemCount: Number(entry.itemCount) || 0,
+    threadTokenUsage: entry.threadTokenUsage || null,
+  };
+}
+
+function _persistSessionSnapshots() {
+  try {
+    const source = (_sessionSnapshots && typeof _sessionSnapshots === 'object' && !Array.isArray(_sessionSnapshots))
+      ? _sessionSnapshots : {};
+    const entries = Object.entries(source)
+      .map(([sid, e]) => [sid, _normalizeSnapshotEntry(e)])
+      .filter(([, e]) => !!e)
+      .sort(([, a], [, b]) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    const next = {};
+    let totalChars = 0;
+    for (const [sid, entry] of entries) {
+      const size = entry.html.length;
+      if (Object.keys(next).length >= MAX_OCP_SESSION_SNAPSHOTS) break;
+      if (totalChars + size > MAX_OCP_SESSION_SNAPSHOT_CHARS && Object.keys(next).length) continue;
+      totalChars += size;
+      next[sid] = entry;
+    }
+    _sessionSnapshots = next;
+    storage.setItem('synabun-ocp-session-snapshots', JSON.stringify(next));
+  } catch {}
+}
+
+export function getSessionSnapshot(sid) {
+  if (!sid) return null;
+  return _normalizeSnapshotEntry(_sessionSnapshots?.[sid]);
+}
+
+export function writeSessionSnapshot(tab) {
+  const sid = tab?.sessionId || null;
+  const container = panelEl('#ocp-messages');
+  if (!sid || !container) return;
+  // Only snapshot when this tab is the one currently rendered in #ocp-messages.
+  if (tab !== activeTab()) return;
+  const html = container.innerHTML || '';
+  if (!html.trim()) return;
+  // Skip empty-state placeholder
+  const onlyChild = container.children.length === 1 ? container.firstElementChild : null;
+  if (onlyChild?.classList?.contains('ocp-empty')) return;
+  if (onlyChild?.classList?.contains('ocp-thinking') && container.children.length === 1) return;
+  if (!_sessionSnapshots || typeof _sessionSnapshots !== 'object' || Array.isArray(_sessionSnapshots)) {
+    _sessionSnapshots = {};
+  }
+  const itemCount = [...container.children].filter(n =>
+    !n.classList?.contains('ocp-empty') && !n.classList?.contains('ocp-thinking')
+  ).length;
+  _sessionSnapshots[sid] = {
+    html,
+    updatedAt: Date.now(),
+    title: tab.sessionTitle || '',
+    itemCount,
+    threadTokenUsage: tab.threadTokenUsage || null,
+  };
+  _persistSessionSnapshots();
+}
+
+export function scheduleSessionSnapshotSave(tab, ms = 350) {
+  if (!tab?.sessionId) return;
+  if (_snapshotDebounceTimer) clearTimeout(_snapshotDebounceTimer);
+  _snapshotDebounceTimer = setTimeout(() => {
+    _snapshotDebounceTimer = null;
+    writeSessionSnapshot(tab);
+  }, ms);
+}
+
+export function flushSessionSnapshotSave(tab) {
+  if (!tab) return;
+  if (_snapshotDebounceTimer) { clearTimeout(_snapshotDebounceTimer); _snapshotDebounceTimer = null; }
+  writeSessionSnapshot(tab);
+}
+
+export function flushAllSessionSnapshots() {
+  // Only the active tab is rendered into #ocp-messages, so flush just that one.
+  flushSessionSnapshotSave(activeTab());
+}
+
+function _installSnapshotObserver(container) {
+  if (!container || _snapshotObserverContainer === container) return;
+  if (_snapshotObserver) try { _snapshotObserver.disconnect(); } catch {}
+  _snapshotObserverContainer = container;
+  _snapshotObserver = new MutationObserver(() => {
+    if (_snapshotRestoring) return;
+    const tab = activeTab();
+    if (tab?.sessionId) scheduleSessionSnapshotSave(tab);
+  });
+  _snapshotObserver.observe(container, { childList: true, subtree: true, characterData: true });
+}
+
+function _renderStoredSession(snapshot, container) {
+  const norm = _normalizeSnapshotEntry(snapshot);
+  if (!norm || !container) return false;
+  _snapshotRestoring = true;
+  try {
+    container.innerHTML = norm.html;
+    // Restored DOM has no event handlers and any mid-turn UI (permission cards,
+    // ask cards, post-plan, thinking dots) is stale — disable / strip.
+    container.querySelectorAll('button, input, select, textarea').forEach(node => { node.disabled = true; });
+    container.querySelectorAll('.ocp-thinking, .ocp-permission-card, .ocp-question-card.active, .ocp-post-plan-card').forEach(n => n.remove());
+  } finally {
+    _snapshotRestoring = false;
+  }
+  return true;
+}
+
 // ── Render current tab's messages ──
 
 export async function renderTabMessages() {
   const container = panelEl('#ocp-messages');
   if (!container) return;
+  _installSnapshotObserver(container);
   const tab = activeTab();
   const seq = ++_renderSeq;
 
@@ -2057,24 +2643,49 @@ export async function renderTabMessages() {
     return;
   }
 
+  // Try local snapshot first — exact replay of the live render. Skip while
+  // a turn is actively running so streaming state isn't masked by a stale snapshot.
+  if (!tab.running) {
+    const snap = getSessionSnapshot(tab.sessionId);
+    if (snap && _renderStoredSession(snap, container)) {
+      // Background refresh: pull latest messages and rebuild only if upstream
+      // is materially ahead of the snapshot, otherwise the cheap restore wins.
+      try {
+        const messages = await loadMessages(tab.sessionId);
+        if (seq !== _renderSeq) return;
+        const upstreamCount = Array.isArray(messages) ? messages.length : 0;
+        if (upstreamCount > (snap.itemCount || 0) + 1) {
+          renderHistory(container, messages);
+          writeSessionSnapshot(tab);
+        }
+      } catch {}
+      if (tab.mode === 'plan' && (tab.showPostPlanActions || tab._pendingPostPlanCheck)) {
+        if (!tab.planContent || tab._pendingPostPlanCheck) capturePlanContent(tab);
+        tab._pendingPostPlanCheck = false;
+        if (tab.planContent) showPostPlanUI(tab);
+      }
+      return;
+    }
+  }
+
   container.innerHTML = '<div class="ocp-thinking"><span class="ocp-thinking-dots"><span></span><span></span><span></span></span> Loading…</div>';
 
   try {
     const messages = await loadMessages(tab.sessionId);
     if (seq !== _renderSeq) return; // stale render — a newer one took over
     renderHistory(container, messages);
-    // Restore post-plan card if it was active
-    if (tab.showPostPlanActions && tab.planContent) {
-      showPostPlanUI(tab);
+    writeSessionSnapshot(tab);
+    // Restore post-plan card only while still in plan mode — leaving plan
+    // mode must not allow the card to resurrect on tab switch / WS reconnect.
+    if (tab.mode === 'plan' && (tab.showPostPlanActions || tab._pendingPostPlanCheck)) {
+      if (!tab.planContent || tab._pendingPostPlanCheck) capturePlanContent(tab);
+      tab._pendingPostPlanCheck = false;
+      if (tab.planContent) showPostPlanUI(tab);
     }
     // Re-show thinking indicator if the tab is mid-turn — history render wipes it,
     // and SSE events may not fire again for a while.
     if (tab.running) {
-      updateThinking(container, {
-        title: tab.statusText || 'Thinking…',
-        detail: tab.statusDetail || '',
-        startedAt: tab.turnStartedAt || Date.now(),
-      });
+      syncActingIndicator(container, tab);
     }
   } catch {
     if (seq !== _renderSeq) return;

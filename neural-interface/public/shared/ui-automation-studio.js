@@ -21,6 +21,7 @@ import {
   reorderLoopFolders,
   fetchActiveLoop,
   launchLoop,
+  sendClientLoopLog,
   stopLoop,
   launchAgent,
   fetchAgents,
@@ -181,7 +182,8 @@ const CLI_MODELS = {
     { id: 'claude-haiku-4-5',  label: 'Haiku 4.5',   desc: 'Fastest' },
   ],
   'codex': [
-    { id: 'gpt-5.4',       label: 'GPT-5.4',       desc: 'Most capable', tier: 'top' },
+    { id: 'gpt-5.5',       label: 'GPT-5.5',       desc: 'Most capable', tier: 'top' },
+    { id: 'gpt-5.4',       label: 'GPT-5.4',       desc: 'Strong general' },
     { id: 'gpt-5.4-mini',  label: 'GPT-5.4 Mini',  desc: 'Fast & cheap', tier: 'default' },
     { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', desc: 'Codex-tuned' },
   ],
@@ -1469,15 +1471,30 @@ async function confirmLaunch() {
     // Launch as floating terminal + floating browser
     showToast('Launching loop...');
     emit('terminal:expect-managed');
+    sendClientLoopLog(null, 'launch:client', 'confirmLaunch about to POST /api/loop/launch', {
+      profile: params.profile,
+      usesBrowser: !!params.usesBrowser,
+      iterations: params.iterations,
+      maxMinutes: params.maxMinutes,
+      taskLen: (params.task || '').length,
+      cwd: params.cwd || null,
+      browserSessionId: params.browserSessionId || null,
+    });
     console.log('[AS] confirmLaunch: calling launchLoop, profile =', params.profile, ', usesBrowser =', params.usesBrowser);
     const result = await launchLoop(params);
     console.log('[AS] confirmLaunch: launchLoop result =', JSON.stringify(result));
+    sendClientLoopLog(result?.terminalSessionId || null, 'launch:client', 'launchLoop response received', { result });
     if (!result?.ok) {
       emit('terminal:attach-floating', {});
       showToast(result?.error || 'Failed to launch loop');
       return;
     }
     console.log('[AS] confirmLaunch: emitting terminal:attach-floating, terminalSessionId =', result.terminalSessionId);
+    sendClientLoopLog(result.terminalSessionId, 'launch:client', 'emit terminal:attach-floating', {
+      terminalSessionId: result.terminalSessionId,
+      profile: params.profile || 'claude-code',
+      initialMessage: '[SynaBun Loop] Begin task.',
+    });
     emit('terminal:attach-floating', {
       terminalSessionId: result.terminalSessionId,
       profile: params.profile || 'claude-code',
@@ -1491,7 +1508,9 @@ async function confirmLaunch() {
     // Clear the managed-terminal flag since we won't emit terminal:attach-floating
     emit('terminal:attach-floating', {});
     console.error('[AS] confirmLaunch: caught error:', err);
+    sendClientLoopLog(null, 'launch:client', 'confirmLaunch caught error', { err: err?.message || String(err) });
     showToast('Launch failed: ' + (err.message || 'unknown error'));
+    try { alert(`[SynaBun] Loop launch failed: ${err?.message || err || 'unknown error'}\n\nOpen DevTools Console for stack trace.`); } catch {}
   }
 }
 
@@ -1541,20 +1560,25 @@ function buildTemplateCommand(template) {
 // ═══════════════════════════════════════════
 
 export function initAutomationStudio() {
-  on('automations:open', () => openPanel());
+  on('automations:open', (opts) => openPanel(opts || {}));
   on('automations:open-wizard', () => { openPanel(); });
-  on('automations:open-schedules', () => { openPanel().then(() => { _view = 'schedules'; _selected = null; loadScheduleData().then(() => renderView()); }); });
   on('automations:import', () => { openPanel().then(() => triggerImport()); });
   setupAgentWebSocket();
-  setupScheduleWebSocket();
 }
 
-async function openPanel() {
+async function openPanel(opts = {}) {
   if (isGuest() && !hasPermission('automations')) {
     showGuestToast('Automation Studio is disabled by the host');
     return;
   }
-  if (_panel) { _panel.focus(); return; }
+  if (_panel) {
+    if (opts.templateId) {
+      const tpl = _templates.find(t => t.id === opts.templateId);
+      if (tpl) switchToDetail(tpl);
+    }
+    _panel.focus();
+    return;
+  }
 
   // Backdrop
   _backdrop = document.createElement('div');
@@ -1574,7 +1598,12 @@ async function openPanel() {
 
   wirePanel();
   await loadData();
-  renderView();
+  if (opts.templateId) {
+    const tpl = _templates.find(t => t.id === opts.templateId);
+    if (tpl) switchToDetail(tpl); else renderView();
+  } else {
+    renderView();
+  }
   requestAnimationFrame(() => { _backdrop.classList.add('open'); _panel.classList.add('open'); });
   startPolling();
 }
@@ -1659,7 +1688,7 @@ function wirePanel() {
   $('as-close')?.addEventListener('click', closePanel);
   $('as-new-btn')?.addEventListener('click', () => { _view = 'picker'; _selected = null; renderView(); });
   $('as-new-folder-btn')?.addEventListener('click', (e) => openFolderPopover(e.currentTarget, null));
-  $('as-schedules-btn')?.addEventListener('click', () => { _view = 'schedules'; _selected = null; loadScheduleData().then(() => renderView()); });
+  $('as-schedules-btn')?.addEventListener('click', () => emit('automations:open-schedules'));
   $('as-import-btn')?.addEventListener('click', () => triggerImport());
 
   $('as-sidebar-toggle')?.addEventListener('click', () => {
@@ -1721,8 +1750,6 @@ function wirePanel() {
   const onEsc = (e) => {
     if (e.key === 'Escape' && _panel) {
       if (_view === 'launch') { closeLaunchInline(); return; }
-      if (_view === 'schedule-editor') { _view = 'schedules'; _editingSchedule = null; renderView(); return; }
-      if (_view === 'schedules') { _view = 'welcome'; renderView(); return; }
       if (_view === 'wizard') { _view = _selected ? 'detail' : 'welcome'; renderView(); return; }
       if (_view === 'detail' || _view === 'running' || _view === 'picker') {
         if (_detailDirty && !confirm('Discard unsaved changes?')) return;
@@ -2233,8 +2260,6 @@ function renderView() {
     case 'detail': renderDetailMain(); break;
     case 'wizard': renderWizardMain(); break;
     case 'running': renderRunningMain(); break;
-    case 'schedules': renderSchedulesMain(); break;
-    case 'schedule-editor': renderScheduleEditorMain(); break;
     case 'launch': break; // launch panel is rendered by showLaunchInline
   }
 }
@@ -3413,6 +3438,7 @@ function renderRunningMain() {
         </div>
         <div class="as-running-controls">
           <button class="as-btn-stop" data-action="force-stop" data-id="${loop.terminalSessionId || ''}">Stop</button>
+          ${loop.terminalSessionId ? `<a class="as-btn-stop" style="margin-left:8px;text-decoration:none;display:inline-flex;align-items:center;" href="/api/loop/log/${encodeURIComponent(loop.terminalSessionId)}" target="_blank" rel="noopener">View Loop Log</a>` : ''}
         </div>
       </div>`;
   }

@@ -1521,6 +1521,69 @@ export function injectStyles() {
       stroke: currentColor; fill: none;
       stroke-width: 1; opacity: 0.3;
     }
+    .ocp-cli-banner {
+      flex-shrink: 0;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 10px;
+      align-items: center;
+      margin: 8px 12px 0;
+      padding: 10px 12px;
+      border: 1px solid rgba(255,180,80,0.45);
+      border-radius: 8px;
+      background: rgba(255,180,80,0.08);
+      color: rgba(255,235,200,0.92);
+      font-size: 11px;
+      line-height: 1.4;
+      position: relative;
+      z-index: 5;
+    }
+    .ocp-cli-banner-icon {
+      width: 22px; height: 22px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      background: rgba(255,180,80,0.25);
+      color: rgba(255,210,140,1);
+      font-weight: 700;
+    }
+    .ocp-cli-banner-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .ocp-cli-banner-title {
+      font-size: 12px; font-weight: 600;
+      color: rgba(255,210,140,0.95);
+    }
+    .ocp-cli-banner-body {
+      font-size: 11px;
+      color: rgba(255,255,255,0.7);
+      word-break: break-word;
+    }
+    .ocp-cli-banner-body code {
+      padding: 1px 5px;
+      background: rgba(0,0,0,0.35);
+      border-radius: 3px;
+      font-size: 10.5px;
+      color: rgba(255,255,255,0.85);
+    }
+    .ocp-cli-banner-actions { display: flex; gap: 6px; }
+    .ocp-cli-banner-link, .ocp-cli-banner-recheck {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 500;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.9);
+      text-decoration: none;
+      cursor: pointer;
+      user-select: none;
+      font-family: inherit;
+    }
+    .ocp-cli-banner-link:hover, .ocp-cli-banner-recheck:hover {
+      background: rgba(255,255,255,0.12);
+      border-color: rgba(255,255,255,0.4);
+    }
+    .ocp-cli-banner-recheck:disabled { opacity: 0.5; cursor: default; }
+    .ocp-panel.ocp-cli-blocked .ocp-input { opacity: 0.7; }
 
     /* ── Thinking indicator ── */
     .ocp-thinking {

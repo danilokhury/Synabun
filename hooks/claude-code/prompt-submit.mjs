@@ -20,7 +20,7 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, ren
 import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { detectProject, DATA_DIR } from './shared.mjs';
+import { detectProject, DATA_DIR, appendLoopLog } from './shared.mjs';
 
 // Cross-platform safety: catch uncaught errors and output valid hook JSON
 process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
@@ -721,28 +721,39 @@ async function main() {
 
   // --- Loop marker detection (BEFORE greeting — loops must bypass greeting) ---
   const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION || '';
+  if (terminalSessionEnv) {
+    appendLoopLog(terminalSessionEnv, 'prompt-submit:enter', 'UserPromptSubmit fired inside loop terminal', {
+      sessionId, isLoopMarker: /^\[SynaBun Loop\]/i.test(trimmed), promptPreview: trimmed.slice(0, 200),
+    });
+  }
   if (sessionId && /^\[SynaBun Loop\]/i.test(trimmed)) {
     try {
       if (existsSync(LOOP_DIR)) {
         const pending = readdirSync(LOOP_DIR)
           .filter(f => f.startsWith('pending-') && f.endsWith('.json'));
-        // Filter by terminalSessionId when available (multi-loop isolation).
-        // Without the env var, fall back to first match (legacy behavior).
+        // STRICT multi-loop isolation: only claim a pending file whose
+        // terminalSessionId matches our SYNABUN_TERMINAL_SESSION env.
+        // Legacy "match first pending" fallback was removed — it silently
+        // stole loops across concurrent sessions (sidepanel plan ↔ scheduled
+        // CLI loop in same cwd). Loop spawners MUST set the env var.
+        // Legacy pending files without terminalSessionId are still claimable
+        // when this session also has no env (ancient manual-loop compat).
         let matchedPending = null;
-        if (terminalSessionEnv) {
-          for (const pf of pending) {
-            try {
-              const ps = JSON.parse(readFileSync(join(LOOP_DIR, pf), 'utf-8'));
+        for (const pf of pending) {
+          try {
+            const ps = JSON.parse(readFileSync(join(LOOP_DIR, pf), 'utf-8'));
+            if (terminalSessionEnv) {
               if (ps.terminalSessionId === terminalSessionEnv) { matchedPending = pf; break; }
-            } catch { continue; }
-          }
-        } else if (pending.length > 0) {
-          matchedPending = pending[0];
+            } else {
+              if (!ps.terminalSessionId) { matchedPending = pf; break; }
+            }
+          } catch { continue; }
         }
         if (matchedPending) {
           const pendingPath = join(LOOP_DIR, matchedPending);
           const targetPath = join(LOOP_DIR, `${sessionId}.json`);
           renameSync(pendingPath, targetPath);
+          appendLoopLog(terminalSessionEnv, 'prompt-submit:claim', 'pending loop renamed to active', { from: matchedPending, to: `${sessionId}.json` });
 
           const state = JSON.parse(readFileSync(targetPath, 'utf-8'));
           delete state.pending;
@@ -752,6 +763,7 @@ async function main() {
           state.currentIteration = 1;
           // Preserve terminalSessionId — loop driver needs it for session isolation
           writeFileSync(targetPath, JSON.stringify(state, null, 2));
+          appendLoopLog(terminalSessionEnv, 'prompt-submit:inject', 'iteration 1 context built — emitting additionalContext', { task: state.task?.slice(0, 200), totalIterations: state.totalIterations, usesBrowser: !!state.usesBrowser });
 
           const browserNote = buildBrowserNote(state);
           const blockerRule = state.usesBrowser
@@ -783,8 +795,11 @@ async function main() {
           try { state = JSON.parse(readFileSync(existingPath, 'utf-8')); } catch { /* skip */ }
         }
         // Fallback: scan loop files for an active loop (session ID may have changed after /clear).
-        // When SYNABUN_TERMINAL_SESSION is set, only match loops owned by this terminal.
-        // Without the env var, fall back to first active loop (legacy behavior).
+        // STRICT isolation: only match our terminal's loop.
+        //   - env set → require exact terminalSessionId match
+        //   - env unset → only match loops WITHOUT terminalSessionId (legacy manual loops)
+        // Previously the filter was disabled when env was empty, letting any
+        // Claude session grab any active loop in the same LOOP_DIR.
         if (!state?.active || !(state?.currentIteration > 0)) {
           const now = Date.now();
           const allLoopFiles = readdirSync(LOOP_DIR)
@@ -794,8 +809,12 @@ async function main() {
               const fullPath = join(LOOP_DIR, f);
               const candidate = JSON.parse(readFileSync(fullPath, 'utf-8'));
               if (candidate.active && candidate.currentIteration > 0) {
-                // Multi-loop isolation: only match OUR terminal's loop
-                if (terminalSessionEnv && candidate.terminalSessionId && candidate.terminalSessionId !== terminalSessionEnv) continue;
+                // Multi-loop isolation
+                if (terminalSessionEnv) {
+                  if (candidate.terminalSessionId !== terminalSessionEnv) continue;
+                } else {
+                  if (candidate.terminalSessionId) continue;
+                }
                 // Validate the loop hasn't exceeded its own time cap + grace
                 // Skip loops inactive for >45 minutes (stuck)
                 const lastAct = new Date(candidate.lastIterationAt || candidate.startedAt || 0).getTime();
@@ -808,6 +827,7 @@ async function main() {
           }
         }
         if (state?.active && state?.currentIteration > 0) {
+            appendLoopLog(terminalSessionEnv, 'prompt-submit:inject', 'subsequent iteration context built', { iter: state.currentIteration, total: state.totalIterations, usesBrowser: !!state.usesBrowser });
             const formattingRules = extractFormattingRules(state.task);
             const browserNote = buildBrowserNote(state);
             const blockerRule2 = state.usesBrowser

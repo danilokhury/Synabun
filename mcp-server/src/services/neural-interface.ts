@@ -10,6 +10,14 @@ const DEFAULT_TIMEOUT = 10_000;
 const LONG_TIMEOUT = 30_000;
 const SESSION_CREATE_TIMEOUT = 70_000;
 
+export function isBrowserFastMode(): boolean {
+  return process.env.SYNABUN_BROWSER_FAST === '1';
+}
+
+export function isBrowserCompactMode(): boolean {
+  return process.env.SYNABUN_BROWSER_COMPACT === '1' || isBrowserFastMode();
+}
+
 export interface BrowserSessionInfo {
   id: string;
   url: string;
@@ -82,8 +90,14 @@ export async function resolveSession(
   autoCreate?: { url?: string },
   tabId?: string
 ): Promise<{ sessionId: string; tabId?: string } | { error: string }> {
-  // Resolve tab ID from explicit param or environment variable
-  const resolvedTabId = tabId || process.env.SYNABUN_BROWSER_TAB || undefined;
+  // Resolve tab ID from explicit param or environment variable.
+  // When SYNABUN_BROWSER_TAB is pinned (loop/agent context), the env value wins
+  // even if caller passes a different tabId — prevents tab-leak across loops.
+  const pinnedTab = process.env.SYNABUN_BROWSER_TAB || undefined;
+  const resolvedTabId = pinnedTab || tabId || undefined;
+  if (pinnedTab && tabId && tabId !== pinnedTab) {
+    console.error(`[MCP] tabId override ignored: pinned=${pinnedTab} requested=${tabId}`);
+  }
 
   // Agent/loop-scoped browser session — set by the orchestrator to pin
   // this MCP instance to a specific browser session (multi-session isolation).
@@ -119,6 +133,17 @@ export async function resolveSession(
     // Skipping the extra GET /api/browser/sessions verification call saves a full round-trip.
     _affinitySessionId = sessionId;
     return { sessionId, tabId: resolvedTabId };
+  }
+
+  // Codex fast mode favors one direct create call on first navigate. This avoids
+  // the list-sessions round trip that dominates short browser flows.
+  if (autoCreate && isBrowserFastMode()) {
+    const created = await request('POST', '/api/browser/sessions', {
+      url: autoCreate.url || 'about:blank',
+    }, SESSION_CREATE_TIMEOUT);
+    if (created.error) return { error: `Failed to auto-create session: ${created.error}` };
+    _affinitySessionId = created.sessionId as string;
+    return { sessionId: _affinitySessionId, tabId: resolvedTabId };
   }
 
   // List sessions (single GET used for both affinity check and auto-selection)
@@ -212,21 +237,22 @@ export async function navigate(
 ): Promise<NiResponse> {
   return request('POST', `/api/browser/sessions/${sessionId}/navigate`, {
     url,
+    ...(isBrowserCompactMode() && { compact: true }),
     ...(returnSnapshot && { returnSnapshot }),
     ...(tabId && { tabId }),
   }, LONG_TIMEOUT);
 }
 
 export async function goBack(sessionId: string, tabId?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/back`, { ...(tabId && { tabId }) });
+  return request('POST', `/api/browser/sessions/${sessionId}/back`, { ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
 export async function goForward(sessionId: string, tabId?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/forward`, { ...(tabId && { tabId }) });
+  return request('POST', `/api/browser/sessions/${sessionId}/forward`, { ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
 export async function reload(sessionId: string, tabId?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/reload`, { ...(tabId && { tabId }) }, LONG_TIMEOUT);
+  return request('POST', `/api/browser/sessions/${sessionId}/reload`, { ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 
 // ── Interaction (selector-based) ──
@@ -243,29 +269,31 @@ export async function click(
     selector,
     ...(nthMatch !== undefined && { nthMatch }),
     ...(textHint && { textHint }),
+    ...(isBrowserCompactMode() && { compact: true }),
     ...(returnSnapshot && { returnSnapshot }),
     ...(tabId && { tabId }),
   });
 }
 
 export async function fill(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string, textHint?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(tabId && { tabId }) });
+  return request('POST', `/api/browser/sessions/${sessionId}/fill`, { selector, value, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
-export async function type(sessionId: string, selector: string | null, text: string, nthMatch?: number, tabId?: string, textHint?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(tabId && { tabId }) });
+export async function type(sessionId: string, selector: string | null, text: string, nthMatch?: number, tabId?: string, textHint?: string, mode?: 'sequential' | 'insert'): Promise<NiResponse> {
+  const resolvedMode = mode || (isBrowserFastMode() ? 'insert' : 'sequential');
+  return request('POST', `/api/browser/sessions/${sessionId}/type`, { selector, text, mode: resolvedMode, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
 export async function hover(sessionId: string, selector: string, nthMatch?: number, tabId?: string, textHint?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(tabId && { tabId }) });
+  return request('POST', `/api/browser/sessions/${sessionId}/hover`, { selector, ...(nthMatch !== undefined && { nthMatch }), ...(textHint && { textHint }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
 export async function selectOption(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/select`, { selector, value, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) });
+  return request('POST', `/api/browser/sessions/${sessionId}/select`, { selector, value, ...(nthMatch !== undefined && { nthMatch }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
 export async function pressKey(sessionId: string, key: string, tabId?: string): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/press`, { key, ...(tabId && { tabId }) });
+  return request('POST', `/api/browser/sessions/${sessionId}/press`, { key, ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) });
 }
 
 export async function scroll(
@@ -273,7 +301,7 @@ export async function scroll(
   opts: { direction: string; distance?: number; selector?: string; returnSnapshot?: { mode?: string; selector?: string; viewport?: boolean } },
   tabId?: string
 ): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/scroll`, { ...opts, ...(tabId && { tabId }) } as Record<string, unknown>);
+  return request('POST', `/api/browser/sessions/${sessionId}/scroll`, { ...opts, ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) } as Record<string, unknown>);
 }
 
 export async function upload(
@@ -283,7 +311,7 @@ export async function upload(
   nthMatch?: number,
   tabId?: string
 ): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths, ...(nthMatch !== undefined && { nthMatch }), ...(tabId && { tabId }) }, LONG_TIMEOUT);
+  return request('POST', `/api/browser/sessions/${sessionId}/upload`, { selector, filePaths, ...(nthMatch !== undefined && { nthMatch }), ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 
 // ── Observation ──
@@ -338,7 +366,7 @@ export async function waitFor(
   opts: { selector?: string; state?: string; loadState?: string; timeout?: number },
   tabId?: string
 ): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/wait`, { ...opts, ...(tabId && { tabId }) }, LONG_TIMEOUT);
+  return request('POST', `/api/browser/sessions/${sessionId}/wait`, { ...opts, ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) }, LONG_TIMEOUT);
 }
 
 // ── Whiteboard ──

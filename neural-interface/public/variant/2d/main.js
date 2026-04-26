@@ -53,6 +53,7 @@ import { initImageGallery } from '../../shared/ui-image-gallery.js';
 import { gfx, saveGfxConfig } from './gfx.js';
 import './settings-gfx.js'; // side-effect: self-registers Graphics tab
 import { initAutomationStudio } from '../../shared/ui-automation-studio.js';
+import { initSchedulesStudio } from '../../shared/ui-schedules-studio.js';
 import { initCommandRunner } from '../../shared/ui-command-runner.js';
 import { stopBackground } from './background.js';
 import { initMinimap, drawMinimap, toggleMinimap, isMinimapVisible, forceHideMinimap, restoreMinimap } from './minimap.js';
@@ -422,6 +423,7 @@ initExplorer();
 initFileExplorer();
 initSkillsStudio();
 initAutomationStudio();
+initSchedulesStudio();
 initImageGallery();
 initCommandRunner();
 initTerminal();

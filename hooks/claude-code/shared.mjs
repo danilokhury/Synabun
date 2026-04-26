@@ -5,8 +5,8 @@
  * post-remember, pre-compact, and stop hooks.
  */
 
-import { readFileSync, existsSync, writeFileSync, readdirSync, unlinkSync } from 'node:fs';
-import { dirname, join, basename } from 'node:path';
+import { readFileSync, existsSync, writeFileSync, readdirSync, unlinkSync, appendFileSync, mkdirSync } from 'node:fs';
+import { dirname, join, basename, resolve as pathResolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDataHome } from '../../lib/paths.js';
 
@@ -17,6 +17,43 @@ export const MCP_DATA_DIR = join(DATA_HOME, 'mcp-data');
 export const ENV_PATH = join(DATA_HOME, '.env');
 export const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
 export const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
+export const LOOP_LOG_DIR = join(DATA_DIR, 'logs');
+
+// --- Loop logging (mirrors neural-interface/lib/loop-logger.js) ---
+// Writes per-loop entries from inside hooks into the same logfile the server uses.
+
+let _loopLogDirEnsured = false;
+function ensureLoopLogDir() {
+  if (_loopLogDirEnsured) return;
+  try {
+    if (!existsSync(LOOP_LOG_DIR)) mkdirSync(LOOP_LOG_DIR, { recursive: true });
+    _loopLogDirEnsured = true;
+  } catch { /* ok */ }
+}
+
+function safeJsonInline(obj) {
+  try {
+    return JSON.stringify(obj, (_k, v) => {
+      if (typeof v === 'string' && v.length > 800) return v.slice(0, 800) + `…(+${v.length - 800})`;
+      return v;
+    });
+  } catch { return '<unserializable>'; }
+}
+
+/**
+ * Append one log entry to the per-loop logfile and stderr.
+ * tsid may be null/undefined; will fall back to SYNABUN_TERMINAL_SESSION env.
+ */
+export function appendLoopLog(tsid, tag, msg, meta = undefined) {
+  const sid = tsid || process.env.SYNABUN_TERMINAL_SESSION || null;
+  const line = `${new Date().toISOString()} | hook:${tag} | ${msg}${meta ? ' | ' + safeJsonInline(meta) : ''}\n`;
+  try { process.stderr.write(`[loop:hook:${tag}] ${msg}${meta ? ' ' + safeJsonInline(meta) : ''}\n`); } catch { /* ok */ }
+  if (!sid) return;
+  ensureLoopLogDir();
+  try {
+    appendFileSync(pathResolve(LOOP_LOG_DIR, `loop-${sid}.log`), line);
+  } catch { /* ok */ }
+}
 
 // --- Stdin ---
 

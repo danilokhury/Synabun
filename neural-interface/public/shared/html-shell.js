@@ -298,6 +298,18 @@ export function getSharedHTML() {
             <span class="menu-check"></span>
             <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span> Schedules</span>
           </div>
+          <div class="menu-item" id="menu-automations-schedule-new">
+            <span class="menu-check"></span>
+            <span class="menu-text">New Cron Schedule</span>
+          </div>
+          <div class="menu-item" id="menu-automations-quick-timer">
+            <span class="menu-check"></span>
+            <span class="menu-text">Quick Timer</span>
+          </div>
+          <div class="menu-item" id="menu-automations-schedule-groups">
+            <span class="menu-check"></span>
+            <span class="menu-text">Schedule Groups</span>
+          </div>
           <div class="menu-sep"></div>
           <div class="menu-item" id="menu-automations-new">
             <span class="menu-check"></span>
@@ -706,6 +718,15 @@ export function getSharedHTML() {
 <div id="static-bg">
   <div class="focus-breathe"></div>
   <img src="synabun.png?v=2" alt="SynaBun" class="static-bg-logo">
+  <div id="wb-ruleset-alert" class="wb-ruleset-alert" aria-live="polite">
+    <div class="wb-ruleset-alert-text">
+      Add <code>AGENTS.md</code> and <code>CLAUDE.md</code> rulesets so memory usage stays consistent.
+    </div>
+    <div class="wb-ruleset-alert-actions">
+      <button type="button" id="wb-ruleset-settings" class="wb-ruleset-alert-btn">Setup</button>
+      <button type="button" id="wb-ruleset-dismiss" class="wb-ruleset-alert-btn wb-ruleset-alert-dismiss">Don't Show This Again</button>
+    </div>
+  </div>
 
   <!-- Whiteboard (Focus Mode canvas) -->
   <div id="wb-root">

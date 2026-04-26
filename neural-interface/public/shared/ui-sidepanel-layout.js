@@ -3,7 +3,7 @@ const RESERVED_GAP_VAR = '--right-panel-gap';
 const LEGACY_WIDTH_VAR = '--claude-panel-width';
 const LEGACY_GAP_VAR = '--claude-panel-gap';
 
-let _activeOwner = null;
+const _reservations = new Map();
 
 function px(value) {
   return `${Math.max(0, Math.round(Number(value) || 0))}px`;
@@ -20,6 +20,14 @@ function applyReservation(reservedWidthPx, gapPx) {
   setVarPair(RESERVED_GAP_VAR, LEGACY_GAP_VAR, px(gapPx));
 }
 
+function applyActiveReservation() {
+  let active = null;
+  for (const entry of _reservations.values()) {
+    if (!active || entry.reservedWidth > active.reservedWidth) active = entry;
+  }
+  applyReservation(active?.reservedWidth || 0, active?.gap || 0);
+}
+
 export function measureRightPanelReservation(panel, outerGap = 20) {
   if (!panel) return 0;
   return Math.ceil(panel.getBoundingClientRect().width) + outerGap;
@@ -30,14 +38,17 @@ export function reserveRightPanelLayout(owner, panelOrReservedWidth, outerGap = 
   const reservedWidth = typeof panelOrReservedWidth === 'number'
     ? panelOrReservedWidth
     : measureRightPanelReservation(panelOrReservedWidth, outerGap);
-  _activeOwner = owner;
-  applyReservation(reservedWidth, outerGap);
+  _reservations.set(owner, {
+    reservedWidth,
+    gap: Math.max(0, Number(outerGap) || 0),
+  });
+  applyActiveReservation();
   return reservedWidth;
 }
 
 export function clearRightPanelLayout(owner) {
-  if (owner && _activeOwner && owner !== _activeOwner) return false;
-  _activeOwner = null;
-  applyReservation(0, 0);
-  return true;
+  if (owner) _reservations.delete(owner);
+  else _reservations.clear();
+  applyActiveReservation();
+  return _reservations.size === 0;
 }
