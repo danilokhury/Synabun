@@ -12,7 +12,8 @@ import { openHelp } from './ui-help.js';
 import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { sendToPanel } from './ui-claude-panel.js';
-import { forceCheckToolUpdates } from './ui-tool-updates.js';
+import { forceCheckToolUpdates, showUpdateToast, TOOL_LABELS } from './ui-tool-updates.js';
+import { forceCheckSynabunUpdate, openSynabunUpdateModal } from './ui-update.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -370,7 +371,34 @@ function wireTerminalMenu() {
     'menu-terminal-codex':   () => emit('terminal:open', { profile: 'codex' }),
     'menu-terminal-gemini':   () => emit('terminal:open', { profile: 'gemini' }),
     'menu-terminal-opencode': () => emit('terminal:open', { profile: 'opencode' }),
-    'menu-check-cli-updates': () => forceCheckToolUpdates(),
+    'menu-check-cli-updates': async () => {
+      const [tools, syn] = await Promise.all([
+        forceCheckToolUpdates(),
+        forceCheckSynabunUpdate(),
+      ]);
+
+      const updates = [];
+      for (const [key, info] of Object.entries(tools?.tools || {})) {
+        if (info?.updateAvailable) {
+          const label = `${TOOL_LABELS[key] || key} v${info.installed} → v${info.latest}`;
+          updates.push({ label });
+        }
+      }
+      if (syn?.updateAvailable) {
+        const srcLabel = syn.source === 'both' ? 'npm + GitHub' : syn.source === 'github' ? 'GitHub' : 'npm';
+        updates.push({ label: `SynaBun v${syn.current} → v${syn.latest}`, source: srcLabel });
+      }
+
+      const errors = [];
+      if (!tools) errors.push('CLI versions');
+      if (!syn)   errors.push('SynaBun version');
+
+      showUpdateToast({
+        updates,
+        errors,
+        onClick: syn?.updateAvailable ? () => openSynabunUpdateModal() : null,
+      });
+    },
     'menu-terminal-shell':   () => emit('terminal:open', { profile: 'shell' }),
     'menu-terminal-browser': () => emit('browser:open'),
     'menu-terminal-youtube': () => emit('browser:open', { url: 'https://www.youtube.com' }),

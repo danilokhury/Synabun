@@ -10073,60 +10073,182 @@ app.post('/api/search/memories', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════
-// NPM UPDATE CHECK
+// SYNABUN UPDATE CHECK (NPM + GITHUB RELEASES)
 // ═══════════════════════════════════════════
+//
+// Checks both the npm registry AND the project's GitHub releases. Alerts
+// when EITHER source is newer than the installed version (catches one-sided
+// publishes — e.g. release tagged on GitHub before npm publish completes).
 
-let _npmUpdateCache = { current: null, latest: null, updateAvailable: false, checkedAt: null };
+let _synabunUpdateCache = {
+  current: null,
+  installedChannel: 'stable',    // 'stable' | 'prerelease'
+  npmLatestStable: null,         // dist-tags.latest
+  npmLatestBeta: null,           // dist-tags.beta (or null if absent)
+  npmLatest: null,               // chosen target for installed channel
+  gitLatest: null,               // tag_name from GitHub release matching channel
+  latest: null,                  // newer of (npmLatest, gitLatest) — legacy field
+  npmUpdateAvailable: false,
+  gitUpdateAvailable: false,
+  updateAvailable: false,        // npmUpdateAvailable || gitUpdateAvailable
+  source: null,                  // 'npm' | 'github' | 'both' | null
+  checkedAt: null,
+  npmError: null,
+  gitError: null,
+};
 
-async function checkNpmUpdate() {
+async function checkSynabunUpdate() {
+  let current = _synabunUpdateCache.current;
   try {
-    const pkgPath = resolve(PACKAGE_ROOT, 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    const current = pkg.version;
-    _npmUpdateCache.current = current;
+    const pkg = JSON.parse(readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf-8'));
+    current = pkg.version;
+  } catch { /* keep prior current if package.json read fails */ }
 
+  const curParsed = parseSemver(current);
+  const installedChannel = curParsed?.pre ? 'prerelease' : 'stable';
+
+  const fetchJsonWithTimeout = async (url, ms = 5000) => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch('https://registry.npmjs.org/synabun/latest', { signal: controller.signal });
-    clearTimeout(timeout);
+    const timeout = setTimeout(() => controller.abort(), ms);
+    try {
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: { 'Accept': 'application/json', 'User-Agent': 'synabun-update-check' },
+      });
+      if (!res.ok) throw new Error(`${url} returned ${res.status}`);
+      return await res.json();
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
 
-    if (!res.ok) throw new Error(`npm registry returned ${res.status}`);
-    const data = await res.json();
-    const latest = data.version;
+  // npm: fetch the FULL registry document so we can read every dist-tag
+  // (latest + beta + any future channel). The /latest shorthand only
+  // surfaces dist-tags.latest, which made beta installs invisible.
+  // github: when installed is a prerelease, /releases/latest is wrong
+  // because it skips prereleases — fetch the full list and pick newest.
+  const npmUrl = 'https://registry.npmjs.org/synabun';
+  const githubUrl = installedChannel === 'prerelease'
+    ? 'https://api.github.com/repos/danilokhury/Synabun/releases?per_page=20'
+    : 'https://api.github.com/repos/danilokhury/Synabun/releases/latest';
 
-    const cur = current.split('.').map(Number);
-    const lat = latest.split('.').map(Number);
-    const updateAvailable = lat[0] > cur[0]
-      || (lat[0] === cur[0] && lat[1] > cur[1])
-      || (lat[0] === cur[0] && lat[1] === cur[1] && lat[2] > cur[2]);
+  const [npmRes, gitRes] = await Promise.allSettled([
+    fetchJsonWithTimeout(npmUrl),
+    fetchJsonWithTimeout(githubUrl),
+  ]);
 
-    _npmUpdateCache = { current, latest, updateAvailable, checkedAt: new Date().toISOString() };
+  let npmLatestStable = null, npmLatestBeta = null;
+  let gitLatest = null;
+  let npmError = null, gitError = null;
 
-    if (updateAvailable) {
-      console.log(`  Updates:   v${current} → v${latest} available`);
+  if (npmRes.status === 'fulfilled') {
+    const tags = npmRes.value?.['dist-tags'] || {};
+    npmLatestStable = tags.latest || null;
+    npmLatestBeta = tags.beta || tags.next || tags.rc || null;
+  } else {
+    npmError = npmRes.reason?.message || 'npm fetch failed';
+  }
+
+  if (gitRes.status === 'fulfilled') {
+    if (Array.isArray(gitRes.value)) {
+      // /releases — pick newest non-draft entry whose tag parses as semver.
+      // For stable channel users we'd skip prereleases, but this branch only
+      // runs for prerelease users (per githubUrl above), so include both.
+      let best = null;
+      for (const r of gitRes.value) {
+        if (r?.draft) continue;
+        const tag = r?.tag_name || r?.name || '';
+        const parsed = parseSemver(tag);
+        if (!parsed) continue;
+        if (!best || compareSemver(parsed, best.parsed) > 0) {
+          best = { tag, parsed };
+        }
+      }
+      gitLatest = best?.tag.replace(/^v\.?/, '') || null;
     } else {
-      console.log(`  Updates:   up to date (v${current})`);
+      // /releases/latest — single object
+      const tag = gitRes.value?.tag_name || gitRes.value?.name || '';
+      gitLatest = tag ? tag.replace(/^v\.?/, '') : null;
     }
-  } catch (err) {
-    if (!_npmUpdateCache.current) {
-      try {
-        const pkg = JSON.parse(readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf-8'));
-        _npmUpdateCache.current = pkg.version;
-      } catch {}
+  } else {
+    gitError = gitRes.reason?.message || 'github fetch failed';
+  }
+
+  // Channel-aware npm target:
+  //  - prerelease user: pick whichever of (stable, beta) is newest. Either
+  //    is genuinely "newer than current"; surfacing stable when on beta is
+  //    intentional (some users manually flip back to stable).
+  //  - stable user: only stable. Beta on a stable install would look like
+  //    a downgrade ("2026.4.26 → 2026.4.26-beta.3" via semver = older).
+  let npmLatest = null;
+  if (installedChannel === 'prerelease') {
+    if (npmLatestStable && npmLatestBeta) {
+      npmLatest = compareSemver(npmLatestBeta, npmLatestStable) > 0 ? npmLatestBeta : npmLatestStable;
+    } else {
+      npmLatest = npmLatestStable || npmLatestBeta;
     }
-    _npmUpdateCache.checkedAt = new Date().toISOString();
-    console.log(`  Updates:   check failed (${err.message})`);
+  } else {
+    npmLatest = npmLatestStable;
+  }
+
+  const npmUpdateAvailable = !!(npmLatest && semverNewer(current, npmLatest));
+  const gitUpdateAvailable = !!(gitLatest && semverNewer(current, gitLatest));
+  const updateAvailable = npmUpdateAvailable || gitUpdateAvailable;
+
+  // Newer of the two (npm vs github) for legacy "latest" display.
+  let latest = null;
+  if (npmLatest && gitLatest) {
+    latest = compareSemver(npmLatest, gitLatest) >= 0 ? npmLatest : gitLatest;
+  } else {
+    latest = npmLatest || gitLatest;
+  }
+
+  let source = null;
+  if (npmUpdateAvailable && gitUpdateAvailable) source = 'both';
+  else if (npmUpdateAvailable)                   source = 'npm';
+  else if (gitUpdateAvailable)                   source = 'github';
+
+  _synabunUpdateCache = {
+    current,
+    installedChannel,
+    npmLatestStable,
+    npmLatestBeta,
+    npmLatest,
+    gitLatest,
+    latest,
+    npmUpdateAvailable,
+    gitUpdateAvailable,
+    updateAvailable,
+    source,
+    checkedAt: new Date().toISOString(),
+    npmError,
+    gitError,
+  };
+
+  if (updateAvailable) {
+    console.log(`  Updates:   v${current} → v${latest} (${source}; channel: ${installedChannel})`);
+  } else if (npmError && gitError) {
+    console.log(`  Updates:   check failed (npm: ${npmError}; github: ${gitError})`);
+  } else if (npmError) {
+    console.log(`  Updates:   up to date (v${current}; npm check failed: ${npmError})`);
+  } else if (gitError) {
+    console.log(`  Updates:   up to date (v${current}; github check failed: ${gitError})`);
+  } else {
+    console.log(`  Updates:   up to date (v${current}; channel: ${installedChannel})`);
   }
 }
 
 app.get('/api/system/version', async (req, res) => {
-  if (_npmUpdateCache.checkedAt) {
-    const age = Date.now() - new Date(_npmUpdateCache.checkedAt).getTime();
-    if (age > 6 * 60 * 60 * 1000) {
-      checkNpmUpdate().catch(() => {});
+  const force = req.query.force === '1';
+  if (force || !_synabunUpdateCache.checkedAt) {
+    try { await checkSynabunUpdate(); } catch {}
+  } else {
+    const age = Date.now() - new Date(_synabunUpdateCache.checkedAt).getTime();
+    if (age > 60 * 60 * 1000) {
+      checkSynabunUpdate().catch(() => {});
     }
   }
-  res.json(_npmUpdateCache);
+  res.json(_synabunUpdateCache);
 });
 
 // ═══════════════════════════════════════════
@@ -10142,17 +10264,80 @@ const TOOL_DEFS = [
 
 let _toolVersionCache = { checkedAt: null, tools: {} };
 
+// Backwards-compat helper — returns a "MAJOR.MINOR.PATCH" string (no pre).
+// Kept because legacy callers expect a string for display purposes only.
+// Comparison logic must use parseSemver/compareSemver below to handle
+// prerelease/iteration suffixes correctly.
 function parseVersion(raw) {
-  const m = raw.match(/(\d+\.\d+\.\d+)/);
-  return m ? m[1] : null;
+  const m = String(raw ?? '').match(/(\d+)\.(\d+)\.(\d+)/);
+  return m ? `${m[1]}.${m[2]}.${m[3]}` : null;
+}
+
+// Structured semver parse — handles calver bumps and prerelease tags:
+//   "2026.4.26"          -> { major:2026, minor:4, patch:26, pre:null }
+//   "2026.4.20-2"        -> { major:2026, minor:4, patch:20, pre:"2" }
+//   "2026.4.26-beta.3"   -> { major:2026, minor:4, patch:26, pre:"beta.3" }
+//   "v1.2.3-rc.1"        -> { major:1, minor:2, patch:3, pre:"rc.1" }
+function parseSemver(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim().replace(/^v\.?/, '');
+  const m = s.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+  if (!m) return null;
+  return {
+    major: +m[1],
+    minor: +m[2],
+    patch: +m[3],
+    pre: m[4] || null,
+  };
+}
+
+// Semver-spec precedence including prerelease handling:
+//   1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0
+// Returns negative if a<b, positive if a>b, 0 if equal. Accepts strings or
+// parsed objects.
+function compareSemver(a, b) {
+  const pa = (a && typeof a === 'object' && 'major' in a) ? a : parseSemver(a);
+  const pb = (b && typeof b === 'object' && 'major' in b) ? b : parseSemver(b);
+  if (!pa && !pb) return 0;
+  if (!pa) return -1;
+  if (!pb) return 1;
+  if (pa.major !== pb.major) return pa.major - pb.major;
+  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
+  if (pa.patch !== pb.patch) return pa.patch - pb.patch;
+  // Equal x.y.z. Prerelease vs none: a release without prerelease is GREATER.
+  if (!pa.pre && !pb.pre) return 0;
+  if (!pa.pre &&  pb.pre) return  1;
+  if ( pa.pre && !pb.pre) return -1;
+  // Both have prerelease — compare identifiers per semver §11.4.
+  const ia = pa.pre.split('.');
+  const ib = pb.pre.split('.');
+  const len = Math.max(ia.length, ib.length);
+  for (let i = 0; i < len; i++) {
+    if (i >= ia.length) return -1; // shorter set has lower precedence
+    if (i >= ib.length) return  1;
+    const xa = ia[i], xb = ib[i];
+    const na = /^\d+$/.test(xa), nb = /^\d+$/.test(xb);
+    if (na && nb) {
+      const da = +xa, db = +xb;
+      if (da !== db) return da - db;
+    } else if (na && !nb) {
+      return -1; // numeric < alphanumeric
+    } else if (!na && nb) {
+      return  1;
+    } else {
+      if (xa !== xb) return xa < xb ? -1 : 1;
+    }
+  }
+  return 0;
 }
 
 function semverNewer(a, b) {
-  if (!a || !b) return false;
-  const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
-  return pb[0] > pa[0]
-    || (pb[0] === pa[0] && pb[1] > pa[1])
-    || (pb[0] === pa[0] && pb[1] === pa[1] && pb[2] > pa[2]);
+  // True iff b is strictly newer than a. Falls back to false if either side
+  // can't be parsed — same defensive contract as the prior implementation.
+  if (a == null || b == null) return false;
+  const pa = parseSemver(a), pb = parseSemver(b);
+  if (!pa || !pb) return false;
+  return compareSemver(pa, pb) < 0;
 }
 
 function resolveBinPath(cmd, env) {
@@ -22378,8 +22563,8 @@ const httpServer = app.listen(PORT, async () => {
     }
   } catch { /* ok */ }
 
-  // Check for npm updates
-  try { await checkNpmUpdate(); } catch {}
+  // Check for SynaBun updates (npm + github releases)
+  try { await checkSynabunUpdate(); } catch {}
 
   // Aggressively prune any stale bundled CLI tools left in our node_modules
   // before the version check runs — defends against `npm install` not auto-

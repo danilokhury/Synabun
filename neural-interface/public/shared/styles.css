@@ -24315,3 +24315,73 @@
 .ig-lb-prev { left: 16px; }
 .ig-lb-next { right: 16px; }
 
+/* ── Update-check toast (Apps > Check for updates) ── */
+.update-check-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 80px;
+  z-index: 300050;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-width: 240px;
+  max-width: 360px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(20, 20, 24, 0.85);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--t-text);
+  font-size: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.25s ease, transform 0.25s ease, background 0.15s ease;
+  pointer-events: auto;
+}
+.update-check-toast.show { opacity: 1; transform: translateY(0); }
+.update-check-toast--clickable { cursor: pointer; }
+.update-check-toast--clickable:hover { background: rgba(28, 28, 32, 0.92); }
+.update-check-toast .utc-icon {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 14px;
+  flex-shrink: 0;
+}
+.update-check-toast .utc-icon--up  { background: rgba(52, 199, 89, 0.18);  color: #34c759; }
+.update-check-toast .utc-icon--ok  { background: rgba(52, 199, 89, 0.18);  color: #34c759; }
+.update-check-toast .utc-icon--err { background: rgba(255, 69, 58, 0.18);  color: #ff453a; }
+.update-check-toast .utc-body  { flex: 1; min-width: 0; }
+.update-check-toast .utc-title { font-weight: 600; margin-bottom: 4px; }
+.update-check-toast .utc-list  { list-style: none; margin: 0; padding: 0; }
+.update-check-toast .utc-list li { padding: 2px 0; color: var(--t-muted); }
+.update-check-toast .utc-list li .utc-src {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-left: 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--t-text);
+}
+.update-check-toast .utc-sub  { color: var(--t-muted); }
+.update-check-toast .utc-hint { color: var(--t-muted); opacity: 0.7; margin-top: 6px; font-size: 11px; }
+
+.update-channel-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 6px;
+  vertical-align: middle;
+  background: rgba(255, 159, 10, 0.18);
+  color: #ff9f0a;
+}
+.update-channel-pill--beta { background: rgba(255, 159, 10, 0.18); color: #ff9f0a; }
+
+

@@ -7,27 +7,55 @@
 const $ = (id) => document.getElementById(id);
 
 let _versionData = null;
+let _btnWired = false;
+
+function applyTopRightButton(data) {
+  const btn = $('topright-update-btn');
+  const badge = $('update-badge');
+  if (!btn) return;
+  const has = !!data?.updateAvailable;
+  btn.style.display = has ? '' : 'none';
+  if (badge) badge.textContent = has ? '!' : '';
+  if (has) {
+    const srcLabel = data.source === 'both' ? 'npm + GitHub' : data.source === 'github' ? 'GitHub' : 'npm';
+    btn.dataset.tooltip = `Update: v${data.current} → v${data.latest} (${srcLabel})`;
+  }
+  if (!_btnWired) {
+    _btnWired = true;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openUpdateModal();
+    });
+  }
+}
 
 export async function initUpdate() {
   try {
     const res = await fetch('/api/system/version');
     if (!res.ok) return;
     _versionData = await res.json();
-
-    if (!_versionData.updateAvailable) return;
-
-    const btn = $('topright-update-btn');
-    if (!btn) return;
-
-    btn.style.display = '';
-    const badge = $('update-badge');
-    if (badge) badge.textContent = '!';
-
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openUpdateModal();
-    });
+    applyTopRightButton(_versionData);
   } catch { /* silent — no update UI if check fails */ }
+}
+
+// Force a fresh server-side check (bypasses 1h cache via ?force=1) and
+// re-applies the top-right button + badge state. Returns the latest
+// _synabunUpdateCache shape so callers can compose toasts.
+export async function forceCheckSynabunUpdate() {
+  try {
+    const res = await fetch('/api/system/version?force=1');
+    if (!res.ok) return null;
+    _versionData = await res.json();
+    applyTopRightButton(_versionData);
+    return _versionData;
+  } catch {
+    return null;
+  }
+}
+
+export function openSynabunUpdateModal() {
+  if (!_versionData?.updateAvailable) return;
+  openUpdateModal();
 }
 
 // ── Modal Wizard ──
@@ -59,16 +87,37 @@ function openUpdateModal() {
   }
 
   function renderStep1() {
+    const src = _versionData.source;
+    const channel = _versionData.installedChannel || 'stable';
+    const channelTag = channel === 'prerelease'
+      ? '<span class="update-channel-pill update-channel-pill--beta">beta</span>'
+      : '';
+
+    const srcCopy = src === 'both'
+      ? 'A new version of SynaBun is available on npm and GitHub.'
+      : src === 'github'
+        ? 'A new SynaBun release is tagged on GitHub. The npm publish may still be in progress.'
+        : 'A new version of SynaBun has been published to npm.';
+
+    const npmStable = _versionData.npmLatestStable
+      ? `npm latest v${esc(_versionData.npmLatestStable)}`
+      : 'npm latest —';
+    const npmBeta = _versionData.npmLatestBeta
+      ? ` · npm beta v${esc(_versionData.npmLatestBeta)}`
+      : '';
+    const gitBit = _versionData.gitLatest
+      ? ` · GitHub v${esc(_versionData.gitLatest)}`
+      : ' · GitHub —';
+
     return `
-      <h3 class="update-modal-title">Update Available</h3>
+      <h3 class="update-modal-title">Update Available ${channelTag}</h3>
       <div class="update-version-diff">
         <span class="update-ver update-ver--old">v${esc(_versionData.current)}</span>
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
         <span class="update-ver update-ver--new">v${esc(_versionData.latest)}</span>
       </div>
-      <p style="font-size:12px;color:var(--t-muted);margin:12px 0 18px">
-        A new version of SynaBun is available on npm.
-      </p>
+      <p style="font-size:12px;color:var(--t-muted);margin:12px 0 6px">${srcCopy}</p>
+      <p style="font-size:11px;color:var(--t-muted);opacity:.75;margin:0 0 18px">${npmStable}${npmBeta}${gitBit}</p>
       <div class="tag-delete-modal-actions">
         <button class="action-btn action-btn--ghost" id="update-cancel">Cancel</button>
         <button class="action-btn action-btn--primary" id="update-next">Next</button>
@@ -100,14 +149,22 @@ function openUpdateModal() {
   }
 
   function renderStep3() {
+    // Channel-aware install command. Beta users staying on beta keep the
+    // @beta tag; both targets exist on stable so we surface a single line.
+    const channel = _versionData.installedChannel || 'stable';
+    const target = _versionData.latest || '';
+    const targetLooksBeta = parseSemverPre(target);
+    const installTag = (channel === 'prerelease' && targetLooksBeta) ? 'beta' : 'latest';
+    const installCmd = `npm install -g synabun@${installTag}`;
+
     return `
       <h3 class="update-modal-title">Run the Update</h3>
       <p style="font-size:12px;color:var(--t-muted);margin:4px 0 12px">
         Run this command in your terminal to update SynaBun:
       </p>
       <div class="update-code-block">
-        <code>npm install -g synabun@latest</code>
-        <button class="update-copy-btn" data-copy="npm install -g synabun@latest" title="Copy">
+        <code>${esc(installCmd)}</code>
+        <button class="update-copy-btn" data-copy="${esc(installCmd)}" title="Copy">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         </button>
       </div>
@@ -241,4 +298,13 @@ function esc(str) {
   const d = document.createElement('div');
   d.textContent = str || '';
   return d.innerHTML;
+}
+
+// Returns the prerelease tag from a semver-ish string ("2026.4.26-beta.3"
+// -> "beta.3"), or null. Used to pick install command target.
+function parseSemverPre(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim().replace(/^v\.?/, '');
+  const m = s.match(/^\d+\.\d+\.\d+(?:-([0-9A-Za-z.-]+))?/);
+  return m && m[1] ? m[1] : null;
 }

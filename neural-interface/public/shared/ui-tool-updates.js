@@ -174,7 +174,81 @@ export async function initToolUpdates() {
 export async function forceCheckToolUpdates() {
   try {
     const res = await fetch('/api/system/tool-versions?force=1');
-    if (!res.ok) return;
-    applyBadges(await res.json());
-  } catch { /* silent */ }
+    if (!res.ok) return null;
+    const data = await res.json();
+    applyBadges(data);
+    return data;
+  } catch { return null; }
+}
+
+// Re-export human-readable tool labels so toast/menu code can build summaries
+// without redefining the label map.
+export { TOOL_LABELS };
+
+// ── Update-check toast ──
+// Bottom-right ephemeral pill. One of three modes: updates available (with
+// list + optional click handler), all-clear, or check-failed. Auto-dismisses.
+
+function _toastEsc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s ?? '');
+  return d.innerHTML;
+}
+
+export function showUpdateToast({ updates, errors, onClick } = {}) {
+  document.querySelectorAll('.update-check-toast').forEach(el => el.remove());
+
+  const toast = document.createElement('div');
+  toast.className = 'update-check-toast';
+
+  const hasUpdates = Array.isArray(updates) && updates.length > 0;
+  const hasErrors  = Array.isArray(errors)  && errors.length  > 0;
+  const clickable  = hasUpdates && typeof onClick === 'function';
+  if (clickable) toast.classList.add('update-check-toast--clickable');
+
+  if (hasUpdates) {
+    const items = updates.map(u => {
+      const label = _toastEsc(u?.label || '');
+      const src = u?.source ? `<span class="utc-src">${_toastEsc(u.source)}</span>` : '';
+      return `<li>${label}${src}</li>`;
+    }).join('');
+    toast.innerHTML = `
+      <div class="utc-icon utc-icon--up">↑</div>
+      <div class="utc-body">
+        <div class="utc-title">Updates available</div>
+        <ul class="utc-list">${items}</ul>
+        ${clickable ? '<div class="utc-hint">Click to open update guide</div>' : ''}
+      </div>`;
+  } else if (hasErrors) {
+    toast.innerHTML = `
+      <div class="utc-icon utc-icon--err">!</div>
+      <div class="utc-body">
+        <div class="utc-title">Update check failed</div>
+        <div class="utc-sub">${_toastEsc(errors.join(' · '))}</div>
+      </div>`;
+  } else {
+    toast.innerHTML = `
+      <div class="utc-icon utc-icon--ok">✓</div>
+      <div class="utc-body">
+        <div class="utc-title">All up to date</div>
+      </div>`;
+  }
+
+  if (clickable) {
+    toast.addEventListener('click', () => {
+      try { onClick(); } catch {}
+      toast.classList.remove('show');
+      setTimeout(() => toast.remove(), 250);
+    });
+  }
+
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+
+  const ttl = hasUpdates ? 7000 : hasErrors ? 5000 : 3500;
+  setTimeout(() => {
+    if (!toast.isConnected) return;
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 250);
+  }, ttl);
 }
