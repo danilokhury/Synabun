@@ -8115,9 +8115,7 @@ function wireEvents() {
   $close.addEventListener('click', () => closeTab(_activeTabIdx));
   $slide.addEventListener('click', () => toggleClaudePanel());
   $minimize.addEventListener('click', () => {
-    // Always minimize to a fresh blank panel — never swap in an existing session
-    if (_tabs.length >= MAX_TABS) { appendStatus(activeTab(), 'Max sessions reached — close one first.'); return; }
-    createTab(null, 'New chat');
+    if (_visible) toggleClaudePanel();
   });
 
   // Image paste — capture images from clipboard with thumbnail preview
