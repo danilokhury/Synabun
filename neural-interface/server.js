@@ -2556,9 +2556,14 @@ function getClaudeBin() {
       // Might be a bare command in PATH — try which/where
       try {
         const envWithPath = { ...process.env, PATH: getAugmentedPath() };
-        const lookup = process.platform === 'win32'
-          ? execSync(`where "${userCmd}"`, { encoding: 'utf-8', env: envWithPath }).split('\n')[0].trim()
-          : execSync(`which "${userCmd}"`, { encoding: 'utf-8', env: envWithPath }).trim();
+        let lookup;
+        if (process.platform === 'win32') {
+          const lines = execSync(`where "${userCmd}"`, { encoding: 'utf-8', env: envWithPath })
+            .split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+          lookup = lines.find(l => /\.(cmd|exe|bat|ps1)$/i.test(l)) || lines[0];
+        } else {
+          lookup = execSync(`which "${userCmd}"`, { encoding: 'utf-8', env: envWithPath }).trim();
+        }
         if (lookup) { _claudeBinPath = lookup; return _claudeBinPath; }
       } catch {}
     }
@@ -2596,8 +2601,12 @@ function getClaudeBin() {
   // 2. Fall back to global install via which/where (with augmented PATH)
   const envWithPath = { ...process.env, PATH: getAugmentedPath() };
   if (process.platform === 'win32') {
-    try { _claudeBinPath = execSync('where claude', { encoding: 'utf-8', env: envWithPath }).split('\n')[0].trim(); }
-    catch { _claudeBinPath = null; }
+    try {
+      const lines = execSync('where claude', { encoding: 'utf-8', env: envWithPath })
+        .split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      // Prefer .cmd/.exe/.bat/.ps1 over the bare extensionless shim (which is a sh script Windows can't spawn)
+      _claudeBinPath = lines.find(l => /\.(cmd|exe|bat|ps1)$/i.test(l)) || lines[0] || null;
+    } catch { _claudeBinPath = null; }
   } else {
     try { _claudeBinPath = execSync('which claude', { encoding: 'utf-8', env: envWithPath }).trim(); }
     catch { _claudeBinPath = null; }
@@ -5822,6 +5831,8 @@ app.post('/api/opencode/mcp', async (req, res) => {
     try { persistMcpToOpencodeConfig(name, mcpConfig); } catch (e) {
       return res.status(500).json({ ok: false, error: `Persist failed: ${e.message}` });
     }
+    // Force-allow the 7 SynaBun memory tools so CLI sessions skip prompts.
+    injectOpenCodeMemoryPerms();
     if (_ocpReady) {
       try { await ocpProxy('POST', '/mcp', { name, config: { type: 'stdio', ...mcpConfig } }); } catch (e) {
         console.warn(`[opencode] Runtime register failed (config persisted): ${e.message}`);
@@ -12889,6 +12900,89 @@ const SYNABUN_TOOL_CATEGORIES = [
   },
 ];
 
+// ── Memory-tool permission auto-injection ──
+// On MCP enable for any provider, force-allow the 7 SynaBun memory tools
+// (recall/remember/reflect/forget/memories/restore/sync) so PTY/CLI sessions
+// can use SynaBun memory without per-call permission prompts. Inject-only,
+// never overwrites existing entries. Falls back to project-scoped settings
+// when the user has no global settings file.
+function getMemoryToolKeys() {
+  const cat = SYNABUN_TOOL_CATEGORIES.find(c => c.id === 'memory');
+  return cat ? cat.tools.map(t => t.key) : [];
+}
+
+function injectClaudeMemoryPerms() {
+  const keys = getMemoryToolKeys();
+  const globalPath = getGlobalClaudeSettingsPath();
+
+  if (existsSync(globalPath)) {
+    const settings = readClaudeSettings(globalPath) || {};
+    if (!settings.permissions) settings.permissions = {};
+    if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
+    const set = new Set(settings.permissions.allow);
+    for (const k of keys) set.add(k);
+    settings.permissions.allow = [...set];
+    writeClaudeSettings(globalPath, settings);
+    return { scope: 'global', paths: [globalPath] };
+  }
+
+  const projects = loadHookProjects();
+  const written = [];
+  for (const p of projects) {
+    if (!p?.path) continue;
+    const projPath = getClaudeSettingsPath(p.path);
+    const s = readClaudeSettings(projPath) || {};
+    if (!s.permissions) s.permissions = {};
+    if (!Array.isArray(s.permissions.allow)) s.permissions.allow = [];
+    const set = new Set(s.permissions.allow);
+    for (const k of keys) set.add(k);
+    s.permissions.allow = [...set];
+    writeClaudeSettings(projPath, s);
+    written.push(projPath);
+  }
+  return { scope: 'project', paths: written };
+}
+
+function injectCodexMemoryPerms() {
+  try {
+    const configPath = join(getHomePath(), '.codex', 'config.toml');
+    if (!existsSync(configPath)) return { scope: 'none', paths: [] };
+    let content = readFileSync(configPath, 'utf-8');
+    if (!tomlHasSection(content, 'mcp_servers.SynaBun')) return { scope: 'none', paths: [] };
+    for (const k of getMemoryToolKeys()) {
+      const shortName = k.replace('mcp__SynaBun__', '');
+      const section = `mcp_servers.SynaBun.tools.${shortName}`;
+      if (!tomlHasSection(content, section)) {
+        content = tomlUpsertSection(content, section, { approval_mode: 'approve' });
+      }
+    }
+    writeFileSync(configPath, content, 'utf-8');
+    return { scope: 'global', paths: [configPath] };
+  } catch (err) {
+    console.error('[memory-perms] Codex inject failed:', err.message);
+    return { scope: 'error', paths: [] };
+  }
+}
+
+function injectOpenCodeMemoryPerms() {
+  try {
+    const configPath = getOpencodeConfigPath();
+    if (!existsSync(configPath)) return { scope: 'none', paths: [] };
+    let cfg = {};
+    try { cfg = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
+    if (!cfg.permission) cfg.permission = {};
+    if (!cfg.permission.tools || typeof cfg.permission.tools !== 'object') cfg.permission.tools = {};
+    for (const k of getMemoryToolKeys()) {
+      if (!(k in cfg.permission.tools)) cfg.permission.tools[k] = 'allow';
+    }
+    writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    return { scope: 'global', paths: [configPath] };
+  } catch (err) {
+    console.error('[memory-perms] OpenCode inject failed:', err.message);
+    return { scope: 'error', paths: [] };
+  }
+}
+
 function addHookToSettings(settings, onlyEvent, targetProjectPath) {
   if (!settings) settings = {};
   if (!settings.hooks) settings.hooks = {};
@@ -14746,11 +14840,12 @@ app.post('/api/claude-code/mcp', (req, res) => {
     };
     writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
 
-    // Also inject tool permissions into global settings so tools work without prompts
-    const globalSettingsPath = getGlobalClaudeSettingsPath();
-    let globalSettings = readClaudeSettings(globalSettingsPath) || {};
-    ensureSynaBunPermissions(globalSettings);
-    writeClaudeSettings(globalSettingsPath, globalSettings);
+    // Force-allow the 7 SynaBun memory tools so CLI/PTY sessions skip per-call
+    // permission prompts. Writes to ~/.claude/settings.json if present, otherwise
+    // falls back to project-scoped <project>/.claude/settings.json for each
+    // SynaBun-tracked project.
+    const permResult = injectClaudeMemoryPerms();
+    console.log(`[memory-perms] Claude memory tools injected (${permResult.scope}): ${permResult.paths.join(', ')}`);
 
     res.json({ ok: true, message: 'SynaBun MCP registered (HTTP). Restart Claude Code to connect.' });
   } catch (err) {
@@ -14986,6 +15081,9 @@ app.post('/api/setup/gemini/mcp', (req, res) => {
       command: 'node',
       args: [mcpIndexPath],
       env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
+      // trust:true skips per-tool permission prompts for this MCP server, so CLI
+      // sessions can use SynaBun memory without interactive approval gates.
+      trust: true,
     };
     writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
     res.json({ ok: true, message: 'SynaBun MCP registered in Gemini CLI. Restart Gemini to connect.' });
@@ -15039,6 +15137,8 @@ app.post('/api/setup/codex/mcp', (req, res) => {
       env: buildCodexMcpEnv(),
     });
     writeFileSync(configPath, content, 'utf-8');
+    // Force-allow the 7 SynaBun memory tools so CLI sessions skip prompts.
+    injectCodexMemoryPerms();
     res.json({ ok: true, message: 'SynaBun MCP registered in Codex CLI. Restart Codex to connect.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
