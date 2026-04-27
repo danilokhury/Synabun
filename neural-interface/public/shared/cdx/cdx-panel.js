@@ -399,8 +399,8 @@ let _cliInstallFailureForced = false;
 function ensureCliBannerEl() {
   if (!_panel) return null;
   const container = panelEl('#cxp-messages-container');
-  if (!container) return null;
-  let banner = container.querySelector(':scope > .cxp-cli-banner');
+  if (!container || !container.parentNode) return null;
+  let banner = container.parentNode.querySelector(':scope > .cxp-cli-banner');
   if (banner) return banner;
   const label = getCliLabel('codex');
   const cmd = getCliInstallCommand('codex');
@@ -418,7 +418,7 @@ function ensureCliBannerEl() {
       <button class="cxp-cli-banner-recheck" type="button">Re-check</button>
     </div>
   `;
-  container.insertBefore(banner, container.firstChild);
+  container.parentNode.insertBefore(banner, container);
   const btn = banner.querySelector('.cxp-cli-banner-recheck');
   btn?.addEventListener('click', async () => {
     btn.disabled = true;
@@ -437,7 +437,7 @@ function ensureCliBannerEl() {
 function removeCliBannerEl() {
   if (!_panel) return;
   const container = panelEl('#cxp-messages-container');
-  const banner = container?.querySelector(':scope > .cxp-cli-banner');
+  const banner = container?.parentNode?.querySelector(':scope > .cxp-cli-banner');
   banner?.remove();
 }
 

@@ -197,6 +197,25 @@ function registerProtocolHandler() {
   }
 }
 
+// ── Updater shim executable bit ──
+//
+// npm publish drops the executable bit on macOS/Linux when the tarball is
+// built on Windows (a common pipeline issue). The in-app updater needs
+// updater.sh to be executable so the per-OS terminal-launch path can
+// `exec()` it directly. Restore the bit defensively on every postinstall.
+
+function ensureUpdaterShExecutable() {
+  if (platform() === 'win32') return;
+  const shPath = resolve(__dirname, 'updater.sh');
+  if (!existsSync(shPath)) return;
+  try {
+    chmodSync(shPath, 0o755);
+    ok('updater.sh marked executable');
+  } catch (err) {
+    warn(`updater.sh chmod failed (${err.message}) — manual fix: chmod +x "${shPath}"`);
+  }
+}
+
 // ── Main ──
 
 function main() {
@@ -207,6 +226,7 @@ function main() {
   rebuildPty();
   buildMcpServer();
   registerProtocolHandler();
+  ensureUpdaterShExecutable();
 
   console.log(`\n  ${c.green}\u2713${c.reset} Setup complete. Run ${c.cyan}synabun${c.reset} to start.\n`);
 }

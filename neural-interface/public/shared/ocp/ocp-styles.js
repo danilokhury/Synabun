@@ -1527,7 +1527,7 @@ export function injectStyles() {
       grid-template-columns: auto 1fr auto;
       gap: 10px;
       align-items: center;
-      margin: 8px 12px 0;
+      margin: 6px 8px 0;
       padding: 10px 12px;
       border: 1px solid rgba(255,180,80,0.45);
       border-radius: 8px;

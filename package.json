@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2026.4.26-1",
+  "version": "2026.4.26-4",
   "description": "Persistent vector memory for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -17,6 +17,9 @@
     "setup.js",
     "postinstall.js",
     "preuninstall.js",
+    "updater.mjs",
+    "updater.cmd",
+    "updater.sh",
     "mcp-server/package.json",
     "mcp-server/dist/",
     "mcp-server/tsconfig.json",

@@ -1526,8 +1526,8 @@ let _cliInstallFailureForced = false;
 function ensureCliBannerEl() {
   if (!_panel) return null;
   const container = _panel.querySelector('.ocp-messages-container');
-  if (!container) return null;
-  let banner = container.querySelector(':scope > .ocp-cli-banner');
+  if (!container || !container.parentNode) return null;
+  let banner = container.parentNode.querySelector(':scope > .ocp-cli-banner');
   if (banner) return banner;
   const label = getCliLabel('opencode');
   const cmd = getCliInstallCommand('opencode');
@@ -1545,7 +1545,7 @@ function ensureCliBannerEl() {
       <button class="ocp-cli-banner-recheck" type="button">Re-check</button>
     </div>
   `;
-  container.insertBefore(banner, container.firstChild);
+  container.parentNode.insertBefore(banner, container);
   const btn = banner.querySelector('.ocp-cli-banner-recheck');
   btn?.addEventListener('click', async () => {
     btn.disabled = true;
@@ -1563,7 +1563,8 @@ function ensureCliBannerEl() {
 
 function removeCliBannerEl() {
   if (!_panel) return;
-  const banner = _panel.querySelector('.ocp-messages-container > .ocp-cli-banner');
+  const container = _panel.querySelector('.ocp-messages-container');
+  const banner = container?.parentNode?.querySelector(':scope > .ocp-cli-banner');
   banner?.remove();
 }
 

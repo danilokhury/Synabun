@@ -1546,14 +1546,400 @@ app.put('/api/settings', (req, res) => {
   }
 });
 
-// POST /api/server/restart — Gracefully restart the server process
-app.post('/api/server/restart', (req, res) => {
-  console.log('[server] Restart requested — shutting down in 500ms...');
+// ── Graceful shutdown — kills all spawned children before exiting ──
+//
+// Background: the previous /api/server/restart only ran closeDb() + exit(0),
+// leaving spawned children orphaned (opencode sidecar, agents, _sidecarProcess
+// CLI links, pty terminals, cloudflare tunnel). On Windows those orphans
+// kept file handles inside neural-interface/ open, causing EBUSY errors when
+// `npm i -g synabun@latest` tried to rename the package directory.
+//
+// gracefulShutdown() centralizes shutdown so /api/server/restart,
+// /api/server/shutdown, and the new /api/system/run-update all release
+// children before exiting.
+
+let _shutdownInProgress = false;
+
+async function gracefulShutdown(reason = 'shutdown') {
+  if (_shutdownInProgress) return;
+  _shutdownInProgress = true;
+  console.log(`[server] gracefulShutdown(${reason}) — releasing children...`);
+
+  // 1. opencode sidecar — has its own teardown that handles managed PID + ollama.
+  try { stopOpencodeServer(); } catch (err) { console.warn('  opencode stop err:', err?.message); }
+
+  // 2. Agents in agentRegistry — use platform-native tree kill so descendants die too.
+  try {
+    const isWin = process.platform === 'win32';
+    for (const agent of agentRegistry.values()) {
+      const pid = agent?.process?.pid;
+      if (!pid || agent.status !== 'running') continue;
+      agent._stopped = true;
+      agent.status = 'stopped';
+      try {
+        if (isWin) {
+          spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { shell: true, windowsHide: true });
+        } else {
+          try { process.kill(-pid, 'SIGTERM'); } catch { try { agent.process.kill('SIGTERM'); } catch {} }
+        }
+      } catch {}
+    }
+  } catch (err) { console.warn('  agent kill err:', err?.message); }
+
+  // 3. Save snapshot + DB last so children release file handles before SQLite closes.
+  try { saveSessionSnapshot(); } catch {}
+
+  // 4. Brief grace period so SIGTERM'd children can flush.
+  await new Promise(r => setTimeout(r, 500));
+
+  try { closeDb(); } catch {}
+
+  // 5. Belt-and-suspenders: tree-kill THIS process's descendants on Windows.
+  // Synabun spawns CLI links, pty terminals, cloudflare tunnel etc. that may
+  // not be reachable through the registries above. The taskkill /T flag walks
+  // the process tree and terminates every descendant.
+  //
+  // Do not run this for click-to-update. The updater terminal is deliberately
+  // launched before this server exits; taskkill /T would kill that brand-new
+  // terminal too, which looks like a brief blink and no update on Windows.
+  if (process.platform === 'win32' && reason !== 'run-update') {
+    try {
+      // Use spawn(detached) so taskkill survives our own exit and finishes
+      // killing children even if we exit before it completes.
+      const tk = spawn('taskkill', ['/pid', String(process.pid), '/T'], {
+        shell: true, windowsHide: true, detached: true, stdio: 'ignore',
+      });
+      tk.unref();
+    } catch {}
+  }
+
+  console.log(`[server] gracefulShutdown(${reason}) complete — exiting.`);
+}
+
+// POST /api/server/restart — Gracefully restart the server process.
+// (Caller is expected to launch a new instance externally; we just exit.)
+app.post('/api/server/restart', async (req, res) => {
+  console.log('[server] Restart requested.');
   res.json({ ok: true, message: 'Server restarting...' });
-  setTimeout(() => {
-    closeDb();
+  // Defer so the response flushes before we start tearing down children.
+  setTimeout(async () => {
+    await gracefulShutdown('restart');
     process.exit(0);
-  }, 500);
+  }, 200);
+});
+
+// POST /api/server/shutdown — Graceful shutdown without restart. Used by
+// `npm uninstall synabun` (preuninstall.js) and the in-app updater.
+app.post('/api/server/shutdown', async (req, res) => {
+  console.log('[server] Shutdown requested.');
+  res.json({ ok: true, message: 'Server shutting down...' });
+  setTimeout(async () => {
+    await gracefulShutdown('shutdown');
+    process.exit(0);
+  }, 200);
+});
+
+function shellSingleQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+function collectWindowsDescendantPids(rootPid) {
+  if (process.platform !== 'win32' || !rootPid) return [];
+  try {
+    const script = [
+      `$root=${Number(rootPid)}`,
+      '$procs=Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId',
+      '$seen=@{}',
+      '$front=@($root)',
+      '$out=@()',
+      'while ($front.Count -gt 0) {',
+      '  $next=@()',
+      '  foreach ($p in $procs) {',
+      '    if ($front -contains $p.ParentProcessId -and -not $seen.ContainsKey($p.ProcessId)) {',
+      '      $seen[$p.ProcessId]=$true',
+      '      $out += $p.ProcessId',
+      '      $next += $p.ProcessId',
+      '    }',
+      '  }',
+      '  $front=$next',
+      '}',
+      '$out -join ","',
+    ].join('; ');
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 5000,
+    });
+    const out = result.status === 0 ? String(result.stdout || '').trim() : '';
+    return out
+      ? out.split(',').map(v => Number(v)).filter(pid => Number.isFinite(pid) && pid > 0 && pid !== rootPid)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function cleanupOldUpdaterStages(baseDir) {
+  try {
+    if (!existsSync(baseDir)) return;
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    for (const name of readdirSync(baseDir)) {
+      const full = resolve(baseDir, name);
+      try {
+        const st = statSync(full);
+        if (st.isDirectory() && st.mtimeMs < cutoff) rmSync(full, { recursive: true, force: true });
+      } catch {}
+    }
+  } catch {}
+}
+
+function stageSynabunUpdater({ installPlan, serverPid, autoRestart, cleanupPids = [] }) {
+  const sourceUpdater = resolve(PACKAGE_ROOT, 'updater.mjs');
+  if (!existsSync(sourceUpdater)) {
+    throw new Error(`updater.mjs not found at ${sourceUpdater}. SynaBun install may be corrupt - reinstall manually: ${installPlan.displayCommand}`);
+  }
+
+  const stagesRoot = resolve(DATA_HOME, 'data', 'updater');
+  mkdirSync(stagesRoot, { recursive: true });
+  cleanupOldUpdaterStages(stagesRoot);
+
+  const stageDir = resolve(stagesRoot, `${Date.now()}-${randomBytes(4).toString('hex')}`);
+  mkdirSync(stageDir, { recursive: true });
+
+  const stagedUpdater = resolve(stageDir, 'updater.mjs');
+  const payloadPath = resolve(stageDir, 'payload.json');
+  const runnerPath = resolve(stageDir, process.platform === 'win32' ? 'run-update.cmd' : 'run-update.sh');
+  copyFileSync(sourceUpdater, stagedUpdater);
+
+  const payload = {
+    serverPid,
+    autoRestart,
+    installSpec: installPlan.installSpec,
+    displayCommand: installPlan.displayCommand,
+    source: installPlan.source,
+    current: installPlan.current,
+    target: installPlan.target,
+    channel: installPlan.channel,
+    cleanupPids,
+  };
+  writeFileSync(payloadPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+
+  if (process.platform === 'win32') {
+    const nodeBin = String(process.execPath || 'node').replace(/"/g, '');
+    writeFileSync(runnerPath, [
+      '@echo off',
+      'setlocal enableextensions',
+      'chcp 65001 >nul 2>&1',
+      'title SynaBun Updater',
+      'cd /d "%~dp0"',
+      'set "EXIT_CODE=0"',
+      `set "NODE_BIN=${nodeBin}"`,
+      'if defined SYNABUN_NODE_BIN set "NODE_BIN=%SYNABUN_NODE_BIN%"',
+      'echo SynaBun Updater starting...',
+      'echo Node:    %NODE_BIN%',
+      'echo Stage:   %~dp0',
+      'echo.',
+      '"%NODE_BIN%" "%~dp0updater.mjs" --payload "%~dp0payload.json" --no-hold',
+      'set "EXIT_CODE=%ERRORLEVEL%"',
+      'echo.',
+      'if "%EXIT_CODE%"=="0" (',
+      '  echo [Update finished. Press any key to close this window.]',
+      ') else (',
+      '  echo [Update exited with code %EXIT_CODE%. Press any key to close this window.]',
+      ')',
+      'pause >nul',
+      'endlocal & exit /b %EXIT_CODE%',
+      '',
+    ].join('\r\n'), 'utf8');
+  } else {
+    const nodeBin = shellSingleQuote(process.execPath);
+    writeFileSync(runnerPath, [
+      '#!/usr/bin/env bash',
+      'set +e',
+      'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"',
+      'cd "$SCRIPT_DIR" || exit 1',
+      'printf \'\\033]0;SynaBun Updater\\007\' 2>/dev/null || true',
+      'NODE_BIN="${SYNABUN_NODE_BIN:-}"',
+      `if [ -z "$NODE_BIN" ]; then NODE_BIN=${nodeBin}; fi`,
+      '"$NODE_BIN" "$SCRIPT_DIR/updater.mjs" --payload "$SCRIPT_DIR/payload.json" --no-hold',
+      'EXIT_CODE=$?',
+      'echo',
+      'if [ "$EXIT_CODE" = "0" ]; then',
+      '  echo "[Update finished. Press Enter to close this window.]"',
+      'else',
+      '  echo "[Update exited with code $EXIT_CODE. Press Enter to close this window.]"',
+      'fi',
+      'read -r _ || true',
+      'exit "$EXIT_CODE"',
+      '',
+    ].join('\n'), 'utf8');
+    try { chmodSync(runnerPath, 0o755); } catch {}
+  }
+
+  return { stageDir, runnerPath, payloadPath };
+}
+
+// POST /api/system/run-update - click-to-update flow.
+//
+// The updater is staged under DATA_HOME, not PACKAGE_ROOT, before launch. This
+// matters on Windows: a terminal cwd or command line inside node_modules/synabun
+// can lock the directory npm is trying to replace.
+app.post('/api/system/run-update', async (req, res) => {
+  try {
+    // Auto-restart is always on — running the click-to-update flow implies the
+    // user wants the new version live without a manual relaunch step.
+    const autoRestart = true;
+
+    if (!_synabunUpdateCache.checkedAt) {
+      try { await checkSynabunUpdate(); } catch {}
+    }
+    const installPlan = _synabunUpdateCache.installPlan;
+    if (!_synabunUpdateCache.updateAvailable || !installPlan) {
+      return res.status(409).json({ error: 'No SynaBun update is currently available.' });
+    }
+    if (installPlan.canAutoUpdate === false) {
+      return res.status(409).json({
+        error: installPlan.manualHint || `This installation cannot be auto-updated. Open ${installPlan.openUrl || SYNABUN_GITHUB_REPO_URL}`,
+        installPlan,
+        openUrl: installPlan.openUrl || SYNABUN_GITHUB_REPO_URL,
+      });
+    }
+    if (!installPlan.installSpec) {
+      return res.status(500).json({ error: 'SynaBun update plan is missing an npm install target.' });
+    }
+
+    const plat = process.platform;
+    const serverPid = process.pid;
+    const cleanupPids = collectWindowsDescendantPids(serverPid);
+    const staged = stageSynabunUpdater({ installPlan, serverPid, autoRestart, cleanupPids });
+
+    let spawned = null;
+    let launchError = null;
+
+    if (plat === 'win32') {
+      // Use cmd's `start` builtin to spawn a fresh visible console.
+      // Prior implementation used PowerShell + Start-Process -ArgumentList,
+      // which re-quoted the runner path and produced `cmd /k """C:\path\..."""`
+      // — cmd's quote-stripping then mangled it and the new window died before
+      // running anything (visible to users as a brief blink). `cmd /c start ""
+      // /D <dir> <runner>` is the canonical, reliable way to launch a fresh
+      // console window on Windows.
+      try {
+        const comSpec = process.env.ComSpec || 'cmd.exe';
+        spawned = spawn(comSpec, [
+          '/c', 'start',
+          '""',                        // empty title — required when next token is quoted path
+          '/D', staged.stageDir,       // working dir for new console
+          staged.runnerPath,           // batch file to run in new window
+        ], {
+          cwd: staged.stageDir,
+          shell: false,
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,           // hides only the wrapper cmd.exe; new console stays visible
+          env: {
+            ...process.env,
+            SYNABUN_NODE_BIN: process.execPath,
+          },
+        });
+      } catch (err) { launchError = err; }
+    } else if (plat === 'darwin') {
+      // Drive Terminal.app via osascript. The shim path may contain spaces;
+      // wrap it in single quotes inside the AppleScript string. AppleScript
+      // string is wrapped in JS double-quote, so we escape JS backslashes
+      // and double-quotes after building the inner shell command.
+      const appleCmd = shellSingleQuote(staged.runnerPath);
+      try {
+        spawned = spawn('osascript', [
+          '-e', 'tell application "Terminal" to activate',
+          '-e', `tell application "Terminal" to do script "${appleCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`,
+        ], { cwd: staged.stageDir, detached: true, stdio: 'ignore' });
+      } catch (err) { launchError = err; }
+    } else {
+      // Linux/BSD/etc — try common terminal emulators in order. Each gets
+      // the shim path as the program to run; the shim itself is a bash
+      // script so we let the terminal exec it directly without bash -c.
+      const quotedRunner = shellSingleQuote(staged.runnerPath);
+      const candidates = [
+        ['x-terminal-emulator', ['-e', staged.runnerPath]],
+        ['gnome-terminal',      ['--', staged.runnerPath]],
+        ['konsole',             ['-e', staged.runnerPath]],
+        ['xfce4-terminal',      ['-e', quotedRunner]],
+        ['mate-terminal',       ['-e', quotedRunner]],
+        ['lxterminal',          ['-e', staged.runnerPath]],
+        ['terminator',          ['-e', quotedRunner]],
+        ['alacritty',           ['-e', staged.runnerPath]],
+        ['kitty',               [staged.runnerPath]],
+        ['wezterm',             ['start', '--', staged.runnerPath]],
+        ['urxvt',               ['-e', staged.runnerPath]],
+        ['xterm',               ['-e', staged.runnerPath]],
+      ];
+      for (const [bin, args] of candidates) {
+        let child = null;
+        try {
+          child = spawn(bin, args, { cwd: staged.stageDir, detached: true, stdio: 'ignore' });
+        } catch {
+          continue;
+        }
+        // spawn() doesn't throw synchronously when bin is missing — it emits
+        // 'error' async (ENOENT). Probe briefly to detect that case before
+        // declaring success and unrefing.
+        const survived = await new Promise((resolveProbe) => {
+          let settled = false;
+          const onErr = () => {
+            if (settled) return;
+            settled = true;
+            child.removeAllListeners('error');
+            resolveProbe(false);
+          };
+          child.once('error', onErr);
+          setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            child.removeAllListeners('error');
+            resolveProbe(true);
+          }, 150);
+        });
+        if (survived) { spawned = child; break; }
+      }
+      if (!spawned) {
+        launchError = new Error(
+          'No supported terminal emulator found (tried: x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal, mate-terminal, lxterminal, terminator, alacritty, kitty, wezterm, urxvt, xterm). ' +
+          `Install one (e.g. \`apt install xterm\`) or run manually: ${installPlan.displayCommand}`
+        );
+      }
+    }
+
+    if (!spawned) {
+      const msg = launchError?.message || `Failed to launch updater terminal on ${plat}`;
+      console.error('[server] run-update launch failed:', msg);
+      return res.status(500).json({ error: msg });
+    }
+
+    // Don't tie our shutdown to the spawned process — it's a long-living
+    // terminal we don't want to wait on.
+    spawned.unref();
+    spawned.on('error', (err) => {
+      // Async ENOENT etc. — log but the response already went out.
+      console.error('[server] updater spawn async error:', err.message);
+    });
+
+    console.log(`[server] Updater terminal launched (${installPlan.displayCommand}, autoRestart=${autoRestart}, stage=${staged.stageDir}). Shutting down...`);
+    res.json({ ok: true, autoRestart, installPlan, stageDir: staged.stageDir, platform: plat });
+
+    // Give the spawned terminal time to fully launch before we tear down
+    // (on Windows `start` returns instantly but the new window takes a
+    // beat to init node; on macOS osascript dispatches AppleScript async).
+    // 1.2s is generous; updater polls our PID anyway so an extra second
+    // here is harmless.
+    setTimeout(async () => {
+      await gracefulShutdown('run-update');
+      process.exit(0);
+    }, 1200);
+  } catch (err) {
+    console.error('[server] run-update error:', err?.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/settings/move-db — Move SQLite database to a new directory
@@ -4259,12 +4645,36 @@ function stopOpencodeServer() {
   stopOpencodeSSERelay();
   const managedPid = readOpencodeManagedPid();
   const procPid = _ocpProc?.pid || null;
+  const isWin = process.platform === 'win32';
+
+  // On Windows `process.kill(pid, 'SIGTERM')` is unreliable for non-Node
+  // children (cmd.exe shells, opencode native binaries). Use taskkill /T /F
+  // to walk the process tree and force-terminate every descendant.
+  // This is the recurring source of EBUSY errors during `npm i -g
+  // synabun@latest` — opencode-ai's `serve` process survives parent SynaBun
+  // exit and keeps file handles inside neural-interface/ open.
+  const winKill = (pid) => {
+    try {
+      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        shell: true, windowsHide: true, stdio: 'ignore',
+      });
+    } catch {}
+  };
+
   if (_ocpProc && !_ocpProc.killed) {
-    try { _ocpProc.kill(); } catch {}
+    if (isWin && procPid) {
+      winKill(procPid);
+    } else {
+      try { _ocpProc.kill(); } catch {}
+    }
     _ocpProc = null;
   }
   if (managedPid && managedPid !== procPid) {
-    signalPids([managedPid], 'SIGTERM');
+    if (isWin) {
+      winKill(managedPid);
+    } else {
+      signalPids([managedPid], 'SIGTERM');
+    }
   }
   clearOpencodeManagedPid();
   _ocpReady = false;
@@ -10085,17 +10495,106 @@ let _synabunUpdateCache = {
   installedChannel: 'stable',    // 'stable' | 'prerelease'
   npmLatestStable: null,         // dist-tags.latest
   npmLatestBeta: null,           // dist-tags.beta (or null if absent)
+  npmLatestTag: null,            // dist-tag selected for install
   npmLatest: null,               // chosen target for installed channel
   gitLatest: null,               // tag_name from GitHub release matching channel
+  gitLatestRaw: null,            // original GitHub tag, preserving leading v
   latest: null,                  // newer of (npmLatest, gitLatest) — legacy field
   npmUpdateAvailable: false,
   gitUpdateAvailable: false,
   updateAvailable: false,        // npmUpdateAvailable || gitUpdateAvailable
   source: null,                  // 'npm' | 'github' | 'both' | null
+  installPlan: null,             // server-owned npm/GitHub action target for click-to-update
   checkedAt: null,
   npmError: null,
   gitError: null,
 };
+
+const SYNABUN_GITHUB_REPO_URL = 'https://github.com/danilokhury/Synabun';
+
+function isSynabunGitHubRemote(remoteText) {
+  return /github\.com[:/]danilokhury\/Synabun(?:\.git)?(?:[\s)]|$)/i.test(String(remoteText || ''));
+}
+
+function detectSynabunInstallSource() {
+  const normalizedRoot = PACKAGE_ROOT.replace(/\\/g, '/');
+  if (/\/node_modules\/synabun$/i.test(normalizedRoot)) {
+    return { kind: 'npm-global' };
+  }
+
+  try {
+    const inside = execSync('git rev-parse --is-inside-work-tree', {
+      cwd: PACKAGE_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    }).trim();
+    if (inside === 'true') {
+      let remote = '';
+      let remotes = '';
+      try {
+        remote = execSync('git remote get-url origin', {
+          cwd: PACKAGE_ROOT,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 2000,
+        }).trim();
+      } catch {}
+      try {
+        remotes = execSync('git remote -v', {
+          cwd: PACKAGE_ROOT,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 2000,
+        }).trim();
+      } catch {}
+      if (isSynabunGitHubRemote(`${remote}\n${remotes}`)) {
+        const firstRemote = remote || remotes.split(/\s+/).find(part => isSynabunGitHubRemote(part)) || null;
+        return { kind: 'github-clone', remote: firstRemote };
+      }
+      return { kind: 'git-clone', remote: remote || null };
+    }
+  } catch {}
+
+  return { kind: 'local' };
+}
+
+function buildSynabunInstallPlan({ current, installedChannel, latest, updateAvailable }) {
+  if (!updateAvailable) return null;
+
+  const installSource = detectSynabunInstallSource();
+  if (installSource.kind !== 'npm-global') {
+    const clonedHint = installSource.kind === 'github-clone'
+      ? 'This SynaBun install is a GitHub checkout. Open the repository to pull or reinstall from the correct source.'
+      : 'This SynaBun install was not detected as npm. Open the repository for the correct update path.';
+    return {
+      source: 'github',
+      installSource: installSource.kind,
+      canAutoUpdate: false,
+      current,
+      target: latest,
+      channel: installedChannel,
+      displayCommand: SYNABUN_GITHUB_REPO_URL,
+      openUrl: SYNABUN_GITHUB_REPO_URL,
+      manualCommand: installSource.kind === 'github-clone' ? 'git pull --ff-only' : null,
+      manualHint: clonedHint,
+      remote: installSource.remote,
+    };
+  }
+
+  const installSpec = 'synabun@latest';
+  return {
+    source: 'npm',
+    installSource: installSource.kind,
+    canAutoUpdate: true,
+    current,
+    target: latest,
+    channel: installedChannel,
+    installSpec,
+    displayCommand: 'npm i -g synabun@latest',
+    npmTag: 'latest',
+  };
+}
 
 async function checkSynabunUpdate() {
   let current = _synabunUpdateCache.current;
@@ -10105,7 +10604,10 @@ async function checkSynabunUpdate() {
   } catch { /* keep prior current if package.json read fails */ }
 
   const curParsed = parseSemver(current);
-  const installedChannel = curParsed?.pre ? 'prerelease' : 'stable';
+  // Numeric-only suffix (`2026.4.26-1`) is a post-release iteration, not a
+  // prerelease — keep those on the stable channel. Only true alpha/beta/rc
+  // suffixes flip the channel.
+  const installedChannel = (curParsed?.pre && curParsed.iter == null) ? 'prerelease' : 'stable';
 
   const fetchJsonWithTimeout = async (url, ms = 5000) => {
     const controller = new AbortController();
@@ -10137,14 +10639,20 @@ async function checkSynabunUpdate() {
     fetchJsonWithTimeout(githubUrl),
   ]);
 
-  let npmLatestStable = null, npmLatestBeta = null;
-  let gitLatest = null;
+  let npmLatestStable = null, npmLatestBeta = null, npmLatestBetaTag = null, npmLatestTag = null;
+  let gitLatest = null, gitLatestRaw = null;
   let npmError = null, gitError = null;
 
   if (npmRes.status === 'fulfilled') {
     const tags = npmRes.value?.['dist-tags'] || {};
     npmLatestStable = tags.latest || null;
-    npmLatestBeta = tags.beta || tags.next || tags.rc || null;
+    for (const tagName of ['beta', 'next', 'rc', 'alpha']) {
+      if (tags[tagName]) {
+        npmLatestBeta = tags[tagName];
+        npmLatestBetaTag = tagName;
+        break;
+      }
+    }
   } else {
     npmError = npmRes.reason?.message || 'npm fetch failed';
   }
@@ -10164,10 +10672,12 @@ async function checkSynabunUpdate() {
           best = { tag, parsed };
         }
       }
-      gitLatest = best?.tag.replace(/^v\.?/, '') || null;
+      gitLatestRaw = best?.tag || null;
+      gitLatest = gitLatestRaw ? gitLatestRaw.replace(/^v\.?/, '') : null;
     } else {
       // /releases/latest — single object
       const tag = gitRes.value?.tag_name || gitRes.value?.name || '';
+      gitLatestRaw = tag || null;
       gitLatest = tag ? tag.replace(/^v\.?/, '') : null;
     }
   } else {
@@ -10183,12 +10693,20 @@ async function checkSynabunUpdate() {
   let npmLatest = null;
   if (installedChannel === 'prerelease') {
     if (npmLatestStable && npmLatestBeta) {
-      npmLatest = compareSemver(npmLatestBeta, npmLatestStable) > 0 ? npmLatestBeta : npmLatestStable;
+      if (compareSemver(npmLatestBeta, npmLatestStable) > 0) {
+        npmLatest = npmLatestBeta;
+        npmLatestTag = npmLatestBetaTag;
+      } else {
+        npmLatest = npmLatestStable;
+        npmLatestTag = 'latest';
+      }
     } else {
       npmLatest = npmLatestStable || npmLatestBeta;
+      npmLatestTag = npmLatestStable ? 'latest' : npmLatestBetaTag;
     }
   } else {
     npmLatest = npmLatestStable;
+    npmLatestTag = npmLatest ? 'latest' : null;
   }
 
   const npmUpdateAvailable = !!(npmLatest && semverNewer(current, npmLatest));
@@ -10208,18 +10726,28 @@ async function checkSynabunUpdate() {
   else if (npmUpdateAvailable)                   source = 'npm';
   else if (gitUpdateAvailable)                   source = 'github';
 
+  const installPlan = buildSynabunInstallPlan({
+    current,
+    installedChannel,
+    latest,
+    updateAvailable,
+  });
+
   _synabunUpdateCache = {
     current,
     installedChannel,
     npmLatestStable,
     npmLatestBeta,
+    npmLatestTag,
     npmLatest,
     gitLatest,
+    gitLatestRaw,
     latest,
     npmUpdateAvailable,
     gitUpdateAvailable,
     updateAvailable,
     source,
+    installPlan,
     checkedAt: new Date().toISOString(),
     npmError,
     gitError,
@@ -10274,25 +10802,36 @@ function parseVersion(raw) {
 }
 
 // Structured semver parse — handles calver bumps and prerelease tags:
-//   "2026.4.26"          -> { major:2026, minor:4, patch:26, pre:null }
-//   "2026.4.20-2"        -> { major:2026, minor:4, patch:20, pre:"2" }
-//   "2026.4.26-beta.3"   -> { major:2026, minor:4, patch:26, pre:"beta.3" }
-//   "v1.2.3-rc.1"        -> { major:1, minor:2, patch:3, pre:"rc.1" }
+//   "2026.4.26"          -> { major:2026, minor:4, patch:26, pre:null,    iter:null }
+//   "2026.4.20-2"        -> { major:2026, minor:4, patch:20, pre:"2",     iter:2    }
+//   "2026.4.26-beta.3"   -> { major:2026, minor:4, patch:26, pre:"beta.3", iter:null }
+//   "v1.2.3-rc.1"        -> { major:1, minor:2, patch:3, pre:"rc.1", iter:null }
+//
+// `iter` is set when the suffix is purely numeric (SynaBun's calver iteration
+// scheme: `2026.4.26-1` is the FIRST patch published after `2026.4.26`).
+// Strict semver §9 treats any prerelease suffix as PRE-release (lower than no
+// suffix). SynaBun publishes calver iterations as `latest` on npm, so we need
+// to treat numeric-only suffixes as POST-release iterations instead.
 function parseSemver(raw) {
   if (raw == null) return null;
   const s = String(raw).trim().replace(/^v\.?/, '');
   const m = s.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
   if (!m) return null;
+  const pre = m[4] || null;
+  const iter = pre && /^\d+$/.test(pre) ? Number(pre) : null;
   return {
     major: +m[1],
     minor: +m[2],
     patch: +m[3],
-    pre: m[4] || null,
+    pre,
+    iter,
   };
 }
 
-// Semver-spec precedence including prerelease handling:
-//   1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0
+// Precedence (mix of semver §11 + SynaBun calver-iteration convention):
+//   1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0 < 1.0.0-1 < 1.0.0-2
+// Numeric-only suffix = post-release iteration (NEWER than no-suffix release).
+// Mixed/alpha suffix  = prerelease (OLDER than no-suffix release, per semver).
 // Returns negative if a<b, positive if a>b, 0 if equal. Accepts strings or
 // parsed objects.
 function compareSemver(a, b) {
@@ -10304,11 +10843,19 @@ function compareSemver(a, b) {
   if (pa.major !== pb.major) return pa.major - pb.major;
   if (pa.minor !== pb.minor) return pa.minor - pb.minor;
   if (pa.patch !== pb.patch) return pa.patch - pb.patch;
-  // Equal x.y.z. Prerelease vs none: a release without prerelease is GREATER.
+  // Equal x.y.z. Order from oldest → newest:
+  //   alpha-prerelease  <  no-suffix release  <  numeric iteration
   if (!pa.pre && !pb.pre) return 0;
+  // Numeric iterations are POST-release: always newer than no-suffix and
+  // newer than alpha prereleases.
+  if (pa.iter != null && pb.iter == null) return  1;
+  if (pa.iter == null && pb.iter != null) return -1;
+  if (pa.iter != null && pb.iter != null) return pa.iter - pb.iter;
+  // Neither side is a numeric iteration. Standard semver §11: no-suffix is
+  // greater than alpha prerelease.
   if (!pa.pre &&  pb.pre) return  1;
   if ( pa.pre && !pb.pre) return -1;
-  // Both have prerelease — compare identifiers per semver §11.4.
+  // Both have alpha-flavoured prerelease — compare identifiers per semver §11.4.
   const ia = pa.pre.split('.');
   const ib = pb.pre.split('.');
   const len = Math.max(ia.length, ib.length);
@@ -10361,6 +10908,7 @@ function detectInstallSource(binPath) {
   if (/\/node_modules\//.test(p) || /\/npm\/node_modules\//.test(p)) return 'npm';
   if (p.includes('/opt/homebrew/') || p.includes('/usr/local/cellar/') || /\/homebrew\//.test(p)) return 'brew';
   if (p.includes('/.claude/local/') || p.includes('/anthropicclaude/')) return 'native';
+  if (/\/\.local\/bin\//.test(p)) return 'native';
   if (/\/program files( \(x86\))?\//.test(p) || /\/localappdata\/.*anthropicclaude/.test(p)) return 'native';
   if (p.includes('/winget/') || p.includes('/microsoft/winget/')) return 'winget';
   if (/\/usr\/local\/lib\/node_modules\//.test(p)) return 'npm';
@@ -10489,15 +11037,19 @@ async function checkToolVersions() {
     }
 
     // Nuclear safety net for the recurring claude phantom-version bug:
-    // if the probe returned a known historical bundled version of claude-code,
-    // reject it even if the binary-path detection failed. A real user-global
-    // install of claude is always current (2.1.116+), so seeing 2.1.89 etc.
-    // means we're reading a stale bundle SynaBun shipped in a prior release.
-    if (tool.key === 'claude-code' && installed && KNOWN_STALE_CLAUDE_VERSIONS.has(installed)) {
+    // only reject when binary path detection failed (truly phantom). If we
+    // resolved a path AND it's outside SynaBun's own dirs, trust the version
+    // — Anthropic ships these versions in the native installer too, so a
+    // version-only blacklist hits legit installs at ~/.local/bin/claude.exe.
+    if (
+      tool.key === 'claude-code' &&
+      installed &&
+      KNOWN_STALE_CLAUDE_VERSIONS.has(installed) &&
+      !probedBinPath
+    ) {
       console.warn(
-        `  [version-guard] Rejected claude v${installed} from ${probedBinPath || '(unknown path)'}` +
-        ` — matches known-stale SynaBun bundle. Treating as not installed. ` +
-        `If you actually have this version installed, remove it from KNOWN_STALE_CLAUDE_VERSIONS.`
+        `  [version-guard] Rejected claude v${installed} from (unknown path)` +
+        ` — matches known-stale SynaBun bundle and no binary path could be resolved.`
       );
       installed = null;
     }
@@ -23337,6 +23889,21 @@ function saveSessionSnapshot() {
 setInterval(saveSessionSnapshot, SESSION_SNAPSHOT_INTERVAL_MS);
 
 // Also try to save on clean shutdown (works with Ctrl+C, not window close)
-process.on('SIGINT', () => { stopOpencodeServer(); saveSessionSnapshot(); process.exit(0); });
-process.on('SIGTERM', () => { stopOpencodeServer(); saveSessionSnapshot(); process.exit(0); });
-process.on('exit', () => { stopOpencodeServer(); saveSessionSnapshot(); });
+// Manual termination paths (Ctrl+C, kill, parent shell exit) all flow through
+// gracefulShutdown — same teardown the in-app restart/shutdown/update paths
+// use. Without this, hand-killed servers still leave orphaned opencode +
+// agent children holding file handles, which blocks `npm i -g synabun`.
+process.on('SIGINT', async () => {
+  console.log('\n[server] SIGINT received.');
+  await gracefulShutdown('sigint');
+  process.exit(0);
+});
+process.on('SIGTERM', async () => {
+  console.log('\n[server] SIGTERM received.');
+  await gracefulShutdown('sigterm');
+  process.exit(0);
+});
+// `exit` fires after process.exit() — only safe for synchronous final tasks.
+// gracefulShutdown is async so we cannot await here; just snapshot + ocp stop
+// best-effort. The async paths above are the primary teardown.
+process.on('exit', () => { try { stopOpencodeServer(); } catch {} try { saveSessionSnapshot(); } catch {} });

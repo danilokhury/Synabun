@@ -5102,6 +5102,42 @@
     color: var(--t-muted);
     padding: 4px 0;
   }
+  .update-run-status {
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--r-card);
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.045);
+    color: var(--t-secondary);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .update-run-status .update-backup-icon {
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+  .update-run-status strong {
+    display: block;
+    color: var(--t-primary);
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .update-run-detail,
+  .update-run-hint {
+    display: block;
+    color: var(--t-muted);
+  }
+  .update-run-hint {
+    margin-top: 5px;
+    opacity: .82;
+  }
+  .update-run-status code {
+    font-family: var(--ff-mono);
+    font-size: 11px;
+    color: var(--t-secondary);
+  }
   .update-backup-icon { font-size: 14px; font-weight: 700; }
   .update-backup-icon.spin { animation: updateSpin 1s linear infinite; }
   @keyframes updateSpin {

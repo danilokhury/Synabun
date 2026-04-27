@@ -439,7 +439,7 @@ function injectStyles() {
       grid-template-columns: auto 1fr auto;
       gap: 10px;
       align-items: center;
-      margin: 8px 12px 0;
+      margin: 6px 8px 0;
       padding: 10px 12px;
       border: 1px solid rgba(255,180,80,0.45);
       border-radius: 8px;
@@ -7331,8 +7331,8 @@ let _cliInstallFailureForced = false;
 function _ensureCliBannerEl() {
   if (!_panel) return null;
   const container = _panel.querySelector('#cp-messages-container');
-  if (!container) return null;
-  let banner = container.querySelector(':scope > .cp-cli-banner');
+  if (!container || !container.parentNode) return null;
+  let banner = container.parentNode.querySelector(':scope > .cp-cli-banner');
   if (banner) return banner;
   const label = getCliLabel('claude-code');
   const cmd = getCliInstallCommand('claude-code');
@@ -7350,7 +7350,7 @@ function _ensureCliBannerEl() {
       <button class="cp-cli-banner-recheck" type="button">Re-check</button>
     </div>
   `;
-  container.insertBefore(banner, container.firstChild);
+  container.parentNode.insertBefore(banner, container);
   const btn = banner.querySelector('.cp-cli-banner-recheck');
   btn?.addEventListener('click', async () => {
     btn.disabled = true;
@@ -7368,7 +7368,7 @@ function _ensureCliBannerEl() {
 
 function _removeCliBannerEl() {
   if (!_panel) return;
-  const banner = _panel.querySelector('#cp-messages-container > .cp-cli-banner');
+  const banner = _panel.querySelector(':scope > .cp-cli-banner');
   banner?.remove();
 }
 
