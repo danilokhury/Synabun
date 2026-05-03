@@ -8,8 +8,32 @@
 import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
 import { storage } from './storage.js';
-import { sendToPanel } from './ui-claude-panel.js';
-import { on, emit } from './state.js';
+import { sendToPanel as sendToClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
+import { isOpencodePanelOpen, attachPathToOpencode } from './ocp/ocp-panel.js';
+import { isCodexPanelOpen, toggleCodexPanel } from './cdx/cdx-panel.js';
+import { addPathChip as addCodexPathChip } from './cdx/cdx-tabs.js';
+import { on, emit, state } from './state.js';
+
+// Route a file path to whichever side panel is currently active. Falls back
+// to the last-active panel (`state.lastActivePanel`) if none are visible, and
+// finally to Claude. Each panel attaches the path in its native format
+// (chips for Claude/Codex, plain-text input append for OpenCode).
+async function sendPathToActivePanel(filePath) {
+  let target;
+  if (isOpencodePanelOpen()) target = 'opencode';
+  else if (isCodexPanelOpen()) target = 'codex';
+  else if (isClaudePanelOpen()) target = 'claude';
+  else target = state.lastActivePanel || 'claude';
+
+  if (target === 'opencode') {
+    await attachPathToOpencode(filePath);
+  } else if (target === 'codex') {
+    if (!isCodexPanelOpen()) await toggleCodexPanel();
+    addCodexPathChip(filePath);
+  } else {
+    await sendToClaudePanel(filePath);
+  }
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -1243,7 +1267,7 @@ function showContextMenu(e, item, nodeEl, rowEl, iconEl, depth) {
 
   // ── Send to AI (both)
   menu.appendChild(_ctxItem(aiIcon, 'Send to AI', () => {
-    sendToPanel(item.fullPath);
+    sendPathToActivePanel(item.fullPath);
     dismissCtxMenu();
   }));
 

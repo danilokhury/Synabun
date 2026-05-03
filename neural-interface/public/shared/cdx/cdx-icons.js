@@ -46,6 +46,7 @@ export const STOR = {
   model: 'synabun-codex-panel-model',
   effort: 'synabun-codex-panel-effort',
   autoAccept: 'synabun-codex-panel-autoaccept',
+  windowRegistry: 'synabun-codex-panel-windows', // JSON map of windowId → lastSeen — used by stale-window GC
 };
 
 // ── Effort Levels ──

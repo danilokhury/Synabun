@@ -1602,7 +1602,10 @@ async function gracefulShutdown(reason = 'shutdown') {
   // Do not run this for click-to-update. The updater terminal is deliberately
   // launched before this server exits; taskkill /T would kill that brand-new
   // terminal too, which looks like a brief blink and no update on Windows.
-  if (process.platform === 'win32' && reason !== 'run-update') {
+  // Also skip for 'restart': the parent setup.js supervisor must survive so
+  // it can respawn us. taskkill /T from this process would also kill the
+  // parent setup.js node process and break auto-restart.
+  if (process.platform === 'win32' && reason !== 'run-update' && reason !== 'restart') {
     try {
       // Use spawn(detached) so taskkill survives our own exit and finishes
       // killing children even if we exit before it completes.
@@ -1617,14 +1620,50 @@ async function gracefulShutdown(reason = 'shutdown') {
 }
 
 // POST /api/server/restart — Gracefully restart the server process.
-// (Caller is expected to launch a new instance externally; we just exit.)
+//
+// Two paths:
+// 1. Supervised: launched by setup.js (SYNABUN_SUPERVISED=1). Exit with
+//    sentinel code 75 so the parent supervisor respawns us automatically.
+// 2. Unsupervised: someone ran `node server.js` directly. Spawn `node setup.js`
+//    detached as a fallback so the user still gets auto-restart without a
+//    manual terminal command (mirrors updater.mjs autoRestart pattern).
+const RESTART_EXIT_CODE = 75;
+const RESTART_MARKER = resolve(DATA_HOME, 'restart-requested');
 app.post('/api/server/restart', async (req, res) => {
   console.log('[server] Restart requested.');
-  res.json({ ok: true, message: 'Server restarting...' });
+  const supervised = process.env.SYNABUN_SUPERVISED === '1';
+  res.json({ ok: true, message: 'Server restarting...', supervised });
+
+  // Drop a marker so the supervisor respawns even if our exit code is not 75.
+  // Native module teardown (sqlite/playwright/node-pty) can crash with
+  // `mutex lock failed` mid-shutdown, which clobbers the sentinel exit code.
+  try { writeFileSync(RESTART_MARKER, String(Date.now())); } catch (err) {
+    console.warn('[server] Could not write restart marker:', err?.message);
+  }
+
   // Defer so the response flushes before we start tearing down children.
   setTimeout(async () => {
+    if (!supervised) {
+      // Detached fallback: spawn setup.js so a fresh server comes up after we exit.
+      try {
+        const setupPath = resolve(PACKAGE_ROOT, 'setup.js');
+        const respawnEnv = { ...process.env };
+        delete respawnEnv.SYNABUN_SUPERVISED;
+        const child = spawn(process.execPath, [setupPath], {
+          cwd: PACKAGE_ROOT,
+          detached: true,
+          stdio: 'ignore',
+          env: respawnEnv,
+          windowsHide: true,
+        });
+        child.unref();
+        console.log('[server] Detached setup.js spawned for unsupervised restart.');
+      } catch (err) {
+        console.error('[server] Detached respawn failed:', err?.message);
+      }
+    }
     await gracefulShutdown('restart');
-    process.exit(0);
+    process.exit(supervised ? RESTART_EXIT_CODE : 0);
   }, 200);
 });
 
@@ -4540,10 +4579,104 @@ function broadcastToOpencodeClients(data) {
       bytes: _ocpByteLen(data),
     });
   }
+  // Compact, always-on log for session-scoped events so multi-session debugging
+  // does not require OCP_VERBOSE. Surfaces session.created (parent + child link),
+  // session.idle, session.error.
+  if (data?.type === 'event' && data.eventType) {
+    const ev = data.event || {};
+    const evSid = ev.sessionID || ev.sessionId || ev.session?.id || ev.info?.id || '';
+    const parentSid = ev.parentID || ev.parentId || ev.session?.parentID || '';
+    if (data.eventType === 'session.created' && evSid) {
+      _ocpSessionLog('session.created', { sid: evSid, parent: parentSid || undefined, clients: _ocpWsClients.size });
+    } else if (data.eventType === 'session.idle' && evSid) {
+      const owners = _ocpSessionOwners.get(evSid);
+      _ocpSessionLog('session.idle', {
+        sid: evSid,
+        plan: owners?.planMode ? 1 : undefined,
+        owners: owners?.clients.size || 0,
+      });
+    } else if (data.eventType === 'session.error' && evSid) {
+      _ocpSessionLog('session.error', { sid: evSid });
+    }
+  }
   const msg = JSON.stringify(data);
   for (const c of _ocpWsClients) {
     if (c.readyState === 1) c.send(msg);
   }
+}
+
+// ── Always-on session lifecycle tracker (independent of OCP_VERBOSE) ──
+//
+// Tracks which WS connection owns which OpenCode session, plan-mode usage, and
+// in-flight sends so multi-session debugging produces a readable timeline
+// without needing OCP_VERBOSE=1 (the firehose). Compact one-line entries.
+let _ocpClientSeq = 0;                          // unique id per WS connection
+const _ocpSessionOwners = new Map();            // sessionId → { clients:Set<connId>, planMode:bool, lastSendAt:number }
+const _ocpSessionLogEnabled = process.env.OCP_SESSION_LOG !== '0'; // default ON; set OCP_SESSION_LOG=0 to silence
+
+function _ocpSessionLog(tag, fields = {}) {
+  if (!_ocpSessionLogEnabled) return;
+  const parts = [];
+  for (const k of Object.keys(fields)) {
+    const v = fields[k];
+    if (v === undefined || v === null) continue;
+    parts.push(`${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
+  }
+  console.log(`[ocp-session] ${tag}${parts.length ? ' ' + parts.join(' ') : ''}`);
+}
+
+function _ocpAttachSession(connId, sessionId, { planMode = null } = {}) {
+  if (!sessionId) return;
+  let entry = _ocpSessionOwners.get(sessionId);
+  if (!entry) {
+    entry = { clients: new Set(), planMode: false, lastSendAt: 0 };
+    _ocpSessionOwners.set(sessionId, entry);
+  }
+  // Conflict: a session already owned by another live client is now being used
+  // by a second client. This is the canonical "multi-session breakage" signal.
+  for (const otherId of entry.clients) {
+    if (otherId !== connId) {
+      _ocpSessionLog('session.conflict', { sid: sessionId, owners: [...entry.clients, connId].join(',') });
+    }
+  }
+  entry.clients.add(connId);
+  if (planMode === true) entry.planMode = true;
+  if (planMode === false && entry.planMode && entry.clients.size === 1) entry.planMode = false;
+}
+
+function _ocpDetachSession(connId, sessionId) {
+  if (!sessionId) return;
+  const entry = _ocpSessionOwners.get(sessionId);
+  if (!entry) return;
+  entry.clients.delete(connId);
+  if (entry.clients.size === 0) _ocpSessionOwners.delete(sessionId);
+}
+
+function _ocpSummarizeSendBody(body) {
+  // Surface plan-mode + tool restrictions + part shape without dumping content.
+  if (!body || typeof body !== 'object') return {};
+  const parts = Array.isArray(body.parts) ? body.parts : [];
+  let textParts = 0, fileParts = 0, otherParts = 0, textChars = 0;
+  for (const p of parts) {
+    if (!p) continue;
+    if (p.type === 'text') { textParts += 1; textChars += String(p.text || '').length; }
+    else if (p.type === 'file') fileParts += 1;
+    else otherParts += 1;
+  }
+  const tools = body.tools && typeof body.tools === 'object'
+    ? Object.keys(body.tools).filter(k => body.tools[k] === false).join(',') || undefined
+    : undefined;
+  return {
+    mode: body.mode || undefined,
+    agent: body.agent || undefined,
+    model: body.model && (body.model.modelID || body.model.id) ? `${body.model.providerID || ''}/${body.model.modelID || body.model.id}` : undefined,
+    parts: parts.length || undefined,
+    textParts: textParts || undefined,
+    textChars: textChars || undefined,
+    fileParts: fileParts || undefined,
+    otherParts: otherParts || undefined,
+    toolsDisabled: tools,
+  };
 }
 
 async function checkOpencodeHealth() {
@@ -5038,6 +5171,11 @@ function handleOpencodeWs(ws) {
   let wsAlive = true;
   const _sendAbortControllers = new Map(); // sessionId → AbortController for in-flight message:send
   const pendingGreetingSessions = new Map(); // sessionId → cwd (fire-once greeting injection)
+  // Per-connection identity + owned-sessions set so we can attribute lifecycle
+  // events to a specific browser tab and detect cross-client session conflicts.
+  const connId = ++_ocpClientSeq;
+  const ownedSessions = new Set();
+  _ocpSessionLog('client.connect', { conn: connId, total: _ocpWsClients.size });
 
   const pingInterval = setInterval(() => {
     if (!wsAlive) { ws.terminate(); return; }
@@ -5088,7 +5226,19 @@ function handleOpencodeWs(ws) {
           if (input.parentID || input.parentId) body.parentID = input.parentID || input.parentId;
           const r = await ocpProxy('POST', '/session', body);
           const newSid = r?.data?.id || r?.data?.sessionID || r?.data?.info?.id || null;
-          if (newSid) pendingGreetingSessions.set(newSid, msg.cwd || PACKAGE_ROOT);
+          if (newSid) {
+            pendingGreetingSessions.set(newSid, msg.cwd || PACKAGE_ROOT);
+            ownedSessions.add(newSid);
+            _ocpAttachSession(connId, newSid);
+            _ocpSessionLog('session.create', {
+              conn: connId, sid: newSid,
+              cwd: msg.cwd || undefined,
+              parent: body.parentID || undefined,
+              status: r.status,
+            });
+          } else if (r.status >= 400) {
+            _ocpSessionLog('session.create.fail', { conn: connId, status: r.status });
+          }
           sendToClient({ type: 'session:create:result', id, ...r });
           break;
         }
@@ -5105,6 +5255,9 @@ function handleOpencodeWs(ws) {
         case 'session:delete': {
           pendingGreetingSessions.delete(msg.sessionId);
           const r = await ocpProxy('DELETE', `/session/${msg.sessionId}`);
+          ownedSessions.delete(msg.sessionId);
+          _ocpDetachSession(connId, msg.sessionId);
+          _ocpSessionLog('session.delete', { conn: connId, sid: msg.sessionId, status: r.status });
           sendToClient({ type: 'session:delete:result', id, ...r });
           break;
         }
@@ -5117,6 +5270,17 @@ function handleOpencodeWs(ws) {
           const tid = _ocpTraceId();
           const tStart = _ocpNow();
           ocpTrace('send:begin', { tid, id, sid, dispatchMs: _ocpMs(_wsRecvAt) });
+          // Always-on session log: surface plan/build/chat mode + part shape so
+          // we can correlate "message sent" → "session.idle" timelines per tab.
+          if (sid) {
+            const planMode = msg.body?.mode === 'plan' ? true : (msg.body?.mode ? false : null);
+            ownedSessions.add(sid);
+            _ocpAttachSession(connId, sid, { planMode });
+            const summary = _ocpSummarizeSendBody(msg.body || {});
+            const owners = _ocpSessionOwners.get(sid);
+            if (owners) owners.lastSendAt = Date.now();
+            _ocpSessionLog('send.begin', { conn: connId, sid, tid, ...summary });
+          }
           // ── Slash command → skill injection ──
           try {
             const parts = Array.isArray(msg.body?.parts) ? msg.body.parts : null;
@@ -5196,12 +5360,15 @@ function handleOpencodeWs(ws) {
             });
             sendToClient({ type: 'message:send:result', id, status: resp.status, data });
             ocpTrace('send:end', { tid, sid, status: resp.status, totalMs: _ocpMs(tStart) });
+            _ocpSessionLog('send.end', { conn: connId, sid, tid, status: resp.status, ms: _ocpMs(tStart), respBytes });
           } catch (err) {
             if (err.name === 'AbortError') {
               ocpTrace('send:abort', { tid, sid, totalMs: _ocpMs(tStart) });
+              _ocpSessionLog('send.abort', { conn: connId, sid, tid, ms: _ocpMs(tStart) });
               sendToClient({ type: 'message:send:result', id, status: 499, data: { error: 'Aborted' } });
             } else {
               ocpTrace('send:err', { tid, sid, err: err.name, msg: err.message, totalMs: _ocpMs(tStart) });
+              _ocpSessionLog('send.error', { conn: connId, sid, tid, err: err.name, ms: _ocpMs(tStart) });
               sendToClient({ type: 'message:send:result', id, status: 500, data: { error: err.message } });
             }
           } finally {
@@ -5219,6 +5386,7 @@ function handleOpencodeWs(ws) {
           } catch (err) {
             r = { status: 0, ok: false, error: err?.message || String(err) };
           }
+          _ocpSessionLog('message.abort', { conn: connId, sid: msg.sessionId, status: r?.status });
           // Always ack so the client never hangs waiting for this reply.
           sendToClient({ type: 'message:abort:result', id, ...(r || { ok: true }) });
           break;
@@ -5384,12 +5552,22 @@ function handleOpencodeWs(ws) {
     // Abort any in-flight message:send fetches for this connection
     for (const ac of _sendAbortControllers.values()) { try { ac.abort(); } catch {} }
     _sendAbortControllers.clear();
+    for (const sid of ownedSessions) _ocpDetachSession(connId, sid);
+    _ocpSessionLog('client.disconnect', {
+      conn: connId,
+      sessions: ownedSessions.size || undefined,
+      total: _ocpWsClients.size,
+    });
+    ownedSessions.clear();
     if (_ocpWsClients.size === 0) scheduleOllamaStop();
   });
 
   ws.on('error', () => {
     clearInterval(pingInterval);
     _ocpWsClients.delete(ws);
+    for (const sid of ownedSessions) _ocpDetachSession(connId, sid);
+    _ocpSessionLog('client.error', { conn: connId, total: _ocpWsClients.size });
+    ownedSessions.clear();
     if (_ocpWsClients.size === 0) scheduleOllamaStop();
   });
 }
@@ -8663,6 +8841,94 @@ app.get('/api/loop/active', (req, res) => {
       return res.json({ active: true, ...first, loops: activeLoops });
     }
     return res.json({ active: false, loops: [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/loop/list — full loop inventory for the Session Monitor.
+// Unlike /api/loop/active, this returns ALL loop files (active + inactive)
+// classified by state so the UI can show stale/finished/orphaned entries
+// alongside running ones. Does NOT delete anything (read-only).
+app.get('/api/loop/list', (_req, res) => {
+  try {
+    if (!existsSync(LOOP_DIR)) return res.json({ loops: [], staleCount: 0 });
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep' && !f.startsWith('pending-') && f !== 'active-pointer.json');
+    const now = Date.now();
+    const loops = [];
+    let staleCount = 0;
+    for (const f of files) {
+      try {
+        const filePath = resolve(LOOP_DIR, f);
+        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+        const startedAtMs = data.startedAt ? new Date(data.startedAt).getTime() : 0;
+        const lastIterAtMs = data.lastIterationAt ? new Date(data.lastIterationAt).getTime() : startedAtMs;
+        const elapsedMs = startedAtMs ? now - startedAtMs : 0;
+        const stalledMs = lastIterAtMs ? now - lastIterAtMs : 0;
+        const terminalAlive = data.terminalSessionId ? terminalSessions.has(data.terminalSessionId) : false;
+        const iterDone = (data.currentIteration || 0) >= (data.totalIterations || 0) && (data.totalIterations || 0) > 0;
+        let state;
+        if (data.active === false) {
+          state = 'stale-inactive';
+          staleCount++;
+        } else if (data.terminalSessionId && !terminalAlive) {
+          state = 'orphaned-pty';
+        } else if (iterDone) {
+          state = 'finished';
+        } else {
+          state = 'active';
+        }
+        loops.push({
+          sessionId: f.replace('.json', ''),
+          terminalSessionId: data.terminalSessionId || null,
+          terminalAlive,
+          task: typeof data.task === 'string' ? data.task.slice(0, 200) : '',
+          currentIteration: data.currentIteration || 0,
+          totalIterations: data.totalIterations || 0,
+          startedAt: data.startedAt || null,
+          lastIterationAt: data.lastIterationAt || null,
+          elapsedMinutes: Math.round(elapsedMs / 60000),
+          stalledMinutes: Math.round(stalledMs / 60000),
+          stalledMs,
+          state,
+          browserSessionId: data.browserSessionId || null,
+          browserTabId: data.browserTabId || null,
+          usesBrowser: !!data.usesBrowser,
+        });
+      } catch { /* skip corrupt */ }
+    }
+    // Newest first
+    loops.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
+    res.json({ loops, staleCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/loop/cleanup — delete stale loop files (active === false only).
+// No PTY/browser side-effects since these are leftover files for already-ended
+// loops. For force-stopping running loops, use POST /api/loop/stop instead.
+app.post('/api/loop/cleanup', (_req, res) => {
+  try {
+    if (!existsSync(LOOP_DIR)) return res.json({ ok: true, cleaned: 0, remaining: 0 });
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep' && !f.startsWith('pending-') && f !== 'active-pointer.json');
+    let cleaned = 0;
+    let remaining = 0;
+    for (const f of files) {
+      const filePath = resolve(LOOP_DIR, f);
+      try {
+        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+        if (data.active === false) {
+          try { unlinkSync(filePath); cleaned++; } catch { /* ok */ }
+        } else {
+          remaining++;
+        }
+      } catch {
+        // Corrupt — also count as stale and delete
+        try { unlinkSync(filePath); cleaned++; } catch { /* ok */ }
+      }
+    }
+    res.json({ ok: true, cleaned, remaining });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -11963,6 +12229,17 @@ app.post('/api/create-plan', (req, res) => {
     const { content, cwd, projectPath } = req.body;
     if (!content || typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
 
+    // Reject thinking/preamble content masquerading as a plan. If there is no H1 and the
+    // first non-empty line begins with a known thinking marker, refuse the write so the
+    // UI can retry instead of accumulating garbage filenames.
+    const h1 = content.match(/^#\s+(.+)$/m);
+    if (!h1) {
+      const firstLine = (content.split('\n').find(l => l.trim()) || '').trim();
+      if (/^(thought\b|›|thinking[:\s]|let me\b|i'?ll\b|i will\b|the user wants? me\b)/i.test(firstLine)) {
+        return res.status(422).json({ error: 'Plan content looks like thinking/preamble, not a plan (no H1, starts with narration marker)' });
+      }
+    }
+
     // Date-organized folder
     const d = new Date();
     const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -11970,7 +12247,6 @@ app.post('/api/create-plan', (req, res) => {
     if (!existsSync(plansDir)) mkdirSync(plansDir, { recursive: true });
 
     // Slug from H1 heading or first line
-    const h1 = content.match(/^#\s+(.+)$/m);
     const title = h1 ? h1[1].trim() : (content.split('\n').find(l => l.trim()) || 'untitled').trim();
     const slug = (title || 'untitled')
       .toLowerCase()
@@ -12650,6 +12926,21 @@ function hookCommandString(scriptName, targetProjectPath) {
   return `node "${scriptPath}"`;
 }
 
+// Returns the set of all command-string forms that should be treated as the
+// same hook entry. For the SynaBun project both relative and absolute forms
+// are valid (different install flows write different forms); for any other
+// target only the absolute form is meaningful.
+function hookCommandVariants(scriptName, targetProjectPath) {
+  const variants = new Set();
+  const relCmd = `node ${join('hooks', 'claude-code', scriptName).replace(/\\/g, '/')}`;
+  const absCmd = `node "${resolve(PACKAGE_ROOT, 'hooks', 'claude-code', scriptName).replace(/\\/g, '/')}"`;
+  variants.add(absCmd);
+  if (targetProjectPath && resolve(targetProjectPath) === resolve(PACKAGE_ROOT)) {
+    variants.add(relCmd);
+  }
+  return variants;
+}
+
 function isHookInstalled(settings, targetProjectPath) {
   // Installed if at least the SessionStart hook is present
   if (!settings?.hooks?.SessionStart) return false;
@@ -12755,6 +13046,43 @@ const SYNABUN_TOOL_PERMISSIONS = [
   'mcp__SynaBun__card_close',
   'mcp__SynaBun__card_update',
   'mcp__SynaBun__card_screenshot',
+  'mcp__SynaBun__leonardo_browser_navigate',
+  'mcp__SynaBun__leonardo_browser_generate',
+  'mcp__SynaBun__leonardo_browser_library',
+  'mcp__SynaBun__leonardo_browser_download',
+  'mcp__SynaBun__leonardo_browser_reference',
+  'mcp__SynaBun__image_staged',
+  'mcp__SynaBun__profile',
+  'mcp__SynaBun__gsc_navigate',
+  'mcp__SynaBun__gsc_property',
+  'mcp__SynaBun__gsc_inspect_url',
+  'mcp__SynaBun__gsc_inspect_test_live',
+  'mcp__SynaBun__gsc_inspect_request_indexing',
+  'mcp__SynaBun__gsc_inspect_view_crawled',
+  'mcp__SynaBun__gsc_performance_query',
+  'mcp__SynaBun__gsc_performance_export',
+  'mcp__SynaBun__gsc_performance_chart_screenshot',
+  'mcp__SynaBun__gsc_pages_report',
+  'mcp__SynaBun__gsc_pages_validate_fix',
+  'mcp__SynaBun__gsc_videos_report',
+  'mcp__SynaBun__gsc_sitemap',
+  'mcp__SynaBun__gsc_removals',
+  'mcp__SynaBun__gsc_removals_cancel',
+  'mcp__SynaBun__gsc_cwv_report',
+  'mcp__SynaBun__gsc_https_report',
+  'mcp__SynaBun__gsc_security_issues',
+  'mcp__SynaBun__gsc_manual_actions',
+  'mcp__SynaBun__gsc_enhancements',
+  'mcp__SynaBun__gsc_links_report',
+  'mcp__SynaBun__gsc_links_export',
+  'mcp__SynaBun__gsc_settings',
+  'mcp__SynaBun__gsc_crawl_stats',
+  'mcp__SynaBun__gsc_users',
+  'mcp__SynaBun__gsc_associations',
+  'mcp__SynaBun__gsc_disavow',
+  'mcp__SynaBun__gsc_shopping',
+  'mcp__SynaBun__gsc_extract_table',
+  'mcp__SynaBun__gsc_screenshot',
 ];
 
 // Ensure base permissions structure + built-in tool permissions that SynaBun requires.
@@ -12811,6 +13139,7 @@ const SYNABUN_TOOL_CATEGORIES = [
       { key: 'mcp__SynaBun__browser_wait', label: 'Wait for page', desc: 'Wait until an element or page finishes loading' },
       { key: 'mcp__SynaBun__browser_scroll', label: 'Scroll', desc: 'Scroll the page or a specific area' },
       { key: 'mcp__SynaBun__browser_upload', label: 'Upload file', desc: 'Upload a file through a form' },
+      { key: 'mcp__SynaBun__browser_cheatsheet', label: 'Selector cheatsheet', desc: 'Look up stable selectors and flow notes for a social platform' },
     ],
   },
   {
@@ -12872,6 +13201,7 @@ const SYNABUN_TOOL_CATEGORIES = [
     tools: [
       { key: 'mcp__SynaBun__loop', label: 'Autonomous loops', desc: 'Run, stop, or check background tasks' },
       { key: 'mcp__SynaBun__category', label: 'Manage categories', desc: 'Create, edit, or remove memory categories' },
+      { key: 'mcp__SynaBun__profile', label: 'Switch tool profile', desc: 'Get or set the active MCP tool profile at runtime' },
       { key: 'mcp__SynaBun__tictactoe', label: 'Tic Tac Toe', desc: 'Play a game of tic-tac-toe with your AI' },
       { key: 'mcp__SynaBun__git', label: 'Git operations', desc: 'Status, diff, commit, log, and branches' },
     ],
@@ -12890,6 +13220,41 @@ const SYNABUN_TOOL_CATEGORIES = [
     id: 'images', label: 'Images',
     tools: [
       { key: 'mcp__SynaBun__image_staged', label: 'Staged images', desc: 'List, clear, or remove staged images' },
+    ],
+  },
+  {
+    id: 'gsc', label: 'Google Search Console',
+    tools: [
+      { key: 'mcp__SynaBun__gsc_navigate', label: 'Open GSC page', desc: 'Navigate to any Search Console section', group: 'Navigation' },
+      { key: 'mcp__SynaBun__gsc_property', label: 'Manage property', desc: 'List, select, read, or add a GSC property', group: 'Navigation' },
+      { key: 'mcp__SynaBun__gsc_inspect_url', label: 'Inspect URL', desc: 'Run URL Inspection and parse the result panel', group: 'URL Inspection' },
+      { key: 'mcp__SynaBun__gsc_inspect_test_live', label: 'Test live URL', desc: 'Run live URL test (up to 90s poll)', group: 'URL Inspection' },
+      { key: 'mcp__SynaBun__gsc_inspect_request_indexing', label: 'Request indexing', desc: 'Submit URL to Google\'s indexing queue (mutating)', group: 'URL Inspection' },
+      { key: 'mcp__SynaBun__gsc_inspect_view_crawled', label: 'View crawled page', desc: 'Open html / screenshot / http_response panel', group: 'URL Inspection' },
+      { key: 'mcp__SynaBun__gsc_performance_query', label: 'Performance query', desc: 'Run Performance report with filters and dimensions', group: 'Performance' },
+      { key: 'mcp__SynaBun__gsc_performance_export', label: 'Export performance', desc: 'Trigger CSV / Excel / Google Sheets export', group: 'Performance' },
+      { key: 'mcp__SynaBun__gsc_performance_chart_screenshot', label: 'Performance chart screenshot', desc: 'Capture the Performance chart panel', group: 'Performance' },
+      { key: 'mcp__SynaBun__gsc_pages_report', label: 'Pages report', desc: 'Read Coverage / Pages report with reason buckets', group: 'Indexing' },
+      { key: 'mcp__SynaBun__gsc_pages_validate_fix', label: 'Validate fix', desc: 'Start a Validate Fix run on a reason (mutating)', group: 'Indexing' },
+      { key: 'mcp__SynaBun__gsc_videos_report', label: 'Videos report', desc: 'Read the Video indexing report', group: 'Indexing' },
+      { key: 'mcp__SynaBun__gsc_sitemap', label: 'Sitemaps', desc: 'List, submit, delete, view errors for sitemaps (mutating)', group: 'Indexing' },
+      { key: 'mcp__SynaBun__gsc_removals', label: 'Removals', desc: 'List or create URL removal requests (mutating)', group: 'Indexing' },
+      { key: 'mcp__SynaBun__gsc_removals_cancel', label: 'Cancel removal', desc: 'Cancel a pending temporary removal (mutating)', group: 'Indexing' },
+      { key: 'mcp__SynaBun__gsc_cwv_report', label: 'Core Web Vitals', desc: 'Read mobile or desktop CWV report', group: 'Experience' },
+      { key: 'mcp__SynaBun__gsc_https_report', label: 'HTTPS report', desc: 'Read HTTPS coverage report', group: 'Experience' },
+      { key: 'mcp__SynaBun__gsc_security_issues', label: 'Security issues', desc: 'Read security issues; optionally request review', group: 'Experience' },
+      { key: 'mcp__SynaBun__gsc_manual_actions', label: 'Manual actions', desc: 'Read manual actions; optionally submit reconsideration', group: 'Experience' },
+      { key: 'mcp__SynaBun__gsc_enhancements', label: 'Enhancements', desc: 'Read any structured-data enhancements report', group: 'Experience' },
+      { key: 'mcp__SynaBun__gsc_links_report', label: 'Links report', desc: 'Read top linked / linking sites / linking text / internal links', group: 'Links' },
+      { key: 'mcp__SynaBun__gsc_links_export', label: 'Export links', desc: 'Trigger Links report export menu', group: 'Links' },
+      { key: 'mcp__SynaBun__gsc_settings', label: 'Settings', desc: 'Read settings page or change address (mutating)', group: 'Settings' },
+      { key: 'mcp__SynaBun__gsc_crawl_stats', label: 'Crawl stats', desc: 'Read Crawl Stats with breakdowns', group: 'Settings' },
+      { key: 'mcp__SynaBun__gsc_users', label: 'Users', desc: 'List, add, remove, change-role for property users (mutating)', group: 'Settings' },
+      { key: 'mcp__SynaBun__gsc_associations', label: 'Associations', desc: 'Manage Analytics / Merchant / Ads / Play / YouTube associations (mutating)', group: 'Settings' },
+      { key: 'mcp__SynaBun__gsc_disavow', label: 'Disavow links', desc: 'Download / upload / delete the Disavow file (mutating)', group: 'Settings' },
+      { key: 'mcp__SynaBun__gsc_shopping', label: 'Shopping report', desc: 'Read the Shopping / Merchant Listings report', group: 'Settings' },
+      { key: 'mcp__SynaBun__gsc_extract_table', label: 'Extract table', desc: 'Generic GSC grid → JSON extractor', group: 'Misc' },
+      { key: 'mcp__SynaBun__gsc_screenshot', label: 'Page screenshot', desc: 'Full-page screenshot of the active GSC tab', group: 'Misc' },
     ],
   },
   {
@@ -12995,10 +13360,19 @@ function addHookToSettings(settings, onlyEvent, targetProjectPath) {
   for (const def of defs) {
     if (!settings.hooks[def.event]) settings.hooks[def.event] = [];
     const cmd = hookCommandString(def.script, targetProjectPath);
-    const alreadyExists = settings.hooks[def.event].some(entry =>
-      entry.hooks?.some(h => h.command === cmd)
-    );
-    if (!alreadyExists) {
+    const variants = hookCommandVariants(def.script, targetProjectPath);
+    // Self-healing sweep: keep at most one entry pointing at this script (any
+    // command-string form). This prevents the legacy duplication bug where
+    // relative + absolute forms both passed an exact-match dedup check.
+    let kept = false;
+    settings.hooks[def.event] = settings.hooks[def.event].filter(entry => {
+      const matches = entry.hooks?.some(h => variants.has(h.command));
+      if (!matches) return true;
+      if (kept) return false;
+      kept = true;
+      return true;
+    });
+    if (!kept) {
       settings.hooks[def.event].push({
         matcher: def.matcher || '',
         hooks: [{ type: 'command', command: cmd, timeout: def.timeout }],
@@ -13006,6 +13380,55 @@ function addHookToSettings(settings, onlyEvent, targetProjectPath) {
     }
   }
   return settings;
+}
+
+// Walk every settings.json (global + registered projects) and dedup hook
+// entries that point at the same script in different command-string forms.
+// Runs once at server startup to repair existing damage from the legacy
+// duplication bug. Returns { files, removed } counters for logging.
+function dedupeAllSettingsHooks() {
+  const stats = { files: 0, removed: 0 };
+  const sweep = (settings, targetProjectPath) => {
+    if (!settings?.hooks) return false;
+    let changed = false;
+    for (const def of HOOK_SCRIPTS) {
+      const arr = settings.hooks[def.event];
+      if (!Array.isArray(arr) || arr.length === 0) continue;
+      const variants = hookCommandVariants(def.script, targetProjectPath);
+      let kept = false;
+      const filtered = arr.filter(entry => {
+        const matches = entry.hooks?.some(h => variants.has(h.command));
+        if (!matches) return true;
+        if (kept) { stats.removed++; changed = true; return false; }
+        kept = true;
+        return true;
+      });
+      if (changed) settings.hooks[def.event] = filtered;
+    }
+    return changed;
+  };
+  try {
+    const globalPath = getGlobalClaudeSettingsPath();
+    const globalSettings = readClaudeSettings(globalPath);
+    if (globalSettings && sweep(globalSettings, undefined)) {
+      writeClaudeSettings(globalPath, globalSettings);
+      stats.files++;
+    }
+  } catch { /* ok */ }
+  try {
+    const projects = loadHookProjects();
+    for (const p of projects) {
+      try {
+        const projPath = getClaudeSettingsPath(p.path);
+        const projSettings = readClaudeSettings(projPath);
+        if (projSettings && sweep(projSettings, p.path)) {
+          writeClaudeSettings(projPath, projSettings);
+          stats.files++;
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* ok */ }
+  return stats;
 }
 
 function removeHookFromSettings(settings, onlyEvent, targetProjectPath) {
@@ -14806,6 +15229,76 @@ app.get('/api/claude-code/ruleset', (req, res) => {
   }
 });
 
+// GET /api/claude-code/ruleset/versions — Per-format fingerprint for the
+// Notifications drawer. Manifest entry (templates/ruleset-versions.json) wins;
+// if absent, fall back to a SHA-1 of the section text. Cached by mtime so the
+// disk read happens at most once per change.
+const _RULESET_FORMATS = ['claude', 'codex', 'cursor', 'generic', 'gemini'];
+const _RULESET_MARKERS = {
+  claude:  { start: '## Memory Ruleset', end: '## Condensed Rulesets' },
+  cursor:  { start: '### Cursor',        end: '### Generic' },
+  generic: { start: '### Generic',       end: '### Gemini' },
+  gemini:  { start: '### Gemini',        end: '### Codex' },
+  codex:   { start: '### Codex',         end: '\n---' },
+};
+let _rulesetVersionsCache = { mtime: 0, payload: null };
+
+app.get('/api/claude-code/ruleset/versions', (req, res) => {
+  try {
+    const templatePath = resolve(__dirname, 'templates', 'CLAUDE-template.md');
+    const manifestPath = resolve(__dirname, 'templates', 'ruleset-versions.json');
+    if (!existsSync(templatePath)) {
+      return res.status(404).json({ error: 'CLAUDE.md template not found' });
+    }
+
+    const tplStat = statSync(templatePath);
+    const manStat = existsSync(manifestPath) ? statSync(manifestPath) : null;
+    const mtime = Math.max(tplStat.mtimeMs || 0, manStat?.mtimeMs || 0);
+    if (_rulesetVersionsCache.payload && _rulesetVersionsCache.mtime === mtime) {
+      return res.json(_rulesetVersionsCache.payload);
+    }
+
+    const tpl = readFileSync(templatePath, 'utf-8');
+    let manifest = null;
+    if (manStat) {
+      try { manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')); } catch { manifest = null; }
+    }
+
+    const formats = {};
+    for (const fmt of _RULESET_FORMATS) {
+      const marker = _RULESET_MARKERS[fmt];
+      const startIdx = marker ? tpl.indexOf(marker.start) : -1;
+      let sectionText = '';
+      if (startIdx !== -1) {
+        const endIdx = tpl.indexOf(marker.end, startIdx + marker.start.length);
+        sectionText = (endIdx !== -1 ? tpl.substring(startIdx, endIdx) : tpl.substring(startIdx)).trim();
+      }
+      const hash = createHash('sha1').update(sectionText).digest('hex').slice(0, 16);
+      const entry = manifest?.rulesets?.[fmt];
+      if (entry?.version) {
+        formats[fmt] = {
+          fingerprint: 'v:' + entry.version,
+          version: entry.version,
+          summary: entry.summary || '',
+          updatedAt: entry.updatedAt || '',
+          source: 'manifest',
+        };
+      } else {
+        formats[fmt] = {
+          fingerprint: 'h:' + hash,
+          source: 'hash',
+        };
+      }
+    }
+
+    const payload = { ok: true, formats };
+    _rulesetVersionsCache = { mtime, payload };
+    res.json(payload);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/claude-code/mcp — Check if SynaBun MCP is registered in Claude
 app.get('/api/claude-code/mcp', (req, res) => {
   try {
@@ -15538,6 +16031,56 @@ app.get('/api/claude-code/plugin-commands', (req, res) => {
     res.json({ ok: true, commands: out });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/sidepanel/kill-session — force-kill an orphaned sidepanel session.
+// Called when the user clicks × on a tray pill so the underlying CLI/SDK
+// process and its OpenCode-server session are torn down immediately rather
+// than waiting for the orphan grace timer.
+app.post('/api/sidepanel/kill-session', async (req, res) => {
+  try {
+    const { provider, windowId, sessionId, threadId } = req.body || {};
+    if (!provider) return res.status(400).json({ error: 'provider is required' });
+    let killed = false;
+
+    if (provider === 'claude') {
+      const okey = _orphanKey(windowId || '', sessionId || '');
+      const orphan = _orphanedProcs.get(okey);
+      if (orphan) {
+        clearTimeout(orphan.killTimer);
+        try { orphan.kill(); } catch {}
+        _orphanedProcs.delete(okey);
+        killed = true;
+      }
+      if (sessionId) _releaseSessionLock(sessionId);
+    } else if (provider === 'codex') {
+      const okey = _codexOrphanKey(windowId || '', sessionId || '');
+      if (okey) {
+        const orphan = _codexOrphanedProcs.get(okey);
+        if (orphan) {
+          clearTimeout(orphan.killTimer);
+          try { orphan.kill(); } catch {}
+          _codexOrphanedProcs.delete(okey);
+          killed = true;
+        }
+      }
+    } else if (provider === 'opencode') {
+      // OpenCode sessions live on the OpenCode SDK server, not in an orphan
+      // map — DELETE them via the proxy.
+      if (sessionId) {
+        try {
+          const r = await ocpProxy('DELETE', `/session/${encodeURIComponent(sessionId)}`);
+          killed = r.status >= 200 && r.status < 300;
+        } catch {}
+      }
+    } else {
+      return res.status(400).json({ error: `unknown provider "${provider}"` });
+    }
+
+    res.json({ ok: true, killed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -16421,6 +16964,20 @@ function readActiveMcpProfile() {
   return 'full';
 }
 
+function readMcpProfileFile(profilePath) {
+  try {
+    if (!existsSync(profilePath)) return null;
+    const data = JSON.parse(readFileSync(profilePath, 'utf-8'));
+    return data.profile && typeof data.profile === 'string' ? data.profile : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMcpProfileName(profile) {
+  return String(profile || 'full').toLowerCase().trim() || 'full';
+}
+
 function buildMcpProfilePresets() {
   const registry = readMcpRegistry();
   const profiles = registry.profiles || {};
@@ -16434,6 +16991,71 @@ function buildMcpProfilePresets() {
   return presets;
 }
 
+let _lastBroadcastMcpProfile = normalizeMcpProfileName(readActiveMcpProfile());
+let _mcpProfileWatchTimer = null;
+const _mcpProfileWatchers = [];
+
+function broadcastMcpProfileChanged(profile, source = 'server', extra = {}) {
+  const normalized = normalizeMcpProfileName(profile);
+  if (!extra.force && normalized === _lastBroadcastMcpProfile) return false;
+  _lastBroadcastMcpProfile = normalized;
+  try {
+    broadcastSync({
+      type: 'mcp:profile-changed',
+      profile: normalized,
+      presets: buildMcpProfilePresets(),
+      source,
+      ...extra,
+    });
+  } catch (err) {
+    console.warn(`[mcp/profile] Failed to broadcast profile change: ${err.message}`);
+  }
+  return true;
+}
+
+function scheduleMcpProfileFileSync(profilePath) {
+  if (_mcpProfileWatchTimer) clearTimeout(_mcpProfileWatchTimer);
+  _mcpProfileWatchTimer = setTimeout(() => {
+    _mcpProfileWatchTimer = null;
+    const profile = readMcpProfileFile(profilePath) || readActiveMcpProfile();
+    const normalized = normalizeMcpProfileName(profile);
+    if (normalized === _lastBroadcastMcpProfile) return;
+    try {
+      applyMcpProfile(normalized, 'file');
+    } catch (err) {
+      console.warn(`[mcp/profile] Failed to sync profile file change: ${err.message}`);
+    }
+  }, 150);
+}
+
+function startMcpProfileWatchers() {
+  const byDir = new Map();
+  for (const profilePath of getRuntimeMcpProfilePaths()) {
+    const dir = dirname(profilePath);
+    const name = basename(profilePath);
+    if (!existsSync(dir)) continue;
+    if (!byDir.has(dir)) byDir.set(dir, new Map());
+    byDir.get(dir).set(name, profilePath);
+  }
+
+  for (const [dir, files] of byDir) {
+    try {
+      const watcher = fsWatch(dir, (_event, filename) => {
+        const changedName = filename ? String(filename) : '';
+        if (changedName && !files.has(changedName)) return;
+        const profilePath = files.get(changedName) || files.values().next().value;
+        scheduleMcpProfileFileSync(profilePath);
+      });
+      watcher.on?.('error', (err) => {
+        console.warn(`[mcp/profile] Profile watcher failed for ${dir}: ${err.message}`);
+      });
+      _mcpProfileWatchers.push(watcher);
+    } catch (err) {
+      console.warn(`[mcp/profile] Could not watch profile directory ${dir}: ${err.message}`);
+    }
+  }
+}
+
 app.get('/api/mcp/profile', (req, res) => {
   try {
     res.json({ ok: true, profile: readActiveMcpProfile(), presets: buildMcpProfilePresets() });
@@ -16442,11 +17064,11 @@ app.get('/api/mcp/profile', (req, res) => {
   }
 });
 
-function applyMcpProfile(profile) {
+function applyMcpProfile(profile, source = 'server') {
   if (!profile || typeof profile !== 'string') {
     throw new Error('Missing "profile"');
   }
-  const normalized = profile.toLowerCase().trim();
+  const normalized = normalizeMcpProfileName(profile);
   const payload = JSON.stringify({ profile: normalized }, null, 2) + '\n';
   for (const profilePath of getRuntimeMcpProfilePaths()) {
     const dir = resolve(profilePath, '..');
@@ -16457,18 +17079,21 @@ function applyMcpProfile(profile) {
     opencode: syncProfileToOpencode(normalized),
     codex: syncProfileToCodex(normalized),
   };
+  broadcastMcpProfileChanged(normalized, source, { synced });
   return { profile: normalized, synced };
 }
 
 app.post('/api/mcp/profile', (req, res) => {
   try {
-    const result = applyMcpProfile(req.body?.profile);
+    const result = applyMcpProfile(req.body?.profile, 'api');
     res.json({ ok: true, ...result });
   } catch (err) {
     const status = err.message === 'Missing "profile"' ? 400 : 500;
     res.status(status).json({ ok: false, error: err.message });
   }
 });
+
+startMcpProfileWatchers();
 
 // --- MCP Registry API ---
 const MCP_REGISTRY_PATH = resolve(DATA_HOME, 'data', 'mcp-registry.json');
@@ -16493,6 +17118,7 @@ const SYNABUN_TOOL_GROUPS = {
   browser_linkedin:  { label: 'LinkedIn',   tools: 8  },
   leonardo:          { label: 'Leonardo',   tools: 5  },
   discord:           { label: 'Discord',    tools: 8  },
+  gsc:               { label: 'Google Search Console', tools: 30 },
 };
 
 function readMcpRegistry() {
@@ -16515,9 +17141,10 @@ function readMcpRegistry() {
       whatsapp:   { label: 'WhatsApp',   groups: ['git', 'image', 'browser', 'browser_whatsapp'], servers: [] },
       instagram:  { label: 'Instagram',  groups: ['git', 'image', 'browser', 'browser_instagram'], servers: [] },
       linkedin:   { label: 'LinkedIn',   groups: ['git', 'image', 'browser', 'browser_linkedin'], servers: [] },
-      browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo'], servers: [] },
-      full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'discord'], servers: [] },
+      browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'gsc'], servers: [] },
+      full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'discord', 'gsc'], servers: [] },
       leonardoai: { label: 'LeonardoAI', groups: ['leonardo'], servers: [] },
+      gsc:        { label: 'GSC',        groups: ['git', 'image', 'browser', 'gsc'], servers: [] },
     },
     activeProfile: 'full',
   };
@@ -16552,6 +17179,60 @@ function removeServerFromAllProfiles(registry, name) {
   return registry;
 }
 
+// Backfill migration: ensure persisted registry has every preset + group that
+// the default registry ships with. New SynaBun groups (e.g. `gsc`) added after
+// a user's first run would otherwise be invisible in the MCP Settings matrix
+// because mcp-registry.json was frozen on first launch. Runs on startup.
+function ensureProfileGroupsBackfilled() {
+  try {
+    if (!existsSync(MCP_REGISTRY_PATH)) return; // first run uses defaults from readMcpRegistry()
+    const persisted = JSON.parse(readFileSync(MCP_REGISTRY_PATH, 'utf-8'));
+    // Load defaults by temporarily hiding the persisted file
+    const stash = MCP_REGISTRY_PATH + '.stash-' + process.pid;
+    let defaults;
+    try {
+      // Inline default — same shape as readMcpRegistry()'s fallback branch
+      defaults = {
+        profiles: {
+          core:       { label: 'Core',       groups: ['git', 'image'], servers: [] },
+          standard:   { label: 'Standard',   groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe'], servers: [] },
+          'codex-browser': { label: 'Codex Browser', groups: ['git', 'image', 'browser', 'browser_twitter'], servers: [] },
+          twitter:    { label: 'Twitter/X',  groups: ['git', 'image', 'browser', 'browser_twitter'], servers: [] },
+          facebook:   { label: 'Facebook',   groups: ['git', 'image', 'browser', 'browser_facebook'], servers: [] },
+          tiktok:     { label: 'TikTok',     groups: ['git', 'image', 'browser', 'browser_tiktok'], servers: [] },
+          whatsapp:   { label: 'WhatsApp',   groups: ['git', 'image', 'browser', 'browser_whatsapp'], servers: [] },
+          instagram:  { label: 'Instagram',  groups: ['git', 'image', 'browser', 'browser_instagram'], servers: [] },
+          linkedin:   { label: 'LinkedIn',   groups: ['git', 'image', 'browser', 'browser_linkedin'], servers: [] },
+          browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'gsc'], servers: [] },
+          full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'discord', 'gsc'], servers: [] },
+          leonardoai: { label: 'LeonardoAI', groups: ['leonardo'], servers: [] },
+          gsc:        { label: 'GSC',        groups: ['git', 'image', 'browser', 'gsc'], servers: [] },
+        },
+      };
+    } finally { void stash; }
+    let changed = false;
+    persisted.profiles = persisted.profiles || {};
+    for (const [name, defProfile] of Object.entries(defaults.profiles)) {
+      if (!persisted.profiles[name]) {
+        persisted.profiles[name] = { label: defProfile.label, groups: [...defProfile.groups], servers: [] };
+        changed = true;
+        continue;
+      }
+      const have = new Set(persisted.profiles[name].groups || []);
+      for (const g of defProfile.groups) {
+        if (!have.has(g)) {
+          persisted.profiles[name].groups = persisted.profiles[name].groups || [];
+          persisted.profiles[name].groups.push(g);
+          changed = true;
+        }
+      }
+    }
+    if (changed) writeMcpRegistry(persisted);
+  } catch (err) {
+    console.warn('[mcp-registry] groups backfill failed:', err.message);
+  }
+}
+
 // Backfill migration: ensure profileDefaults is set and each profile's servers[]
 // lists every currently-registered server name. Runs idempotently on startup.
 function ensureProfileServersBackfilled() {
@@ -16579,6 +17260,7 @@ function ensureProfileServersBackfilled() {
     console.warn('[mcp-registry] backfill failed:', err.message);
   }
 }
+ensureProfileGroupsBackfilled();
 ensureProfileServersBackfilled();
 
 // Build a per-CLI launch config from a server entry, merging env.json secrets.
@@ -16672,10 +17354,8 @@ app.post('/api/mcp/registry/activate', (req, res) => {
     writeMcpRegistry(reg);
     const groups = reg.profiles[profile].groups || [];
     const profileValue = groups.join(',') || 'core';
-    const profileDir = resolve(MCP_PROFILE_PATH, '..');
-    if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true });
-    writeFileSync(MCP_PROFILE_PATH, JSON.stringify({ profile: profileValue }, null, 2) + '\n', 'utf-8');
-    res.json({ ok: true, activeProfile: profile, profileValue });
+    const result = applyMcpProfile(profileValue, 'registry');
+    res.json({ ok: true, activeProfile: profile, profileValue: result.profile, synced: result.synced });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -18600,6 +19280,8 @@ function classifyTerminalType(terminalSessionId) {
   return 'terminal';
 }
 
+const STALE_HOOK_SESSION_MS = 30 * 60 * 1000;
+
 function syncRegistryFromTerminals() {
   for (const [tsId, session] of terminalSessions) {
     if (session.profile !== 'claude-code') continue;
@@ -18615,8 +19297,11 @@ function syncRegistryFromTerminals() {
       });
     }
   }
+  const now = Date.now();
   for (const [csId, entry] of sessionRegistry) {
     if (entry.terminalSessionId && !terminalSessions.has(entry.terminalSessionId)) {
+      unregisterSession(csId);
+    } else if (!entry.terminalSessionId && (now - (entry.lastActivity || 0)) > STALE_HOOK_SESSION_MS) {
       unregisterSession(csId);
     }
   }
@@ -18672,10 +19357,15 @@ function scanForLeaks() {
     }
   } catch { /* ok */ }
 
-  // 3. Multiple sessions targeting same cwd
+  // 3. Multiple sessions targeting same cwd (alive only)
+  const ALIVE_THRESHOLD_MS = 5 * 60 * 1000;
   const cwdMap = new Map();
   for (const [csId, entry] of sessionRegistry) {
     if (!entry.cwd) continue;
+    const isAlive = entry.terminalSessionId
+      ? terminalSessions.has(entry.terminalSessionId)
+      : (now - (entry.lastActivity || 0)) < ALIVE_THRESHOLD_MS;
+    if (!isAlive) continue;
     if (!cwdMap.has(entry.cwd)) cwdMap.set(entry.cwd, []);
     cwdMap.get(entry.cwd).push(csId);
   }
@@ -18716,6 +19406,71 @@ setInterval(() => {
   if (hash !== _lastLeakHash) {
     _lastLeakHash = hash;
     if (leaks.length > 0) broadcastSessionEvent({ type: 'session:leaks', leaks });
+  }
+}, LEAK_SCAN_INTERVAL_MS);
+
+// Inline scan of LOOP_DIR matching the GET /api/loop/list shape. Used by both
+// the WS init payload and the periodic broadcast so the Session Monitor stays
+// in sync with the Loops tab without a separate fetch.
+function scanLoopInventory() {
+  const result = { loops: [], staleCount: 0 };
+  try {
+    if (!existsSync(LOOP_DIR)) return result;
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep' && !f.startsWith('pending-') && f !== 'active-pointer.json');
+    const now = Date.now();
+    for (const f of files) {
+      try {
+        const filePath = resolve(LOOP_DIR, f);
+        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
+        const startedAtMs = data.startedAt ? new Date(data.startedAt).getTime() : 0;
+        const lastIterAtMs = data.lastIterationAt ? new Date(data.lastIterationAt).getTime() : startedAtMs;
+        const elapsedMs = startedAtMs ? now - startedAtMs : 0;
+        const stalledMs = lastIterAtMs ? now - lastIterAtMs : 0;
+        const terminalAlive = data.terminalSessionId ? terminalSessions.has(data.terminalSessionId) : false;
+        const iterDone = (data.currentIteration || 0) >= (data.totalIterations || 0) && (data.totalIterations || 0) > 0;
+        let state;
+        if (data.active === false) { state = 'stale-inactive'; result.staleCount++; }
+        else if (data.terminalSessionId && !terminalAlive) state = 'orphaned-pty';
+        else if (iterDone) state = 'finished';
+        else state = 'active';
+        result.loops.push({
+          sessionId: f.replace('.json', ''),
+          terminalSessionId: data.terminalSessionId || null,
+          terminalAlive,
+          task: typeof data.task === 'string' ? data.task.slice(0, 200) : '',
+          currentIteration: data.currentIteration || 0,
+          totalIterations: data.totalIterations || 0,
+          startedAt: data.startedAt || null,
+          lastIterationAt: data.lastIterationAt || null,
+          elapsedMinutes: Math.round(elapsedMs / 60000),
+          stalledMinutes: Math.round(stalledMs / 60000),
+          stalledMs,
+          state,
+          browserSessionId: data.browserSessionId || null,
+          browserTabId: data.browserTabId || null,
+          usesBrowser: !!data.usesBrowser,
+        });
+      } catch { /* skip corrupt */ }
+    }
+    result.loops.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
+  } catch { /* ok */ }
+  return result;
+}
+
+let _lastLoopHash = '';
+setInterval(() => {
+  const inventory = scanLoopInventory();
+  // Hash on stable fields only (drop minute counters that tick every poll)
+  const hash = JSON.stringify({
+    staleCount: inventory.staleCount,
+    loops: inventory.loops.map(l => ({
+      sessionId: l.sessionId, state: l.state, terminalAlive: l.terminalAlive,
+      currentIteration: l.currentIteration, totalIterations: l.totalIterations,
+    })),
+  });
+  if (hash !== _lastLoopHash) {
+    _lastLoopHash = hash;
+    broadcastSessionEvent({ type: 'session:loops', loops: inventory.loops, staleCount: inventory.staleCount });
   }
 }, LEAK_SCAN_INTERVAL_MS);
 
@@ -18792,7 +19547,8 @@ function handleSessionMonitorWebSocket(ws) {
     ...s,
     isAlive: s.terminalSessionId ? terminalSessions.has(s.terminalSessionId) : (Date.now() - s.lastActivity < 5 * 60 * 1000),
   }));
-  ws.send(JSON.stringify({ type: 'session:init', sessions, leaks: scanForLeaks() }));
+  const loopInv = scanLoopInventory();
+  ws.send(JSON.stringify({ type: 'session:init', sessions, leaks: scanForLeaks(), loops: loopInv.loops, staleCount: loopInv.staleCount }));
   ws.on('close', () => sessionMonitorClients.delete(ws));
   ws.on('error', () => sessionMonitorClients.delete(ws));
 }
@@ -23186,6 +23942,20 @@ const httpServer = app.listen(PORT, async () => {
     }
   } catch (err) {
     console.warn('  OpenClaw bridge sync warning:', err.message);
+  }
+
+  // Repair legacy hook duplication in settings.json files (global + registered
+  // projects). Cleans up entries where the same script appears twice with
+  // different command-string forms (relative + absolute). Future installs are
+  // already self-healing via addHookToSettings; this catches damage from
+  // previous versions of the install flow.
+  try {
+    const dedupStats = dedupeAllSettingsHooks();
+    if (dedupStats.removed > 0) {
+      console.log(`  Hooks:     deduped ${dedupStats.removed} stray entr${dedupStats.removed === 1 ? 'y' : 'ies'} across ${dedupStats.files} settings file${dedupStats.files === 1 ? '' : 's'}`);
+    }
+  } catch (err) {
+    console.warn('  Hook dedup warning:', err.message);
   }
 
   // Clean up orphaned loop state files from previous server runs.

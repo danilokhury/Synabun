@@ -2,8 +2,8 @@
 // SynaBun Neural Interface — CLI Tool Update Badges
 // Checks /api/system/tool-versions and shows green badges
 // on toolbar buttons + Apps menu items when updates exist.
-// Clicking the button/menu item (not just the tiny badge)
-// runs the update command in a shell tab when an update exists.
+// Only clicking the tiny green badge runs the update command; the
+// normal toolbar/menu target keeps launching the selected CLI.
 // ═══════════════════════════════════════════
 
 import { emit } from './state.js';
@@ -17,7 +17,7 @@ const TOOL_ELEMENTS = {
   'gemini':      { toolbar: null,                    menu: 'gemini-menu-update-badge' },
 };
 
-// Parent elements whose clicks get intercepted when an update badge is visible
+// Parent elements whose tooltips are updated when an update badge is visible.
 const PARENT_ELEMENTS = {
   'claude-code': { toolbar: 'topright-claude-panel-btn', menu: 'menu-terminal-claude' },
   'codex':       { toolbar: 'topright-codex-panel-btn',  menu: 'menu-terminal-codex' },
@@ -105,18 +105,17 @@ function schedulePostUpdatePolling(key) {
   _pollTimers.set(key, setTimeout(tick, initialDelay));
 }
 
-function wireParentIntercept(parentId, badgeId, key) {
-  const parent = $(parentId);
+function wireBadgeClick(badgeId, key) {
   const badge = $(badgeId);
-  if (!parent || !badge) return;
-  // Capture phase fires before normal click handlers — intercept when badge is visible
-  parent.addEventListener('click', (e) => {
+  if (!badge) return;
+  badge.classList.add('update-click-target');
+  badge.addEventListener('click', (e) => {
     if (badge.textContent) {
       e.stopPropagation();
       e.preventDefault();
       runUpdate(key, badge);
     }
-  }, true);
+  });
 }
 
 function applyBadges(data) {
@@ -136,17 +135,27 @@ function applyBadges(data) {
 
     if (ids.toolbar) {
       const badge = $(ids.toolbar);
-      if (badge) { badge.textContent = has ? '↑' : ''; badge.title = tip; }
+      if (badge) {
+        badge.textContent = has ? '↑' : '';
+        badge.title = tip;
+        if (has) badge.setAttribute('aria-label', `Update ${TOOL_LABELS[key] || key}`);
+        else badge.removeAttribute('aria-label');
+      }
       // Update parent button tooltip when update is available
       const parentBtn = parents?.toolbar && $(parents.toolbar);
       if (parentBtn) {
         if (!parentBtn.dataset.tooltipOriginal) parentBtn.dataset.tooltipOriginal = parentBtn.dataset.tooltip || '';
-        parentBtn.dataset.tooltip = has ? `Update available: ${tip}` : parentBtn.dataset.tooltipOriginal;
+        parentBtn.dataset.tooltip = has ? `${parentBtn.dataset.tooltipOriginal} · update badge available` : parentBtn.dataset.tooltipOriginal;
       }
     }
     if (ids.menu) {
       const badge = $(ids.menu);
-      if (badge) { badge.textContent = has ? '↑' : ''; badge.title = tip; }
+      if (badge) {
+        badge.textContent = has ? '↑' : '';
+        badge.title = tip;
+        if (has) badge.setAttribute('aria-label', `Update ${TOOL_LABELS[key] || key}`);
+        else badge.removeAttribute('aria-label');
+      }
     }
   }
 }
@@ -162,10 +171,8 @@ export async function initToolUpdates() {
     if (!_wired) {
       _wired = true;
       for (const [key, ids] of Object.entries(TOOL_ELEMENTS)) {
-        const parents = PARENT_ELEMENTS[key];
-        // Wire parent button/menu item intercepts (capture phase)
-        if (ids.toolbar && parents?.toolbar) wireParentIntercept(parents.toolbar, ids.toolbar, key);
-        if (ids.menu && parents?.menu) wireParentIntercept(parents.menu, ids.menu, key);
+        if (ids.toolbar) wireBadgeClick(ids.toolbar, key);
+        if (ids.menu) wireBadgeClick(ids.menu, key);
       }
     }
   } catch { /* silent */ }
@@ -184,6 +191,18 @@ export async function forceCheckToolUpdates() {
 // Re-export human-readable tool labels so toast/menu code can build summaries
 // without redefining the label map.
 export { TOOL_LABELS };
+
+// Read-only accessor for the Notifications drawer. May be null until
+// initToolUpdates() resolves the first /api/system/tool-versions call.
+export function getToolUpdateData() {
+  return _latestData;
+}
+
+// Public wrapper around runUpdate so external surfaces (Notifications drawer)
+// can trigger the same flow used by the toolbar/menu badges.
+export function runToolUpdate(key) {
+  runUpdate(key);
+}
 
 // ── Update-check toast ──
 // Bottom-right ephemeral pill. One of three modes: updates available (with

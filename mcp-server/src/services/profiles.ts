@@ -5,7 +5,7 @@
 import type { RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { config } from '../config.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 // ── Presets and constants ──
 
@@ -21,14 +21,15 @@ export const PROFILE_PRESETS: Record<string, string[]> = {
   whatsapp:   ['git', 'image', 'browser', 'browser_whatsapp'],
   instagram:  ['git', 'image', 'browser', 'browser_instagram'],
   linkedin:   ['git', 'image', 'browser', 'browser_linkedin'],
-  browser:    ['git', 'image', 'whiteboard', 'card', 'tictactoe', ...ALL_BROWSER_GROUPS, 'leonardo'],
-  full:       ['git', 'image', 'whiteboard', 'card', 'tictactoe', ...ALL_BROWSER_GROUPS, 'leonardo', 'discord'],
+  browser:    ['git', 'image', 'whiteboard', 'card', 'tictactoe', ...ALL_BROWSER_GROUPS, 'leonardo', 'gsc'],
+  full:       ['git', 'image', 'whiteboard', 'card', 'tictactoe', ...ALL_BROWSER_GROUPS, 'leonardo', 'discord', 'gsc'],
   leonardoai: ['leonardo'],
+  gsc:        ['git', 'image', 'browser', 'gsc'],
 };
 
 export const VALID_GROUPS = new Set([
   ...ALL_BROWSER_GROUPS,
-  'whiteboard', 'card', 'tictactoe', 'discord', 'git', 'leonardo', 'image',
+  'whiteboard', 'card', 'tictactoe', 'discord', 'git', 'leonardo', 'image', 'gsc',
 ]);
 
 export const PROFILE_PATH = join(config.dataDir, 'active-profile.json');
@@ -136,11 +137,116 @@ export function applyProfile(profileName: string): { profile: string; enabled: s
 }
 
 export function persistProfile(profileName: string) {
+  const payload = JSON.stringify({ profile: profileName }, null, 2) + '\n';
+  const paths = new Set<string>([PROFILE_PATH]);
+
+  if (process.env.SYNABUN_DATA_HOME) {
+    paths.add(join(process.env.SYNABUN_DATA_HOME, 'mcp-data', 'active-profile.json'));
+    paths.add(join(process.env.SYNABUN_DATA_HOME, 'data', 'active-profile.json'));
+    paths.add(join(process.env.SYNABUN_DATA_HOME, 'mcp-server', 'data', 'active-profile.json'));
+  }
+
+  for (const profilePath of paths) {
+    writeProfileFile(profilePath, payload);
+  }
+
+  syncCodexProfileEnv(profileName);
+  syncOpenCodeProfileEnv(profileName);
+}
+
+function writeProfileFile(profilePath: string, payload: string) {
   try {
-    const dir = join(PROFILE_PATH, '..');
+    const dir = dirname(profilePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(PROFILE_PATH, JSON.stringify({ profile: profileName }, null, 2) + '\n', 'utf-8');
+    writeFileSync(profilePath, payload, 'utf-8');
   } catch (err) {
-    console.error('[SynaBun] Failed to persist profile:', err);
+    console.error(`[SynaBun] Failed to persist profile at ${profilePath}:`, err);
+  }
+}
+
+function homeDir(): string {
+  return process.env.USERPROFILE || process.env.HOME || '';
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function tomlSectionRange(content: string, sectionName: string): { start: number; end: number } | null {
+  const startRe = new RegExp(`^\\[${escapeRegExp(sectionName)}\\]\\s*$`, 'm');
+  const startMatch = startRe.exec(content);
+  if (!startMatch) return null;
+
+  const afterHeader = startMatch.index + startMatch[0].length;
+  const rest = content.slice(afterHeader);
+  const nextMatch = /^\[[^\]]+\]\s*$/m.exec(rest);
+  return {
+    start: startMatch.index,
+    end: nextMatch ? afterHeader + nextMatch.index : content.length,
+  };
+}
+
+function upsertInlineTomlString(body: string, key: string, value: string): string {
+  const pair = `${key} = "${value}"`;
+  const keyRe = new RegExp(`${escapeRegExp(key)}\\s*=\\s*"[^"]*"`);
+  if (keyRe.test(body)) return body.replace(keyRe, pair);
+  const trimmed = body.trim().replace(/,$/, '');
+  return trimmed ? `${trimmed}, ${pair}` : pair;
+}
+
+function syncCodexProfileEnv(profileName: string): boolean {
+  try {
+    const home = homeDir();
+    if (!home) return false;
+    const configPath = join(home, '.codex', 'config.toml');
+    if (!existsSync(configPath)) return false;
+
+    const content = readFileSync(configPath, 'utf-8');
+    const range = tomlSectionRange(content, 'mcp_servers.SynaBun');
+    if (!range) return false;
+
+    const section = content.slice(range.start, range.end);
+    const envRe = /^env\s*=\s*\{([^}]*)\}/m;
+    const envMatch = section.match(envRe);
+    let nextSection: string;
+
+    if (envMatch) {
+      let body = envMatch[1].trim();
+      body = upsertInlineTomlString(body, 'SYNABUN_PROFILE', profileName);
+      body = upsertInlineTomlString(body, 'SYNABUN_BROWSER_FAST', '1');
+      body = upsertInlineTomlString(body, 'SYNABUN_BROWSER_COMPACT', '1');
+      nextSection = section.replace(envRe, `env = { ${body} }`);
+    } else {
+      nextSection = `${section.trimEnd()}\nenv = { SYNABUN_PROFILE = "${profileName}", SYNABUN_BROWSER_FAST = "1", SYNABUN_BROWSER_COMPACT = "1" }\n`;
+    }
+
+    if (nextSection === section) return false;
+    writeFileSync(configPath, content.slice(0, range.start) + nextSection + content.slice(range.end), 'utf-8');
+    return true;
+  } catch (err) {
+    console.error('[SynaBun] Failed to sync Codex profile env:', err);
+    return false;
+  }
+}
+
+function syncOpenCodeProfileEnv(profileName: string): boolean {
+  try {
+    const home = homeDir();
+    if (!home) return false;
+    const configPath = process.env.XDG_CONFIG_HOME
+      ? join(process.env.XDG_CONFIG_HOME, 'opencode', 'config.json')
+      : join(home, '.config', 'opencode', 'config.json');
+    if (!existsSync(configPath)) return false;
+
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    if (!config?.mcp?.SynaBun) return false;
+    if (!config.mcp.SynaBun.environment) config.mcp.SynaBun.environment = {};
+    if (config.mcp.SynaBun.environment.SYNABUN_PROFILE === profileName) return false;
+    config.mcp.SynaBun.environment.SYNABUN_PROFILE = profileName;
+    writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    return true;
+  } catch (err) {
+    console.error('[SynaBun] Failed to sync OpenCode profile env:', err);
+    return false;
   }
 }

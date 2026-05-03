@@ -135,24 +135,50 @@ function isRunning(tab) {
   return !!(tab.running || tab.startingThread);
 }
 
-function providerPayload(provider) {
-  const meta = PROVIDERS[provider];
-  if (!meta) return null;
-  const key = scopedTabsKey(meta);
+function readPayload(key) {
   const data = parseJson(storage.getItem(key), null);
   if (Array.isArray(data?.tabs) && data.tabs.length) {
     return { key, activeIdx: Number(data.activeIdx) || 0, tabs: data.tabs };
   }
+  return null;
+}
+
+// Resolve the payloads we'll source pills from. Priority:
+//   1. Current windowId's tab key (if present, this is the only payload).
+//   2. Otherwise, the single most-recent non-empty windowId for this provider
+//      with at least one meaningful tab (so users on a fresh browser tab still
+//      see pills for sessions they minimized in a prior tab).
+// Plus any legacy single-session keys (kept for back-compat).
+function providerPayloads(provider) {
+  const meta = PROVIDERS[provider];
+  if (!meta) return [];
+
+  const payloads = [];
+  const currentKey = scopedTabsKey(meta);
+  const predicate = statePredicate(provider);
+
+  const currentPayload = readPayload(currentKey);
+  const currentHasMeaningful = currentPayload?.tabs.some(predicate);
+  if (currentPayload) payloads.push(currentPayload);
+  if (!currentHasMeaningful) {
+    const fallback = pickMostRecentMeaningfulPayload(provider, currentKey);
+    if (fallback) payloads.push(fallback);
+  }
 
   if (provider === 'claude') {
     const legacy = parseJson(storage.getItem('synabun-claude-panel-tabs'), null);
-    if (Array.isArray(legacy?.tabs) && legacy.tabs.length) {
-      return { key: 'synabun-claude-panel-tabs', activeIdx: Number(legacy.activeIdx) || 0, tabs: legacy.tabs };
+    if (Array.isArray(legacy?.tabs) && legacy.tabs.length && !payloads.some((p) => p.key === 'synabun-claude-panel-tabs')) {
+      payloads.push({ key: 'synabun-claude-panel-tabs', activeIdx: Number(legacy.activeIdx) || 0, tabs: legacy.tabs });
     }
     const sessionId = storage.getItem('synabun-claude-panel-session');
     if (sessionId) {
       const label = storage.getItem(`synabun-session-label:${sessionId}`) || `${sessionId.slice(0, 8)}...`;
-      return { key: 'synabun-claude-panel-session', activeIdx: 0, tabs: [{ sessionId, label }], legacySingle: true };
+      payloads.push({
+        key: 'synabun-claude-panel-session',
+        activeIdx: 0,
+        tabs: [{ sessionId, label }],
+        legacySingle: true,
+      });
     }
   }
 
@@ -160,7 +186,7 @@ function providerPayload(provider) {
     const threadId = storage.getItem('synabun-codex-panel-thread');
     const title = storage.getItem('synabun-codex-panel-title') || '';
     if (threadId || title) {
-      return {
+      payloads.push({
         key: 'synabun-codex-panel-thread',
         activeIdx: 0,
         tabs: [{
@@ -170,22 +196,63 @@ function providerPayload(provider) {
           project: storage.getItem('synabun-codex-panel-project') || '',
         }],
         legacySingle: true,
-      };
+      });
     }
   }
 
+  return payloads;
+}
+
+// Storage keys are insertion-ordered in the cache (server hydrates in JSON
+// order, panels then setItem on top). The most recently written matching key
+// is therefore last — iterate in reverse to find the freshest payload that
+// actually has meaningful tabs.
+function pickMostRecentMeaningfulPayload(provider, currentKey) {
+  const meta = PROVIDERS[provider];
+  if (!meta) return null;
+  const prefix = `${meta.tabsKeyPrefix}-`;
+  const predicate = statePredicate(provider);
+  const keys = storage.keys();
+  for (let i = keys.length - 1; i >= 0; i--) {
+    const k = keys[i];
+    if (k === currentKey) continue;
+    if (!k.startsWith(prefix)) continue;
+    const payload = readPayload(k);
+    if (payload && payload.tabs.some(predicate)) return payload;
+  }
   return null;
 }
 
-function meaningfulTabs(provider, payload) {
-  const predicate = provider === 'claude'
-    ? hasClaudeState
-    : provider === 'codex'
-      ? hasCodexState
-      : hasOpenCodeState;
-  return (payload?.tabs || [])
-    .map((tab, index) => ({ tab, index }))
-    .filter(({ tab }) => predicate(tab));
+function statePredicate(provider) {
+  if (provider === 'claude') return hasClaudeState;
+  if (provider === 'codex') return hasCodexState;
+  return hasOpenCodeState;
+}
+
+function dedupeKeyForTab(provider, tab) {
+  if (provider === 'claude') return tab.sessionId ? `cp:${tab.sessionId}` : null;
+  if (provider === 'codex') return tab.threadId ? `cxp:${tab.threadId}` : null;
+  return tab.sessionId ? `ocp:${tab.sessionId}` : null;
+}
+
+// Flatten every payload's tabs into one list of meaningful pills, deduped by
+// session/thread id so the same session in multiple windowIds renders once.
+function meaningfulPills(provider) {
+  const predicate = statePredicate(provider);
+  const seen = new Set();
+  const pills = [];
+  for (const payload of providerPayloads(provider)) {
+    payload.tabs.forEach((tab, index) => {
+      if (!predicate(tab)) return;
+      const key = dedupeKeyForTab(provider, tab);
+      if (key) {
+        if (seen.has(key)) return;
+        seen.add(key);
+      }
+      pills.push({ payload, tab, index });
+    });
+  }
+  return pills;
 }
 
 function removePlaceholders(provider = '') {
@@ -218,7 +285,90 @@ function writeProviderPayload(provider, payload, removeIndex) {
   storage.setItem(payload.key, JSON.stringify({ activeIdx, tabs }));
 }
 
-async function openProvider(provider, tabIdValue) {
+// Pull the windowId out of a `synabun-{provider}-tabs-{windowId}` key so we
+// can target the right orphan when force-killing on pill close.
+function windowIdFromKey(meta, key) {
+  if (!meta || !key) return '';
+  const prefix = `${meta.tabsKeyPrefix}-`;
+  return key.startsWith(prefix) ? key.slice(prefix.length) : '';
+}
+
+// Force-kill the backend session associated with a tab. Best-effort — if the
+// orphan grace already expired or the OpenCode SDK already cleaned up, the
+// server returns ok with killed:false and we still drop the storage entry.
+async function killBackendSession(provider, tab, sourceKey) {
+  const meta = PROVIDERS[provider];
+  if (!meta) return;
+  const windowId = windowIdFromKey(meta, sourceKey);
+  const sessionId = tab?.sessionId || tab?.id || null;
+  const threadId = tab?.threadId || null;
+  if (!sessionId && !threadId && !windowId) return;
+  try {
+    await fetch('/api/sidepanel/kill-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, windowId, sessionId, threadId }),
+    });
+  } catch {
+    // Network/server unavailable — storage delete is the user-visible part.
+  }
+}
+
+// Pulls the source-key tab data into the current windowId's key so that the
+// panel's own restoreTabs() (which is window-scoped) finds it. Legacy
+// single-session keys are skipped — only proper tab payloads migrate.
+function migrateSourceToCurrentWindow(provider, sourceKey) {
+  const meta = PROVIDERS[provider];
+  if (!meta || !sourceKey) return;
+  const currentKey = scopedTabsKey(meta);
+  if (sourceKey === currentKey) return;
+  if (!sourceKey.startsWith(`${meta.tabsKeyPrefix}-`)) return;
+
+  const sourceData = parseJson(storage.getItem(sourceKey), null);
+  if (!Array.isArray(sourceData?.tabs) || !sourceData.tabs.length) return;
+
+  const predicate = statePredicate(provider);
+  const sourceMeaningful = sourceData.tabs.filter(predicate);
+  if (!sourceMeaningful.length) return;
+
+  const currentData = parseJson(storage.getItem(currentKey), null);
+  const currentTabs = Array.isArray(currentData?.tabs) ? currentData.tabs : [];
+  const currentMeaningful = currentTabs.filter(predicate);
+
+  let nextTabs;
+  let nextActiveIdx;
+  if (!currentMeaningful.length) {
+    // Current window has no real sessions — adopt source wholesale.
+    nextTabs = sourceData.tabs;
+    nextActiveIdx = Number(sourceData.activeIdx) || 0;
+  } else {
+    // Append source's meaningful tabs onto current — dedupe by session/thread id.
+    const seen = new Set();
+    for (const t of currentTabs) {
+      const k = dedupeKeyForTab(provider, t);
+      if (k) seen.add(k);
+    }
+    const additions = sourceMeaningful.filter((t) => {
+      const k = dedupeKeyForTab(provider, t);
+      if (!k) return true;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    if (!additions.length) {
+      storage.removeItem(sourceKey);
+      return;
+    }
+    nextTabs = [...currentTabs, ...additions];
+    nextActiveIdx = Number(currentData?.activeIdx) || 0;
+  }
+
+  storage.setItem(currentKey, JSON.stringify({ activeIdx: nextActiveIdx, tabs: nextTabs }));
+  storage.removeItem(sourceKey);
+}
+
+async function openProvider(provider, tabIdValue, sourceKey) {
+  migrateSourceToCurrentWindow(provider, sourceKey);
   if (provider === 'claude') {
     if (!isClaudePanelOpen()) await toggleClaudePanel();
   } else if (provider === 'codex') {
@@ -245,9 +395,11 @@ function createPlaceholder(provider, payload, tab, index) {
     <button class="term-minimized-pill-close" data-tooltip="Close">&times;</button>
   `;
   pill.classList.toggle(`${meta.pillClass.replace('-session-pill', '')}-pill-running`, isRunning(tab));
-  pill.addEventListener('click', () => openProvider(provider, id));
+  pill.dataset.sourceKey = payload.key || '';
+  pill.addEventListener('click', () => openProvider(provider, id, payload.key));
   pill.querySelector('.term-minimized-pill-close')?.addEventListener('click', (event) => {
     event.stopPropagation();
+    killBackendSession(provider, tab, payload.key);
     writeProviderPayload(provider, payload, index);
     pill.remove();
     renderSidepanelTrayPlaceholders();
@@ -263,8 +415,7 @@ export function renderSidepanelTrayPlaceholders() {
       continue;
     }
     removePlaceholders(provider);
-    const payload = providerPayload(provider);
-    for (const { tab, index } of meaningfulTabs(provider, payload)) {
+    for (const { payload, tab, index } of meaningfulPills(provider)) {
       createPlaceholder(provider, payload, tab, index);
     }
   }

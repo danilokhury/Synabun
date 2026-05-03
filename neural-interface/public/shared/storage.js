@@ -75,6 +75,11 @@ export const storage = {
     _dirty[key] = null; // null signals deletion to the server
     _scheduleDebouncedFlush();
   },
+
+  // List all cached keys (used for cross-window scans, e.g. sidepanel tray pill aggregation).
+  keys() {
+    return Object.keys(_cache);
+  },
 };
 
 // ── Debounced flush to server ────────────────────────

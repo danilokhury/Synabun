@@ -203,7 +203,7 @@ No environment variables needed — SQLite and local embeddings work out of the 
 
 ### 3. Verify
 
-Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 76 tools listed.
+Restart Claude Code, then run `/mcp`. You should see the `SynaBun` server with 106 tools listed.
 
 </details>
 
@@ -232,13 +232,13 @@ AI Assistant (any project)
 ┌───┴──────────────────────────┐
 │   SynaBun MCP Server         │  Node.js 22.5+ / TypeScript
 │                              │
-│  76 tools across 11 groups:  │
+│  106 tools across 12 groups: │
 │  Memory (8), Profile (1),    │
 │  Browser (40), Whiteboard (5)│
 │  Cards (5), Discord (8),     │
-│  Leonardo (5), Git (1),      │
-│  Loop (1), TicTacToe (1),    │
-│  Image (1)                   │
+│  Leonardo (5), GSC (30),     │
+│  Git (1), Loop (1),          │
+│  TicTacToe (1), Image (1)    │
 │                              │
 │  Transformers.js             │  Local embeddings
 │  all-MiniLM-L6-v2            │  (384 dims, ~23MB model)
@@ -253,9 +253,9 @@ AI Assistant (any project)
 
 Everything runs in a single Node.js process — no external services, no Docker, no API keys.
 
-## MCP Tools (76)
+## MCP Tools (106)
 
-SynaBun exposes 76 tools via the Model Context Protocol, organized into 11 groups:
+SynaBun exposes 106 tools via the Model Context Protocol, organized into 12 groups:
 
 ### Memory (8 tools)
 
@@ -340,6 +340,66 @@ Browser-based AI image and video generation via [Leonardo.ai](https://app.leonar
 | `leonardo_browser_reference` | Upload and attach a reference image (style / character / content) to the next generation |
 
 > **Tip:** Use the `/leonardo` skill in Claude Code or Codex for an expert-guided creation experience with a 7-phase video prompter, 6-phase image prompter, model advisor with decision matrices for 30+ models, curated prompt library, and style guide with motion controls and camera combos.
+
+### Google Search Console (30 tools)
+
+Browser-based control of [Google Search Console](https://search.google.com/search-console). No API key — uses the user's authenticated Google session in the SynaBun browser. Locale-tolerant (selectors keyed to URL paths, material-icon ligatures, and aria roles instead of UI strings).
+
+**Navigation & property**
+| Tool | Purpose |
+|------|---------|
+| `gsc_navigate` | Open any GSC section (overview, performance_search, performance_discover, performance_news, inspect, pages, videos, sitemaps, removals, cwv_mobile, cwv_desktop, https, security, manual_actions, links, achievements, settings, crawl_stats, users, change_address, associations, disavow, shopping, merchant, plus 17 enhancement reports). Preserves active property. |
+| `gsc_property` | List, select, read, or add a property (domain or URL-prefix). |
+
+**URL Inspection**
+| Tool | Purpose |
+|------|---------|
+| `gsc_inspect_url` | Inspect a URL, polls up to 30s for the result panel, returns structured JSON (indexingState, canonicals, lastCrawl, sitemap, robots, enhancements, etc.). |
+| `gsc_inspect_test_live` | Click "Test live URL" and poll up to 90s for live test results. |
+| `gsc_inspect_request_indexing` | [mutating] Submit URL to Google's indexing queue. |
+| `gsc_inspect_view_crawled` | Open the View Crawled Page panel — switch between html / screenshot / http_response / more_info tabs. |
+
+**Performance**
+| Tool | Purpose |
+|------|---------|
+| `gsc_performance_query` | Query a Performance report — searchType, dateRange (preset or custom), dimension (query/page/country/device/searchAppearance/date), filter chips, comparison toggle. Auto-scrolls grid up to `limit` rows and returns totals + table JSON. |
+| `gsc_performance_export` | Trigger the report Export menu (CSV / Excel / Google Sheets). |
+| `gsc_performance_chart_screenshot` | Screenshot the current performance chart. |
+
+**Indexing**
+| Tool | Purpose |
+|------|---------|
+| `gsc_pages_report` | Read the Pages (Coverage) report — totals, per-reason buckets, optional drill-down to URL examples. |
+| `gsc_pages_validate_fix` | [mutating] Start a Validate Fix run for a chosen reason bucket. |
+| `gsc_videos_report` | Read the Video Indexing report (same shape as `gsc_pages_report`). |
+| `gsc_sitemap` | List, submit, delete, or view errors for sitemaps. |
+| `gsc_removals` | List or create URL-removal requests (temporary 6-month, outdated content, SafeSearch). |
+| `gsc_removals_cancel` | [mutating] Cancel a pending temporary removal. |
+
+**Experience, Enhancements, Links**
+| Tool | Purpose |
+|------|---------|
+| `gsc_cwv_report` | Core Web Vitals (mobile / desktop) — poor / needs-improvement / good URL counts and per-issue groups. |
+| `gsc_https_report` | HTTPS coverage and non-HTTPS URL reasons. |
+| `gsc_security_issues` | Read security issues; optionally request a review. |
+| `gsc_manual_actions` | Read manual actions; optionally submit a reconsideration request with custom body text. |
+| `gsc_enhancements` | Read any structured-data Enhancements report (breadcrumbs, faq, sitelinks, videos, products, recipes, review, events, jobposting, speakable, qa, logos, sitenames, dataset, practice, math, merchant). |
+| `gsc_links_report` | Top linked pages / linking sites / linking text / internally linked. Auto-paginates. |
+| `gsc_links_export` | Trigger Links report Export menu. |
+
+**Settings & Management**
+| Tool | Purpose |
+|------|---------|
+| `gsc_settings` | Read settings page (ownership, verification, users); change address. |
+| `gsc_crawl_stats` | Crawl Stats — totals (requests, bytes, response time) plus host / response-code / file-type / Googlebot-type breakdowns. |
+| `gsc_users` | List, add, remove, change-role for property users. |
+| `gsc_associations` | List, add, remove associations (Analytics, Merchant Center, Ads, Play, YouTube, Actions, Chrome Web Store). |
+| `gsc_disavow` | [mutating] Download / upload / delete the Disavow Links file. |
+| `gsc_shopping` | Read the Shopping / Merchant Listings report. |
+| `gsc_extract_table` | Generic GSC grid → JSON extractor when no specific tool covers a panel. |
+| `gsc_screenshot` | Full-page screenshot of the active GSC tab. |
+
+> **Auth:** GSC tools require an authenticated Google session in the SynaBun-managed browser. If a tool detects a redirect to `accounts.google.com`, it returns a clear error so you can sign in once and retry. URL Inspection polling: 30 s default, 90 s for live test (Google's own timeout). Mutating tools are clearly labelled `[mutating]` in their descriptions.
 
 ### Image (1 tool)
 

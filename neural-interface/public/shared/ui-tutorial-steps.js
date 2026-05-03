@@ -853,7 +853,7 @@ export const TUTORIAL_STEPS = [
     },
   },
 
-  // ── Step 7: Session Monitor ────────────────────────────
+  // ── Step 7: Notifications drawer ────────────────────────────
   {
     id: 'explain-sessions',
     whiteboardMode: true,
@@ -880,14 +880,14 @@ export const TUTORIAL_STEPS = [
         arrowheadSize: 14, strokeWidth: 1.5,
       }), 250);
 
-      seq.add(() => handwrittenLabel(svg, 'Session Monitor', {
+      seq.add(() => handwrittenLabel(svg, 'Notifications', {
         x: textX, y: textY,
         textAnchor: 'middle',
         color: 'rgba(255, 255, 255, 0.6)',
         fontSize: 28, duration: 350,
       }), 400);
 
-      seq.add(() => handwrittenLabel(svg, 'Track active CLI sessions across your terminals', {
+      seq.add(() => handwrittenLabel(svg, 'Sessions, alerts, and ruleset / CLI updates', {
         x: textX, y: textY + 36,
         textAnchor: 'middle',
         color: 'rgba(255, 255, 255, 0.32)',

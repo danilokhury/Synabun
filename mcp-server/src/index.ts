@@ -23,6 +23,7 @@ import { registerDiscordTools } from './tools/discord.js';
 import { registerGitTools } from './tools/git.js';
 import { registerLeonardoTools } from './tools/leonardo.js';
 import { registerImageTools } from './tools/image.js';
+import { registerGscTools } from './tools/gsc.js';
 import { profileSchema, profileDescription, handleProfile } from './tools/profile.js';
 import {
   PROFILE_PRESETS, VALID_GROUPS, PROFILE_PATH,
@@ -56,6 +57,7 @@ const TOOL_GROUP_INSTRUCTIONS: Record<string, string> = {
   git: '- Git: git (action: status/diff/commit/log/branches)',
   image: '- Images: image_staged (action: list/clear/remove)',
   leonardo: '- Leonardo (browser-based): leonardo_browser_navigate, leonardo_browser_generate, leonardo_browser_library, leonardo_browser_download, leonardo_browser_reference',
+  gsc: '- Google Search Console (browser-based): gsc_navigate, gsc_property, gsc_inspect_url, gsc_inspect_test_live, gsc_inspect_request_indexing, gsc_inspect_view_crawled, gsc_performance_query, gsc_performance_export, gsc_performance_chart_screenshot, gsc_pages_report, gsc_pages_validate_fix, gsc_videos_report, gsc_sitemap, gsc_removals, gsc_removals_cancel, gsc_cwv_report, gsc_https_report, gsc_security_issues, gsc_manual_actions, gsc_enhancements, gsc_links_report, gsc_links_export, gsc_settings, gsc_crawl_stats, gsc_users, gsc_associations, gsc_disavow, gsc_shopping, gsc_extract_table, gsc_screenshot',
 };
 
 function buildServerInstructions(): string {
@@ -132,6 +134,7 @@ export function registerTools(server: McpServer) {
   setToolGroup('git',        registerGitTools(server));
   setToolGroup('leonardo',   registerLeonardoTools(server));
   setToolGroup('image',      registerImageTools(server));
+  setToolGroup('gsc',        registerGscTools(server));
 
   // Apply initial profile (disables groups not in the active profile)
   applyProfile(getActiveProfileName());
@@ -198,6 +201,7 @@ export function getToolUsageSummary(): { counts: Record<string, number>; profile
     git: ['git'],
     leonardo: ['leonardo_'],
     image: ['image_staged'],
+    gsc: ['gsc_'],
   };
   const usedGroups = new Set<string>();
   for (const tool of Object.keys(_usageCounts)) {

@@ -23,29 +23,55 @@ function ensureLoopDir() {
   }
 }
 
+const STALE_LOOP_MS = 45 * 60 * 1000;
+const ACTIVE_POINTER_PATH = join(LOOP_DIR, 'active-pointer.json');
+
+function isFreshActive(data: any): boolean {
+  if (!data?.active) return false;
+  const lastAct = new Date(data.lastIterationAt || data.startedAt || 0).getTime();
+  if (!lastAct) return true;
+  return Date.now() - lastAct <= STALE_LOOP_MS;
+}
+
 /**
  * Resolve the session ID for loop state file.
- * Priority: explicit param > CLAUDE_SESSION_ID env > SYNABUN_TERMINAL_SESSION env > scan.
+ * Priority:
+ *   1. explicit param
+ *   2. CLAUDE_SESSION_ID env (only if matching active flag exists)
+ *   3. SYNABUN_TERMINAL_SESSION env → terminalSessionId scan
+ *   4. active-pointer.json fallback (written by stop hook on claim)
+ *   5. legacy unclaimed loops without terminalSessionId
+ *   6. exactly-one-active fallback (single hook-driven loop)
  *
- * When SYNABUN_TERMINAL_SESSION is set (server-launched loop), find the loop file
- * by matching the terminalSessionId field. This survives /clear (which changes
- * CLAUDE_SESSION_ID) and prevents cross-loop contamination with multiple automations.
+ * Verifying flag existence before trusting CLAUDE_SESSION_ID is what fixes the
+ * "No active loop" regression after /clear renamed the flag file but the env
+ * var still pointed to the pre-clear session ID.
  */
 function resolveSessionId(explicit?: string): string | null {
   if (explicit) return explicit;
-  if (process.env.CLAUDE_SESSION_ID) return process.env.CLAUDE_SESSION_ID;
 
   ensureLoopDir();
 
-  // Priority: find loop file owned by this terminal session (survives /clear)
+  const claudeSessionEnv = process.env.CLAUDE_SESSION_ID;
+  if (claudeSessionEnv) {
+    const path = getLoopPath(claudeSessionEnv);
+    if (existsSync(path)) {
+      try {
+        const data = JSON.parse(readFileSync(path, 'utf-8'));
+        if (isFreshActive(data)) return claudeSessionEnv;
+      } catch { /* fall through */ }
+    }
+  }
+
+  // Strategy A: terminalSessionId env match (survives /clear)
   const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION;
   if (terminalSessionEnv) {
     try {
-      const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
+      const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-') && f !== 'active-pointer.json');
       for (const file of files) {
         try {
           const data = JSON.parse(readFileSync(join(LOOP_DIR, file), 'utf-8'));
-          if (data?.active && data.terminalSessionId === terminalSessionEnv) {
+          if (isFreshActive(data) && data.terminalSessionId === terminalSessionEnv) {
             return file.replace('.json', '');
           }
         } catch { /* skip corrupt files */ }
@@ -53,19 +79,40 @@ function resolveSessionId(explicit?: string): string | null {
     } catch { /* dir read failed */ }
   }
 
-  // Fallback: STRICT — only match legacy loops without terminalSessionId.
-  // Previously this scanned ALL active loops and returned the first, which
-  // let one Claude session claim another's scheduled loop when env was unset.
-  // Server-launched loops always set terminalSessionId; manual/legacy loops
-  // (created without server) don't, so they remain claimable here.
+  // Strategy A3: active-pointer.json (written by stop hook on flag claim)
+  if (existsSync(ACTIVE_POINTER_PATH)) {
+    try {
+      const ptr = JSON.parse(readFileSync(ACTIVE_POINTER_PATH, 'utf-8'));
+      const candidatePath = getLoopPath(ptr.sessionId);
+      if (ptr.sessionId && existsSync(candidatePath)) {
+        const data = JSON.parse(readFileSync(candidatePath, 'utf-8'));
+        if (isFreshActive(data)) return ptr.sessionId;
+      }
+    } catch { /* ignore corrupt pointer */ }
+  }
+
+  // Strategy B: legacy unclaimed loops without terminalSessionId
   try {
-    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-') && f !== 'active-pointer.json');
     for (const file of files) {
       try {
         const data = JSON.parse(readFileSync(join(LOOP_DIR, file), 'utf-8'));
-        if (data?.active && !data.terminalSessionId) return file.replace('.json', '');
+        if (isFreshActive(data) && !data.terminalSessionId) return file.replace('.json', '');
       } catch { /* skip corrupt files */ }
     }
+  } catch { /* dir read failed */ }
+
+  // Strategy A2: exactly-one-fresh-active fallback
+  try {
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-') && f !== 'active-pointer.json');
+    const matches: string[] = [];
+    for (const file of files) {
+      try {
+        const data = JSON.parse(readFileSync(join(LOOP_DIR, file), 'utf-8'));
+        if (isFreshActive(data)) matches.push(file.replace('.json', ''));
+      } catch { /* skip corrupt files */ }
+    }
+    if (matches.length === 1) return matches[0];
   } catch { /* dir read failed */ }
 
   return null;

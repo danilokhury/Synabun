@@ -5026,8 +5026,7 @@ export async function openSettingsModal(options = {}) {
       fetch(`/api/claude-code/ruleset?format=${format}`).then(r => r.json()).then(data => {
         if (data.ok && data.ruleset) {
           cached = data.ruleset;
-          const lines = data.ruleset.split('\n');
-          preview.textContent = lines.slice(0, 20).join('\n') + (lines.length > 20 ? '\n...' : '');
+          preview.textContent = data.ruleset;
         } else { preview.textContent = 'Could not load ruleset.'; }
       }).catch(() => { preview.textContent = 'Failed to load.'; });
 

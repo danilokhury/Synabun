@@ -536,17 +536,32 @@ async function loadBranches(path) {
 let _mcpProfiles = [];
 let _currentProfile = 'full';
 
+function mcpProfileItemsFromPresets(presets) {
+  if (!presets || typeof presets !== 'object') return null;
+  return Object.entries(presets).map(([value, p]) => ({
+    value,
+    label: p?.label || value,
+    hint: `${p?.tools || '?'} tools`,
+  }));
+}
+
+function applyMcpProfileState(profile, presets) {
+  if (profile) _currentProfile = profile;
+  const items = mcpProfileItemsFromPresets(presets);
+  if (items) _mcpProfiles = items;
+  const $profile = panelEl('#cxp-profile');
+  if ($profile) populateProfileDropdown($profile);
+}
+
 async function loadCurrentProfile() {
   const $profile = panelEl('#cxp-profile');
   if (!$profile) return;
   try {
     const resp = await fetch('/api/mcp/profile');
     const data = await resp.json();
-    if (data.ok && data.profile) _currentProfile = data.profile;
-    if (data.presets) {
-      _mcpProfiles = Object.entries(data.presets).map(([value, p]) => ({
-        value, label: p.label || value, hint: `${p.tools} tools`,
-      }));
+    if (data.ok) {
+      applyMcpProfileState(data.profile, data.presets);
+      return;
     }
   } catch {}
   populateProfileDropdown($profile);
@@ -923,6 +938,10 @@ function wireEvents() {
 
   // Initialize voice input
   initVoiceInput();
+
+  on('mcp:profile-changed', (msg = {}) => {
+    applyMcpProfileState(msg.profile, msg.presets);
+  });
 
   on('claude-panel:show', () => {
     if (_visible) setVisible(false);

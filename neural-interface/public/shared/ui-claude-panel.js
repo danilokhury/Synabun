@@ -689,9 +689,17 @@ function injectStyles() {
     /* ── Tool cards ── */
     .cp-messages .tool-card {
       border: 1px solid var(--b-subtle); border-radius: 8px;
-      margin: 4px 0; overflow: hidden; font-size: 11px;
+      margin: 8px 0; overflow: hidden; font-size: 11px;
       background: var(--s-subtle); transition: border-color 0.2s;
     }
+    .cp-messages .msg-content > *:first-child { margin-top: 0; }
+    .cp-messages .msg-content > *:last-child { margin-bottom: 0; }
+    .cp-messages .msg-body + .tool-card,
+    .cp-messages .msg-body + .msg-thinking,
+    .cp-messages .msg-body + .plan-card,
+    .cp-messages .msg-body + .ask-card,
+    .cp-messages .msg-body + .post-plan-card,
+    .cp-messages .msg-body + .perm-card { margin-top: 12px; }
     .cp-messages .tool-card:hover { border-color: var(--b-light); }
     .cp-messages .tool-card.tool-ok { border-left: 3px solid rgba(100,200,120,0.5); }
     .cp-messages .tool-card.tool-error { border-left: 3px solid rgba(255,82,82,0.5); }
@@ -914,7 +922,7 @@ function injectStyles() {
     /* ── Plan cards (inline rendered markdown) ── */
     .cp-messages .plan-card {
       border: 1px solid rgba(255,255,255,0.07); border-radius: 8px;
-      margin: 4px 0; overflow: hidden; font-size: 11px;
+      margin: 8px 0; overflow: hidden; font-size: 11px;
       background: rgba(255,255,255,0.02);
     }
     .cp-messages .plan-card[open] { border-color: rgba(255,255,255,0.12); }
@@ -951,7 +959,7 @@ function injectStyles() {
     .post-plan-card {
       border: 1px solid rgba(255,255,255,0.07);
       border-radius: 8px; padding: 8px 10px;
-      margin-top: 4px; position: relative;
+      margin-top: 8px; position: relative;
       background: rgba(255,255,255,0.02);
       transition: opacity 0.3s, border-color 0.12s;
     }
@@ -991,7 +999,7 @@ function injectStyles() {
       background: var(--s-subtle);
       border: 1px solid var(--b-subtle);
       border-radius: 8px; padding: 8px 10px;
-      margin-top: 4px; transition: opacity 0.3s, border-color 0.2s, box-shadow 0.3s;
+      margin-top: 8px; transition: opacity 0.3s, border-color 0.2s, box-shadow 0.3s;
     }
     .perm-card { position: relative; }
     .perm-card::before {
@@ -1096,7 +1104,7 @@ function injectStyles() {
     /* ── Extended thinking blocks — matches tool-card design ── */
     .msg-thinking {
       border: 1px solid var(--b-subtle); border-radius: 8px;
-      margin: 4px 0; overflow: hidden;
+      margin: 8px 0; overflow: hidden;
       background: var(--s-subtle); transition: border-color 0.2s;
     }
     .msg-thinking:hover { border-color: var(--b-light); }
@@ -3022,21 +3030,33 @@ function _updateWindowRegistry() {
 function _cleanStaleWindows() {
   try {
     const raw = storage.getItem(STOR.windowRegistry);
-    if (!raw) return;
-    const reg = JSON.parse(raw);
+    const reg = raw ? JSON.parse(raw) : {};
     const STALE_MS = 24 * 60 * 60 * 1000; // 24h
     const now = Date.now();
     for (const [wid, ts] of Object.entries(reg)) {
       if (wid === _windowId) continue;
       if (now - ts > STALE_MS) {
-        // Remove stale window's tab key
         storage.removeItem(`synabun-claude-panel-tabs-${wid}`);
         delete reg[wid];
       }
     }
+    // Sweep unregistered tab keys (legacy entries from before the registry,
+    // or windowIds that lost their registry entry somehow). These have no
+    // timestamp and no in-flight client — safe to drop.
+    for (const k of (storage.keys?.() || [])) {
+      if (!k.startsWith('synabun-claude-panel-tabs-')) continue;
+      const wid = k.slice('synabun-claude-panel-tabs-'.length);
+      if (wid === _windowId) continue;
+      if (!(wid in reg)) storage.removeItem(k);
+    }
     storage.setItem(STOR.windowRegistry, JSON.stringify(reg));
   } catch {}
 }
+
+// Run GC + register current window at module load so stale keys get pruned
+// even if the user never opens the Claude panel this session.
+_cleanStaleWindows();
+_updateWindowRegistry();
 
 function restoreTabs() {
   _cleanStaleWindows();
@@ -4965,7 +4985,7 @@ function renderAssistant(tab, msg) {
     if (!tab._planContentCaptured) {
       const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
       const direct = (exitBlock?.input?.plan || '').trim();
-      const captured = direct || extractPlanTextFromMessage(msg) || extractPlanText(tab);
+      const captured = direct;
       if (captured) {
         tab._planContentCaptured = true;
         tab._planContent = captured;
@@ -5045,7 +5065,7 @@ function renderAssistant(tab, msg) {
     if (tab._exitPlanPending && !tab._planContentCaptured) {
       const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
       const direct = (exitBlock?.input?.plan || '').trim();
-      const captured = direct || extractPlanTextFromMessage(msg) || extractPlanText(tab);
+      const captured = direct;
       if (captured) {
         tab._planContentCaptured = true;
         tab._planContent = captured;
@@ -5120,7 +5140,7 @@ function renderAssistant(tab, msg) {
   if (tab._exitPlanPending && !tab._planContentCaptured) {
     const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
     const direct = (exitBlock?.input?.plan || '').trim();
-    const captured = direct || extractPlanTextFromMessage(msg) || extractPlanText(tab);
+    const captured = direct;
     if (captured) {
       tab._planContentCaptured = true;
       tab._planContent = captured;
@@ -5413,12 +5433,12 @@ function extractPlanText(tab) {
 
 function extractPlanTextFromMessage(msg) {
   if (!msg || !Array.isArray(msg.content)) return '';
-  const texts = msg.content.filter(b => b && b.type === 'text');
-  const joined = texts.map(b => b.text || '').join('\n').trim();
-  if (joined && joined.length > 100) return joined;
   const exitTool = msg.content.find(b => b && b.type === 'tool_use' && b.name === 'ExitPlanMode');
   const planInput = (exitTool?.input?.plan || '').trim();
   if (planInput) return planInput;
+  const texts = msg.content.filter(b => b && b.type === 'text');
+  const joined = texts.map(b => b.text || '').join('\n').trim();
+  if (joined && joined.length > 100) return joined;
   return '';
 }
 

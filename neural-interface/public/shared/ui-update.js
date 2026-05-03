@@ -27,15 +27,24 @@ function applyTopRightButton(data) {
   if (!btn) return;
   const has = !!data?.updateAvailable;
   btn.style.display = has ? '' : 'none';
-  if (badge) badge.textContent = has ? '!' : '';
+  if (badge) {
+    badge.classList.add('update-click-target');
+    badge.textContent = has ? '!' : '';
+    if (has) badge.setAttribute('aria-label', 'Update SynaBun');
+    else badge.removeAttribute('aria-label');
+  }
   if (has) {
     const srcLabel = sourceLabel(data);
-    btn.dataset.tooltip = `Update: v${data.current} → v${data.latest} (${srcLabel})`;
+    btn.dataset.tooltip = `SynaBun update available: v${data.current} → v${data.latest} (${srcLabel}) · click green badge`;
   }
   if (!_btnWired) {
     _btnWired = true;
     btn.addEventListener('click', (e) => {
+      const currentBadge = $('update-badge');
+      if (!currentBadge?.textContent) return;
+      if (e.target !== currentBadge && !currentBadge.contains(e.target)) return;
       e.stopPropagation();
+      e.preventDefault();
       openUpdateModal();
     });
   }
@@ -94,6 +103,12 @@ export async function forceCheckSynabunUpdate({ alert = false } = {}) {
 export function openSynabunUpdateModal() {
   if (!_versionData?.updateAvailable) return;
   openUpdateModal();
+}
+
+// Read-only accessor for the Notifications drawer to mirror SynaBun core
+// update state without re-fetching. May be null until initUpdate() resolves.
+export function getSynabunUpdateData() {
+  return _versionData;
 }
 
 // ── Modal Wizard ──

@@ -428,10 +428,24 @@ function wireTerminalMenu() {
           const hd = await h.json();
           if (hd.projectDir) localStorage.setItem('synabun-project-dir', hd.projectDir);
         } catch {}
-        await fetch('/api/server/restart', { method: 'POST' });
-        // Show brief message then attempt reconnect after delay
         document.title = 'Restarting...';
-        setTimeout(() => location.reload(), 2000);
+        await fetch('/api/server/restart', { method: 'POST' });
+
+        // Poll /api/health until the server has gone down AND come back up.
+        // The everDown flag prevents premature reload during the brief window
+        // where the old process is still serving requests during shutdown grace.
+        const deadline = Date.now() + 15000;
+        let everDown = false;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 250));
+          try {
+            const r = await fetch('/api/health', { cache: 'no-store' });
+            if (!r.ok) { everDown = true; continue; }
+            if (everDown) { location.reload(); return; }
+          } catch { everDown = true; }
+        }
+        // Timeout safety net — reload anyway so the user isn't stranded.
+        location.reload();
       } catch {}
     },
   };

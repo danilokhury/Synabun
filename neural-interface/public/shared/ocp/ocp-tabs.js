@@ -6,8 +6,9 @@
 import { requestWs, sendWs, onWsMessage, rejectPending } from './ocp-ws.js';
 import {
   renderHistory, renderEmptyState, renderUserPayload,
-  renderAssistantPayload,
+  renderAssistantPayload, renderAssistantMessage,
   appendStreamChunk, appendThinkChunk, finalizeStreamingMessage,
+  setStreamRawText, setStreamThinkText,
   showThinking, updateThinking, removeThinking, repositionThinking,
   renderToolCard, updateToolCard, renderErrorMessage,
   isQuestionTool, renderQuestionCard, lockQuestionCard,
@@ -43,7 +44,53 @@ export const STOR = {
   project:  'synabun-ocp-project',
   activity: 'synabun-ocp-activity-open',
   sessionSnapshots: 'synabun-ocp-session-snapshots', // global, per-sessionId rendered HTML cache
+  windowRegistry: 'synabun-ocp-windows',             // JSON map of windowId → lastSeen — used by stale-window GC
 };
+
+const OCP_STALE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h — matches Claude registry
+
+// ── Window registry: tracks active windows for stale-key cleanup ──
+function _updateOcpWindowRegistry() {
+  try {
+    const raw = storage.getItem(STOR.windowRegistry);
+    const reg = raw ? JSON.parse(raw) : {};
+    reg[_windowId] = Date.now();
+    storage.setItem(STOR.windowRegistry, JSON.stringify(reg));
+  } catch {}
+}
+
+function _cleanStaleOcpWindows() {
+  try {
+    const raw = storage.getItem(STOR.windowRegistry);
+    if (!raw) return;
+    const reg = JSON.parse(raw);
+    const now = Date.now();
+    let mutated = false;
+    for (const [wid, ts] of Object.entries(reg)) {
+      if (wid === _windowId) continue;
+      if (now - ts > OCP_STALE_WINDOW_MS) {
+        storage.removeItem(`synabun-ocp-tabs-${wid}`);
+        delete reg[wid];
+        mutated = true;
+      }
+    }
+    // Also drop tabs entries whose windowId isn't in the registry at all
+    // (covers legacy entries created before the registry existed).
+    for (const k of (storage.keys?.() || [])) {
+      if (!k.startsWith('synabun-ocp-tabs-')) continue;
+      const wid = k.slice('synabun-ocp-tabs-'.length);
+      if (wid === _windowId) continue;
+      if (!(wid in reg)) {
+        storage.removeItem(k);
+        mutated = true;
+      }
+    }
+    if (mutated) storage.setItem(STOR.windowRegistry, JSON.stringify(reg));
+  } catch {}
+}
+
+_cleanStaleOcpWindows();
+_updateOcpWindowRegistry();
 
 // ── Session HTML snapshot cache ──
 // Mirrors the Codex/Claude snapshot pattern: every render fills a per-session
@@ -123,9 +170,10 @@ const _partTypes = new Map(); // track partID → type (reasoning/text) from par
 const _renderedAssistantMsgIds = new Set(); // prevents double-render when message.updated re-fires after finalize (Windows timing)
 let _activeSendRequestId = null; // WS request id of the in-flight message:send (for abort cancellation)
 let _renderSeq = 0; // guard against stale async renders overwriting fresh ones
-let _activeQuestionToolId = null; // toolId of the currently active (unanswered) question card
-let _questionQueue = []; // queue of pending question events waiting for the active question to be answered
-let _activePermissionId = null; // permissionID of the currently displayed (unresponded) permission card
+// Question / permission gating is per-tab so concurrent OpenCode sessions don't
+// hijack each other's UX. Each tab owns: tab._activeQuestionToolId,
+// tab._questionQueue, tab._activePermissionId. Helpers read/write through the
+// activeQuestionToolId / questionQueue / activePermissionId accessors below.
 let _panelEl = null;    // set by ocp-panel.js
 let _onUpdate = null;   // callback to refresh UI
 let _panelVisible = false;
@@ -290,8 +338,23 @@ function currentTurnHasAssistantContent(tab, container, messageId = '') {
   if (turn.streamedText) return true;
   if (!container) return false;
   if (turn.id && container.querySelector(`.ocp-msg-assistant[data-turn-id="${cssEscape(turn.id)}"]`)) return true;
-  const count = container.querySelectorAll('.ocp-msg-assistant').length;
-  return count > (turn.startAssistantCount || 0);
+  // Walk new-this-turn bubbles for actual response content. A streaming bubble
+  // that contains only a Thought block (rawText empty, only an .ocp-think-block
+  // child) is the placeholder for a reasoning part — the real text response
+  // may still be missing, so the POST/message.updated fallback should run.
+  // The previous bare count check returned a false positive in that case.
+  const all = container.querySelectorAll('.ocp-msg-assistant');
+  const startCount = turn.startAssistantCount || 0;
+  for (let i = startCount; i < all.length; i++) {
+    const el = all[i];
+    if (el.dataset.rawText && el.dataset.rawText.trim()) return true;
+    const hasNonThinkContent = Array.from(el.children).some((child) => {
+      if (child.classList?.contains('ocp-think-block')) return false;
+      return Boolean(child.textContent && child.textContent.trim());
+    });
+    if (hasNonThinkContent) return true;
+  }
+  return false;
 }
 
 function endTurn(tab) {
@@ -325,6 +388,52 @@ function payloadHasAssistantText(value) {
     || payloadHasAssistantText(value.message);
 }
 
+// Backstop: after `session.idle`, fetch the canonical message list and verify
+// the latest assistant message's text is rendered. Catches the Kimi K2.6 /
+// DeepSeek case where the text part SSE never reaches the panel due to timing
+// races but the message exists in OpenCode's DB. Uses the same `messages:list`
+// WS proxy the Edit-plan flow uses; no extra server work.
+function reconcileMissingAssistantText(tab, container) {
+  if (!tab?.sessionId || !container) return;
+  const sid = tab.sessionId;
+  const seq = ++_renderSeq;
+  requestWs('messages:list', { sessionId: sid }, 8000)
+    .then((resp) => {
+      if (seq !== _renderSeq) return; // newer turn already running
+      if (!container.isConnected) return;
+      const raw = resp?.data?.messages || resp?.data || [];
+      const messages = Array.isArray(raw) ? raw : [];
+      if (!messages.length) return;
+      let lastAssistantText = '';
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i] || {};
+        const info = m.info || (typeof m.data === 'string' ? safeJSON(m.data) : null) || m;
+        const role = info?.role || m?.role;
+        if (role !== 'assistant') continue;
+        const parts = Array.isArray(m.parts) ? m.parts : [];
+        const textJoined = parts
+          .map((p) => (typeof p?.data === 'string' ? safeJSON(p.data) : p))
+          .filter((p) => String(p?.type || '').toLowerCase() === 'text')
+          .map((p) => String(p?.text || p?.content || '').trim())
+          .filter(Boolean)
+          .join('\n\n')
+          .trim();
+        if (textJoined) { lastAssistantText = textJoined; break; }
+      }
+      if (!lastAssistantText) return;
+      const probe = lastAssistantText.slice(0, Math.min(80, lastAssistantText.length));
+      const bubbles = container.querySelectorAll('.ocp-msg-assistant');
+      const found = Array.from(bubbles).some((b) => (b.textContent || '').includes(probe));
+      if (found) return;
+      renderAssistantMessage(container, lastAssistantText);
+    })
+    .catch(() => {});
+}
+
+function safeJSON(s) {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
 function findTabBySessionId(sessionId) {
   if (!sessionId) return null;
   const sid = String(sessionId);
@@ -333,29 +442,57 @@ function findTabBySessionId(sessionId) {
     || null;
 }
 
-function hasActiveQuestion() {
-  return _activeQuestionToolId !== null;
+// Per-tab question gating. Each tab owns its own active toolId + queue so two
+// concurrent OpenCode sessions don't share state (a question raised on tab B
+// must never be processed in tab A's container — and clearing tab B's queue
+// when tab A sends a message would silently drop user-facing prompts).
+function activeQuestionToolId(tab) {
+  return tab ? (tab._activeQuestionToolId || null) : null;
 }
 
-function queueQuestion(event) {
-  _questionQueue.push(event);
+function setActiveQuestionToolId(tab, toolId) {
+  if (tab) tab._activeQuestionToolId = toolId || null;
 }
 
-function dequeueNextQuestion() {
-  if (_questionQueue.length === 0) {
-    _activeQuestionToolId = null;
+function tabQuestionQueue(tab) {
+  if (!tab) return [];
+  if (!Array.isArray(tab._questionQueue)) tab._questionQueue = [];
+  return tab._questionQueue;
+}
+
+function hasActiveQuestion(tab) {
+  return activeQuestionToolId(tab) !== null;
+}
+
+function queueQuestion(tab, event) {
+  tabQuestionQueue(tab).push(event);
+}
+
+function dequeueNextQuestion(tab) {
+  const q = tabQuestionQueue(tab);
+  if (q.length === 0) {
+    setActiveQuestionToolId(tab, null);
     return null;
   }
-  return _questionQueue.shift();
+  return q.shift();
 }
 
-function clearQuestionQueue() {
-  _questionQueue = [];
-  _activeQuestionToolId = null;
+function clearQuestionQueue(tab) {
+  if (!tab) return;
+  tab._questionQueue = [];
+  tab._activeQuestionToolId = null;
+}
+
+function activePermissionId(tab) {
+  return tab ? (tab._activePermissionId || null) : null;
+}
+
+function setActivePermissionId(tab, permId) {
+  if (tab) tab._activePermissionId = permId || null;
 }
 
 function processQuestionQueue(tab, container) {
-  const next = dequeueNextQuestion();
+  const next = dequeueNextQuestion(tab);
   if (!next) return;
   // New path: queued question.asked SSE events
   if (next.eventType === 'question.asked' && next.event && next.reqId) {
@@ -365,7 +502,7 @@ function processQuestionQueue(tab, container) {
   // Legacy path: queued tool-based questions (tool.start fallback)
   const { toolName, toolInput, toolId } = next;
   if (!toolId) return;
-  _activeQuestionToolId = toolId;
+  setActiveQuestionToolId(tab, toolId);
   removeThinking(container);
   renderQuestionCard(container, toolName, toolInput, toolId, {
     onAnswer: (answers) => {
@@ -533,6 +670,8 @@ export function switchTab(idx) {
 export function closeTab(idx) {
   if (idx < 0 || idx >= _tabs.length) return;
   const tab = _tabs[idx];
+  clearPlanFinalizationWatchdog(tab);
+  clearQuestionReplyWatchdog(tab);
   flushSessionSnapshotSave(tab);
   if (tab.pillEl) tab.pillEl.remove();
   if (tab.trayPillEl) tab.trayPillEl.remove();
@@ -634,6 +773,7 @@ export function saveTabs() {
       threadTokenUsage: t.threadTokenUsage,
     }));
     storage.setItem(STOR.tabs, JSON.stringify({ activeIdx: _activeTabIdx, tabs: data }));
+    _updateOcpWindowRegistry();
   } catch {}
 }
 
@@ -780,6 +920,21 @@ export async function executeCommand(sessionId, command, args = '') {
 
 // ── Plan mode helpers ──
 
+// Render a TodoWrite/Tasks `todos` array into markdown plan text. Each todo
+// becomes a checklist item using its `content`/`activeForm` and status.
+function todosToMarkdown(todos) {
+  if (!Array.isArray(todos) || !todos.length) return '';
+  const lines = ['# Plan', ''];
+  todos.forEach((t, idx) => {
+    const text = String(t?.content || t?.activeForm || t?.text || t?.title || '').trim();
+    if (!text) return;
+    const status = String(t?.status || '').toLowerCase();
+    const mark = status === 'completed' || status === 'done' ? 'x' : ' ';
+    lines.push(`${idx + 1}. [${mark}] ${text}`);
+  });
+  return lines.join('\n').trim();
+}
+
 function capturePlanContent(tab) {
   if (!tab || tab.mode !== 'plan') return tab?.planContent || '';
   const container = panelEl('#ocp-messages');
@@ -790,6 +945,90 @@ function capturePlanContent(tab) {
   const text = (lastEl.textContent || '').trim();
   if (text.length > 80) tab.planContent = text;
   return tab.planContent || '';
+}
+
+// Relaxed extractor for the Edit plan flow — ignores mode and min-length guards.
+// Order: cached tab.planContent → ExitPlanMode tool args → assistant text bubble
+// → standalone Thought block (reasoning-only output) → subagent (Agent/task)
+// tool result. OpenCode's Plan agent often emits plan text via reasoning parts
+// or subagent results rather than a final assistant text bubble, so DOM
+// extraction has to cover all four layers.
+export function extractPlanTextLoose(tab) {
+  if (!tab) return '';
+  if (tab.planContent) return tab.planContent;
+  const container = panelEl('#ocp-messages');
+  if (!container) return '';
+
+  const toolCards = Array.from(container.querySelectorAll('.ocp-tool-card'));
+
+  // 1. ExitPlanMode tool cards — plan args are JSON, parse for input.plan.
+  for (let i = toolCards.length - 1; i >= 0; i--) {
+    const nameEl = toolCards[i].querySelector('.ocp-tool-name');
+    const name = (nameEl?.textContent || '').trim();
+    if (!/exit\s*plan|plan[\s_-]?exit/i.test(name)) continue;
+    const argsPre = toolCards[i].querySelector('.ocp-tool-args');
+    const argsRaw = (argsPre?.textContent || '').trim();
+    if (!argsRaw) continue;
+    try {
+      const parsed = JSON.parse(argsRaw);
+      const planText = String(parsed?.plan || parsed?.markdown || parsed?.content || parsed?.text || '').trim();
+      if (planText) { tab.planContent = planText; return planText; }
+    } catch {
+      if (argsRaw.length > 40) { tab.planContent = argsRaw; return argsRaw; }
+    }
+  }
+
+  // 1b. Tasks (todowrite) tool cards — plan steps live in the todos array.
+  for (let i = toolCards.length - 1; i >= 0; i--) {
+    const nameEl = toolCards[i].querySelector('.ocp-tool-name');
+    const name = (nameEl?.textContent || '').trim();
+    if (!/^tasks?$|todo[_-]?write/i.test(name)) continue;
+    const argsPre = toolCards[i].querySelector('.ocp-tool-args');
+    const argsRaw = (argsPre?.textContent || '').trim();
+    if (!argsRaw) continue;
+    try {
+      const parsed = JSON.parse(argsRaw);
+      const todos = Array.isArray(parsed?.todos) ? parsed.todos : [];
+      const planMd = todosToMarkdown(todos);
+      if (planMd && planMd.length > 40) { tab.planContent = planMd; return planMd; }
+    } catch {}
+  }
+
+  // 2. Final assistant text bubble.
+  const assistantEls = container.querySelectorAll('.ocp-msg-assistant');
+  if (assistantEls.length) {
+    const lastEl = assistantEls[assistantEls.length - 1];
+    const text = (lastEl.textContent || '').trim();
+    if (text.length > 40) { tab.planContent = text; return text; }
+  }
+
+  // 3. Standalone Thought / reasoning blocks (rendered as siblings, not inside
+  //    .ocp-msg-assistant). Some plan agents emit the entire plan as reasoning.
+  const thinkBlocks = container.querySelectorAll('.ocp-think-block .ocp-think-content');
+  if (thinkBlocks.length) {
+    const lastThink = thinkBlocks[thinkBlocks.length - 1];
+    const text = (lastThink.textContent || '').trim();
+    if (text.length > 40) { tab.planContent = text; return text; }
+  }
+
+  // 4. Subagent (Agent/task) tool result — Plan agent delegates discovery to a
+  //    subagent and the aggregated plan text comes back as the tool result.
+  for (let i = toolCards.length - 1; i >= 0; i--) {
+    const nameEl = toolCards[i].querySelector('.ocp-tool-name');
+    const name = (nameEl?.textContent || '').trim().toLowerCase();
+    if (!(name === 'agent' || name === 'task' || name.includes('agent'))) continue;
+    const resultPre = toolCards[i].querySelector('.ocp-tool-result');
+    const resultRaw = (resultPre?.textContent || '').trim();
+    if (resultRaw.length > 40) { tab.planContent = resultRaw; return resultRaw; }
+  }
+
+  // Last resort: any assistant bubble at all, even if short.
+  if (assistantEls.length) {
+    const lastEl = assistantEls[assistantEls.length - 1];
+    const text = (lastEl.textContent || '').trim();
+    if (text) { tab.planContent = text; return text; }
+  }
+  return '';
 }
 
 export async function ensurePlanFile(tab) {
@@ -848,8 +1087,13 @@ export function showPostPlanUI(tab, headerText = null) {
     onCompact: () => {
       if (tab.sessionId) compactSession(tab.sessionId);
     },
-    onEditPlan: () => {
-      if (typeof _onEditPlan === 'function') _onEditPlan(tab);
+    onEditPlan: (card) => {
+      if (typeof _onEditPlan === 'function') _onEditPlan(tab, card);
+    },
+    onContinuePlanning: () => {
+      tab.showPostPlanActions = false;
+      saveTabs();
+      update();
     },
     onContinuePlanning: () => {
       tab.showPostPlanActions = false;
@@ -857,6 +1101,141 @@ export function showPostPlanUI(tab, headerText = null) {
       update();
     },
   });
+}
+
+// Idempotent post-plan trigger. Safe to call from any quasi-terminal signal
+// in plan mode — short-circuits if the card is already visible or there is
+// no captured plan content yet (would otherwise render an empty PLAN COMPLETE
+// box that confuses the user).
+//
+// `force` skips the 40-char min-length guard — used when ExitPlanMode tool
+// was detected (we have explicit signal that the plan is complete, even if
+// the captured text is short).
+function maybeShowPostPlanUI(tab, { source = '', forceRecapture = false, force = false } = {}) {
+  if (!tab || tab.mode !== 'plan') return false;
+  if (tab.showPostPlanActions) return true;
+  if (forceRecapture || !tab.planContent) capturePlanContent(tab);
+  if (!force && (!tab.planContent || tab.planContent.length < 40)) return false;
+  showPostPlanUI(tab);
+  return true;
+}
+
+// Watchdog for the Deepseek-style stall: the planning subagent fired its own
+// session.idle but the parent never finalized (no parent session.idle, no WS
+// resolve, no message.completed). After ~8s, force-finalize and surface the
+// post-plan card so the user is not stranded.
+function schedulePlanFinalizationWatchdog(tab) {
+  if (!tab || tab.mode !== 'plan') return;
+  // Gate on the rendered card only — _exitPlanDetected flag no longer implies
+  // the card is up (we defer rendering until terminal events). Watchdog must
+  // still fire so a stalled session doesn't strand the user without the card.
+  if (tab.showPostPlanActions) return;
+  if (tab._planFinalizationWatchdogId) return;
+  tab._planFinalizationWatchdogId = setTimeout(() => {
+    tab._planFinalizationWatchdogId = null;
+    if (!tab || tab.mode !== 'plan') return;
+    if (tab.showPostPlanActions) return;
+    capturePlanContent(tab);
+    if (!tab.planContent || tab.planContent.length < 40) return;
+    const live = panelEl('#ocp-messages');
+    if (live) {
+      finalizeStreamingMessage(live);
+      removeThinking(live);
+    }
+    tab.running = false;
+    tab.turnStartedAt = 0;
+    endTurn(tab);
+    setTurnStatus(tab);
+    maybeShowPostPlanUI(tab, { source: 'watchdog:child-idle-no-parent-idle', force: tab._exitPlanDetected });
+    update();
+  }, 8000);
+}
+
+function clearPlanFinalizationWatchdog(tab) {
+  if (tab?._planFinalizationWatchdogId) {
+    clearTimeout(tab._planFinalizationWatchdogId);
+    tab._planFinalizationWatchdogId = null;
+  }
+}
+
+// Watchdog for the kimi-for-coding/k2p6 + OpenCode 1.14.30 deadlock: POST
+// /question/<id> returns 200 but session.processor never resumes — no second
+// LLM stream call, no message.part.delta, no session.idle. Without this, the
+// user sits in "Thinking…" until they manually Stop. After QUESTION_REPLY_WATCHDOG_MS
+// of total SSE silence post-reply, abort the stuck turn and resend the answer
+// as a regular `message:send` (which works fine — the bug is specific to the
+// question-tool resolve path, not normal message turns). Watchdog is cleared
+// in `handleSSEEvent` on any SSE event for this tab, in `abortTab`, and at the
+// start of `sendMessage`.
+const QUESTION_REPLY_WATCHDOG_MS = 75000;
+
+function buildAnswerSyntheticMessage(questions, answers) {
+  const fmt = (v) => Array.isArray(v) ? v.map(x => String(x ?? '').trim()).filter(Boolean).join(', ') : String(v ?? '').trim();
+  if (typeof answers === 'string') return answers.trim();
+  if (!answers || typeof answers !== 'object') return '';
+  const entries = Object.entries(answers).filter(([, v]) => fmt(v));
+  if (entries.length === 0) return '';
+  if (entries.length === 1) return fmt(entries[0][1]);
+  const lines = entries.map(([q, a]) => `- ${q}: ${fmt(a)}`);
+  return `Here are my answers:\n${lines.join('\n')}`;
+}
+
+function scheduleQuestionReplyWatchdog(tab, syntheticMessage) {
+  if (!tab || !syntheticMessage) return;
+  if (tab._questionReplyWatchdogId) clearTimeout(tab._questionReplyWatchdogId);
+  tab._questionReplyAnswerSnapshot = syntheticMessage;
+  tab._questionReplyWatchdogId = setTimeout(() => {
+    const snap = tab._questionReplyAnswerSnapshot;
+    tab._questionReplyWatchdogId = null;
+    tab._questionReplyAnswerSnapshot = null;
+    if (!snap || !tab.running) return;
+    executeQuestionReplyRecovery(tab, snap);
+  }, QUESTION_REPLY_WATCHDOG_MS);
+}
+
+function clearQuestionReplyWatchdog(tab) {
+  if (tab?._questionReplyWatchdogId) {
+    clearTimeout(tab._questionReplyWatchdogId);
+    tab._questionReplyWatchdogId = null;
+  }
+  if (tab) tab._questionReplyAnswerSnapshot = null;
+}
+
+async function executeQuestionReplyRecovery(tab, syntheticMessage) {
+  // sendMessage operates on activeTab(); if the user switched away while
+  // waiting, switch back so the synthetic recovery lands in the right tab.
+  if (tab !== activeTab()) {
+    const idx = _tabs.indexOf(tab);
+    if (idx >= 0) switchTab(idx);
+  }
+  const live = panelEl('#ocp-messages');
+  if (live) {
+    renderErrorMessage(live, "Model didn't resume after answering. Auto-recovering — resending your answer as a regular message…");
+    removeThinking(live);
+    finalizeStreamingMessage(live);
+  }
+  if (tab._activeSendRequestId) {
+    try { rejectPending(tab._activeSendRequestId, 'Question stall recovery'); } catch {}
+    if (_activeSendRequestId === tab._activeSendRequestId) _activeSendRequestId = null;
+    tab._activeSendRequestId = null;
+  }
+  setActiveQuestionToolId(tab, null);
+  tab.running = false;
+  tab.turnStartedAt = 0;
+  endTurn(tab);
+  setTurnStatus(tab);
+  update();
+  // Await the abort so the stuck message is closed server-side before we
+  // start a fresh turn — prevents a late `session.idle` from the abort
+  // racing into the new turn and flipping `tab.running` back to false.
+  if (tab.sessionId) {
+    try { await requestWs('message:abort', { sessionId: tab.sessionId }, 5000); } catch {}
+  }
+  try {
+    await sendMessage(syntheticMessage);
+  } catch (err) {
+    console.error('[ocp-tabs] question stall recovery sendMessage failed:', err);
+  }
 }
 
 export function applySavedPlan(tab, content, filePath = '') {
@@ -890,13 +1269,21 @@ export async function sendMessage(content, options = {}) {
     return false;
   }
   reconcileTabMode(tab);
-  // Clear any pending question queue when user sends a new message
-  clearQuestionQueue();
+  // Clear THIS tab's pending question queue when its user sends a new message.
+  // Per-tab so other concurrent OpenCode tabs keep their queued questions intact.
+  clearQuestionQueue(tab);
 
   // Clear any post-plan action card when sending a new message
   const msgContainer = panelEl('#ocp-messages');
   if (msgContainer) removePostPlanCards(msgContainer);
   tab.showPostPlanActions = false;
+  // Reset per-turn plan-detection state so multi-turn plan mode stays
+  // idempotent — without this the second plan-mode turn would short-circuit
+  // every fallback that gates on !_exitPlanDetected.
+  tab._exitPlanDetected = false;
+  tab._pendingPostPlanCheck = false;
+  clearPlanFinalizationWatchdog(tab);
+  clearQuestionReplyWatchdog(tab);
 
   const turnStartedAt = Date.now();
   tab.running = true;
@@ -957,12 +1344,34 @@ export async function sendMessage(content, options = {}) {
     }
     if (tab.model) body.model = modelObj(tab.model);
     if (tab.agent) body.agent = tab.agent;
+    if (tab.mode) body.mode = tab.mode;
+    // Belt-and-suspenders enforcement of mutating-tool permissions per turn.
+    // Per OpenCode SDK: tools is { write, edit, patch, bash, ... }.
+    //
+    // Plan mode: explicitly disable. Even when `mode: plan` is set, OpenCode
+    // sometimes still lets the agent attempt mutating tools — they then fail
+    // server-side and render as red error tiles. Pin them off so the agent
+    // cannot even attempt them.
+    //
+    // Build / chat mode: explicitly re-enable. OpenCode persists per-message
+    // `body.tools` restrictions at the SESSION level — once we disable
+    // bash/write/edit/patch during a plan turn, subsequent build or chat
+    // turns that omit body.tools inherit the disable. The model then receives
+    // a read-only tool list and either errors out or hallucinates tool names
+    // like `Bash` (which OpenCode rejects as "invalid"). Force-restore so the
+    // build agent gets its full toolset and chat agents get full access when
+    // the user has switched out of plan mode.
+    if (tab.mode === 'plan') {
+      body.tools = { write: false, edit: false, patch: false, bash: false };
+    } else {
+      body.tools = { write: true, edit: true, patch: true, bash: true };
+    }
     const cwd = tab.project || '';
     const sendPromise = requestWs('message:send', {
       sessionId: tab.sessionId,
       body,
       ...(cwd ? { cwd } : {}),
-    }, 360000); // 6 min timeout — OpenCode endpoint blocks until LLM finishes
+    }, 1800000); // 30 min timeout — Plan agent + subagents can run long.
     _activeSendRequestId = sendPromise.requestId;
     tab._activeSendRequestId = sendPromise.requestId;
     const resp = await sendPromise;
@@ -978,15 +1387,22 @@ export async function sendMessage(content, options = {}) {
       const assistantMid = info.id || resp.data.messageID || resp.data.messageId || '';
       const hasCurrentTurnContent = currentTurnHasAssistantContent(tab, container, assistantMid);
       if (container) {
-        if (parts && !hasCurrentTurnContent) {
+        // If a streaming bubble exists (e.g. reasoning streamed but text part
+        // hasn't arrived yet on Kimi K2.6 / DeepSeek / Qwen), augment it with
+        // any missing thinking/text from the authoritative POST `parts`. The
+        // 'merge' mode is idempotent — its length-comparison guard prevents
+        // shorter snapshots from clobbering longer in-flight content.
+        const streamingEl = container.querySelector('.ocp-msg-assistant.streaming');
+        if (parts && streamingEl) {
+          renderAssistantPayload(container, parts, { textMode: 'merge' });
+          if (payloadHasAssistantText(parts)) markCurrentTurnAssistantContent(tab, container, assistantMid);
+        } else if (parts && !hasCurrentTurnContent) {
           removeThinking(container);
           renderAssistantPayload(container, parts, { textMode: 'stream' });
           if (payloadHasAssistantText(parts)) markCurrentTurnAssistantContent(tab, container, assistantMid);
-          finalizeStreamingMessage(container);
-        } else {
-          removeThinking(container);
-          finalizeStreamingMessage(container);
         }
+        removeThinking(container);
+        finalizeStreamingMessage(container);
       } else if (parts) {
         tab._needsHistoryRefresh = true;
       }
@@ -1004,9 +1420,9 @@ export async function sendMessage(content, options = {}) {
         tab.outputTokens = raw.output || raw.outputTokens || raw.output_tokens || 0;
       }
       setTurnStatus(tab);
-      if (tab.mode === 'plan' && !tab._exitPlanDetected) {
-        capturePlanContent(tab);
-        showPostPlanUI(tab);
+      clearPlanFinalizationWatchdog(tab);
+      if (tab.mode === 'plan' && !tab.showPostPlanActions) {
+        maybeShowPostPlanUI(tab, { source: 'sendMessage:resolved', force: tab._exitPlanDetected });
       }
       notifyOpenCodeOutcome(NOTIF_TYPE.DONE, tab, info.id || tab.sessionId || tab.id);
       endTurn(tab);
@@ -1018,17 +1434,30 @@ export async function sendMessage(content, options = {}) {
     tab._activeSendRequestId = null;
     // Don't render error for user-initiated aborts — abortMessage() already cleaned up
     const isAbort = e.message === 'Aborted by user';
-    if (container && !isAbort) {
+    // Suppress the red toast when the WS request timed out but SSE is still
+    // streaming events. Plan agent + subagents can outrun the WS timeout while
+    // the underlying session keeps progressing toward session.idle.
+    const isWsTimeout = /^Request\s+message:send\s+timed out$/i.test(String(e?.message || ''));
+    const sseRecentlyActive = isWsTimeout
+      && tab._lastEventAt
+      && (Date.now() - tab._lastEventAt) < 60000;
+    if (container && !isAbort && !sseRecentlyActive) {
       removeThinking(container);
       renderErrorMessage(container, e.message);
     }
-    if (!isAbort) {
+    if (!isAbort && !sseRecentlyActive) {
       tab.running = false;
       tab.turnStartedAt = 0;
       endTurn(tab);
       setTurnStatus(tab);
       notifyOpenCodeOutcome(NOTIF_TYPE.ERROR, tab, tab.sessionId || tab.id);
       _activeChildSessionId = null;
+      clearPlanFinalizationWatchdog(tab);
+      // Recover plan content if streaming completed before the WS rejection,
+      // so a 4xx/5xx after a successful plan stream doesn't strand the user.
+      if (tab.mode === 'plan' && !tab.showPostPlanActions) {
+        maybeShowPostPlanUI(tab, { source: 'sendMessage:catch', forceRecapture: true, force: tab._exitPlanDetected });
+      }
       update();
     }
     return false;
@@ -1066,6 +1495,8 @@ function abortTab(tab, container = null) {
   tab.turnStartedAt = 0;
   endTurn(tab);
   setTurnStatus(tab);
+  clearPlanFinalizationWatchdog(tab);
+  clearQuestionReplyWatchdog(tab);
   return true;
 }
 
@@ -1331,6 +1762,11 @@ export function recordAgentChildEvent(tab, entry, eventType, event) {
       }
     }
     entry.activeStep = null;
+    // Subagent went idle. Arm a watchdog: if the parent's own terminal signal
+    // doesn't fire within ~8s, render the post-plan card defensively. This is
+    // the Deepseek case — child idles, parent never finalizes, no spinner but
+    // dock stays "active" because parent never received the task tool result.
+    schedulePlanFinalizationWatchdog(tab);
     return true;
   }
   return false;
@@ -1370,7 +1806,7 @@ function agentStepStatusDetail(step) {
 
 function syncActingIndicator(container, tab, options = {}) {
   if (!container || !tab?.running) return;
-  if (hasActiveQuestion() || _activePermissionId) return;
+  if (hasActiveQuestion(tab) || activePermissionId(tab)) return;
   const step = options.ignoreActiveStep ? null : activeAgentStep(tab);
   const title = options.title || (step ? 'Using tool…' : (tab.statusText || 'Thinking…'));
   const detail = options.detail !== undefined
@@ -1513,6 +1949,7 @@ function handleBackgroundEvent(tab, eventType, event) {
     endTurn(tab);
     setTurnStatus(tab);
     markStuckActivityAsAborted(tab);
+    clearPlanFinalizationWatchdog(tab);
     if (tab.mode === 'plan' && !tab._exitPlanDetected) {
       tab._pendingPostPlanCheck = true;
       tab.showPostPlanActions = true;
@@ -1529,9 +1966,35 @@ function handleBackgroundEvent(tab, eventType, event) {
 }
 
 export function handleSSEEvent(eventType, event) {
+  // session.created for a child (subagent) session — link it to the parent's
+  // running task entry so subsequent child events route to the activity card.
+  if (eventType === 'session.created') {
+    const child = event?.session || event?.info || event;
+    const childSid = child?.id || child?.sessionID || child?.sessionId || '';
+    const parentSid = child?.parentID || child?.parentId || child?.parent_id || '';
+    if (childSid && parentSid) {
+      const parentTab = findTabBySessionId(parentSid);
+      if (parentTab) {
+        const entry = (parentTab.toolActivity || []).find(
+          e => e.status === 'running' && isAgentTool(e.rawName) && !e.childSessionId,
+        );
+        if (entry) linkChildSession(parentTab, entry, childSid);
+      }
+    }
+    return;
+  }
+
   let tab = eventSessionId(event) ? findTabBySessionId(eventSessionId(event)) : activeTab();
   if (!tab) tab = activeTab();
   if (!tab) return;
+
+  // Mark recent SSE activity so a stale `message:send` WS timeout can be
+  // distinguished from a truly dead session (sendMessage uses this to suppress
+  // the red error toast when SSE is still streaming).
+  tab._lastEventAt = Date.now();
+  // Any SSE event after a question reply means the LLM resumed — clear the
+  // post-reply watchdog so it doesn't fire spurious recovery.
+  clearQuestionReplyWatchdog(tab);
 
   const isActiveTab = tab === activeTab();
   const container = isActiveTab ? panelEl('#ocp-messages') : null;
@@ -1610,13 +2073,23 @@ export function handleSSEEvent(eventType, event) {
       const status = String(info.status || info.state || '').toLowerCase();
       const explicitTerminal = ['done', 'complete', 'completed', 'finished', 'success'].includes(status);
       const hasToolCards = !!container.querySelector('.ocp-tool-card');
+      // 'merge' (vs the previous 'skip') augments the streaming bubble with
+      // any missing thinking/text from this payload. 'skip' silently dropped
+      // text segments from message.updated when a thinking-only streaming
+      // bubble existed — see ocp-render.js renderAssistantPayload merge mode.
       const rendered = renderAssistantPayload(container, info.content ?? info.parts ?? info.text ?? '', {
-        textMode: hasStreaming ? 'skip' : 'stream',
+        textMode: hasStreaming ? 'merge' : 'stream',
       });
       if (rendered && !hasStreaming && payloadHasAssistantText(info.content ?? info.parts ?? info.text ?? '')) {
         markCurrentTurnAssistantContent(tab, container, assistantMid);
       }
-      if (rendered || hasStreaming || (explicitTerminal && hasToolCards) || (info.tokens && hasToolCards)) {
+      // Only finalize on a terminal signal (tokens/usage/explicitTerminal) or when
+      // we just rendered fallback content. Mid-turn message.updated events with no
+      // payload would otherwise strip the .streaming class while part.updated
+      // events are still streaming the reasoning/text bubble — causing later
+      // setStreamRawText calls to spawn a duplicate sibling bubble.
+      const hasTerminalSignal = explicitTerminal || info.tokens || info.usage || info?.time?.completed;
+      if (rendered || (hasTerminalSignal && (hasToolCards || hasStreaming))) {
         removeThinking(container);
         finalizeStreamingMessage(container);
         partTypes(tab).clear();
@@ -1624,7 +2097,7 @@ export function handleSSEEvent(eventType, event) {
         // arrived or status is explicitly terminal). Mid-turn message.updated
         // events may fire before streaming starts and shouldn't lock out later
         // part.delta / part.updated events.
-        if (assistantMid && (explicitTerminal || info.tokens || info.usage)) {
+        if (assistantMid && hasTerminalSignal) {
           markAssistantRendered(tab, assistantMid);
         }
         if (info.tokens || info.usage) {
@@ -1679,24 +2152,43 @@ export function handleSSEEvent(eventType, event) {
       // Track part type so message.part.delta can look it up by partID
       if (part.id && updatedType) partTypes(tab).set(part.id, updatedType);
       if (updatedType === 'reasoning' || updatedType === 'thinking' || updatedType === 'thought') {
-        // Reasoning part finalized — mark think block as complete (not partial)
-        const streamingEl = container.querySelector('.ocp-msg-assistant.streaming');
-        if (streamingEl && streamingEl.dataset.thinkText !== undefined) {
-          const thinkHtml = `<details class="ocp-think-block"><summary><span class="ocp-think-icon"><svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L4 9h4l-1 5.5L12 7H8l1-5.5z"/></svg></span><span class="ocp-think-label">Thought</span><span class="ocp-think-chevron">&#x203A;</span></summary><div class="ocp-think-content">${streamingEl.dataset.thinkText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}</div></details>`;
-          const responseHtml = streamingEl.dataset.rawText ? streamingEl.innerHTML.replace(/<details class="ocp-think-block"[\s\S]*?<\/details>/, '') : '';
-          streamingEl.innerHTML = thinkHtml + responseHtml;
+        // Live capture (plan mode): if the model emits its plan output as a
+        // reasoning part rather than a text part, cache it on the tab so the
+        // Edit-plan flow can find it after the post-plan card shows.
+        if (tab.mode === 'plan') {
+          const incoming = String(part?.text || part?.reasoning || part?.content || '').trim();
+          if (incoming.length > (tab.planContent?.length || 0)) {
+            tab.planContent = incoming;
+          }
         }
-        setTurnStatus(tab, 'Writing response…', tabStatusDetail(tab));
+        const partMsgId = part.messageID || part.messageId;
+        if (!(partMsgId && hasAssistantRendered(tab, partMsgId))) {
+          const fullText = String(part?.text || part?.reasoning || part?.content || '');
+          if (fullText) {
+            setStreamThinkText(container, fullText);
+            // Don't mark turn as having assistant content yet — reasoning alone
+            // shouldn't suppress POST-response fallback rendering of the text part.
+          }
+        }
+        setTurnStatus(tab, 'Thinking…', tabStatusDetail(tab));
         update();
       } else if (updatedType === 'text') {
-        const hasStreaming = container.querySelector('.ocp-msg-assistant.streaming');
-        // Skip the fallback render if this assistant message has already been
-        // finalized by POST response or a prior message.updated — otherwise we
-        // create a duplicate bubble when late text part.updated events arrive.
+        // Live capture for the Edit-plan flow: cache the streamed text on the
+        // tab so post-plan extraction has authoritative content even when the
+        // bubble was rendered into a Thought/reasoning block elsewhere.
+        if (tab.mode === 'plan') {
+          const incoming = String(part?.text || part?.content || '').trim();
+          if (incoming.length > (tab.planContent?.length || 0)) {
+            tab.planContent = incoming;
+          }
+        }
         const partMsgId = part.messageID || part.messageId;
-        if (!hasStreaming && !(partMsgId && hasAssistantRendered(tab, partMsgId))) {
-          renderAssistantPayload(container, part, { textMode: 'stream' });
-          markCurrentTurnAssistantContent(tab, container, partMsgId || '');
+        if (!(partMsgId && hasAssistantRendered(tab, partMsgId))) {
+          const fullText = String(part?.text || part?.content || '');
+          if (fullText) {
+            setStreamRawText(container, fullText);
+            markCurrentTurnAssistantContent(tab, container, partMsgId || '');
+          }
         }
         setTurnStatus(tab, 'Writing response…', tabStatusDetail(tab));
         if (tab.running) {
@@ -1716,7 +2208,7 @@ export function handleSSEEvent(eventType, event) {
           // OpenCode emits a dedicated question.asked SSE event with the full question
           // payload; the interactive card is rendered from that handler. Suppress the
           // raw tool card here so we don't show a "running" placeholder alongside it.
-          if (hasActiveQuestion()) {
+          if (hasActiveQuestion(tab)) {
             removeThinking(container);
             setTurnStatus(tab, 'Waiting for input…', 'Question');
           }
@@ -1724,8 +2216,34 @@ export function handleSSEEvent(eventType, event) {
           break;
         }
 
+        // Plan exit detection (modern SSE path) — mirror the tool.start handler.
+        // Capture content + flag here, but DEFER showPostPlanUI to the terminal
+        // event (message.completed / session.idle). Otherwise any continuation
+        // text streams in BELOW the card, stranding PLAN COMPLETE mid-conversation.
+        if (tab.mode === 'plan' && /^(ExitPlanMode|plan[_-]exit)$/i.test(toolName)) {
+          tab._exitPlanDetected = true;
+          const toolPlanText = String(
+            toolInput?.plan || toolInput?.markdown || toolInput?.content || toolInput?.text || ''
+          ).trim();
+          if (toolPlanText) tab.planContent = toolPlanText;
+          else capturePlanContent(tab);
+          clearPlanFinalizationWatchdog(tab);
+        }
+
         renderAssistantPayload(container, part, { textMode: 'skip' });
         recordToolStart(tab, toolName, toolId, toolInput);
+        // Fallback: link child session id from task tool's part.state.metadata
+        // when session.created didn't arrive first.
+        if (isAgentTool(toolName)) {
+          const childSidFromPart = part?.state?.metadata?.sessionId
+            || part?.state?.metadata?.sessionID
+            || part?.metadata?.sessionId
+            || '';
+          if (childSidFromPart) {
+            const entry = findAgentEntryByToolId(tab, toolId);
+            if (entry && !entry.childSessionId) linkChildSession(tab, entry, String(childSidFromPart));
+          }
+        }
         const detail = toolStatusDetail(toolName, toolInput);
         setTurnStatus(tab, 'Using tool…', detail);
         syncActingIndicator(container, tab, {
@@ -1752,13 +2270,20 @@ export function handleSSEEvent(eventType, event) {
         tab.turnStartedAt = 0;
         endTurn(tab);
         setTurnStatus(tab);
+        clearPlanFinalizationWatchdog(tab);
+        if (tab.mode === 'plan' && !tab.showPostPlanActions) {
+          maybeShowPostPlanUI(tab, { source: 'message.completed:rendered', force: tab._exitPlanDetected });
+        }
         update();
         break;
       }
-      // Fallback: render content if no streaming element was built
+      // Fallback: render content if no streaming element was built.
+      // 'merge' augments an existing streaming bubble with any missing
+      // thinking/text — preserves SSE-streamed content while recovering
+      // anything that didn't make it through (Kimi K2.6 et al).
       const hasStreamingLegacy = container.querySelector('.ocp-msg-assistant.streaming');
       renderAssistantPayload(container, event.content ?? event.parts ?? event.text ?? '', {
-        textMode: hasStreamingLegacy ? 'skip' : 'stream',
+        textMode: hasStreamingLegacy ? 'merge' : 'stream',
       });
       if (!hasStreamingLegacy) markCurrentTurnAssistantContent(tab, container, completedMid || '');
       finalizeStreamingMessage(container);
@@ -1775,6 +2300,10 @@ export function handleSSEEvent(eventType, event) {
         tab.outputTokens = raw.outputTokens || raw.output_tokens || raw.output || 0;
       }
       notifyOpenCodeOutcome(NOTIF_TYPE.DONE, tab, event.messageID || event.id || tab.sessionId || tab.id);
+      clearPlanFinalizationWatchdog(tab);
+      if (tab.mode === 'plan' && !tab.showPostPlanActions) {
+        maybeShowPostPlanUI(tab, { source: 'message.completed:fallback', force: tab._exitPlanDetected });
+      }
       update();
       break;
     }
@@ -1784,14 +2313,15 @@ export function handleSSEEvent(eventType, event) {
       const toolInput = event.input || event.args || {};
 
       if (isQuestionTool(toolName)) {
-        // If a question is already active, queue this one for later
-        if (hasActiveQuestion()) {
-          queueQuestion({ event, tab, toolName, toolId, toolInput });
+        // If a question is already active for THIS tab, queue this one for
+        // later. Per-tab queue so concurrent OpenCode tabs don't interleave.
+        if (hasActiveQuestion(tab)) {
+          queueQuestion(tab, { event, tab, toolName, toolId, toolInput });
           update();
           break;
         }
         removeThinking(container);
-        _activeQuestionToolId = toolId;
+        setActiveQuestionToolId(tab, toolId);
         renderQuestionCard(container, toolName, toolInput, toolId, {
           onAnswer: (answers) => {
             lockQuestionCard(container, toolId);
@@ -1822,11 +2352,43 @@ export function handleSSEEvent(eventType, event) {
 
       renderToolCard(container, toolName, toolInput, toolId, { status: 'running' });
       recordToolStart(tab, toolName, toolId, toolInput);
-      // Plan exit detection — Anthropic models call ExitPlanMode/plan_exit
+      // Fallback: link child session id from tool.start metadata when
+      // session.created didn't arrive first (parent task → child session).
+      if (isAgentTool(toolName)) {
+        const childSidFromEvent = event?.metadata?.sessionId
+          || event?.metadata?.sessionID
+          || event?.state?.metadata?.sessionId
+          || '';
+        if (childSidFromEvent) {
+          const entry = findAgentEntryByToolId(tab, toolId);
+          if (entry && !entry.childSessionId) linkChildSession(tab, entry, String(childSidFromEvent));
+        }
+      }
+      // Plan exit detection — Anthropic models call ExitPlanMode/plan_exit.
+      // The plan text lives on the tool input (input.plan), not in the assistant
+      // message bubble — capture it so the Edit-plan handler has content to work
+      // with even when the assistant produced no separate prose. DEFER
+      // showPostPlanUI to the terminal event so continuation text can't slip in
+      // below the card.
       if (tab.mode === 'plan' && /^(ExitPlanMode|plan[_-]exit)$/i.test(toolName)) {
         tab._exitPlanDetected = true;
-        capturePlanContent(tab);
-        showPostPlanUI(tab);
+        const toolPlanText = String(
+          toolInput?.plan || toolInput?.markdown || toolInput?.content || toolInput?.text || ''
+        ).trim();
+        if (toolPlanText) tab.planContent = toolPlanText;
+        else capturePlanContent(tab);
+      }
+      // OpenCode's Plan agent often communicates the plan via a `todowrite`
+      // (Tasks) tool call instead of a final assistant text bubble — each
+      // todo IS a plan step. Synthesize markdown from the todos array.
+      if (tab.mode === 'plan' && /^(todo[_-]?write|tasks?|todos?)$/i.test(toolName)) {
+        const todos = Array.isArray(toolInput?.todos) ? toolInput.todos : [];
+        if (todos.length) {
+          const planMd = todosToMarkdown(todos);
+          if (planMd && planMd.length > (tab.planContent?.length || 0)) {
+            tab.planContent = planMd;
+          }
+        }
       }
       const detail = toolStatusDetail(toolName, toolInput);
       setTurnStatus(tab, 'Using tool…', detail);
@@ -1846,13 +2408,22 @@ export function handleSSEEvent(eventType, event) {
         break;
       }
 
+      // Soft-fail tool denials in plan mode: when the server rejects a write
+      // tool (Edit/Write/Patch/Bash) because plan mode forbids it, render the
+      // card as a neutral "skipped" tile rather than a red error so the user
+      // doesn't read the rejection as a regression.
+      const errStr = String(event.error || '').toLowerCase();
+      const isPlanDenial = tab.mode === 'plan'
+        && !!event.error
+        && /permission|not allowed|forbidden|read[- ]?only|disabled|disallow|file_edit|edit not|write not|patch not|bash not/i.test(errStr);
+
       updateToolCard(
         container,
         toolId,
-        event.result ?? event.output ?? event.error ?? '',
-        !!event.error,
+        isPlanDenial ? 'Skipped — plan mode is read-only.' : (event.result ?? event.output ?? event.error ?? ''),
+        isPlanDenial ? false : !!event.error,
         {
-          status: event.error ? 'error' : 'complete',
+          status: isPlanDenial ? 'complete' : (event.error ? 'error' : 'complete'),
           toolName,
           toolInput: event.input ?? event.args,
         }
@@ -1890,12 +2461,15 @@ export function handleSSEEvent(eventType, event) {
         setTurnStatus(tab);
         removeThinking(container);
         markStuckActivityAsAborted(tab);
-        // Fallback plan completion for non-Anthropic models that don't call ExitPlanMode
-        if (tab.mode === 'plan' && !tab._exitPlanDetected) {
-          capturePlanContent(tab);
-          showPostPlanUI(tab);
+        clearPlanFinalizationWatchdog(tab);
+        // Single render funnel — covers both ExitPlanMode (deferred from tool
+        // detection) and OpenCode plan agents that don't call ExitPlanMode.
+        // maybeShowPostPlanUI no-ops if the card is already visible.
+        if (tab.mode === 'plan' && !tab.showPostPlanActions) {
+          maybeShowPostPlanUI(tab, { source: 'session.status:idle', force: tab._exitPlanDetected });
         }
         notifyOpenCodeOutcome(NOTIF_TYPE.DONE, tab, tab.sessionId || tab.id);
+        reconcileMissingAssistantText(tab, container);
       }
       update();
       break;
@@ -1908,19 +2482,20 @@ export function handleSSEEvent(eventType, event) {
       setTurnStatus(tab);
       removeThinking(container);
       markStuckActivityAsAborted(tab);
-      if (tab.mode === 'plan' && !tab._exitPlanDetected) {
-        capturePlanContent(tab);
-        showPostPlanUI(tab);
+      clearPlanFinalizationWatchdog(tab);
+      if (tab.mode === 'plan' && !tab.showPostPlanActions) {
+        maybeShowPostPlanUI(tab, { source: 'session.idle', force: tab._exitPlanDetected });
       }
       notifyOpenCodeOutcome(NOTIF_TYPE.DONE, tab, tab.sessionId || tab.id);
+      reconcileMissingAssistantText(tab, container);
       update();
       break;
     }
     case 'question.asked': {
       const reqId = event.id || event.requestID || '';
       if (!reqId) break;
-      if (hasActiveQuestion()) {
-        queueQuestion({ eventType, event, tab, reqId });
+      if (hasActiveQuestion(tab)) {
+        queueQuestion(tab, { eventType, event, tab, reqId });
         update();
         break;
       }
@@ -1931,8 +2506,8 @@ export function handleSSEEvent(eventType, event) {
     case 'question.rejected': {
       const reqId = event.requestID || event.id || '';
       if (reqId) lockQuestionCard(container, reqId);
-      if (_activeQuestionToolId === reqId) {
-        _activeQuestionToolId = null;
+      if (activeQuestionToolId(tab) === reqId) {
+        setActiveQuestionToolId(tab, null);
         processQuestionQueue(tab, container);
       }
       break;
@@ -1944,10 +2519,10 @@ export function handleSSEEvent(eventType, event) {
       const status = String(event.status || event.state || '').toLowerCase();
       if (status === 'replied' || status === 'resolved' || status === 'approved' || status === 'rejected') {
         lockPermissionCard(container, permId);
-        if (_activePermissionId === permId) _activePermissionId = null;
+        if (activePermissionId(tab) === permId) setActivePermissionId(tab, null);
         break;
       }
-      if (_activePermissionId === permId) break;
+      if (activePermissionId(tab) === permId) break;
       renderOpencodePermission(tab, container, event, permId);
       break;
     }
@@ -1955,7 +2530,7 @@ export function handleSSEEvent(eventType, event) {
     case 'permission.rejected': {
       const permId = event.id || event.permissionID || '';
       if (permId) lockPermissionCard(container, permId);
-      if (_activePermissionId === permId) _activePermissionId = null;
+      if (activePermissionId(tab) === permId) setActivePermissionId(tab, null);
       break;
     }
     case 'session.error':
@@ -1973,6 +2548,13 @@ export function handleSSEEvent(eventType, event) {
       setTurnStatus(tab, 'Error', msg);
       notifyOpenCodeOutcome(NOTIF_TYPE.ERROR, tab, event.id || event.messageID || tab.sessionId || tab.id);
       _activeChildSessionId = null;
+      clearPlanFinalizationWatchdog(tab);
+      // Don't strand a half-completed plan: if plan content was streamed before
+      // the error, surface the post-plan card so the user can still continue,
+      // edit, or retry instead of forcing them to re-plan from scratch.
+      if (tab.mode === 'plan' && !tab.showPostPlanActions) {
+        maybeShowPostPlanUI(tab, { source: 'session.error', forceRecapture: true, force: tab._exitPlanDetected });
+      }
       update();
       break;
     }
@@ -1982,7 +2564,7 @@ export function handleSSEEvent(eventType, event) {
 // Render an OpenCode /question.asked event as an interactive card and wire up
 // reply/reject via the dedicated /question endpoint.
 function renderOpencodeQuestion(tab, container, event, requestID) {
-  _activeQuestionToolId = requestID;
+  setActiveQuestionToolId(tab, requestID);
   const questions = Array.isArray(event.questions) ? event.questions : [event];
   const toolInput = { questions };
 
@@ -1992,13 +2574,49 @@ function renderOpencodeQuestion(tab, container, event, requestID) {
       lockQuestionCard(container, requestID);
       const payload = buildQuestionReplyPayload(questions, answers);
       requestWs('question:reply', { requestID, body: payload }, 15000)
-        .then(() => {
-          if (_activeQuestionToolId === requestID) {
-            _activeQuestionToolId = null;
+        .then((resp) => {
+          if (activeQuestionToolId(tab) === requestID) {
+            setActiveQuestionToolId(tab, null);
+            // Status was "Waiting for input… / Question". Switch to Thinking
+            // so the gauge doesn't sit on "Waiting" while the agent resumes.
+            setTurnStatus(tab, 'Thinking…', tabStatusDetail(tab));
+            showThinking(container, {
+              title: 'Thinking…',
+              detail: tabStatusDetail(tab),
+              startedAt: Date.now(),
+              waiting: true,
+            });
+            // Arm the no-resume watchdog. Auto-recovers from the
+            // kimi-for-coding/k2p6 + OpenCode 1.14.30 deadlock where the POST
+            // is accepted but session.processor never resumes the LLM stream.
+            if (!resp?.status || resp.status < 400) {
+              const synthetic = buildAnswerSyntheticMessage(questions, answers);
+              if (synthetic) scheduleQuestionReplyWatchdog(tab, synthetic);
+            }
             processQuestionQueue(tab, container);
+            update();
+          }
+          // Surface non-2xx responses so the user sees the failure instead of
+          // staring at a stuck "Waiting for input…" status forever.
+          if (resp?.status && resp.status >= 400) {
+            const body = resp.data?.error || resp.data?.message || `HTTP ${resp.status}`;
+            renderErrorMessage(container, `Question reply rejected: ${body}. Try sending a regular message to retry.`);
           }
         })
-        .catch((err) => console.error('[ocp-tabs] question:reply failed:', err));
+        .catch((err) => {
+          console.error('[ocp-tabs] question:reply failed:', err);
+          renderErrorMessage(container, `Question reply failed: ${err?.message || err}. Try sending a regular message to retry.`);
+          // Clear active question + restore controls so the user isn't trapped.
+          if (activeQuestionToolId(tab) === requestID) {
+            setActiveQuestionToolId(tab, null);
+            tab.running = false;
+            tab.turnStartedAt = 0;
+            endTurn(tab);
+            removeThinking(container);
+            setTurnStatus(tab);
+            update();
+          }
+        });
     },
   });
   setTurnStatus(tab, 'Waiting for input…', 'Question');
@@ -2013,7 +2631,7 @@ function renderOpencodeQuestion(tab, container, event, requestID) {
 // Render an OpenCode /permission.asked event as an interactive card with
 // Allow once / Always allow / Reject buttons. Posts reply via WS proxy.
 function renderOpencodePermission(tab, container, event, permissionID) {
-  _activePermissionId = permissionID;
+  setActivePermissionId(tab, permissionID);
   const sessionID = event.sessionID || event.sessionId || tab?.sessionId || '';
 
   // OpenCode Permission.Request schema: { id, sessionID, permission, patterns[], metadata, always[], tool?:{messageID,callID} }
@@ -2072,7 +2690,7 @@ function renderOpencodePermission(tab, container, event, permissionID) {
         card.dataset.locked = '';
         card.querySelectorAll('button').forEach(b => { b.disabled = false; });
       });
-    if (_activePermissionId === permissionID) _activePermissionId = null;
+    if (activePermissionId(tab) === permissionID) setActivePermissionId(tab, null);
   };
 
   card.querySelectorAll('button[data-response]').forEach(btn => {
@@ -2241,12 +2859,18 @@ export function setTabMode(mode) {
   const tab = activeTab();
   if (!tab) return;
   const nextMode = normalizeMode(mode) || DEFAULT_MODE;
-  if (nextMode === 'plan') tab._exitPlanDetected = false;
+  if (nextMode === 'plan') {
+    tab._exitPlanDetected = false;
+    if (tab.mode !== 'plan' || !tab._planModeStartedAt) {
+      tab._planModeStartedAt = Date.now();
+    }
+  }
   // Leaving plan mode invalidates any pending post-plan card — clear the flag
   // so a later renderTabMessages (tab switch, WS reconnect) can't resurrect it.
   if (tab.mode === 'plan' && nextMode !== 'plan') {
     tab.showPostPlanActions = false;
     tab._pendingPostPlanCheck = false;
+    clearPlanFinalizationWatchdog(tab);
     const container = panelEl('#ocp-messages');
     if (container) removePostPlanCards(container);
   }
@@ -2262,16 +2886,34 @@ export function getActiveTabMode() {
 }
 
 const CAP_BADGES = [
-  { key: 'reasoning',    test: c => c?.reasoning,          label: 'Reason', color: '#c084fc', bg: 'rgba(192,132,252,0.12)' },
-  { key: 'toolcall',     test: c => c?.toolcall,           label: 'Tools',  color: '#60a5fa', bg: 'rgba(96,165,250,0.12)' },
-  { key: 'input.image',  test: c => c?.input?.image,       label: 'Vision', color: '#4ade80', bg: 'rgba(74,222,128,0.12)' },
-  { key: 'input.audio',  test: c => c?.input?.audio,       label: 'Audio',  color: '#fb923c', bg: 'rgba(251,146,60,0.12)' },
-  { key: 'input.video',  test: c => c?.input?.video,       label: 'Video',  color: '#f87171', bg: 'rgba(248,113,113,0.12)' },
-  { key: 'input.pdf',    test: c => c?.input?.pdf,         label: 'PDF',    color: '#fbbf24', bg: 'rgba(251,191,36,0.12)' },
-  { key: 'output.image', test: c => c?.output?.image,      label: 'ImgGen', color: '#f472b6', bg: 'rgba(244,114,182,0.12)' },
-  { key: 'output.audio', test: c => c?.output?.audio,      label: 'TTS',    color: '#2dd4bf', bg: 'rgba(45,212,191,0.12)' },
-  { key: 'attachment',   test: c => c?.attachment,          label: 'Files',  color: '#94a3b8', bg: 'rgba(148,163,184,0.12)' },
+  { key: 'reasoning',    test: c => c?.reasoning,     label: 'Reason', abbr: 'R',  color: '#c084fc', bg: 'rgba(192,132,252,0.12)', description: 'Stronger at multi-step reasoning, planning, and hard problem solving.' },
+  { key: 'toolcall',     test: c => c?.toolcall,      label: 'Tools',  abbr: 'T',  color: '#60a5fa', bg: 'rgba(96,165,250,0.12)',  description: 'Can call external tools and functions during a task.' },
+  { key: 'input.image',  test: c => c?.input?.image,  label: 'Vision', abbr: 'V',  color: '#4ade80', bg: 'rgba(74,222,128,0.12)',  description: 'Can understand images and screenshots you attach.' },
+  { key: 'input.audio',  test: c => c?.input?.audio,  label: 'Audio',  abbr: 'A',  color: '#fb923c', bg: 'rgba(251,146,60,0.12)', description: 'Can understand audio input.' },
+  { key: 'input.video',  test: c => c?.input?.video,  label: 'Video',  abbr: 'Vi', color: '#f87171', bg: 'rgba(248,113,113,0.12)', description: 'Can understand video input.' },
+  { key: 'input.pdf',    test: c => c?.input?.pdf,    label: 'PDF',    abbr: 'P',  color: '#fbbf24', bg: 'rgba(251,191,36,0.12)', description: 'Can read PDF documents directly.' },
+  { key: 'output.image', test: c => c?.output?.image, label: 'ImgGen', abbr: 'I',  color: '#f472b6', bg: 'rgba(244,114,182,0.12)', description: 'Can generate images.' },
+  { key: 'output.audio', test: c => c?.output?.audio, label: 'TTS',    abbr: 'S',  color: '#2dd4bf', bg: 'rgba(45,212,191,0.12)', description: 'Can generate spoken audio.' },
+  { key: 'attachment',   test: c => c?.attachment,    label: 'Files',  abbr: 'F',  color: '#94a3b8', bg: 'rgba(148,163,184,0.12)', description: 'Can accept file attachments as input.' },
 ];
+
+function escAttr(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function capTooltip(badge) {
+  return `${badge.label}\n${badge.description || ''}`;
+}
+
+const ALL_CAP_HELP = {
+  key: '',
+  label: 'All',
+  description: 'Showing every visible model.',
+};
 
 function capBadgesHtml(modelObj) {
   if (!modelObj || typeof modelObj !== 'object') return '';
@@ -2279,7 +2921,7 @@ function capBadgesHtml(modelObj) {
   if (!caps) return '';
   return CAP_BADGES
     .filter(b => b.test(caps))
-    .map(b => `<span class="ocp-cap" style="color:${b.color};background:${b.bg}">${b.label}</span>`)
+    .map(b => `<span class="ocp-cap" data-cap-key="${escAttr(b.key)}" data-tooltip="${escAttr(capTooltip(b))}" data-tooltip-pos="above">${b.label}</span>`)
     .join('');
 }
 
@@ -2343,6 +2985,7 @@ export function populateModelDropdown(ddEl) {
   const sortedEntries = Object.entries(groups).sort((a, b) =>
     a[1].name.localeCompare(b[1].name)
   );
+  const hasAnyModel = sortedEntries.some(([, group]) => group.models.length > 0);
 
   function makeOption(provId, modelId, entry) {
     const fullId = `${provId}/${modelId}`;
@@ -2353,7 +2996,7 @@ export function populateModelDropdown(ddEl) {
     opt.dataset.modelName = modelId.toLowerCase();
     opt.dataset.fullId = fullId;
     if (entry._obj?.capabilities) opt.dataset.caps = JSON.stringify(entry._obj.capabilities);
-    opt.innerHTML = `<span class="ocp-dd-model-name">${modelId}</span>${badges ? `<span class="ocp-dd-caps">${badges}</span>` : ''}`;
+    opt.innerHTML = `<span class="ocp-dd-model-name">${escHtml(modelId)}</span>${badges ? `<span class="ocp-dd-caps">${badges}</span>` : ''}`;
     const starBtn = document.createElement('button');
     starBtn.className = 'ocp-dd-star' + (isFav ? ' active' : '');
     starBtn.type = 'button';
@@ -2408,44 +3051,130 @@ export function populateModelDropdown(ddEl) {
     menu.appendChild(sep);
   }
 
+  const emptyState = document.createElement('div');
+  emptyState.className = 'ocp-dd-empty';
+  emptyState.style.display = 'none';
+  const emptyText = document.createElement('span');
+  emptyText.className = 'ocp-dd-empty-text';
+  const emptyClear = document.createElement('button');
+  emptyClear.className = 'ocp-dd-empty-clear';
+  emptyClear.type = 'button';
+  emptyClear.textContent = 'Clear filter';
+  emptyClear.addEventListener('mousedown', e => e.stopPropagation());
+  emptyState.append(emptyText, emptyClear);
+  menu.appendChild(emptyState);
+
   // Capability filter pills
   const filterBar = document.createElement('div');
   filterBar.className = 'ocp-cap-filter-bar';
-  const activeCaps = new Set();
+  let activeCapKey = '';
+  const filterPills = new Map();
 
   // Toggle button — declared before pill loop so pill handlers can reference it
   const filterToggle = document.createElement('button');
   filterToggle.className = 'ocp-cap-filter-toggle';
   filterToggle.type = 'button';
-  filterToggle.title = 'Toggle capability filters';
+  filterToggle.setAttribute('data-tooltip', 'Capability filters\nShow or hide model capability chips.');
+  filterToggle.setAttribute('data-tooltip-pos', 'left');
   filterToggle.innerHTML = '<svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M0.5 2h8M2 4.5h5M3.5 7h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
   filterToggle.addEventListener('mousedown', e => e.stopPropagation());
   filterToggle.addEventListener('click', e => {
     e.stopPropagation();
     const collapsed = filterBar.classList.toggle('ocp-cap-filter-bar--hidden');
     filterToggle.classList.toggle('collapsed', collapsed);
+    capHelp.classList.toggle('ocp-cap-help--collapsed', collapsed);
+    if (!collapsed) restoreCapHelp();
     try { localStorage.setItem('ocp-cap-filter-expanded', collapsed ? '0' : '1'); } catch {}
   });
 
+  function syncFilterPills() {
+    for (const [key, pill] of filterPills) {
+      const active = key === activeCapKey || (!activeCapKey && key === '');
+      pill.classList.toggle('active', active);
+      pill.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+    filterToggle.classList.toggle('has-active', !!activeCapKey);
+  }
+
+  function setActiveCap(key) {
+    activeCapKey = activeCapKey === key ? '' : key;
+    syncFilterPills();
+    applyFilters();
+    restoreCapHelp();
+  }
+
+  const capHelp = document.createElement('div');
+  capHelp.className = 'ocp-cap-help';
+  const capHelpTitle = document.createElement('span');
+  capHelpTitle.className = 'ocp-cap-help-title';
+  const capHelpText = document.createElement('span');
+  capHelpText.className = 'ocp-cap-help-text';
+  capHelp.append(capHelpTitle, capHelpText);
+  let lastHelpKey = null;
+
+  function applyCapHelp(badge) {
+    const target = badge || ALL_CAP_HELP;
+    if (lastHelpKey !== target.key) {
+      capHelpTitle.textContent = target.label;
+      capHelpText.textContent = target.description;
+      lastHelpKey = target.key;
+      // restart swap animation for smooth text transition
+      capHelp.classList.remove('ocp-cap-help--swap');
+      void capHelp.offsetWidth;
+      capHelp.classList.add('ocp-cap-help--swap');
+    }
+    capHelp.classList.toggle('ocp-cap-help--active', !!(badge && badge.key));
+  }
+
+  function showCapHelp(badge) {
+    applyCapHelp(badge);
+  }
+
+  function restoreCapHelp() {
+    applyCapHelp(activeCapKey ? CAP_BADGES.find(b => b.key === activeCapKey) : null);
+  }
+
+  function bindCapHelp(pill, badge) {
+    pill.addEventListener('mouseenter', () => showCapHelp(badge));
+    pill.addEventListener('focus', () => showCapHelp(badge));
+    pill.addEventListener('mouseleave', restoreCapHelp);
+    pill.addEventListener('blur', restoreCapHelp);
+  }
+
+  applyCapHelp(null);
+
+  const allPill = document.createElement('button');
+  allPill.className = 'ocp-cap-filter ocp-cap-filter-all active';
+  allPill.type = 'button';
+  allPill.dataset.capKey = '';
+  allPill.textContent = 'All';
+  allPill.setAttribute('aria-pressed', 'true');
+  allPill.addEventListener('mousedown', e => e.stopPropagation());
+  allPill.addEventListener('click', e => {
+    e.stopPropagation();
+    activeCapKey = '';
+    syncFilterPills();
+    applyFilters();
+    restoreCapHelp();
+  });
+  bindCapHelp(allPill, ALL_CAP_HELP);
+  filterPills.set('', allPill);
+  filterBar.appendChild(allPill);
+
   for (const b of CAP_BADGES) {
-    const pill = document.createElement('span');
+    const pill = document.createElement('button');
     pill.className = 'ocp-cap-filter';
+    pill.type = 'button';
     pill.dataset.capKey = b.key;
-    pill.textContent = b.label;
-    pill.style.color = b.color;
-    pill.style.background = b.bg;
+    pill.innerHTML = `<span class="ocp-cap-filter-letter">${escHtml(b.abbr || b.label.slice(0, 1))}</span><span class="ocp-cap-filter-label">${escHtml(b.label)}</span>`;
+    pill.setAttribute('aria-pressed', 'false');
+    pill.addEventListener('mousedown', e => e.stopPropagation());
     pill.addEventListener('click', e => {
       e.stopPropagation();
-      if (activeCaps.has(b.key)) {
-        activeCaps.delete(b.key);
-        pill.classList.remove('active');
-      } else {
-        activeCaps.add(b.key);
-        pill.classList.add('active');
-      }
-      filterToggle.classList.toggle('has-active', activeCaps.size > 0);
-      applyFilters();
+      setActiveCap(b.key);
     });
+    bindCapHelp(pill, b);
+    filterPills.set(b.key, pill);
     filterBar.appendChild(pill);
   }
   menu.insertBefore(filterBar, searchInput.nextSibling);
@@ -2456,6 +3185,7 @@ export function populateModelDropdown(ddEl) {
   menu.insertBefore(header, searchInput);
   header.appendChild(searchInput);
   header.appendChild(filterBar);
+  header.appendChild(capHelp);
   header.appendChild(filterToggle);
 
   // Restore collapsed state from localStorage
@@ -2467,11 +3197,44 @@ export function populateModelDropdown(ddEl) {
   } catch {}
 
   // Combined search + capability filter
+  emptyClear.addEventListener('click', e => {
+    e.stopPropagation();
+    activeCapKey = '';
+    syncFilterPills();
+    applyFilters();
+    searchInput.focus();
+  });
+
+  function updateEmptyState(visibleOptionCount) {
+    if (visibleOptionCount > 0) {
+      emptyState.style.display = 'none';
+      return;
+    }
+    const term = searchInput.value.trim();
+    const activeBadge = activeCapKey ? CAP_BADGES.find(b => b.key === activeCapKey) : null;
+    if (!hasAnyModel) {
+      emptyText.textContent = 'No connected models available';
+    } else if (activeBadge && term) {
+      emptyText.textContent = `No ${activeBadge.label} models match "${term}"`;
+    } else if (activeBadge) {
+      emptyText.textContent = `No models with ${activeBadge.label}`;
+    } else if (term) {
+      emptyText.textContent = `No models match "${term}"`;
+    } else {
+      emptyText.textContent = 'No models available';
+    }
+    emptyClear.style.display = activeCapKey ? '' : 'none';
+    emptyState.style.display = 'flex';
+  }
+
   function applyFilters() {
     const term = searchInput.value.toLowerCase();
+    const activeBadge = activeCapKey ? CAP_BADGES.find(b => b.key === activeCapKey) : null;
+    let visibleOptionCount = 0;
     let prevLabel = null, prevLabelVisible = false, labelTextMatch = false;
     for (const el of menu.children) {
       if (el === header) continue;
+      if (el === emptyState) continue;
       if (el.classList.contains('ocp-dd-group-label')) {
         if (prevLabel) prevLabel.style.display = prevLabelVisible ? '' : 'none';
         prevLabel = el;
@@ -2480,20 +3243,20 @@ export function populateModelDropdown(ddEl) {
       } else if (el.classList.contains('ocp-dd-option')) {
         const nameMatch = !term || (el.dataset.modelName || '').includes(term) || labelTextMatch;
         let capMatch = true;
-        if (activeCaps.size > 0 && el.dataset.caps) {
+        if (activeBadge && el.dataset.caps) {
           try {
             const caps = JSON.parse(el.dataset.caps);
-            for (const key of activeCaps) {
-              const badge = CAP_BADGES.find(b => b.key === key);
-              if (badge && !badge.test(caps)) { capMatch = false; break; }
-            }
+            capMatch = activeBadge.test(caps);
           } catch { capMatch = false; }
-        } else if (activeCaps.size > 0) {
+        } else if (activeBadge) {
           capMatch = false;
         }
         const match = nameMatch && capMatch;
         el.style.display = match ? '' : 'none';
-        if (match) prevLabelVisible = true;
+        if (match) {
+          prevLabelVisible = true;
+          visibleOptionCount += 1;
+        }
       } else if (el.classList.contains('ocp-dd-sep')) {
         el.style.display = prevLabelVisible ? '' : 'none';
         if (prevLabel) prevLabel.style.display = prevLabelVisible ? '' : 'none';
@@ -2501,8 +3264,10 @@ export function populateModelDropdown(ddEl) {
       }
     }
     if (prevLabel) prevLabel.style.display = prevLabelVisible ? '' : 'none';
+    updateEmptyState(visibleOptionCount);
   }
   searchInput.addEventListener('input', applyFilters);
+  applyFilters();
 
   // Update label from current model
   const labelEl = ddEl.querySelector('.ocp-dd-label');

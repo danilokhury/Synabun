@@ -1979,8 +1979,50 @@ export function saveTabs() {
     });
     storage.setItem(STOR.tabs, payload);
     sessionStorage.removeItem(STOR.tabs);
+    _updateCodexWindowRegistry();
   } catch {}
 }
+
+const CODEX_STALE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h — matches Claude/OpenCode
+
+function _updateCodexWindowRegistry() {
+  try {
+    const raw = storage.getItem(STOR.windowRegistry);
+    const reg = raw ? JSON.parse(raw) : {};
+    reg[windowId] = Date.now();
+    storage.setItem(STOR.windowRegistry, JSON.stringify(reg));
+  } catch {}
+}
+
+function _cleanStaleCodexWindows() {
+  try {
+    const raw = storage.getItem(STOR.windowRegistry);
+    const reg = raw ? JSON.parse(raw) : {};
+    const now = Date.now();
+    let mutated = false;
+    for (const [wid, ts] of Object.entries(reg)) {
+      if (wid === windowId) continue;
+      if (now - ts > CODEX_STALE_WINDOW_MS) {
+        storage.removeItem(`synabun-codex-panel-tabs-${wid}`);
+        delete reg[wid];
+        mutated = true;
+      }
+    }
+    for (const k of (storage.keys?.() || [])) {
+      if (!k.startsWith('synabun-codex-panel-tabs-')) continue;
+      const wid = k.slice('synabun-codex-panel-tabs-'.length);
+      if (wid === windowId) continue;
+      if (!(wid in reg)) {
+        storage.removeItem(k);
+        mutated = true;
+      }
+    }
+    if (mutated) storage.setItem(STOR.windowRegistry, JSON.stringify(reg));
+  } catch {}
+}
+
+_cleanStaleCodexWindows();
+_updateCodexWindowRegistry();
 
 export function restoreTabs() {
   try {

@@ -365,7 +365,7 @@ export function cleanupStaleLoops(loopDir) {
 
   const now = Date.now();
   try {
-    const files = readdirSync(loopDir).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
+    const files = readdirSync(loopDir).filter(f => f.endsWith('.json') && !f.startsWith('pending-') && f !== 'active-pointer.json');
     for (const f of files) {
       const fp = join(loopDir, f);
       try {
@@ -384,6 +384,18 @@ export function cleanupStaleLoops(loopDir) {
           try { unlinkSync(fp); deleted.push(f); } catch { /* ok */ }
         }
       } catch { /* skip corrupt files */ }
+    }
+  } catch { /* ok */ }
+
+  // Drop active-pointer.json if its target flag no longer exists
+  try {
+    const ptrPath = join(loopDir, 'active-pointer.json');
+    if (existsSync(ptrPath)) {
+      const ptr = JSON.parse(readFileSync(ptrPath, 'utf-8'));
+      const targetPath = ptr?.sessionId ? join(loopDir, `${ptr.sessionId}.json`) : null;
+      if (!targetPath || !existsSync(targetPath)) {
+        try { unlinkSync(ptrPath); } catch { /* ok */ }
+      }
     }
   } catch { /* ok */ }
 

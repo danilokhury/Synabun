@@ -40,6 +40,23 @@ process.on('unhandledRejection', () => { try { process.stdout.write('{}'); } cat
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PENDING_COMPACT_DIR = join(DATA_DIR, 'pending-compact');
 const LOOP_DIR = join(DATA_DIR, 'loop');
+const ACTIVE_POINTER_PATH = join(LOOP_DIR, 'active-pointer.json');
+
+function writeActivePointer(sessionId, terminalSessionId, claudeSessionId) {
+  try {
+    const payload = {
+      sessionId,
+      terminalSessionId: terminalSessionId || null,
+      claudeSessionId: claudeSessionId || null,
+      updatedAt: new Date().toISOString(),
+    };
+    writeFileSync(ACTIVE_POINTER_PATH, JSON.stringify(payload, null, 2));
+  } catch { /* ok */ }
+}
+
+function clearActivePointer() {
+  try { if (existsSync(ACTIVE_POINTER_PATH)) unlinkSync(ACTIVE_POINTER_PATH); } catch { /* ok */ }
+}
 const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
 const STORED_PLANS_PATH = join(DATA_DIR, 'stored-plans.json');
 const PLANS_DIR = join(DATA_DIR, 'plans');
@@ -385,6 +402,9 @@ async function main() {
   if (existsSync(loopFlagPath)) {
     try {
       loop = JSON.parse(readFileSync(loopFlagPath, 'utf-8'));
+      if (loop?.active) {
+        writeActivePointer(sessionId, loop.terminalSessionId || terminalSessionEnv, sessionId);
+      }
     } catch {
       try { unlinkSync(loopFlagPath); } catch { /* ok */ }
     }
@@ -431,6 +451,7 @@ async function main() {
               loopFlagPath = fp;
               appendLoopLog(terminalSessionEnv, 'stop:claim', 'matched loop via Strategy A (env), already named correctly', { file: f, currentIteration: candidate.currentIteration });
             }
+            writeActivePointer(sessionId, terminalSessionEnv, sessionId);
             break;
           }
 
@@ -443,6 +464,7 @@ async function main() {
             } else {
               loopFlagPath = fp;
             }
+            writeActivePointer(sessionId, candidate.terminalSessionId || null, sessionId);
             break;
           }
         } catch { continue; }
@@ -465,6 +487,7 @@ async function main() {
     if (iterationsDone >= totalIterations) {
       // Loop finished — delete the file (no history keeping)
       try { unlinkSync(loopFlagPath); } catch { /* ok */ }
+      clearActivePointer();
       // Fall through to remember/conversation checks
     } else if (loop.memoryPending && (loop.memoryRetries || 0) < MAX_RETRIES) {
       // Memory enforcement: block until Claude stores progress in memory

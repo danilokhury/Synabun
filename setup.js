@@ -15,7 +15,7 @@
  */
 
 import { execSync, spawn, exec } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, cpSync, readdirSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, cpSync, readdirSync, mkdirSync, unlinkSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
@@ -216,51 +216,108 @@ function openBrowser(url) {
   }
 }
 
+// Sentinel exit code for supervised restart. Server exits with this code via
+// /api/server/restart; the supervisor below respawns instead of giving up.
+// 75 = sysexits EX_TEMPFAIL — conventional "transient, retry" signal.
+const RESTART_EXIT_CODE = 75;
+
+// Marker file written by /api/server/restart before tearing down. If the
+// server crashes during shutdown (e.g. native module mutex error in sqlite/
+// playwright/node-pty), the exit code will not be 75 — but the marker tells
+// the supervisor the user asked for a restart, so we respawn anyway.
+const RESTART_MARKER = resolve(DATA_HOME, 'restart-requested');
+
 function startServer() {
   const serverPath = resolve(PACKAGE_ROOT, 'neural-interface', 'server.js');
+  const niDir = resolve(PACKAGE_ROOT, 'neural-interface');
+  const setupComplete = isSetupComplete();
+
+  // Clear any stale marker from a previous run so we do not respawn on a
+  // clean exit from this child.
+  try { if (existsSync(RESTART_MARKER)) unlinkSync(RESTART_MARKER); } catch {}
 
   info('Starting Neural Interface server...');
   console.log('');
 
-  const child = spawn('node', [serverPath], {
-    cwd: resolve(PACKAGE_ROOT, 'neural-interface'),
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      SYNABUN_DATA_HOME: DATA_HOME,
-      MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data'),
-    },
-  });
+  let firstLaunch = true;
+  let currentChild = null;
+  let shuttingDown = false;
+  const restartLog = [];
+  const CRASH_WINDOW_MS = 60_000;
+  const CRASH_LIMIT = 5;
 
-  let opened = false;
-  const setupComplete = isSetupComplete();
+  function spawnOnce() {
+    const child = spawn('node', [serverPath], {
+      cwd: niDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        SYNABUN_DATA_HOME: DATA_HOME,
+        MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data'),
+        SYNABUN_SUPERVISED: '1',
+      },
+    });
+    currentChild = child;
 
-  child.stdout.on('data', (data) => {
-    process.stdout.write(data.toString());
+    let opened = !firstLaunch;
+    child.stdout.on('data', (data) => {
+      process.stdout.write(data.toString());
+      if (!opened && data.toString().includes('Server:')) {
+        opened = true;
+        const port = data.toString().match(/Server:\s+http:\/\/localhost:(\d+)/)?.[1] || '3344';
+        const url = `http://localhost:${port}${setupComplete ? '/' : '/onboarding.html'}`;
+        setTimeout(() => openBrowser(url), 1500);
+      }
+    });
+    child.stderr.on('data', (data) => process.stderr.write(data.toString()));
 
-    if (!opened && data.toString().includes('Server:')) {
-      opened = true;
-      const port = data.toString().match(/Server:\s+http:\/\/localhost:(\d+)/)?.[1] || '3344';
-      const url = `http://localhost:${port}${setupComplete ? '/' : '/onboarding.html'}`;
+    child.on('exit', (code) => {
+      currentChild = null;
+      if (shuttingDown) return;
 
-      setTimeout(() => openBrowser(url), 1500);
+      // Treat a present marker file the same as exit code 75. Native module
+      // crashes during shutdown can clobber the exit code; the marker keeps
+      // restart reliable in that case.
+      let restartRequested = code === RESTART_EXIT_CODE;
+      if (!restartRequested && existsSync(RESTART_MARKER)) {
+        restartRequested = true;
+        info(`Server exited with code ${code} but restart marker present — respawning.`);
+      }
+      try { if (existsSync(RESTART_MARKER)) unlinkSync(RESTART_MARKER); } catch {}
+
+      if (restartRequested) {
+        if (code === RESTART_EXIT_CODE) info('Server requested restart — respawning...');
+        const now = Date.now();
+        restartLog.push(now);
+        while (restartLog.length && now - restartLog[0] > CRASH_WINDOW_MS) restartLog.shift();
+        if (restartLog.length > CRASH_LIMIT) {
+          fail(`Server restarted ${restartLog.length} times in ${Math.round(CRASH_WINDOW_MS / 1000)}s — aborting supervisor.`);
+          process.exit(1);
+        }
+        firstLaunch = false;
+        setTimeout(spawnOnce, 250);
+        return;
+      }
+
+      if (code !== 0 && code !== null) {
+        fail(`Server exited with code ${code}`);
+        process.exit(code);
+      }
+      process.exit(0);
+    });
+  }
+
+  spawnOnce();
+
+  const stop = (sig) => {
+    shuttingDown = true;
+    if (currentChild) {
+      try { currentChild.kill(sig); } catch {}
     }
-  });
-
-  child.stderr.on('data', (data) => {
-    process.stderr.write(data.toString());
-  });
-
-  child.on('exit', (code) => {
-    if (code !== 0 && code !== null) {
-      fail(`Server exited with code ${code}`);
-      process.exit(code);
-    }
-  });
-
-  // Clean shutdown on Ctrl+C
-  process.on('SIGINT', () => { child.kill('SIGINT'); process.exit(0); });
-  process.on('SIGTERM', () => { child.kill('SIGTERM'); process.exit(0); });
+    process.exit(0);
+  };
+  process.on('SIGINT', () => stop('SIGINT'));
+  process.on('SIGTERM', () => stop('SIGTERM'));
 }
 
 // ── CLI: profile subcommand ──
@@ -285,6 +342,7 @@ const TOOL_GROUPS = {
   browser_linkedin:  { label: 'LinkedIn',   tools: 8  },
   leonardo:          { label: 'Leonardo',   tools: 5  },
   discord:           { label: 'Discord',    tools: 8  },
+  gsc:               { label: 'Google Search Console', tools: 30 },
 };
 
 function readRegistry(dataHome) {
@@ -309,9 +367,10 @@ function getProfiles(dataHome) {
     instagram:  { label: 'Instagram',  groups: ['git', 'image', 'browser', 'browser_instagram'] },
     linkedin:   { label: 'LinkedIn',   groups: ['git', 'image', 'browser', 'browser_linkedin'] },
     discord:    { label: 'Discord',    groups: ['git', 'image', 'discord'] },
-    browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo'] },
-    full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'discord'] },
+    browser:    { label: 'Browser',    groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'gsc'] },
+    full:       { label: 'Full',       groups: ['git', 'image', 'whiteboard', 'card', 'tictactoe', 'browser', 'browser_twitter', 'browser_facebook', 'browser_tiktok', 'browser_whatsapp', 'browser_instagram', 'browser_linkedin', 'leonardo', 'discord', 'gsc'] },
     leonardoai: { label: 'LeonardoAI', groups: ['leonardo'] },
+    gsc:        { label: 'GSC',        groups: ['git', 'image', 'browser', 'gsc'] },
   };
 }
 

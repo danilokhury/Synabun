@@ -13,7 +13,7 @@ import { startTutorial } from './ui-tutorial.js';
 import { toggleClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
 import { toggleCodexPanel, isCodexPanelOpen } from './ui-codex-panel.js';
 import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel.js';
-import { toggleSessionMonitor } from './ui-sessions.js';
+import { toggleSessionMonitor, fetchLoopsForBadge, fetchNotificationsForBadge } from './ui-sessions.js';
 import { toggleImageGallery } from './ui-image-gallery.js';
 import { initUpdate } from './ui-update.js';
 import { initToolUpdates } from './ui-tool-updates.js';
@@ -126,8 +126,9 @@ export function initNavbar() {
     registerAction('toggle-focus-mode', () => vizBtn.click());
   }
 
-  // ── Session monitor toggle ──
+  // ── Notifications drawer toggle ──
   const sessionsBtn = $('titlebar-sessions-btn');
+  const notifCountEl = $('titlebar-notifications-count');
   if (sessionsBtn) {
     sessionsBtn.addEventListener('click', () => {
       toggleSessionMonitor();
@@ -136,6 +137,23 @@ export function initNavbar() {
     // Sync button state when window is closed via its own close button or backdrop
     on('session-monitor:closed', () => sessionsBtn.classList.remove('active'));
     registerAction('toggle-session-monitor', () => sessionsBtn.click());
+
+    // Live count badge for the Notifications drawer (rulesets, SynaBun, CLI)
+    on('notifications:updated', (data) => {
+      const count = data?.unreadCount || 0;
+      if (notifCountEl) {
+        notifCountEl.textContent = count > 0 ? String(count) : '';
+        notifCountEl.hidden = count === 0;
+      }
+      sessionsBtn.dataset.tooltip = count > 0
+        ? `Notifications · ${count} update${count === 1 ? '' : 's'}`
+        : 'Notifications';
+    });
+
+    // Bootstrap ruleset version fetch so the badge populates without the user
+    // ever opening the drawer. Periodic refresh as a fallback alongside loops.
+    fetchNotificationsForBadge().catch(() => {});
+    setInterval(() => fetchNotificationsForBadge().catch(() => {}), 5 * 60 * 1000);
   }
 
   // ── Image gallery toggle ──
@@ -165,6 +183,12 @@ export function initNavbar() {
       costBtn.classList.toggle('active', docked);
     });
   }
+
+  // Bootstrap stale-loop badge state for the Notifications drawer's Loops tab
+  // (the dedicated titlebar alert button was removed; loops still surface via
+  // the Notifications drawer count + Loops tab).
+  fetchLoopsForBadge().catch(() => {});
+  setInterval(() => fetchLoopsForBadge().catch(() => {}), 30000);
 
   // ── Tutorial toggle (?) ──
   const tutBtn = $('titlebar-tutorial-btn');

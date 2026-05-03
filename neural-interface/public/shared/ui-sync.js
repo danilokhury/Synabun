@@ -54,6 +54,12 @@ const SYNC_HANDLERS = {
   // Browser auto-open (triggered by menu/keybind manual open)
   'browser:open': (msg) => emit('browser:open', msg),
 
+  // MCP profile sync
+  'mcp:profile-changed': (msg) => {
+    emit('mcp:profile-changed', msg);
+    emit('sync:mcp:profile-changed', msg);
+  },
+
   // Terminal link events
   'link:created':        (msg) => emit('sync:link:created', msg),
   'link:deleted':        (msg) => emit('sync:link:deleted', msg),

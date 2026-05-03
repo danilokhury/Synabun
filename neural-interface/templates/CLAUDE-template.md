@@ -19,6 +19,7 @@ Persistent vector memory via SQLite + local Transformers.js embeddings. Memories
 | `memories` | List recent or stats (recent, by-category, by-project) |
 | `sync` | Detect stale memories (file content changed) |
 | `category_create/update/delete/list` | Manage category hierarchy |
+| `profile` | Inspect or switch MCP tool profiles/tool selector at runtime |
 
 ### Auto-Recall
 
@@ -63,6 +64,14 @@ Never store directly in parent categories.
 - `remember` returns the full UUID and accepts tags + importance directly.
 - `reflect` requires FULL UUID — use the one returned by `remember`, or `recall` to find existing memories.
 - Sequential MCP calls only — never parallel.
+
+### MCP Profile / Tool Selector
+
+- Before using platform-specific or heavy tool groups, call `profile` with `action: "get"` unless the current profile is already known from this turn.
+- Switch with `profile` `action: "set"` only when the current profile does not expose the needed tools.
+- Choose the narrowest useful profile: `core` for memory-only work, `standard` for normal coding/git/memory work, `browser` for generic browser automation, `twitter` / `facebook` / `tiktok` / `whatsapp` / `instagram` / `linkedin` for social-platform work, `gsc` for Search Console/SEO work, and `full` only when the task truly needs broad unrelated tool families.
+- If you switch for a temporary task, keep the previous profile in turn-local context and restore it when finished unless the user asks to keep the new profile.
+- After `profile set`, the Neural Interface profile selector should update immediately. If the UI appears out of sync, call `profile get` and report the mismatch instead of guessing.
 
 ### Browser Sessions
 
@@ -116,7 +125,7 @@ If you notice the AI defaulting to another tool's memory features, add the enfor
 ### Cursor
 ```
 # Memory: SynaBun MCP (SQLite + local embeddings)
-## Tools: remember, recall, forget, restore, reflect, memories, sync, category_create/update/delete/list
+## Tools: remember, recall, forget, restore, reflect, memories, sync, category_create/update/delete/list, profile
 Tool names may be prefixed by the host. Only call tools by their EXACT names from your available tools list. Never invent or guess tool names.
 ## Rules
 - Session start: recall project context
@@ -129,13 +138,14 @@ Tool names may be prefixed by the host. Only call tools by their EXACT names fro
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
 - Browser: always create a new tab — never reuse or navigate an existing tab.
+- Tool selector: use `profile` get/set to switch only when needed, choose the narrowest profile (`standard` coding, `browser` generic web, platform profiles for social/GSC), and restore temporary switches when done.
 ```
 
 ### Generic
 ```
 ## Memory: SynaBun MCP
-Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
-Tool names are prefixed by the host (e.g. SynaBun_remember in OpenCode, mcp__SynaBun__remember in Claude Code).
+Tools: remember, recall, forget, restore, reflect, memories, sync, category_*, profile
+Tool names are prefixed by the host (e.g. SynaBun_remember in OpenCode, mcp__SynaBun__remember in Claude Code, SynaBun_profile / mcp__SynaBun__profile for the tool selector).
 IMPORTANT: Only call tools by their EXACT names from your available tools list. Never invent or guess tool names.
 - Recall at session start. Remember after every task with tags + importance (MANDATORY).
 - Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
@@ -144,12 +154,13 @@ IMPORTANT: Only call tools by their EXACT names from your available tools list. 
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
 - Browser: always create a new tab — never reuse or navigate an existing tab.
+- Tool selector/profile: before platform-specific work, call profile get, then profile set only if needed. Prefer the narrowest profile: core/standard for local work, browser for generic web, twitter/facebook/tiktok/whatsapp/instagram/linkedin for social platforms, gsc for Search Console, full only as a last resort. Restore temporary switches when done.
 ```
 
 ### Gemini
 ```
 ## Memory: SynaBun MCP
-Tools: remember, recall, forget, restore, reflect, memories, sync, category_*
+Tools: remember, recall, forget, restore, reflect, memories, sync, category_*, profile
 Tool names may be prefixed by the host (e.g. SynaBun_remember). Only call tools by their EXACT names from your available tools list.
 - Recall at session start. Remember after every task with tags + importance (MANDATORY).
 - Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
@@ -158,14 +169,15 @@ Tool names may be prefixed by the host (e.g. SynaBun_remember). Only call tools 
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
 - Browser: always create a new tab — never reuse or navigate an existing tab.
+- Tool selector: use `profile` get/set only when a task needs a different MCP tool profile; choose the narrowest profile and restore temporary switches when done.
 ```
 
 ### Codex
 ```
 ## Memory: SynaBun MCP
 Use SynaBun for ALL memory operations. Tool names are prefixed by the host:
-- OpenCode: SynaBun_remember, SynaBun_recall, SynaBun_forget, SynaBun_restore, SynaBun_reflect, SynaBun_memories, SynaBun_sync, SynaBun_category, SynaBun_loop, SynaBun_git, SynaBun_image_staged
-- Claude Code / Codex: mcp__SynaBun__remember, mcp__SynaBun__recall, etc.
+- OpenCode: SynaBun_remember, SynaBun_recall, SynaBun_forget, SynaBun_restore, SynaBun_reflect, SynaBun_memories, SynaBun_sync, SynaBun_category, SynaBun_loop, SynaBun_git, SynaBun_image_staged, SynaBun_profile
+- Claude Code / Codex: mcp__SynaBun__remember, mcp__SynaBun__recall, mcp__SynaBun__profile, etc.
 IMPORTANT: Only call tools by their EXACT names as they appear in your available tool list. Never invent, guess, or use colon-separated tool names.
 - Session start: recall current project context, recent sessions, known issues, and prior decisions before substantial work.
 - During work: recall before architecture decisions, debugging, migrations, or when the user references prior work or existing patterns.
@@ -180,6 +192,7 @@ IMPORTANT: Only call tools by their EXACT names as they appear in your available
 - Coexistence: SynaBun owns memory. Do not use other tools or services for storing, recalling, or updating long-term context.
 - Capability boundary: Claude Code in this repo has additional hook-based automations. Codex should follow these rules via AGENTS.md + MCP and must not assume Claude hook events or `.claude/settings.json` behavior exist.
 - Browser: always create a new tab — never reuse or navigate an existing tab.
+- Tool selector/profile: use `profile` with `action: "get"` before platform-specific or heavy tool work unless the current profile is known. Use `profile` with `action: "set"` only when needed, choose the narrowest profile (`core`, `standard`, `browser`, social platform profiles, `gsc`; `full` only as a last resort), and restore temporary switches when finished unless the user asks to keep them. After a switch, the sidepanel profile selector should update immediately; if it appears stale, verify with `profile get` and report the mismatch.
 ```
 
 ---

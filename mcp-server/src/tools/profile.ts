@@ -30,6 +30,7 @@ const GROUP_TOOL_ESTIMATES: Record<string, number> = {
   browser_linkedin: 8,
   leonardo: 5,
   discord: 8,
+  gsc: 30,
 };
 
 export async function handleProfile(args: { action: string; profile?: string }) {

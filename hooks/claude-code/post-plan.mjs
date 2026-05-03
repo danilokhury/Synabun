@@ -476,17 +476,70 @@ async function main() {
   // Clean up root PLAN.md if it was just created
   cleanupRootPlanMd(input.cwd || '');
 
+  // Authoritative plan markdown lives in tool_input.plan (and is echoed in tool_response.plan).
+  // Pull it directly so we can author the file ourselves if the UI capture failed.
+  function readPlanField(obj) {
+    if (!obj) return '';
+    if (typeof obj === 'string') {
+      try {
+        const parsed = JSON.parse(obj);
+        if (parsed && typeof parsed.plan === 'string') return parsed.plan;
+      } catch { /* not JSON — fall through */ }
+      return '';
+    }
+    if (typeof obj === 'object' && typeof obj.plan === 'string') return obj.plan;
+    return '';
+  }
+  const authoritativePlan =
+    readPlanField(input.tool_input) ||
+    readPlanField(input.tool_response);
+
   // Match plan file: content-match first (session-accurate), mtime fallback
   const toolResponse = typeof input.tool_response === 'string'
     ? input.tool_response
     : (input.tool_response != null ? JSON.stringify(input.tool_response) : '');
 
-  debugLog(`ExitPlanMode fired — tool_response length: ${toolResponse.length}, first 200 chars: ${toolResponse.slice(0, 200).replace(/\n/g, '\\n')}`);
+  debugLog(`ExitPlanMode fired — tool_response length: ${toolResponse.length}, authoritativePlan length: ${authoritativePlan.length}, first 200 chars: ${toolResponse.slice(0, 200).replace(/\n/g, '\\n')}`);
 
-  const planFile = findPlanByContent(toolResponse) || findLatestPlan();
+  let planFile = findPlanByContent(authoritativePlan || toolResponse) || findLatestPlan();
+
+  // If a match was found but its content doesn't match the authoritative plan,
+  // it's stale. Drop it so we author a fresh file from tool_input.plan instead.
+  if (planFile && authoritativePlan) {
+    try {
+      const existing = readFileSync(planFile.path, 'utf-8').trim();
+      if (existing !== authoritativePlan.trim()) {
+        debugLog(`Match stale (file != tool_input.plan) — discarding ${planFile.path}, will author from tool_input`);
+        planFile = null;
+      }
+    } catch { /* unreadable — fall through to authoring */ planFile = null; }
+  }
+
+  // Author the plan file ourselves if no match and we have authoritative content.
+  if (!planFile && authoritativePlan) {
+    try {
+      const todayDir = getTodayPlanDir();
+      mkdirSync(todayDir, { recursive: true });
+      const title = extractPlanTitle(authoritativePlan);
+      const slug = slugify(title);
+      const targetPath = uniqueSlugPath(todayDir, slug);
+      writeFileSync(targetPath, authoritativePlan, 'utf-8');
+      const stat = statSync(targetPath);
+      planFile = {
+        name: targetPath.split(/[/\\]/).pop(),
+        path: targetPath,
+        mtime: stat.mtimeMs,
+        method: 'authored-from-tool_input',
+      };
+      debugLog(`Authored plan file from tool_input.plan: ${targetPath}`);
+    } catch (err) {
+      debugLog(`Failed to author plan file: ${err.message}`);
+    }
+  }
+
   if (!planFile) {
     process.stdout.write(JSON.stringify({
-      additionalContext: 'SynaBun: No unstored plan file found (all plans already in memory).',
+      additionalContext: 'SynaBun: No plan file found and no plan content in tool_input — UI capture and hook authoring both failed.',
     }));
     return;
   }

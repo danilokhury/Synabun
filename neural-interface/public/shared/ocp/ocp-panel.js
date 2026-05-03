@@ -15,8 +15,8 @@ import {
   ICON_PLUS, ICON_X, ICON_MINIMIZE, ICON_EDIT, ICON_SEND, ICON_STOP,
   ICON_REVERT, ICON_COMPACT, ICON_SLIDE, ICON_SETTINGS,
 } from './ocp-icons.js';
-import { connectWs, disconnectWs, isConnected, onWsMessage, sendWs } from './ocp-ws.js';
-import { renderEmptyState, esc, renderToolActivityDock, tickActivityDockElapsed, focusActivityToolCard } from './ocp-render.js';
+import { connectWs, disconnectWs, isConnected, onWsMessage, sendWs, requestWs } from './ocp-ws.js';
+import { renderEmptyState, esc, renderToolActivityDock, tickActivityDockElapsed, focusActivityToolCard, renderErrorMessage } from './ocp-render.js';
 import {
   STOR, getTabs, getActiveTabIdx, activeTab, getProviders, getSessions,
   setPanelEl, setOnUpdate, setPanelVisible, setOnShow, setOnHide, setOnEditPlan,
@@ -26,7 +26,7 @@ import {
   revertSession, compactSession, shareSession, executeCommand, renderTabMessages,
   getActiveTabMode, setTabMode, resolveContextInputTokens, setActivityVisible,
   toggleActivityExpanded, abortAgent, ensurePlanFile, showPostPlanUI, applySavedPlan,
-  flushAllSessionSnapshots,
+  flushAllSessionSnapshots, extractPlanTextLoose,
 } from './ocp-tabs.js';
 
 window.addEventListener('beforeunload', () => { try { flushAllSessionSnapshots(); } catch {} });
@@ -84,14 +84,13 @@ function sessionTitleFor(sessionOrTab) {
 }
 
 function canRenameActiveSession() {
-  const tab = activeTab();
-  return !!(tab?.sessionId && !tab.running && _serverReady);
+  return !!activeTab();
 }
 
 function beginRenameSession() {
   const tab = activeTab();
   const label = panelEl('#ocp-session-label');
-  if (!tab?.sessionId || !label || tab.running || !_serverReady) return;
+  if (!tab || !label) return;
 
   const existing = label.querySelector('.ocp-rename-input');
   if (existing) {
@@ -127,8 +126,14 @@ function beginRenameSession() {
       return;
     }
     try {
-      await renameSession(tab.sessionId, nextTitle);
-      if (panelEl('#ocp-session-menu')?.classList.contains('open')) await renderSessionMenu();
+      if (tab.sessionId && _serverReady && !tab.running) {
+        await renameSession(tab.sessionId, nextTitle);
+        if (panelEl('#ocp-session-menu')?.classList.contains('open')) await renderSessionMenu();
+      } else {
+        tab.pendingTitle = nextTitle;
+        tab.sessionTitle = nextTitle;
+        saveTabs();
+      }
     } catch (err) {
       console.error('[ocp] rename failed:', err);
     } finally {
@@ -1360,15 +1365,30 @@ async function loadBranches(projectPath) {
 let _mcpProfiles = [];
 let _currentProfile = 'full';
 
+function mcpProfileItemsFromPresets(presets) {
+  if (!presets || typeof presets !== 'object') return null;
+  return Object.entries(presets).map(([id, p]) => ({
+    id,
+    label: p?.label || id,
+    hint: `${p?.tools || '?'} tools`,
+  }));
+}
+
+function applyMcpProfileState(profile, presets) {
+  if (profile) _currentProfile = profile;
+  const items = mcpProfileItemsFromPresets(presets);
+  if (items) _mcpProfiles = items;
+  const dd = panelEl('#ocp-profile-dd');
+  if (dd) populateProfileDropdown(dd);
+}
+
 async function loadCurrentProfile() {
   try {
     const resp = await fetch('/api/mcp/profile');
     const data = await resp.json();
-    if (data.ok && data.profile) _currentProfile = data.profile;
-    if (data.presets) {
-      _mcpProfiles = Object.entries(data.presets).map(([id, p]) => ({
-        id, label: p.label || id, hint: `${p.tools} tools`,
-      }));
+    if (data.ok) {
+      applyMcpProfileState(data.profile, data.presets);
+      return;
     }
   } catch {}
   const dd = panelEl('#ocp-profile-dd');
@@ -1385,6 +1405,10 @@ function populateProfileDropdown(dd) {
   const lbl = dd.querySelector('.ocp-dd-label');
   if (!menu || !lbl) return;
   menu.innerHTML = '';
+  const matched = _mcpProfiles.find(p => p.id === _currentProfile);
+  lbl.textContent = matched ? matched.label : _currentProfile;
+  dd.classList.add('has-value');
+  dd._value = _currentProfile;
   for (const p of _mcpProfiles) {
     const opt = document.createElement('div');
     opt.className = 'ocp-dd-option' + (p.id === _currentProfile ? ' selected' : '');
@@ -1702,19 +1726,210 @@ function ensurePanel() {
   setOnUpdate(onUpdate);
   setOnShow(() => setVisible(true));
   setOnHide(() => setVisible(false));
+  on('mcp:profile-changed', (msg = {}) => {
+    applyMcpProfileState(msg.profile, msg.presets);
+  });
 
-  // Wire "Edit plan" button — materializes plan content as a file and opens it
-  setOnEditPlan(async (tab) => {
-    const openPlan = (path) => emit('open-plan-editor', { filePath: path, tabId: tab.id, source: 'opencode' });
-    if (tab.planFilePath) { openPlan(tab.planFilePath); return; }
-    if (!tab.planContent) return;
-    try {
-      const planPath = await ensurePlanFile(tab);
-      if (planPath) openPlan(planPath);
-    } catch (e) {
-      console.error('[ocp-panel] Edit plan failed:', e);
-      showPostPlanUI(tab);
-    }
+  // Wire "Edit plan" button — materializes plan content as a file and opens it.
+  // Mirrors the robust handler in ui-claude-panel.js: tries the cached file path
+  // first, falls back to capturing assistant text from the DOM (with one rAF
+  // retry for late-stream races), then a /api/latest-plan disk lookup. Any
+  // failure surfaces a visible error and re-enables the card so the user can
+  // retry instead of clicking into a silent void.
+  setOnEditPlan(async (tab, card) => {
+    const messagesEl = _panel?.querySelector('#ocp-messages');
+    const setBusy = (busy) => {
+      if (!card) return;
+      card.style.opacity = busy ? '0.45' : '1';
+      card.style.pointerEvents = busy ? 'none' : 'auto';
+    };
+    const openPlan = (path) => {
+      emit('open-plan-editor', { filePath: path, tabId: tab.id, source: 'opencode' });
+    };
+    // Diagnostic snapshot: dump exactly what the panel sees at click time so
+    // we can pinpoint where the plan content is hiding when extraction fails.
+    const diagnosticSnapshot = async () => {
+      const diag = {
+        sessionId: tab.sessionId || '(none)',
+        mode: tab.mode || '(none)',
+        agent: tab.agent || '(none)',
+        planContentLen: (tab.planContent || '').length,
+        planFilePath: tab.planFilePath || '(none)',
+        assistantBubbles: messagesEl ? messagesEl.querySelectorAll('.ocp-msg-assistant').length : 0,
+        thinkBlocks: messagesEl ? messagesEl.querySelectorAll('.ocp-think-block').length : 0,
+        toolCards: [],
+        messagesApi: '(not fetched)',
+      };
+      if (messagesEl) {
+        messagesEl.querySelectorAll('.ocp-tool-card').forEach((c) => {
+          const name = (c.querySelector('.ocp-tool-name')?.textContent || '').trim();
+          const argsLen = (c.querySelector('.ocp-tool-args')?.textContent || '').trim().length;
+          const resultLen = (c.querySelector('.ocp-tool-result')?.textContent || '').trim().length;
+          diag.toolCards.push({ name, argsLen, resultLen });
+        });
+      }
+      try {
+        if (tab.sessionId) {
+          const resp = await requestWs('messages:list', { sessionId: tab.sessionId }, 8000);
+          const raw = resp?.data?.messages || resp?.data || [];
+          const messages = Array.isArray(raw) ? raw : [];
+          let lastAssistantParts = '(no assistant message)';
+          for (let i = messages.length - 1; i >= 0; i--) {
+            const m = messages[i] || {};
+            if ((m.info?.role || m.role) !== 'assistant') continue;
+            lastAssistantParts = (m.parts || []).map(p => ({
+              type: p?.type,
+              tool: p?.tool || p?.name,
+              textLen: String(p?.text || '').length,
+              inputKeys: p?.input ? Object.keys(p.input).slice(0, 6) : [],
+              stateInputKeys: p?.state?.input ? Object.keys(p.state.input).slice(0, 6) : [],
+            }));
+            break;
+          }
+          diag.messagesApi = { count: messages.length, lastAssistantParts };
+        }
+      } catch (err) {
+        diag.messagesApi = `(error: ${err?.message || err})`;
+      }
+      console.warn('[ocp-panel] Edit plan diagnostic:', JSON.stringify(diag, null, 2));
+      return diag;
+    };
+
+    const noFile = (reason) => {
+      if (reason) console.warn('[ocp-panel] Edit plan fallback:', reason);
+      // Console dump preserves full diagnostic for follow-up debugging; user
+      // sees a friendly message in the toast.
+      diagnosticSnapshot().then(() => {
+        if (card && !card._noFileShown) {
+          card._noFileShown = true;
+          if (messagesEl) renderErrorMessage(messagesEl, 'Plan text was empty — ask OpenCode to re-output the plan, or click Continue with implementation to proceed. (Devtools console has the diagnostic dump.)');
+        }
+        setBusy(false);
+      });
+    };
+    const materialize = (planText) => {
+      // server.js:12011 rejects content with no H1 whose first line starts
+      // with a thinking marker (Thought, I'll, Let me, ›, …). Captured
+      // reasoning streams almost always start that way. Prepend `# Plan` if
+      // there's no existing H1 so the server accepts the content.
+      let content = String(planText || '').trim();
+      if (!/^#\s+.+$/m.test(content)) {
+        content = `# Plan\n\n${content}`;
+      }
+      fetch('/api/create-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, cwd: tab.project || '' }),
+      }).then(r => r.json()).then(result => {
+        if (result?.ok && result.path) {
+          tab.planFilePath = result.path;
+          saveTabs();
+          openPlan(result.path);
+        } else {
+          noFile(result?.error || 'create-plan returned non-ok');
+        }
+      }).catch(err => noFile(err?.message || 'create-plan request failed'));
+    };
+    const diskFallback = () => {
+      fetch('/api/latest-plan').then(r => r.ok ? r.json() : null).then(result => {
+        const p = result?.path;
+        const mtime = result?.mtime ? new Date(result.mtime).getTime() : 0;
+        const startedAt = tab._planModeStartedAt || 0;
+        if (p && mtime && (!startedAt || mtime >= startedAt)) {
+          tab.planFilePath = p;
+          saveTabs();
+          openPlan(p);
+        } else {
+          noFile('latest-plan not fresh (mtime < plan-mode start)');
+        }
+      }).catch(err => noFile(err?.message || 'latest-plan request failed'));
+    };
+
+    // Authoritative fallback: ask the OpenCode server for this session's
+    // message parts directly via the existing `messages:list` WS proxy
+    // (server.js:5285 → GET /session/{id}/message). Walk the most recent
+    // assistant message, concatenate text parts (then reasoning parts as
+    // backup). Bypasses DOM scraping entirely — works regardless of how the
+    // model surfaced its output (text bubble, Thought block, subagent result).
+    const fetchPlanFromMessagesAPI = async () => {
+      if (!tab.sessionId) return '';
+      try {
+        const resp = await requestWs('messages:list', { sessionId: tab.sessionId }, 15000);
+        const raw = resp?.data?.messages || resp?.data || [];
+        const messages = Array.isArray(raw) ? raw : [];
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i] || {};
+          const role = m.info?.role || m.role || '';
+          if (role !== 'assistant') continue;
+          const parts = Array.isArray(m.parts) ? m.parts : [];
+          const textParts = parts
+            .filter(p => String(p?.type || '').toLowerCase() === 'text')
+            .map(p => String(p?.text || '').trim())
+            .filter(Boolean)
+            .join('\n\n')
+            .trim();
+          if (textParts.length > 40) return textParts;
+          // Tasks tool input — todos array is the plan when emitted as todowrite.
+          for (const p of parts.slice().reverse()) {
+            const ptype = String(p?.type || '').toLowerCase();
+            if (!ptype.includes('tool')) continue;
+            const tname = String(p?.tool || p?.name || '').toLowerCase();
+            if (!/^tasks?$|todo[_-]?write/i.test(tname)) continue;
+            const todoInput = p?.state?.input || p?.input || p?.args || p?.arguments || {};
+            const todos = Array.isArray(todoInput?.todos) ? todoInput.todos : [];
+            if (!todos.length) continue;
+            const lines = ['# Plan', ''];
+            todos.forEach((t, idx) => {
+              const text = String(t?.content || t?.activeForm || t?.text || t?.title || '').trim();
+              if (!text) return;
+              const status = String(t?.status || '').toLowerCase();
+              const mark = status === 'completed' || status === 'done' ? 'x' : ' ';
+              lines.push(`${idx + 1}. [${mark}] ${text}`);
+            });
+            const planMd = lines.join('\n').trim();
+            if (planMd.length > 40) return planMd;
+          }
+          const reasoningParts = parts
+            .filter(p => /reason|think/i.test(String(p?.type || '')))
+            .map(p => String(p?.text || p?.reasoning || p?.content || '').trim())
+            .filter(Boolean)
+            .join('\n\n')
+            .trim();
+          if (reasoningParts.length > 40) return reasoningParts;
+        }
+      } catch (err) {
+        console.warn('[ocp-panel] messages:list fallback failed:', err?.message || err);
+      }
+      return '';
+    };
+
+    setBusy(true);
+    (async () => {
+      try {
+        if (tab.planFilePath) { openPlan(tab.planFilePath); return; }
+        // Authoritative source first: OpenCode's session/{id}/message API has
+        // the COMPLETE assistant parts (full reasoning text). Live-capture in
+        // ocp-tabs.js often only stores the initial Thought preamble before
+        // the reply stream resolves, so the local cache can be drastically
+        // shorter than the API. Prefer the longer of the two sources.
+        const fromApi = await fetchPlanFromMessagesAPI();
+        const fromDom = extractPlanTextLoose(tab);
+        const apiLen = (fromApi || '').length;
+        const domLen = (fromDom || '').length;
+        const best = apiLen >= domLen ? fromApi : fromDom;
+        if (best) { materialize(best); return; }
+        // Late-stream DOM race: retry once on the next frame.
+        requestAnimationFrame(async () => {
+          const retry = extractPlanTextLoose(tab);
+          if (retry) { materialize(retry); return; }
+          const retryApi = await fetchPlanFromMessagesAPI();
+          if (retryApi) { tab.planContent = retryApi; materialize(retryApi); }
+          else diskFallback();
+        });
+      } catch (e) {
+        noFile(e?.message || 'Edit plan exception');
+      }
+    })();
   });
 
   // Listen for edited plan content from file explorer
@@ -1817,4 +2032,23 @@ export async function openOpencodeWithPrompt(text, opts = {}) {
       if (opts.autoSend) handleSend();
     }
   }
+}
+
+/** Append a file path to the OpenCode input as a text reference. Used by the
+ *  file explorer's "Send to AI" when OpenCode is the active panel. */
+export async function attachPathToOpencode(filePath) {
+  if (!filePath) return;
+  ensurePanel();
+  await ensureProjectsLoaded();
+  if (!_visible) setVisible(true);
+  if (!activeTab()) createTab();
+  const input = panelEl('#ocp-input');
+  if (!input) return;
+  const existing = input.value || '';
+  const sep = existing && !existing.endsWith('\n') && !existing.endsWith(' ') ? ' ' : '';
+  input.value = existing + sep + filePath;
+  autosizeInput();
+  input.focus();
+  try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
+  syncSendButton();
 }

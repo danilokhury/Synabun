@@ -260,6 +260,37 @@ function renderAssistantMarkdown(text) {
   };
 }
 
+function renderUserMarkdown(text) {
+  const escaped = esc(text || '');
+  if (!_marked) return escaped.replace(/\n/g, '<br>');
+  try {
+    return _marked.parse(escaped);
+  } catch {
+    return escaped.replace(/\n/g, '<br>');
+  }
+}
+
+function looksLikeStructuredData(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) {
+    try { JSON.parse(t); return true; } catch { return false; }
+  }
+  return false;
+}
+
+function looksLikeMarkdown(text) {
+  const t = String(text || '');
+  if (!t.trim()) return false;
+  return /(^|\n)#{1,6}\s/.test(t)
+    || /(^|\n)\s*[-*+]\s/.test(t)
+    || /(^|\n)\s*\d+\.\s/.test(t)
+    || /(^|\n)\|.+\|.*\n\|?\s*[-:]+\s*\|/.test(t)
+    || /```[\s\S]*?```/.test(t)
+    || /\*\*[^*\n]+\*\*/.test(t)
+    || /(^|\n)>\s/.test(t);
+}
+
 function attachCopyButton(pre) {
   if (!pre || pre.querySelector('.ocp-copy-btn')) return;
   const btn = document.createElement('button');
@@ -282,18 +313,31 @@ function attachCopyButton(pre) {
   pre.appendChild(btn);
 }
 
+function wrapTables(container) {
+  container.querySelectorAll('table').forEach((table) => {
+    const parent = table.parentElement;
+    if (!parent || parent.classList.contains('ocp-table-wrapper')) return;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'ocp-table-wrapper';
+    parent.insertBefore(wrapper, table);
+    wrapper.appendChild(table);
+  });
+}
+
 function postProcessRenderedHtml(container) {
   if (!container) return;
   container.querySelectorAll('pre').forEach((pre) => attachCopyButton(pre));
   attachLanguageLabels(container);
   highlightCodeBlocks(container);
   linkifyFilePaths(container);
+  wrapTables(container);
 }
 
 function setAssistantHtml(el, content) {
   const segments = parseThinkSegments(content || '');
   let html = '';
   let hasContent = false;
+  let hasTextContent = false;
   for (const seg of segments) {
     if (seg.type === 'thinking') {
       html += thinkBlockHtml(seg.content, seg.partial);
@@ -302,6 +346,7 @@ function setAssistantHtml(el, content) {
       if (rendered.hasContent) {
         html += rendered.html;
         hasContent = true;
+        hasTextContent = true;
       }
     }
   }
@@ -310,6 +355,7 @@ function setAssistantHtml(el, content) {
   el.innerHTML = html;
   clearThinkingTimer(el);
   el.classList.toggle('ocp-msg-empty', !hasContent);
+  el.classList.toggle('ocp-msg-think-only', hasContent && !hasTextContent);
   postProcessRenderedHtml(el);
 }
 
@@ -587,6 +633,13 @@ function findToolCard(container, toolId) {
   return Array.from(container.querySelectorAll('.ocp-tool-card')).find((card) => card.dataset.toolId === toolId) || null;
 }
 
+// Keep the post-plan card pinned to the bottom — any new bubble or tool card
+// appended after it would otherwise leave PLAN COMPLETE stranded mid-thread.
+function reseatPostPlanCard(container) {
+  const card = container?.querySelector('.ocp-post-plan-card');
+  if (card && card !== container.lastElementChild) container.appendChild(card);
+}
+
 function ensureToolCard(container, toolName, toolId) {
   let card = findToolCard(container, toolId);
   if (card) return card;
@@ -624,6 +677,7 @@ function ensureToolCard(container, toolName, toolId) {
   header?.addEventListener('click', () => card.classList.toggle('expanded'));
 
   container.appendChild(card);
+  reseatPostPlanCard(container);
   return card;
 }
 
@@ -665,7 +719,19 @@ function syncToolCard(card, toolName, toolInput, { result, isError = false, stat
   if (result !== undefined && resultSection && resultPre) {
     const resultText = pretty(result);
     resultSection.hidden = !resultText.trim();
-    resultPre.textContent = resultText;
+    const renderMd = !isError
+      && resultText.trim()
+      && !looksLikeStructuredData(resultText)
+      && looksLikeMarkdown(resultText);
+    if (renderMd) {
+      resultPre.classList.add('ocp-tool-result-md');
+      const rendered = renderAssistantMarkdown(resultText);
+      resultPre.innerHTML = rendered.html;
+      postProcessRenderedHtml(resultPre);
+    } else {
+      resultPre.classList.remove('ocp-tool-result-md');
+      resultPre.textContent = resultText;
+    }
     resultPre.classList.toggle('error', Boolean(resultText.trim()) && isError);
     if (!resultSection.hidden) attachCopyButton(resultPre);
   }
@@ -747,7 +813,9 @@ export function renderUserPayload(container, payload) {
 
   if (content) {
     const textEl = document.createElement('div');
-    textEl.textContent = content;
+    textEl.className = 'ocp-msg-user-md';
+    textEl.innerHTML = renderUserMarkdown(content);
+    postProcessRenderedHtml(textEl);
     div.appendChild(textEl);
   }
   if (summary) {
@@ -767,6 +835,7 @@ export function renderAssistantMessage(container, content) {
   div.className = 'ocp-msg ocp-msg-assistant';
   setAssistantHtml(div, content);
   container.appendChild(div);
+  reseatPostPlanCard(container);
   scrollToBottom(container);
   return div;
 }
@@ -776,6 +845,7 @@ export function renderErrorMessage(container, message) {
   div.className = 'ocp-msg ocp-msg-error';
   div.textContent = message;
   container.appendChild(div);
+  reseatPostPlanCard(container);
   scrollToBottom(container);
   return div;
 }
@@ -800,6 +870,7 @@ function ensurePendingAssistantEl(container) {
   el = document.createElement('div');
   el.className = 'ocp-msg ocp-msg-assistant pending';
   container.appendChild(el);
+  reseatPostPlanCard(container);
   return el;
 }
 
@@ -815,6 +886,7 @@ export function getOrCreateStreamingEl(container) {
       el = document.createElement('div');
       el.className = 'ocp-msg ocp-msg-assistant';
       container.appendChild(el);
+      reseatPostPlanCard(container);
     }
     el.classList.add('streaming');
   }
@@ -825,6 +897,7 @@ function renderStreamingElement(container, el, { partialThinking = true } = {}) 
   if (!el) return;
   let html = '';
   let hasContent = false;
+  let hasTextContent = false;
   if (el.dataset.thinkText) {
     html += thinkBlockHtml(el.dataset.thinkText, partialThinking);
     hasContent = true;
@@ -834,11 +907,16 @@ function renderStreamingElement(container, el, { partialThinking = true } = {}) 
     if (rendered.hasContent) {
       html += rendered.html;
       hasContent = true;
+      hasTextContent = true;
     }
   }
   el.innerHTML = html;
   clearThinkingTimer(el);
   el.classList.toggle('ocp-msg-empty', !hasContent);
+  // think-only = bubble has thinking but no response text yet. CSS uses this
+  // to suppress the outer bubble + avatar so the inner Thought block isn't
+  // wrapped in a redundant container during reasoning streaming.
+  el.classList.toggle('ocp-msg-think-only', hasContent && !hasTextContent);
   postProcessRenderedHtml(el);
   scrollToBottom(container);
 }
@@ -874,10 +952,36 @@ export function appendThinkChunk(container, text) {
   return el;
 }
 
+// OpenCode 1.14+ emits message.part.updated carrying the FULL part.text on
+// each event (delta is optional). REPLACE rawText/thinkText so the streaming
+// bubble tracks the canonical part state instead of double-appending.
+export function setStreamRawText(container, text) {
+  const full = normalizeTextContent(text, { stringifyObjects: false });
+  const el = getOrCreateStreamingEl(container);
+  el.dataset.rawText = full;
+  scheduleStreamingRender(container, el);
+  return el;
+}
+
+export function setStreamThinkText(container, text) {
+  const full = normalizeTextContent(text, { stringifyObjects: false });
+  const el = getOrCreateStreamingEl(container);
+  el.dataset.thinkText = full;
+  scheduleStreamingRender(container, el);
+  return el;
+}
+
 /** Finalize the streaming message (remove streaming class). */
 export function finalizeStreamingMessage(container) {
   const el = container.querySelector('.ocp-msg-assistant.streaming');
   if (el) {
+    // Cancel any pending streaming render — without this, a deferred rAF can
+    // fire AFTER finalize cleared the datasets and re-render the bubble with
+    // empty think/raw text, blanking the response.
+    if (el._ocpStreamRaf && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(el._ocpStreamRaf);
+    }
+    el._ocpStreamRaf = null;
     el.classList.remove('streaming');
     renderStreamingElement(container, el, { partialThinking: false });
     delete el.dataset.rawText;
@@ -1000,7 +1104,51 @@ export function renderAssistantPayload(container, payload, { textMode = 'render'
     if (!fallbackText.trim()) return false;
     if (textMode === 'stream') appendStreamChunk(container, fallbackText);
     else if (textMode === 'render') renderAssistantMessage(container, fallbackText);
+    else if (textMode === 'merge') {
+      const streamingEl = container.querySelector('.ocp-msg-assistant.streaming');
+      const currentRaw = streamingEl?.dataset.rawText || '';
+      if (fallbackText.length > currentRaw.length) setStreamRawText(container, fallbackText);
+    }
     return true;
+  }
+
+  // 'merge' mode: augment an existing streaming bubble with any missing
+  // thinking/text without duplicating already-rendered content. Used by the
+  // POST/message.updated/message.completed fallbacks when SSE didn't deliver
+  // the full message before the fallback ran (e.g. Kimi K2.6 emits long
+  // reasoning then a short text part that loses the race against POST).
+  // setStream*Text REPLACE — the length guard prevents shorter snapshots
+  // from clobbering longer in-flight content.
+  if (textMode === 'merge') {
+    const textJoined = segments
+      .filter((s) => s.type === 'text')
+      .map((s) => s.text)
+      .join('\n\n')
+      .trim();
+    const thinkJoined = segments
+      .filter((s) => s.type === 'thinking')
+      .map((s) => s.text)
+      .join('\n\n')
+      .trim();
+    const streamingEl = container.querySelector('.ocp-msg-assistant.streaming');
+    const currentThink = streamingEl?.dataset.thinkText || '';
+    const currentRaw = streamingEl?.dataset.rawText || '';
+    if (thinkJoined && thinkJoined.length > currentThink.length) {
+      setStreamThinkText(container, thinkJoined);
+    }
+    if (textJoined && textJoined.length > currentRaw.length) {
+      setStreamRawText(container, textJoined);
+    }
+    for (const seg of segments) {
+      if (seg.type !== 'tool') continue;
+      if (skipQuestionTools && isQuestionTool(seg.name)) continue;
+      renderToolCard(container, seg.name, seg.input, seg.id, {
+        status: seg.status,
+        result: seg.result,
+        isError: seg.isError,
+      });
+    }
+    return Boolean(textJoined || thinkJoined || segments.some((s) => s.type === 'tool'));
   }
 
   const textParts = [];
@@ -1023,6 +1171,7 @@ export function renderAssistantPayload(container, payload, { textMode = 'render'
       const thinkDiv = document.createElement('div');
       thinkDiv.innerHTML = thinkBlockHtml(segment.text || '', false);
       container.appendChild(thinkDiv.firstElementChild || thinkDiv);
+      reseatPostPlanCard(container);
       continue;
     }
     if (skipQuestionTools && segment.type === 'tool' && isQuestionTool(segment.name)) {
@@ -1369,7 +1518,11 @@ export function renderPostPlanCard(container, { headerText = 'PLAN COMPLETE', on
     if (typeof onCompact === 'function') onCompact();
   });
   card.querySelector('[data-action="edit"]').addEventListener('click', () => {
-    if (typeof onEditPlan === 'function') onEditPlan();
+    if (typeof onEditPlan === 'function') onEditPlan(card);
+  });
+  card.querySelector('[data-action="continue-planning"]').addEventListener('click', () => {
+    card.remove();
+    if (typeof onContinuePlanning === 'function') onContinuePlanning();
   });
   card.querySelector('[data-action="continue-planning"]').addEventListener('click', () => {
     card.remove();

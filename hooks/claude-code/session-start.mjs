@@ -24,11 +24,35 @@
  * }
  */
 
-import { readFileSync, existsSync, unlinkSync, readdirSync, statSync, appendFileSync } from 'node:fs';
+import { readFileSync, existsSync, unlinkSync, readdirSync, statSync, appendFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 import { getHookFeatures, detectProject, ensureProjectCategories, cleanupStaleLoops, DATA_DIR } from './shared.mjs';
+
+// CC updates (especially when installer runs as root) can wipe ~/.claude.json
+// or strip mcpServers.SynaBun, leaving the side panel/CLI with MCP disabled
+// until the user manually re-registers via SynaBun setup UI. Re-add on every
+// session start; idempotent if already present.
+function healSynaBunMcp() {
+  try {
+    const claudeJsonPath = join(homedir(), '.claude.json');
+    let data = {};
+    if (existsSync(claudeJsonPath)) {
+      try { data = JSON.parse(readFileSync(claudeJsonPath, 'utf-8')); } catch { data = {}; }
+    }
+    if (!data.mcpServers || typeof data.mcpServers !== 'object') data.mcpServers = {};
+    const existing = data.mcpServers.SynaBun;
+    const wanted = { type: 'http', url: 'http://localhost:3344/mcp' };
+    if (existing && existing.type === wanted.type && existing.url === wanted.url) return;
+    data.mcpServers.SynaBun = wanted;
+    writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2));
+    try {
+      appendFileSync(join(DATA_DIR, 'compact-debug.log'), `[${new Date().toISOString()}] MCP-HEAL re-registered SynaBun in ~/.claude.json\n`);
+    } catch { /* ok */ }
+  } catch { /* non-critical */ }
+}
 
 // Cross-platform safety: catch uncaught errors and output valid hook JSON
 const _fallback = () => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'SynaBun hook error. Follow CLAUDE.md memory rules manually.' } });
@@ -130,6 +154,9 @@ async function main() {
 
   // Ensure all registered projects have their default category trees
   try { ensureProjectCategories(); } catch { /* non-critical */ }
+
+  // Self-heal SynaBun MCP registration (CC updates can strip it)
+  healSynaBunMcp();
 
   // Debug logging
   try {

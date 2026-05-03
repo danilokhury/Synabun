@@ -613,18 +613,59 @@ export function injectStyles() {
       letter-spacing: 0.02em;
     }
     .ocp-msg-assistant {
-      background: transparent;
+      position: relative;
+      background: rgba(255,255,255,0.025);
+      border: 0.5px solid rgba(255,255,255,0.06);
       color: rgba(255,255,255,0.86);
+      align-self: flex-start;
+      max-width: 92%;
+      padding: 10px 14px 10px 40px;
+      border-radius: 10px;
+      border-top-left-radius: 4px;
+    }
+    /* OpenCode avatar — pseudo-element pinned to the bubble's top-left */
+    .ocp-msg-assistant::before {
+      content: '';
+      position: absolute;
+      left: 8px;
+      top: 9px;
+      width: 22px;
+      height: 22px;
+      border-radius: 7px;
+      background:
+        rgba(232,224,220,0.12)
+        url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2030%27%20fill%3D%27%23E8E0DC%27%3E%3Cpath%20d%3D%27M18%206H6V24H18V6ZM24%2030H0V0H24V30Z%27%2F%3E%3C%2Fsvg%3E")
+        center / 11px no-repeat;
+      pointer-events: none;
+    }
+    /* Thought-only / empty bubbles: keep the legacy bare look (no outer bubble, no avatar).
+       The .ocp-msg-think-only class is set by renderStreamingElement / setAssistantHtml when
+       the bubble contains thinking but no response text — mirrors the live streaming state. */
+    .ocp-msg-assistant.ocp-msg-empty,
+    .ocp-msg-assistant.ocp-msg-think-only {
+      background: transparent;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 10px;
+      align-self: stretch;
       max-width: 100%;
     }
+    .ocp-msg-assistant.ocp-msg-empty::before,
+    .ocp-msg-assistant.ocp-msg-think-only::before {
+      display: none;
+    }
+    /* Pending placeholder bubble (pre-streaming): keep its existing look */
     .ocp-msg-assistant.pending {
       padding: 0;
       background: rgba(255,255,255,0.02);
       border: 1px solid rgba(255,255,255,0.06);
       border-radius: 12px;
+      align-self: stretch;
+      max-width: 100%;
       overflow: hidden;
       box-shadow: inset 0 1px 0 rgba(255,255,255,0.015);
     }
+    .ocp-msg-assistant.pending::before { display: none; }
     .ocp-msg-assistant p { margin: 0 0 8px; }
     .ocp-msg-assistant p:last-child { margin-bottom: 0; }
     .ocp-msg-assistant h1,
@@ -683,6 +724,236 @@ export function injectStyles() {
       font-size: inherit;
       color: inherit;
     }
+
+    /* ── Markdown tables ── */
+    .ocp-msg-assistant .ocp-table-wrapper {
+      margin: 8px 0;
+      overflow-x: auto;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px;
+      background: rgba(0,0,0,0.18);
+    }
+    .ocp-msg-assistant table {
+      border-collapse: collapse;
+      width: auto;
+      min-width: 100%;
+      font-size: 11px;
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+    }
+    .ocp-msg-assistant thead { background: rgba(255,255,255,0.04); }
+    .ocp-msg-assistant th {
+      text-align: left;
+      padding: 6px 10px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.96);
+      border-bottom: 1px solid rgba(255,255,255,0.10);
+      white-space: nowrap;
+    }
+    .ocp-msg-assistant td {
+      padding: 5px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.82);
+      vertical-align: top;
+    }
+    .ocp-msg-assistant tr:last-child td { border-bottom: none; }
+    .ocp-msg-assistant tbody tr:hover td { background: rgba(255,255,255,0.025); }
+    .ocp-msg-assistant th + th,
+    .ocp-msg-assistant td + td { border-left: 1px solid rgba(255,255,255,0.04); }
+    .ocp-msg-assistant th[align="right"],
+    .ocp-msg-assistant td[align="right"] { text-align: right; }
+    .ocp-msg-assistant th[align="center"],
+    .ocp-msg-assistant td[align="center"] { text-align: center; }
+
+    /* ── Heading + HR polish ── */
+    .ocp-msg-assistant h1 { font-size: 15px; }
+    .ocp-msg-assistant h2 { font-size: 13.5px; }
+    .ocp-msg-assistant h4,
+    .ocp-msg-assistant h5,
+    .ocp-msg-assistant h6 {
+      margin: 0.6em 0 0.25em;
+      font-size: 11.5px;
+      color: rgba(255,255,255,0.92);
+      font-weight: 600;
+    }
+    .ocp-msg-assistant hr {
+      border: none;
+      height: 1px;
+      margin: 0.75em 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.10) 30%, rgba(255,255,255,0.10) 70%, transparent);
+    }
+
+    /* ── GFM task list checkboxes ── */
+    .ocp-msg-assistant ul li input[type="checkbox"] {
+      margin-right: 6px;
+      accent-color: rgba(232,224,220,0.9);
+    }
+    .ocp-msg-assistant ul:has(> li > input[type="checkbox"]) {
+      list-style: none;
+      padding-left: 4px;
+    }
+
+    /* ── Inline emphasis (bold/italic/strike) ── */
+    .ocp-msg-assistant strong { color: rgba(255,255,255,0.98); font-weight: 600; }
+    .ocp-msg-assistant em { color: rgba(255,255,255,0.92); font-style: italic; }
+    .ocp-msg-assistant del {
+      color: rgba(255,255,255,0.5);
+      text-decoration: line-through;
+      text-decoration-color: rgba(255,255,255,0.4);
+    }
+
+    /* ── Keyboard shortcuts ── */
+    .ocp-msg-assistant kbd {
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+      font-size: 10.5px;
+      padding: 1px 5px;
+      margin: 0 1px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-bottom-width: 2px;
+      border-radius: 4px;
+      color: rgba(255,255,255,0.92);
+      vertical-align: 0.05em;
+    }
+
+    /* ── Inline images ── */
+    .ocp-msg-assistant img,
+    .ocp-msg-user-md img {
+      max-width: 100%;
+      max-height: 400px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.06);
+      margin: 4px 0;
+      display: block;
+    }
+
+    /* ── Native details/summary (non-think-block) ── */
+    .ocp-msg-assistant details:not(.ocp-think-block) {
+      margin: 8px 0;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px;
+      background: rgba(255,255,255,0.02);
+      overflow: hidden;
+    }
+    .ocp-msg-assistant details:not(.ocp-think-block) > summary {
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.86);
+      background: rgba(255,255,255,0.03);
+      user-select: none;
+      list-style: none;
+    }
+    .ocp-msg-assistant details:not(.ocp-think-block) > summary::-webkit-details-marker { display: none; }
+    .ocp-msg-assistant details:not(.ocp-think-block) > summary::before {
+      content: '▸';
+      display: inline-block;
+      margin-right: 6px;
+      transition: transform 0.15s ease;
+      color: rgba(255,255,255,0.5);
+    }
+    .ocp-msg-assistant details:not(.ocp-think-block)[open] > summary::before {
+      transform: rotate(90deg);
+    }
+    .ocp-msg-assistant details:not(.ocp-think-block) > summary:hover {
+      background: rgba(255,255,255,0.05);
+    }
+    .ocp-msg-assistant details:not(.ocp-think-block)[open] > summary {
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .ocp-msg-assistant details:not(.ocp-think-block) > *:not(summary) {
+      padding: 8px 10px;
+    }
+
+    /* ── User message markdown rendering ── */
+    .ocp-msg-user-md > *:first-child { margin-top: 0; }
+    .ocp-msg-user-md > *:last-child { margin-bottom: 0; }
+    .ocp-msg-user-md p { margin: 0 0 6px; }
+    .ocp-msg-user-md p:last-child { margin-bottom: 0; }
+    .ocp-msg-user-md code {
+      background: rgba(0,0,0,0.22);
+      border: 1px solid rgba(255,255,255,0.06);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+    }
+    .ocp-msg-user-md pre {
+      background: rgba(0,0,0,0.28);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin: 6px 0;
+      overflow-x: auto;
+      font-size: 11px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .ocp-msg-user-md pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      font-size: inherit;
+    }
+    .ocp-msg-user-md ul,
+    .ocp-msg-user-md ol { margin: 4px 0 4px 18px; padding: 0; }
+    .ocp-msg-user-md blockquote {
+      margin: 6px 0;
+      padding-left: 8px;
+      border-left: 2px solid rgba(255,255,255,0.15);
+      color: rgba(255,255,255,0.78);
+    }
+    .ocp-msg-user-md strong { font-weight: 600; }
+    .ocp-msg-user-md em { font-style: italic; }
+    .ocp-msg-user-md a { color: rgba(151,214,255,0.92); text-decoration: none; }
+    .ocp-msg-user-md a:hover { text-decoration: underline; }
+
+    /* ── Tool result markdown rendering ── */
+    .ocp-tool-result.ocp-tool-result-md {
+      white-space: normal;
+      font-family: inherit;
+      font-size: 11.5px;
+      padding: 4px 8px;
+    }
+    .ocp-tool-result.ocp-tool-result-md p { margin: 0 0 6px; }
+    .ocp-tool-result.ocp-tool-result-md p:last-child { margin-bottom: 0; }
+    .ocp-tool-result.ocp-tool-result-md code {
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.06);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-size: 10.5px;
+    }
+    .ocp-tool-result.ocp-tool-result-md pre {
+      background: rgba(0,0,0,0.28);
+      border-radius: 5px;
+      padding: 6px 8px;
+      margin: 4px 0;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .ocp-tool-result.ocp-tool-result-md table {
+      border-collapse: collapse;
+      width: auto;
+      min-width: 100%;
+      font-size: 10.5px;
+    }
+    .ocp-tool-result.ocp-tool-result-md th {
+      text-align: left;
+      padding: 4px 8px;
+      font-weight: 600;
+      background: rgba(255,255,255,0.04);
+      border-bottom: 1px solid rgba(255,255,255,0.10);
+    }
+    .ocp-tool-result.ocp-tool-result-md td {
+      padding: 3px 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .ocp-tool-result.ocp-tool-result-md ul,
+    .ocp-tool-result.ocp-tool-result-md ol { margin: 4px 0 4px 16px; padding: 0; }
+
     .ocp-copy-btn {
       position: absolute;
       top: 6px;
@@ -1033,6 +1304,19 @@ export function injectStyles() {
     .ocp-dropdown.has-value .ocp-dd-label { color: rgba(255,255,255,0.5); }
     .ocp-dropdown:hover .ocp-dd-arrow { color: rgba(255,255,255,0.3); }
     .ocp-dropdown.open .ocp-dd-arrow { transform: rotate(180deg); color: rgba(255,255,255,0.4); }
+    @keyframes ocp-model-menu-in {
+      from { opacity: 0; transform: translateY(8px) scale(0.985); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes ocp-cap-help-in {
+      from { opacity: 0; transform: translateY(-3px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes ocp-cap-help-swap {
+      0%   { opacity: 0.45; transform: translateY(-1px); filter: blur(0.4px); }
+      55%  { opacity: 1;    transform: translateY(0);    filter: blur(0); }
+      100% { opacity: 1;    transform: translateY(0);    filter: blur(0); }
+    }
     .ocp-dd-menu {
       display: none;
       position: absolute;
@@ -1045,18 +1329,39 @@ export function injectStyles() {
       box-shadow: 0 8px 32px rgba(0,0,0,0.4);
       z-index: 50; padding: 0 4px 4px;
     }
+    #ocp-model-dd .ocp-dd-menu {
+      width: min(520px, calc(100vw - 28px));
+      max-width: min(520px, calc(100vw - 28px));
+      max-height: 460px;
+      bottom: calc(100% + 10px);
+      background:
+        linear-gradient(180deg, rgba(26,27,31,0.98) 0%, rgba(18,19,22,0.985) 100%);
+      border-color: rgba(255,255,255,0.12);
+      box-shadow:
+        0 22px 70px rgba(0,0,0,0.52),
+        inset 0 1px 0 rgba(255,255,255,0.055);
+      backdrop-filter: blur(18px) saturate(1.12);
+      -webkit-backdrop-filter: blur(18px) saturate(1.12);
+    }
     .ocp-dd-menu:not(:has(.ocp-model-search)) { padding: 4px; }
     .ocp-dd-menu.open { display: block; }
+    #ocp-model-dd .ocp-dd-menu.open {
+      animation: ocp-model-menu-in 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+      transform-origin: bottom right;
+    }
     .ocp-dd-header {
       position: sticky;
       top: 0;
       z-index: 3;
-      background: rgba(22,22,26,0.98);
+      background:
+        linear-gradient(180deg, rgba(28,29,34,0.98) 0%, rgba(22,23,27,0.96) 100%);
       border-radius: 8px 8px 0 0;
+      border-bottom: 1px solid rgba(255,255,255,0.09);
+      box-shadow: 0 10px 24px rgba(0,0,0,0.16);
     }
     .ocp-cap-filter-toggle {
       position: absolute;
-      right: 6px; top: 2px;
+      right: 6px; top: 4px;
       width: 22px; height: 26px;
       display: flex; align-items: center; justify-content: center;
       background: none; border: none;
@@ -1070,7 +1375,7 @@ export function injectStyles() {
       background: rgba(255,255,255,0.05);
     }
     .ocp-cap-filter-toggle.collapsed { color: rgba(255,255,255,0.12); }
-    .ocp-cap-filter-toggle.has-active { color: rgba(96,165,250,0.7); }
+    .ocp-cap-filter-toggle.has-active { color: rgba(232,224,220,0.7); }
     .ocp-cap-filter-bar--hidden { display: none; }
     .ocp-dd-option {
       padding: 6px 10px; border-radius: 5px;
@@ -1080,12 +1385,36 @@ export function injectStyles() {
       transition: background 0.1s;
       position: relative;
     }
+    #ocp-model-dd .ocp-dd-option {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto 18px;
+      gap: 8px;
+      min-height: 34px;
+      padding: 7px 10px;
+      border: 1px solid transparent;
+      transition: background 0.13s ease, border-color 0.13s ease, transform 0.13s ease;
+    }
     .ocp-dd-model-name {
       flex: 1; min-width: 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    #ocp-model-dd .ocp-dd-model-name {
+      font-size: 11.5px;
+      font-weight: 650;
+      color: rgba(255,255,255,0.72);
+    }
     .ocp-dd-option:hover { background: rgba(255,255,255,0.07); }
     .ocp-dd-option.selected { color: rgba(232,224,220,0.95); background: rgba(232,224,220,0.08); }
+    #ocp-model-dd .ocp-dd-option:hover {
+      background: rgba(255,255,255,0.055);
+      border-color: rgba(255,255,255,0.055);
+      transform: translateX(1px);
+    }
+    #ocp-model-dd .ocp-dd-option.selected {
+      background: rgba(255,255,255,0.075);
+      border-color: rgba(255,255,255,0.105);
+    }
+    #ocp-model-dd .ocp-dd-option.selected .ocp-dd-model-name { color: rgba(232,224,220,0.96); }
     .ocp-dd-caps {
       display: inline-flex;
       align-items: center;
@@ -1094,53 +1423,165 @@ export function injectStyles() {
       opacity: 0;
       transition: opacity 0.15s;
     }
+    #ocp-model-dd .ocp-dd-caps {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 3px;
+      max-width: 260px;
+      padding-left: 0;
+      opacity: 0.56;
+    }
     .ocp-dd-option:hover .ocp-dd-caps { opacity: 1; }
     .ocp-dd-option.selected .ocp-dd-caps { opacity: 0.75; }
     .ocp-cap {
-      display: inline-block;
-      font-size: 8px;
+      display: inline-flex;
+      align-items: center;
+      font-size: 8.5px;
       line-height: 1;
-      padding: 2px 4px;
+      padding: 3px 5px;
       margin-left: 3px;
-      border-radius: 3px;
-      font-weight: 600;
-      letter-spacing: 0.3px;
+      border-radius: 5px;
+      font-weight: 700;
+      letter-spacing: 0;
       vertical-align: middle;
       white-space: nowrap;
-      opacity: 0.85;
+      color: rgba(255,255,255,0.42);
+      background: rgba(255,255,255,0.045);
+      border: 1px solid rgba(255,255,255,0.055);
+      opacity: 1;
+    }
+    #ocp-model-dd .ocp-cap { margin-left: 0; }
+    #ocp-model-dd .ocp-dd-option:hover .ocp-cap,
+    #ocp-model-dd .ocp-dd-option.selected .ocp-cap {
+      color: rgba(255,255,255,0.66);
+      background: rgba(255,255,255,0.065);
+      border-color: rgba(255,255,255,0.09);
     }
     .ocp-cap-filter-bar {
       display: flex;
       flex-wrap: wrap;
-      gap: 3px;
-      padding: 5px 8px;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      gap: 6px;
+      padding: 8px 34px 7px 8px;
+      background: rgba(255,255,255,0.01);
     }
     .ocp-cap-filter {
-      display: inline-block;
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-height: 22px;
       font-size: 9px;
+      font-family: inherit;
       line-height: 1;
-      padding: 3px 6px;
-      border-radius: 3px;
-      font-weight: 600;
-      letter-spacing: 0.3px;
+      padding: 3px 7px 3px 4px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.075);
+      font-weight: 700;
+      letter-spacing: 0;
       cursor: pointer;
-      opacity: 0.55;
-      transition: opacity 0.15s, box-shadow 0.15s, filter 0.15s;
+      color: rgba(255,255,255,0.52);
+      background: rgba(255,255,255,0.028);
+      opacity: 1;
+      transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s, box-shadow 0.15s;
       user-select: none;
     }
-    .ocp-cap-filter:hover { opacity: 0.8; }
+    .ocp-cap-filter:hover {
+      color: rgba(255,255,255,0.78);
+      background: rgba(255,255,255,0.055);
+      border-color: rgba(255,255,255,0.13);
+      transform: translateY(-1px);
+    }
     .ocp-cap-filter.active {
-      opacity: 1;
-      box-shadow: inset 0 0 0 1.5px currentColor;
-      filter: brightness(1.5);
+      color: rgba(247,244,239,0.94);
+      background: rgba(255,255,255,0.105);
+      border-color: rgba(255,255,255,0.22);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 6px 16px rgba(0,0,0,0.18);
+      transform: translateY(-1px);
+    }
+    .ocp-cap-filter-all {
+      padding: 3px 9px;
+    }
+    .ocp-cap-filter-letter {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 4px;
+      font-size: 8.5px;
+      font-weight: 800;
+      font-family: 'JetBrains Mono', 'SF Mono', monospace;
+      letter-spacing: 0;
+      color: rgba(255,255,255,0.62);
+      background: rgba(255,255,255,0.07);
+      flex-shrink: 0;
+    }
+    .ocp-cap-filter.active .ocp-cap-filter-letter {
+      color: rgba(18,19,22,0.94);
+      background: rgba(247,244,239,0.88);
+    }
+    .ocp-cap-help {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin: 0 8px 8px;
+      padding: 7px 9px;
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 6px;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,0.045), rgba(255,255,255,0.018));
+      color: rgba(255,255,255,0.52);
+      font-size: 10.5px;
+      line-height: 1.4;
+      min-height: 32px;
+      animation: ocp-cap-help-in 140ms ease-out;
+      transition:
+        opacity 180ms ease,
+        max-height 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        margin 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        padding 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        border-color 180ms ease,
+        background 180ms ease;
+      max-height: 80px;
+      overflow: hidden;
+    }
+    .ocp-cap-help--active {
+      border-color: rgba(255,255,255,0.11);
+      background:
+        linear-gradient(90deg, rgba(255,255,255,0.075), rgba(255,255,255,0.03));
+    }
+    .ocp-cap-help--collapsed {
+      opacity: 0;
+      max-height: 0;
+      margin-top: 0;
+      margin-bottom: 0;
+      padding-top: 0;
+      padding-bottom: 0;
+      border-top-width: 0;
+      border-bottom-width: 0;
+      pointer-events: none;
+    }
+    .ocp-cap-help--swap { animation: ocp-cap-help-swap 180ms ease-out; }
+    .ocp-cap-help-title {
+      flex: 0 0 auto;
+      color: rgba(247,244,239,0.9);
+      font-weight: 800;
+    }
+    .ocp-cap-help-text {
+      min-width: 0;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: normal;
     }
     .ocp-dd-group-label {
       padding: 6px 10px 3px;
       font-size: 9px; font-weight: 600;
       color: rgba(255,255,255,0.3);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0;
     }
     .ocp-dd-fav-label { color: rgba(251,191,36,0.5) !important; }
     .ocp-dd-star {
@@ -1153,29 +1594,77 @@ export function injectStyles() {
       opacity: 0;
       transition: opacity 0.15s, color 0.15s;
     }
+    #ocp-model-dd .ocp-dd-star {
+      margin-left: 0;
+      justify-self: end;
+      align-self: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      opacity: 0.22;
+    }
     .ocp-dd-option:hover .ocp-dd-star { opacity: 1; }
-    .ocp-dd-star.active { color: #fbbf24; opacity: 1; }
-    .ocp-dd-star:hover { color: rgba(251,191,36,0.8); opacity: 1; }
+    .ocp-dd-star.active { color: rgba(247,244,239,0.72); opacity: 1; }
+    .ocp-dd-star:hover { color: rgba(247,244,239,0.86); opacity: 1; }
     .ocp-dd-sep {
       height: 1px;
       background: rgba(255,255,255,0.06);
       margin: 4px 8px;
     }
+    .ocp-dd-empty {
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 6px;
+      padding: 11px 10px;
+      border: 1px dashed rgba(255,255,255,0.08);
+      border-radius: 6px;
+      background: rgba(255,255,255,0.018);
+      color: rgba(255,255,255,0.42);
+      font-size: 11px;
+    }
+    .ocp-dd-empty-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ocp-dd-empty-clear {
+      appearance: none;
+      flex: 0 0 auto;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 5px;
+      background: rgba(255,255,255,0.035);
+      color: rgba(255,255,255,0.58);
+      font: inherit;
+      font-size: 10px;
+      line-height: 1;
+      padding: 5px 7px;
+      cursor: pointer;
+    }
+    .ocp-dd-empty-clear:hover {
+      color: rgba(255,255,255,0.82);
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.14);
+    }
     .ocp-model-search {
       width: 100%; box-sizing: border-box;
-      padding: 6px 28px 6px 10px;
+      padding: 9px 30px 9px 12px;
       background: transparent;
       border: none;
       border-bottom: 1px solid rgba(255,255,255,0.08);
       border-radius: 8px 8px 0 0;
       color: var(--t-bright, #eee);
-      font-size: 11px; font-family: inherit;
+      font-size: 12px; font-family: inherit;
       outline: none;
       margin: 0 -4px;
       width: calc(100% + 8px);
     }
     .ocp-model-search::placeholder { opacity: 0.4; }
-    .ocp-model-search:focus { background: rgba(28,28,32,0.98); }
+    .ocp-model-search:focus {
+      background: rgba(255,255,255,0.025);
+      box-shadow: inset 0 -1px 0 rgba(247,244,239,0.14);
+    }
 
     /* ── Input area ── */
     @property --ocp-input-angle {

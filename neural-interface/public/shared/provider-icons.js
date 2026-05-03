@@ -8,12 +8,14 @@ const SVG_GEMINI = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.61
 const SVG_OPENCODE = '<svg viewBox="0 0 240 300" fill="currentColor"><path fill-rule="evenodd" d="M0 0h240v300H0V0zm60 60v180h120V60H60z"/><rect x="60" y="120" width="120" height="120" opacity=".45"/></svg>';
 const SVG_SHELL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>';
 const SVG_BROWSER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
+const SVG_SYNABUN = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="8" y="5.5" width="11" height="5" rx="2.5" transform="rotate(-12 13.5 8)"/><rect x="4.5" y="12.5" width="11" height="5" rx="2.5" transform="rotate(-12 10 15)"/></svg>';
 
 const PROVIDER_META = {
   'claude-code': { id: 'claude-code', label: 'Claude Code', shortLabel: 'Claude', icon: SVG_CLAUDE, color: '#D4A27F' },
   codex:         { id: 'codex',       label: 'Codex',       shortLabel: 'Codex',  icon: SVG_OPENAI, color: '#74C7A5' },
   opencode:      { id: 'opencode',    label: 'OpenCode',    shortLabel: 'OpenCode', icon: SVG_OPENCODE, color: '#E8E0DC' },
   gemini:        { id: 'gemini',      label: 'Gemini',      shortLabel: 'Gemini', icon: SVG_GEMINI, color: '#669DF6' },
+  synabun:      { id: 'synabun',    label: 'SynaBun',     shortLabel: 'SynaBun', icon: SVG_SYNABUN, color: '#FFD23C' },
   shell:         { id: 'shell',       label: 'Shell',       shortLabel: 'Shell', icon: SVG_SHELL, color: '#AAAAAA' },
   browser:       { id: 'browser',     label: 'Browser',     shortLabel: 'Browser', icon: SVG_BROWSER, color: '#4FC3F7' },
 };
