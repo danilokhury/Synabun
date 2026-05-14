@@ -889,12 +889,6 @@ export function pruneTranscriptDom(messagesEl = _messagesEl) {
   return removed;
 }
 
-export function flushAllThreadSnapshots() {
-  for (const tab of _tabs) {
-    try { flushThreadSnapshotSave(tab); } catch {}
-  }
-}
-
 function normalizeTokenUsageBreakdown(value) {
   if (!value || typeof value !== 'object') return null;
   return {
