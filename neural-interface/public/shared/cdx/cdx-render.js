@@ -39,6 +39,7 @@ let _ctx = {
   hideEmpty() {},
   showEmpty() {},
   repositionThinking() {},
+  pruneTranscriptDom() {},
   scheduleThreadSnapshotSave() {},
   flushThreadSnapshotSave() {},
   setTranscriptSourceMeta() {},
@@ -79,10 +80,29 @@ export function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
+// Codex re-renders every assistant message through marked.parse() on every
+// streaming delta tick. Memoize so identical text — unchanged messages
+// elsewhere in the transcript that get re-rendered anyway — returns cached
+// HTML without re-parsing.
+const _mdCache = new Map();
+const _MD_CACHE_LIMIT = 512;
 export function md(text) {
-  if (!_ctx.marked) return esc(text).replace(/\n/g, '<br>');
-  try { return _ctx.marked.parse(text || ''); }
-  catch { return esc(text || '').replace(/\n/g, '<br>'); }
+  const key = text || '';
+  const cached = _mdCache.get(key);
+  if (cached !== undefined) return cached;
+  let html;
+  if (!_ctx.marked) {
+    html = esc(key).replace(/\n/g, '<br>');
+  } else {
+    try { html = _ctx.marked.parse(key); }
+    catch { html = esc(key).replace(/\n/g, '<br>'); }
+  }
+  if (_mdCache.size >= _MD_CACHE_LIMIT) {
+    const firstKey = _mdCache.keys().next().value;
+    if (firstKey !== undefined) _mdCache.delete(firstKey);
+  }
+  _mdCache.set(key, html);
+  return html;
 }
 
 export function renderAssistantMarkdown(text) {
@@ -1041,6 +1061,7 @@ export function appendElement(el) {
   }
   _ctx.hideEmpty();
   _ctx.messagesEl.appendChild(el);
+  _ctx.pruneTranscriptDom(_ctx.messagesEl);
   if (_ctx.threadId) {
     _ctx.setTranscriptSourceMeta({
       sourceType: _ctx.transcriptSourceType && _ctx.transcriptSourceType !== 'snapshot'
@@ -1803,7 +1824,7 @@ export function setMarkdownBuffer(state, text, final = false) {
       }
     }
     _ctx.scrollEnd();
-    _ctx.scheduleThreadSnapshotSave(_ctx.boundTab);
+    _ctx.scheduleThreadSnapshotSave(_ctx.boundTab, { force: true });
     return;
   }
   queueMarkdownRender(state);
@@ -1817,6 +1838,7 @@ export function ensureUserState(item) {
   let state = _ctx.items.get(item.id);
   if (state) return state;
   const shell = createMessageShell('user', 'User');
+  shell.el.dataset.itemId = item.id || '';
   state = {
     type: 'userMessage',
     el: shell.el,
@@ -1830,6 +1852,7 @@ export function ensureAssistantState(itemId) {
   let state = _ctx.items.get(itemId);
   if (state) return state;
   const shell = createMessageShell('assistant', 'Codex');
+  shell.el.dataset.itemId = itemId || '';
   const rendered = document.createElement('div');
   rendered.className = 'cxp-msg-rendered';
   shell.body.appendChild(rendered);
@@ -1915,6 +1938,7 @@ export function ensurePlanState(item) {
   let state = _ctx.items.get(item.id);
   if (state) return state;
   const card = createCard(item, ICON_SPARK, 'Plan', 'Structured plan output');
+  card.el.dataset.itemId = item.id || '';
   const body = document.createElement('div');
   body.className = 'cxp-msg-body';
   card.body.appendChild(body);

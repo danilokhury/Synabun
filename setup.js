@@ -101,7 +101,18 @@ function checkNodeVersion() {
 // ── Phase 2: Dependency installation ──
 
 function needsInstall(dir) {
-  return !existsSync(resolve(dir, 'node_modules', '.package-lock.json'));
+  const nm = resolve(dir, 'node_modules');
+  if (!existsSync(resolve(nm, '.package-lock.json'))) return true;
+  // Guard against a corrupted/partially-wiped node_modules where
+  // .package-lock.json survived but the actual packages didn't.
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8'));
+    const dep = Object.keys(pkg.dependencies || {})[0];
+    if (dep && !existsSync(resolve(nm, dep))) return true;
+  } catch {
+    return true;
+  }
+  return false;
 }
 
 function installDeps(name, dir, { includeDev = false } = {}) {

@@ -36,3 +36,20 @@ jobs:
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Notify Discord #changelog
+        if: success()
+        run: |
+          curl -H "Content-Type: application/json" \
+               -d '{
+                 "content": "@everyone",
+                 "allowed_mentions": { "parse": ["everyone"] },
+                 "embeds": [{
+                   "title": "🚀 SynaBun '${{ github.event.release.tag_name }}' is live on npm!",
+                   "url": "${{ github.event.release.html_url }}",
+                   "color": 5763719,
+                   "description": "A new version has been published.\n\n**Update:**\n```\nnpm i -g synabun@latest\n```\n\n[View Release Notes](${{ github.event.release.html_url }})",
+                   "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+                 }]
+               }' \
+               "${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}"

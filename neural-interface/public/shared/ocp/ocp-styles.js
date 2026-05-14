@@ -503,7 +503,8 @@ export function injectStyles() {
     .ocp-session-pill {
       position: relative;
       overflow: hidden;
-      border-color: transparent;
+      border-color: rgba(232, 224, 220, 0.12);
+      transition: border-color 0.2s;
     }
     .ocp-session-pill::before {
       content: '';
@@ -511,46 +512,66 @@ export function injectStyles() {
       border-radius: 8px;
       padding: 1px;
       pointer-events: none;
-      background: conic-gradient(
-        from var(--ocp-pill-angle, 0deg),
-        rgba(232,224,220,0.0) 0%,
-        rgba(232,224,220,0.30) 25%,
-        rgba(232,224,220,0.06) 50%,
-        rgba(232,224,220,0.30) 75%,
-        rgba(232,224,220,0.0) 100%
-      );
+      background: transparent;
       -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
       -webkit-mask-composite: xor;
       mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
       mask-composite: exclude;
-      animation: ocp-pill-border-spin 3s linear infinite;
+      opacity: 0;
+    }
+    .ocp-session-pill.ocp-pill-running {
+      border-color: transparent;
+    }
+    .ocp-session-pill.ocp-pill-running::before {
+      background: conic-gradient(
+        from var(--ocp-pill-angle, 0deg),
+        rgba(232,224,220,0.0) 0%,
+        rgba(232,224,220,0.55) 25%,
+        rgba(232,224,220,0.10) 50%,
+        rgba(232,224,220,0.55) 75%,
+        rgba(232,224,220,0.0) 100%
+      );
+      animation: ocp-pill-border-spin 2.4s linear infinite;
+      opacity: 1;
     }
     @keyframes ocp-pill-border-spin {
       to { --ocp-pill-angle: 360deg; }
     }
-    .ocp-session-pill .term-minimized-pill-icon { color: rgba(232, 224, 220, 0.7); }
-    .ocp-session-pill:hover { border-color: transparent; }
-    .ocp-session-pill:hover::before {
+    .ocp-session-pill .term-minimized-pill-icon { color: rgba(232, 224, 220, 0.45); transition: color 0.2s; }
+    .ocp-session-pill.ocp-pill-running .term-minimized-pill-icon { color: rgba(232, 224, 220, 1); }
+    .ocp-session-pill:hover { border-color: rgba(232, 224, 220, 0.24); }
+    .ocp-session-pill:hover .term-minimized-pill-icon { color: rgba(232, 224, 220, 0.85); }
+    .ocp-session-pill:hover.ocp-pill-running::before {
       background: conic-gradient(
         from var(--ocp-pill-angle, 0deg),
         rgba(232,224,220,0.0) 0%,
-        rgba(232,224,220,0.45) 25%,
-        rgba(232,224,220,0.10) 50%,
-        rgba(232,224,220,0.45) 75%,
+        rgba(232,224,220,0.75) 25%,
+        rgba(232,224,220,0.20) 50%,
+        rgba(232,224,220,0.75) 75%,
         rgba(232,224,220,0.0) 100%
       );
     }
     .ocp-session-pill.ocp-pill-running .term-minimized-pill-label::before {
       content: '';
       display: inline-block;
-      width: 6px;
-      height: 6px;
+      width: 8px;
+      height: 8px;
       margin-right: 6px;
       border-radius: 999px;
-      background: rgba(232, 224, 220, 0.95);
-      box-shadow: 0 0 10px rgba(232, 224, 220, 0.55);
+      background: rgba(232, 224, 220, 1);
+      box-shadow: 0 0 8px rgba(232, 224, 220, 0.75), 0 0 14px rgba(232, 224, 220, 0.35);
       vertical-align: middle;
-      animation: ocp-pill-pulse 1.5s ease-in-out infinite;
+      animation: ocp-pill-pulse 1.2s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    .ocp-session-pill.ocp-pill-running::after {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 2px;
+      background: linear-gradient(180deg, rgba(232,224,220,0), rgba(232,224,220,0.9), rgba(232,224,220,0));
+      animation: ocp-pill-pulse 1.2s ease-in-out infinite;
+      pointer-events: none;
     }
     @keyframes ocp-pill-pulse {
       0%, 100% { opacity: 0.45; }
@@ -639,7 +660,7 @@ export function injectStyles() {
       pointer-events: none;
     }
     /* Thought-only / empty bubbles: keep the legacy bare look (no outer bubble, no avatar).
-       The .ocp-msg-think-only class is set by renderStreamingElement / setAssistantHtml when
+       The .ocp-msg-think-only class is set by syncStreamingClasses / setAssistantHtml when
        the bubble contains thinking but no response text — mirrors the live streaming state. */
     .ocp-msg-assistant.ocp-msg-empty,
     .ocp-msg-assistant.ocp-msg-think-only {
@@ -666,6 +687,16 @@ export function injectStyles() {
       box-shadow: inset 0 1px 0 rgba(255,255,255,0.015);
     }
     .ocp-msg-assistant.pending::before { display: none; }
+    /* Live plain-text streaming node — populated token-by-token during a turn,
+       replaced with rendered markdown on finalize. Mirrors paragraph spacing
+       so the visual transition from streaming → finalized is seamless. */
+    .ocp-msg-stream-text {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: inherit;
+      color: inherit;
+      margin: 0;
+    }
     .ocp-msg-assistant p { margin: 0 0 8px; }
     .ocp-msg-assistant p:last-child { margin-bottom: 0; }
     .ocp-msg-assistant h1,
@@ -1842,41 +1873,121 @@ export function injectStyles() {
       100% { box-shadow: 0 0 0 0 rgba(245, 163, 101, 0); }
     }
 
-    /* ── Slash command hints ── */
-    .ocp-slash-hints {
+    /* ── Slash command browser ── */
+    .ocp-slash-browser {
       position: absolute;
-      bottom: calc(100% + 4px);
+      bottom: calc(100% + 6px);
       left: 0; right: 0;
-      background: rgba(20,16,14,0.96);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 8px;
-      max-height: 200px;
-      overflow-y: auto;
+      background: rgba(20,16,14,0.97);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 10px;
+      max-height: 360px;
+      display: none;
+      flex-direction: column;
       z-index: 100;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+      overflow: hidden;
     }
-    .ocp-slash-hints.open { display: block; }
-    .ocp-slash-item {
+    .ocp-slash-browser.open { display: flex; }
+    .ocp-slash-search {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       padding: 8px 12px;
-      cursor: pointer;
-      transition: background 0.1s;
-    }
-    .ocp-slash-item:hover, .ocp-slash-item.active {
-      background: rgba(255,255,255,0.06);
-    }
-    .ocp-slash-name {
+      border-bottom: 1px solid rgba(255,255,255,0.06);
       font-family: 'JetBrains Mono', monospace;
       font-size: 12px;
       color: rgba(232,224,220,0.9);
+      flex-shrink: 0;
+    }
+    .ocp-slash-search-icon { color: rgba(245,163,101,0.9); }
+    .ocp-slash-query {
+      flex: 1;
+      color: rgba(255,255,255,0.85);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-height: 1em;
+    }
+    .ocp-slash-query:empty::after {
+      content: 'type to search…';
+      color: rgba(255,255,255,0.25);
+    }
+    .ocp-slash-count {
+      color: rgba(255,255,255,0.35);
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+    .ocp-slash-list {
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+    .ocp-slash-list::-webkit-scrollbar { width: 8px; }
+    .ocp-slash-list::-webkit-scrollbar-track { background: transparent; }
+    .ocp-slash-list::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.08);
+      border-radius: 4px;
+    }
+    .ocp-slash-list::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
+    .ocp-slash-group { padding: 4px 0; }
+    .ocp-slash-group + .ocp-slash-group {
+      border-top: 1px solid rgba(255,255,255,0.04);
+      margin-top: 2px;
+    }
+    .ocp-slash-group-header {
+      padding: 6px 12px 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: rgba(255,255,255,0.35);
+    }
+    .ocp-slash-item {
+      display: grid;
+      grid-template-columns: 14px minmax(0, auto) 1fr;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      transition: background 0.08s;
+    }
+    .ocp-slash-item.active,
+    .ocp-slash-item:hover { background: rgba(255,255,255,0.06); }
+    .ocp-slash-icon {
+      font-size: 11px;
+      text-align: center;
+      color: rgba(255,255,255,0.4);
+      line-height: 1;
+    }
+    .ocp-slash-icon[data-source="builtin"] { color: rgba(245,163,101,0.85); }
+    .ocp-slash-icon[data-source="skill"]   { color: rgba(120,200,255,0.85); }
+    .ocp-slash-icon[data-source="user"]    { color: rgba(160,220,150,0.9); }
+    .ocp-slash-name {
+      color: rgba(232,224,220,0.92);
       font-weight: 500;
+      white-space: nowrap;
+    }
+    .ocp-slash-name .ocp-slash-hl {
+      color: rgba(245,163,101,1);
+      font-weight: 700;
     }
     .ocp-slash-desc {
+      color: rgba(255,255,255,0.4);
       font-size: 11px;
-      color: rgba(255,255,255,0.35);
-      margin-left: auto;
+      text-align: right;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .ocp-slash-empty {
+      padding: 16px 12px;
+      color: rgba(255,255,255,0.4);
+      font-size: 12px;
+      text-align: center;
+      font-family: 'JetBrains Mono', monospace;
     }
 
     /* ── Footer toolbar ── */
@@ -1939,6 +2050,25 @@ export function injectStyles() {
       opacity: 0.3; transition: opacity 0.15s;
     }
     .ocp-brand-link:hover { opacity: 0.7; }
+    .ocp-footer-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 20px; height: 20px;
+      padding: 0;
+      background: transparent;
+      border: none;
+      color: rgba(255,255,255,0.45);
+      cursor: pointer;
+      border-radius: 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .ocp-footer-btn:hover {
+      color: rgba(245,163,101,0.95);
+      background: rgba(245,163,101,0.08);
+    }
+    .ocp-footer-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
     .ocp-brand {
       width: 14px; height: 14px;
     }
@@ -1990,6 +2120,24 @@ export function injectStyles() {
     .ocp-think-block[open] .ocp-think-content { display: block; }
     .ocp-think-content::-webkit-scrollbar { width: 2px; }
     .ocp-think-content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+    /* Live (streaming) thinking block — built once, text-node appended per delta.
+       Inherits visual style from .ocp-think-content; smooth-scrolls to follow new text.
+       The pulsing label signals "still thinking" even during dead-air (no deltas). */
+    .ocp-think-block-live {
+      border-color: rgba(232,224,220,0.18);
+    }
+    .ocp-think-block-live > summary .ocp-think-label {
+      color: rgba(232,224,220,0.9);
+      animation: ocp-think-pulse 1.6s ease-in-out infinite;
+    }
+    .ocp-think-content-live {
+      scroll-behavior: smooth;
+    }
+    @keyframes ocp-think-pulse {
+      0%, 100% { opacity: 0.55; }
+      50%      { opacity: 1; }
+    }
 
     /* ── Empty state ── */
     .ocp-empty {
@@ -2110,6 +2258,49 @@ export function injectStyles() {
       white-space: nowrap;
       min-width: 0;
       flex: 1;
+    }
+    .ocp-thinking-pulse {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.18);
+      flex-shrink: 0;
+      transition: background 200ms ease, box-shadow 200ms ease;
+    }
+    .ocp-thinking-pulse[data-state="fresh"] {
+      background: #6ee7a7;
+      box-shadow: 0 0 0 2px rgba(110,231,167,0.18);
+      animation: ocp-pulse-glow 1.2s ease-in-out infinite;
+    }
+    .ocp-thinking-pulse[data-state="warm"] {
+      background: #c4d890;
+      box-shadow: 0 0 0 2px rgba(196,216,144,0.14);
+    }
+    .ocp-thinking-pulse[data-state="cool"] {
+      background: #e8c97a;
+      box-shadow: 0 0 0 2px rgba(232,201,122,0.16);
+    }
+    .ocp-thinking-pulse[data-state="stall"] {
+      background: #e89c7a;
+      box-shadow: 0 0 0 2px rgba(232,156,122,0.22);
+      animation: ocp-pulse-warn 1s ease-in-out infinite;
+    }
+    @keyframes ocp-pulse-glow {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.55; }
+    }
+    @keyframes ocp-pulse-warn {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.35); }
+    }
+    .ocp-thinking-event {
+      color: rgba(255,255,255,0.32);
+      font-size: 10px;
+      flex-shrink: 0;
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      letter-spacing: 0.02em;
     }
     .ocp-thinking-timer {
       color: rgba(255,255,255,0.3);
@@ -2574,6 +2765,146 @@ export function injectStyles() {
       background: rgba(232,224,220,0.22);
       color: rgba(232,224,220,1);
       border-color: rgba(232,224,220,0.35);
+    }
+
+    /* ── Prose-question recovery card ── */
+    /* Shown when the model trailed off in prose questions instead of using
+       the question tool. Amber accent so user instantly distinguishes from
+       the green-ish PLAN COMPLETE card. */
+    .ocp-prose-question-card {
+      background: rgba(255,180,80,0.06);
+      border: 1px solid rgba(255,180,80,0.32);
+      border-radius: 10px;
+      margin: 10px 0 6px;
+      overflow: hidden;
+    }
+    .ocp-prose-question-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,180,80,0.18);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      color: rgba(255,210,140,0.95);
+    }
+    .ocp-prose-question-icon {
+      width: 16px; height: 16px;
+      color: rgba(255,200,120,0.85);
+      flex-shrink: 0;
+    }
+    .ocp-prose-question-note {
+      padding: 10px 12px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: rgba(255,235,200,0.78);
+    }
+    .ocp-prose-question-note code {
+      padding: 1px 5px;
+      background: rgba(0,0,0,0.35);
+      border-radius: 3px;
+      font-size: 10.5px;
+      color: rgba(255,255,255,0.85);
+    }
+    .ocp-prose-question-actions {
+      display: flex;
+      gap: 8px;
+      padding: 0 12px 12px;
+      flex-wrap: wrap;
+    }
+    .ocp-prose-question-btn {
+      padding: 7px 14px;
+      border: 1px solid rgba(255,180,80,0.22);
+      border-radius: 7px;
+      background: rgba(255,180,80,0.06);
+      color: rgba(255,235,200,0.78);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .ocp-prose-question-btn:hover {
+      background: rgba(255,180,80,0.14);
+      color: rgba(255,245,220,1);
+      border-color: rgba(255,180,80,0.4);
+    }
+    .ocp-prose-question-btn.primary {
+      background: rgba(255,180,80,0.22);
+      border-color: rgba(255,180,80,0.5);
+      color: rgba(255,245,220,0.96);
+      font-weight: 600;
+    }
+    .ocp-prose-question-btn.primary:hover {
+      background: rgba(255,180,80,0.32);
+      border-color: rgba(255,180,80,0.65);
+    }
+
+    /* ── Plan-mode stall soft prompt ── */
+    /* Shown after ~60s of SSE silence in plan mode. Cool blue accent so the
+       user can distinguish it from the amber prose-question recovery card. */
+    .ocp-plan-stall-card {
+      background: rgba(120,170,255,0.06);
+      border: 1px solid rgba(120,170,255,0.32);
+      border-radius: 10px;
+      margin: 10px 0 6px;
+      overflow: hidden;
+    }
+    .ocp-plan-stall-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(120,170,255,0.18);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      color: rgba(180,210,255,0.95);
+    }
+    .ocp-plan-stall-icon {
+      width: 16px; height: 16px;
+      color: rgba(150,190,255,0.85);
+      flex-shrink: 0;
+    }
+    .ocp-plan-stall-note {
+      padding: 10px 12px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: rgba(220,235,255,0.78);
+    }
+    .ocp-plan-stall-actions {
+      display: flex;
+      gap: 8px;
+      padding: 0 12px 12px;
+      flex-wrap: wrap;
+    }
+    .ocp-plan-stall-btn {
+      padding: 7px 14px;
+      border: 1px solid rgba(120,170,255,0.22);
+      border-radius: 7px;
+      background: rgba(120,170,255,0.06);
+      color: rgba(220,235,255,0.78);
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .ocp-plan-stall-btn:hover {
+      background: rgba(120,170,255,0.14);
+      color: rgba(245,250,255,1);
+      border-color: rgba(120,170,255,0.4);
+    }
+    .ocp-plan-stall-btn.primary {
+      background: rgba(120,170,255,0.22);
+      border-color: rgba(120,170,255,0.5);
+      color: rgba(245,250,255,0.96);
+      font-weight: 600;
+    }
+    .ocp-plan-stall-btn.primary:hover {
+      background: rgba(120,170,255,0.32);
+      border-color: rgba(120,170,255,0.65);
     }
 
     /* ── Tool activity dock (sibling surface, matches Claude todo dock aesthetic) ── */

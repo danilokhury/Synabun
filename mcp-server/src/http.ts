@@ -45,7 +45,11 @@ export function createMcpRoutes(): Router {
 
   router.post('/', async (req, res) => {
     await ensureInit();
-    const server = createMcpServer();
+    // HTTP clients (Claude Code via ~/.claude.json) have ToolSearch / deferred
+    // loading — always serve the full toolset regardless of active-profile.json.
+    // Profile restriction targets stdio clients (Codex, OpenCode) that load all
+    // tool schemas eagerly.
+    const server = createMcpServer('full');
     try {
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       await server.connect(transport);

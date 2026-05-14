@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2026.5.3",
+  "version": "2026.5.13-beta",
   "description": "Persistent vector memory for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",
@@ -45,7 +45,8 @@
   "scripts": {
     "start": "node setup.js",
     "postinstall": "node postinstall.js",
-    "preuninstall": "node preuninstall.js"
+    "preuninstall": "node preuninstall.js",
+    "prepublishOnly": "npm --prefix mcp-server install --ignore-scripts && npm --prefix mcp-server run build && node -e \"require('node:fs').accessSync('mcp-server/dist/index.js')\""
   },
   "keywords": [
     "claude",

@@ -13,6 +13,9 @@ import { getSynabunUpdateData, openSynabunUpdateModal, forceCheckSynabunUpdate }
 import { getToolUpdateData, runToolUpdate, TOOL_LABELS } from './ui-tool-updates.js';
 import { openSettingsModal } from './ui-settings.js';
 import { getProviderMeta } from './provider-icons.js';
+import { sendToPanel as sendToClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
+import { toggleCodexPanel, isCodexPanelOpen } from './cdx/cdx-panel.js';
+import { openOpencodeWithPrompt } from './ocp/ocp-panel.js';
 
 // ── State ──
 let ws = null;
@@ -27,6 +30,10 @@ let _backdrop = null;
 let _activeTab = 'updates'; // 'updates' | 'sessions' | 'agents' | 'loops' | 'leaks'
 let isVisible = false;
 let _stalledTickerTimer = null;
+
+// ── Pending-Remember picker state ──
+const PROVIDER_LABELS = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' };
+let _prPicker = { open: false, provider: 'claude', model: '', modelsByProvider: {}, loading: null };
 
 // ── Notifications state ──
 const NOTIF_ACK_KEY = 'synabun:notifications:acked-v1';
@@ -604,6 +611,21 @@ function renderLeaksTab() {
     html += '</div>';
   }
 
+  const pendingRememberLeaks = leaks.filter(l =>
+    l.type === 'orphaned-state' && l.file && l.file.includes('pending-remember')
+  );
+
+  if (pendingRememberLeaks.length > 0) {
+    if (!_prPicker.open) {
+      html += `<div class="sm-cleanup-bar">
+        <span>${pendingRememberLeaks.length} pending remember${pendingRememberLeaks.length > 1 ? 's' : ''} — pick a provider/model to summarize each session into a memory</span>
+        <button class="sm-btn sm-btn-cleanup" id="sm-process-pending-remembers-btn">✨ Run Pending Remembers</button>
+      </div>`;
+    } else {
+      html += renderPendingRememberPicker();
+    }
+  }
+
   if (cleanableLeaks.length > 0) {
     html += `<div class="sm-cleanup-bar">
       <span>${cleanableLeaks.length} stale flag${cleanableLeaks.length > 1 ? 's' : ''} can be cleaned up</span>
@@ -811,6 +833,21 @@ function render() {
   });
   const cleanupBtn = body.querySelector('#sm-cleanup-btn');
   if (cleanupBtn) cleanupBtn.addEventListener('click', cleanupOrphans);
+  const processPendingBtn = body.querySelector('#sm-process-pending-remembers-btn');
+  if (processPendingBtn) processPendingBtn.addEventListener('click', openPendingRememberPicker);
+  body.querySelectorAll('[data-pr-provider]').forEach(b =>
+    b.addEventListener('click', () => selectPendingRememberProvider(b.dataset.prProvider))
+  );
+  const prModel = body.querySelector('#sm-pr-model');
+  if (prModel) prModel.addEventListener('change', () => {
+    _prPicker.model = prModel.value;
+    const runBtn = body.querySelector('#sm-pr-run');
+    if (runBtn) runBtn.disabled = !_prPicker.model;
+  });
+  const prCancel = body.querySelector('#sm-pr-cancel');
+  if (prCancel) prCancel.addEventListener('click', cancelPendingRememberPicker);
+  const prRun = body.querySelector('#sm-pr-run');
+  if (prRun) prRun.addEventListener('click', runPendingRemembers);
 
   // Wire loops-tab actions
   body.querySelectorAll('[data-loop-stop]').forEach(btn => {
@@ -935,6 +972,158 @@ async function cleanupOrphans() {
     }).then(r => r.json());
     if (res.ok) await refreshSessions();
   } catch {}
+}
+
+function renderPendingRememberPicker() {
+  const provider = _prPicker.provider;
+  const models = _prPicker.modelsByProvider[provider] || [];
+  const loading = _prPicker.loading === provider;
+
+  const providerBtns = ['claude', 'codex', 'opencode'].map(p => `
+    <button class="sm-btn sm-pr-prov${p === provider ? ' active' : ''}" data-pr-provider="${p}">
+      ${esc(PROVIDER_LABELS[p])}
+    </button>
+  `).join('');
+
+  let modelOptions = '<option value="">— select model —</option>';
+  if (loading) modelOptions = '<option value="">Loading…</option>';
+  else if (models.length === 0) modelOptions = '<option value="">No models found</option>';
+  else {
+    modelOptions += models.map(m =>
+      `<option value="${esc(m.id)}"${m.id === _prPicker.model ? ' selected' : ''}>${esc(m.label || m.id)}</option>`
+    ).join('');
+  }
+
+  return `<div class="sm-cleanup-bar sm-pr-picker">
+    <div class="sm-pr-row">
+      <span class="sm-pr-label">Provider</span>
+      <span class="sm-pr-providers">${providerBtns}</span>
+    </div>
+    <div class="sm-pr-row">
+      <span class="sm-pr-label">Model</span>
+      <select id="sm-pr-model" class="sm-pr-select"${loading || models.length === 0 ? ' disabled' : ''}>${modelOptions}</select>
+    </div>
+    <div class="sm-pr-row sm-pr-actions">
+      <button class="sm-btn" id="sm-pr-cancel">Cancel</button>
+      <button class="sm-btn sm-btn-cleanup" id="sm-pr-run"${(!_prPicker.model || loading) ? ' disabled' : ''}>Run on ${esc(PROVIDER_LABELS[provider])}</button>
+    </div>
+  </div>`;
+}
+
+async function loadProviderModels(provider) {
+  if (_prPicker.modelsByProvider[provider]) return _prPicker.modelsByProvider[provider];
+  _prPicker.loading = provider;
+  render();
+  try {
+    let models = [];
+    if (provider === 'claude') {
+      const r = await fetch('/api/claude/config').then(r => r.json());
+      models = (r?.models || []).map(m => ({ id: m.id, label: m.label || m.id }));
+    } else if (provider === 'opencode') {
+      const r = await fetch('/api/opencode/providers/full').then(r => r.json()).catch(() => null);
+      const provs = r?.providers || r?.data || r || [];
+      const flat = [];
+      for (const p of (Array.isArray(provs) ? provs : Object.values(provs || {}))) {
+        const pid = p?.id || p?.name || '';
+        const ms = p?.models || {};
+        const list = Array.isArray(ms) ? ms : Object.values(ms);
+        for (const m of list) {
+          const mid = m?.id || m?.name;
+          if (!mid) continue;
+          const id = pid ? `${pid}/${mid}` : mid;
+          flat.push({ id, label: `${pid ? pid + ' · ' : ''}${m?.name || mid}` });
+        }
+      }
+      models = flat;
+    } else if (provider === 'codex') {
+      // Codex models come from the running CLI (WebSocket). Provide a sensible static list.
+      models = [
+        { id: 'gpt-5-codex', label: 'gpt-5-codex' },
+        { id: 'gpt-5', label: 'gpt-5' },
+        { id: 'o4', label: 'o4' },
+        { id: 'o4-mini', label: 'o4-mini' },
+      ];
+    }
+    _prPicker.modelsByProvider[provider] = models;
+    return models;
+  } catch (err) {
+    console.warn(`[pending-remember] model load failed for ${provider}:`, err);
+    _prPicker.modelsByProvider[provider] = [];
+    return [];
+  } finally {
+    if (_prPicker.loading === provider) _prPicker.loading = null;
+  }
+}
+
+async function openPendingRememberPicker() {
+  _prPicker.open = true;
+  if (!_prPicker.provider) _prPicker.provider = 'claude';
+  render();
+  await loadProviderModels(_prPicker.provider);
+  render();
+}
+
+function cancelPendingRememberPicker() {
+  _prPicker.open = false;
+  _prPicker.model = '';
+  render();
+}
+
+async function selectPendingRememberProvider(provider) {
+  if (!provider || provider === _prPicker.provider) return;
+  _prPicker.provider = provider;
+  _prPicker.model = '';
+  render();
+  await loadProviderModels(provider);
+  render();
+}
+
+async function runPendingRemembers() {
+  const provider = _prPicker.provider;
+  const model = _prPicker.model;
+  if (!provider || !model) return;
+  const runBtn = _panel?.querySelector('#sm-pr-run');
+  if (runBtn) { runBtn.disabled = true; runBtn.textContent = 'Loading prompt…'; }
+  try {
+    const res = await fetch('/api/sessions/pending-remember-prompt').then(r => r.json());
+    if (!res?.ok) {
+      alert(res?.error || 'Failed to build prompt');
+      if (runBtn) { runBtn.disabled = false; runBtn.textContent = `Run on ${PROVIDER_LABELS[provider]}`; }
+      return;
+    }
+    if (!res.prompt) {
+      alert(res.message || 'No pending remembers to process.');
+      cancelPendingRememberPicker();
+      return;
+    }
+
+    if (provider === 'claude') {
+      try { localStorage.setItem('claudePanel:lastModel', model); } catch {}
+      await sendToClaudePanel(res.prompt, { newTab: true, tabLabel: 'Pending remembers', autoSubmit: true });
+    } else if (provider === 'opencode') {
+      try { localStorage.setItem('ocp:lastModel', model); } catch {}
+      await openOpencodeWithPrompt(res.prompt, { autoSend: true });
+    } else if (provider === 'codex') {
+      try { localStorage.setItem('cxp:model', model); } catch {}
+      if (!isCodexPanelOpen()) await toggleCodexPanel();
+      // Codex auto-send is unreliable from outside the panel — populate the input
+      // and let the user click send. Best-effort.
+      setTimeout(() => {
+        const input = document.querySelector('#cxp-input');
+        if (input) {
+          input.value = res.prompt;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.focus();
+        }
+      }, 200);
+    }
+
+    cancelPendingRememberPicker();
+    closePanel();
+  } catch (err) {
+    alert('Failed: ' + (err?.message || err));
+    if (runBtn) { runBtn.disabled = false; runBtn.textContent = `Run on ${PROVIDER_LABELS[provider]}`; }
+  }
 }
 
 // ── Helpers ──

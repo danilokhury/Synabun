@@ -18,7 +18,7 @@ import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { getProviderMeta } from './provider-icons.js';
 
 const $ = (id) => document.getElementById(id);
-const CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini']);
+const CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
 const NOTIF_TRACKED_CLI_PROFILES = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
 const CLI_PROFILES_NEED_PROFILER = new Set(['codex', 'gemini']); // Claude Code has tool search — no profiler needed
 const CLI_PROFILES_NEED_RECALL = new Set(['claude-code', 'codex', 'gemini', 'opencode']);
@@ -1400,10 +1400,34 @@ function saveFloatPos() {
 }
 
 function initFloatDrag() {
+  let panelDragRaf = 0;
+  let pendingPanelDrag = null;
+
+  function _applyPanelDrag() {
+    panelDragRaf = 0;
+    if (!pendingPanelDrag) return;
+    _movePanelDrag(pendingPanelDrag.x, pendingPanelDrag.y);
+  }
+
+  function _schedulePanelDrag(x, y) {
+    if (!_floatDrag) return;
+    pendingPanelDrag = { x, y };
+    if (!panelDragRaf) panelDragRaf = requestAnimationFrame(_applyPanelDrag);
+  }
+
+  function _flushPanelDrag() {
+    if (panelDragRaf) {
+      cancelAnimationFrame(panelDragRaf);
+      panelDragRaf = 0;
+    }
+    _applyPanelDrag();
+  }
+
   // Header drag for floating mode
   function _startPanelDrag(x, y) {
     const rect = _panel.getBoundingClientRect();
     _floatDrag = { startX: x, startY: y, startL: rect.left, startT: rect.top };
+    pendingPanelDrag = null;
     _panel.classList.add('float-dragging');
     document.body.style.cursor = 'move';
     document.body.style.userSelect = 'none';
@@ -1423,6 +1447,7 @@ function initFloatDrag() {
   }
   function _endPanelDrag() {
     if (!_floatDrag) return;
+    _flushPanelDrag();
     _floatDrag = null;
     if (_panel) _panel.classList.remove('float-dragging');
     document.body.style.cursor = '';
@@ -1443,7 +1468,7 @@ function initFloatDrag() {
     e.preventDefault();
     _startPanelDrag(e.clientX, e.clientY);
   });
-  document.addEventListener('mousemove', (e) => _movePanelDrag(e.clientX, e.clientY));
+  document.addEventListener('mousemove', (e) => _schedulePanelDrag(e.clientX, e.clientY));
   document.addEventListener('mouseup', _endPanelDrag);
 
   // Touch equivalents
@@ -1457,7 +1482,7 @@ function initFloatDrag() {
     const pt = _touchXY(e);
     if (!pt || !_floatDrag) return;
     e.preventDefault();
-    _movePanelDrag(pt.clientX, pt.clientY);
+    _schedulePanelDrag(pt.clientX, pt.clientY);
   }, { passive: false });
   document.addEventListener('touchend', _endPanelDrag);
   document.addEventListener('touchcancel', _endPanelDrag);
@@ -1468,6 +1493,8 @@ function initFloatDrag() {
 
 function initFloatResize() {
   let resizing = null;
+  let resizeRaf = 0;
+  let pendingResizePoint = null;
 
   const CURSORS = { n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
     nw: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', se: 'nwse-resize' };
@@ -1479,6 +1506,7 @@ function initFloatResize() {
     const dir = handle.dataset.resize;
     const r = _panel.getBoundingClientRect();
     resizing = { dir, startX: x, startY: y, l: r.left, t: r.top, w: r.width, h: r.height };
+    pendingResizePoint = null;
     _draggingResize = true;
     document.body.style.cursor = CURSORS[dir];
     document.body.style.userSelect = 'none';
@@ -1505,8 +1533,26 @@ function initFloatResize() {
     _panel.style.height = nh + 'px';
     _sessions.forEach(s => _scheduleFit(s));
   }
+  function _applyPanelResize() {
+    resizeRaf = 0;
+    if (!pendingResizePoint) return;
+    _movePanelResize(pendingResizePoint.x, pendingResizePoint.y);
+  }
+  function _schedulePanelResize(x, y) {
+    if (!resizing) return;
+    pendingResizePoint = { x, y };
+    if (!resizeRaf) resizeRaf = requestAnimationFrame(_applyPanelResize);
+  }
+  function _flushPanelResize() {
+    if (resizeRaf) {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = 0;
+    }
+    _applyPanelResize();
+  }
   function _endPanelResize() {
     if (!resizing) return;
+    _flushPanelResize();
     resizing = null;
     _draggingResize = false;
     document.body.style.cursor = '';
@@ -1523,7 +1569,7 @@ function initFloatResize() {
     e.stopPropagation();
     _startPanelResize(handle, e.clientX, e.clientY);
   });
-  document.addEventListener('mousemove', (e) => _movePanelResize(e.clientX, e.clientY));
+  document.addEventListener('mousemove', (e) => _schedulePanelResize(e.clientX, e.clientY));
   document.addEventListener('mouseup', _endPanelResize);
 
   // Touch
@@ -1539,7 +1585,7 @@ function initFloatResize() {
     const pt = _touchXY(e);
     if (!pt || !resizing) return;
     e.preventDefault();
-    _movePanelResize(pt.clientX, pt.clientY);
+    _schedulePanelResize(pt.clientX, pt.clientY);
   }, { passive: false });
   document.addEventListener('touchend', _endPanelResize);
   document.addEventListener('touchcancel', _endPanelResize);
@@ -1552,10 +1598,31 @@ function initResizeHandle() {
   if (!handle) return;
 
   let startY, startH;
+  let resizeRaf = 0;
+  let pendingHeight = 0;
+
+  const applyHeight = () => {
+    resizeRaf = 0;
+    if (!_panel) return;
+    _panel.style.height = pendingHeight + 'px';
+    document.documentElement.style.setProperty('--terminal-height', pendingHeight + 'px');
+  };
+  const scheduleHeight = (height) => {
+    pendingHeight = height;
+    if (!resizeRaf) resizeRaf = requestAnimationFrame(applyHeight);
+  };
+  const flushHeight = () => {
+    if (resizeRaf) {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = 0;
+    }
+    applyHeight();
+  };
 
   handle.addEventListener('mousedown', (e) => {
     startY = e.clientY;
     startH = _panel.getBoundingClientRect().height;
+    pendingHeight = startH;
     e.preventDefault();
     handle.classList.add('active');
     _draggingResize = true;
@@ -1564,13 +1631,13 @@ function initResizeHandle() {
       const dy = startY - e.clientY;
       const maxH = window.innerHeight * 0.8;
       const newH = Math.max(MIN_HEIGHT, Math.min(maxH, startH + dy));
-      _panel.style.height = newH + 'px';
-      document.documentElement.style.setProperty('--terminal-height', newH + 'px');
+      scheduleHeight(newH);
     };
 
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      flushHeight();
       handle.classList.remove('active');
       _draggingResize = false;
       const h = parseInt(_panel.style.height, 10);
@@ -3639,6 +3706,23 @@ function _updateSnappedEdges() {
   }
 }
 
+let _snappedEdgesRaf = 0;
+function _scheduleSnappedEdgesUpdate() {
+  if (_snappedEdgesRaf) return;
+  _snappedEdgesRaf = requestAnimationFrame(() => {
+    _snappedEdgesRaf = 0;
+    _updateSnappedEdges();
+  });
+}
+
+function _flushSnappedEdgesUpdate() {
+  if (_snappedEdgesRaf) {
+    cancelAnimationFrame(_snappedEdgesRaf);
+    _snappedEdgesRaf = 0;
+  }
+  _updateSnappedEdges();
+}
+
 /** Tile all floating (non-minimized) terminals across the viewport */
 export function tileFloatingTerminals() {
   const entries = [];
@@ -3973,16 +4057,8 @@ function detachTab(idx) {
   _detachedTabs.set(session.id, tabState);
 
   // Ctrl+C fallback for floating window — covers cases where xterm textarea loses focus
+  // (ESC for the same case is handled by the global window-capture listener in initTerminal())
   win.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !e.target.closest('button, input, textarea, select, [contenteditable]')) {
-      if (session.ws?.readyState === WebSocket.OPEN) {
-        session.ws.send(JSON.stringify({ type: 'input', data: '\x1b' }));
-        e.preventDefault();
-        e.stopPropagation();
-        requestAnimationFrame(() => session.term?.focus());
-      }
-      return;
-    }
     if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       const sel = session.term?.getSelection();
       if (sel) {
@@ -4234,6 +4310,8 @@ function initTabFloatDrag(win, sessionId) {
   const ac = new AbortController();
   const { signal } = ac;
   let drag = null;
+  let dragRaf = 0;
+  let pendingDragPoint = null;
 
   function _checkHeader(target) {
     const header = target.closest('.term-float-tab-header');
@@ -4244,6 +4322,7 @@ function initTabFloatDrag(win, sessionId) {
   function _startDrag(x, y) {
     const r = win.getBoundingClientRect();
     drag = { startX: x, startY: y, startL: r.left, startT: r.top, startW: r.width };
+    pendingDragPoint = null;
     win.classList.add('float-dragging');
     document.body.style.cursor = DRAG_CURSOR_ACTIVE;
     document.body.style.userSelect = 'none';
@@ -4303,16 +4382,34 @@ function initTabFloatDrag(win, sessionId) {
     win.classList.toggle('float-snapping', snapped);
     win.style.left = finalL + 'px';
     win.style.top = finalT + 'px';
-    _updateSnappedEdges();
+    _scheduleSnappedEdgesUpdate();
+  }
+  function _applyDragFrame() {
+    dragRaf = 0;
+    if (!pendingDragPoint) return;
+    _moveDrag(pendingDragPoint.x, pendingDragPoint.y);
+  }
+  function _scheduleDragFrame(x, y) {
+    if (!drag) return;
+    pendingDragPoint = { x, y };
+    if (!dragRaf) dragRaf = requestAnimationFrame(_applyDragFrame);
+  }
+  function _flushDragFrame() {
+    if (dragRaf) {
+      cancelAnimationFrame(dragRaf);
+      dragRaf = 0;
+    }
+    _applyDragFrame();
   }
   function _endDrag() {
     if (!drag) return;
+    _flushDragFrame();
     drag = null;
     win.classList.remove('float-dragging');
     win.classList.remove('float-snapping');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    _updateSnappedEdges();
+    _flushSnappedEdgesUpdate();
   }
 
   // Mouse
@@ -4322,7 +4419,7 @@ function initTabFloatDrag(win, sessionId) {
     e.stopPropagation();
     _startDrag(e.clientX, e.clientY);
   }, { signal });
-  document.addEventListener('mousemove', (e) => _moveDrag(e.clientX, e.clientY), { signal });
+  document.addEventListener('mousemove', (e) => _scheduleDragFrame(e.clientX, e.clientY), { signal });
   document.addEventListener('mouseup', _endDrag, { signal });
 
   // Touch
@@ -4337,7 +4434,7 @@ function initTabFloatDrag(win, sessionId) {
     const pt = _touchXY(e);
     if (!pt || !drag) return;
     e.preventDefault();
-    _moveDrag(pt.clientX, pt.clientY);
+    _scheduleDragFrame(pt.clientX, pt.clientY);
   }, { signal, passive: false });
   document.addEventListener('touchend', _endDrag, { signal });
   document.addEventListener('touchcancel', _endDrag, { signal });
@@ -4349,6 +4446,8 @@ function initTabFloatResize(win, sessionId) {
   const ac = new AbortController();
   const { signal } = ac;
   let resizing = null;
+  let resizeRaf = 0;
+  let pendingResizePoint = null;
 
   const CURSORS = { n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
     nw: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', se: 'nwse-resize' };
@@ -4361,6 +4460,7 @@ function initTabFloatResize(win, sessionId) {
     const dir = handle.dataset.resize;
     const r = win.getBoundingClientRect();
     resizing = { dir, startX: x, startY: y, l: r.left, t: r.top, w: r.width, h: r.height };
+    pendingResizePoint = null;
     _draggingResize = true;
     document.body.style.cursor = CURSORS[dir];
     document.body.style.userSelect = 'none';
@@ -4388,15 +4488,33 @@ function initTabFloatResize(win, sessionId) {
     const session = _sessions.find(s => s.id === sessionId);
     if (session) _scheduleFit(session);
   }
+  function _applyResizeFrame() {
+    resizeRaf = 0;
+    if (!pendingResizePoint) return;
+    _moveResize(pendingResizePoint.x, pendingResizePoint.y);
+  }
+  function _scheduleResizeFrame(x, y) {
+    if (!resizing) return;
+    pendingResizePoint = { x, y };
+    if (!resizeRaf) resizeRaf = requestAnimationFrame(_applyResizeFrame);
+  }
+  function _flushResizeFrame() {
+    if (resizeRaf) {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = 0;
+    }
+    _applyResizeFrame();
+  }
   function _endResize() {
     if (!resizing) return;
+    _flushResizeFrame();
     resizing = null;
     _draggingResize = false;
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
     const session = _sessions.find(s => s.id === sessionId);
     if (session) _sendResize(session);
-    _updateSnappedEdges();
+    _flushSnappedEdgesUpdate();
   }
 
   // Mouse
@@ -4416,14 +4534,14 @@ function initTabFloatResize(win, sessionId) {
     }, { signal, passive: false });
   });
 
-  document.addEventListener('mousemove', (e) => _moveResize(e.clientX, e.clientY), { signal });
+  document.addEventListener('mousemove', (e) => _scheduleResizeFrame(e.clientX, e.clientY), { signal });
   document.addEventListener('mouseup', _endResize, { signal });
 
   document.addEventListener('touchmove', (e) => {
     const pt = _touchXY(e);
     if (!pt || !resizing) return;
     e.preventDefault();
-    _moveResize(pt.clientX, pt.clientY);
+    _scheduleResizeFrame(pt.clientX, pt.clientY);
   }, { signal, passive: false });
   document.addEventListener('touchend', _endResize, { signal });
   document.addEventListener('touchcancel', _endResize, { signal });
@@ -4635,24 +4753,34 @@ function _escHtml(s) {
 
 export async function initTerminal() {
   // ── Global ESC handler (window capture phase) ──
-  // xterm.js captures all key events on its internal textarea and calls
-  // stopImmediatePropagation, preventing element-level listeners from firing.
-  // A window-level capture listener fires BEFORE any element-level handler.
+  // Forwards a single ESC byte to the active terminal's PTY so TUIs like the
+  // OpenCode/Claude/Codex CLIs can abort an in-flight task. Capture phase
+  // fires before xterm's own textarea keydown listener; stopImmediatePropagation
+  // prevents xterm from also emitting a second \x1b via onData (the duplicate
+  // \x1b\x1b was being misread as a Meta-prefix, so the TUI never aborted).
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    // Only act when a terminal textarea has focus
-    const ta = document.activeElement;
-    const isXterm = ta?.classList.contains('xterm-helper-textarea');
-    if (!isXterm) return;
-    const vp = ta.closest('.term-viewport');
-    if (!vp) return;
-    const sid = vp.dataset.sessionId;
-    const session = _sessions.find(s => s.id === sid);
+    const target = e.target;
+    let session = null;
+    if (target?.classList?.contains?.('xterm-helper-textarea')) {
+      const sid = target.closest('.term-viewport')?.dataset?.sessionId;
+      session = _sessions.find(s => s.id === sid);
+    } else {
+      // Let non-terminal inputs (search bar, rename, path field, etc.) handle ESC.
+      if (target?.matches?.('input, textarea, select, [contenteditable]')) return;
+      const floatTab = target?.closest?.('.term-float-tab');
+      if (floatTab) {
+        session = _sessions.find(s => s.id === floatTab.dataset?.sessionId);
+      } else if (_panel && _panel.contains(target)) {
+        session = _sessions[_activeIdx];
+      }
+    }
     if (!session?.ws || session.ws.readyState !== WebSocket.OPEN) return;
 
     session.ws.send(JSON.stringify({ type: 'input', data: '\x1b' }));
-    session.term?.blur();
-    ta.blur();
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    requestAnimationFrame(() => session.term?.focus());
   }, true); // capture phase — fires before xterm's handlers
 
   // ── Click-outside-terminal blurs all terminals ──
@@ -4740,6 +4868,26 @@ export async function initTerminal() {
   on('terminal:open', (data) => {
     const profile = data?.profile || 'shell';
     openSessionWithPicker(profile);
+  });
+
+  // Open a CLI session (skipping the project picker if cwd is supplied) and
+  // auto-type a command once the TUI is ready. Used by the OCP v2 slash picker
+  // when the user selects a TUI-only builtin (e.g. /sessions, /models).
+  on('terminal:open-with-command', async (data) => {
+    const profile = data?.profile || 'shell';
+    const command = data?.command || '';
+    if (!command) return;
+    if (isGuest() && !hasPermission('terminal')) return;
+    try {
+      const cwd = data?.cwd || (CLI_PROFILES.has(profile) ? await pickProject(profile) : null);
+      if (cwd === undefined) return; // picker cancelled
+      showPanel();
+      await openSession(profile, cwd);
+      const idx = _sessions.length - 1;
+      if (idx >= 0) _sendOnceReady(_sessions[idx], command, false);
+    } catch (err) {
+      console.error('[terminal:open-with-command] failed', err);
+    }
   });
 
   on('terminal:open-resume', async (data) => {
@@ -6137,16 +6285,35 @@ function initSidebarResize(sidebar, session) {
 
   let startX = 0;
   let startW = 0;
+  let resizeRaf = 0;
+  let pendingWidth = 0;
+
+  const applyWidth = () => {
+    resizeRaf = 0;
+    sidebar.style.width = pendingWidth + 'px';
+  };
+  const scheduleWidth = (width) => {
+    pendingWidth = width;
+    if (!resizeRaf) resizeRaf = requestAnimationFrame(applyWidth);
+  };
+  const flushWidth = () => {
+    if (resizeRaf) {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = 0;
+    }
+    applyWidth();
+  };
 
   const onMove = (e) => {
     const dx = e.clientX - startX;
     const newW = Math.max(140, Math.min(500, startW + dx));
-    sidebar.style.width = newW + 'px';
+    scheduleWidth(newW);
   };
 
   const onUp = () => {
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
+    flushWidth();
     sidebar.classList.remove('resizing');
     // Refit terminal to account for new sidebar width
     refitActiveSession(session);
@@ -6157,6 +6324,7 @@ function initSidebarResize(sidebar, session) {
     e.stopPropagation();
     startX = e.clientX;
     startW = sidebar.offsetWidth;
+    pendingWidth = startW;
     sidebar.classList.add('resizing');
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -6288,19 +6456,41 @@ function initSplitDivider() {
   const divider = _panel?.querySelector('.term-split-divider');
   if (!divider) return;
   const container = $('term-container');
+  let containerRect = null;
+  let splitRaf = 0;
+  let pendingRatio = null;
 
-  const onMove = (e) => {
-    const containerRect = container.getBoundingClientRect();
-    const newRatio = Math.max(0.3, Math.min(0.7,
-      (e.clientX - containerRect.left) / containerRect.width));
-    _splitRatio = newRatio;
+  const applyRatio = () => {
+    splitRaf = 0;
+    if (pendingRatio == null) return;
+    _splitRatio = pendingRatio;
     applySplitRatio();
     refitAllDockedSessions();
+  };
+  const scheduleRatio = (ratio) => {
+    pendingRatio = ratio;
+    if (!splitRaf) splitRaf = requestAnimationFrame(applyRatio);
+  };
+  const flushRatio = () => {
+    if (splitRaf) {
+      cancelAnimationFrame(splitRaf);
+      splitRaf = 0;
+    }
+    applyRatio();
+  };
+
+  const onMove = (e) => {
+    if (!containerRect) return;
+    const newRatio = Math.max(0.3, Math.min(0.7,
+      (e.clientX - containerRect.left) / containerRect.width));
+    scheduleRatio(newRatio);
   };
 
   const onUp = () => {
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
+    flushRatio();
+    containerRect = null;
     divider.classList.remove('dragging');
     storage.setItem(KEYS.TERMINAL_SPLIT_RATIO, String(_splitRatio));
     refitAllDockedSessions();
@@ -6310,6 +6500,7 @@ function initSplitDivider() {
     e.preventDefault();
     e.stopPropagation();
     divider.classList.add('dragging');
+    containerRect = container.getBoundingClientRect();
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   });

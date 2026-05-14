@@ -47,6 +47,8 @@ import { startIndexing, getIndexingStatus, mirrorExistingChunks } from './lib/se
 import * as mcpInstaller from './lib/mcp-installer.js';
 import * as pluginInstaller from './lib/plugin-installer.js';
 import { loopLog, loopLogPath } from './lib/loop-logger.js';
+import * as opencodeClient from './lib/opencode-client.js';
+import * as opencodeV2Client from './lib/opencode-v2-client.js';
 import { ensureProjectCategories } from '../hooks/claude-code/shared.mjs';
 import {
   getDb, closeDb, getDbPath, getEmbedding, getEmbeddingBatch, getEmbeddingDims, warmupEmbeddings,
@@ -4341,8 +4343,13 @@ let _ocpBaseUrl = () => `http://127.0.0.1:${_ocpPort}`;
 let _ocpStarting = false;
 let _ocpReady = false;
 let _ocpVersion = null;
-let _ocpSseAbort = null;      // AbortController for SSE relay
 const _ocpWsClients = new Set(); // all connected /ws/opencode-skin clients
+let _ocpClientListenerInstalled = false; // wired once per process
+
+// ── OpenCode V2 (clean-slate sidepanel) — independent client set & bridge ──
+const _ocpV2WsClients = new Set();   // all connected /ws/opencode-v2 clients
+let _ocpV2ListenerInstalled = false;
+let _ocpV2ClientSeq = 0;
 const OCP_MANAGED_PID_PATH = resolve(DATA_HOME, 'data', 'opencode-managed.pid');
 let _ocpBootReconcileTried = false;
 let _ocpLastBootAt = 0;           // Date.now() when serve process last became ready
@@ -4586,6 +4593,18 @@ function broadcastToOpencodeClients(data) {
     const ev = data.event || {};
     const evSid = ev.sessionID || ev.sessionId || ev.session?.id || ev.info?.id || '';
     const parentSid = ev.parentID || ev.parentId || ev.session?.parentID || '';
+    if (evSid) _ocpTrackSseEvent(evSid, data.eventType);
+    // High-signal SSE events go to the unified trace stream so the in-panel
+    // viewer correlates browser-side `event:in` with the server-side relay.
+    const TRACE_SSE = new Set([
+      'question.asked', 'question.replied', 'question.rejected',
+      'permission.asked', 'permission.replied', 'permission.rejected', 'permission.updated',
+      'session.created', 'session.idle', 'session.error', 'session.status',
+    ]);
+    if (TRACE_SSE.has(data.eventType)) {
+      const reqId = ev?.id || ev?.requestID || ev?.permissionID || '';
+      ocpTraceEmit('sse:relay', { eventType: data.eventType, sid: evSid, reqId, parent: parentSid || undefined });
+    }
     if (data.eventType === 'session.created' && evSid) {
       _ocpSessionLog('session.created', { sid: evSid, parent: parentSid || undefined, clients: _ocpWsClients.size });
     } else if (data.eventType === 'session.idle' && evSid) {
@@ -4595,14 +4614,314 @@ function broadcastToOpencodeClients(data) {
         plan: owners?.planMode ? 1 : undefined,
         owners: owners?.clients.size || 0,
       });
+      _ocpMarkSendEnd(evSid, 'idle');
     } else if (data.eventType === 'session.error' && evSid) {
       _ocpSessionLog('session.error', { sid: evSid });
+      _ocpMarkSendEnd(evSid, 'error');
     }
   }
   const msg = JSON.stringify(data);
   for (const c of _ocpWsClients) {
     if (c.readyState === 1) c.send(msg);
   }
+  if (data?.type === 'providers:changed') {
+    broadcastToOpencodeV2Clients(data);
+  }
+}
+
+// ── opencode-client → broadcast bridge ──
+// Registered once per process. Translates SDK event envelopes into the wire
+// shape today's browser code already speaks ({ type:'event', eventType, event }).
+// Replaces the old hand-rolled startOpencodeSSERelay() reader.
+let _ocpRelayCount = 0;
+const _ocpHealthTimers = new Map(); // tid → intervalId
+function _ocpClearHealthTimer(tid) {
+  const t = _ocpHealthTimers.get(tid);
+  if (t) { clearInterval(t); _ocpHealthTimers.delete(tid); }
+}
+function installOpencodeClientListener() {
+  if (_ocpClientListenerInstalled) {
+    console.log('[ocp-relay] installOpencodeClientListener noop (already installed)');
+    return;
+  }
+  _ocpClientListenerInstalled = true;
+  console.log('[ocp-relay] installOpencodeClientListener installing event bridge');
+  opencodeClient.event.onEvent((envelope) => {
+    if (!envelope) {
+      console.log('[ocp-relay] empty envelope dropped');
+      return;
+    }
+    const { eventType, event } = envelope;
+    _ocpRelayCount++;
+    const evSid = event?.sessionID || event?.sessionId || event?.info?.id || event?.session?.id || '-';
+    console.log(`[ocp-relay] ev#${_ocpRelayCount} ${eventType} sid=${evSid} clients=${_ocpWsClients.size}`);
+    if (eventType === 'server:status') {
+      broadcastToOpencodeClients({
+        type: 'server:status',
+        status: event?.status || 'unknown',
+        version: _ocpVersion,
+        port: event?.port || _ocpPort,
+        managed: !!_ocpProc,
+      });
+      return;
+    }
+    broadcastToOpencodeClients({ type: 'event', eventType, event });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OpenCode V2 — clean-slate broadcast bridge & WS handler
+// Pass-through: forwards opencodeV2Client envelopes verbatim to /ws/opencode-v2
+// clients. No normalizers, no plan-mode injection, no shape translation.
+// Independent of legacy `_ocpWsClients` and `installOpencodeClientListener`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function broadcastToOpencodeV2Clients(data) {
+  const payload = JSON.stringify(data);
+  for (const ws of _ocpV2WsClients) {
+    if (ws.readyState === 1) ws.send(payload);
+  }
+}
+
+function installOpencodeV2Listener() {
+  if (_ocpV2ListenerInstalled) return;
+  _ocpV2ListenerInstalled = true;
+  console.log('[ocp-v2-relay] installing event bridge');
+  opencodeV2Client.event.onEvent((envelope) => {
+    if (!envelope) return;
+    const { eventType, event } = envelope;
+    if (eventType === 'server:status') {
+      broadcastToOpencodeV2Clients({
+        type: 'server:status',
+        status: event?.status || 'unknown',
+        version: _ocpVersion,
+        port: event?.port || _ocpPort,
+        managed: !!_ocpProc,
+      });
+      return;
+    }
+    broadcastToOpencodeV2Clients({ type: 'event', eventType, event });
+  });
+}
+
+function handleOpencodeV2Ws(ws) {
+  _ocpV2WsClients.add(ws);
+  const connId = ++_ocpV2ClientSeq;
+  console.log(`[ocp-v2-ws] connect conn=${connId} total=${_ocpV2WsClients.size}`);
+
+  let alive = true;
+  const ping = setInterval(() => {
+    if (!alive) { ws.terminate(); return; }
+    alive = false;
+    try { ws.ping(); } catch {}
+  }, 30000);
+  ws.on('pong', () => { alive = true; });
+
+  // Track in-flight prompts so a fresh send can abort the previous turn cleanly.
+  const sendAborts = new Map();  // sessionID → AbortController
+
+  const send = (data) => {
+    if (ws.readyState === 1) ws.send(JSON.stringify(data));
+  };
+
+  ws.on('message', async (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+    const { type, id } = msg;
+    try {
+      switch (type) {
+        case 'init': {
+          const ready = await ensureOpencodeServer();
+          // ensureOpencodeServer also boots the v2 client (see below) — surface state.
+          send({
+            type: 'init:result',
+            id,
+            ready,
+            version: _ocpVersion,
+            port: _ocpPort,
+            managed: !!_ocpProc,
+            connected: opencodeV2Client.isConnected(),
+          });
+          break;
+        }
+        case 'session:list': {
+          const r = await opencodeV2Client.session.list({});
+          send({ type: 'session:list:result', id, status: r.status, data: r.data });
+          break;
+        }
+        case 'session:create': {
+          const r = await opencodeV2Client.session.create({
+            directory: msg.cwd || undefined,
+            ...(msg.body || {}),
+          });
+          send({ type: 'session:create:result', id, status: r.status, data: r.data });
+          break;
+        }
+        case 'session:get': {
+          const r = await opencodeV2Client.session.get({ sessionID: msg.sessionId });
+          send({ type: 'session:get:result', id, status: r.status, data: r.data });
+          break;
+        }
+        case 'session:update': {
+          let r;
+          try { r = await opencodeV2Client.session.update({ sessionID: msg.sessionId, ...(msg.body || {}) }); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
+          send({ type: 'session:update:result', id, status: r.status, data: r.data });
+          break;
+        }
+        case 'session:delete': {
+          const r = await opencodeV2Client.session.delete({ sessionID: msg.sessionId });
+          send({ type: 'session:delete:result', id, status: r.status, data: r.data });
+          break;
+        }
+        case 'session:messages': {
+          const r = await opencodeV2Client.session.messages({ sessionID: msg.sessionId });
+          send({ type: 'session:messages:result', id, status: r.status, data: r.data });
+          break;
+        }
+        case 'session:context': {
+          const r = await opencodeV2Client.session.context({
+            sessionID: msg.sessionId,
+            directory: msg.cwd || undefined,
+          });
+          send({ type: 'session:context:result', id, status: r.status, data: r.data });
+          break;
+        }
+        case 'message:send': {
+          const sid = msg.sessionId;
+          const agent = msg.agent || (msg.mode === 'plan' ? 'plan' : 'build');
+          const useAsync = msg.mode === 'plan' || agent === 'plan';
+          // noAbortPrev is reserved for callers that already own the running
+          // turn. Question cards must use /question/{id}/reply, not this queued
+          // prompt path.
+          if (!msg.noAbortPrev) {
+            const prev = sendAborts.get(sid);
+            if (prev) { try { prev.abort(); } catch {} }
+          }
+          const ctrl = new AbortController();
+          if (!msg.noAbortPrev) sendAborts.set(sid, ctrl);
+          try {
+            const promptFn = useAsync
+              ? opencodeV2Client.session.promptAsync
+              : opencodeV2Client.session.prompt;
+            const r = await promptFn({
+              sessionID: sid,
+              parts: msg.parts,
+              model: msg.model,
+              agent,
+              variant: msg.variant || undefined,
+              directory: msg.cwd || undefined,
+              signal: ctrl.signal,
+            });
+            send({ type: 'message:send:result', id, status: r.status, data: r.data, async: useAsync });
+          } catch (err) {
+            send({
+              type: 'message:send:result', id,
+              status: err?.status || 500,
+              error: err?.message || String(err),
+            });
+          } finally {
+            if (sendAborts.get(sid) === ctrl) sendAborts.delete(sid);
+          }
+          break;
+        }
+        case 'session:compact': {
+          try {
+            const r = await opencodeV2Client.session.compact({
+              sessionID: msg.sessionId,
+              directory: msg.cwd || undefined,
+            });
+            send({ type: 'session:compact:result', id, status: r.status, data: r.data });
+          } catch (err) {
+            send({ type: 'session:compact:result', id, ok: false, error: err?.message || String(err) });
+          }
+          break;
+        }
+        case 'message:abort': {
+          const sid = msg.sessionId;
+          const ctrl = sendAborts.get(sid);
+          if (ctrl) { try { ctrl.abort(); } catch {} sendAborts.delete(sid); }
+          try {
+            await opencodeV2Client.session.abort({ sessionID: sid });
+            send({ type: 'message:abort:result', id, ok: true });
+          } catch (err) {
+            send({ type: 'message:abort:result', id, ok: false, error: err?.message });
+          }
+          break;
+        }
+        case 'permission:reply': {
+          try {
+            const r = await opencodeV2Client.permission.reply({
+              sessionID: msg.sessionId,
+              permissionID: msg.permissionId,
+              response: msg.response,  // 'once' | 'always' | 'reject'
+            });
+            send({ type: 'permission:reply:result', id, status: r.status, data: r.data });
+          } catch (err) {
+            send({ type: 'permission:reply:result', id, ok: false, error: err?.message });
+          }
+          break;
+        }
+        case 'question:list': {
+          try {
+            const q = ocpDirectoryQuery(msg.cwd);
+            let r = await ocpProxy('GET', `/question${q}`, null, 10000);
+            if (r.status === 404 || r.status === 405) {
+              r = await opencodeV2Client.question.list({ directory: msg.cwd || undefined });
+            }
+            send({ type: 'question:list:result', id, status: r.status, data: r.data });
+          } catch (err) {
+            send({ type: 'question:list:result', id, ok: false, error: err?.message });
+          }
+          break;
+        }
+        case 'question:reply': {
+          try {
+            const requestID = String(msg.requestId || msg.requestID || '');
+            const body = { answers: Array.isArray(msg.answers) ? msg.answers : [] };
+            const encodedRequestID = encodeURIComponent(requestID);
+            const q = ocpDirectoryQuery(msg.cwd);
+            const r = await ocpProxyFirstSupported('POST', [
+              `/question/${encodedRequestID}/reply${q}`,
+              `/question/${encodedRequestID}${q}`,
+            ], body, 10000);
+            send({ type: 'question:reply:result', id, status: r.status, data: r.data });
+          } catch (err) {
+            send({ type: 'question:reply:result', id, ok: false, error: err?.message });
+          }
+          break;
+        }
+        case 'question:reject': {
+          try {
+            const r = await opencodeV2Client.question.reject({
+              requestID: msg.requestId,
+            });
+            send({ type: 'question:reject:result', id, status: r.status, data: r.data });
+          } catch (err) {
+            send({ type: 'question:reject:result', id, ok: false, error: err?.message });
+          }
+          break;
+        }
+        default:
+          send({ type: 'error', id, error: `unknown message type: ${type}` });
+      }
+    } catch (err) {
+      console.warn(`[ocp-v2-ws] handler error type=${type}: ${err?.message || err}`);
+      send({ type: 'error', id, error: err?.message || String(err) });
+    }
+  });
+
+  ws.on('close', () => {
+    clearInterval(ping);
+    _ocpV2WsClients.delete(ws);
+    for (const ctrl of sendAborts.values()) { try { ctrl.abort(); } catch {} }
+    sendAborts.clear();
+    console.log(`[ocp-v2-ws] close conn=${connId} total=${_ocpV2WsClients.size}`);
+  });
+
+  ws.on('error', (err) => {
+    console.warn(`[ocp-v2-ws] socket error conn=${connId}: ${err?.message || err}`);
+  });
 }
 
 // ── Always-on session lifecycle tracker (independent of OCP_VERBOSE) ──
@@ -4614,6 +4933,24 @@ let _ocpClientSeq = 0;                          // unique id per WS connection
 const _ocpSessionOwners = new Map();            // sessionId → { clients:Set<connId>, planMode:bool, lastSendAt:number }
 const _ocpSessionLogEnabled = process.env.OCP_SESSION_LOG !== '0'; // default ON; set OCP_SESSION_LOG=0 to silence
 
+// Per-session SSE activity tracker — mirrors the client-side heartbeat so
+// stalls are visible from server logs alone. Captures last-event timestamp,
+// type, count, and longest inter-event gap for each session.
+const _ocpSessionActivity = new Map();          // sessionId → { lastEventAt, lastEventName, eventCount, longestGap, sendBeganAt, lastSilenceWarnAt, silenceWarnCount, autoAbortFired }
+const OCP_SILENCE_WARN_MS = Number(process.env.OCP_SILENCE_WARN_MS) || 30000;
+// Server-side auto-abort. OFF by default — the client-side ocp-plan tiered
+// watchdog (silence8 → soft60 → hard180 → kill480) already gives the user
+// a "Wait longer / Cancel" prompt at 60s, and the message:send POST has a
+// 30-minute timeout for real hangs. Some non-streaming models (deepseek
+// v4-pro in plan mode, Kimi K2.6) emit zero SSE events for 60-180s before
+// returning the full response in one shot via POST — auto-abort killed
+// those legitimate turns mid-flight. Opt back in with OCP_AUTO_ABORT=1.
+const OCP_GAP_RECOVERY_MS = Number(process.env.OCP_GAP_RECOVERY_MS) || 10000;
+const OCP_AUTO_ABORT_MS = Number(process.env.OCP_AUTO_ABORT_MS) || 600000; // 10 min — generous for plan-mode w/ non-streaming models
+const OCP_AUTO_ABORT_ENABLED = process.env.OCP_AUTO_ABORT === '1'; // off by default
+const OCP_NOOP_EVENTS = new Set(['heartbeat', 'ping', 'keepalive', 'message']);
+let _ocpSilenceWatchdog = null;
+
 function _ocpSessionLog(tag, fields = {}) {
   if (!_ocpSessionLogEnabled) return;
   const parts = [];
@@ -4623,6 +4960,279 @@ function _ocpSessionLog(tag, fields = {}) {
     parts.push(`${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
   }
   console.log(`[ocp-session] ${tag}${parts.length ? ' ' + parts.join(' ') : ''}`);
+}
+
+// ── OCP trace ingest + jsonl writer + WS broadcast ──
+//
+// Receives client trace batches from neural-interface/public/shared/ocp/ocp-trace.js,
+// appends each event to data/ocp-trace.jsonl (rotating at 50MB), and live-broadcasts
+// to all /ws/ocp-trace clients (the in-panel viewer drawer).
+const _OCP_TRACE_DIR = resolve(DATA_HOME, 'data');
+const _OCP_TRACE_PATH = resolve(_OCP_TRACE_DIR, 'ocp-trace.jsonl');
+const _OCP_TRACE_MAX_BYTES = 50 * 1024 * 1024; // rotate at 50MB
+const _ocpTraceWsClients = new Set();
+
+function _ocpTraceRotateIfNeeded() {
+  try {
+    if (!existsSync(_OCP_TRACE_PATH)) return;
+    const st = statSync(_OCP_TRACE_PATH);
+    if (st.size < _OCP_TRACE_MAX_BYTES) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const rotated = resolve(_OCP_TRACE_DIR, `ocp-trace.${stamp}.jsonl`);
+    renameSync(_OCP_TRACE_PATH, rotated);
+  } catch (err) {
+    console.warn('[ocp-trace] rotate failed:', err?.message || err);
+  }
+}
+
+function _ocpTraceAppend(events) {
+  if (!Array.isArray(events) || !events.length) return;
+  try {
+    if (!existsSync(_OCP_TRACE_DIR)) mkdirSync(_OCP_TRACE_DIR, { recursive: true });
+    _ocpTraceRotateIfNeeded();
+    const lines = events.map((e) => JSON.stringify({ ...e, _serverT: Date.now() })).join('\n') + '\n';
+    appendFileSync(_OCP_TRACE_PATH, lines, 'utf8');
+  } catch (err) {
+    console.warn('[ocp-trace] append failed:', err?.message || err);
+  }
+}
+
+function _ocpTraceBroadcast(events) {
+  if (_ocpTraceWsClients.size === 0) return;
+  const payload = JSON.stringify({ type: 'trace:batch', events });
+  for (const ws of _ocpTraceWsClients) {
+    try { if (ws.readyState === 1) ws.send(payload); } catch {}
+  }
+}
+
+// Server-originated trace events go through this — used so SSE broadcast and
+// question:reply / permission:respond paths participate in the same stream.
+function ocpTraceEmit(tag, fields = {}) {
+  const entry = {
+    seq: ++_ocpTraceSeq,
+    t: Date.now(),
+    tag: String(tag || ''),
+    source: 'server',
+    ...fields,
+  };
+  if (OCP_VERBOSE) {
+    const parts = [];
+    for (const k of Object.keys(fields)) {
+      const v = fields[k];
+      if (v === undefined || v === null) continue;
+      parts.push(`${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
+    }
+    console.log(`[ocp-trace] ${tag}${parts.length ? ' ' + parts.join(' ') : ''}`);
+  }
+  _ocpTraceAppend([entry]);
+  _ocpTraceBroadcast([entry]);
+}
+
+function handleOcpTraceWs(ws) {
+  _ocpTraceWsClients.add(ws);
+  try { ws.send(JSON.stringify({ type: 'trace:hello', t: Date.now(), clients: _ocpTraceWsClients.size })); } catch {}
+  ws.on('message', (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+    if (msg?.type === 'snapshot:request') {
+      const tail = Math.min(2000, Math.max(50, Number(msg.tail) || 500));
+      try {
+        const lines = _ocpTraceTail(tail);
+        ws.send(JSON.stringify({ type: 'snapshot:result', events: lines }));
+      } catch {}
+    }
+  });
+  ws.on('close', () => _ocpTraceWsClients.delete(ws));
+  ws.on('error', () => _ocpTraceWsClients.delete(ws));
+}
+
+function _ocpTraceTail(n) {
+  if (!existsSync(_OCP_TRACE_PATH)) return [];
+  try {
+    const buf = readFileSync(_OCP_TRACE_PATH, 'utf8');
+    const lines = buf.split('\n').filter(Boolean);
+    return lines.slice(-n).map((l) => {
+      try { return JSON.parse(l); } catch { return null; }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// HTTP endpoints — kept tight, JSON-only.
+app.post('/api/ocp/trace/ingest', express.json({ limit: '5mb' }), (req, res) => {
+  const events = Array.isArray(req.body?.events) ? req.body.events : [];
+  if (!events.length) return res.json({ ok: true, count: 0 });
+  // Stamp source=client and forward.
+  const stamped = events.map((e) => ({ ...e, source: e.source || 'client' }));
+  _ocpTraceAppend(stamped);
+  _ocpTraceBroadcast(stamped);
+  res.json({ ok: true, count: stamped.length });
+});
+
+app.get('/api/ocp/trace/snapshot', (req, res) => {
+  const tail = Math.min(5000, Math.max(50, Number(req.query.tail) || 500));
+  res.json({ ok: true, events: _ocpTraceTail(tail) });
+});
+
+app.post('/api/ocp/trace/clear', (req, res) => {
+  try {
+    if (existsSync(_OCP_TRACE_PATH)) unlinkSync(_OCP_TRACE_PATH);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+function _ocpGetActivity(sid) {
+  let entry = _ocpSessionActivity.get(sid);
+  if (!entry) {
+    entry = {
+      lastEventAt: 0,
+      lastEventName: '',
+      eventCount: 0,
+      longestGap: 0,
+      sendBeganAt: 0,
+      lastSilenceWarnAt: 0,
+      silenceWarnCount: 0,
+      autoAbortFired: false,
+    };
+    _ocpSessionActivity.set(sid, entry);
+  }
+  return entry;
+}
+
+function _ocpTrackSseEvent(sid, eventType) {
+  if (!sid) return;
+  if (OCP_NOOP_EVENTS.has(eventType)) return; // heartbeats/keepalives don't reset stall counters
+  const now = Date.now();
+  const entry = _ocpGetActivity(sid);
+  const prevAt = entry.lastEventAt;
+  if (prevAt) {
+    const gap = now - prevAt;
+    if (gap > entry.longestGap) entry.longestGap = gap;
+    if (entry.sendBeganAt && gap >= OCP_GAP_RECOVERY_MS) {
+      _ocpSessionLog('sse.gap.recovered', {
+        sid,
+        gap_ms: gap,
+        prev: entry.lastEventName || 'none',
+        evt: eventType,
+        count: entry.eventCount + 1,
+      });
+    }
+  }
+  entry.lastEventAt = now;
+  entry.lastEventName = eventType || entry.lastEventName;
+  entry.eventCount += 1;
+  entry.lastSilenceWarnAt = 0;
+  entry.silenceWarnCount = 0;
+}
+
+async function _ocpFireAutoAbort(sid, entry) {
+  if (entry.autoAbortFired) return;
+  entry.autoAbortFired = true;
+  const silenceMs = Date.now() - entry.lastEventAt;
+  _ocpSessionLog('sse.auto-abort', {
+    sid,
+    silent_ms: silenceMs,
+    last_evt: entry.lastEventName || 'none',
+    events: entry.eventCount,
+    since_send_ms: Date.now() - entry.sendBeganAt,
+  });
+  try {
+    await opencodeClient.session.abort({ sessionID: sid });
+  } catch (err) {
+    _ocpSessionLog('sse.auto-abort.error', { sid, error: err?.message || String(err) });
+  }
+  // Notify clients with a synthetic error so the UI's existing error-path takes over.
+  broadcastToOpencodeClients({
+    type: 'event',
+    eventType: 'session.error',
+    event: {
+      sessionID: sid,
+      reason: 'auto-abort',
+      message: `Stalled — no model events for ${Math.round(silenceMs / 1000)}s. Auto-aborted.`,
+      silent_ms: silenceMs,
+    },
+  });
+  _ocpMarkSendEnd(sid, 'auto-abort');
+}
+
+function _ocpMarkSendStart(sid) {
+  if (!sid) return;
+  const entry = _ocpGetActivity(sid);
+  entry.sendBeganAt = Date.now();
+  entry.lastEventAt = entry.sendBeganAt;
+  entry.eventCount = 0;
+  entry.longestGap = 0;
+  entry.lastSilenceWarnAt = 0;
+  entry.silenceWarnCount = 0;
+  entry.autoAbortFired = false;
+  entry.lastEventName = '';
+}
+
+function _ocpMarkSendEnd(sid, reason) {
+  if (!sid) return;
+  const entry = _ocpSessionActivity.get(sid);
+  if (!entry || !entry.sendBeganAt) return;
+  const totalMs = Date.now() - entry.sendBeganAt;
+  _ocpSessionLog('sse.summary', {
+    sid,
+    reason: reason || 'idle',
+    total_ms: totalMs,
+    events: entry.eventCount,
+    longest_gap_ms: entry.longestGap,
+    last_evt: entry.lastEventName || 'none',
+  });
+  entry.sendBeganAt = 0;
+}
+
+function _ocpStartSilenceWatchdog() {
+  if (_ocpSilenceWatchdog) return;
+  _ocpSilenceWatchdog = setInterval(() => {
+    const now = Date.now();
+    for (const [sid, entry] of _ocpSessionActivity) {
+      if (!entry.sendBeganAt) continue;
+      if (entry.autoAbortFired) continue;
+      const silence = now - entry.lastEventAt;
+      if (silence < OCP_SILENCE_WARN_MS) continue;
+      if ((now - entry.lastSilenceWarnAt) >= OCP_SILENCE_WARN_MS) {
+        entry.silenceWarnCount = (entry.silenceWarnCount || 0) + 1;
+        _ocpSessionLog('sse.silent', {
+          sid,
+          silent_ms: silence,
+          last_evt: entry.lastEventName || 'none',
+          events: entry.eventCount,
+          since_send_ms: now - entry.sendBeganAt,
+          warn: entry.silenceWarnCount,
+        });
+        entry.lastSilenceWarnAt = now;
+      }
+      if (OCP_AUTO_ABORT_ENABLED && silence >= OCP_AUTO_ABORT_MS) {
+        _ocpFireAutoAbort(sid, entry).catch(() => {});
+      }
+    }
+    // Prune _ocpSessionOwners entries with no live clients and no recent
+    // activity — over a long workday this map otherwise grows monotonically
+    // and every watchdog tick iterates the dead entries.
+    for (const [sid, owner] of _ocpSessionOwners) {
+      if (owner?.clients?.size > 0) continue;
+      const activity = _ocpSessionActivity.get(sid);
+      const last = activity?.lastEventAt || owner?.lastSendAt || 0;
+      if (!last || (now - last) > 30 * 60 * 1000) {
+        _ocpSessionOwners.delete(sid);
+        _ocpSessionActivity.delete(sid);
+      }
+    }
+  }, 5000);
+  if (typeof _ocpSilenceWatchdog.unref === 'function') _ocpSilenceWatchdog.unref();
+}
+
+function _ocpStopSilenceWatchdog() {
+  if (_ocpSilenceWatchdog) {
+    clearInterval(_ocpSilenceWatchdog);
+    _ocpSilenceWatchdog = null;
+  }
 }
 
 function _ocpAttachSession(connId, sessionId, { planMode = null } = {}) {
@@ -4691,6 +5301,26 @@ async function checkOpencodeHealth() {
   return false;
 }
 
+// Stop any loop associated with an OpenCode session. Called from message:abort
+// so clicking Stop in the sidepanel kills the loop driver, not just the current turn.
+function _abortLoopForOcpSession(ocpSessionId) {
+  try {
+    if (!existsSync(LOOP_DIR)) return;
+    const targetFile = resolve(LOOP_DIR, `${ocpSessionId}.json`);
+    if (!existsSync(targetFile)) return;
+    const data = JSON.parse(readFileSync(targetFile, 'utf-8'));
+    if (!data.active && !data.pending) return;
+    if (data.terminalSessionId && terminalSessions.has(data.terminalSessionId)) {
+      const session = terminalSessions.get(data.terminalSessionId);
+      try { session.pty.kill(); } catch {}
+    }
+    try { unlinkSync(targetFile); } catch {}
+    console.log(`[ocp-session] message.abort — stopped loop for OCP session ${ocpSessionId} (terminal ${data.terminalSessionId})`);
+  } catch {
+    // Non-critical: abort should still succeed even if loop cleanup fails
+  }
+}
+
 async function reconcileOpencodeServerIfStale() {
   const listenerPids = listPortListenerPids(_ocpPort);
   const managedPid = readOpencodeManagedPid();
@@ -4705,6 +5335,33 @@ async function reconcileOpencodeServerIfStale() {
   console.log(`[opencode] Existing server on port ${_ocpPort} is stale for current auth; taking over`);
   await takeoverOpencodeServer();
   return true;
+}
+
+// Fire-and-forget: eagerly connect every configured stdio MCP child as soon
+// as `opencode serve` is reachable, so OpenCode doesn't pay the spawn+init
+// cost on the user's first prompt. Without this, the first message of a
+// fresh `opencode serve` lifetime takes seconds longer to "start acting"
+// because OpenCode lazy-spawns MCP children (notably SynaBun's local stdio
+// child, which loads SQLite + the embedding pipeline) inline with the prompt.
+let _ocpMcpPrewarmedAt = 0;
+async function prewarmOpencodeMcpServers() {
+  // Re-prewarm only after a server restart — `_ocpLastBootAt` ratchets every
+  // time we transition to ready, so this stays a per-serve-lifetime cost.
+  if (_ocpMcpPrewarmedAt && _ocpMcpPrewarmedAt >= _ocpLastBootAt) return;
+  _ocpMcpPrewarmedAt = _ocpLastBootAt || Date.now();
+  try {
+    const tStart = Date.now();
+    const status = await opencodeClient.mcp.status();
+    const names = Object.keys(status?.data || {});
+    if (!names.length) return;
+    const results = await Promise.allSettled(
+      names.map((name) => opencodeClient.mcp.connect({ name })),
+    );
+    const ok = results.filter((r) => r.status === 'fulfilled').length;
+    console.log(`[opencode] MCP prewarm: ${ok}/${names.length} connected (${Date.now() - tStart}ms) — ${names.join(', ')}`);
+  } catch (err) {
+    console.warn('[opencode] MCP prewarm failed:', err?.message || err);
+  }
 }
 
 async function ensureOpencodeServer() {
@@ -4725,9 +5382,15 @@ async function ensureOpencodeServer() {
     _ocpStarting = false;
     _ocpBootReconcileTried = true;
     _ocpLastBootAt = Date.now();
-    startOpencodeSSERelay();
+    installOpencodeClientListener();
+    installOpencodeV2Listener();
+    _ocpStartSilenceWatchdog();
+    await opencodeClient.connect({ port: _ocpPort });
+    await opencodeV2Client.connect({ port: _ocpPort });
     broadcastToOpencodeClients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: false });
+    broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: false });
     console.log(`[opencode] External server detected on port ${_ocpPort} (v${_ocpVersion || '?'})`);
+    prewarmOpencodeMcpServers();
     return true;
   }
 
@@ -4752,8 +5415,11 @@ async function ensureOpencodeServer() {
       _ocpProc = null;
       _ocpReady = false;
       clearOpencodeManagedPid();
-      stopOpencodeSSERelay();
+      opencodeClient.disconnect().catch(() => {});
+      opencodeV2Client.disconnect().catch(() => {});
+      _ocpStopSilenceWatchdog();
       broadcastToOpencodeClients({ type: 'server:status', status: 'offline', port: _ocpPort });
+      broadcastToOpencodeV2Clients({ type: 'server:status', status: 'offline', port: _ocpPort });
     });
   } catch (err) {
     console.error(`[opencode] Failed to spawn: ${err.message}`);
@@ -4770,9 +5436,15 @@ async function ensureOpencodeServer() {
       _ocpBootReconcileTried = true;
       _ocpLastBootAt = Date.now();
       writeOpencodeManagedPid(listPortListenerPids(_ocpPort)[0] || _ocpProc?.pid);
-      startOpencodeSSERelay();
+      installOpencodeClientListener();
+      installOpencodeV2Listener();
+      _ocpStartSilenceWatchdog();
+      await opencodeClient.connect({ port: _ocpPort });
+      await opencodeV2Client.connect({ port: _ocpPort });
       broadcastToOpencodeClients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: true });
+      broadcastToOpencodeV2Clients({ type: 'server:status', status: 'ready', version: _ocpVersion, port: _ocpPort, managed: true });
       console.log(`[opencode] Server ready on port ${_ocpPort} (v${_ocpVersion || '?'})`);
+      prewarmOpencodeMcpServers();
       return true;
     }
   }
@@ -4784,7 +5456,9 @@ async function ensureOpencodeServer() {
 }
 
 function stopOpencodeServer() {
-  stopOpencodeSSERelay();
+  opencodeClient.disconnect().catch(() => {});
+  opencodeV2Client.disconnect().catch(() => {});
+  _ocpStopSilenceWatchdog();
   const managedPid = readOpencodeManagedPid();
   const procPid = _ocpProc?.pid || null;
   const isWin = process.platform === 'win32';
@@ -4822,6 +5496,7 @@ function stopOpencodeServer() {
   _ocpReady = false;
   _ocpStarting = false;
   broadcastToOpencodeClients({ type: 'server:status', status: 'offline', port: _ocpPort });
+  broadcastToOpencodeV2Clients({ type: 'server:status', status: 'offline', port: _ocpPort });
   // Stop Ollama if we configured it this session
   try { stopOllama(); } catch {}
 }
@@ -4836,7 +5511,8 @@ async function takeoverOpencodeServer() {
   }
   // External server — terminate the actual port listener so we can take over with
   // a managed process that will boot from the updated auth/config files.
-  stopOpencodeSSERelay();
+  await opencodeClient.disconnect().catch(() => {});
+  _ocpStopSilenceWatchdog();
   _ocpReady = false;
   _ocpStarting = false;
   try {
@@ -4866,109 +5542,10 @@ async function takeoverOpencodeServer() {
   return ensureOpencodeServer();
 }
 
-// ── SSE Relay: single persistent connection to opencode /global/event ──
+// ── OpenCode DB fallback (read direct sqlite when SDK messages payload is sparse) ──
 
-let _ocpSseReader = null;
-let _ocpSsePromise = null;
 let _ocpDb = null;
 let _ocpDbPath = null;
-
-function startOpencodeSSERelay() {
-  if (_ocpSseAbort) return;
-  _ocpSseAbort = new AbortController();
-  const url = `${_ocpBaseUrl()}/global/event`;
-  console.log(`[opencode] Starting SSE relay from ${url}`);
-
-  _ocpSsePromise = (async () => {
-    try {
-      const resp = await fetch(url, {
-        signal: _ocpSseAbort.signal,
-        headers: { 'Accept': 'text/event-stream' },
-      });
-      if (!resp.ok || !resp.body) {
-        console.error(`[opencode] SSE connect failed: ${resp.status}`);
-        return;
-      }
-      _ocpSseReader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let eventType = 'message';
-      let dataLines = [];
-
-      const flushSseEvent = () => {
-        if (!dataLines.length) {
-          eventType = 'message';
-          return;
-        }
-        const raw = dataLines.join('\n');
-        const currentType = eventType || 'message';
-        dataLines = [];
-        eventType = 'message';
-        try {
-          const parsed = JSON.parse(raw);
-          // Unwrap GlobalEvent envelope: { directory, payload: { type, properties } }
-          const payload = parsed?.payload;
-          const evType = payload?.type || parsed?.type || currentType;
-          const evData = payload?.properties || parsed?.properties || parsed;
-          broadcastToOpencodeClients({ type: 'event', eventType: evType, event: evData });
-        } catch {
-          broadcastToOpencodeClients({ type: 'event', eventType: currentType, event: raw });
-        }
-      };
-
-      while (true) {
-        const { done, value } = await _ocpSseReader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          const clean = line.endsWith('\r') ? line.slice(0, -1) : line;
-          if (clean === '') {
-            flushSseEvent();
-          } else if (clean.startsWith('event:')) {
-            eventType = clean.slice(6).trim() || 'message';
-          } else if (clean.startsWith('data:')) {
-            dataLines.push(clean.slice(5).replace(/^ /, ''));
-          } else if (clean.startsWith(':')) {
-            // SSE comment/heartbeat.
-          }
-        }
-      }
-      if (buffer || dataLines.length) {
-        if (buffer) {
-          const clean = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer;
-          if (clean.startsWith('data:')) dataLines.push(clean.slice(5).replace(/^ /, ''));
-          else if (clean.startsWith('event:')) eventType = clean.slice(6).trim() || 'message';
-        }
-        flushSseEvent();
-      }
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error(`[opencode] SSE relay error: ${err.message}`);
-      }
-    } finally {
-      _ocpSseReader = null;
-      _ocpSsePromise = null;
-      if (_ocpReady && _ocpSseAbort) {
-        _ocpSseAbort = null;
-        setTimeout(() => { if (_ocpReady) startOpencodeSSERelay(); }, 2000);
-      }
-    }
-  })();
-  // Suppress unhandled rejection when abort() races with the IIFE's catch
-  _ocpSsePromise.catch(() => {});
-}
-
-function stopOpencodeSSERelay() {
-  const ac = _ocpSseAbort;
-  const reader = _ocpSseReader;
-  _ocpSseAbort = null;
-  _ocpSseReader = null;
-  _ocpSsePromise = null;
-  if (reader) { try { reader.cancel(); } catch {} }
-  if (ac) { try { ac.abort(); } catch {} }
-}
 
 function getOpencodeDbPath() {
   const dataHome = process.env.XDG_DATA_HOME || resolve(os.homedir(), '.local', 'share');
@@ -5153,6 +5730,11 @@ async function ocpProxy(method, path, body = null, timeoutMs = 30000) {
   return { status: resp.status, data };
 }
 
+function ocpDirectoryQuery(cwd) {
+  const directory = String(cwd || '').trim();
+  return directory ? `?directory=${encodeURIComponent(directory)}` : '';
+}
+
 async function ocpProxyFirstSupported(method, paths, body = null, timeoutMs = 30000) {
   let last = null;
   for (const path of paths) {
@@ -5215,7 +5797,49 @@ function handleOpencodeWs(ws) {
           break;
         }
         case 'session:list': {
-          const r = await ocpProxy('GET', '/session');
+          // Query the OpenCode SQLite DB directly. The OpenCode HTTP /session
+          // endpoint only returns sessions whose directory matches the serve
+          // cwd (PACKAGE_ROOT = SynaBun), so it filters out sessions for
+          // every other registered project. Reading the DB mirrors how the
+          // navbar Resume dropdown sources sessions in /api/opencode/sessions
+          // and is required for the sidepanel project switcher to surface
+          // sessions outside SynaBun (e.g. CriticalPixel, EllaCred).
+          const db = getOpencodeDb();
+          if (db) {
+            try {
+              const rows = db.prepare(`
+                SELECT s.id, s.title, s.directory, s.slug, s.project_id,
+                       s.time_created, s.time_updated,
+                       (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) AS message_count
+                FROM session s
+                WHERE s.time_archived IS NULL
+                ORDER BY s.time_updated DESC
+              `).all();
+              const sessions = rows.map((row) => ({
+                id: row.id,
+                title: row.title || '',
+                slug: row.slug || '',
+                directory: row.directory || '',
+                projectID: row.project_id || '',
+                messageCount: row.message_count || 0,
+                time: {
+                  created: row.time_created ? Math.floor(new Date(row.time_created).getTime()) : 0,
+                  updated: row.time_updated ? Math.floor(new Date(row.time_updated).getTime()) : 0,
+                },
+              }));
+              sendToClient({ type: 'session:list:result', id, status: 200, data: sessions });
+              break;
+            } catch (err) {
+              ocpTrace('session:list:db-err', { msg: err?.message });
+              // fall through to HTTP proxy below
+            }
+          }
+          let r;
+          try {
+            r = await opencodeClient.session.list({});
+          } catch (err) {
+            r = { status: err?.status || 500, data: null, error: err?.message };
+          }
           sendToClient({ type: 'session:list:result', id, status: r.status, data: enrichOpencodeSessions(r.data) });
           break;
         }
@@ -5224,8 +5848,33 @@ function handleOpencodeWs(ws) {
           const body = {};
           if (input.title) body.title = input.title;
           if (input.parentID || input.parentId) body.parentID = input.parentID || input.parentId;
-          const r = await ocpProxy('POST', '/session', body);
+          // OpenCode binds each session to a working directory. Forward the
+          // requested cwd via the SDK's `directory` parameter so tools resolve
+          // at the project root, not at the OpenCode serve cwd.
+          //
+          // NOTE: we previously tried passing `agent` + `model` in the body to
+          // bind plan-mode at session create time. OpenCode server v1.14.41
+          // rejected the request (panel showed "Could not create OpenCode
+          // session"), so those fields are NOT supported by this server
+          // version. Agent/model go in per-prompt body — see message:send.
+          console.log('[ocp-session-debug] session:create incoming', {
+            connId, requestedCwd: msg.cwd || '(none)', bodyKeys: Object.keys(body),
+          });
+          let r;
+          try {
+            r = await opencodeClient.session.create({ directory: msg.cwd || undefined, ...body });
+          } catch (err) {
+            console.warn('[ocp-session-debug] session.create threw', { connId, status: err?.status, msg: err?.message });
+            r = { status: err?.status || 500, data: { error: err?.message } };
+          }
           const newSid = r?.data?.id || r?.data?.sessionID || r?.data?.info?.id || null;
+          const responseDir = r?.data?.directory || r?.data?.info?.directory || null;
+          console.log('[ocp-session-debug] session:create result', {
+            connId, status: r.status, newSid,
+            responseDir,
+            requestedCwd: msg.cwd || '(none)',
+            directoryMatchesRequest: msg.cwd ? (responseDir === msg.cwd) : null,
+          });
           if (newSid) {
             pendingGreetingSessions.set(newSid, msg.cwd || PACKAGE_ROOT);
             ownedSessions.add(newSid);
@@ -5233,6 +5882,7 @@ function handleOpencodeWs(ws) {
             _ocpSessionLog('session.create', {
               conn: connId, sid: newSid,
               cwd: msg.cwd || undefined,
+              dir: responseDir || undefined,
               parent: body.parentID || undefined,
               status: r.status,
             });
@@ -5243,18 +5893,24 @@ function handleOpencodeWs(ws) {
           break;
         }
         case 'session:get': {
-          const r = await ocpProxy('GET', `/session/${msg.sessionId}`);
+          let r;
+          try { r = await opencodeClient.session.get({ sessionID: msg.sessionId }); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'session:get:result', id, ...r });
           break;
         }
         case 'session:update': {
-          const r = await ocpProxy('PATCH', `/session/${msg.sessionId}`, msg.body || {});
+          let r;
+          try { r = await opencodeClient.session.update({ sessionID: msg.sessionId, ...(msg.body || {}) }); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'session:update:result', id, ...r });
           break;
         }
         case 'session:delete': {
           pendingGreetingSessions.delete(msg.sessionId);
-          const r = await ocpProxy('DELETE', `/session/${msg.sessionId}`);
+          let r;
+          try { r = await opencodeClient.session.delete({ sessionID: msg.sessionId }); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           ownedSessions.delete(msg.sessionId);
           _ocpDetachSession(connId, msg.sessionId);
           _ocpSessionLog('session.delete', { conn: connId, sid: msg.sessionId, status: r.status });
@@ -5280,6 +5936,17 @@ function handleOpencodeWs(ws) {
             const owners = _ocpSessionOwners.get(sid);
             if (owners) owners.lastSendAt = Date.now();
             _ocpSessionLog('send.begin', { conn: connId, sid, tid, ...summary });
+            _ocpMarkSendStart(sid);
+            // Periodic health while the SDK call is in flight: prints relay
+            // total + listener count + WS client count every 10s. If relay
+            // count stays at 0 across multiple ticks, the OpenCode SSE stream
+            // is the layer that's silent (not our broadcast pipeline).
+            const _hbStart = _ocpRelayCount;
+            const _hbTimer = setInterval(() => {
+              const elapsedSec = Math.round((Date.now() - (owners?.lastSendAt || Date.now())) / 1000);
+              console.log(`[ocp-health] sid=${sid} tid=${tid} elapsedSec=${elapsedSec} relayCount=${_ocpRelayCount} relayDelta=${_ocpRelayCount - _hbStart} clients=${_ocpWsClients.size}`);
+            }, 10000);
+            _ocpHealthTimers.set(tid, _hbTimer);
           }
           // ── Slash command → skill injection ──
           try {
@@ -5306,6 +5973,15 @@ function handleOpencodeWs(ws) {
             console.warn('[ocp] Skill injection failed:', err.message);
             ocpTrace('send:skill-err', { tid, msg: err.message });
           }
+          // ── OpenCode plan-mode prompt-prefix injection ──
+          // Now handled via the SDK's `system` field in lib/opencode-client.js
+          // (when agent === 'plan'). The previous implementation mutated
+          // parts[0].text in-place, which leaked the entire wall of plan-mode
+          // rules into the user's visible message bubble (and into OpenCode's
+          // stored message history) — making subsequent `messages:list` reloads
+          // re-render the rules as if the user had typed them. Worse, some
+          // models (deepseek v4-pro) saw the giant prefix as the prompt and
+          // hung. Plan-mode anchoring is preserved via system-channel only.
           // ── OpenCode greeting injection (fire-once per fresh session) ──
           if (pendingGreetingSessions.has(sid)) {
             try {
@@ -5336,40 +6012,104 @@ function handleOpencodeWs(ws) {
             }
           }
           try {
-            const url = `${_ocpBaseUrl()}/session/${sid}/message`;
-            const reqBody = JSON.stringify(msg.body || { content: msg.content });
-            ocpTrace('send:fetch-start', { tid, sid, url: `/session/${sid}/message`, reqBytes: _ocpByteLen(reqBody) });
+            // OpenCode tools resolve at the directory passed via the SDK's
+            // `directory` parameter (per-message), NOT at `session.directory`.
+            // Forward the panel-supplied cwd here so Read/Bash/Edit/Write run
+            // at the user-selected project root instead of the OpenCode serve cwd.
+            const body = msg.body || (typeof msg.content === 'string' ? { parts: [{ type: 'text', text: msg.content }] } : {});
+            ocpTrace('send:fetch-start', { tid, sid, dir: msg.cwd || undefined, reqBytes: _ocpByteLen(body) });
+            // Unified trace: record the plan-mode system-injection so the viewer
+            // shows "did the OPENCODE_PLAN_MODE_INSTRUCTION ship?" inline.
+            const _agent = body?.agent || msg.body?.agent || '';
+            const _planModeInjected = _agent === 'plan';
+            ocpTraceEmit('send:dispatch', {
+              tid, sid, agent: _agent || undefined,
+              model: body?.model?.modelID || body?.model || undefined,
+              planSystemInjected: _planModeInjected,
+              dir: msg.cwd || undefined,
+              reqBytes: _ocpByteLen(body),
+            });
+            console.log('[ocp-session-debug] message:send', { sid, cwd: msg.cwd || '(none)' });
             const tFetchStart = _ocpNow();
-            const resp = await undiciFetch(url, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: reqBody,
-              signal: ac.signal,
-              dispatcher: _ocpLongPollDispatcher,
+            // Strip fields the SDK doesn't accept (like our internal `mode`/`content`).
+            const { mode: _mode, content: _content, ...sdkBody } = body;
+            // Visible breadcrumb of the EXACT SDK call shape so silent hangs
+            // are diagnosable from the server log without verbose tracing.
+            console.log('[ocp-session-debug] session.prompt input', {
+              sid, agent: sdkBody.agent || null,
+              model: sdkBody.model || null,
+              partsCount: Array.isArray(sdkBody.parts) ? sdkBody.parts.length : null,
+              hasSystem: typeof sdkBody.system === 'string' && sdkBody.system.length > 0,
+              hasTools: !!sdkBody.tools,
+              directory: msg.cwd || undefined,
             });
-            const tHeaders = _ocpMs(tFetchStart);
-            ocpTrace('send:fetch-headers', { tid, sid, status: resp.status, headersMs: tHeaders });
-            const text = await resp.text();
+            // ── promptAsync for plan mode (CLI parity) ──
+            // The legacy blocking `prompt()` (POST /session/{id}/message) hangs
+            // on `opencode-go/kimi-k2.6 + agent='plan'` (0 SSE events for 100s+).
+            // The OpenCode CLI uses `promptAsync` (POST /session/{id}/prompt_async)
+            // which queues the prompt for the agent loop and returns immediately,
+            // streaming output via SSE events. SAME body shape as legacy `prompt`,
+            // just a different URL. Match CLI behavior on plan mode.
+            //
+            // Note: we tried the truly-V2 `/api/session/{sid}/prompt` endpoint
+            // first, but OpenCode v1.14.41 server returns 400 on it (probably
+            // not implemented at that server version). promptAsync is the
+            // CLI-correct choice for v1.14.41.
+            //
+            // Overrides:
+            //   OCP_FORCE_LEGACY_PROMPT=1 → never use async
+            //   OCP_USE_ASYNC_PROMPT=1   → always use async (build/chat too)
+            const _forceLegacy = process.env.OCP_FORCE_LEGACY_PROMPT === '1';
+            const _useAsync = !_forceLegacy && (
+              process.env.OCP_USE_ASYNC_PROMPT === '1'
+              || sdkBody.agent === 'plan'
+            );
+            let r;
+            if (_useAsync) {
+              // session.create on v1.14.41 doesn't accept agent/model so we
+              // can't bind them at session level. Pass them per-prompt to
+              // promptAsync. The earlier hypothesis "stripping these makes
+              // kimi-k2.6 plan agent run" was wrong — server rejected
+              // session.create and we got "Could not create OpenCode session".
+              console.log('[ocp-session-debug] async prompt route', {
+                sid, agent: sdkBody.agent, model: sdkBody.model,
+                partsCount: Array.isArray(sdkBody.parts) ? sdkBody.parts.length : 0,
+              });
+              r = await opencodeClient.session.promptAsync({
+                sessionID: sid,
+                directory: msg.cwd || undefined,
+                signal: ac.signal,
+                ...sdkBody,
+              });
+            } else {
+              r = await opencodeClient.session.prompt({
+                sessionID: sid,
+                directory: msg.cwd || undefined,
+                signal: ac.signal,
+                ...sdkBody,
+              });
+            }
+            console.log('[ocp-session-debug] session.prompt returned', { sid, status: r?.status, ms: _ocpMs(tFetchStart), via: _useAsync ? 'async' : 'legacy' });
+            _ocpClearHealthTimer(tid);
             const tBody = _ocpMs(tFetchStart);
-            let data;
-            try { data = JSON.parse(text); } catch { data = text; }
-            const respBytes = _ocpByteLen(text);
-            ocpTrace('send:fetch-done', {
-              tid, sid, status: resp.status,
-              headersMs: tHeaders, bodyMs: tBody, respBytes,
-            });
-            sendToClient({ type: 'message:send:result', id, status: resp.status, data });
-            ocpTrace('send:end', { tid, sid, status: resp.status, totalMs: _ocpMs(tStart) });
-            _ocpSessionLog('send.end', { conn: connId, sid, tid, status: resp.status, ms: _ocpMs(tStart), respBytes });
+            const respBytes = _ocpByteLen(r.data);
+            ocpTrace('send:fetch-done', { tid, sid, status: r.status, bodyMs: tBody, respBytes });
+            sendToClient({ type: 'message:send:result', id, status: r.status, data: r.data });
+            ocpTrace('send:end', { tid, sid, status: r.status, totalMs: _ocpMs(tStart) });
+            _ocpSessionLog('send.end', { conn: connId, sid, tid, status: r.status, ms: _ocpMs(tStart), respBytes });
           } catch (err) {
-            if (err.name === 'AbortError') {
+            _ocpClearHealthTimer(tid);
+            if (err.name === 'AbortError' || ac.signal.aborted) {
               ocpTrace('send:abort', { tid, sid, totalMs: _ocpMs(tStart) });
               _ocpSessionLog('send.abort', { conn: connId, sid, tid, ms: _ocpMs(tStart) });
+              if (sid) _ocpMarkSendEnd(sid, 'abort');
               sendToClient({ type: 'message:send:result', id, status: 499, data: { error: 'Aborted' } });
             } else {
+              console.warn('[ocp-session-debug] session.prompt threw', { sid, tid, err: err?.name, msg: err?.message, status: err?.status, ms: _ocpMs(tStart) });
               ocpTrace('send:err', { tid, sid, err: err.name, msg: err.message, totalMs: _ocpMs(tStart) });
               _ocpSessionLog('send.error', { conn: connId, sid, tid, err: err.name, ms: _ocpMs(tStart) });
-              sendToClient({ type: 'message:send:result', id, status: 500, data: { error: err.message } });
+              const status = err.status || 500;
+              sendToClient({ type: 'message:send:result', id, status, data: { error: err.message } });
             }
           } finally {
             _sendAbortControllers.delete(sid);
@@ -5382,75 +6122,145 @@ function handleOpencodeWs(ws) {
           if (sendAc) { try { sendAc.abort(); } catch {} }
           let r;
           try {
-            r = await ocpProxy('POST', `/session/${msg.sessionId}/abort`);
+            r = await opencodeClient.session.abort({ sessionID: msg.sessionId });
           } catch (err) {
-            r = { status: 0, ok: false, error: err?.message || String(err) };
+            r = { status: err?.status || 0, ok: false, error: err?.message || String(err) };
           }
           _ocpSessionLog('message.abort', { conn: connId, sid: msg.sessionId, status: r?.status });
+          // Stop any associated loop driver so the agent doesn't just start another iteration
+          _abortLoopForOcpSession(msg.sessionId);
           // Always ack so the client never hangs waiting for this reply.
           sendToClient({ type: 'message:abort:result', id, ...(r || { ok: true }) });
           break;
         }
         case 'question:reply': {
-          const requestID = encodeURIComponent(String(msg.requestID || ''));
-          const r = await ocpProxyFirstSupported('POST', [
-            `/question/${requestID}`,
-            `/question/${requestID}/reply`,
-          ], msg.body || { answers: [] });
+          const requestID = String(msg.requestID || '');
+          const body = msg.body || { answers: [] };
+          const answers = Array.isArray(body.answers) ? body.answers : [];
+          ocpTraceEmit('q:reply:recv', { conn: connId, reqId: requestID, answersCount: answers.length });
+          const tStart = _ocpNow();
+          let r;
+          let viaPath = 'sdk';
+          try {
+            r = await opencodeClient.question.reply({ requestID, answers });
+          } catch (err) {
+            if (err?.status && err.status !== 404 && err.status !== 405) {
+              r = { status: err.status || 500, data: { error: err.message || String(err) } };
+              viaPath = 'sdk-error';
+            } else {
+              viaPath = 'proxy';
+              const encodedRequestID = encodeURIComponent(requestID);
+              r = await ocpProxyFirstSupported('POST', [
+                `/question/${encodedRequestID}/reply`,
+                `/question/${encodedRequestID}`,
+              ], body);
+            }
+          }
+          ocpTraceEmit('q:reply:done', { conn: connId, reqId: requestID, status: r?.status, via: viaPath, ms: _ocpMs(tStart) });
           sendToClient({ type: 'question:reply:result', id, ...r });
           break;
         }
         case 'question:reject': {
-          const requestID = encodeURIComponent(String(msg.requestID || ''));
-          const r = await ocpProxyFirstSupported('POST', [
-            `/question/${requestID}/reject`,
-            `/question/${requestID}`,
-          ], msg.body || { answers: [] });
+          const requestID = String(msg.requestID || '');
+          let r;
+          try {
+            r = await opencodeClient.question.reject({ requestID });
+          } catch (err) {
+            if (err?.status && err.status !== 404 && err.status !== 405) {
+              r = { status: err.status || 500, data: { error: err.message || String(err) } };
+            } else {
+              const encodedRequestID = encodeURIComponent(requestID);
+              r = await ocpProxyFirstSupported('POST', [
+                `/question/${encodedRequestID}/reject`,
+                `/question/${encodedRequestID}`,
+              ]);
+            }
+          }
           sendToClient({ type: 'question:reject:result', id, ...r });
           break;
         }
         case 'permission:respond': {
           const sid = msg.sessionId || msg.sessionID;
           const permId = msg.permissionID || msg.permissionId || msg.requestID;
-          const encodedPermId = encodeURIComponent(String(permId || ''));
-          const encodedSid = encodeURIComponent(String(sid || ''));
-          const body = { response: msg.response || 'once' };
+          const response = ['once', 'always', 'reject'].includes(String(msg.response || ''))
+            ? String(msg.response)
+            : 'once';
+          const body = { response, reply: response };
           if (typeof msg.remember === 'boolean') body.remember = msg.remember;
-          const r = await ocpProxyFirstSupported('POST', [
-            `/permission/${encodedPermId}`,
-            `/permission/${encodedPermId}/respond`,
-            `/session/${encodedSid}/permissions/${encodedPermId}`,
-          ], body);
+          let r;
+          try {
+            r = await opencodeClient.permission.reply({ requestID: String(permId || ''), reply: response });
+          } catch (err) {
+            try {
+              r = await opencodeClient.permission.respond({
+                sessionID: String(sid || ''),
+                permissionID: String(permId || ''),
+                response,
+              });
+            } catch (err2) {
+              const status = err2?.status || err?.status || 0;
+              if (status && status !== 404 && status !== 405) {
+                r = { status: status || 500, data: { error: err2?.message || err?.message || String(err2 || err) } };
+              } else {
+                const encodedPermId = encodeURIComponent(String(permId || ''));
+                const encodedSid = encodeURIComponent(String(sid || ''));
+                r = await ocpProxyFirstSupported('POST', [
+                  `/permission/${encodedPermId}/reply`,
+                  `/permission/${encodedPermId}/respond`,
+                  `/permission/${encodedPermId}`,
+                  `/session/${encodedSid}/permissions/${encodedPermId}`,
+                ], body);
+              }
+            }
+          }
+          ocpTraceEmit('perm:respond:done', { conn: connId, sid, permId, response, status: r?.status });
           sendToClient({ type: 'permission:respond:result', id, ...r });
           break;
         }
         case 'question:list': {
-          const r = await ocpProxy('GET', '/question');
+          const tStart = _ocpNow();
+          let r;
+          try { r = await opencodeClient.question.list({}); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
+          const count = Array.isArray(r?.data) ? r.data.length
+            : (Array.isArray(r?.data?.questions) ? r.data.questions.length
+            : (Array.isArray(r?.data?.data) ? r.data.data.length : 0));
+          ocpTraceEmit('q:list:done', { conn: connId, status: r?.status, count, ms: _ocpMs(tStart) });
           sendToClient({ type: 'question:list:result', id, ...r });
           break;
         }
         case 'session:revert': {
-          const r = await ocpProxy('POST', `/session/${msg.sessionId}/revert`);
+          let r;
+          try { r = await opencodeClient.session.revert({ sessionID: msg.sessionId }); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'session:revert:result', id, ...r });
           break;
         }
         case 'session:unrevert': {
-          const r = await ocpProxy('POST', `/session/${msg.sessionId}/unrevert`);
+          let r;
+          try { r = await opencodeClient.session.unrevert({ sessionID: msg.sessionId }); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'session:unrevert:result', id, ...r });
           break;
         }
         case 'session:summarize': {
-          const r = await ocpProxy('POST', `/session/${msg.sessionId}/summarize`);
+          let r;
+          try { r = await opencodeClient.session.summarize({ sessionID: msg.sessionId }); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'session:summarize:result', id, ...r });
           break;
         }
         case 'session:share': {
-          const r = await ocpProxy('POST', `/session/${msg.sessionId}/share`);
+          let r;
+          try { r = await opencodeClient.session.share({ sessionID: msg.sessionId }); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'session:share:result', id, ...r });
           break;
         }
         case 'messages:list': {
-          const r = await ocpProxy('GET', `/session/${msg.sessionId}/message`);
+          let r;
+          try { r = await opencodeClient.session.messages({ sessionID: msg.sessionId }); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           if (r.status < 400 && opencodeMessagesNeedFallback(r.data)) {
             const fallback = loadOpencodeMessagesFallback(msg.sessionId);
             if (fallback?.length) {
@@ -5472,54 +6282,72 @@ function handleOpencodeWs(ws) {
           break;
         }
         case 'config:read': {
-          const r = await ocpProxy('GET', '/config');
+          let r;
+          try { r = await opencodeClient.config.get({}); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'config:read:result', id, ...r });
           break;
         }
         case 'config:write': {
-          const r = await ocpProxy('PATCH', '/config', msg.body || {});
+          let r;
+          try { r = await opencodeClient.config.update({ config: msg.body || {} }); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'config:write:result', id, ...r });
           break;
         }
         case 'providers:list': {
           await reconcileAuthIfStale();
-          const r = await ocpProxy('GET', '/provider');
+          let r;
+          try { r = await opencodeClient.provider.list({}); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'providers:list:result', id, ...r });
           break;
         }
         case 'providers:full': {
           await reconcileAuthIfStale();
-          const r = await ocpProxy('GET', '/provider');
+          let r;
+          try { r = await opencodeClient.provider.list({}); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'providers:full:result', id, ...r });
           break;
         }
         case 'providers:auth': {
-          const r = await ocpProxy('GET', '/provider/auth');
+          let r;
+          try { r = await opencodeClient.provider.auth({}); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'providers:auth:result', id, ...r });
           break;
         }
         case 'auth:set': {
+          // Auth.set isn't surfaced on the wrapper (rarely-used + low payoff);
+          // fall back to ocpProxy for now.
           const r = await ocpProxy('PUT', `/auth/${msg.providerId}`, msg.body || {});
           sendToClient({ type: 'auth:set:result', id, ...r });
           break;
         }
         case 'oauth:authorize': {
+          // Provider.oauth.* isn't surfaced on the wrapper; ocpProxy fallback.
           const r = await ocpProxy('POST', `/provider/${msg.providerId}/oauth/authorize`);
           sendToClient({ type: 'oauth:authorize:result', id, ...r });
           break;
         }
         case 'oauth:callback': {
+          // Provider.oauth.* isn't surfaced on the wrapper; ocpProxy fallback.
           const r = await ocpProxy('POST', `/provider/${msg.providerId}/oauth/callback`, msg.body || {});
           sendToClient({ type: 'oauth:callback:result', id, ...r });
           break;
         }
         case 'agents:list': {
-          const r = await ocpProxy('GET', '/agent');
+          let r;
+          try { r = await opencodeClient.app.agents({}); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'agents:list:result', id, ...r });
           break;
         }
         case 'config:providers': {
-          const r = await ocpProxy('GET', '/config/providers');
+          let r;
+          try { r = await opencodeClient.config.providers({}); }
+          catch (err) { r = { status: err?.status || 500, data: { error: err?.message } }; }
           sendToClient({ type: 'config:providers:result', id, ...r });
           break;
         }
@@ -5781,7 +6609,8 @@ app.get('/api/opencode/status', async (req, res) => {
       running = await ensureOpencodeServer();
     } else if (!running && _ocpReady) {
       _ocpReady = false;
-      stopOpencodeSSERelay();
+      opencodeClient.disconnect().catch(() => {});
+      _ocpStopSilenceWatchdog();
     }
     res.json({ ok: true, running, port: _ocpPort, version: _ocpVersion, managed: !!_ocpProc });
   } catch (err) {
@@ -5831,6 +6660,44 @@ app.post('/api/opencode/serve/start', async (req, res) => {
 });
 
 app.post('/api/opencode/serve/stop', (req, res) => {
+  try {
+    stopOpencodeServer();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── REST endpoints for OpenCode V2 (clean-slate sidepanel) ──
+
+app.get('/api/opencode-v2/status', async (req, res) => {
+  try {
+    let running = await checkOpencodeHealth();
+    if (running && !_ocpReady) running = await ensureOpencodeServer();
+    res.json({
+      ok: true,
+      running,
+      port: _ocpPort,
+      version: _ocpVersion,
+      managed: !!_ocpProc,
+      connected: opencodeV2Client.isConnected(),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/opencode-v2/serve/start', async (req, res) => {
+  try {
+    if (req.body?.port) _ocpPort = Number(req.body.port) || 4096;
+    const ready = await ensureOpencodeServer();
+    res.json({ ok: ready, port: _ocpPort, version: _ocpVersion, managed: !!_ocpProc });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/opencode-v2/serve/stop', (req, res) => {
   try {
     stopOpencodeServer();
     res.json({ ok: true });
@@ -6083,6 +6950,20 @@ app.post('/api/opencode/config/reveal', (req, res) => {
 const _orphanedProcs = new Map(); // windowId:sessionId → { proc, state, buffer, killTimer, sendToClient, ... }
 function _orphanKey(wid, sid) { return sid ? `${wid}:${sid}` : wid; }
 const ORPHAN_GRACE_MS = 30 * 60 * 1000; // 30 minutes — survive sleep, network hiccups, tab throttling
+
+// Periodic sweep of orphaned procs whose process has died (system reboot,
+// kill -9, crash) but whose killTimer never fired and whose entry was never
+// reattached. Without this, _orphanedProcs grows unbounded across long
+// uptimes and each entry retains its proc/buffer closures.
+setInterval(() => {
+  for (const [key, orphan] of _orphanedProcs) {
+    const p = orphan?.proc;
+    if (!p || p.killed || p.exitCode !== null) {
+      try { clearTimeout(orphan.killTimer); } catch {}
+      _orphanedProcs.delete(key);
+    }
+  }
+}, 60_000).unref?.();
 
 function handleClaudeSkinWebSocket(ws) {
   const SKIN_DEBUG = process.env.CLAUDE_SKIN_DEBUG === '1';
@@ -6592,23 +7473,54 @@ function handleClaudeSkinWebSocket(ws) {
             // we kill the process — leaving ghost tool cards below PLAN COMPLETE. Drop
             // them at the protocol boundary so the UI renders: plan text → ExitPlanMode → PLAN COMPLETE.
             const content = event.message?.content;
+            let planFilePath = null;
+            let planFileName = null;
             if (Array.isArray(content)) {
               const exitIdx = content.findIndex(b => b?.type === 'tool_use' && b?.name === 'ExitPlanMode');
               const precedingTypes = content.slice(0, exitIdx).map(b => b?.type === 'tool_use' ? `tool_use:${b.name}` : (b?.type || 'unknown'));
               const trailingTypes = content.slice(exitIdx + 1).map(b => b?.type === 'tool_use' ? `tool_use:${b.name}` : (b?.type || 'unknown'));
               const planTextBlock = content.slice(0, exitIdx).find(b => b?.type === 'text');
+              const exitBlock = content[exitIdx];
+              const inputPlan = (exitBlock?.input?.plan || '').trim();
+              const planText = (planTextBlock?.text || '').trim();
               planTrace('exit-detected', {
                 contentBlocks: content.length,
                 exitIdx,
                 precedingTypes,
                 trailingCount: trailingTypes.length,
                 trailingTypes,
-                planLen: (planTextBlock?.text || '').length,
+                planLen: planText.length,
+                inputPlanLen: inputPlan.length,
               });
               if (exitIdx >= 0 && exitIdx < content.length - 1) {
                 event.message.content = content.slice(0, exitIdx + 1);
                 console.log(`[claude-skin] ▶ Trimmed ${content.length - exitIdx - 1} block(s) after ExitPlanMode`);
               }
+              // Server-side plan authoring — runs BEFORE killProc() since the kill
+              // prevents PostToolUse from firing and post-plan.mjs from authoring the file.
+              // Prefer ExitPlanMode.input.plan; fall back to the prose text block before it
+              // (the SynaBun plan-mode prefix instructs Claude to write the plan as prose).
+              const planBody = inputPlan || planText;
+              if (planBody) {
+                try {
+                  const result = writePlanFile(planBody, { cwd: workDir, projectPath: workDir });
+                  if (result.ok) {
+                    planFilePath = result.path;
+                    planFileName = result.name;
+                    console.log(`[claude-skin] ▶ Plan authored: ${result.path}${result.idempotent ? ' (idempotent)' : ''}`);
+                  } else {
+                    console.log(`[claude-skin] ▶ Plan author skipped: ${result.error}`);
+                  }
+                } catch (err) {
+                  console.log(`[claude-skin] ▶ Plan author error: ${err.message}`);
+                }
+              }
+            }
+            // Tell the client about the plan file BEFORE the assistant event so the eager
+            // capture in renderAssistant sees tab.planFilePath already set and skips its
+            // (now redundant) /api/create-plan POST.
+            if (planFilePath) {
+              sendToClient({ type: 'event', event: { type: 'system', subtype: 'plan_file_written', path: planFilePath, name: planFileName } });
             }
             sendToClient({ type: 'event', event });
             exitPlanKilled = true;
@@ -12223,51 +13135,58 @@ function cleanupMatchingRootPlan(cwd, content) {
   }
 }
 
+const _NARRATION_PREFIX = /^(thought\b|›|thinking[:\s]|let me\b|i'?ll\b|i will\b|i (have|see|need|found|checked)\b|i'?ve (found|checked|seen|got)\b|now i (have|see|understand|need)\b|here'?s\b|looking at\b|based on (the|my|your)\b|okay,?\s|alright,?\s|so\s+(i|we)\s+(need|should|can)|the user (wants|asked|is asking|needs)|the recent\b|found it\b)/i;
+
+function writePlanFile(content, opts = {}) {
+  if (!content || typeof content !== 'string') return { ok: false, status: 400, error: 'Missing content' };
+  const h1 = content.match(/^#\s+(.+)$/m);
+  if (!h1) {
+    const firstLine = (content.split('\n').find(l => l.trim()) || '').trim();
+    if (_NARRATION_PREFIX.test(firstLine)) {
+      return { ok: false, status: 422, error: 'Plan content looks like thinking/preamble, not a plan (no H1, starts with narration marker)' };
+    }
+  }
+  const d = new Date();
+  const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const plansDir = join(DATA_HOME, 'data', 'plans', ymd);
+  if (!existsSync(plansDir)) mkdirSync(plansDir, { recursive: true });
+  const title = h1 ? h1[1].trim() : (content.split('\n').find(l => l.trim()) || 'untitled').trim();
+  const slug = (title || 'untitled')
+    .toLowerCase()
+    .replace(/^plan[:\s]+/i, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'untitled';
+  // Idempotent: same-slug + identical content returns existing path so the
+  // server hook and a UI retry don't race into slug-2.md duplicates.
+  const sameContent = (path) => {
+    try { return readFileSync(path, 'utf-8') === content; } catch { return false; }
+  };
+  let name = `${slug}.md`;
+  let fullPath = join(plansDir, name);
+  if (existsSync(fullPath)) {
+    if (sameContent(fullPath)) return { ok: true, path: fullPath.replace(/\\/g, '/'), name, idempotent: true };
+    let n = 2;
+    while (existsSync(join(plansDir, `${slug}-${n}.md`))) {
+      const candidate = join(plansDir, `${slug}-${n}.md`);
+      if (sameContent(candidate)) return { ok: true, path: candidate.replace(/\\/g, '/'), name: `${slug}-${n}.md`, idempotent: true };
+      n++;
+    }
+    name = `${slug}-${n}.md`;
+    fullPath = join(plansDir, name);
+  }
+  writeFileSync(fullPath, content, 'utf-8');
+  const cleanedRootPlan = cleanupMatchingRootPlan(opts.projectPath || opts.cwd || '', content);
+  return { ok: true, path: fullPath.replace(/\\/g, '/'), name, cleanedRootPlan };
+}
+
 // POST /api/create-plan — Materialize plan content into a file in data/plans/YYYY-MM-DD/slug.md
 app.post('/api/create-plan', (req, res) => {
   try {
     const { content, cwd, projectPath } = req.body;
-    if (!content || typeof content !== 'string') return res.status(400).json({ error: 'Missing content' });
-
-    // Reject thinking/preamble content masquerading as a plan. If there is no H1 and the
-    // first non-empty line begins with a known thinking marker, refuse the write so the
-    // UI can retry instead of accumulating garbage filenames.
-    const h1 = content.match(/^#\s+(.+)$/m);
-    if (!h1) {
-      const firstLine = (content.split('\n').find(l => l.trim()) || '').trim();
-      if (/^(thought\b|›|thinking[:\s]|let me\b|i'?ll\b|i will\b|the user wants? me\b)/i.test(firstLine)) {
-        return res.status(422).json({ error: 'Plan content looks like thinking/preamble, not a plan (no H1, starts with narration marker)' });
-      }
-    }
-
-    // Date-organized folder
-    const d = new Date();
-    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    const plansDir = join(DATA_HOME, 'data', 'plans', ymd);
-    if (!existsSync(plansDir)) mkdirSync(plansDir, { recursive: true });
-
-    // Slug from H1 heading or first line
-    const title = h1 ? h1[1].trim() : (content.split('\n').find(l => l.trim()) || 'untitled').trim();
-    const slug = (title || 'untitled')
-      .toLowerCase()
-      .replace(/^plan[:\s]+/i, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 60) || 'untitled';
-
-    // Collision-safe naming
-    let name = `${slug}.md`;
-    let fullPath = join(plansDir, name);
-    if (existsSync(fullPath)) {
-      let n = 2;
-      while (existsSync(join(plansDir, `${slug}-${n}.md`))) n++;
-      name = `${slug}-${n}.md`;
-      fullPath = join(plansDir, name);
-    }
-
-    writeFileSync(fullPath, content, 'utf-8');
-    const cleanedRootPlan = cleanupMatchingRootPlan(projectPath || cwd || '', content);
-    res.json({ ok: true, path: fullPath.replace(/\\/g, '/'), name, cleanedRootPlan });
+    const result = writePlanFile(content, { cwd, projectPath });
+    if (!result.ok) return res.status(result.status || 500).json({ error: result.error });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -14982,6 +15901,38 @@ function loadOpencodeGreetingConfig() {
   }
 }
 
+// Plan-mode prompt-prefix injected into every OpenCode plan-mode turn. OpenCode
+// has no native plan-mode system prompt — the SDK only exposes `body.mode` for
+// agent selection. Without explicit instructions models like Kimi K2.6 write
+// clarification questions as prose, which the sidepanel cannot render as an
+// interactive card. The pressing-STOP recovery path then surfaces a PLAN
+// COMPLETE for the half-finished plan. Anchoring the rules here forces the
+// model to use the `question` tool and stop after a final plan.
+const OPENCODE_PLAN_MODE_INSTRUCTION = `[PLAN MODE] Read-only research and planning. Do NOT make code changes.
+
+CRITICAL — When you have clarifying questions for the user:
+1. You MUST call the \`question\` tool to ask. The user only sees interactive question cards in the sidepanel — they CANNOT see questions you write as plain text.
+2. Do NOT write questions as prose in your reply (e.g. "Before I proceed, a couple of quick questions: …").
+3. After calling \`question\`, stop and wait for the user's answer before continuing the plan.
+4. When the plan is ready and questions are resolved, write the final plan as a structured Markdown response and stop. Do NOT continue into implementation — the sidepanel will present approval options (Continue with implementation / Continue planning / Compact context / Edit plan).
+
+EXAMPLE — calling the question tool (use this shape verbatim, just substitute your own content):
+question({
+  questions: [
+    {
+      question: "Which database engine should we use?",
+      header: "DB engine",
+      options: [
+        { label: "PostgreSQL", description: "Mature SQL, good for complex queries" },
+        { label: "SQLite", description: "Single-file, zero-config, lower throughput" }
+      ],
+      multiSelect: false
+    }
+  ]
+})
+
+If you find yourself writing "let me ask a few questions" or "Question 1:" or "Before I proceed:", STOP and call the \`question\` tool instead.`;
+
 function buildOpencodeGreetingUserPrompt({ cwd = PACKAGE_ROOT, userPrompt = '' } = {}) {
   const config = loadOpencodeGreetingConfig();
   if (config.enabled !== true) return '';
@@ -15017,6 +15968,15 @@ function buildOpencodeGreetingUserPrompt({ cwd = PACKAGE_ROOT, userPrompt = '' }
   const showLastSession = projectConfig?.showLastSession ?? config.defaults?.showLastSession ?? false;
 
   const parts = [];
+  // OpenCode does not bind a session to a project directory the way Codex does
+  // — its tools default to the serve process's cwd, not the user-selected
+  // project. Spell out the absolute project path here so the agent always uses
+  // it for Read/Bash/etc. instead of falling back to the serve cwd.
+  if (cwd && cwd !== PACKAGE_ROOT) {
+    parts.push(`Project working directory: \`${cwd}\``);
+    parts.push(`Use this absolute path as the working directory for all file operations (Read, Write, Edit, Bash). Do not operate on the SynaBun project unless explicitly asked.`);
+    parts.push('');
+  }
   parts.push(`Before answering, please use the recall tool to search for "recent sessions, ongoing work, known issues, decisions" in the "${project}" project with recency_boost enabled.`);
   parts.push('');
   parts.push(`Start your reply with this greeting:`);
@@ -15981,6 +16941,29 @@ app.delete('/api/skills/install', (req, res) => {
 app.get('/api/claude-code/skills', (req, res) => {
   try {
     res.json({ ok: true, skills: listAvailableSkills() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/opencode/commands — list user-defined OpenCode commands at ~/.config/opencode/command/*.md
+app.get('/api/opencode/commands', (req, res) => {
+  try {
+    const dir = getOpenCodeCommandDir();
+    if (!existsSync(dir)) return res.json({ ok: true, commands: [] });
+    const commands = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      const name = entry.name.replace(/\.md$/, '');
+      let description = '';
+      try {
+        const content = readFileSync(join(dir, entry.name), 'utf-8');
+        const fm = parseSkillFrontmatter(content);
+        description = fm.description || '';
+      } catch {}
+      commands.push({ name, description, fileName: entry.name });
+    }
+    res.json({ ok: true, commands });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -19538,6 +20521,60 @@ app.post('/api/sessions/cleanup', express.json(), (req, res) => {
   res.json({ ok: true, cleaned, total: leaks.length });
 });
 
+// GET /api/sessions/pending-remember-prompt — build the prompt that processes
+// orphaned pending-remember flags. The client routes this prompt to the
+// chosen provider sidepanel (Claude Code / Codex / OpenCode) — no agent spawn.
+app.get('/api/sessions/pending-remember-prompt', (req, res) => {
+  try {
+    const leaks = scanForLeaks().filter(l =>
+      l.type === 'orphaned-state' && l.file && l.file.includes('pending-remember') && l.sessionId
+    );
+    if (leaks.length === 0) return res.json({ ok: true, count: 0, prompt: '', message: 'No pending-remember flags to process.' });
+
+    const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+    const claudeProjectsDir = join(homeDir, '.claude', 'projects');
+
+    const targets = leaks.map(l => {
+      let transcriptPath = null;
+      try {
+        if (existsSync(claudeProjectsDir)) {
+          const projDirs = readdirSync(claudeProjectsDir, { withFileTypes: true }).filter(d => d.isDirectory());
+          for (const d of projDirs) {
+            const candidate = join(claudeProjectsDir, d.name, `${l.sessionId}.jsonl`);
+            if (existsSync(candidate)) { transcriptPath = candidate; break; }
+          }
+        }
+      } catch { /* ignore */ }
+      return { sessionId: l.sessionId, flagFile: l.file, transcriptPath, ageMs: l.ageMs };
+    });
+
+    const lines = targets.map((t, i) =>
+      `${i + 1}. session=${t.sessionId}\n   flag=${t.flagFile}\n   transcript=${t.transcriptPath || '(not found)'}`
+    ).join('\n');
+
+    const prompt = [
+      'Process orphaned pending-remember flags. Each flag corresponds to a Claude Code session whose auto-remember never fired.',
+      '',
+      'For each target below:',
+      '1. If a transcript path is given, read it (JSONL — read enough to identify edited files, decisions, fixes, features).',
+      '2. If the session did substantive work, call the `remember` MCP tool with: clear summary (what + why + how), appropriate category, project="synabun", related_files (paths actually touched), 3-5 tags, importance 5-7 (8+ only if architectural).',
+      '3. If the transcript is missing, empty, or shows trivial activity (Q&A, no edits), skip the remember step.',
+      '4. After deciding, DELETE the flag file using a shell command: `rm "<flagFile>"`.',
+      '5. Move to the next target. Do not narrate between items — just execute.',
+      '',
+      `Targets (${targets.length}):`,
+      lines,
+      '',
+      'When all targets are processed, output one line: "Processed N flags: M memories created, K skipped."',
+    ].join('\n');
+
+    res.json({ ok: true, count: targets.length, prompt });
+  } catch (err) {
+    console.error('GET /api/sessions/pending-remember-prompt error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Session Monitor WebSocket ──
 
 function handleSessionMonitorWebSocket(ws) {
@@ -22549,6 +23586,8 @@ async function createBrowserSession(options = {}) {
   context.on('close', () => {
     const orphanedLoops = session._loopOwned?.size > 0 ? [...session._loopOwned] : [];
     console.log(`Browser context closed for session ${sessionId}${session._agentOwned ? ` (agent-owned: ${session._agentOwned})` : ''}${orphanedLoops.length ? ` (orphaning loops: ${orphanedLoops.join(', ')})` : ''}`);
+    session.screencastActive = false;
+    detachScreencastFrameHandler(session);
     // Stop autosave interval
     if (session._autosaveInterval) { clearInterval(session._autosaveInterval); session._autosaveInterval = null; }
     session.clients.forEach(ws => {
@@ -22591,8 +23630,22 @@ async function createBrowserSession(options = {}) {
 /**
  * Start CDP screencast — streams JPEG frames to all connected WebSocket clients.
  */
+function detachScreencastFrameHandler(session) {
+  const handler = session?._screencastFrameHandler;
+  const cdp = session?._screencastFrameCdpSession || session?.cdpSession;
+  if (!handler || !cdp) return;
+  try {
+    if (typeof cdp.off === 'function') cdp.off('Page.screencastFrame', handler);
+    else if (typeof cdp.removeListener === 'function') cdp.removeListener('Page.screencastFrame', handler);
+  } catch {}
+  session._screencastFrameHandler = null;
+  session._screencastFrameCdpSession = null;
+}
+
 async function startScreencast(session) {
-  if (session.screencastActive) return;
+  if (session.screencastActive &&
+      session._screencastFrameHandler &&
+      session._screencastFrameCdpSession === session.cdpSession) return;
 
   const scCfg = loadBrowserConfig().screencast || {};
   if (scCfg.disabled !== false) {
@@ -22604,10 +23657,15 @@ async function startScreencast(session) {
 
   console.log('[screencast] Starting screencast, CDP session exists:', !!session.cdpSession, 'persistent:', !!session._isPersistent);
 
-  let frameCount = 0;
-  session.cdpSession.on('Page.screencastFrame', (params) => {
-    frameCount++;
-    if (frameCount <= 3) console.log(`[screencast] Frame #${frameCount} received (${params.data?.length || 0} chars)`);
+  detachScreencastFrameHandler(session);
+  const frameCdpSession = session.cdpSession;
+  const onScreencastFrame = (params) => {
+    // Bail out cheaply when no clients can receive frames. Still ack to keep
+    // the CDP pipeline moving — otherwise Chromium stops sending frames.
+    if (!session.clients || session.clients.size === 0) {
+      frameCdpSession.send('Page.screencastFrameAck', { sessionId: params.sessionId }).catch(() => {});
+      return;
+    }
 
     // Send raw JPEG bytes as binary WebSocket message (no base64/JSON overhead).
     // First byte = 0x01 (frame marker) so clients distinguish binary frames
@@ -22622,10 +23680,13 @@ async function startScreencast(session) {
     });
 
     // Fire-and-forget ACK — no await, removes ACK latency from the frame pipeline
-    session.cdpSession.send('Page.screencastFrameAck', {
+    frameCdpSession.send('Page.screencastFrameAck', {
       sessionId: params.sessionId,
     }).catch(() => {});
-  });
+  };
+  session._screencastFrameHandler = onScreencastFrame;
+  session._screencastFrameCdpSession = frameCdpSession;
+  frameCdpSession.on('Page.screencastFrame', onScreencastFrame);
 
   try {
     await session.cdpSession.send('Page.startScreencast', {
@@ -22639,16 +23700,20 @@ async function startScreencast(session) {
   } catch (err) {
     console.error('[screencast] Page.startScreencast FAILED:', err.message);
     session.screencastActive = false;
+    detachScreencastFrameHandler(session);
     throw err;
   }
 }
 
 async function stopScreencast(session) {
-  if (!session.screencastActive) return;
+  const wasActive = !!session.screencastActive;
   session.screencastActive = false;
-  try {
-    await session.cdpSession.send('Page.stopScreencast');
-  } catch {}
+  if (wasActive) {
+    try {
+      await session.cdpSession.send('Page.stopScreencast');
+    } catch {}
+  }
+  detachScreencastFrameHandler(session);
 }
 
 // ── Multi-tab helpers ──
@@ -24032,7 +25097,7 @@ httpServer.on('upgrade', (req, socket, head) => {
     // Whiteboard + sync always allowed (read-only viewing; sync needed for permission delivery)
   }
 
-  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin' || url.pathname === '/ws/codex-skin' || url.pathname === '/ws/opencode-skin' || url.pathname === '/ws/sessions') {
+  if (url.pathname.startsWith('/ws/terminal/') || url.pathname.startsWith('/ws/browser/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin' || url.pathname === '/ws/codex-skin' || url.pathname === '/ws/opencode-skin' || url.pathname === '/ws/opencode-v2' || url.pathname === '/ws/ocp-trace' || url.pathname === '/ws/sessions') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });
@@ -24089,6 +25154,18 @@ wss.on('connection', (ws, req) => {
   // ── Route: OpenCode Skin chat ──
   if (url.pathname === '/ws/opencode-skin') {
     handleOpencodeWs(ws);
+    return;
+  }
+
+  // ── Route: OpenCode V2 (clean-slate sidepanel) ──
+  if (url.pathname === '/ws/opencode-v2') {
+    handleOpencodeV2Ws(ws);
+    return;
+  }
+
+  // ── Route: OpenCode trace stream (live ocp-trace.jsonl tail) ──
+  if (url.pathname === '/ws/ocp-trace') {
+    handleOcpTraceWs(ws);
     return;
   }
 

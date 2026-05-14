@@ -45,8 +45,55 @@ let _visible = false;
 
 // Drag state
 let _dragState = null;
+let _dragRaf = 0;
+let _pendingDragFrame = null;
 // Resize state
 let _resizeState = null;
+let _resizeRaf = 0;
+let _pendingResizeFrame = null;
+
+function _applyDragFrame() {
+  _dragRaf = 0;
+  if (!_panel || !_pendingDragFrame) return;
+  _panel.style.left = _pendingDragFrame.left + 'px';
+  _panel.style.top = _pendingDragFrame.top + 'px';
+}
+
+function _scheduleDragFrame(left, top) {
+  _pendingDragFrame = { left, top };
+  if (!_dragRaf) _dragRaf = requestAnimationFrame(_applyDragFrame);
+}
+
+function _flushDragFrame() {
+  if (_dragRaf) {
+    cancelAnimationFrame(_dragRaf);
+    _dragRaf = 0;
+  }
+  _applyDragFrame();
+}
+
+function _applyResizeFrame() {
+  _resizeRaf = 0;
+  if (!_panel || !_pendingResizeFrame) return;
+  const { width, height, left, top } = _pendingResizeFrame;
+  if (width != null) _panel.style.width = width + 'px';
+  if (height != null) _panel.style.height = height + 'px';
+  if (left != null) _panel.style.left = left + 'px';
+  if (top != null) _panel.style.top = top + 'px';
+}
+
+function _scheduleResizeFrame(frame) {
+  _pendingResizeFrame = frame;
+  if (!_resizeRaf) _resizeRaf = requestAnimationFrame(_applyResizeFrame);
+}
+
+function _flushResizeFrame() {
+  if (_resizeRaf) {
+    cancelAnimationFrame(_resizeRaf);
+    _resizeRaf = 0;
+  }
+  _applyResizeFrame();
+}
 
 /**
  * Open the Link Panel. If no link exists, shows setup view.
@@ -578,6 +625,7 @@ function _onDragStart(e) {
   const rect = _panel.getBoundingClientRect();
   _panel.style.transform = 'none';
   _dragState = { startX: e.clientX, startY: e.clientY, startLeft: rect.left, startTop: rect.top };
+  _pendingDragFrame = null;
   _panel.classList.add('dragging');
   document.addEventListener('mousemove', _onDragMove);
   document.addEventListener('mouseup', _onDragEnd);
@@ -587,11 +635,12 @@ function _onDragMove(e) {
   if (!_dragState) return;
   const dx = e.clientX - _dragState.startX;
   const dy = e.clientY - _dragState.startY;
-  _panel.style.left = (_dragState.startLeft + dx) + 'px';
-  _panel.style.top = (_dragState.startTop + dy) + 'px';
+  _scheduleDragFrame(_dragState.startLeft + dx, _dragState.startTop + dy);
 }
 
 function _onDragEnd() {
+  if (!_dragState) return;
+  _flushDragFrame();
   _dragState = null;
   _panel.classList.remove('dragging');
   document.removeEventListener('mousemove', _onDragMove);
@@ -628,6 +677,7 @@ function _onResizeStart(e) {
   if (!dirs.left && !dirs.right && !dirs.top && !dirs.bottom) return;
   e.preventDefault();
   _resizeState = { dirs, startX: e.clientX, startY: e.clientY, startRect: rect };
+  _pendingResizeFrame = null;
   document.addEventListener('mousemove', _onResizeMove);
   document.addEventListener('mouseup', _onResizeEnd);
 }
@@ -637,21 +687,25 @@ function _onResizeMove(e) {
   const { dirs, startX, startY, startRect } = _resizeState;
   const dx = e.clientX - startX, dy = e.clientY - startY;
   const minW = 320, minH = 300;
-  if (dirs.right) _panel.style.width = Math.max(minW, startRect.width + dx) + 'px';
-  if (dirs.bottom) _panel.style.height = Math.max(minH, startRect.height + dy) + 'px';
+  const frame = {};
+  if (dirs.right) frame.width = Math.max(minW, startRect.width + dx);
+  if (dirs.bottom) frame.height = Math.max(minH, startRect.height + dy);
   if (dirs.left) {
     const newW = Math.max(minW, startRect.width - dx);
-    _panel.style.width = newW + 'px';
-    _panel.style.left = (startRect.left + startRect.width - newW) + 'px';
+    frame.width = newW;
+    frame.left = startRect.left + startRect.width - newW;
   }
   if (dirs.top) {
     const newH = Math.max(minH, startRect.height - dy);
-    _panel.style.height = newH + 'px';
-    _panel.style.top = (startRect.top + startRect.height - newH) + 'px';
+    frame.height = newH;
+    frame.top = startRect.top + startRect.height - newH;
   }
+  _scheduleResizeFrame(frame);
 }
 
 function _onResizeEnd() {
+  if (!_resizeState) return;
+  _flushResizeFrame();
   _resizeState = null;
   document.removeEventListener('mousemove', _onResizeMove);
   document.removeEventListener('mouseup', _onResizeEnd);

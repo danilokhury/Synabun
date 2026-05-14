@@ -2315,7 +2315,8 @@ export function injectStyles() {
     .cxp-session-pill {
       position: relative;
       overflow: hidden;
-      border-color: transparent;
+      border-color: rgba(115, 213, 167, 0.14);
+      transition: border-color 0.2s;
     }
     .cxp-session-pill::before {
       content: '';
@@ -2323,46 +2324,66 @@ export function injectStyles() {
       border-radius: 8px;
       padding: 1px;
       pointer-events: none;
-      background: conic-gradient(
-        from var(--cxp-pill-angle, 0deg),
-        rgba(16,163,127,0.0) 0%,
-        rgba(16,163,127,0.30) 25%,
-        rgba(16,163,127,0.06) 50%,
-        rgba(16,163,127,0.30) 75%,
-        rgba(16,163,127,0.0) 100%
-      );
+      background: transparent;
       -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
       -webkit-mask-composite: xor;
       mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
       mask-composite: exclude;
-      animation: cxp-pill-border-spin 3s linear infinite;
+      opacity: 0;
+    }
+    .cxp-session-pill.cxp-pill-running {
+      border-color: transparent;
+    }
+    .cxp-session-pill.cxp-pill-running::before {
+      background: conic-gradient(
+        from var(--cxp-pill-angle, 0deg),
+        rgba(16,163,127,0.0) 0%,
+        rgba(16,163,127,0.6) 25%,
+        rgba(16,163,127,0.12) 50%,
+        rgba(16,163,127,0.6) 75%,
+        rgba(16,163,127,0.0) 100%
+      );
+      animation: cxp-pill-border-spin 2.4s linear infinite;
+      opacity: 1;
     }
     @keyframes cxp-pill-border-spin {
       to { --cxp-pill-angle: 360deg; }
     }
-    .cxp-session-pill .term-minimized-pill-icon { color: rgba(115, 213, 167, 0.7); }
-    .cxp-session-pill:hover { border-color: transparent; }
-    .cxp-session-pill:hover::before {
+    .cxp-session-pill .term-minimized-pill-icon { color: rgba(115, 213, 167, 0.45); transition: color 0.2s; }
+    .cxp-session-pill.cxp-pill-running .term-minimized-pill-icon { color: rgba(115, 213, 167, 1); }
+    .cxp-session-pill:hover { border-color: rgba(115, 213, 167, 0.28); }
+    .cxp-session-pill:hover .term-minimized-pill-icon { color: rgba(115, 213, 167, 0.85); }
+    .cxp-session-pill:hover.cxp-pill-running::before {
       background: conic-gradient(
         from var(--cxp-pill-angle, 0deg),
         rgba(16,163,127,0.0) 0%,
-        rgba(16,163,127,0.45) 25%,
-        rgba(16,163,127,0.10) 50%,
-        rgba(16,163,127,0.45) 75%,
+        rgba(16,163,127,0.8) 25%,
+        rgba(16,163,127,0.20) 50%,
+        rgba(16,163,127,0.8) 75%,
         rgba(16,163,127,0.0) 100%
       );
     }
     .cxp-session-pill.cxp-pill-running .term-minimized-pill-label::before {
       content: '';
       display: inline-block;
-      width: 6px;
-      height: 6px;
+      width: 8px;
+      height: 8px;
       margin-right: 6px;
       border-radius: 999px;
-      background: rgba(115, 213, 167, 0.95);
-      box-shadow: 0 0 10px rgba(115, 213, 167, 0.55);
+      background: rgba(115, 213, 167, 1);
+      box-shadow: 0 0 8px rgba(115, 213, 167, 0.75), 0 0 14px rgba(115, 213, 167, 0.35);
       vertical-align: middle;
-      animation: cxp-pill-pulse 1.5s ease-in-out infinite;
+      animation: cxp-pill-pulse 1.2s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    .cxp-session-pill.cxp-pill-running::after {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 2px;
+      background: linear-gradient(180deg, rgba(115,213,167,0), rgba(115,213,167,0.95), rgba(115,213,167,0));
+      animation: cxp-pill-pulse 1.2s ease-in-out infinite;
+      pointer-events: none;
     }
     @keyframes cxp-pill-pulse {
       0%, 100% { opacity: 0.45; }

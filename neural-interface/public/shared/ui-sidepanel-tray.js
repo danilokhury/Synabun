@@ -6,7 +6,7 @@ import { emit } from './state.js';
 import { getProviderMeta } from './provider-icons.js';
 import { toggleClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
 import { toggleCodexPanel, isCodexPanelOpen } from './ui-codex-panel.js';
-import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel.js';
+import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel-v2.js';
 
 const PLACEHOLDER_CLASS = 'sidepanel-tray-placeholder';
 
@@ -28,7 +28,14 @@ const PROVIDERS = {
   opencode: {
     providerId: 'opencode',
     windowKey: 'ocp-window-id',
-    tabsKeyPrefix: 'synabun-ocp-tabs',
+    // OCP v2 stores a plain string[] of session IDs at a single non-scoped key.
+    // v2Plain flips readPayload / writeProviderPayload / scopedTabsKey into the
+    // v2 shape; the legacy v1 prefix below is only kept around so a one-shot
+    // migration can wipe stale per-window v1 entries.
+    tabsKeyPrefix: 'opencode-v2-tabs',
+    v2Plain: true,
+    legacyV1Prefix: 'synabun-ocp-tabs',
+    legacyV1CleanupFlag: 'opencode-v1-cleanup-done',
     pillClass: 'ocp-session-pill',
     eventName: 'opencode-panel:show',
   },
@@ -59,6 +66,8 @@ function ensureWindowId(key) {
 }
 
 function scopedTabsKey(meta) {
+  // v2Plain providers (OCP v2) use a single global key, not per-window.
+  if (meta.v2Plain) return meta.tabsKeyPrefix;
   return `${meta.tabsKeyPrefix}-${ensureWindowId(meta.windowKey)}`;
 }
 
@@ -103,11 +112,12 @@ function hasCodexState(tab) {
 }
 
 function hasOpenCodeState(tab) {
+  // v2 plain payload only carries sessionId — that's enough to be meaningful.
+  if (tab.sessionId) return true;
   const label = normalizeLabel(tab.sessionTitle);
   const draft = normalizeLabel(tab.draft);
   return !!(
-    tab.sessionId
-    || tab.running
+    tab.running
     || draft
     || tab.planContent
     || tab.editedPlanContent
@@ -120,7 +130,13 @@ function hasOpenCodeState(tab) {
 function tabLabel(provider, tab) {
   if (provider === 'claude') return normalizeLabel(tab.label) || 'New chat';
   if (provider === 'codex') return normalizeLabel(tab.pendingSessionLabel || tab.title || tab.sessionLabel) || 'New session';
-  return normalizeLabel(tab.sessionTitle || tab.title) || 'New session';
+  const title = normalizeLabel(tab.sessionTitle || tab.title);
+  if (title) return title;
+  // OCP v2 placeholders only know the sessionId until the panel boots; fall
+  // back to a short-id label so users at least recognize the pill belongs to
+  // a real session.
+  if (tab.sessionId) return `OpenCode · ${String(tab.sessionId).slice(0, 8)}`;
+  return 'New session';
 }
 
 function tabId(provider, tab, index) {
@@ -135,7 +151,18 @@ function isRunning(tab) {
   return !!(tab.running || tab.startingThread);
 }
 
-function readPayload(key) {
+function readPayload(key, meta = null) {
+  if (meta?.v2Plain) {
+    const arr = parseJson(storage.getItem(key), null);
+    if (Array.isArray(arr) && arr.length) {
+      const tabs = arr
+        .filter((s) => typeof s === 'string' && s)
+        .map((sid) => ({ sessionId: sid }));
+      if (!tabs.length) return null;
+      return { key, activeIdx: 0, tabs, v2Plain: true };
+    }
+    return null;
+  }
   const data = parseJson(storage.getItem(key), null);
   if (Array.isArray(data?.tabs) && data.tabs.length) {
     return { key, activeIdx: Number(data.activeIdx) || 0, tabs: data.tabs };
@@ -157,10 +184,16 @@ function providerPayloads(provider) {
   const currentKey = scopedTabsKey(meta);
   const predicate = statePredicate(provider);
 
-  const currentPayload = readPayload(currentKey);
+  if (meta.v2Plain) {
+    // OCP v2: single global key. Wipe legacy v1 per-window entries once so they
+    // can never resurface as phantom placeholder pills next to the real ones.
+    cleanupLegacyV1Once(meta);
+  }
+
+  const currentPayload = readPayload(currentKey, meta);
   const currentHasMeaningful = currentPayload?.tabs.some(predicate);
   if (currentPayload) payloads.push(currentPayload);
-  if (!currentHasMeaningful) {
+  if (!currentHasMeaningful && !meta.v2Plain) {
     const fallback = pickMostRecentMeaningfulPayload(provider, currentKey);
     if (fallback) payloads.push(fallback);
   }
@@ -209,7 +242,7 @@ function providerPayloads(provider) {
 // actually has meaningful tabs.
 function pickMostRecentMeaningfulPayload(provider, currentKey) {
   const meta = PROVIDERS[provider];
-  if (!meta) return null;
+  if (!meta || meta.v2Plain) return null;
   const prefix = `${meta.tabsKeyPrefix}-`;
   const predicate = statePredicate(provider);
   const keys = storage.keys();
@@ -217,10 +250,26 @@ function pickMostRecentMeaningfulPayload(provider, currentKey) {
     const k = keys[i];
     if (k === currentKey) continue;
     if (!k.startsWith(prefix)) continue;
-    const payload = readPayload(k);
+    const payload = readPayload(k, meta);
     if (payload && payload.tabs.some(predicate)) return payload;
   }
   return null;
+}
+
+// One-shot delete of stale v1 OCP per-window keys after v2 takes over. Without
+// this, pre-v2 storage entries render placeholder pills that race the real v2
+// pills — clicking them re-toggles the panel and looks like a cascading close.
+function cleanupLegacyV1Once(meta) {
+  if (!meta?.legacyV1Prefix || !meta.legacyV1CleanupFlag) return;
+  if (storage.getItem(meta.legacyV1CleanupFlag)) return;
+  const prefix = `${meta.legacyV1Prefix}-`;
+  const keys = storage.keys();
+  for (const k of keys) {
+    if (k.startsWith(prefix)) {
+      try { storage.removeItem(k); } catch {}
+    }
+  }
+  try { storage.setItem(meta.legacyV1CleanupFlag, '1'); } catch {}
 }
 
 function statePredicate(provider) {
@@ -270,6 +319,19 @@ function writeProviderPayload(provider, payload, removeIndex) {
       storage.removeItem('synabun-codex-panel-thread');
       storage.removeItem('synabun-codex-panel-title');
     }
+    return;
+  }
+
+  if (payload.v2Plain) {
+    // v2 stores a plain string[] of session IDs, not a {tabs, activeIdx}
+    // envelope. Rewrite in the same shape so the panel reads it cleanly when
+    // it boots next.
+    const ids = payload.tabs
+      .filter((_, index) => index !== removeIndex)
+      .map((t) => t.sessionId)
+      .filter(Boolean);
+    if (!ids.length) storage.removeItem(payload.key);
+    else storage.setItem(payload.key, JSON.stringify(ids));
     return;
   }
 
@@ -370,10 +432,16 @@ function migrateSourceToCurrentWindow(provider, sourceKey) {
 async function openProvider(provider, tabIdValue, sourceKey) {
   migrateSourceToCurrentWindow(provider, sourceKey);
   if (provider === 'claude') {
+    if (isCodexPanelOpen()) await toggleCodexPanel();
+    if (isOpencodePanelOpen()) await toggleOpencodePanel();
     if (!isClaudePanelOpen()) await toggleClaudePanel();
   } else if (provider === 'codex') {
+    if (isClaudePanelOpen()) await toggleClaudePanel();
+    if (isOpencodePanelOpen()) await toggleOpencodePanel();
     if (!isCodexPanelOpen()) await toggleCodexPanel();
   } else if (provider === 'opencode') {
+    if (isClaudePanelOpen()) await toggleClaudePanel();
+    if (isCodexPanelOpen()) await toggleCodexPanel();
     if (!isOpencodePanelOpen()) await toggleOpencodePanel();
   }
   emit(PROVIDERS[provider]?.eventName, { tabId: tabIdValue });
@@ -392,7 +460,7 @@ function createPlaceholder(provider, payload, tab, index) {
   pill.innerHTML = `
     <span class="term-minimized-pill-icon" style="color:${providerMeta.color}">${providerMeta.icon}</span>
     <span class="term-minimized-pill-label">${esc(tabLabel(provider, tab))}</span>
-    <button class="term-minimized-pill-close" data-tooltip="Close">&times;</button>
+    <button class="term-minimized-pill-close" data-tooltip="Close" data-tooltip-pos="top">&times;</button>
   `;
   pill.classList.toggle(`${meta.pillClass.replace('-session-pill', '')}-pill-running`, isRunning(tab));
   pill.dataset.sourceKey = payload.key || '';

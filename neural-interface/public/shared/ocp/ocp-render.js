@@ -4,6 +4,7 @@
 // ═══════════════════════════════════════════
 
 import { toolIcon, ICON_SLIDE } from './ocp-icons.js';
+import { trace as _trace } from './ocp-trace.js';
 
 let _marked = null;
 let _markedLoading = false;
@@ -63,13 +64,28 @@ export function normalizeTextContent(value, options = {}) {
   return '';
 }
 
+// Memoized marked.parse(). OCP V1 re-renders messages through this path on
+// every state delta during streaming; without caching, identical text gets
+// re-parsed repeatedly. Bounded LRU prevents unbounded growth.
+const _mdCache = new Map();
+const _MD_CACHE_LIMIT = 512;
 function md(text) {
-  if (!_marked) return esc(text).replace(/\n/g, '<br>');
-  try {
-    return _marked.parse(text || '');
-  } catch {
-    return esc(text).replace(/\n/g, '<br>');
+  const key = text || '';
+  const cached = _mdCache.get(key);
+  if (cached !== undefined) return cached;
+  let html;
+  if (!_marked) {
+    html = esc(key).replace(/\n/g, '<br>');
+  } else {
+    try { html = _marked.parse(key); }
+    catch { html = esc(key).replace(/\n/g, '<br>'); }
   }
+  if (_mdCache.size >= _MD_CACHE_LIMIT) {
+    const firstKey = _mdCache.keys().next().value;
+    if (firstKey !== undefined) _mdCache.delete(firstKey);
+  }
+  _mdCache.set(key, html);
+  return html;
 }
 
 // ── Thinking block helpers ──
@@ -857,11 +873,67 @@ function clearThinkingTimer(el) {
 }
 
 function updateThinkingTimer(el) {
-  const timer = el?.querySelector('.ocp-thinking-timer');
-  if (!timer) return;
-  const startedAt = Number(el.dataset.startedAt || Date.now());
-  const sec = Math.round((Date.now() - startedAt) / 1000);
-  timer.textContent = sec > 0 ? `${sec}s` : '';
+  if (!el) return;
+  const timer = el.querySelector('.ocp-thinking-timer');
+  if (timer) {
+    const startedAt = Number(el.dataset.startedAt || Date.now());
+    const sec = Math.round((Date.now() - startedAt) / 1000);
+    timer.textContent = sec > 0 ? `${sec}s` : '';
+  }
+  const pulse = el.querySelector('.ocp-thinking-pulse');
+  const eventEl = el.querySelector('.ocp-thinking-event');
+  const lastEventAt = Number(el.dataset.lastEventAt || 0);
+  const lastEventName = el.dataset.lastEventName || '';
+  const eventCount = Number(el.dataset.eventCount || 0);
+  const age = lastEventAt ? Math.round((Date.now() - lastEventAt) / 1000) : -1;
+  if (pulse) {
+    let state = 'idle';
+    if (age >= 0) {
+      if (age < 3) state = 'fresh';
+      else if (age < 12) state = 'warm';
+      else if (age < 45) state = 'cool';
+      else state = 'stall';
+    }
+    pulse.dataset.state = state;
+    pulse.title = age >= 0 ? `Last event ${age}s ago (${eventCount || 0} this turn)` : 'Awaiting first event';
+  }
+  if (eventEl) {
+    if (age >= 0 || eventCount) {
+      const nice = formatEventLabel(lastEventName);
+      const ageText = age >= 0 ? `${age}s ago` : '—';
+      eventEl.textContent = nice ? `${nice} · ${ageText} · ${eventCount}` : `${eventCount} ev`;
+    } else {
+      eventEl.textContent = '';
+    }
+  }
+}
+
+function formatEventLabel(name) {
+  if (!name) return '';
+  switch (name) {
+    case 'message.part.delta': return 'δ delta';
+    case 'message.part.updated': return 'part';
+    case 'message.updated': return 'msg';
+    case 'message.completed': return 'done';
+    case 'session.idle': return 'idle';
+    case 'session.status': return 'status';
+    case 'session.updated': return 'session';
+    case 'tool.start': return 'tool↑';
+    case 'tool.result': return 'tool✓';
+    case 'permission.requested': return 'perm?';
+    case 'question.asked': return 'ask';
+    case 'question.replied': return 'reply';
+    default: return name.split('.').pop() || name;
+  }
+}
+
+export function bumpThinkingActivity(container, eventName) {
+  const el = container ? getThinkingEl(container) : null;
+  if (!el) return;
+  el.dataset.lastEventAt = String(Date.now());
+  if (eventName) el.dataset.lastEventName = String(eventName);
+  el.dataset.eventCount = String((Number(el.dataset.eventCount) || 0) + 1);
+  updateThinkingTimer(el);
 }
 
 function ensurePendingAssistantEl(container) {
@@ -893,97 +965,278 @@ export function getOrCreateStreamingEl(container) {
   return el;
 }
 
-function renderStreamingElement(container, el, { partialThinking = true } = {}) {
-  if (!el) return;
-  let html = '';
-  let hasContent = false;
-  let hasTextContent = false;
-  if (el.dataset.thinkText) {
-    html += thinkBlockHtml(el.dataset.thinkText, partialThinking);
-    hasContent = true;
+// Live text node for plain-text deltas during streaming. Markdown is applied
+// once at finalize. Each delta becomes an O(1) text-node append (CLI feel)
+// instead of an O(n) full-buffer markdown re-parse per tick.
+function ensureStreamTextNode(el) {
+  let node = el.querySelector(':scope > .ocp-msg-stream-text');
+  if (!node) {
+    node = document.createElement('div');
+    node.className = 'ocp-msg-stream-text';
+    el.appendChild(node);
   }
-  if (el.dataset.rawText) {
-    const rendered = renderAssistantMarkdown(el.dataset.rawText);
-    if (rendered.hasContent) {
-      html += rendered.html;
-      hasContent = true;
-      hasTextContent = true;
-    }
+  return node;
+}
+
+function ensureStreamThinkSlot(el) {
+  let node = el.querySelector(':scope > .ocp-msg-stream-think');
+  if (!node) {
+    node = document.createElement('div');
+    node.className = 'ocp-msg-stream-think';
+    el.insertBefore(node, el.firstChild);
   }
-  el.innerHTML = html;
-  clearThinkingTimer(el);
-  el.classList.toggle('ocp-msg-empty', !hasContent);
-  // think-only = bubble has thinking but no response text yet. CSS uses this
-  // to suppress the outer bubble + avatar so the inner Thought block isn't
-  // wrapped in a redundant container during reasoning streaming.
-  el.classList.toggle('ocp-msg-think-only', hasContent && !hasTextContent);
-  postProcessRenderedHtml(el);
+  return node;
+}
+
+// Persistent live thinking block — built once per streaming bubble. Reasoning
+// deltas append a TextNode directly to .ocp-think-content-live (O(1) per
+// delta, CLI-style typing) instead of rebuilding <details>.innerHTML on every
+// 16 ms tick (the old O(n) path).
+function getOrCreateLiveThinkContent(el) {
+  const slot = ensureStreamThinkSlot(el);
+  let live = slot.querySelector(':scope > .ocp-think-block-live > .ocp-think-content-live');
+  if (live) return live;
+  slot.innerHTML = `<details class="ocp-think-block ocp-think-block-live" open>`
+    + `<summary><span class="ocp-think-icon">${THINK_ICON_SVG}</span>`
+    + `<span class="ocp-think-label">Thinking…</span>`
+    + `<span class="ocp-think-chevron">&#x203A;</span></summary>`
+    + `<div class="ocp-think-content ocp-think-content-live"></div>`
+    + `</details>`;
+  live = slot.querySelector(':scope > .ocp-think-block-live > .ocp-think-content-live');
+  return live;
+}
+
+function autoScrollLiveThink(live) {
+  if (!live) return;
+  // Auto-scroll only when the user is at/near the bottom — avoids fighting a
+  // user who has scrolled up to read earlier reasoning.
+  const distanceFromBottom = live.scrollHeight - live.scrollTop - live.clientHeight;
+  if (distanceFromBottom < 32) live.scrollTop = live.scrollHeight;
+}
+
+function syncStreamingClasses(el) {
+  const hasThink = !!el.dataset.thinkText;
+  const hasText = !!el.dataset.rawText;
+  el.classList.toggle('ocp-msg-empty', !hasThink && !hasText);
+  el.classList.toggle('ocp-msg-think-only', hasThink && !hasText);
+}
+
+// ── Inline <think> tag streaming parser ─────────────────────────────────
+//
+// Models that emit reasoning as inline `<think>…</think>` tags in regular
+// text deltas (Kimi K2, DeepSeek R1, Qwen QwQ via opencode-go) need stateful
+// parsing during streaming so the reasoning routes to the live thinking
+// block instead of appearing as raw `<think>` text. State lives on the
+// streaming element so multiple bubbles stream independently.
+//
+// `el._thinkInside` — currently inside an unclosed <think> block
+// `el._thinkPendingTag` — partial tag at chunk boundary (e.g. "</thi")
+function _matchTrailingTagPrefix(s, target) {
+  const max = Math.min(s.length, target.length - 1);
+  for (let n = max; n >= 1; n--) {
+    if (s.endsWith(target.slice(0, n))) return n;
+  }
+  return 0;
+}
+
+function _appendRawTextOnly(el, container, chunk) {
+  if (!chunk) return;
+  el.dataset.rawText = (el.dataset.rawText || '') + chunk;
+  const node = ensureStreamTextNode(el);
+  node.appendChild(document.createTextNode(chunk));
+  syncStreamingClasses(el);
   scrollToBottom(container);
 }
 
-function scheduleStreamingRender(container, el) {
-  if (el._ocpStreamRaf) return;
-  const schedule = typeof requestAnimationFrame === 'function'
-    ? requestAnimationFrame
-    : (fn) => setTimeout(fn, 16);
-  el._ocpStreamRaf = schedule(() => {
-    el._ocpStreamRaf = null;
-    renderStreamingElement(container, el, { partialThinking: true });
-  });
+function _appendThinkTextOnly(el, container, chunk) {
+  if (!chunk) return;
+  el.dataset.thinkText = (el.dataset.thinkText || '') + chunk;
+  const live = getOrCreateLiveThinkContent(el);
+  live.appendChild(document.createTextNode(chunk));
+  autoScrollLiveThink(live);
+  syncStreamingClasses(el);
+  scrollToBottom(container);
 }
 
-/** Append a text chunk to the streaming element. */
+function _routeStreamingChunk(el, container, chunk) {
+  let work = (el._thinkPendingTag || '') + chunk;
+  el._thinkPendingTag = '';
+  while (work.length > 0) {
+    if (el._thinkInside) {
+      const closeIdx = work.indexOf(THINK_CLOSE_TAG);
+      if (closeIdx === -1) {
+        const buf = _matchTrailingTagPrefix(work, THINK_CLOSE_TAG);
+        if (buf > 0) {
+          _appendThinkTextOnly(el, container, work.slice(0, work.length - buf));
+          el._thinkPendingTag = work.slice(work.length - buf);
+        } else {
+          _appendThinkTextOnly(el, container, work);
+        }
+        work = '';
+      } else {
+        _appendThinkTextOnly(el, container, work.slice(0, closeIdx));
+        el._thinkInside = false;
+        work = work.slice(closeIdx + THINK_CLOSE_TAG.length);
+      }
+    } else {
+      const openIdx = work.indexOf(THINK_OPEN_TAG);
+      if (openIdx === -1) {
+        const buf = _matchTrailingTagPrefix(work, THINK_OPEN_TAG);
+        if (buf > 0) {
+          _appendRawTextOnly(el, container, work.slice(0, work.length - buf));
+          el._thinkPendingTag = work.slice(work.length - buf);
+        } else {
+          _appendRawTextOnly(el, container, work);
+        }
+        work = '';
+      } else {
+        _appendRawTextOnly(el, container, work.slice(0, openIdx));
+        el._thinkInside = true;
+        work = work.slice(openIdx + THINK_OPEN_TAG.length);
+      }
+    }
+  }
+}
+
+/** Append a text chunk to the streaming element. Stateful parser routes
+ *  inline `<think>…</think>` content to the live thinking block so reasoning
+ *  shows up CLI-style as it streams (Kimi K2, DeepSeek R1, Qwen QwQ, etc.). */
 export function appendStreamChunk(container, text) {
   const chunk = normalizeTextContent(text, { stringifyObjects: false });
   if (!chunk) return getOrCreateStreamingEl(container);
   const el = getOrCreateStreamingEl(container);
-  el.dataset.rawText = (el.dataset.rawText || '') + chunk;
-  scheduleStreamingRender(container, el);
+  try { _trace('stream:append', { bytes: chunk.length, hasContainer: !!container, hidden: typeof document !== 'undefined' ? document.hidden : null }); } catch {}
+  _routeStreamingChunk(el, container, chunk);
   return el;
 }
 
-/** Append a reasoning/thinking chunk directly (for explicit reasoning part types). */
+/** Append a reasoning/thinking chunk directly (for explicit reasoning part types).
+ *  CLI-style: text-node append onto a persistent live block, O(1) per delta. */
 export function appendThinkChunk(container, text) {
   const chunk = normalizeTextContent(text, { stringifyObjects: false });
   if (!chunk) return getOrCreateStreamingEl(container);
   const el = getOrCreateStreamingEl(container);
-  el.dataset.thinkText = (el.dataset.thinkText || '') + chunk;
-  scheduleStreamingRender(container, el);
+  try { _trace('stream:appendThink', { bytes: chunk.length, hasContainer: !!container, hidden: typeof document !== 'undefined' ? document.hidden : null }); } catch {}
+  _appendThinkTextOnly(el, container, chunk);
   return el;
 }
 
-// OpenCode 1.14+ emits message.part.updated carrying the FULL part.text on
-// each event (delta is optional). REPLACE rawText/thinkText so the streaming
-// bubble tracks the canonical part state instead of double-appending.
+// OpenCode 1.14+ emits message.part.updated carrying the FULL part.text. Adopt
+// it ONLY if longer than what deltas have already accumulated — otherwise an
+// out-of-order/partial part.updated would shrink the bubble (snap-back flicker).
+//
+// Inline `<think>…</think>` tags in the full payload are split: the
+// non-thinking portion becomes rawText (live text node), the thinking
+// portion becomes thinkText (live reasoning block). Mirrors what the delta
+// parser does so a late part.updated doesn't blow away the split.
 export function setStreamRawText(container, text) {
   const full = normalizeTextContent(text, { stringifyObjects: false });
   const el = getOrCreateStreamingEl(container);
-  el.dataset.rawText = full;
-  scheduleStreamingRender(container, el);
+
+  // Fast path: no inline reasoning tags — original behavior, length-gated.
+  if (!full.includes(THINK_OPEN_TAG)) {
+    const current = el.dataset.rawText || '';
+    if (full.length <= current.length) return el;
+    el.dataset.rawText = full;
+    const node = ensureStreamTextNode(el);
+    node.textContent = full;
+    syncStreamingClasses(el);
+    scrollToBottom(container);
+    return el;
+  }
+
+  // Split path: parse think segments and adopt each side independently if
+  // longer than what we have. Lets a part.updated payload that includes
+  // <think>X</think>Y land cleanly into both live blocks.
+  const segments = parseThinkSegments(full);
+  const textJoined = segments.filter(s => s.type === 'text').map(s => s.content).join('');
+  const thinkJoined = segments.filter(s => s.type === 'thinking').map(s => s.content).join('');
+
+  const currentRaw = el.dataset.rawText || '';
+  if (textJoined.length > currentRaw.length) {
+    el.dataset.rawText = textJoined;
+    const node = ensureStreamTextNode(el);
+    node.textContent = textJoined;
+  }
+  const currentThink = el.dataset.thinkText || '';
+  if (thinkJoined.length > currentThink.length) {
+    const suffix = thinkJoined.slice(currentThink.length);
+    el.dataset.thinkText = thinkJoined;
+    if (suffix) {
+      const live = getOrCreateLiveThinkContent(el);
+      live.appendChild(document.createTextNode(suffix));
+      autoScrollLiveThink(live);
+    }
+  }
+  // Sync delta parser state to the canonical full payload — last segment's
+  // type tells us whether subsequent deltas continue inside a think block.
+  el._thinkInside = segments.length > 0
+    && segments[segments.length - 1].type === 'thinking'
+    && segments[segments.length - 1].partial === true;
+  el._thinkPendingTag = '';
+
+  syncStreamingClasses(el);
+  scrollToBottom(container);
   return el;
 }
 
+// OpenCode 1.14+ also emits message.part.updated for reasoning parts carrying
+// the FULL part.text. Adopt only if longer than current buffer; append the
+// suffix as a single text node to preserve the persistent live block (no
+// innerHTML rebuild → no flicker, no scroll-position loss).
 export function setStreamThinkText(container, text) {
   const full = normalizeTextContent(text, { stringifyObjects: false });
   const el = getOrCreateStreamingEl(container);
+  const current = el.dataset.thinkText || '';
+  if (full.length <= current.length) return el;
+  const suffix = full.slice(current.length);
   el.dataset.thinkText = full;
-  scheduleStreamingRender(container, el);
+  const live = getOrCreateLiveThinkContent(el);
+  if (suffix) live.appendChild(document.createTextNode(suffix));
+  autoScrollLiveThink(live);
+  syncStreamingClasses(el);
+  scrollToBottom(container);
   return el;
 }
 
-/** Finalize the streaming message (remove streaming class). */
+/** Finalize the streaming message: drop live plain-text node, render markdown. */
 export function finalizeStreamingMessage(container) {
   const el = container.querySelector('.ocp-msg-assistant.streaming');
+  try { _trace('render:finalize', { hasStreaming: !!el, hadTimer: !!(el && el._ocpStreamTimer), rawTextLen: el?.dataset?.rawText?.length || 0, thinkTextLen: el?.dataset?.thinkText?.length || 0 }); } catch {}
   if (el) {
-    // Cancel any pending streaming render — without this, a deferred rAF can
-    // fire AFTER finalize cleared the datasets and re-render the bubble with
-    // empty think/raw text, blanking the response.
-    if (el._ocpStreamRaf && typeof cancelAnimationFrame === 'function') {
-      cancelAnimationFrame(el._ocpStreamRaf);
+    // Cancel any pending streaming-render timeout — without this, a deferred
+    // tick can fire AFTER finalize cleared the datasets and re-render the
+    // bubble with empty think/raw text, blanking the response.
+    if (el._ocpStreamTimer) {
+      clearTimeout(el._ocpStreamTimer);
+      el._ocpStreamTimer = null;
     }
-    el._ocpStreamRaf = null;
     el.classList.remove('streaming');
-    renderStreamingElement(container, el, { partialThinking: false });
+
+    const rawText = el.dataset.rawText || '';
+    const thinkText = el.dataset.thinkText || '';
+    let html = '';
+    let hasContent = false;
+    let hasTextContent = false;
+    if (thinkText) {
+      html += thinkBlockHtml(thinkText, false);
+      hasContent = true;
+    }
+    if (rawText) {
+      const rendered = renderAssistantMarkdown(rawText);
+      if (rendered.hasContent) {
+        html += rendered.html;
+        hasContent = true;
+        hasTextContent = true;
+      }
+    }
+    el.innerHTML = html;
+    clearThinkingTimer(el);
+    el.classList.toggle('ocp-msg-empty', !hasContent);
+    el.classList.toggle('ocp-msg-think-only', hasContent && !hasTextContent);
+    postProcessRenderedHtml(el);
+    scrollToBottom(container);
+
     delete el.dataset.rawText;
     delete el.dataset.thinkText;
   }
@@ -1040,8 +1293,11 @@ export function updateThinking(container, options = {}) {
       <span class="ocp-thinking-dots"><span></span><span></span><span></span></span>
       <span class="ocp-thinking-title"></span>
       <span class="ocp-thinking-detail"></span>
+      <span class="ocp-thinking-pulse" data-state="idle" title="Awaiting first event"></span>
+      <span class="ocp-thinking-event"></span>
       <span class="ocp-thinking-timer"></span>
     `;
+    el.dataset.eventCount = '0';
     container.appendChild(el);
   }
   el.classList.toggle('ocp-thinking-waiting', !!waiting);
@@ -1052,6 +1308,9 @@ export function updateThinking(container, options = {}) {
   if (startedAt || !el.dataset.startedAt) {
     el.dataset.startedAt = String(startedAt || Date.now());
   }
+  if (options.lastEventAt) el.dataset.lastEventAt = String(options.lastEventAt);
+  if (options.lastEventName) el.dataset.lastEventName = String(options.lastEventName);
+  if (typeof options.events === 'number') el.dataset.eventCount = String(options.events);
   clearThinkingTimer(el);
   updateThinkingTimer(el);
   el._ocpThinkingTimer = setInterval(() => updateThinkingTimer(el), 1000);
@@ -1524,10 +1783,6 @@ export function renderPostPlanCard(container, { headerText = 'PLAN COMPLETE', on
     card.remove();
     if (typeof onContinuePlanning === 'function') onContinuePlanning();
   });
-  card.querySelector('[data-action="continue-planning"]').addEventListener('click', () => {
-    card.remove();
-    if (typeof onContinuePlanning === 'function') onContinuePlanning();
-  });
 
   container.appendChild(card);
   scrollToBottom(container);
@@ -1537,6 +1792,104 @@ export function renderPostPlanCard(container, { headerText = 'PLAN COMPLETE', on
 export function removePostPlanCards(container) {
   if (!container) return;
   container.querySelectorAll('.ocp-post-plan-card').forEach(el => el.remove());
+}
+
+// Recovery card shown when the model trailed off in prose questions in plan
+// mode without using the `question` tool. Different visual accent (amber) so
+// the user can immediately tell this is NOT a finalized plan.
+export function renderProseQuestionRecoveryCard(container, { onReplyDirectly, onReAskInteractive, onForceQuestionTool, onDismiss } = {}) {
+  const card = document.createElement('div');
+  card.className = 'ocp-prose-question-card';
+  card.innerHTML = `
+    <div class="ocp-prose-question-header">
+      <svg class="ocp-prose-question-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+      MODEL ASKED QUESTIONS IN PROSE
+    </div>
+    <div class="ocp-prose-question-note">The model wrote its clarifying questions as text instead of using the interactive <code>question</code> tool, so no answer card was rendered. Choose how to continue:</div>
+    <div class="ocp-prose-question-actions">
+      <button class="ocp-prose-question-btn primary" data-action="reply">Reply directly</button>
+      <button class="ocp-prose-question-btn" data-action="force">Force question tool now</button>
+      <button class="ocp-prose-question-btn" data-action="reask">Re-ask using question tool</button>
+      <button class="ocp-prose-question-btn" data-action="dismiss">Dismiss</button>
+    </div>
+  `;
+
+  card.querySelector('[data-action="reply"]').addEventListener('click', () => {
+    card.remove();
+    if (typeof onReplyDirectly === 'function') onReplyDirectly();
+  });
+  card.querySelector('[data-action="force"]').addEventListener('click', () => {
+    card.remove();
+    if (typeof onForceQuestionTool === 'function') onForceQuestionTool();
+  });
+  card.querySelector('[data-action="reask"]').addEventListener('click', () => {
+    card.remove();
+    if (typeof onReAskInteractive === 'function') onReAskInteractive();
+  });
+  card.querySelector('[data-action="dismiss"]').addEventListener('click', () => {
+    card.remove();
+    if (typeof onDismiss === 'function') onDismiss();
+  });
+
+  container.appendChild(card);
+  scrollToBottom(container);
+  return card;
+}
+
+export function removeProseQuestionRecoveryCards(container) {
+  if (!container) return;
+  container.querySelectorAll('.ocp-prose-question-card').forEach(el => el.remove());
+}
+
+// Soft prompt rendered after PLAN_STALL_SOFT_MS of SSE silence in plan mode.
+// Lets the user choose to abort + view the captured plan, wait longer, or
+// cancel the turn outright. Mirrors the prose-question card visual language.
+export function renderPlanStallSoftCard(container, { onAbort, onWait, onCancel } = {}) {
+  if (!container) return null;
+  // De-dup: if a stall card is already mounted, leave it alone.
+  const existing = container.querySelector('.ocp-plan-stall-card');
+  if (existing) return existing;
+
+  const card = document.createElement('div');
+  card.className = 'ocp-plan-stall-card';
+  card.innerHTML = `
+    <div class="ocp-plan-stall-header">
+      <svg class="ocp-plan-stall-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+      </svg>
+      LOOKS STUCK
+    </div>
+    <div class="ocp-plan-stall-note">No streaming activity for ~60s in plan mode. The model may have stalled (common with non-Anthropic providers in plan mode). Choose how to continue:</div>
+    <div class="ocp-plan-stall-actions">
+      <button class="ocp-plan-stall-btn primary" data-action="abort">Abort &amp; show captured plan</button>
+      <button class="ocp-plan-stall-btn" data-action="wait">Wait longer</button>
+      <button class="ocp-plan-stall-btn" data-action="cancel">Cancel turn</button>
+    </div>
+  `;
+
+  card.querySelector('[data-action="abort"]').addEventListener('click', () => {
+    card.remove();
+    if (typeof onAbort === 'function') onAbort();
+  });
+  card.querySelector('[data-action="wait"]').addEventListener('click', () => {
+    card.remove();
+    if (typeof onWait === 'function') onWait();
+  });
+  card.querySelector('[data-action="cancel"]').addEventListener('click', () => {
+    card.remove();
+    if (typeof onCancel === 'function') onCancel();
+  });
+
+  container.appendChild(card);
+  scrollToBottom(container);
+  return card;
+}
+
+export function removePlanStallSoftCards(container) {
+  if (!container) return;
+  container.querySelectorAll('.ocp-plan-stall-card').forEach(el => el.remove());
 }
 
 // ── Tool-activity dock (session-long activity log) ──
@@ -1838,7 +2191,24 @@ export function renderToolActivityDock(tab, panelRoot, callbacks = {}) {
 // ── Helpers ──
 
 function scrollToBottom(container) {
+  if (!container) return;
+  ensureScrollTracking(container);
+  // If the user has manually scrolled up (e.g. to read earlier output during
+  // an active task), don't yank the viewport back down. They regain auto-scroll
+  // by scrolling back near the bottom themselves.
+  if (container._ocpUserScrolledUp) return;
   requestAnimationFrame(() => {
+    if (container._ocpUserScrolledUp) return;
     container.scrollTop = container.scrollHeight;
   });
+}
+
+function ensureScrollTracking(container) {
+  if (container._ocpScrollTracked) return;
+  container._ocpScrollTracked = true;
+  container._ocpUserScrolledUp = false;
+  container.addEventListener('scroll', () => {
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    container._ocpUserScrolledUp = distanceFromBottom > 32;
+  }, { passive: true });
 }

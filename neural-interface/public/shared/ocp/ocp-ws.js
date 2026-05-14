@@ -3,6 +3,8 @@
 // Connects to /ws/opencode-skin, routes messages
 // ═══════════════════════════════════════════
 
+import { trace } from './ocp-trace.js';
+
 let _ws = null;
 let _connected = false;
 let _reconnectTimer = null;
@@ -23,6 +25,7 @@ export function connectWs(callbacks = {}) {
 
   _ws.onopen = () => {
     _connected = true;
+    trace('ws:open', { url: `${proto}//${location.host}/ws/opencode-skin` });
     if (callbacks.onConnect) callbacks.onConnect();
     // Send init to start/detect OpenCode server
     sendWs({ type: 'init' });
@@ -38,12 +41,13 @@ export function connectWs(callbacks = {}) {
     const wasConnected = _connected;
     _connected = false;
     _ws = null;
+    trace('ws:close', { wasConnected, pending: _pending.size });
     rejectAllPending('WebSocket disconnected');
     if (callbacks.onDisconnect) callbacks.onDisconnect(wasConnected);
     scheduleReconnect(callbacks);
   };
 
-  _ws.onerror = () => {};
+  _ws.onerror = (e) => { trace('ws:error', { msg: e?.message || 'ws error' }); };
 }
 
 export function disconnectWs() {
@@ -67,12 +71,15 @@ export function sendWs(msg) {
  *  The returned promise has a `.requestId` property for cancellation via `rejectPending()`. */
 export function requestWs(type, payload = {}, timeoutMs = 30000) {
   const id = ++_msgId;
+  const startedAt = Date.now();
+  trace('ws:request:start', { type, id, timeoutMs });
   const p = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       _pending.delete(id);
+      trace('ws:request:timeout', { type, id, ms: Date.now() - startedAt });
       reject(new Error(`Request ${type} timed out`));
     }, timeoutMs);
-    _pending.set(id, { resolve, reject, timer });
+    _pending.set(id, { resolve, reject, timer, type, startedAt });
     sendWs({ type, id, ...payload });
   });
   p.requestId = id;
@@ -111,6 +118,7 @@ function handleIncoming(msg, callbacks) {
     const entry = _pending.get(id);
     _pending.delete(id);
     clearTimeout(entry.timer);
+    const ms = Date.now() - (entry.startedAt || Date.now());
     if (type === 'error' || (msg.status && msg.status >= 400)) {
       const raw = msg.data?.error ?? msg.data?.message ?? msg.message ?? msg.data;
       let errMsg = msg.status ? `HTTP ${msg.status}` : 'Request failed';
@@ -120,8 +128,10 @@ function handleIncoming(msg, callbacks) {
         errMsg = raw.message || (typeof raw.error === 'string' && raw.error)
           || JSON.stringify(raw);
       }
+      trace('ws:request:error', { type: entry.type, id, status: msg.status, ms, err: errMsg });
       entry.reject(new Error(errMsg));
     } else {
+      trace('ws:request:end', { type: entry.type, id, status: msg.status || 200, ms });
       entry.resolve(msg);
     }
     return;
@@ -143,6 +153,10 @@ function handleIncoming(msg, callbacks) {
 
   // SSE event relay
   if (type === 'event') {
+    try {
+      const evSid = msg.event?.sessionID || msg.event?.sessionId || msg.event?.info?.id || '';
+      trace('ws:event', { eventType: msg.eventType, sid: evSid, hidden: typeof document !== 'undefined' ? document.hidden : null });
+    } catch {}
     if (callbacks.onEvent) callbacks.onEvent(msg.eventType, msg.event);
     dispatch(type, msg);
     dispatch(`event:${msg.eventType}`, msg.event);

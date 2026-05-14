@@ -10,6 +10,7 @@ import { createFrameRenderer } from './utils.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { reserveRightPanelLayout, clearRightPanelLayout } from './ui-sidepanel-layout.js';
 import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel } from './cli-status.js';
+import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel-v2.js';
 
 const CLAUDE_ICON = '<svg fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z"/></svg>';
 
@@ -2214,7 +2215,8 @@ function injectStyles() {
     .cp-session-pill {
       position: relative;
       overflow: hidden;
-      border-color: transparent;
+      border-color: rgba(212, 162, 127, 0.14);
+      transition: border-color 0.2s;
     }
     .cp-session-pill::before {
       content: '';
@@ -2222,35 +2224,45 @@ function injectStyles() {
       border-radius: 8px;
       padding: 1px;
       pointer-events: none;
-      background: conic-gradient(
-        from var(--cp-pill-angle, 0deg),
-        rgba(212,162,127,0.0) 0%,
-        rgba(212,162,127,0.30) 25%,
-        rgba(212,162,127,0.06) 50%,
-        rgba(212,162,127,0.30) 75%,
-        rgba(212,162,127,0.0) 100%
-      );
+      background: transparent;
       -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
       -webkit-mask-composite: xor;
       mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
       mask-composite: exclude;
-      animation: cp-pill-border-spin 3s linear infinite;
+      opacity: 0;
+    }
+    .cp-session-pill.cp-pill-running {
+      border-color: transparent;
+    }
+    .cp-session-pill.cp-pill-running::before {
+      background: conic-gradient(
+        from var(--cp-pill-angle, 0deg),
+        rgba(212,162,127,0.0) 0%,
+        rgba(212,162,127,0.6) 25%,
+        rgba(212,162,127,0.12) 50%,
+        rgba(212,162,127,0.6) 75%,
+        rgba(212,162,127,0.0) 100%
+      );
+      animation: cp-pill-border-spin 2.4s linear infinite;
+      opacity: 1;
     }
     @keyframes cp-pill-border-spin {
       to { --cp-pill-angle: 360deg; }
     }
-    .cp-session-pill:hover { border-color: transparent; }
-    .cp-session-pill:hover::before {
+    .cp-session-pill:hover { border-color: rgba(212, 162, 127, 0.28); }
+    .cp-session-pill:hover.cp-pill-running::before {
       background: conic-gradient(
         from var(--cp-pill-angle, 0deg),
         rgba(212,162,127,0.0) 0%,
-        rgba(212,162,127,0.45) 25%,
-        rgba(212,162,127,0.10) 50%,
-        rgba(212,162,127,0.45) 75%,
+        rgba(212,162,127,0.8) 25%,
+        rgba(212,162,127,0.20) 50%,
+        rgba(212,162,127,0.8) 75%,
         rgba(212,162,127,0.0) 100%
       );
     }
-    .cp-session-pill .term-minimized-pill-icon { color: rgba(212, 162, 127, 0.7); }
+    .cp-session-pill .term-minimized-pill-icon { color: rgba(212, 162, 127, 0.45); transition: color 0.2s; }
+    .cp-session-pill.cp-pill-running .term-minimized-pill-icon { color: rgba(212, 162, 127, 1); }
+    .cp-session-pill:hover .term-minimized-pill-icon { color: rgba(212, 162, 127, 0.85); }
     .cp-session-pill .term-minimized-pill-icon svg { width: 12px; height: 12px; }
     .cp-session-pill.cp-pill-enter {
       animation: cp-pill-pop-in 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
@@ -2260,11 +2272,21 @@ function injectStyles() {
       100% { opacity: 1; transform: scale(1) translateX(0); }
     }
     .cp-session-pill.cp-pill-running .term-minimized-pill-label::before {
-      content: ''; display: inline-block; width: 6px; height: 6px;
-      border-radius: 50%; background: rgba(212, 162, 127, 0.95);
-      box-shadow: 0 0 10px rgba(212, 162, 127, 0.55);
-      margin-right: 5px; vertical-align: middle;
-      animation: cp-pill-pulse 1.5s ease-in-out infinite;
+      content: ''; display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; background: rgba(212, 162, 127, 1);
+      box-shadow: 0 0 8px rgba(212, 162, 127, 0.75), 0 0 14px rgba(212, 162, 127, 0.35);
+      margin-right: 6px; vertical-align: middle;
+      animation: cp-pill-pulse 1.2s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    .cp-session-pill.cp-pill-running::after {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 2px;
+      background: linear-gradient(180deg, rgba(212,162,127,0), rgba(212,162,127,0.95), rgba(212,162,127,0));
+      animation: cp-pill-pulse 1.2s ease-in-out infinite;
+      pointer-events: none;
     }
     @keyframes cp-pill-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
 
@@ -2955,7 +2977,7 @@ function _createTrayPill(tab) {
   pill.innerHTML = `
     <span class="term-minimized-pill-icon">${_CP_ICON_SVG}</span>
     <span class="term-minimized-pill-label">${escH(tab.label)}</span>
-    <button class="term-minimized-pill-close" data-tooltip="Close">&times;</button>
+    <button class="term-minimized-pill-close" data-tooltip="Close" data-tooltip-pos="top">&times;</button>
   `;
   pill.addEventListener('click', () => {
     const idx = _tabs.indexOf(tab);
@@ -3057,6 +3079,38 @@ function _cleanStaleWindows() {
 // even if the user never opens the Claude panel this session.
 _cleanStaleWindows();
 _updateWindowRegistry();
+
+// Drop runtime-only fields from saved tab payload after a server restart.
+// Keep what the Claude CLI can still resume (sessionId, label, project, model),
+// drop transient state that no longer reflects reality (running flags, queued
+// prompts, in-flight plan banners, last session cost — re-synced on attach).
+function _scrubStaleTabState(key) {
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data?.tabs)) { storage.removeItem(key); return; }
+    const scrubbed = data.tabs
+      .map((t) => ({
+        id: t.id,
+        sessionId: t.sessionId || null,
+        label: t.label || '',
+        project: t.project || '',
+        model: t.model || '',
+        effort: t.effort || '',
+      }))
+      .filter((t) => {
+        if (t.sessionId) return true;
+        const label = String(t.label || '').trim().toLowerCase();
+        return label && label !== 'new chat' && label !== 'new session' && label !== 'claude';
+      });
+    if (!scrubbed.length) { storage.removeItem(key); return; }
+    const activeIdx = Math.min(Math.max(Number(data.activeIdx) || 0, 0), scrubbed.length - 1);
+    storage.setItem(key, JSON.stringify({ activeIdx, tabs: scrubbed }));
+  } catch {
+    try { storage.removeItem(key); } catch {}
+  }
+}
 
 function restoreTabs() {
   _cleanStaleWindows();
@@ -4484,6 +4538,16 @@ function handleTabEvent(tab, ev) {
     appendStatus(tab, ev.message || 'Session reset — starting fresh.');
     return;
   }
+  if (ev.type === 'system' && ev.subtype === 'plan_file_written') {
+    // Server-side ExitPlanMode hook authored the plan file. Arrives BEFORE the
+    // assistant event so renderAssistant's eager capture sees planFilePath set
+    // and skips its redundant POST.
+    if (ev.path) {
+      tab.planFilePath = ev.path;
+      saveTabs();
+    }
+    return;
+  }
   if (ev.type === 'system' && ev.subtype === 'init') {
     if (ev.session_id) {
       tab.sessionId = ev.session_id;
@@ -4828,27 +4892,105 @@ function renderPostPlanActions(tab, headerText) {
           card.style.opacity = '1'; card.style.pointerEvents = 'auto';
         }
       } else if (a.action === 'plan') {
-        // Open plan file in SynaBun code editor for direct editing
+        // The server-side ExitPlanMode hook authors the plan file and emits
+        // plan_file_written before the assistant event, so tab.planFilePath is
+        // normally set by the time the user clicks. If not (reconnect, missed
+        // event), give the event one frame to arrive then fall back to disk.
+        // No DOM-scrape path: the DOM only ever holds rendered prose, never an
+        // authoritative plan, and writing prose produces garbage-named files.
         const openPlan = (path) => emit('open-plan-editor', { filePath: path, tabId: tab.id, source: 'claude' });
         const noFile = (reason) => {
           if (reason) console.warn('[claude-panel] Edit plan fallback:', reason);
           if (!card._noFileShown) {
             card._noFileShown = true;
-            appendStatus(tab, 'Plan text was empty — ask Claude to re-output the plan, or click Continue with implementation to proceed.');
+            const $msgs = tab.messagesEl;
+            if ($msgs) {
+              const row = document.createElement('div');
+              row.className = 'msg-status';
+              row.style.cssText = 'display: flex; align-items: center; gap: 10px; flex-wrap: wrap;';
+              const txt = document.createElement('span');
+              txt.textContent = 'Plan text was empty.';
+              row.appendChild(txt);
+              const btnRetry = document.createElement('button');
+              btnRetry.className = 'post-plan-action pp-primary';
+              btnRetry.textContent = 'Ask Claude to re-output the plan';
+              btnRetry.addEventListener('click', () => {
+                if (btnRetry.disabled) return;
+                if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) {
+                  appendStatus(tab, 'Connection lost — cannot send. Try refreshing.');
+                  return;
+                }
+                btnRetry.disabled = true; btnRetry.style.opacity = '0.5'; btnRetry.style.pointerEvents = 'none';
+                btnBlank.disabled = true; btnBlank.style.opacity = '0.5'; btnBlank.style.pointerEvents = 'none';
+                // Re-enter plan mode so Claude has access to ExitPlanMode again.
+                // After the first ExitPlanMode call, planMode was toggled off, so a
+                // plain re-prompt would be answered as prose with no tool call —
+                // which means no plan_file_written event and no Edit-plan path.
+                tab.planMode = true;
+                const $planToggle = _panel?.querySelector('#cp-plan-toggle');
+                if ($planToggle) $planToggle.classList.add('active');
+                const $input = _panel?.querySelector('#cp-input');
+                if ($input) {
+                  $input.value = 'The previous plan output was empty. Please re-create the full plan from your prior analysis and call ExitPlanMode with the complete plan text.';
+                  send();
+                }
+              });
+              row.appendChild(btnRetry);
+              const btnBlank = document.createElement('button');
+              btnBlank.className = 'post-plan-action pp-secondary';
+              btnBlank.textContent = 'Write plan myself';
+              btnBlank.addEventListener('click', () => {
+                if (btnBlank.disabled) return;
+                btnRetry.disabled = true; btnRetry.style.opacity = '0.5'; btnRetry.style.pointerEvents = 'none';
+                btnBlank.disabled = true; btnBlank.style.opacity = '0.5'; btnBlank.style.pointerEvents = 'none';
+                fetch('/api/create-plan', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ content: '# Plan\n\n', cwd: tab.project || '' }),
+                }).then(r => r.json()).then(result => {
+                  if (result?.ok && result.path) {
+                    tab.planFilePath = result.path;
+                    saveTabs();
+                    emit('open-plan-editor', { filePath: result.path, tabId: tab.id, source: 'claude' });
+                  } else {
+                    appendStatus(tab, 'Could not create blank plan: ' + (result?.error || 'unknown'));
+                    btnRetry.disabled = false; btnRetry.style.opacity = '1'; btnRetry.style.pointerEvents = 'auto';
+                    btnBlank.disabled = false; btnBlank.style.opacity = '1'; btnBlank.style.pointerEvents = 'auto';
+                  }
+                }).catch(err => {
+                  appendStatus(tab, 'Could not create blank plan: ' + (err?.message || 'request failed'));
+                  btnRetry.disabled = false; btnRetry.style.opacity = '1'; btnRetry.style.pointerEvents = 'auto';
+                  btnBlank.disabled = false; btnBlank.style.opacity = '1'; btnBlank.style.pointerEvents = 'auto';
+                });
+              });
+              row.appendChild(btnBlank);
+              $msgs.appendChild(row);
+              if (tab === activeTab()) scrollEnd();
+            }
           }
           card.style.opacity = '1'; card.style.pointerEvents = 'auto';
         };
+        // Materialize: when no plan file exists on disk, extract any plan-like
+        // text from the assistant DOM and POST it to /api/create-plan so we have
+        // a real file to open. Mirrors the OCP materialize() pattern. Without
+        // this, an empty ExitPlanMode.input.plan permanently blocks the Edit
+        // path even though the assistant prose contains a usable plan.
         const materialize = (planText) => {
+          let content = String(planText || '').trim();
+          if (!content) { noFile('no plan text to materialize'); return; }
+          if (!/^#\s+.+$/m.test(content)) content = `# Plan\n\n${content}`;
           fetch('/api/create-plan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: planText }),
+            body: JSON.stringify({ content, cwd: tab.project || '' }),
           }).then(r => r.json()).then(result => {
-            if (result.ok) {
+            if (result?.ok && result.path) {
               tab.planFilePath = result.path;
               saveTabs();
               openPlan(result.path);
-            } else { noFile(result.error || 'create-plan returned non-ok'); }
+            } else {
+              noFile(result?.error || 'create-plan returned non-ok');
+            }
           }).catch(err => noFile(err?.message || 'create-plan request failed'));
         };
         const diskFallback = () => {
@@ -4861,20 +5003,21 @@ function renderPostPlanActions(tab, headerText) {
               saveTabs();
               openPlan(p);
             } else {
-              noFile('latest-plan not fresh (mtime < plan-mode start)');
+              const fromDom = extractPlanText(tab);
+              if (fromDom && fromDom.length > 40) materialize(fromDom);
+              else noFile('latest-plan not fresh and no DOM plan text');
             }
-          }).catch(err => noFile(err?.message || 'latest-plan request failed'));
+          }).catch(err => {
+            const fromDom = extractPlanText(tab);
+            if (fromDom && fromDom.length > 40) materialize(fromDom);
+            else noFile(err?.message || 'latest-plan request failed');
+          });
         };
         if (tab.planFilePath) {
           openPlan(tab.planFilePath);
         } else {
-          const planText = tab._planContent || extractPlanText(tab);
-          if (planText) { materialize(planText); return; }
-          // Late-stream DOM race: retry once on the next frame to catch content that
-          // was inserted just after the click fired.
           requestAnimationFrame(() => {
-            const retry = tab._planContent || extractPlanText(tab);
-            if (retry) materialize(retry);
+            if (tab.planFilePath) openPlan(tab.planFilePath);
             else diskFallback();
           });
           return;
@@ -4980,19 +5123,16 @@ function renderAssistant(tab, msg) {
     tab.planMode = false;
     const $plan = _panel?.querySelector('#cp-plan-toggle');
     if ($plan) $plan.classList.remove('active');
-    // Capture plan content immediately before post-plan messages pollute the DOM.
-    // Prefer ExitPlanMode.input.plan (authoritative), then msg text, then DOM walk.
+    // Capture plan content from the tool input. The plan FILE is authored by the
+    // server-side ExitPlanMode hook (see server.js) and arrives via plan_file_written
+    // before this event — no /api/create-plan POST needed here.
     if (!tab._planContentCaptured) {
       const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
       const direct = (exitBlock?.input?.plan || '').trim();
-      const captured = direct;
-      if (captured) {
+      if (direct) {
         tab._planContentCaptured = true;
-        tab._planContent = captured;
+        tab._planContent = direct;
         tab._exitPlanPending = false;
-        fetch('/api/create-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: captured }) })
-          .then(r => r.json()).then(result => { if (result.ok && !tab.planFilePath) { tab.planFilePath = result.path; saveTabs(); } })
-          .catch(err => console.warn('[claude-panel] create-plan failed:', err));
       }
     }
     // Render post-plan actions IMMEDIATELY — don't wait for result/updateToolResult
@@ -5062,17 +5202,14 @@ function renderAssistant(tab, msg) {
     }
     // Eager capture plan content in dedup path — streaming creates the element via
     // handleStreamDelta, so renderAssistant always takes this dedup branch.
+    // File authoring is server-side; this just stashes the content for the prompt flow.
     if (tab._exitPlanPending && !tab._planContentCaptured) {
       const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
       const direct = (exitBlock?.input?.plan || '').trim();
-      const captured = direct;
-      if (captured) {
+      if (direct) {
         tab._planContentCaptured = true;
-        tab._planContent = captured;
+        tab._planContent = direct;
         tab._exitPlanPending = false;
-        fetch('/api/create-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: captured }) })
-          .then(r => r.json()).then(result => { if (result.ok && !tab.planFilePath) { tab.planFilePath = result.path; saveTabs(); } })
-          .catch(err => console.warn('[claude-panel] create-plan failed:', err));
       }
     }
     // Ensure post-plan card stays at the bottom of the messages
@@ -5137,17 +5274,14 @@ function renderAssistant(tab, msg) {
   if (msgId) { tab.currentMsgId = msgId; tab.currentMsgEl = el; }
 
   // Eagerly capture plan content the moment ExitPlanMode is detected.
+  // File authoring is server-side; this just stashes the content for the prompt flow.
   if (tab._exitPlanPending && !tab._planContentCaptured) {
     const exitBlock = tools.find(t => t.name === 'ExitPlanMode');
     const direct = (exitBlock?.input?.plan || '').trim();
-    const captured = direct;
-    if (captured) {
+    if (direct) {
       tab._planContentCaptured = true;
-      tab._planContent = captured;
+      tab._planContent = direct;
       tab._exitPlanPending = false;
-      fetch('/api/create-plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: captured }) })
-        .then(r => r.json()).then(result => { if (result.ok && !tab.planFilePath) { tab.planFilePath = result.path; saveTabs(); } })
-        .catch(err => console.warn('[claude-panel] create-plan failed:', err));
     }
   }
 
@@ -7220,14 +7354,14 @@ async function loadConfig() {
     _projects = res.projects || [];
     _models = res.models || [];
 
-    // Detect server restart — clear stale tab state so fresh sessions start clean
+    // Detect server restart — scrub runtime-only state but preserve resumable
+    // session identity so sidepanel pills still open the underlying Claude
+    // session after the server reboots.
     if (res.bootId) {
       const savedBoot = storage.getItem(STOR.bootId);
       if (savedBoot && savedBoot !== res.bootId) {
-        // Server restarted since last visit — wipe saved tabs for this window
-        storage.removeItem(STOR.tabs);
-        storage.removeItem(STOR.tabsLegacy);
-        storage.removeItem(STOR.session);
+        _scrubStaleTabState(STOR.tabs);
+        _scrubStaleTabState(STOR.tabsLegacy);
       }
       storage.setItem(STOR.bootId, res.bootId);
     }
@@ -7436,6 +7570,8 @@ export async function toggleClaudePanel() {
   }
   _visible = !_visible;
   if (_visible) {
+    // Mutual exclusion — close OpenCode V2 panel if it's open.
+    if (isOpencodePanelOpen()) { try { await toggleOpencodePanel(); } catch {} }
     if (_tabs.length === 0) createTab(null, 'New chat');
     state.lastActivePanel = 'claude';
     _panel.classList.add('open');
@@ -7450,6 +7586,8 @@ export async function toggleClaudePanel() {
     syncReservedWidth();
   }
   renderPills(); // Sync pill visibility with panel open/close state
+  emit('claude-panel:visibility', _visible);
+  if (_visible) emit('claude-panel:show');
   window.dispatchEvent(new Event('resize'));
 }
 
@@ -8471,22 +8609,38 @@ function wireEvents() {
   const $handle = _panel.querySelector('.cp-resize-handle');
   if ($handle) {
     let dragging = false;
+    let pendingWidth = 0;
+    let resizeRaf = 0;
+    const applyResizeWidth = () => {
+      resizeRaf = 0;
+      if (!dragging || !_panel || !pendingWidth) return;
+      _panel.style.width = pendingWidth + 'px';
+      syncReservedWidth();
+    };
     $handle.addEventListener('mousedown', (e) => {
       e.preventDefault();
       dragging = true;
+      pendingWidth = _panel?.offsetWidth || 0;
       _panel.style.transition = 'none';
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
     });
     window.addEventListener('mousemove', (e) => {
       if (!dragging) return;
-      const w = Math.min(700, Math.max(320, window.innerWidth - e.clientX - 20));
-      _panel.style.width = w + 'px';
-      syncReservedWidth();
+      pendingWidth = Math.min(700, Math.max(320, window.innerWidth - e.clientX - 20));
+      if (!resizeRaf) resizeRaf = requestAnimationFrame(applyResizeWidth);
     });
     window.addEventListener('mouseup', () => {
       if (!dragging) return;
       dragging = false;
+      if (resizeRaf) {
+        cancelAnimationFrame(resizeRaf);
+        resizeRaf = 0;
+      }
+      if (pendingWidth) {
+        _panel.style.width = pendingWidth + 'px';
+        syncReservedWidth();
+      }
       _panel.style.transition = '';
       document.body.style.cursor = '';
       document.body.style.userSelect = '';

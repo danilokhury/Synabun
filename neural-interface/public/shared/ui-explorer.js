@@ -759,6 +759,26 @@ function initResizeHandle() {
   if (!handle || !panel) return;
 
   let dragging = false;
+  let resizeRaf = 0;
+  let pendingWidth = _width;
+
+  const applyResize = () => {
+    resizeRaf = 0;
+    _width = pendingWidth;
+    panel.style.width = `${_width}px`;
+    applyExplorerWidth();
+  };
+  const scheduleResize = (width) => {
+    pendingWidth = width;
+    if (!resizeRaf) resizeRaf = requestAnimationFrame(applyResize);
+  };
+  const flushResize = () => {
+    if (resizeRaf) {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = 0;
+    }
+    applyResize();
+  };
 
   handle.addEventListener('mousedown', (e) => {
     e.preventDefault();
@@ -771,14 +791,13 @@ function initResizeHandle() {
   document.addEventListener('mousemove', (e) => {
     if (!dragging) return;
     const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, e.clientX));
-    _width = newWidth;
-    panel.style.width = `${_width}px`;
-    applyExplorerWidth();
+    scheduleResize(newWidth);
   });
 
   document.addEventListener('mouseup', () => {
     if (!dragging) return;
     dragging = false;
+    flushResize();
     handle.classList.remove('active');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';

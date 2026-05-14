@@ -9,7 +9,7 @@ import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
 import { storage } from './storage.js';
 import { sendToPanel as sendToClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
-import { isOpencodePanelOpen, attachPathToOpencode } from './ocp/ocp-panel.js';
+import { isOpencodePanelOpen, attachPathToOpencode } from './ui-opencode-panel-v2.js';
 import { isCodexPanelOpen, toggleCodexPanel } from './cdx/cdx-panel.js';
 import { addPathChip as addCodexPathChip } from './cdx/cdx-tabs.js';
 import { on, emit, state } from './state.js';
@@ -17,7 +17,7 @@ import { on, emit, state } from './state.js';
 // Route a file path to whichever side panel is currently active. Falls back
 // to the last-active panel (`state.lastActivePanel`) if none are visible, and
 // finally to Claude. Each panel attaches the path in its native format
-// (chips for Claude/Codex, plain-text input append for OpenCode).
+// (chips for Claude/Codex/OpenCode).
 async function sendPathToActivePanel(filePath) {
   let target;
   if (isOpencodePanelOpen()) target = 'opencode';
@@ -2413,10 +2413,32 @@ function initResizeHandle() {
   if (!handle || !panel) return;
 
   let dragging = false;
+  let resizeRaf = 0;
+  let pendingWidth = _width;
+  let explorerWidth = 0;
+
+  const applyResize = () => {
+    resizeRaf = 0;
+    _width = pendingWidth;
+    panel.style.width = `${_width}px`;
+    applyFileExplorerWidth();
+  };
+  const scheduleResize = (width) => {
+    pendingWidth = width;
+    if (!resizeRaf) resizeRaf = requestAnimationFrame(applyResize);
+  };
+  const flushResize = () => {
+    if (resizeRaf) {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = 0;
+    }
+    applyResize();
+  };
 
   handle.addEventListener('mousedown', (e) => {
     e.preventDefault();
     dragging = true;
+    explorerWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--explorer-width')) || 0;
     handle.classList.add('active');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
@@ -2425,16 +2447,14 @@ function initResizeHandle() {
   document.addEventListener('mousemove', (e) => {
     if (!dragging) return;
     // The panel left edge starts at --explorer-width
-    const explorerWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--explorer-width')) || 0;
     const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, e.clientX - explorerWidth));
-    _width = newWidth;
-    panel.style.width = `${_width}px`;
-    applyFileExplorerWidth();
+    scheduleResize(newWidth);
   });
 
   document.addEventListener('mouseup', () => {
     if (!dragging) return;
     dragging = false;
+    flushResize();
     handle.classList.remove('active');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';

@@ -24,6 +24,28 @@ let isVisible = false;
 // ── Drag state ──
 let _dragging = false;
 let _dragOff = { x: 0, y: 0 };
+let _dragRaf = 0;
+let _pendingDrag = null;
+
+function applyDragPosition() {
+  _dragRaf = 0;
+  if (!_panel || !_pendingDrag) return;
+  _panel.style.left = _pendingDrag.left + 'px';
+  _panel.style.top = _pendingDrag.top + 'px';
+}
+
+function scheduleDragPosition(left, top) {
+  _pendingDrag = { left, top };
+  if (!_dragRaf) _dragRaf = requestAnimationFrame(applyDragPosition);
+}
+
+function flushDragPosition() {
+  if (_dragRaf) {
+    cancelAnimationFrame(_dragRaf);
+    _dragRaf = 0;
+  }
+  applyDragPosition();
+}
 
 // ── Icons ──
 const ICON_CLOSE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
@@ -368,6 +390,7 @@ function wirePanel() {
       _panel.classList.add('dragging');
       const rect = _panel.getBoundingClientRect();
       _dragOff = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      _pendingDrag = null;
       e.preventDefault();
     });
   }
@@ -411,11 +434,12 @@ function openPanel() {
   // Global mouse handlers for drag
   const onMouseMove = (e) => {
     if (!_dragging) return;
-    _panel.style.left = (e.clientX - _dragOff.x) + 'px';
-    _panel.style.top = (e.clientY - _dragOff.y) + 'px';
+    scheduleDragPosition(e.clientX - _dragOff.x, e.clientY - _dragOff.y);
   };
   const onMouseUp = () => {
+    if (!_dragging) return;
     _dragging = false;
+    flushDragPosition();
     if (_panel) _panel.classList.remove('dragging');
   };
   document.addEventListener('mousemove', onMouseMove);

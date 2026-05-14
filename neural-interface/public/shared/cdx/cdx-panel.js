@@ -6,6 +6,7 @@ import { state, emit, on } from '../state.js';
 import { reserveRightPanelLayout, clearRightPanelLayout } from '../ui-sidepanel-layout.js';
 import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel } from '../cli-status.js';
 import { isClaudePanelOpen, toggleClaudePanel } from '../ui-claude-panel.js';
+import { isOpencodePanelOpen, toggleOpencodePanel } from '../ui-opencode-panel-v2.js';
 import { injectStyles } from './cdx-styles.js';
 import { appendAssistantMarkdownMessage, flushCardBody, renderPostPlanActions } from './cdx-render.js';
 import {
@@ -32,6 +33,7 @@ import {
   resetStallTimer, stopStallTimer,
   withTab,
   ensureProjectsLoaded,
+  setActiveProject,
 } from './cdx-tabs.js';
 
 window.addEventListener('beforeunload', () => { try { flushAllThreadSnapshots(); } catch {} });
@@ -49,6 +51,7 @@ let _visible = false;
 let _resizeBound = false;
 let _cliInstalled = null;
 let _cliUnsub = null;
+let _scrollEndRaf = 0;
 
 // ═══════════════════════════════════════════
 //  Bound State (mirrors active tab — managed by cdx-tabs)
@@ -354,9 +357,13 @@ function buildPanel() {
 // ═══════════════════════════════════════════
 
 function scrollEnd() {
-  const el = activeTab()?.messagesEl;
-  if (!el) return;
-  el.scrollTop = el.scrollHeight;
+  if (_scrollEndRaf) return;
+  _scrollEndRaf = requestAnimationFrame(() => {
+    _scrollEndRaf = 0;
+    const el = activeTab()?.messagesEl;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  });
 }
 
 function autosizeInput() {
@@ -830,13 +837,11 @@ function wireEvents() {
   projectDd?.addEventListener('change', () => {
     const tab = activeTab();
     const project = ddGetValue(projectDd);
-    if (tab) tab.project = project;
-    if (project) storage.setItem(STOR.project, project);
-    else storage.removeItem(STOR.project);
-    loadBranches(project);
     sessionMenu?.classList.remove('open');
-    _host.resetThreadState?.({ preserveStatus: !tab?.connected, tone: tab?.connected ? 'ready' : 'working' });
-    saveTabs();
+    setActiveProject(project, {
+      preserveStatus: !tab?.connected,
+      tone: tab?.connected ? 'ready' : 'working',
+    });
   });
   sessionBtn?.addEventListener('click', (event) => {
     if (sessionLabelEl?.querySelector('.cxp-rename-input')) return;
@@ -869,22 +874,38 @@ function wireEvents() {
 
   if (resizeHandle) {
     let dragging = false;
+    let pendingWidth = 0;
+    let resizeRaf = 0;
+    const applyResizeWidth = () => {
+      resizeRaf = 0;
+      if (!dragging || !_panel || !pendingWidth) return;
+      _panel.style.width = `${pendingWidth}px`;
+      syncReservedWidth();
+    };
     resizeHandle.addEventListener('mousedown', (event) => {
       event.preventDefault();
       dragging = true;
+      pendingWidth = _panel?.offsetWidth || 0;
       _panel.style.transition = 'none';
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
     });
     window.addEventListener('mousemove', (event) => {
       if (!dragging || !_panel) return;
-      const width = Math.min(700, Math.max(320, window.innerWidth - event.clientX - 20));
-      _panel.style.width = `${width}px`;
-      syncReservedWidth();
+      pendingWidth = Math.min(700, Math.max(320, window.innerWidth - event.clientX - 20));
+      if (!resizeRaf) resizeRaf = requestAnimationFrame(applyResizeWidth);
     });
     window.addEventListener('mouseup', () => {
       if (!dragging || !_panel) return;
       dragging = false;
+      if (resizeRaf) {
+        cancelAnimationFrame(resizeRaf);
+        resizeRaf = 0;
+      }
+      if (pendingWidth) {
+        _panel.style.width = `${pendingWidth}px`;
+        syncReservedWidth();
+      }
       _panel.style.transition = '';
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
@@ -947,9 +968,10 @@ function wireEvents() {
     if (_visible) setVisible(false);
   });
 
-  on('codex-panel:show', (data) => {
+  on('codex-panel:show', async (data) => {
     if (!_visible) {
-      if (isClaudePanelOpen()) toggleClaudePanel();
+      if (isClaudePanelOpen()) await toggleClaudePanel();
+      if (isOpencodePanelOpen()) await toggleOpencodePanel();
       setVisible(true);
     }
     if (data?.tabId) {
@@ -1095,11 +1117,12 @@ export function isCodexPanelOpen() {
 
 export async function toggleCodexPanel() {
   ensurePanel();
-  await ensureProjectsLoaded();
   if (_visible) {
     setVisible(false);
     return;
   }
-  if (isClaudePanelOpen()) toggleClaudePanel();
+  await ensureProjectsLoaded();
+  if (isClaudePanelOpen()) await toggleClaudePanel();
+  if (isOpencodePanelOpen()) { try { await toggleOpencodePanel(); } catch {} }
   setVisible(true);
 }

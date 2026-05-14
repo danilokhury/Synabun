@@ -354,10 +354,16 @@
     z-index: 4;
     transform: translateX(-50%) rotate(-1deg);
     text-align: center;
-    pointer-events: auto;
+    /* Wrapper must not eat clicks — it overlaps the whiteboard's auto-paste
+       drop zone (center of #wb-root) and would block dragging of screenshots
+       and pasted images. Interactive children opt back in with auto below. */
+    pointer-events: none;
     opacity: 0;
     animation: wbRulesetAlertIn 0.5s ease 0.35s forwards;
     transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+  .wb-ruleset-alert-btn {
+    pointer-events: auto;
   }
   .wb-ruleset-alert.hidden {
     display: none;
@@ -20123,8 +20129,13 @@
     transition: left 0.08s ease-out, top 0.08s ease-out, border-radius 0.15s ease, box-shadow 0.2s ease;
   }
   .term-float-tab.float-dragging {
-    box-shadow: var(--shadow-2xl), 0 0 0 1px rgba(0,0,0,0.4);
-    transition: border-radius 0.15s ease, box-shadow 0.15s ease;
+    /* Simplified shadow during drag — multi-layer --shadow-2xl forces heavy
+       GPU compositing each frame while the position changes. Use a single
+       cheap shadow + will-change hint so the browser keeps the dragging
+       window on its own composited layer. */
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(0,0,0,0.4);
+    transition: border-radius 0.15s ease;
+    will-change: transform, left, top;
   }
 
   /* Snapped edge corners become sharp */
@@ -24106,6 +24117,35 @@
   font-size: 11px;
   color: var(--t-secondary, rgba(255,255,255,0.5));
 }
+
+/* ── Pending-Remember provider/model picker ── */
+.sm-pr-picker { flex-direction: column; align-items: stretch; gap: 10px; }
+.sm-pr-row { display: flex; align-items: center; gap: 10px; }
+.sm-pr-row.sm-pr-actions { justify-content: flex-end; }
+.sm-pr-label {
+  width: 64px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--t-muted, rgba(255,255,255,0.38));
+}
+.sm-pr-providers { display: flex; gap: 6px; flex-wrap: wrap; }
+.sm-btn.sm-pr-prov { font-size: 11px; padding: 5px 10px; }
+.sm-btn.sm-pr-prov.active {
+  background: var(--c-accent, #6aa9ff);
+  color: #000;
+  border-color: var(--c-accent, #6aa9ff);
+}
+.sm-pr-select {
+  flex: 1;
+  background: var(--s-subtle, rgba(255,255,255,0.04));
+  color: var(--t-primary, #fff);
+  border: 1px solid var(--b-subtle, rgba(255,255,255,0.1));
+  border-radius: var(--r-small, 6px);
+  padding: 6px 8px;
+  font-size: 11px;
+}
+.sm-pr-select:disabled { opacity: 0.5; }
 
 /* ── Section labels ── */
 .sm-section-label {

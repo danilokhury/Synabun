@@ -12,7 +12,7 @@ import { registerAction } from './ui-keybinds.js';
 import { startTutorial } from './ui-tutorial.js';
 import { toggleClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
 import { toggleCodexPanel, isCodexPanelOpen } from './ui-codex-panel.js';
-import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel.js';
+import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel-v2.js';
 import { toggleSessionMonitor, fetchLoopsForBadge, fetchNotificationsForBadge } from './ui-sessions.js';
 import { toggleImageGallery } from './ui-image-gallery.js';
 import { initUpdate } from './ui-update.js';
@@ -49,38 +49,83 @@ export function initNavbar() {
   const codexPanelBtn = $('topright-codex-panel-btn');
   const opencodePanelBtn = $('topright-opencode-panel-btn');
   initSidepanelTrayPlaceholders();
+
+  const agentPanels = {
+    claude: {
+      isOpen: isClaudePanelOpen,
+      toggle: toggleClaudePanel,
+      button: claudePanelBtn,
+    },
+    codex: {
+      isOpen: isCodexPanelOpen,
+      toggle: toggleCodexPanel,
+      button: codexPanelBtn,
+    },
+    opencode: {
+      isOpen: isOpencodePanelOpen,
+      toggle: toggleOpencodePanel,
+      button: opencodePanelBtn,
+    },
+  };
+
+  function syncAgentPanelButtons() {
+    for (const panel of Object.values(agentPanels)) {
+      panel.button?.classList.toggle('active', !!panel.isOpen());
+    }
+  }
+
+  async function toggleAgentPanel(target) {
+    const selected = agentPanels[target];
+    if (!selected) return;
+
+    if (selected.isOpen()) {
+      await selected.toggle();
+      syncAgentPanelButtons();
+      return;
+    }
+
+    for (const [name, panel] of Object.entries(agentPanels)) {
+      if (name === target || !panel.isOpen()) continue;
+      try {
+        await panel.toggle();
+      } catch (err) {
+        console.warn(`[navbar] Failed to minimize ${name} panel before opening ${target}:`, err);
+      }
+    }
+
+    await selected.toggle();
+    syncAgentPanelButtons();
+  }
+
   if (claudePanelBtn) {
-    claudePanelBtn.addEventListener('click', (e) => {
+    claudePanelBtn.addEventListener('click', async (e) => {
       e.preventDefault();
-      if (isCodexPanelOpen()) { toggleCodexPanel(); codexPanelBtn?.classList.remove('active'); }
-      if (isOpencodePanelOpen()) { toggleOpencodePanel(); opencodePanelBtn?.classList.remove('active'); }
-      toggleClaudePanel();
-      claudePanelBtn.classList.toggle('active');
+      await toggleAgentPanel('claude');
     });
     registerAction('toggle-claude-panel', () => claudePanelBtn.click());
   }
   if (codexPanelBtn) {
     codexPanelBtn.addEventListener('click', async (e) => {
       e.preventDefault();
-      if (isClaudePanelOpen()) { toggleClaudePanel(); claudePanelBtn.classList.remove('active'); }
-      if (isOpencodePanelOpen()) { toggleOpencodePanel(); opencodePanelBtn?.classList.remove('active'); }
-      await toggleCodexPanel();
+      await toggleAgentPanel('codex');
     });
     on('codex-panel:visibility', (visible) => {
       codexPanelBtn.classList.toggle('active', !!visible);
+      syncAgentPanelButtons();
     });
   }
   if (opencodePanelBtn) {
     opencodePanelBtn.addEventListener('click', async (e) => {
       e.preventDefault();
-      if (isClaudePanelOpen()) { toggleClaudePanel(); claudePanelBtn?.classList.remove('active'); }
-      if (isCodexPanelOpen()) { toggleCodexPanel(); codexPanelBtn?.classList.remove('active'); }
-      await toggleOpencodePanel();
+      await toggleAgentPanel('opencode');
     });
     on('opencode-panel:visibility', (visible) => {
       opencodePanelBtn.classList.toggle('active', !!visible);
+      syncAgentPanelButtons();
     });
   }
+  on('claude-panel:visibility', () => syncAgentPanelButtons());
+  on('opencode-child:visibility', () => syncAgentPanelButtons());
 
   // ── Sidebar close button ──
   const sidebar = $('category-sidebar');

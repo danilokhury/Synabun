@@ -29,6 +29,7 @@ import {
   PROFILE_PRESETS, VALID_GROUPS, PROFILE_PATH,
   resolveProfileGroups, readInitialProfile, getActiveProfile, getActiveProfileName, getActiveGroups,
   setActiveState, setToolGroup, applyProfile, persistProfile, isClaudeCode,
+  setOnProfileChanged,
 } from './services/profiles.js';
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, initCategoryCache } from './services/categories.js';
 import { getEnvPath, config } from './config.js';
@@ -136,8 +137,22 @@ export function registerTools(server: McpServer) {
   setToolGroup('image',      registerImageTools(server));
   setToolGroup('gsc',        registerGscTools(server));
 
-  // Apply initial profile (disables groups not in the active profile)
+  // Apply initial profile (disables groups not in the active profile).
+  // The notifier is registered AFTER this call so the initial sweep doesn't
+  // emit a spurious tools/list_changed before the client has even subscribed.
   applyProfile(getActiveProfileName());
+
+  // From now on, any applyProfile() (file-watcher path or `profile` MCP tool)
+  // emits a single coalesced notifications/tools/list_changed instead of one
+  // event per tool flipped — required because some MCP clients (OpenCode SDK)
+  // abort the in-flight tool roundtrip on a notification storm.
+  setOnProfileChanged(() => {
+    server.server.notification({
+      method: 'notifications/tools/list_changed',
+    }).catch((err) => {
+      console.error('[SynaBun] profile tools/list_changed notify failed:', err);
+    });
+  });
 
   return { rememberTool, recallTool, reflectTool, memoriesTool };
 }
@@ -231,8 +246,12 @@ loadUsageCounts();
 
 // Create a fully configured McpServer with all tools registered.
 // Used by HTTP transport (stateless, fresh server per request).
-export function createMcpServer() {
-  const initialProfile = readInitialProfile();
+// `forceProfile` overrides the file/env profile — HTTP transport passes 'full'
+// because HTTP clients (Claude Code) have ToolSearch / deferred loading and
+// don't need eager profile restriction. Stdio clients (Codex, OpenCode) keep
+// using readInitialProfile() via the singleton at the bottom of this file.
+export function createMcpServer(forceProfile?: string) {
+  const initialProfile = forceProfile ?? readInitialProfile();
   setActiveState(initialProfile, resolveProfileGroups(initialProfile));
   const server = new McpServer(
     { name: 'claude-memory', version: '1.1.0' },

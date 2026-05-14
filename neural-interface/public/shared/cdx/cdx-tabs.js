@@ -6,6 +6,7 @@ import { storage } from '../storage.js';
 import { state as appState, on as appOn } from '../state.js';
 import { fetchProjects, searchSessions } from '../api.js';
 import { isClaudePanelOpen, toggleClaudePanel } from '../ui-claude-panel.js';
+import { isOpencodePanelOpen, toggleOpencodePanel } from '../ui-opencode-panel-v2.js';
 import { reserveRightPanelLayout, clearRightPanelLayout } from '../ui-sidepanel-layout.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import {
@@ -42,6 +43,39 @@ import {
   setRequestsContext, handleServerRequest, resolveRequestCard, sendServerRequestReply,
   getRequestCardEntry, rememberRequestCard, createRequestButton,
 } from './cdx-requests.js';
+
+const SNAPSHOT_IDLE_DELAY_MS = 350;
+const SNAPSHOT_RUNNING_DELAY_MS = 1800;
+const SNAPSHOT_RUNNING_MIN_INTERVAL_MS = 5000;
+const SNAPSHOT_IDLE_TIMEOUT_MS = 2500;
+const CODEX_MAX_TRANSCRIPT_CHILDREN = 700;
+const CODEX_PRUNE_BATCH = 150;
+const CODEX_PERF_DEBUG_KEY = 'synabun-codex-perf-debug';
+
+function codexPerfDebugEnabled() {
+  try { return storage.getItem(CODEX_PERF_DEBUG_KEY) === '1'; } catch { return false; }
+}
+
+function codexPerfLog(label, detail = {}) {
+  if (!codexPerfDebugEnabled()) return;
+  console.debug(`[codex-perf] ${label}`, detail);
+}
+
+function requestIdleWork(callback, timeout = SNAPSHOT_IDLE_TIMEOUT_MS) {
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    return { type: 'idle', id: window.requestIdleCallback(callback, { timeout }) };
+  }
+  return { type: 'timeout', id: setTimeout(callback, Math.min(timeout, 1000)) };
+}
+
+function cancelIdleWork(handle) {
+  if (!handle) return;
+  if (handle.type === 'idle' && typeof window !== 'undefined' && typeof window.cancelIdleCallback === 'function') {
+    window.cancelIdleCallback(handle.id);
+  } else {
+    clearTimeout(handle.id);
+  }
+}
 
 // ── Panel ref + callbacks from cdx-panel ──
 let _getPanelEl = () => null;
@@ -157,8 +191,8 @@ function buildWsCallbacks(tab) {
     onReady(msg) {
       _bootstrapped = true;
       if (_boundTab) _boundTab.bootstrapped = true;
-      if (msg.threadId) {
-        _threadId = msg.threadId;
+      if (Object.prototype.hasOwnProperty.call(msg, 'threadId')) {
+        _threadId = msg.threadId || null;
         if (_boundTab) _boundTab.threadId = _threadId;
       }
       setStatus('Ready', 'ready');
@@ -717,7 +751,13 @@ function persistThreadSnapshots() {
   }
 
   _threadSnapshots = next;
+  const t0 = codexPerfDebugEnabled() ? performance.now() : 0;
   storage.setItem(STOR.threadSnapshots, JSON.stringify(next));
+  if (t0) codexPerfLog('snapshot:persist', {
+    ms: Math.round((performance.now() - t0) * 10) / 10,
+    threads: Object.keys(next).length,
+    chars: totalChars,
+  });
 }
 
 function getThreadSnapshot(threadId) {
@@ -725,7 +765,7 @@ function getThreadSnapshot(threadId) {
   return normalizeThreadSnapshotEntry(_threadSnapshots?.[threadId]);
 }
 
-function writeThreadSnapshot(tab) {
+function writeThreadSnapshot(tab, { force = false } = {}) {
   const threadId = tab?.threadId || null;
   const messagesEl = tab?.messagesEl || null;
   if (!threadId || !messagesEl) return;
@@ -734,6 +774,8 @@ function writeThreadSnapshot(tab) {
       if (itemState?._bodyDirty) flushCardBody(itemState);
     }
   }
+  const t0 = codexPerfDebugEnabled() ? performance.now() : 0;
+  pruneTranscriptDom(messagesEl);
   const html = messagesEl.innerHTML || '';
   if (!html.trim()) return;
   const itemCount = normalizeSnapshotItemCount(tab?.transcriptItemCount)
@@ -752,15 +794,40 @@ function writeThreadSnapshot(tab) {
     sourceUpdatedAt: Number(tab?.transcriptSourceUpdatedAt) || null,
   };
   persistThreadSnapshots();
+  tab._lastSnapshotWriteAt = Date.now();
+  if (t0) codexPerfLog('snapshot:write', {
+    force,
+    ms: Math.round((performance.now() - t0) * 10) / 10,
+    chars: html.length,
+    children: messagesEl.childElementCount,
+    itemCount,
+  });
 }
 
-export function scheduleThreadSnapshotSave(tab = _boundTab) {
+export function scheduleThreadSnapshotSave(tab = _boundTab, { force = false } = {}) {
   if (!tab?.threadId || !tab?.messagesEl) return;
   if (tab.snapshotTimer) clearTimeout(tab.snapshotTimer);
+  if (tab.snapshotIdleHandle) {
+    cancelIdleWork(tab.snapshotIdleHandle);
+    tab.snapshotIdleHandle = null;
+  }
+  const running = !!(tab.running || (tab === _boundTab && _running));
+  const sinceLast = Date.now() - (tab._lastSnapshotWriteAt || 0);
+  let delay = force ? 0 : (running ? SNAPSHOT_RUNNING_DELAY_MS : SNAPSHOT_IDLE_DELAY_MS);
+  if (!force && running && sinceLast < SNAPSHOT_RUNNING_MIN_INTERVAL_MS) {
+    delay = Math.max(delay, SNAPSHOT_RUNNING_MIN_INTERVAL_MS - sinceLast);
+  }
   tab.snapshotTimer = setTimeout(() => {
     tab.snapshotTimer = null;
-    writeThreadSnapshot(tab);
-  }, 200);
+    if (force) {
+      writeThreadSnapshot(tab, { force: true });
+      return;
+    }
+    tab.snapshotIdleHandle = requestIdleWork(() => {
+      tab.snapshotIdleHandle = null;
+      writeThreadSnapshot(tab);
+    });
+  }, delay);
 }
 
 export function flushThreadSnapshotSave(tab = _boundTab) {
@@ -769,7 +836,57 @@ export function flushThreadSnapshotSave(tab = _boundTab) {
     clearTimeout(tab.snapshotTimer);
     tab.snapshotTimer = null;
   }
-  writeThreadSnapshot(tab);
+  if (tab.snapshotIdleHandle) {
+    cancelIdleWork(tab.snapshotIdleHandle);
+    tab.snapshotIdleHandle = null;
+  }
+  writeThreadSnapshot(tab, { force: true });
+}
+
+export function flushAllThreadSnapshots() {
+  for (const tab of _tabs) {
+    try { flushThreadSnapshotSave(tab); } catch {}
+  }
+}
+
+export function pruneTranscriptDom(messagesEl = _messagesEl) {
+  if (!messagesEl || messagesEl.childElementCount <= CODEX_MAX_TRANSCRIPT_CHILDREN) return 0;
+  const targetRemove = Math.min(
+    CODEX_PRUNE_BATCH,
+    messagesEl.childElementCount - (CODEX_MAX_TRANSCRIPT_CHILDREN - CODEX_PRUNE_BATCH)
+  );
+  const activeIds = new Set(_activeItems?.keys?.() || []);
+  let removed = 0;
+
+  for (const child of Array.from(messagesEl.children)) {
+    if (removed >= targetRemove) break;
+    if (child.classList?.contains('cxp-empty') || child.classList?.contains('cxp-thinking')) continue;
+    const itemId = child.dataset?.itemId || child.querySelector?.('[data-item-id]')?.dataset?.itemId || '';
+    if (itemId && activeIds.has(itemId)) continue;
+
+    child.remove();
+    removed++;
+    if (itemId) {
+      _items.delete(itemId);
+      _requestCards.delete(itemId);
+      _activeItems.delete(itemId);
+    }
+  }
+
+  if (removed) {
+    const itemCount = countRenderableTranscriptNodes(messagesEl);
+    _transcriptItemCount = itemCount;
+    if (_boundTab?.messagesEl === messagesEl) {
+      _boundTab.transcriptItemCount = itemCount;
+      _boundTab.transcriptSourceUpdatedAt = Date.now();
+    }
+    codexPerfLog('transcript:prune', {
+      removed,
+      children: messagesEl.childElementCount,
+      itemCount,
+    });
+  }
+  return removed;
 }
 
 export function flushAllThreadSnapshots() {
@@ -1703,12 +1820,13 @@ function createTrayPill(tab) {
   pill.innerHTML = `
     <span class="term-minimized-pill-icon">${OPENAI_ICON}</span>
     <span class="term-minimized-pill-label">${esc(tab.sessionLabel || 'New session')}</span>
-    <button class="term-minimized-pill-close" data-tooltip="Close">&times;</button>
+    <button class="term-minimized-pill-close" data-tooltip="Close" data-tooltip-pos="top">&times;</button>
   `;
-  pill.addEventListener('click', () => {
+  pill.addEventListener('click', async () => {
     const idx = _tabs.indexOf(tab);
     if (idx < 0) return;
-    if (isClaudePanelOpen()) toggleClaudePanel();
+    if (isClaudePanelOpen()) await toggleClaudePanel();
+    if (isOpencodePanelOpen()) { try { await toggleOpencodePanel(); } catch {} }
     if (!_getVisible()) _setVisible(true);
     switchTab(idx);
   });
@@ -2215,6 +2333,32 @@ export function resetThreadState({ tone = 'ready', preserveStatus = false } = {}
   syncSessionControls();
   renderPills();
   saveTabs();
+}
+
+export function setActiveProject(projectPath, { reset = true, preserveStatus = false, tone = 'ready' } = {}) {
+  const nextProject = typeof projectPath === 'string' ? projectPath : '';
+  const tab = activeTab();
+  const changed = nextProject !== _project || (tab && tab.project !== nextProject);
+
+  _project = nextProject;
+  if (tab) tab.project = nextProject;
+  if (nextProject) storage.setItem(STOR.project, nextProject);
+  else storage.removeItem(STOR.project);
+
+  if (reset) {
+    resetThreadState({ preserveStatus, tone });
+  } else {
+    syncLegacyState();
+    syncInputEnabled();
+    saveTabs();
+  }
+
+  if (changed && _connected && _ws?.readyState === WebSocket.OPEN) {
+    sendSocket({ type: 'reset_thread' });
+  }
+  renderProjects();
+  _loadBranches(_project);
+  return changed;
 }
 
 export function restoreSavedThreadState() {
@@ -5431,6 +5575,7 @@ export function initContextBridge() {
     hideEmpty,
     showEmpty,
     repositionThinking,
+    pruneTranscriptDom,
     appendSystem: (...args) => appendSystem(...args),
     scheduleThreadSnapshotSave,
     flushThreadSnapshotSave,

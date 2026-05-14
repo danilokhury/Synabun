@@ -20,7 +20,7 @@ import { renderEmptyState, esc, renderToolActivityDock, tickActivityDockElapsed,
 import {
   STOR, getTabs, getActiveTabIdx, activeTab, getProviders, getSessions,
   setPanelEl, setOnUpdate, setPanelVisible, setOnShow, setOnHide, setOnEditPlan,
-  createTab, switchTab, closeTab, renderPills, saveTabs, restoreTabs,
+  createTab, switchTab, closeTab, renderPills, saveTabs, restoreTabs, setActiveProject,
   loadSessions, createSession, renameSession, loadProviders, loadAgents, populateModelDropdown,
   sendMessage, abortMessage, handleSSEEvent,
   revertSession, compactSession, shareSession, executeCommand, renderTabMessages,
@@ -243,14 +243,7 @@ function promptNameNewSession() {
     if (cancel) return;
 
     if (chosenProject && chosenProject !== (tab.project || '')) {
-      tab.project = chosenProject;
-      storage.setItem(STOR.project, chosenProject);
-      saveTabs();
-      const projectDd = panelEl('#ocp-project-dd');
-      if (projectDd) {
-        const lbl = projectDd.querySelector('.ocp-dd-label');
-        if (lbl) lbl.textContent = chosenProject.split('/').pop() || chosenProject;
-      }
+      setActiveProject(chosenProject);
       loadBranches(chosenProject);
     }
 
@@ -369,7 +362,7 @@ function buildPanel() {
             <span class="ocp-stop-icon">${ICON_STOP}</span>
           </button>
         </div>
-        <div class="ocp-slash-hints" id="ocp-slash-hints" hidden></div>
+        <div class="ocp-slash-browser" id="ocp-slash-hints" hidden></div>
         <input type="file" id="ocp-file-input" accept="image/*" multiple hidden>
       </div>
       <div class="ocp-footer-toolbar">
@@ -377,6 +370,9 @@ function buildPanel() {
           <a class="ocp-brand-link" href="https://opencode.ai" target="_blank" rel="noopener noreferrer" data-tooltip="OpenCode">
             <svg class="ocp-brand" viewBox="0 0 240 300" fill="currentColor" width="14" height="14"><path fill-rule="evenodd" d="M0 0h240v300H0V0zm30 30v240h180V30H30z"/><rect x="30" y="150" width="180" height="120" opacity=".45"/></svg>
           </a>
+          <button class="ocp-footer-btn" id="ocp-footer-changelog" type="button" data-tooltip="Generate changelog (/synabun changelog)">
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h8.5v13H4a1.5 1.5 0 01-1.5-1.5V3A1.5 1.5 0 014 1.5z"/><path d="M5.5 5h5M5.5 7.5h3M5.5 10h4"/></svg>
+          </button>
           <div class="ocp-mode-toggle" id="ocp-mode-toggle" role="group" aria-label="OpenCode mode">
             <button class="ocp-mode-btn" type="button" data-mode="chat" data-tooltip="Chat">Chat</button>
             <button class="ocp-mode-btn" type="button" data-mode="build" data-tooltip="Build">Build</button>
@@ -408,13 +404,25 @@ function wireEvents() {
       e.preventDefault();
       startX = e.clientX;
       startW = _panel.offsetWidth;
-      const onMove = (ev) => {
-        const diff = startX - ev.clientX;
-        const w = Math.max(320, Math.min(700, startW + diff));
-        _panel.style.width = w + 'px';
+      let pendingW = startW;
+      let rafId = 0;
+      const applyWidth = () => {
+        rafId = 0;
+        if (!_panel) return;
+        _panel.style.width = pendingW + 'px';
         syncReservedWidth();
       };
+      const onMove = (ev) => {
+        const diff = startX - ev.clientX;
+        pendingW = Math.max(320, Math.min(700, startW + diff));
+        if (!rafId) rafId = requestAnimationFrame(applyWidth);
+      };
       const onUp = () => {
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = 0;
+        }
+        applyWidth();
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
       };
@@ -459,7 +467,7 @@ function wireEvents() {
   });
 
   // Action bar
-  panelEl('#ocp-action-changelog')?.addEventListener('click', () => {
+  const triggerChangelog = () => {
     const tab = activeTab();
     if (!tab || tab.running || !_serverReady) return;
     const inp = panelEl('#ocp-input');
@@ -467,7 +475,9 @@ function wireEvents() {
     inp.value = '/synabun changelog';
     autosizeInput();
     handleSend();
-  });
+  };
+  panelEl('#ocp-action-changelog')?.addEventListener('click', triggerChangelog);
+  panelEl('#ocp-footer-changelog')?.addEventListener('click', triggerChangelog);
   panelEl('#ocp-revert')?.addEventListener('click', async () => {
     const tab = activeTab();
     if (tab?.sessionId) {
@@ -488,16 +498,46 @@ function wireEvents() {
     input.addEventListener('input', () => {
       autosizeInput();
       syncSendButton();
-      // Show slash hints when user types /
-      const val = input.value;
-      const slashMatch = val.match(/^\/(\w*)$/);
-      if (slashMatch) {
-        showSlashHints(slashMatch[1]);
-      } else {
-        hideSlashHints();
-      }
+      refreshSlashTrigger();
     });
+    input.addEventListener('keyup', (e) => {
+      // Re-detect when caret moves with arrow keys / home/end, but skip when
+      // navigating an open browser
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') return;
+      if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape') return;
+      refreshSlashTrigger();
+    });
+    input.addEventListener('click', () => refreshSlashTrigger());
     input.addEventListener('keydown', (e) => {
+      const browser = panelEl('#ocp-slash-hints');
+      const browserOpen = !!browser?.classList.contains('open');
+
+      // Browser-open shortcuts take priority
+      if (browserOpen) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          navigateSlashHints(1);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          navigateSlashHints(-1);
+          return;
+        }
+        if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+          if (applySlashHint()) {
+            e.preventDefault();
+            return;
+          }
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          hideSlashHints();
+          return;
+        }
+      }
+
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         handleSend();
@@ -514,30 +554,10 @@ function wireEvents() {
         return;
       }
       if (e.key === 'Escape') {
-        hideSlashHints();
         if (activeTabRunning()) {
           e.preventDefault();
           e.stopPropagation();
           abortMessage();
-        }
-      }
-      // Navigate slash hints with arrow keys
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        const hints = panelEl('#ocp-slash-hints');
-        if (hints?.classList.contains('open')) {
-          e.preventDefault();
-          navigateSlashHints(e.key === 'ArrowDown' ? 1 : -1);
-          return;
-        }
-      }
-      // Apply selected slash hint with Enter
-      if (e.key === 'Enter' && !e.shiftKey) {
-        const hints = panelEl('#ocp-slash-hints');
-        if (hints?.classList.contains('open')) {
-          if (applySlashHint()) {
-            e.preventDefault();
-            return;
-          }
         }
       }
     });
@@ -613,6 +633,13 @@ function wireEvents() {
     _panel.querySelectorAll('.ocp-dd-menu.open').forEach(menu => {
       if (!menu.parentElement.contains(e.target)) menu.classList.remove('open');
     });
+    // Close slash command browser if clicking outside it and outside the input
+    const slashBrowser = panelEl('#ocp-slash-hints');
+    if (slashBrowser?.classList.contains('open')
+        && !e.target.closest('#ocp-slash-hints')
+        && !e.target.closest('#ocp-input')) {
+      hideSlashHints();
+    }
   });
 
   // Status bar start button
@@ -727,52 +754,76 @@ function setupDropdownToggle(sel) {
 // ── Slash command parsing ──
 
 const BUILTIN_SLASH_COMMANDS = [
-  { name: 'new', description: 'Start a new session' },
-  { name: 'undo', description: 'Undo last message' },
-  { name: 'redo', description: 'Redo undone message' },
-  { name: 'compact', description: 'Compact context' },
-  { name: 'summarize', description: 'Compact context' },
-  { name: 'sessions', description: 'List all sessions' },
-  { name: 'resume', description: 'Resume a session' },
-  { name: 'continue', description: 'Continue session' },
-  { name: 'share', description: 'Share current session' },
-  { name: 'unshare', description: 'Unshare current session' },
-  { name: 'clear', description: 'Clear all messages' },
-  { name: 'help', description: 'Show help' },
-  { name: 'exit', description: 'Exit OpenCode' },
-  { name: 'quit', description: 'Exit OpenCode' },
+  { name: 'new', description: 'Start a new session', source: 'builtin' },
+  { name: 'sessions', description: 'List & switch sessions', source: 'builtin' },
+  { name: 'resume', description: 'Resume a session', source: 'builtin' },
+  { name: 'continue', description: 'Continue last session', source: 'builtin' },
+  { name: 'share', description: 'Share current session', source: 'builtin' },
+  { name: 'unshare', description: 'Stop sharing session', source: 'builtin' },
+  { name: 'export', description: 'Export session as JSON', source: 'builtin' },
+  { name: 'import', description: 'Import session from JSON', source: 'builtin' },
+  { name: 'compact', description: 'Compact context', aliases: ['summarize'], source: 'builtin' },
+  { name: 'clear', description: 'Clear all messages', source: 'builtin' },
+  { name: 'undo', description: 'Undo last message', source: 'builtin' },
+  { name: 'redo', description: 'Redo undone message', source: 'builtin' },
+  { name: 'models', description: 'Pick a model', source: 'builtin' },
+  { name: 'providers', description: 'Manage providers & auth', source: 'builtin' },
+  { name: 'agents', description: 'Switch agent', aliases: ['agent'], source: 'builtin' },
+  { name: 'themes', description: 'Pick a theme', source: 'builtin' },
+  { name: 'init', description: 'Initialize project (AGENTS.md)', source: 'builtin' },
+  { name: 'editor', description: 'Open in editor', source: 'builtin' },
+  { name: 'tokens', description: 'Token usage stats', source: 'builtin' },
+  { name: 'config', description: 'Open config', source: 'builtin' },
+  { name: 'login', description: 'Provider login', source: 'builtin' },
+  { name: 'logout', description: 'Provider logout', source: 'builtin' },
+  { name: 'help', description: 'Show help', source: 'builtin' },
+  { name: 'exit', description: 'Exit OpenCode', aliases: ['quit'], source: 'builtin' },
 ];
 
-const BUILTIN_NAMES = new Set(BUILTIN_SLASH_COMMANDS.map(c => c.name));
 let SLASH_COMMANDS = [...BUILTIN_SLASH_COMMANDS];
-let _skillNames = new Set();
-let _skillsLoaded = false;
+let _catalogLoaded = false;
 
-async function loadSkillSlashCommands() {
-  if (_skillsLoaded) return;
-  _skillsLoaded = true;
-  try {
-    const res = await fetch('/api/skills');
-    const data = await res.json();
-    const skills = Array.isArray(data.skills) ? data.skills : [];
-    const merged = [...BUILTIN_SLASH_COMMANDS];
-    for (const s of skills) {
-      const name = String(s.name || s.dirName || '').trim();
-      if (!name || BUILTIN_NAMES.has(name)) continue;
-      merged.push({ name, description: String(s.description || '').trim(), isSkill: true });
-      _skillNames.add(name);
-    }
-    SLASH_COMMANDS = merged;
-  } catch {
-    // Fallback: keep builtins only
+async function loadSlashCommandCatalog() {
+  if (_catalogLoaded) return;
+  _catalogLoaded = true;
+  const seen = new Set();
+  for (const c of BUILTIN_SLASH_COMMANDS) {
+    seen.add(c.name);
+    (c.aliases || []).forEach(a => seen.add(a));
+  }
+  const [skillsRes, userRes] = await Promise.allSettled([
+    fetch('/api/skills').then(r => r.json()).catch(() => null),
+    fetch('/api/opencode/commands').then(r => r.json()).catch(() => null),
+  ]);
+  const merged = [...BUILTIN_SLASH_COMMANDS];
+  const skills = Array.isArray(skillsRes.value?.skills) ? skillsRes.value.skills : [];
+  for (const s of skills) {
+    const name = String(s.name || s.dirName || '').trim();
+    if (!name || seen.has(name)) continue;
+    merged.push({ name, description: String(s.description || '').trim(), source: 'skill' });
+    seen.add(name);
+  }
+  const userCmds = Array.isArray(userRes.value?.commands) ? userRes.value.commands : [];
+  for (const c of userCmds) {
+    const name = String(c.name || '').trim();
+    if (!name || seen.has(name)) continue;
+    merged.push({ name, description: String(c.description || '').trim(), source: 'user' });
+    seen.add(name);
+  }
+  SLASH_COMMANDS = merged;
+  // Re-render if browser is currently open
+  if (panelEl('#ocp-slash-hints')?.classList.contains('open')) {
+    showSlashHints(_slashQuery, _activeSlashToken);
   }
 }
 
-// Kick off load at module init; hint UI will re-render on demand.
-loadSkillSlashCommands();
+// Kick off load at module init; browser UI will re-render on demand.
+loadSlashCommandCatalog();
 
 let _slashHintIdx = -1;
-let _slashFilter = '';
+let _slashQuery = '';
+let _slashItems = []; // flat ordered list for keyboard nav
+let _activeSlashToken = null; // { start, end } in textarea
 
 function parseSlashCommand(text) {
   const match = text.match(/^\/(\w+)(?:\s+(.*))?$/);
@@ -780,57 +831,223 @@ function parseSlashCommand(text) {
   return { command: match[1].toLowerCase(), args: match[2] || '' };
 }
 
-function showSlashHints(filter) {
-  const hints = panelEl('#ocp-slash-hints');
-  if (!hints) return;
-  _slashFilter = filter;
-  const q = filter.toLowerCase();
-  const matches = SLASH_COMMANDS.filter(c => c.name.startsWith(q));
-  if (!matches.length || !filter) { hideSlashHints(); return; }
-  hints.innerHTML = '';
-  matches.forEach((c, i) => {
-    const el = document.createElement('div');
-    el.className = 'ocp-slash-item' + (i === 0 ? ' active' : '');
-    el.innerHTML = `<div class="ocp-slash-name">/${esc(c.name)}</div><div class="ocp-slash-desc">${esc(c.description)}</div>`;
-    el.addEventListener('click', () => {
-      const input = panelEl('#ocp-input');
-      if (input) { input.value = '/' + c.name + ' '; input.focus(); }
-      hideSlashHints();
-    });
-    hints.appendChild(el);
-  });
-  _slashHintIdx = 0;
-  hints.classList.add('open');
+// Detect a "/word" token at the cursor position in the input. Returns
+// { start, end, query } or null. URL-guard: skip if preceded by `:` (https://).
+function detectSlashToken(inputEl) {
+  if (!inputEl) return null;
+  const pos = inputEl.selectionStart ?? inputEl.value.length;
+  const value = inputEl.value;
+  const before = value.slice(0, pos);
+  let tokenStart = pos;
+  while (tokenStart > 0 && !/\s/.test(value[tokenStart - 1])) tokenStart--;
+  const token = value.slice(tokenStart, pos);
+  if (!token.startsWith('/')) return null;
+  // URL guard: `https://example.com` — char before `/` is `:` or another `/`
+  if (tokenStart > 0) {
+    const prev = value[tokenStart - 1];
+    if (prev === ':' || prev === '/') return null;
+  }
+  // Also bail if the leading slash sits inside a longer URL-like token
+  if (/^\/\/+/.test(token)) return null;
+  return { start: tokenStart, end: pos, query: token.slice(1) };
+}
+
+// Compute match score + matched-char indices for highlighting.
+// Returns { score, indices } or null when there is no match.
+function scoreSlashMatch(name, query) {
+  if (!query) return { score: 1, indices: [] };
+  const n = name.toLowerCase();
+  const q = query.toLowerCase();
+  if (n === q) {
+    return { score: 1000, indices: [...q].map((_, i) => i) };
+  }
+  if (n.startsWith(q)) {
+    return { score: 700 - (n.length - q.length), indices: [...q].map((_, i) => i) };
+  }
+  const idx = n.indexOf(q);
+  if (idx !== -1) {
+    return { score: 400 - idx, indices: [...q].map((_, i) => idx + i) };
+  }
+  // Subsequence fuzzy
+  let qi = 0, score = 0, lastIdx = -2;
+  const indices = [];
+  for (let i = 0; i < n.length && qi < q.length; i++) {
+    if (n[i] === q[qi]) {
+      score += (lastIdx === i - 1) ? 8 : 4;
+      indices.push(i);
+      lastIdx = i;
+      qi++;
+    }
+  }
+  if (qi < q.length) return null;
+  return { score: 100 + score, indices };
+}
+
+function rankSlashMatch(cmd, query) {
+  let best = scoreSlashMatch(cmd.name, query);
+  // Try aliases — keep canonical indices only if alias matches better
+  for (const alias of (cmd.aliases || [])) {
+    const m = scoreSlashMatch(alias, query);
+    if (m && (!best || m.score > best.score)) {
+      // No highlight when match is via alias (canonical name shown)
+      best = { score: m.score, indices: [] };
+    }
+  }
+  return best;
+}
+
+function renderHighlightedName(name, indices) {
+  if (!indices?.length) return '/' + esc(name);
+  const set = new Set(indices);
+  let out = '/';
+  for (let i = 0; i < name.length; i++) {
+    out += set.has(i) ? `<span class="ocp-slash-hl">${esc(name[i])}</span>` : esc(name[i]);
+  }
+  return out;
+}
+
+const SLASH_GROUP_ORDER = ['builtin', 'skill', 'user'];
+const SLASH_GROUP_LABEL = { builtin: 'OpenCode', skill: 'Skills', user: 'Custom' };
+
+function showSlashHints(query, tokenInfo) {
+  const browser = panelEl('#ocp-slash-hints');
+  if (!browser) return;
+  _slashQuery = query || '';
+  _activeSlashToken = tokenInfo || _activeSlashToken;
+
+  // Score and rank
+  const scored = [];
+  for (const cmd of SLASH_COMMANDS) {
+    const m = rankSlashMatch(cmd, _slashQuery);
+    if (!m) continue;
+    scored.push({ cmd, score: m.score, indices: m.indices });
+  }
+  scored.sort((a, b) => (b.score - a.score) || a.cmd.name.localeCompare(b.cmd.name));
+
+  // Group by source while preserving rank order within each group
+  const groups = {};
+  for (const entry of scored) {
+    const src = entry.cmd.source || 'builtin';
+    (groups[src] ||= []).push(entry);
+  }
+
+  // Render
+  browser.innerHTML = '';
+  const header = document.createElement('div');
+  header.className = 'ocp-slash-search';
+  header.innerHTML = `
+    <span class="ocp-slash-search-icon">/</span>
+    <span class="ocp-slash-query">${esc(_slashQuery)}</span>
+    <span class="ocp-slash-count">${scored.length} result${scored.length === 1 ? '' : 's'}</span>
+  `;
+  browser.appendChild(header);
+
+  const list = document.createElement('div');
+  list.className = 'ocp-slash-list';
+  browser.appendChild(list);
+
+  _slashItems = [];
+  if (!scored.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ocp-slash-empty';
+    empty.textContent = _slashQuery ? `No commands match /${_slashQuery}` : 'No commands available';
+    list.appendChild(empty);
+  } else {
+    for (const src of SLASH_GROUP_ORDER) {
+      const entries = groups[src];
+      if (!entries?.length) continue;
+      const group = document.createElement('div');
+      group.className = 'ocp-slash-group';
+      const gh = document.createElement('div');
+      gh.className = 'ocp-slash-group-header';
+      gh.textContent = SLASH_GROUP_LABEL[src] || src;
+      group.appendChild(gh);
+      for (const entry of entries) {
+        const itemIdx = _slashItems.length;
+        const item = document.createElement('div');
+        item.className = 'ocp-slash-item' + (itemIdx === 0 ? ' active' : '');
+        item.dataset.name = entry.cmd.name;
+        item.dataset.source = src;
+        item.innerHTML = `
+          <span class="ocp-slash-icon" data-source="${src}">${src === 'builtin' ? '▸' : src === 'skill' ? '✦' : '★'}</span>
+          <span class="ocp-slash-name">${renderHighlightedName(entry.cmd.name, entry.indices)}</span>
+          <span class="ocp-slash-desc">${esc(entry.cmd.description || '')}</span>
+        `;
+        item.addEventListener('click', () => {
+          _slashHintIdx = itemIdx;
+          applySlashHint();
+        });
+        item.addEventListener('mousemove', () => {
+          if (_slashHintIdx === itemIdx) return;
+          _slashItems[_slashHintIdx]?.el?.classList.remove('active');
+          _slashHintIdx = itemIdx;
+          item.classList.add('active');
+        });
+        group.appendChild(item);
+        _slashItems.push({ name: entry.cmd.name, el: item });
+      }
+      list.appendChild(group);
+    }
+  }
+
+  _slashHintIdx = _slashItems.length ? 0 : -1;
+  browser.hidden = false;
+  browser.classList.add('open');
 }
 
 function hideSlashHints() {
-  const hints = panelEl('#ocp-slash-hints');
-  if (hints) { hints.classList.remove('open'); hints.innerHTML = ''; }
+  const browser = panelEl('#ocp-slash-hints');
+  if (browser) {
+    browser.classList.remove('open');
+    browser.innerHTML = '';
+    browser.hidden = true;
+  }
   _slashHintIdx = -1;
+  _slashItems = [];
+  _activeSlashToken = null;
+  _slashQuery = '';
 }
 
 function navigateSlashHints(dir) {
-  const hints = panelEl('#ocp-slash-hints');
-  if (!hints) return;
-  const items = hints.querySelectorAll('.ocp-slash-item');
-  if (!items.length) return;
-  items[_slashHintIdx]?.classList.remove('active');
-  _slashHintIdx = Math.max(0, Math.min(items.length - 1, _slashHintIdx + dir));
-  items[_slashHintIdx]?.classList.add('active');
+  if (!_slashItems.length) return;
+  _slashItems[_slashHintIdx]?.el?.classList.remove('active');
+  _slashHintIdx = Math.max(0, Math.min(_slashItems.length - 1, _slashHintIdx + dir));
+  const next = _slashItems[_slashHintIdx]?.el;
+  if (next) {
+    next.classList.add('active');
+    next.scrollIntoView({ block: 'nearest' });
+  }
 }
 
 function applySlashHint() {
-  const hints = panelEl('#ocp-slash-hints');
-  const items = hints?.querySelectorAll('.ocp-slash-item');
-  if (!items || _slashHintIdx < 0) return false;
-  const active = items[_slashHintIdx];
-  if (!active) return false;
-  const name = active.querySelector('.ocp-slash-name')?.textContent?.replace('/', '');
-  if (!name) return false;
+  const item = _slashItems[_slashHintIdx];
+  if (!item) return false;
   const input = panelEl('#ocp-input');
-  if (input) { input.value = '/' + name + ' '; input.focus(); }
+  const token = _activeSlashToken;
+  if (!input || !token) {
+    hideSlashHints();
+    return false;
+  }
+  const before = input.value.slice(0, token.start);
+  const after = input.value.slice(token.end);
+  const insert = '/' + item.name + ' ';
+  input.value = before + insert + after;
+  const caret = (before + insert).length;
+  try { input.setSelectionRange(caret, caret); } catch {}
+  input.focus();
+  autosizeInput();
+  syncSendButton();
   hideSlashHints();
   return true;
+}
+
+// Re-evaluate slash trigger from the current cursor position.
+function refreshSlashTrigger() {
+  const input = panelEl('#ocp-input');
+  if (!input) return;
+  const token = detectSlashToken(input);
+  if (token) showSlashHints(token.query, token);
+  else hideSlashHints();
 }
 
 async function executeSlashCommand(command, args) {
@@ -1218,6 +1435,13 @@ function stopActivityTicker() {
 
 // ── Session menu ──
 
+function sessionMatchesProject(session, projectPath) {
+  const dir = session?.directory || '';
+  if (!dir) return false;
+  const trimmed = projectPath.replace(/\/+$/, '');
+  return dir === trimmed || dir.startsWith(trimmed + '/');
+}
+
 async function renderSessionMenu() {
   const menu = panelEl('#ocp-session-menu');
   if (!menu) return;
@@ -1227,8 +1451,12 @@ async function renderSessionMenu() {
 
   const sessions = getSessions();
   const tab = activeTab();
-  const sessionsWithMessages = sessions.filter((session) => Number(session?.messageCount || 0) > 0);
-  const visibleSessions = sessionsWithMessages.length ? sessionsWithMessages : sessions;
+  const projectPath = tab?.project || '';
+  const projectScoped = projectPath
+    ? sessions.filter((session) => sessionMatchesProject(session, projectPath))
+    : sessions;
+  const sessionsWithMessages = projectScoped.filter((session) => Number(session?.messageCount || 0) > 0);
+  const visibleSessions = sessionsWithMessages.length ? sessionsWithMessages : projectScoped;
   menu.innerHTML = '';
 
   // New session option
@@ -1306,17 +1534,14 @@ function populateProjectDropdown(dd) {
     opt.textContent = label || path;
     opt.title = path;
     opt.addEventListener('click', () => {
-      if (tab) {
-        tab.project = path;
-        storage.setItem(STOR.project, path);
-        saveTabs();
-      }
+      setActiveProject(path);
       menu.classList.remove('open');
       const lbl = dd.querySelector('.ocp-dd-label');
       if (lbl) lbl.textContent = label || path;
       menu.querySelectorAll('.ocp-dd-option').forEach(o => o.classList.remove('selected'));
       opt.classList.add('selected');
       loadBranches(path);
+      if (panelEl('#ocp-session-menu')?.classList.contains('open')) renderSessionMenu();
     });
     menu.appendChild(opt);
   }

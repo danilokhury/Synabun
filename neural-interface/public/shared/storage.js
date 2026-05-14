@@ -18,6 +18,9 @@ let _dirty = {};
 let _flushTimer = null;
 let _hydrated = false;
 const DEBOUNCE_MS = 500;
+// Sentinel placed in _dirty so the flush step knows the value lives in _cache
+// as a string and still needs JSON.parse for the server payload.
+const STR_SENTINEL = Symbol('storage:str');
 
 // ── Hydrate from server ──────────────────────────────
 
@@ -64,8 +67,10 @@ export const storage = {
     const strValue = String(value);
     if (_cache[key] === strValue) return; // no-op if unchanged
     _cache[key] = strValue;
-    // Parse back to native type for the server (avoids double-encoding JSON)
-    try { _dirty[key] = JSON.parse(strValue); } catch { _dirty[key] = strValue; }
+    // Defer JSON.parse to flush time — for callers that store large snapshots
+    // (whiteboard, codex transcripts) this otherwise runs on every keystroke
+    // while we still debounce the network round-trip.
+    _dirty[key] = STR_SENTINEL; // mark "needs parse at flush"
     _scheduleDebouncedFlush();
   },
 
@@ -90,7 +95,16 @@ function _scheduleDebouncedFlush() {
 }
 
 async function _flushToServer() {
-  const payload = { ..._dirty };
+  const payload = {};
+  for (const [k, v] of Object.entries(_dirty)) {
+    if (v === STR_SENTINEL) {
+      const str = _cache[k];
+      if (str == null) { payload[k] = null; continue; }
+      try { payload[k] = JSON.parse(str); } catch { payload[k] = str; }
+    } else {
+      payload[k] = v;
+    }
+  }
   _dirty = {};
   _flushTimer = null;
   if (Object.keys(payload).length === 0) return;
@@ -118,8 +132,17 @@ window.addEventListener('beforeunload', () => {
     clearTimeout(_flushTimer);
     _flushTimer = null;
   }
-  // Merge any pending dirty keys
-  const payload = { ..._dirty };
+  // Resolve sentinels — same logic as _flushToServer
+  const payload = {};
+  for (const [k, v] of Object.entries(_dirty)) {
+    if (v === STR_SENTINEL) {
+      const str = _cache[k];
+      if (str == null) { payload[k] = null; continue; }
+      try { payload[k] = JSON.parse(str); } catch { payload[k] = str; }
+    } else {
+      payload[k] = v;
+    }
+  }
   _dirty = {};
   if (Object.keys(payload).length === 0) return;
   navigator.sendBeacon(

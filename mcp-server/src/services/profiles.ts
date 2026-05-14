@@ -47,6 +47,18 @@ let _activeGroups: Set<string> = new Set();
 let _activeProfileName: string = 'full';
 const _toolGroups: Map<string, RegisteredTool[]> = new Map();
 
+// Single-fire notifier hook. The MCP SDK's RegisteredTool.enable()/disable()
+// each emit a `notifications/tools/list_changed` event. A profile swap that
+// flips ~30-50 tools therefore fires a storm that some MCP clients (notably
+// the OpenCode SDK) react to by aborting the in-flight tool roundtrip — the
+// agent appears to "stall" after one profile.set call. applyProfile bypasses
+// enable()/disable() with direct `tool.enabled = ...` mutation and emits a
+// single notification at the end via this callback.
+let _onProfileChanged: (() => void) | null = null;
+export function setOnProfileChanged(fn: (() => void) | null): void {
+  _onProfileChanged = fn;
+}
+
 // ── Helpers ──
 
 export function resolveProfileGroups(profileName: string): Set<string> {
@@ -111,8 +123,11 @@ export function applyProfile(profileName: string): { profile: string; enabled: s
   for (const [group, tools] of _toolGroups) {
     const shouldEnable = newGroups.has(group);
     for (const tool of tools) {
-      if (shouldEnable && !tool.enabled) tool.enable();
-      if (!shouldEnable && tool.enabled) tool.disable();
+      // Direct mutation bypasses RegisteredTool.enable()/disable() which each
+      // emit a `notifications/tools/list_changed`. We fire one notification at
+      // the end via the _onProfileChanged callback instead — see top of file.
+      if (shouldEnable && !tool.enabled) tool.enabled = true;
+      if (!shouldEnable && tool.enabled) tool.enabled = false;
     }
     if (shouldEnable && !_activeGroups.has(group)) enabled.push(group);
     if (!shouldEnable && _activeGroups.has(group)) disabled.push(group);
@@ -128,10 +143,15 @@ export function applyProfile(profileName: string): { profile: string; enabled: s
     if (_activeGroups.has(group)) totalTools += tools.length;
   }
 
-  // Only log on an actual change — HTTP MCP creates a fresh server per request,
-  // which would otherwise spam this line twice per request forever.
-  if (prevProfileName !== _activeProfileName || enabled.length > 0 || disabled.length > 0) {
+  // Only log + notify on an actual change. HTTP MCP creates a fresh server
+  // per request, which would otherwise spam this line twice per request.
+  const changed = prevProfileName !== _activeProfileName || enabled.length > 0 || disabled.length > 0;
+  if (changed) {
     console.error(`[SynaBun] Profile switched to "${_activeProfileName}" (${_activeGroups.size} groups, ${totalTools} tools, +${enabled.join(',') || 'none'}, -${disabled.join(',') || 'none'})`);
+    if (_onProfileChanged) {
+      try { _onProfileChanged(); }
+      catch (err) { console.error('[SynaBun] profile-change notifier failed:', err); }
+    }
   }
   return { profile: _activeProfileName, enabled, disabled, totalTools };
 }

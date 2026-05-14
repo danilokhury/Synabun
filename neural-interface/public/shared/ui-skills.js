@@ -381,32 +381,7 @@ function wirePanel() {
   };
   document.addEventListener('keydown', onEsc);
 
-  // Drag
-  initDrag();
-}
-
-// ═══════════════════════════════════════════
-// DRAG SUPPORT (simplified, panel-specific)
-// ═══════════════════════════════════════════
-
-function initDrag() {
-  const handle = _panel.querySelector('.drag-handle');
-  if (!handle) return;
-  let dragging = false, startX, startY, startLeft, startTop;
-  handle.addEventListener('mousedown', (e) => {
-    if (e.target.closest('button') || e.target.closest('input')) return;
-    dragging = true;
-    startX = e.clientX; startY = e.clientY;
-    const rect = _panel.getBoundingClientRect();
-    startLeft = rect.left; startTop = rect.top;
-    e.preventDefault();
-  });
-  document.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    _panel.style.left = (startLeft + e.clientX - startX) + 'px';
-    _panel.style.top = (startTop + e.clientY - startY) + 'px';
-  });
-  document.addEventListener('mouseup', () => { dragging = false; });
+  // Drag/resize are handled by the shared panel system via drag-handle/resize-handle.
 }
 
 // ═══════════════════════════════════════════

@@ -130,8 +130,24 @@ const RULESET_SETUP_SECTIONS = ['setup-claude', 'setup-codex', 'setup-opencode']
 // COORDINATE TRANSFORMS
 // ═══════════════════════════════════════════
 
+// Cached _root rect. Reading getBoundingClientRect() inside mousemove (60Hz)
+// forces a layout flush. We capture it once at drag/pen/marquee start and
+// reuse it for the rest of the gesture, then invalidate on mouseup/resize/scroll.
+let _rootRectCached = null;
+
+function _getRootRect() {
+  if (_rootRectCached) return _rootRectCached;
+  if (!_root) return { left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 };
+  _rootRectCached = _root.getBoundingClientRect();
+  return _rootRectCached;
+}
+
+function _invalidateRootRect() {
+  _rootRectCached = null;
+}
+
 function clientToCanvas(clientX, clientY) {
-  const rect = _root.getBoundingClientRect();
+  const rect = _getRootRect();
   return {
     x: clientX - rect.left,
     y: clientY - rect.top,
@@ -175,6 +191,7 @@ function undo() {
 
   _selectedId = null;
   _selectedIds.clear();
+  _invalidateElementMap();
   renderAll();
   persistDebounced();
   updateUndoButtons();
@@ -208,6 +225,7 @@ function redo() {
 
   _selectedId = null;
   _selectedIds.clear();
+  _invalidateElementMap();
   renderAll();
   persistDebounced();
   updateUndoButtons();
@@ -415,19 +433,43 @@ function compressImage(blob) {
 // RENDERING
 // ═══════════════════════════════════════════
 
+// Element ID → element lookup cache. Rebuilt lazily; many mousemove paths
+// previously did O(n) Array.prototype.find on every event.
+let _elementMap = null;
+
+function _findEl(id) {
+  if (!id) return null;
+  // Rebuild the map if length changed (covers add/remove). Same-length object
+  // replacement (undo/redo paths) calls _invalidateElementMap() explicitly.
+  if (!_elementMap || _elementMap._len !== _elements.length) {
+    _elementMap = new Map();
+    for (const e of _elements) _elementMap.set(e.id, e);
+    _elementMap._len = _elements.length;
+  }
+  return _elementMap.get(id) || null;
+}
+
+function _invalidateElementMap() { _elementMap = null; }
+
+// Synchronous render. Earlier perf pass tried rAF-batching this — that caused
+// visible drag lag because the move/resize/rotate mousemove paths each call
+// renderAll() once and rely on the DOM update completing before the next
+// pointer event. Keep the call synchronous; the real per-frame cost lives in
+// _findEl/_getRootRect (already optimized), not in scheduling.
 function renderAll() {
   renderElements();
   renderArrows();
-  // Reposition context menu if element(s) selected
   if (_ctxMenu && _selectedIds.size > 0) {
     if (_selectedIds.size === 1) {
-      const el = _elements.find(e => e.id === _selectedId);
+      const el = _findEl(_selectedId);
       if (el) positionContextMenu(el);
     } else {
       positionContextMenuMulti();
     }
   }
 }
+
+function renderAllImmediate() { renderAll(); }
 
 function renderElements() {
   if (!_elementsDiv) return;
@@ -1996,7 +2038,7 @@ function onMouseMove(e) {
     const dx = state.gridSnap ? (_snap(_drag.snapshots[0]?.origX + rawDx) - _drag.snapshots[0]?.origX) : rawDx;
     const dy = state.gridSnap ? (_snap(_drag.snapshots[0]?.origY + rawDy) - _drag.snapshots[0]?.origY) : rawDy;
     for (const snap of _drag.snapshots) {
-      const el = _elements.find(el2 => el2.id === snap.id);
+      const el = _findEl(snap.id);
       if (!el) continue;
       if (el.type === 'arrow') {
         el.points = snap.origPoints.map(([px, py]) => [px + dx, py + dy]);
@@ -2019,7 +2061,7 @@ function onMouseMove(e) {
   // Shape drag-to-create
   if (_shapeCreating) {
     const pt = clientToCanvas(e.clientX, e.clientY);
-    const el = _elements.find(el2 => el2.id === _shapeCreating.id);
+    const el = _findEl(_shapeCreating.id);
     if (el) {
       const sx = _snap(Math.min(_shapeCreating.originX, pt.x));
       const sy = _snap(Math.min(_shapeCreating.originY, pt.y));
@@ -2035,7 +2077,7 @@ function onMouseMove(e) {
   // Section drag-to-create
   if (_sectionCreating) {
     const pt = clientToCanvas(e.clientX, e.clientY);
-    const el = _elements.find(el2 => el2.id === _sectionCreating.id);
+    const el = _findEl(_sectionCreating.id);
     if (el) {
       const sx = _snap(Math.min(_sectionCreating.originX, pt.x));
       const sy = _snap(Math.min(_sectionCreating.originY, pt.y));
@@ -2050,7 +2092,7 @@ function onMouseMove(e) {
 
   // Pen drawing
   if (_penPoints) {
-    const rect = _root.getBoundingClientRect();
+    const rect = _getRootRect();
     penMove(e.clientX - rect.left, e.clientY - rect.top);
     return;
   }
@@ -2059,7 +2101,7 @@ function onMouseMove(e) {
   if (_drag?.type === 'move') {
     const dx = e.clientX - _drag.startX;
     const dy = e.clientY - _drag.startY;
-    const el = _elements.find(el2 => el2.id === _drag.id);
+    const el = _findEl(_drag.id);
     if (el) {
       el.x = _snap(_drag.origX + dx);
       el.y = _snap(_drag.origY + dy);
@@ -2072,7 +2114,7 @@ function onMouseMove(e) {
   if (_drag?.type === 'move-arrow') {
     const dx = e.clientX - _drag.startX;
     const dy = e.clientY - _drag.startY;
-    const el = _elements.find(el2 => el2.id === _drag.id);
+    const el = _findEl(_drag.id);
     if (el && el.points) {
       el.points = _drag.origPoints.map(([px, py]) => [px + dx, py + dy]);
       el.startAnchor = null;
@@ -2086,7 +2128,7 @@ function onMouseMove(e) {
   if (_drag?.type === 'move-pen') {
     const dx = e.clientX - _drag.startX;
     const dy = e.clientY - _drag.startY;
-    const el = _elements.find(el2 => el2.id === _drag.id);
+    const el = _findEl(_drag.id);
     if (el) {
       el.x = _drag.origX + dx;
       el.y = _drag.origY + dy;
@@ -2103,7 +2145,7 @@ function onMouseMove(e) {
     const angle = Math.atan2(pt2.y - _drag.centerY, pt2.x - _drag.centerX);
     const deltaRad = angle - _drag.startAngle;
     const deltaDeg = deltaRad * (180 / Math.PI);
-    const el = _elements.find(el2 => el2.id === _drag.id);
+    const el = _findEl(_drag.id);
     if (el) {
       // For arrows: rotate all points around centroid
       if (el.type === 'arrow' && _drag.origPoints) {
@@ -2155,7 +2197,7 @@ function onMouseMove(e) {
   if (_drag?.type === 'resize') {
     const dx = e.clientX - _drag.startX;
     const dy = e.clientY - _drag.startY;
-    const el = _elements.find(el2 => el2.id === _drag.id);
+    const el = _findEl(_drag.id);
     if (el) {
       el.width = _snap(Math.max(60, _drag.origW + dx));
       el.height = _snap(Math.max(30, _drag.origH + dy));
@@ -2310,6 +2352,7 @@ function onMouseUp(e) {
     _drag = null;
     persistDebounced();
   }
+  _invalidateRootRect();
 }
 
 function onDblClick(e) {
@@ -3069,6 +3112,7 @@ function _connectWhiteboardWS() {
 // Debounced viewport resize reporting
 let _viewportResizeTimer = null;
 window.addEventListener('resize', () => {
+  _invalidateRootRect();
   clearTimeout(_viewportResizeTimer);
   _viewportResizeTimer = setTimeout(() => {
     if (_ws && _ws.readyState === 1 && _root) {

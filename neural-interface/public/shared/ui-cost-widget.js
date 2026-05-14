@@ -547,6 +547,27 @@ function _makeDraggable(header) {
       startY: e.clientY,
       origLeft: rect.left,
       origTop: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+    let dragRaf = 0;
+    let pendingPos = null;
+    const applyDrag = () => {
+      dragRaf = 0;
+      if (!_widget || !pendingPos) return;
+      _widget.style.left = pendingPos.left + 'px';
+      _widget.style.top = pendingPos.top + 'px';
+    };
+    const scheduleDrag = (left, top) => {
+      pendingPos = { left, top };
+      if (!dragRaf) dragRaf = requestAnimationFrame(applyDrag);
+    };
+    const flushDrag = () => {
+      if (dragRaf) {
+        cancelAnimationFrame(dragRaf);
+        dragRaf = 0;
+      }
+      applyDrag();
     };
     header.style.cursor = 'grabbing';
 
@@ -563,12 +584,11 @@ function _makeDraggable(header) {
       let newLeft = _drag.origLeft + dx;
       let newTop = _drag.origTop + dy;
       // Constrain to viewport
-      const ww = _widget.offsetWidth;
-      const wh = _widget.offsetHeight;
+      const ww = _drag.width;
+      const wh = _drag.height;
       newLeft = Math.max(0, Math.min(window.innerWidth - ww, newLeft));
       newTop = Math.max(0, Math.min(window.innerHeight - wh, newTop));
-      _widget.style.left = newLeft + 'px';
-      _widget.style.top = newTop + 'px';
+      scheduleDrag(newLeft, newTop);
     };
 
     const onUp = () => {
@@ -576,6 +596,7 @@ function _makeDraggable(header) {
       document.removeEventListener('mouseup', onUp);
       header.style.cursor = 'grab';
       if (_drag) {
+        flushDrag();
         _savePos(parseInt(_widget.style.left), parseInt(_widget.style.top));
         _drag = null;
       }

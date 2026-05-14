@@ -17,6 +17,9 @@ export function initTooltip() {
   let showTimer = null;
   let hideTimer = null;
   let currentTarget = null;
+  let repositionRunHandler = null;
+  let repositionEndHandler = null;
+  let repositionRafId = 0;
 
   function positionTip(el) {
     const r = el.getBoundingClientRect();
@@ -129,12 +132,53 @@ export function initTooltip() {
         tip.classList.add('visible');
       }
     });
+    // Some targets resize on hover (e.g. tray pill label expands max-width
+    // 100→300px over ~300ms). Without follow-up positioning, the tooltip
+    // stays anchored to the un-expanded rect and the pill grows leftward
+    // over it. Drive a rAF loop for the duration of any size/position
+    // transition so the tooltip tracks the target.
+    const followFor = 360; // ms — slightly longer than the longest pill transition
+    const stopAt = performance.now() + followFor;
+    const tick = () => {
+      repositionRafId = 0;
+      if (currentTarget !== el) return;
+      positionTip(el);
+      if (performance.now() < stopAt) {
+        repositionRafId = requestAnimationFrame(tick);
+      }
+    };
+    repositionRunHandler = (event) => {
+      if (currentTarget !== el) return;
+      if (event.target !== el && !el.contains(event.target)) return;
+      if (!/width|max-width|transform|margin|padding|left|right|top|bottom/.test(event.propertyName || '')) return;
+      if (!repositionRafId) repositionRafId = requestAnimationFrame(tick);
+    };
+    repositionEndHandler = (event) => {
+      if (currentTarget !== el) return;
+      if (event.target !== el && !el.contains(event.target)) return;
+      positionTip(el);
+    };
+    el.addEventListener('transitionrun', repositionRunHandler);
+    el.addEventListener('transitionend', repositionEndHandler);
+    // Kick off one immediate rAF in case the transition already started on
+    // mouseenter before our listeners attached.
+    if (!repositionRafId) repositionRafId = requestAnimationFrame(tick);
   }
 
   function hide() {
     clearTimeout(showTimer);
     clearTimeout(hideTimer);
     showTimer = null;
+    if (repositionRafId) {
+      cancelAnimationFrame(repositionRafId);
+      repositionRafId = 0;
+    }
+    if (currentTarget) {
+      if (repositionRunHandler) currentTarget.removeEventListener('transitionrun', repositionRunHandler);
+      if (repositionEndHandler) currentTarget.removeEventListener('transitionend', repositionEndHandler);
+    }
+    repositionRunHandler = null;
+    repositionEndHandler = null;
     if (currentTarget) restoreTitle(currentTarget);
     currentTarget = null;
     tip.classList.remove('visible');
