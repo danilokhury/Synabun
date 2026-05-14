@@ -1,0 +1,113 @@
+/**
+ * HTTP client for communicating with the Neural Interface Express server.
+ * The MCP server delegates all browser operations to the Neural Interface
+ * which manages Playwright sessions, CDP screencast, stealth, etc.
+ */
+export declare function isBrowserFastMode(): boolean;
+export declare function isBrowserCompactMode(): boolean;
+export interface BrowserSessionInfo {
+    id: string;
+    url: string;
+    title: string;
+    createdAt: number;
+    clients: number;
+    loopOwned?: boolean;
+    agentOwned?: boolean;
+}
+interface NiResponse {
+    ok?: boolean;
+    error?: string;
+    [key: string]: unknown;
+}
+/**
+ * Resolve which session ID to use.
+ * - If sessionId provided, return it immediately (server returns 404 if invalid).
+ * - If 1 session exists, auto-select it.
+ * - If 0 sessions exist and autoCreate is true, create one.
+ * - If multiple sessions and no ID, return error listing them.
+ */
+export declare function resolveSession(sessionId?: string, autoCreate?: {
+    url?: string;
+}, tabId?: string): Promise<{
+    sessionId: string;
+    tabId?: string;
+} | {
+    error: string;
+}>;
+export declare function invalidateCache(reason: string): Promise<void>;
+export declare function listSessions(): Promise<NiResponse>;
+export declare function createSession(url?: string): Promise<NiResponse>;
+export declare function closeSession(sessionId: string): Promise<NiResponse>;
+export declare function navigate(sessionId: string, url: string, tabId?: string, returnSnapshot?: {
+    mode?: string;
+    selector?: string;
+    viewport?: boolean;
+}): Promise<NiResponse>;
+export declare function goBack(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function goForward(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function reload(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function click(sessionId: string, selector: string, nthMatch?: number, tabId?: string, textHint?: string, returnSnapshot?: {
+    mode?: string;
+    selector?: string;
+    viewport?: boolean;
+}): Promise<NiResponse>;
+export declare function fill(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string, textHint?: string): Promise<NiResponse>;
+export declare function type(sessionId: string, selector: string | null, text: string, nthMatch?: number, tabId?: string, textHint?: string, mode?: 'sequential' | 'insert'): Promise<NiResponse>;
+export declare function hover(sessionId: string, selector: string, nthMatch?: number, tabId?: string, textHint?: string): Promise<NiResponse>;
+export declare function selectOption(sessionId: string, selector: string, value: string, nthMatch?: number, tabId?: string): Promise<NiResponse>;
+export declare function pressKey(sessionId: string, key: string, tabId?: string): Promise<NiResponse>;
+export declare function scroll(sessionId: string, opts: {
+    direction: string;
+    distance?: number;
+    selector?: string;
+    returnSnapshot?: {
+        mode?: string;
+        selector?: string;
+        viewport?: boolean;
+    };
+}, tabId?: string): Promise<NiResponse>;
+export declare function upload(sessionId: string, selector: string, filePaths: string[], nthMatch?: number, tabId?: string): Promise<NiResponse>;
+export declare function snapshot(sessionId: string, selector?: string, tabId?: string, opts?: {
+    mode?: string;
+    viewport?: boolean;
+}): Promise<NiResponse>;
+export declare function getContent(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function getMarkdown(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function fetchMarkdown(url: string, timeout?: number): Promise<NiResponse>;
+export declare function screenshot(sessionId: string, tabId?: string): Promise<NiResponse>;
+export declare function evaluate(sessionId: string, script: string, tabId?: string): Promise<NiResponse>;
+export declare function waitFor(sessionId: string, opts: {
+    selector?: string;
+    state?: string;
+    loadState?: string;
+    timeout?: number;
+}, tabId?: string): Promise<NiResponse>;
+export declare function getWhiteboard(): Promise<NiResponse>;
+export declare function addWhiteboardElements(elements: Record<string, unknown>[], coordMode?: string, layout?: string): Promise<NiResponse>;
+export declare function updateWhiteboardElement(id: string, updates: Record<string, unknown>, coordMode?: string): Promise<NiResponse>;
+export declare function removeWhiteboardElement(id: string): Promise<NiResponse>;
+export declare function clearWhiteboard(): Promise<NiResponse>;
+export declare function whiteboardScreenshot(): Promise<NiResponse>;
+export declare function getCards(): Promise<NiResponse>;
+export declare function openCard(memoryId: string, opts?: {
+    left?: number;
+    top?: number;
+    compact?: boolean;
+    coordMode?: string;
+}): Promise<NiResponse>;
+export declare function closeCard(memoryId?: string): Promise<NiResponse>;
+export declare function updateCard(memoryId: string, updates: Record<string, unknown>, coordMode?: string): Promise<NiResponse>;
+export declare function cardsScreenshot(): Promise<NiResponse>;
+export declare function tictactoeStart(piece?: string): Promise<NiResponse>;
+export declare function tictactoeMove(cell: number): Promise<NiResponse>;
+export declare function tictactoeState(): Promise<NiResponse>;
+export declare function tictactoeEnd(): Promise<NiResponse>;
+export declare function gitStatus(path: string): Promise<NiResponse>;
+export declare function gitDiff(path: string, maxLines?: number): Promise<NiResponse>;
+export declare function gitCommit(path: string, message: string, files?: string[]): Promise<NiResponse>;
+export declare function gitLog(path: string, count?: number): Promise<NiResponse>;
+export declare function gitBranches(path: string): Promise<NiResponse>;
+export declare function listImages(): Promise<NiResponse>;
+export declare function deleteImage(filename: string): Promise<NiResponse>;
+export {};
+//# sourceMappingURL=neural-interface.d.ts.map
