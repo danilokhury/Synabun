@@ -51,6 +51,64 @@ let _recoveredSessionId = null;
 // Prevents a second Claude Code instance (e.g. sidepanel) from grabbing the CLI's session
 // when both are running without explicit sessionId or SYNABUN_BROWSER_SESSION pinning.
 let _affinitySessionId = null;
+// Ancestor-PID fallback (Layer B). Walks the process tree once and caches the
+// resolved loop pins. Used when codex/opencode strip SYNABUN_BROWSER_* env on
+// MCP child spawn — we map our PID chain up to a known PTY and pull the loop's
+// session/tab IDs from that loop's state file.
+let _ancestorLookupTried = false;
+let _ancestorPinnedSession = null;
+let _ancestorPinnedTab = null;
+async function getAncestorPids() {
+    const ppid = typeof process.ppid === 'number' ? process.ppid : 0;
+    if (!ppid)
+        return [];
+    const pids = [ppid];
+    const isWin = process.platform === 'win32';
+    const { exec } = await import('node:child_process');
+    const runCmd = (cmd) => new Promise((resolve) => {
+        exec(cmd, { timeout: 1500, windowsHide: true }, (_err, stdout) => resolve(stdout || ''));
+    });
+    let current = ppid;
+    for (let i = 0; i < 6; i++) {
+        let parent = 0;
+        try {
+            if (isWin) {
+                const out = await runCmd(`wmic process where ProcessId=${current} get ParentProcessId /value`);
+                const m = /ParentProcessId=(\d+)/i.exec(out);
+                parent = m ? Number(m[1]) : 0;
+            }
+            else {
+                const out = await runCmd(`ps -o ppid= -p ${current}`);
+                parent = Number(out.trim().split(/\s+/)[0]) || 0;
+            }
+        }
+        catch {
+            parent = 0;
+        }
+        if (!parent || parent === 1 || parent === current)
+            break;
+        pids.push(parent);
+        current = parent;
+    }
+    return pids;
+}
+async function resolveFromAncestors() {
+    if (_ancestorLookupTried)
+        return;
+    _ancestorLookupTried = true;
+    try {
+        const pids = await getAncestorPids();
+        if (pids.length === 0)
+            return;
+        const resp = await request('POST', '/api/loop/resolve-from-ancestors', { pids }, 2000);
+        if (resp.matched) {
+            _ancestorPinnedSession = resp.browserSessionId || null;
+            _ancestorPinnedTab = resp.browserTabId || null;
+            console.error(`[MCP] ancestor lookup matched: session=${_ancestorPinnedSession} tab=${_ancestorPinnedTab}`);
+        }
+    }
+    catch { /* best-effort */ }
+}
 /**
  * Resolve which session ID to use.
  * - If sessionId provided, return it immediately (server returns 404 if invalid).
@@ -62,7 +120,12 @@ export async function resolveSession(sessionId, autoCreate, tabId) {
     // Resolve tab ID from explicit param or environment variable.
     // When SYNABUN_BROWSER_TAB is pinned (loop/agent context), the env value wins
     // even if caller passes a different tabId — prevents tab-leak across loops.
-    const pinnedTab = process.env.SYNABUN_BROWSER_TAB || undefined;
+    // If env pins are missing (codex/opencode env-strip case), try ancestor-PID
+    // lookup once and use whatever the Neural Interface reports for our PTY.
+    if (!process.env.SYNABUN_BROWSER_SESSION && !process.env.SYNABUN_BROWSER_TAB && !sessionId) {
+        await resolveFromAncestors();
+    }
+    const pinnedTab = process.env.SYNABUN_BROWSER_TAB || _ancestorPinnedTab || undefined;
     const resolvedTabId = pinnedTab || tabId || undefined;
     if (pinnedTab && tabId && tabId !== pinnedTab) {
         console.error(`[MCP] tabId override ignored: pinned=${pinnedTab} requested=${tabId}`);
@@ -70,7 +133,7 @@ export async function resolveSession(sessionId, autoCreate, tabId) {
     // Agent/loop-scoped browser session — set by the orchestrator to pin
     // this MCP instance to a specific browser session (multi-session isolation).
     // If pinned session died, check recovery cache first, then auto-create.
-    const pinnedSession = process.env.SYNABUN_BROWSER_SESSION;
+    const pinnedSession = process.env.SYNABUN_BROWSER_SESSION || _ancestorPinnedSession || undefined;
     if (pinnedSession && !sessionId) {
         // Check recovery cache first — avoids re-creating on every call after recovery
         if (_recoveredSessionId) {

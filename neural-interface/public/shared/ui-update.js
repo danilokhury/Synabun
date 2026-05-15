@@ -35,14 +35,15 @@ function applyTopRightButton(data) {
   }
   if (has) {
     const srcLabel = sourceLabel(data);
-    btn.dataset.tooltip = `SynaBun update available: v${data.current} → v${data.latest} (${srcLabel}) · click green badge`;
+    btn.dataset.tooltip = `SynaBun update available: v${data.current} → v${data.latest} (${srcLabel})`;
   }
   if (!_btnWired) {
     _btnWired = true;
+    // Whole button opens the update flow — it's a dedicated SynaBun-update
+    // button (display:none when no update available), so any click on it
+    // should prompt the wizard, not just the green badge.
     btn.addEventListener('click', (e) => {
-      const currentBadge = $('update-badge');
-      if (!currentBadge?.textContent) return;
-      if (e.target !== currentBadge && !currentBadge.contains(e.target)) return;
+      if (!_versionData?.updateAvailable) return;
       e.stopPropagation();
       e.preventDefault();
       openUpdateModal();
@@ -118,25 +119,131 @@ function openUpdateModal() {
 
   let step = 1;
   let backupDone = false;
+  let isAnimating = false;
 
   const overlay = document.createElement('div');
   overlay.className = 'tag-delete-overlay';
   overlay.style.zIndex = '300100';
 
-  function render() {
-    overlay.innerHTML = `
-      <div class="tag-delete-modal update-modal" style="max-width:460px;text-align:left">
-        ${renderStepDots(step)}
-        ${step === 1 ? renderStep1() : step === 2 ? renderStep2() : renderStep3()}
-      </div>`;
-    document.body.appendChild(overlay);
-    bindEvents();
+  const modal = document.createElement('div');
+  modal.className = 'tag-delete-modal update-modal';
+  modal.style.maxWidth = '460px';
+  modal.style.textAlign = 'left';
+
+  const dotsRow = document.createElement('div');
+  dotsRow.className = 'update-steps';
+  dotsRow.innerHTML = [1, 2, 3].map(() => `<span class="update-step-dot"></span>`).join('');
+
+  const stepWrap = document.createElement('div');
+  stepWrap.className = 'update-step-content';
+
+  modal.appendChild(dotsRow);
+  modal.appendChild(stepWrap);
+  overlay.appendChild(modal);
+
+  function buildStepNode(n) {
+    const node = document.createElement('div');
+    node.className = 'update-step';
+    node.dataset.step = String(n);
+    node.innerHTML = n === 1 ? renderStep1() : n === 2 ? renderStep2() : renderStep3();
+    return node;
   }
 
-  function renderStepDots(current) {
-    return `<div class="update-steps">
-      ${[1, 2, 3].map(i => `<span class="update-step-dot${i === current ? ' active' : i < current ? ' done' : ''}"></span>`).join('')}
-    </div>`;
+  function syncStepDots() {
+    const dots = dotsRow.querySelectorAll('.update-step-dot');
+    dots.forEach((dot, i) => {
+      const idx = i + 1;
+      dot.classList.toggle('active', idx === step);
+      dot.classList.toggle('done', idx < step);
+    });
+  }
+
+  function prefersReducedMotion() {
+    try { return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true; }
+    catch { return false; }
+  }
+
+  function setStep(n) {
+    if (isAnimating) return;
+    step = n;
+    syncStepDots();
+
+    const outgoing = stepWrap.firstElementChild;
+    const incoming = buildStepNode(n);
+
+    if (!outgoing) {
+      stepWrap.appendChild(incoming);
+      bindStepEvents(incoming);
+      return;
+    }
+
+    if (prefersReducedMotion()) {
+      stepWrap.replaceChild(incoming, outgoing);
+      bindStepEvents(incoming);
+      return;
+    }
+
+    isAnimating = true;
+
+    // 1. Pin BOTH wrapper height AND modal width before any positioning
+    //    changes. The modal is a flex item whose width derives from its
+    //    in-flow content; when both step nodes go absolute, the only
+    //    remaining in-flow child is the tiny .update-steps dots row,
+    //    causing the modal to shrink horizontally to its min-width during
+    //    the transition (visible as a horizontal snap).
+    const oldH = outgoing.offsetHeight;
+    const pinW = modal.offsetWidth;
+    stepWrap.style.height = oldH + 'px';
+    modal.style.width = pinW + 'px';
+
+    // 2. Stage incoming absolutely positioned, hidden, to measure its
+    //    natural height at the pinned modal width.
+    incoming.style.position = 'absolute';
+    incoming.style.left = '0';
+    incoming.style.right = '0';
+    incoming.style.top = '0';
+    incoming.style.visibility = 'hidden';
+    stepWrap.appendChild(incoming);
+    bindStepEvents(incoming);
+    const newH = incoming.offsetHeight;
+
+    // 3. Position outgoing absolutely so the height tween isn't fought.
+    outgoing.style.position = 'absolute';
+    outgoing.style.left = '0';
+    outgoing.style.right = '0';
+    outgoing.style.top = '0';
+    outgoing.classList.add('is-leaving');
+
+    // 4. Reveal incoming and trigger its enter animation.
+    incoming.style.visibility = '';
+    incoming.classList.add('is-entering');
+
+    // 5. Tween wrapper height. Next frame so the pinned values commit first.
+    requestAnimationFrame(() => {
+      stepWrap.style.height = newH + 'px';
+    });
+
+    let settled = false;
+    const finalize = () => {
+      if (settled) return;
+      settled = true;
+      incoming.removeEventListener('animationend', onIncomingEnd);
+      if (outgoing.parentNode === stepWrap) stepWrap.removeChild(outgoing);
+      incoming.classList.remove('is-entering');
+      incoming.style.position = '';
+      incoming.style.left = '';
+      incoming.style.right = '';
+      incoming.style.top = '';
+      incoming.style.visibility = '';
+      stepWrap.style.height = '';
+      modal.style.width = '';
+      isAnimating = false;
+    };
+    const onIncomingEnd = (ev) => {
+      if (ev.target === incoming && ev.animationName === 'synabunStepIn') finalize();
+    };
+    incoming.addEventListener('animationend', onIncomingEnd);
+    setTimeout(finalize, 480);
   }
 
   function renderStep1() {
@@ -261,30 +368,23 @@ function openUpdateModal() {
       </p>`;
   }
 
-  function bindEvents() {
-    // Close on overlay click
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) close();
-    });
-
+  function bindStepEvents(scope) {
     // Cancel / Done
-    overlay.querySelector('#update-cancel')?.addEventListener('click', close);
-    overlay.querySelector('#update-done')?.addEventListener('click', close);
+    scope.querySelector('#update-cancel')?.addEventListener('click', close);
+    scope.querySelector('#update-done')?.addEventListener('click', close);
 
     // Next
-    overlay.querySelector('#update-next')?.addEventListener('click', () => {
-      step++;
-      render();
+    scope.querySelector('#update-next')?.addEventListener('click', () => {
+      setStep(step + 1);
     });
 
     // Back
-    overlay.querySelector('#update-back')?.addEventListener('click', () => {
-      step--;
-      render();
+    scope.querySelector('#update-back')?.addEventListener('click', () => {
+      setStep(step - 1);
     });
 
     // Copy buttons
-    overlay.querySelectorAll('.update-copy-btn').forEach(btn => {
+    scope.querySelectorAll('.update-copy-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const text = btn.dataset.copy;
         navigator.clipboard.writeText(text).then(() => {
@@ -297,24 +397,24 @@ function openUpdateModal() {
     });
 
     // Backup download
-    overlay.querySelector('#update-backup-download')?.addEventListener('click', handleBackupDownload);
+    scope.querySelector('#update-backup-download')?.addEventListener('click', handleBackupDownload);
 
     // Update Now — kick off click-to-update flow
-    overlay.querySelector('#update-run-now')?.addEventListener('click', handleRunUpdate);
+    scope.querySelector('#update-run-now')?.addEventListener('click', handleRunUpdate);
 
     // Manual — surface the command + relaunch hint, hide auto-update controls
-    overlay.querySelector('#update-manual')?.addEventListener('click', () => {
-      overlay.querySelector('#update-manual-note').style.display = '';
-      const runNow = overlay.querySelector('#update-run-now');
+    scope.querySelector('#update-manual')?.addEventListener('click', () => {
+      scope.querySelector('#update-manual-note').style.display = '';
+      const runNow = scope.querySelector('#update-run-now');
       if (runNow) runNow.style.display = 'none';
     });
 
     // Skip checkbox
-    const skipCb = overlay.querySelector('#update-skip-backup');
+    const skipCb = scope.querySelector('#update-skip-backup');
     if (skipCb) {
       skipCb.addEventListener('change', () => {
         backupDone = skipCb.checked;
-        const nextBtn = overlay.querySelector('#update-next');
+        const nextBtn = scope.querySelector('#update-next');
         if (nextBtn) nextBtn.disabled = !backupDone;
       });
     }
@@ -328,12 +428,13 @@ function openUpdateModal() {
     // Auto-restart is always on; server forces it true regardless of payload.
     const autoRestart = true;
 
-    const runBtn = overlay.querySelector('#update-run-now');
-    const backBtn = overlay.querySelector('#update-back');
-    const manualBtn = overlay.querySelector('#update-manual');
-    const status = overlay.querySelector('#update-run-status');
-    const icon = overlay.querySelector('#update-run-icon');
-    const text = overlay.querySelector('#update-run-text');
+    const liveStep = stepWrap.querySelector('.update-step:not(.is-leaving)') || stepWrap;
+    const runBtn = liveStep.querySelector('#update-run-now');
+    const backBtn = liveStep.querySelector('#update-back');
+    const manualBtn = liveStep.querySelector('#update-manual');
+    const status = liveStep.querySelector('#update-run-status');
+    const icon = liveStep.querySelector('#update-run-icon');
+    const text = liveStep.querySelector('#update-run-text');
 
     if (!runBtn || !backBtn || !status || !icon || !text) return;
 
@@ -393,10 +494,11 @@ function openUpdateModal() {
   }
 
   async function handleBackupDownload() {
-    const btn = overlay.querySelector('#update-backup-download');
-    const status = overlay.querySelector('#update-backup-status');
-    const icon = overlay.querySelector('#update-backup-icon');
-    const text = overlay.querySelector('#update-backup-text');
+    const liveStep = stepWrap.querySelector('.update-step:not(.is-leaving)') || stepWrap;
+    const btn = liveStep.querySelector('#update-backup-download');
+    const status = liveStep.querySelector('#update-backup-status');
+    const icon = liveStep.querySelector('#update-backup-icon');
+    const text = liveStep.querySelector('#update-backup-text');
     if (!btn) return;
 
     btn.disabled = true;
@@ -431,9 +533,9 @@ function openUpdateModal() {
       text.textContent = `${filename} (${(blob.size / 1024 / 1024).toFixed(1)} MB)`;
 
       backupDone = true;
-      const nextBtn = overlay.querySelector('#update-next');
+      const nextBtn = liveStep.querySelector('#update-next');
       if (nextBtn) nextBtn.disabled = false;
-      const skipCb = overlay.querySelector('#update-skip-backup');
+      const skipCb = liveStep.querySelector('#update-skip-backup');
       if (skipCb) skipCb.checked = true;
     } catch (err) {
       icon.className = 'update-backup-icon';
@@ -451,7 +553,13 @@ function openUpdateModal() {
     setTimeout(() => overlay.remove(), 150);
   }
 
-  render();
+  // Boot: attach shell once, wire overlay-click-to-close, render initial step.
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) close();
+  });
+  document.body.appendChild(overlay);
+  syncStepDots();
+  setStep(1);
 }
 
 function esc(str) {

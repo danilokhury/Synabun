@@ -10051,6 +10051,22 @@ app.post('/api/loop/launch', async (req, res) => {
     // Claude Code uses ToolSearch for deferred loading — always give it the full profile
     if (cliProfile === 'claude-code') loopExtraEnv.SYNABUN_PROFILE = 'full';
 
+    // Per-loop opencode config dir: opencode reads ~/.config/opencode/config.json (or
+    // $XDG_CONFIG_HOME/opencode/config.json) at startup and uses the MCP env block
+    // verbatim. Spawn each opencode loop with its own XDG_CONFIG_HOME so the MCP
+    // child inherits this loop's browser pins.
+    if (cliProfile === 'opencode' && (browserSessionId || browserTabId)) {
+      try {
+        const xdgRoot = setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTabId);
+        if (xdgRoot) {
+          loopExtraEnv.XDG_CONFIG_HOME = xdgRoot;
+          loopLog(terminalSessionId, 'launch:opencode-config', 'per-loop XDG_CONFIG_HOME wired', { xdgRoot });
+        }
+      } catch (err) {
+        loopLog(terminalSessionId, 'launch:opencode-config', 'setup FAILED (falling back to global config)', { err: err.message });
+      }
+    }
+
     loopLog(terminalSessionId, 'launch:env', 'extraEnv prepared for spawned PTY', {
       keys: Object.keys(loopExtraEnv),
       SYNABUN_TERMINAL_SESSION: loopExtraEnv.SYNABUN_TERMINAL_SESSION,
@@ -10125,6 +10141,10 @@ app.post('/api/loop/stop', async (req, res) => {
               }
             }
           }
+          // Per-CLI per-loop config dir cleanup (opencode XDG_CONFIG_HOME, etc.)
+          if (data.profile === 'opencode' && data.terminalSessionId) {
+            cleanupOpencodeLoopConfig(data.terminalSessionId);
+          }
           // Delete the loop file — no history keeping
           try { unlinkSync(filePath); } catch { /* ok */ }
           stopped++;
@@ -10132,6 +10152,40 @@ app.post('/api/loop/stop', async (req, res) => {
       } catch { /* skip corrupt */ }
     }
     res.json({ ok: true, stopped });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/loop/resolve-from-ancestors — process-tree fallback for MCP env loss.
+// The MCP server walks its ancestor PID chain (codex/opencode/gemini → shell PTY)
+// and POSTs the chain here. We match any PID against terminalSessions[*].pty.pid
+// and return that loop's browserSessionId/browserTabId. Layer B of the
+// defense-in-depth browser tab isolation fix.
+app.post('/api/loop/resolve-from-ancestors', (req, res) => {
+  try {
+    const pids = Array.isArray(req.body?.pids) ? req.body.pids.map(Number).filter(Number.isFinite) : [];
+    if (pids.length === 0) return res.json({ matched: false });
+    const pidSet = new Set(pids);
+    let matchedTerminal = null;
+    for (const [tsid, session] of terminalSessions.entries()) {
+      const pid = session?.pty?.pid;
+      if (pid && pidSet.has(pid)) { matchedTerminal = tsid; break; }
+    }
+    if (!matchedTerminal) return res.json({ matched: false });
+    const loopFile = findLoopFileForTerminal(matchedTerminal);
+    if (!loopFile) return res.json({ matched: false, terminalSessionId: matchedTerminal });
+    try {
+      const data = JSON.parse(readFileSync(resolve(LOOP_DIR, loopFile), 'utf-8'));
+      return res.json({
+        matched: true,
+        terminalSessionId: matchedTerminal,
+        browserSessionId: data.browserSessionId || null,
+        browserTabId: data.browserTabId || null,
+      });
+    } catch {
+      return res.json({ matched: false, terminalSessionId: matchedTerminal });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -10456,6 +10510,15 @@ async function launchScheduledLoop(schedule) {
         }
       }
       if (scheduledBrowserTabId) schedExtraEnv.SYNABUN_BROWSER_TAB = scheduledBrowserTabId;
+    }
+
+    if (cliProfile === 'opencode' && (scheduledBrowserSessionId || scheduledBrowserTabId)) {
+      try {
+        const xdgRoot = setupOpencodeLoopConfig(terminalSessionId, scheduledBrowserSessionId, scheduledBrowserTabId);
+        if (xdgRoot) schedExtraEnv.XDG_CONFIG_HOME = xdgRoot;
+      } catch (err) {
+        console.warn(`[schedule] opencode per-loop config setup failed: ${err.message}`);
+      }
     }
 
     const pendingId = 'pending-' + randomBytes(8).toString('hex');
@@ -19901,6 +19964,68 @@ function prepareExecTaskFile(terminalSessionId, loopState) {
 }
 
 /**
+ * Build a per-loop XDG_CONFIG_HOME with an opencode config.json whose MCP env
+ * block is augmented with this loop's SYNABUN_BROWSER_SESSION/TAB pins.
+ * OpenCode's `opencode run` reads MCP server env verbatim from config.json; the
+ * pins set on the PTY don't propagate to the MCP child, so we have to bake them
+ * into the config file. Returns the XDG_CONFIG_HOME root (parent of opencode/).
+ */
+function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTabId) {
+  const xdgRoot = resolve(DATA_HOME, 'data', 'loop-configs', `opencode-${terminalSessionId}`);
+  const targetDir = resolve(xdgRoot, 'opencode');
+  if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
+
+  let baseCfg = {};
+  try {
+    const userPath = getOpencodeConfigPath();
+    if (existsSync(userPath)) baseCfg = JSON.parse(readFileSync(userPath, 'utf8'));
+  } catch { /* start from blank if user's config is missing/broken */ }
+  if (!baseCfg.mcp) baseCfg.mcp = {};
+  const existingEntry = baseCfg.mcp.SynaBun;
+  if (existingEntry && typeof existingEntry === 'object') {
+    const env = { ...(existingEntry.environment || existingEntry.env || {}) };
+    if (browserSessionId) env.SYNABUN_BROWSER_SESSION = browserSessionId;
+    if (browserTabId) env.SYNABUN_BROWSER_TAB = browserTabId;
+    env.SYNABUN_TERMINAL_SESSION = terminalSessionId;
+    // config.json uses "environment" (per persistMcpToOpencodeConfig). Preserve both
+    // keys defensively in case different opencode versions read one or the other.
+    baseCfg.mcp.SynaBun = { ...existingEntry, environment: env, env };
+  } else {
+    // No SynaBun entry — fall back to canonical MCP install pointing at our preload
+    const { mcpIndexPath, envPath } = getMcpPaths();
+    const env = {
+      DOTENV_PATH: envPath,
+      SYNABUN_DATA_HOME: DATA_HOME,
+      MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data'),
+      SYNABUN_TERMINAL_SESSION: terminalSessionId,
+    };
+    if (browserSessionId) env.SYNABUN_BROWSER_SESSION = browserSessionId;
+    if (browserTabId) env.SYNABUN_BROWSER_TAB = browserTabId;
+    baseCfg.mcp.SynaBun = {
+      type: 'local',
+      command: ['node', mcpIndexPath],
+      environment: env,
+      env,
+    };
+  }
+  const target = resolve(targetDir, 'config.json');
+  writeFileSync(target, JSON.stringify(baseCfg, null, 2) + '\n', 'utf8');
+  return xdgRoot;
+}
+
+/**
+ * Best-effort cleanup of a per-loop opencode XDG_CONFIG_HOME dir on loop stop.
+ */
+function cleanupOpencodeLoopConfig(terminalSessionId) {
+  const xdgRoot = resolve(DATA_HOME, 'data', 'loop-configs', `opencode-${terminalSessionId}`);
+  try {
+    if (existsSync(xdgRoot)) rmSync(xdgRoot, { recursive: true, force: true });
+  } catch (err) {
+    console.warn(`[loop/stop] Failed to remove opencode loop config dir: ${err.message}`);
+  }
+}
+
+/**
  * Build a CLI exec command for non-Claude loop iterations.
  * Task is read from a temp file via stdin (`cat <file> | <cli> exec -`)
  * to avoid PTY chunking garble on large task texts.
@@ -19915,11 +20040,28 @@ function buildExecCommand(profile, loopState, taskFile) {
   // Shell-escape a string for safe embedding in single quotes
   const esc = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
 
+  // Per-loop MCP env overrides. Codex's shell_environment_policy filters parent env,
+  // so PTY-level SYNABUN_BROWSER_TAB/SESSION pins are stripped before reaching the
+  // SynaBun MCP child. Inject them directly into the MCP env via `-c` overrides.
+  const mcpEnvOverrides = [];
+  if (loopState.browserSessionId) {
+    mcpEnvOverrides.push(['SYNABUN_BROWSER_SESSION', loopState.browserSessionId]);
+  }
+  if (loopState.browserTabId) {
+    mcpEnvOverrides.push(['SYNABUN_BROWSER_TAB', loopState.browserTabId]);
+  }
+  if (loopState.terminalSessionId) {
+    mcpEnvOverrides.push(['SYNABUN_TERMINAL_SESSION', loopState.terminalSessionId]);
+  }
+
   switch (profile) {
     case 'codex': {
       // --dangerously-bypass-approvals-and-sandbox: SynaBun Automation Studio
       // provides its own sandboxed, user-supervised environment.
       const parts = ['cat', esc(taskFile), '|', bin, 'exec', '--dangerously-bypass-approvals-and-sandbox'];
+      for (const [k, v] of mcpEnvOverrides) {
+        parts.push('-c', esc(`mcp_servers.SynaBun.env.${k}="${v}"`));
+      }
       if (model) parts.push('--model', model);
       parts.push('-C', esc(cwd), '-');
       return parts.join(' ');

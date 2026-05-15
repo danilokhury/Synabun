@@ -5182,6 +5182,51 @@
     transition: opacity 0.15s ease;
   }
 
+  /* Liquid step transition for the update wizard. The shell stays mounted;
+     only the inner .update-step swaps with a measured height tween +
+     keyframe-driven crossfade. Keyframe animations are used (not CSS
+     transitions) because freshly-appended elements have unreliable initial-
+     state observation under Chromium — animations run their declared
+     keyframes deterministically. `isolation: isolate` on the wrapper keeps
+     repaints from propagating to the modal's `backdrop-filter` ancestor. */
+  .update-step-content {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    transition: height 340ms cubic-bezier(.4, 0, .2, 1);
+    will-change: height;
+  }
+  .update-step {
+    width: 100%;
+    transform: translate3d(0, 0, 0);
+  }
+  @keyframes synabunStepIn {
+    from { opacity: 0; transform: translate3d(0, 10px, 0); }
+    to   { opacity: 1; transform: translate3d(0, 0, 0); }
+  }
+  @keyframes synabunStepOut {
+    from { opacity: 1; transform: translate3d(0, 0, 0); }
+    to   { opacity: 0; transform: translate3d(0, -8px, 0); }
+  }
+  .update-step.is-entering {
+    animation: synabunStepIn 360ms cubic-bezier(.22, 1, .36, 1) forwards;
+    will-change: opacity, transform;
+  }
+  .update-step.is-leaving {
+    pointer-events: none;
+    animation: synabunStepOut 260ms cubic-bezier(.4, 0, .2, 1) forwards;
+    will-change: opacity, transform;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .update-step-content,
+    .update-step.is-entering,
+    .update-step.is-leaving {
+      animation: none !important;
+      transition: none !important;
+      transform: none !important;
+    }
+  }
+
   /* ── Dropdown panels (shared) ── */
   .dropdown-panel {
     position: absolute;
