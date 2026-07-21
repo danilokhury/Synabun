@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>SynApp</title>
+<meta name="theme-color" content="#0e0e10">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://db.onlinewebfonts.com/c/3284c3a32cf946466fb963369b3c5b2d?family=Disket+Mono" rel="stylesheet">
+<link rel="stylesheet" href="/shared/styles.css">
+<style>
+  /* ═══════════════════════════════════════════
+     3D VARIANT — Camera HUD
+     ═══════════════════════════════════════════ */
+  #camera-hud {
+    display: none !important;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.4s;
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+  }
+  #camera-hud.visible { opacity: 1; pointer-events: auto; }
+  #camera-hud.pinned { opacity: 1; pointer-events: auto; }
+  #camera-hud.dragging { transition: none; }
+
+  .cam-card {
+    width: 140px;
+    background: rgba(18,18,20,0.65);
+    backdrop-filter: blur(var(--blur-heavy, 16px));
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    padding: 12px 14px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    position: relative;
+  }
+
+  .cam-pin {
+    position: absolute; top: 6px; right: 6px;
+    width: 20px; height: 20px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 4px; background: transparent;
+    border: 1px solid transparent; cursor: pointer;
+    pointer-events: auto; opacity: 0;
+    transition: opacity 0.2s, background 0.15s, border-color 0.15s;
+    z-index: 5; padding: 0;
+  }
+  .cam-card:hover .cam-pin, #camera-hud.pinned .cam-pin { opacity: 1; }
+  .cam-pin:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.1); }
+  .cam-pin svg { width: 11px; height: 11px; stroke: rgba(255,255,255,0.3); fill: none; stroke-width: 2; transform: rotate(45deg); transition: stroke 0.15s, fill 0.15s, transform 0.15s; }
+  .cam-pin:hover svg { stroke: rgba(255,255,255,0.5); }
+  #camera-hud.pinned .cam-pin svg { stroke: rgba(110,200,255,0.7); fill: rgba(110,200,255,0.15); transform: rotate(0deg); }
+
+  .cam-drag-grip { width: 24px; height: 3px; border-radius: 2px; background: rgba(255,255,255,0.06); margin: -2px auto 0; cursor: grab; pointer-events: auto; transition: background 0.2s; }
+  .cam-card:hover .cam-drag-grip { background: rgba(255,255,255,0.12); }
+  .cam-drag-grip:active { cursor: grabbing; background: rgba(110,200,255,0.25); }
+
+  .cam-compass { width: 80px; height: 80px; position: relative; }
+  .cam-compass svg { width: 100%; height: 100%; }
+  .compass-ring { fill: none; stroke: rgba(255,255,255,0.08); stroke-width: 1.5; }
+  .compass-tick { stroke: rgba(255,255,255,0.2); stroke-width: 1; }
+  .compass-tick-major { stroke: rgba(255,255,255,0.4); stroke-width: 1.5; }
+  .compass-label { fill: rgba(255,255,255,0.35); font-size: 7px; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
+  .compass-label-n { fill: rgba(110,200,255,0.7); }
+  .compass-needle { fill: rgba(110,200,255,0.6); transition: none; }
+  .compass-center { fill: rgba(255,255,255,0.15); }
+  .compass-fov { fill: rgba(110,200,255,0.06); stroke: rgba(110,200,255,0.15); stroke-width: 0.5; }
+
+  .cam-divider { width: 100%; height: 1px; background: rgba(255,255,255,0.06); }
+  .cam-controls-row { display: flex; align-items: center; gap: 12px; }
+
+  .cam-keys { display: grid; grid-template-columns: repeat(3, 22px); grid-template-rows: repeat(2, 22px); gap: 2px; }
+  .cam-key { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: 4px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); color: rgba(255,255,255,0.25); font-size: 9px; font-weight: 600; transition: background 0.1s, color 0.1s, border-color 0.1s, box-shadow 0.1s; }
+  .cam-key.active { background: rgba(110,200,255,0.15); border-color: rgba(110,200,255,0.35); color: rgba(110,200,255,0.9); box-shadow: 0 0 8px rgba(110,200,255,0.15); }
+
+  .cam-altitude { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .alt-label { font-size: 8px; color: rgba(255,255,255,0.25); text-transform: uppercase; letter-spacing: 0.08em; }
+  .alt-bar-v { width: 3px; height: 32px; background: rgba(255,255,255,0.06); border-radius: 2px; position: relative; overflow: hidden; display: flex; flex-direction: column-reverse; }
+  .alt-fill-v { width: 100%; background: linear-gradient(0deg, rgba(110,200,255,0.4), rgba(110,200,255,0.7)); border-radius: 2px; transition: height 0.1s; }
+  .alt-value { font-size: 9px; color: rgba(255,255,255,0.4); font-variant-numeric: tabular-nums; min-width: 28px; text-align: center; }
+
+  .cam-speed { font-size: 9px; color: rgba(255,255,255,0.25); letter-spacing: 0.06em; text-align: center; }
+  .cam-speed .boost { color: rgba(255,180,60,0.7); }
+
+  /* ═══════════════════════════════════════════
+     3D VARIANT — Controls Panel
+     ═══════════════════════════════════════════ */
+  #controls-panel {
+    position: fixed; bottom: 52px; right: 12px; width: 190px; z-index: 90;
+    border-radius: 10px; overflow: hidden;
+    background: rgba(28,28,30,0.72); backdrop-filter: blur(var(--blur-heavy, 16px)) saturate(1.4); -webkit-backdrop-filter: blur(var(--blur-heavy, 16px)) saturate(1.4);
+    border: 1px solid rgba(255,255,255,0.06); box-shadow: 0 2px 20px rgba(0,0,0,0.4);
+    padding: 12px 14px; transition: opacity 0.2s; display: none;
+  }
+  #controls-panel.visible { display: block; }
+  #controls-panel .ctrl-title { font-size: 9px; font-weight: 600; letter-spacing: 0.15em; text-transform: uppercase; color: rgba(255,255,255,0.25); margin-bottom: 8px; }
+  #controls-panel .ctrl-section { margin-bottom: 8px; }
+  #controls-panel .ctrl-section:last-child { margin-bottom: 0; }
+  #controls-panel .ctrl-section-label { font-size: 8px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255,255,255,0.15); margin-bottom: 5px; }
+  #controls-panel .ctrl-row { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+  #controls-panel .ctrl-row:last-child { margin-bottom: 0; }
+  #controls-panel .ctrl-keys { display: flex; gap: 2px; flex-shrink: 0; }
+  #controls-panel .ctrl-key { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 18px; padding: 0 4px; font-size: 9px; font-weight: 600; font-family: 'SF Mono', 'Fira Code', monospace; color: rgba(255,255,255,0.45); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); border-radius: 3px; }
+  #controls-panel .ctrl-desc { font-size: 10px; color: rgba(255,255,255,0.3); white-space: nowrap; }
+</style>
+<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{})</script>
+</head>
+<body>
+
+<!-- 3D-only: Camera HUD -->
+<div id="camera-hud">
+  <div class="cam-card">
+    <button class="cam-pin" id="cam-pin-btn" title="Pin HUD"><svg viewBox="0 0 24 24"><path d="M9 4v4.5L7.5 10H6v2h4v7l2 1 2-1v-7h4v-2h-1.5L15 8.5V4H9z" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
+    <div class="cam-drag-grip" id="cam-drag-grip"></div>
+    <div class="cam-compass">
+      <svg viewBox="0 0 72 72">
+        <circle class="compass-ring" cx="36" cy="36" r="32"/>
+        <g id="compass-ticks"></g>
+        <path id="compass-fov" class="compass-fov" d=""/>
+        <polygon id="compass-needle" class="compass-needle" points="36,8 34,16 38,16"/>
+        <circle class="compass-center" cx="36" cy="36" r="2.5"/>
+        <text class="compass-label compass-label-n" x="36" y="6">N</text>
+        <text class="compass-label" x="66" y="37">E</text>
+        <text class="compass-label" x="36" y="69">S</text>
+        <text class="compass-label" x="6" y="37">W</text>
+      </svg>
+    </div>
+    <div class="cam-divider"></div>
+    <div class="cam-controls-row">
+      <div class="cam-keys">
+        <div class="cam-key" id="key-q">Q</div>
+        <div class="cam-key" id="key-w">W</div>
+        <div class="cam-key" id="key-e">E</div>
+        <div class="cam-key" id="key-a">A</div>
+        <div class="cam-key" id="key-s">S</div>
+        <div class="cam-key" id="key-d">D</div>
+      </div>
+      <div class="cam-altitude">
+        <span class="alt-label">ALT</span>
+        <div class="alt-bar-v"><div class="alt-fill-v" id="alt-fill"></div></div>
+        <span class="alt-value" id="alt-value">0</span>
+      </div>
+    </div>
+    <div class="cam-speed" id="cam-speed-label">MOVE</div>
+  </div>
+</div>
+
+<!-- 3D-only: Controls Reference Panel -->
+<div id="controls-panel">
+  <div class="ctrl-title">3D Controls</div>
+  <div class="ctrl-section">
+    <div class="ctrl-section-label">Movement</div>
+    <div class="ctrl-row"><div class="ctrl-keys"><span class="ctrl-key">W</span><span class="ctrl-key">A</span><span class="ctrl-key">S</span><span class="ctrl-key">D</span></div><span class="ctrl-desc">Move</span></div>
+    <div class="ctrl-row"><div class="ctrl-keys"><span class="ctrl-key">Q</span></div><span class="ctrl-desc">Down</span></div>
+    <div class="ctrl-row"><div class="ctrl-keys"><span class="ctrl-key">E</span></div><span class="ctrl-desc">Up</span></div>
+    <div class="ctrl-row"><div class="ctrl-keys"><span class="ctrl-key">Shift</span></div><span class="ctrl-desc">Boost 3x</span></div>
+  </div>
+  <div class="ctrl-section">
+    <div class="ctrl-section-label">Camera</div>
+    <div class="ctrl-row"><div class="ctrl-keys"><span class="ctrl-key">L-Drag</span></div><span class="ctrl-desc">Rotate</span></div>
+    <div class="ctrl-row"><div class="ctrl-keys"><span class="ctrl-key">R-Drag</span></div><span class="ctrl-desc">Pan</span></div>
+    <div class="ctrl-row"><div class="ctrl-keys"><span class="ctrl-key">Scroll</span></div><span class="ctrl-desc">Zoom</span></div>
+  </div>
+</div>
+
+<!-- html2canvas for card screenshot MCP tool -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
+
+<!-- 3D CDN dependencies (loaded as globals before module) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.169.0",
+    "three/addons/": "https://esm.sh/three@0.169.0/examples/jsm/",
+    "@tweenjs/tween.js": "https://esm.sh/@tweenjs/tween.js@23.1.3"
+  }
+}
+</script>
+<script type="module">
+  // Load 3D deps as globals (variant modules expect THREE, TWEEN, OrbitControls, etc.)
+  import * as THREE from 'three';
+  import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+  import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+  import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+  import TWEEN from '@tweenjs/tween.js';
+
+  window.THREE = THREE;
+  window.UnrealBloomPass = UnrealBloomPass;
+  window.OrbitControls = OrbitControls;
+  window.EffectComposer = EffectComposer;
+  window.RenderPass = RenderPass;
+  window.OutputPass = OutputPass;
+  window.TWEEN = TWEEN;
+
+  // Boot the 3D variant
+  await import('/variant/3d/main.js');
+</script>
+</body>
+</html>

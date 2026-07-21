@@ -1,0 +1,110 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Verify release commit is the Clean branch tip
+        run: |
+          git fetch --no-tags --depth=1 origin Clean
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse FETCH_HEAD)" ]; then
+            echo "Release tags must point to the current Clean branch tip." >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp-server/package-lock.json
+            neural-interface/package-lock.json
+
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: >-
+          node -e "const { version } = require('./package.json');
+          const raw = process.env.RELEASE_TAG || '';
+          const normalized = raw.replace(/^v\.?/, '').split('.').map((part, index) =>
+          index < 3 && /^\d+$/.test(part) ? String(Number(part)) : part).join('.');
+          if (normalized !== version) {
+          console.error('Release tag ' + raw + ' does not match package version ' + version);
+          process.exit(1);
+          }"
+
+      - name: Install root package metadata
+        run: npm ci --ignore-scripts
+
+      - name: Install MCP server dependencies
+        run: npm --prefix mcp-server ci --ignore-scripts
+
+      - name: Install Neural Interface dependencies
+        run: npm --prefix neural-interface ci --ignore-scripts
+
+      - name: Build MCP server
+        run: npm run mcp:build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Inspect npm package
+        run: npm run pack:check
+
+      - name: Publish with provenance
+        run: npm publish --provenance --access public --tag latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Notify Discord changelog
+        if: success()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+        run: |
+          node -e '
+            const payload = {
+              content: "@everyone",
+              allowed_mentions: { parse: ["everyone"] },
+              embeds: [{
+                title: "SynaBun " + process.env.RELEASE_TAG + " is live on npm",
+                url: process.env.RELEASE_URL,
+                color: 5763719,
+                description: "A new version has been published.\n\nUpdate:\n```\nnpm i -g synabun@latest\n```\n\n[View release notes](" + process.env.RELEASE_URL + ")",
+                timestamp: new Date().toISOString()
+              }]
+            };
+            fetch(process.env.DISCORD_WEBHOOK_URL, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload)
+            }).then(async (response) => {
+              if (!response.ok) {
+                throw new Error("Discord webhook failed: " + response.status + " " + await response.text());
+              }
+            }).catch((error) => {
+              console.error(error);
+              process.exit(1);
+            });
+          '

@@ -1,0 +1,2589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Setup - SynaBun</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --t-faint: rgba(255,255,255,0.15);
+    --t-muted: rgba(255,255,255,0.32);
+    --t-secondary: rgba(255,255,255,0.52);
+    --t-primary: rgba(255,255,255,0.72);
+    --t-bright: rgba(255,255,255,0.92);
+    --s-subtle: rgba(255,255,255,0.03);
+    --s-light: rgba(255,255,255,0.05);
+    --s-medium: rgba(255,255,255,0.08);
+    --s-hover: rgba(255,255,255,0.06);
+    --s-active: rgba(255,255,255,0.12);
+    --b-subtle: rgba(255,255,255,0.05);
+    --b-light: rgba(255,255,255,0.08);
+    --b-hover: rgba(255,255,255,0.14);
+    --b-visible: rgba(255,255,255,0.20);
+    --accent: #ffffff;
+    --accent-bg: rgba(255,255,255,0.06);
+    --accent-border: rgba(255,255,255,0.18);
+    --accent-dim: rgba(255,255,255,0.45);
+    --green: #6dd58c;
+    --green-bg: rgba(109,213,140,0.10);
+    --red: #ff6b6b;
+    --red-bg: rgba(255,107,107,0.10);
+    --r-card: 12px;
+    --r-button: 12px;
+    --ease: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  body {
+    background: #050505;
+    color: #e0e0e0;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Fira Code', monospace;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Background canvas */
+  #bgCanvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+
+  /* ── Wizard Container ── */
+  .wizard {
+    width: 620px;
+    max-height: 90vh;
+    background: rgba(10, 10, 12, 0.85);
+    backdrop-filter: blur(60px) saturate(1.3);
+    -webkit-backdrop-filter: blur(60px) saturate(1.3);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 20px;
+    box-shadow:
+      0 0 0 1px rgba(0,0,0,0.3),
+      0 2px 8px rgba(0,0,0,0.3),
+      0 12px 48px rgba(0,0,0,0.5),
+      inset 0 1px 0 rgba(255,255,255,0.04);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+    z-index: 2;
+  }
+
+  /* ── Steps Viewport ── */
+  .steps-viewport {
+    position: relative;
+    overflow: hidden;
+    /* Progressive fallback: absolute-positioned steps do not size their parent.
+       JavaScript replaces this with the active step's measured height, but the
+       welcome screen must remain visible while initialization is pending. */
+    height: min(533px, calc(90vh - 56px));
+    transition: height 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .step {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    padding: 36px 40px;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.45s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s ease;
+    overflow-y: auto;
+  }
+  .step.active { transform: translateX(0); opacity: 1; z-index: 2; }
+  .step.left   { transform: translateX(-100%); opacity: 0; z-index: 1; }
+  .step.right  { transform: translateX(100%); opacity: 0; z-index: 1; }
+
+  .step-eyes {
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    user-select: none;
+    margin-bottom: 8px;
+    min-height: 0;
+    transition: opacity 0.4s ease;
+  }
+  .step-eyes:empty { display: none; }
+
+  .step h2 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--t-bright);
+    margin-bottom: 6px;
+    letter-spacing: -0.3px;
+  }
+  .step .subtitle {
+    font-size: 13px;
+    color: var(--t-secondary);
+    margin-bottom: 24px;
+    line-height: 1.5;
+  }
+
+  /* ── Navigation Bar ── */
+  .nav-bar {
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    background: rgba(0,0,0,0.25);
+  }
+
+  .dots {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+  }
+  .dot {
+    width: 16px; height: 3px;
+    border-radius: 1px;
+    background: rgba(255,255,255,0.08);
+    transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .dot.active {
+    background: var(--accent);
+  }
+  .dot.done { background: rgba(255,255,255,0.30); }
+
+  .nav-btn {
+    padding: 7px 16px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.03);
+    color: var(--t-muted);
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .nav-btn:hover { color: var(--t-bright); background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12); }
+  .nav-btn:disabled { opacity: 0; cursor: default; pointer-events: none; }
+  .nav-btn.primary {
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.18);
+    color: var(--accent);
+  }
+  .nav-btn.primary:hover {
+    background: rgba(255,255,255,0.12);
+    border-color: rgba(255,255,255,0.30);
+  }
+
+  /* ── Form Elements ── */
+  .field { margin-bottom: 18px; }
+  .field label:not(.key-backup-check) {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--t-secondary);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+  .field input:not([type="checkbox"]), .field select {
+    width: 100%;
+    padding: 11px 14px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--b-light);
+    border-radius: 10px;
+    color: var(--t-bright);
+    font-size: 13px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Fira Code', monospace;
+    outline: none;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .field input:not([type="checkbox"]):focus, .field select:focus {
+    border-color: var(--accent-border);
+    background: rgba(255,255,255,0.04);
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.04);
+  }
+  .field input:not([type="checkbox"])::placeholder { color: var(--t-muted); font-family: inherit; }
+  .field .hint {
+    font-size: 11px;
+    color: var(--t-muted);
+    margin-top: 6px;
+    line-height: 1.4;
+  }
+  .field .error-text {
+    font-size: 11px;
+    color: var(--red);
+    margin-top: 6px;
+  }
+  .field .error-text:empty {
+    display: none;
+  }
+
+  .input-row {
+    display: flex;
+    gap: 8px;
+  }
+  .input-row input { flex: 1; }
+  .input-row .btn-sm {
+    padding: 9px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--b-light);
+    background: var(--s-light);
+    color: var(--t-primary);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all var(--ease);
+  }
+  .input-row .btn-sm:hover { background: var(--s-medium); color: var(--t-bright); border-color: var(--b-hover); }
+
+  /* ── Key Backup Notice ── */
+  .key-backup-notice {
+    margin-top: 16px;
+    padding: 12px 14px;
+    background: rgba(255,255,255,0.025);
+    border: 1px solid var(--b-light);
+    border-radius: 10px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .key-backup-icon {
+    flex-shrink: 0;
+    color: var(--t-muted);
+    margin-top: 1px;
+  }
+  .key-backup-text {
+    font-size: 12px;
+    color: var(--t-secondary);
+    line-height: 1.5;
+    margin: 0;
+  }
+  .key-backup-check {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+    color: var(--t-secondary);
+    padding: 10px 14px;
+    border: 1px solid var(--b-light);
+    border-radius: 10px;
+    background: var(--s-subtle);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .key-backup-check:hover {
+    background: var(--s-hover);
+    border-color: var(--b-hover);
+    color: var(--t-primary);
+  }
+  .key-backup-check:has(input:checked) {
+    border-color: rgba(109,213,140,0.25);
+    background: rgba(109,213,140,0.05);
+    color: var(--t-bright);
+  }
+  .key-backup-checkbox-wrap {
+    position: relative;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+  .key-backup-checkbox-wrap input {
+    position: absolute;
+    opacity: 0;
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    margin: 0;
+    z-index: 1;
+  }
+  .key-backup-checkmark {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--b-hover);
+    border-radius: 5px;
+    background: rgba(255,255,255,0.03);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    color: transparent;
+  }
+  .key-backup-checkbox-wrap input:checked ~ .key-backup-checkmark {
+    background: rgba(109,213,140,0.15);
+    border-color: rgba(109,213,140,0.35);
+    color: var(--green);
+  }
+
+  /* ── Provider Cards Grid ── */
+  .provider-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .provider-card {
+    padding: 12px 14px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    cursor: pointer;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+  }
+  .provider-card:hover { background: var(--s-hover); border-color: var(--b-hover); transform: translateY(-1px); }
+  .provider-card.selected {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+    box-shadow: 0 0 0 1px var(--accent-border);
+  }
+  .provider-card .pname {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--t-bright);
+  }
+  .provider-card .ptag {
+    position: absolute;
+    top: 8px; right: 10px;
+    font-size: 9px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.08);
+    color: var(--t-bright);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  .provider-card .pmodel {
+    font-size: 11px;
+    color: var(--t-muted);
+    margin-top: 3px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 10px;
+  }
+  .provider-card .plink {
+    display: inline-block;
+    font-size: 10px;
+    color: var(--accent-dim);
+    margin-top: 6px;
+    text-decoration: none;
+    transition: color 0.2s ease;
+  }
+  .provider-card .plink:hover { color: var(--accent); text-decoration: underline; }
+
+  /* ── Mode Toggle ── */
+  .mode-toggle {
+    display: flex;
+    gap: 0;
+    margin-bottom: 20px;
+    border: 1px solid var(--b-light);
+    border-radius: 10px;
+    overflow: hidden;
+    width: fit-content;
+    background: var(--s-subtle);
+  }
+  .mode-toggle button {
+    padding: 8px 20px;
+    border: none;
+    background: transparent;
+    color: var(--t-muted);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    letter-spacing: 0.01em;
+    font-weight: 500;
+  }
+  .mode-toggle button.active {
+    background: rgba(255,255,255,0.10);
+    color: var(--t-bright);
+  }
+  .mode-toggle button:hover:not(.active) { color: var(--t-primary); background: var(--s-hover); }
+
+  /* ── Tool Cards ── */
+  .tool-grid {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .tool-card {
+    flex: 1;
+    padding: 10px 6px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .tool-card:hover { background: var(--s-hover); border-color: var(--b-hover); transform: translateY(-1px); }
+  .tool-card.selected {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+    box-shadow: 0 0 0 1px var(--accent-border);
+  }
+  .tool-card .tname {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--t-bright);
+    white-space: nowrap;
+  }
+
+  /* ── MCP Toggle List (Step 5) — 2×2 grid ── */
+  .mcp-toggle-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .mcp-toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    transition: border-color 0.25s ease, background 0.25s ease;
+    min-width: 0; /* allow grid cell to shrink below intrinsic width */
+  }
+  .mcp-toggle-row.connected {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+  }
+  .mcp-toggle-row .mtr-body { flex: 1 1 0; min-width: 0; overflow: hidden; }
+  .mcp-toggle-row .mtr-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--t-bright);
+    margin-bottom: 2px;
+  }
+  .mcp-toggle-row .mtr-path {
+    font-size: 11px;
+    color: var(--t-muted);
+    font-family: var(--mono, monospace);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mcp-toggle-row .mtr-toggle {
+    flex-shrink: 0;
+    width: 36px; height: 20px;
+    border-radius: 10px;
+    background: var(--s-hover);
+    border: 1px solid var(--b-light);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+    padding: 0;
+  }
+  .mcp-toggle-row .mtr-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--t-secondary);
+    transition: left 0.2s ease, background 0.2s ease;
+  }
+  .mcp-toggle-row .mtr-toggle.on {
+    background: var(--accent-border);
+    border-color: var(--accent-border);
+  }
+  .mcp-toggle-row .mtr-toggle.on::after {
+    left: 18px;
+    background: var(--t-bright);
+  }
+  .mcp-toggle-row .mtr-toggle:disabled,
+  .mcp-toggle-row .mtr-toggle.busy {
+    opacity: 0.4;
+    cursor: wait;
+  }
+  .mcp-other-section {
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    overflow: hidden;
+  }
+  .mcp-other-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--t-secondary);
+    user-select: none;
+    transition: background 0.2s ease;
+  }
+  .mcp-other-header:hover { background: var(--s-hover); }
+  .mcp-other-chevron { transition: transform 0.2s ease; }
+  .mcp-other-section.open .mcp-other-chevron { transform: rotate(180deg); }
+  .mcp-other-body { padding: 0 14px 12px; }
+
+  /* ── Dependency List ── */
+  .dep-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .dep-item {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.4s ease, transform 0.4s ease, border-color 0.3s ease, background 0.3s ease, box-shadow 0.3s ease;
+  }
+  .dep-item.visible { opacity: 1; transform: translateY(0); }
+  .dep-item.ok { border-color: rgba(255,255,255,0.12); background: rgba(255,255,255,0.03); }
+  .dep-item.warn { border-color: rgba(255,193,7,0.15); background: rgba(255,193,7,0.03); }
+  .dep-item.fail { border-color: rgba(255,107,107,0.15); background: rgba(255,107,107,0.03); }
+
+  .dep-icon {
+    width: 32px; height: 32px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+    transition: all 0.3s ease;
+  }
+  .dep-item.checking .dep-icon { background: var(--s-medium); color: var(--t-muted); }
+  .dep-item.ok .dep-icon { background: rgba(255,255,255,0.08); color: var(--t-bright); }
+  .dep-item.warn .dep-icon { background: rgba(255,193,7,0.12); color: #FFC107; }
+  .dep-item.fail .dep-icon { background: rgba(255,107,107,0.10); color: var(--red); }
+
+  .dep-info { flex: 1; min-width: 0; }
+  .dep-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--t-bright);
+  }
+  .dep-detail {
+    font-size: 11px;
+    color: var(--t-muted);
+    margin-top: 3px;
+  }
+  .dep-detail a {
+    color: var(--accent-dim);
+    text-decoration: none;
+    transition: color 0.2s ease;
+  }
+  .dep-detail a:hover { color: var(--accent); text-decoration: underline; }
+
+  @keyframes dep-spin {
+    to { transform: rotate(360deg); }
+  }
+  .dep-item.checking .dep-icon::after {
+    content: '';
+    width: 14px; height: 14px;
+    border: 2px solid var(--b-light);
+    border-top-color: var(--t-bright);
+    border-radius: 50%;
+    animation: dep-spin 0.7s linear infinite;
+  }
+
+  /* ── Terminal Output ── */
+  .terminal {
+    background: rgba(0,0,0,0.35);
+    border: 1px solid var(--b-subtle);
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Fira Code', monospace;
+    font-size: 11px;
+    color: var(--t-secondary);
+    max-height: 180px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.6;
+    margin-bottom: 14px;
+  }
+
+  /* ── Status Indicators ── */
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--t-primary);
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.green { background: var(--t-bright); }
+  .status-dot.red { background: var(--red); }
+  .status-dot.yellow { background: #FFC107; }
+  .status-dot.gray { background: rgba(255,255,255,0.15); }
+
+  /* ── Action Button ── */
+  .action-btn {
+    padding: 11px 26px;
+    border-radius: var(--r-button);
+    border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.06);
+    color: var(--t-bright);
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .action-btn:hover {
+    background: rgba(255,255,255,0.12);
+    border-color: rgba(255,255,255,0.30);
+    transform: translateY(-1px);
+  }
+  .action-btn:active { transform: translateY(0); }
+  .action-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+  .action-btn.success {
+    border-color: rgba(109,213,140,0.30);
+    background: var(--green-bg);
+    color: var(--green);
+  }
+  .action-btn.success:hover {
+    background: rgba(109,213,140,0.12);
+  }
+
+  /* ── SynaBun Eyes ── */
+  #synabun-bg {
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    user-select: none;
+    margin-bottom: 0;
+  }
+
+  /* ── Typewriter ── */
+  .typewriter-line {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--t-bright);
+    text-align: center;
+    min-height: 36px;
+    letter-spacing: -0.5px;
+  }
+  .welcome-desc {
+    font-size: 15px;
+    color: var(--t-secondary);
+    text-align: center;
+    margin-top: 16px;
+    opacity: 1;
+    transition: opacity 0.6s ease;
+    line-height: 1.8;
+  }
+  .onboarding-animated .welcome-desc:not(.visible) { opacity: 0; }
+  .welcome-desc.visible { opacity: 1; }
+
+  /* ── Welcome Choice Cards ── */
+  .welcome-choices {
+    display: flex;
+    gap: 14px;
+    margin-top: 28px;
+    opacity: 1;
+    transition: opacity 0.5s ease;
+    width: 100%;
+    max-width: 440px;
+  }
+  .onboarding-animated .welcome-choices:not(.visible) { opacity: 0; }
+  .welcome-choices.visible { opacity: 1; }
+  .welcome-choice {
+    flex: 1;
+    padding: 20px 16px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .welcome-choice:hover {
+    background: var(--s-hover);
+    border-color: var(--b-hover);
+    transform: translateY(-2px);
+  }
+  .welcome-choice-icon {
+    width: 32px;
+    height: 32px;
+    color: var(--t-muted);
+    transition: color 0.2s ease;
+  }
+  .welcome-choice:hover .welcome-choice-icon { color: var(--t-bright); }
+  .welcome-choice-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--t-bright);
+  }
+  .welcome-choice-desc {
+    font-size: 11px;
+    color: var(--t-muted);
+    line-height: 1.4;
+  }
+
+  /* Restore sub-panel inside step 0 */
+  .welcome-restore-panel {
+    width: 100%;
+    max-width: 440px;
+    margin-top: 20px;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    display: none;
+  }
+  .welcome-restore-panel.visible {
+    display: block;
+    opacity: 1;
+  }
+  .restore-dropzone {
+    padding: 28px 20px;
+    border: 2px dashed var(--b-light);
+    border-radius: var(--r-card);
+    background: var(--s-subtle);
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.25s ease;
+  }
+  .restore-dropzone:hover,
+  .restore-dropzone.dragover {
+    border-color: var(--b-hover);
+    background: var(--s-hover);
+  }
+  .restore-dropzone-icon {
+    color: var(--t-muted);
+    margin-bottom: 8px;
+  }
+  .restore-dropzone-text {
+    font-size: 13px;
+    color: var(--t-secondary);
+  }
+  .restore-dropzone-hint {
+    font-size: 11px;
+    color: var(--t-muted);
+    margin-top: 4px;
+  }
+  .restore-back-link {
+    display: inline-block;
+    margin-top: 14px;
+    font-size: 11px;
+    color: var(--t-muted);
+    cursor: pointer;
+    transition: color 0.2s ease;
+    text-decoration: none;
+  }
+  .restore-back-link:hover { color: var(--t-bright); }
+
+  /* ── Instructions Preview ── */
+  .instructions-preview {
+    background: rgba(0,0,0,0.30);
+    border: 1px solid var(--b-subtle);
+    border-radius: 10px;
+    padding: 16px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Fira Code', monospace;
+    font-size: 11px;
+    color: var(--t-secondary);
+    max-height: 240px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    line-height: 1.6;
+    margin-bottom: 14px;
+  }
+  .code-copy-wrap {
+    position: relative;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+  }
+  .code-copy-wrap:hover { opacity: 0.85; }
+  .code-copy-wrap:hover .code-copy-label { opacity: 1; }
+  .code-copy-wrap:active .instructions-preview {
+    border-color: rgba(255,255,255,0.22);
+  }
+  .code-copy-wrap .instructions-preview { margin-bottom: 0; }
+  #mcpSetupCode { max-height: 140px; }
+  .code-copy-label {
+    position: absolute;
+    bottom: 8px;
+    right: 12px;
+    font-size: 10px;
+    color: var(--t-muted);
+    opacity: 0.5;
+    transition: opacity 0.15s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    pointer-events: none;
+  }
+  .mascot-toast {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(40px, -50%);
+    font-size: 11px;
+    color: var(--t-bright);
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.25s ease, transform 0.3s ease;
+    pointer-events: none;
+  }
+  .mascot-toast.show {
+    opacity: 1;
+    transform: translate(50px, -50%);
+  }
+
+  /* ── Checklist ── */
+  .checklist {
+    list-style: none;
+    margin: 16px 0;
+  }
+  .checklist li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    font-size: 13px;
+    color: var(--t-primary);
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .checklist li:last-child { border-bottom: none; }
+  .checklist .check {
+    color: var(--t-bright);
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+
+  /* ── Spinner ── */
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.12);
+    border-top-color: var(--t-bright);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .btn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  /* ── Social Icons ── */
+  .social-bar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.02);
+  }
+  .social-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 24px;
+    border-radius: 4px;
+    color: rgba(255,255,255,0.20);
+    transition: all 0.2s ease;
+  }
+  .social-icon:hover {
+    color: rgba(255,255,255,0.60);
+    background: rgba(255,255,255,0.06);
+  }
+
+  /* ── Floating Mascot ── */
+  .wizard-wrap {
+    position: relative;
+    perspective: 600px;
+  }
+  #synabun-float {
+    position: absolute;
+    left: 50%;
+    top: -60px;
+    pointer-events: none;
+    user-select: none;
+    z-index: 3;
+    opacity: 0;
+    transform: translate(-50%, 20px);
+    transform-style: preserve-3d;
+    transition:
+      transform 1s cubic-bezier(0.34, 1.4, 0.64, 1),
+      opacity 0.5s ease;
+    will-change: transform, opacity;
+  }
+  #synabun-float.visible { opacity: 1; }
+
+  .float-inner {
+    will-change: transform;
+    transform-style: preserve-3d;
+    transform: rotateX(18deg);
+  }
+
+  /* ── Idle animations (all preserve rotateX tilt) ── */
+  @keyframes mascot-float {
+    0%, 100% { transform: rotateX(18deg) translateY(0) rotateZ(0deg); }
+    25% { transform: rotateX(20deg) translateY(-5px) rotateZ(0.5deg); }
+    75% { transform: rotateX(16deg) translateY(-2px) rotateZ(-0.5deg); }
+  }
+  @keyframes mascot-drift-r {
+    0%, 100% { transform: rotateX(18deg) translateX(0) translateY(0) rotateZ(0deg); }
+    30% { transform: rotateX(22deg) translateX(4px) translateY(-4px) rotateZ(2deg); }
+    70% { transform: rotateX(15deg) translateX(-2px) translateY(-2px) rotateZ(-1deg); }
+  }
+  @keyframes mascot-drift-l {
+    0%, 100% { transform: rotateX(18deg) translateX(0) translateY(0) rotateZ(0deg); }
+    30% { transform: rotateX(22deg) translateX(-4px) translateY(-4px) rotateZ(-2deg); }
+    70% { transform: rotateX(15deg) translateX(2px) translateY(-2px) rotateZ(1deg); }
+  }
+  @keyframes mascot-nod {
+    0%, 100% { transform: rotateX(18deg) translateY(0) scale(1); }
+    25% { transform: rotateX(28deg) translateY(4px) scale(1.02, 0.96); }
+    50% { transform: rotateX(12deg) translateY(-3px) scale(0.98, 1.04); }
+    75% { transform: rotateX(20deg) translateY(1px) scale(1); }
+  }
+  @keyframes mascot-celebrate {
+    0%, 100% { transform: rotateX(18deg) translateY(0) rotateZ(0deg) scale(1); }
+    20% { transform: rotateX(10deg) translateY(-8px) rotateZ(-3deg) scale(1.05); }
+    40% { transform: rotateX(22deg) translateY(-2px) rotateZ(3deg) scale(1); }
+    60% { transform: rotateX(12deg) translateY(-6px) rotateZ(-2deg) scale(1.03); }
+    80% { transform: rotateX(20deg) translateY(-1px) rotateZ(1deg) scale(1); }
+  }
+
+  #synabun-float svg {
+    filter: drop-shadow(0 6px 24px rgba(255, 255, 255, 0.08));
+  }
+</style>
+<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{})</script>
+</head>
+<body>
+
+<canvas id="bgCanvas"></canvas>
+
+<a href="https://synabun.ai" target="_blank" rel="noopener" style="position:fixed;top:24px;left:28px;z-index:10;opacity:0.4;transition:opacity 0.2s;" onmouseenter="this.style.opacity='0.7'" onmouseleave="this.style.opacity='0.4'">
+  <img src="synabun.png?v=2" alt="SynaBun" style="height:34px;width:auto;">
+</a>
+
+<div class="wizard-wrap">
+<div id="synabun-float"><div class="float-inner" id="synabunFloatInner"></div></div>
+<div class="wizard">
+  <div class="steps-viewport" id="stepsViewport">
+
+    <!-- Step 0: Welcome -->
+    <div class="step active" data-step="0" style="align-items:center;">
+      <div id="synabun-bg" aria-hidden="true">
+        <!-- Static first-paint fallback. The animation replaces this SVG. -->
+        <svg viewBox="0 0 280 140" width="380" height="190" style="overflow:visible">
+          <g class="syna-eye"><g class="syna-lid"><rect x="80" y="24" width="38" height="72" rx="19" fill="#ffffff"/></g></g>
+          <g class="syna-eye"><g class="syna-lid"><rect x="162" y="24" width="38" height="72" rx="19" fill="#ffffff"/></g></g>
+          <path class="syna-mouth" d="M118,116 Q140,130 162,116" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="typewriter-line" id="typewriter">Hi! I'm SynaBun!</div>
+        <div class="welcome-desc" id="welcomeDesc">
+          Persistent vector memory for your AI coding tools.<br>
+          How would you like to get started?
+        </div>
+        <div class="welcome-choices" id="welcomeChoices">
+          <div class="welcome-choice" id="choiceFreshInstall">
+            <svg class="welcome-choice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+            <div class="welcome-choice-title">Fresh Install</div>
+            <div class="welcome-choice-desc">Set up SynaBun from scratch with the guided wizard</div>
+          </div>
+          <div class="welcome-choice" id="choiceRestore">
+            <svg class="welcome-choice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <div class="welcome-choice-title">Restore Backup</div>
+            <div class="welcome-choice-desc">Restore from a previous SynaBun backup file</div>
+          </div>
+        </div>
+        <div class="welcome-restore-panel" id="welcomeRestorePanel">
+          <div class="restore-dropzone" id="restoreDropzone">
+            <div class="restore-dropzone-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </div>
+            <div class="restore-dropzone-text">Drop your backup .zip here</div>
+            <div class="restore-dropzone-hint">or click to browse</div>
+          </div>
+          <input type="file" id="onboardRestoreFile" accept=".zip" style="display:none">
+          <div id="onboardRestoreStatus" style="display:none;margin-top:12px;font-size:12px;align-items:center;gap:8px">
+            <div class="wiz-status-dot spin" id="onboardRestoreDot"></div>
+            <span id="onboardRestoreText"></span>
+          </div>
+          <div style="text-align:center">
+            <span class="restore-back-link" id="restoreBackLink">&larr; Back to options</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 1: Dependencies -->
+    <div class="step right" data-step="1">
+      <div class="step-eyes"></div>
+      <h2>Environment Check</h2>
+      <p class="subtitle">Verifying your system has everything SynaBun needs.</p>
+      <ul class="dep-list" id="depList"></ul>
+    </div>
+
+    <!-- Step 2: Memory Name & Location -->
+    <div class="step right" data-step="2">
+      <div class="step-eyes"></div>
+      <h2>Memory Name</h2>
+      <p class="subtitle">A display name for your memory database.</p>
+      <div class="field">
+        <label>Name</label>
+        <input type="text" id="collectionName" value="Claude Memory" placeholder="Claude Memory">
+        <div class="hint">Type any name you like.</div>
+        <div class="error-text" id="collectionError"></div>
+      </div>
+      <div class="field" style="margin-top:18px">
+        <label>Database Location</label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="dbLocationPath" autocomplete="off" spellcheck="false"
+                 placeholder="Loading default..." style="flex:1">
+          <button class="action-btn" id="dbBrowseBtn" style="padding:8px 14px;font-size:12px;flex:0 0 auto">Browse</button>
+        </div>
+        <div class="hint">Where to store memory.db. Leave blank to use the default location.</div>
+        <div class="error-text" id="dbLocationError"></div>
+      </div>
+    </div>
+
+    <!-- Step 3: Install & Build -->
+    <div class="step right" data-step="3">
+      <div class="step-eyes"></div>
+      <h2>Install & Build</h2>
+      <p class="subtitle">Install npm dependencies and compile the MCP server.</p>
+      <div id="installBuildSteps" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+        <div class="dep-item" id="ibStepNI" style="opacity:1;transform:none">
+          <div class="dep-icon" id="ibIconNI" style="background:var(--s-medium);color:var(--t-muted);font-size:12px">1</div>
+          <div class="dep-info">
+            <div class="dep-name">Neural Interface</div>
+            <div class="dep-detail" id="ibDetailNI">npm install</div>
+          </div>
+        </div>
+        <div class="dep-item" id="ibStepMCP" style="opacity:1;transform:none">
+          <div class="dep-icon" id="ibIconMCP" style="background:var(--s-medium);color:var(--t-muted);font-size:12px">2</div>
+          <div class="dep-info">
+            <div class="dep-name">MCP Server</div>
+            <div class="dep-detail" id="ibDetailMCP">npm install</div>
+          </div>
+        </div>
+        <div class="dep-item" id="ibStepBuild" style="opacity:1;transform:none">
+          <div class="dep-icon" id="ibIconBuild" style="background:var(--s-medium);color:var(--t-muted);font-size:12px">3</div>
+          <div class="dep-info">
+            <div class="dep-name">Build MCP Server</div>
+            <div class="dep-detail" id="ibDetailBuild">TypeScript &rarr; JavaScript</div>
+          </div>
+        </div>
+      </div>
+      <div class="terminal" id="buildOutput" style="display:none"></div>
+      <button class="action-btn" id="buildBtn">Install & Build</button>
+    </div>
+
+    <!-- Step 4: Add Projects -->
+    <div class="step right" data-step="4">
+      <div class="step-eyes"></div>
+      <h2>Add Projects</h2>
+      <p class="subtitle">Register your coding projects so SynaBun can organize memories per-project.</p>
+      <div id="onboardProjectList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+        <div id="onboardProjectEmpty" style="text-align:center;padding:16px 10px;color:var(--t-secondary);font-size:13px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.06);border-radius:8px;line-height:1.6">
+          Each project gets its own memory categories<br>
+          <span style="font-size:11px;opacity:0.6">(architecture, bugs, config, and more)</span>
+        </div>
+      </div>
+      <div class="error-text" id="onboardProjectError" style="margin-bottom:6px"></div>
+      <button class="action-btn" id="onboardProjectAdd" style="width:100%;padding:12px 14px;font-size:13px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:8px">
+        <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;flex-shrink:0"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Browse for Project Folder
+      </button>
+      <div class="hint" style="margin-top:10px;text-align:center;opacity:0.5">You can skip this and add projects later in Settings.</div>
+    </div>
+
+    <!-- Step 5: AI Tool Integration -->
+    <div class="step right" data-step="5">
+      <div style="position:relative;display:flex;justify-content:center;align-items:center;">
+        <div class="step-eyes"></div>
+        <span class="mascot-toast" id="mascotToast"></span>
+      </div>
+      <h2>AI Tool Integration</h2>
+      <p class="subtitle">Toggle on the AI coding tools you use. SynaBun registers itself with each one automatically.</p>
+      <div class="mcp-toggle-list" id="mcpToggleList"></div>
+      <div class="mcp-other-section" id="mcpOtherSection">
+        <div class="mcp-other-header" id="mcpOtherHeader">
+          <span>Other providers (Cursor, Windsurf, etc.)</span>
+          <svg class="mcp-other-chevron" viewBox="0 0 24 24" width="14" height="14"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </div>
+        <div class="mcp-other-body" id="mcpOtherBody" style="display:none;">
+          <div style="font-size:12px;color:var(--t-secondary);margin-bottom:6px;">Add this MCP server JSON to your tool's config file:</div>
+          <div class="code-copy-wrap" id="mcpCodeWrap">
+            <div class="instructions-preview" id="mcpSetupCode"></div>
+            <span class="code-copy-label">copy</span>
+          </div>
+          <div style="margin-top:6px;font-size:11px;color:var(--t-muted);">Cursor: Settings &rarr; MCP Servers, or <code>.cursor/mcp.json</code>. Windsurf: <code>~/.codeium/windsurf/mcp_config.json</code>.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 6: Ruleset -->
+    <div class="step right" data-step="6">
+      <div style="position:relative;display:flex;justify-content:center;align-items:center;">
+        <div class="step-eyes"></div>
+      </div>
+      <h2>Memory Ruleset</h2>
+      <p class="subtitle">Copy this into your project's <code id="rulesetFileName" style="color:var(--t-bright);">CLAUDE.md</code> so your AI tool knows how to use SynaBun.</p>
+      <div id="rulesetPanel">
+        <div class="code-copy-wrap" id="rulesetCodeWrap">
+          <div class="instructions-preview" id="rulesetCode" style="max-height:220px;">Loading...</div>
+          <span class="code-copy-label">copy</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 7: Complete -->
+    <div class="step right" data-step="7">
+      <div class="step-eyes"></div>
+      <h2 style="text-align:center;margin-bottom:12px;">Setup Complete!</h2>
+      <ul class="checklist" id="checklist"></ul>
+      <div id="restartNotice" style="margin:16px 0 0;padding:12px 14px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.10);border-radius:var(--r-card);font-size:12px;color:var(--t-primary);line-height:1.5;">
+        <span style="color:var(--t-bright);font-weight:600;">Restart required</span> — Relaunch <span id="restartToolName" style="color:var(--t-bright);font-weight:500;"></span> for the MCP changes to be picked up.
+      </div>
+      <div style="text-align:center;margin-top:16px;">
+        <button class="action-btn" id="launchBtn" style="font-size:15px;padding:12px 32px;">Launch Neural Interface</button>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="nav-bar">
+    <button class="nav-btn" id="prevBtn" disabled>&larr; Back</button>
+    <div class="dots" id="dots"></div>
+    <button class="nav-btn primary" id="nextBtn">Begin &rarr;</button>
+  </div>
+</div>
+</div>
+
+<div style="text-align:center;margin-top:16px;display:flex;flex-direction:column;align-items:center;gap:12px;">
+  <div class="social-bar">
+    <a href="https://discord.gg/x6yWqE9GZP" target="_blank" rel="noopener" class="social-icon" title="Discord">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+    </a>
+    <a href="https://x.com/SynabunAI" target="_blank" rel="noopener" class="social-icon" title="X / Twitter">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+    </a>
+    <a href="https://github.com/danilokhury/Synabun" target="_blank" rel="noopener" class="social-icon" title="GitHub">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+    </a>
+    <a href="https://synabun.ai" target="_blank" rel="noopener" class="social-icon" title="Website">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+    </a>
+  </div>
+</div>
+
+<script>
+// ── Animated mesh background ──
+(function() {
+  const canvas = document.getElementById('bgCanvas');
+  const ctx = canvas.getContext('2d');
+  let w, h, nodes = [], edges = [];
+  const NODE_COUNT = 140;
+  const EDGE_DIST = 200;
+
+  function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+  }
+
+  function init() {
+    resize();
+    nodes = [];
+    for (let i = 0; i < NODE_COUNT; i++) {
+      nodes.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+        r: 1 + Math.random() * 1.5,
+      });
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, w, h);
+
+    // Update positions
+    for (const n of nodes) {
+      n.x += n.vx;
+      n.y += n.vy;
+      if (n.x < 0 || n.x > w) n.vx *= -1;
+      if (n.y < 0 || n.y > h) n.vy *= -1;
+    }
+
+    // Draw edges
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const dx = nodes[i].x - nodes[j].x;
+        const dy = nodes[i].y - nodes[j].y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < EDGE_DIST) {
+          const alpha = (1 - dist / EDGE_DIST) * 0.15;
+          ctx.beginPath();
+          ctx.moveTo(nodes[i].x, nodes[i].y);
+          ctx.lineTo(nodes[j].x, nodes[j].y);
+          ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Draw nodes
+    for (const n of nodes) {
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.22)';
+      ctx.fill();
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', () => { resize(); });
+  init();
+  draw();
+})();
+</script>
+
+<script type="module">
+
+// ═══════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════
+
+const TOTAL_STEPS = 8;
+let currentStep = 0;
+
+const wizardState = {
+  collectionName: 'claude_memory',
+  collectionDisplayName: 'Claude Memory',
+  dbLocationPath: null,
+  selectedTool: null,
+  enabledTools: [],    // tool ids toggled on via Step 5 install toggles
+  dataHome: '',
+  packageRoot: '',
+  buildReady: false,
+  mcpWritten: false,
+  projects: [],
+};
+
+// Tools with server-side MCP install/uninstall endpoints. Each row maps a
+// toggle to the POST/DELETE endpoint that writes the provider's config file.
+const TOOLS = [
+  { id: 'claude',   name: 'Claude Code', instrFile: 'CLAUDE.md', format: 'claude',  api: '/api/claude-code/mcp', configPath: '~/.claude.json' },
+  { id: 'gemini',   name: 'Gemini CLI',  instrFile: 'GEMINI.md', format: 'gemini',  api: '/api/setup/gemini/mcp', configPath: '~/.gemini/settings.json' },
+  { id: 'codex',    name: 'Codex CLI',   instrFile: 'AGENTS.md', format: 'codex',   api: '/api/setup/codex/mcp',  configPath: '~/.codex/config.toml' },
+  { id: 'opencode', name: 'OpenCode',    instrFile: 'AGENTS.md', format: 'generic', api: '/api/opencode/mcp',     configPath: '~/.config/opencode/config.json' },
+];
+
+// ═══════════════════════════════════════════
+// DOM REFS
+// ═══════════════════════════════════════════
+
+const $steps     = document.querySelectorAll('.step');
+const $viewport  = document.getElementById('stepsViewport');
+const $dots      = document.getElementById('dots');
+const $prevBtn   = document.getElementById('prevBtn');
+const $nextBtn   = document.getElementById('nextBtn');
+
+// ═══════════════════════════════════════════
+// DOTS
+// ═══════════════════════════════════════════
+
+for (let i = 0; i < TOTAL_STEPS; i++) {
+  const d = document.createElement('div');
+  d.className = 'dot' + (i === 0 ? ' active' : '');
+  $dots.appendChild(d);
+}
+
+function updateDots() {
+  $dots.querySelectorAll('.dot').forEach((d, i) => {
+    d.className = 'dot' + (i === currentStep ? ' active' : i < currentStep ? ' done' : '');
+  });
+}
+
+// ═══════════════════════════════════════════
+// STEP NAVIGATION
+// ═══════════════════════════════════════════
+
+function resizeViewport(stepIndex) {
+  // Only resize for the currently active step — ignore stale async callbacks
+  if (stepIndex !== currentStep) return;
+  const step = $steps[stepIndex];
+  if (!step) return;
+  const pb = parseFloat(getComputedStyle(step).paddingBottom) || 36;
+  // Find the last visible child (skip hidden inputs, zero-height elements)
+  let last = null;
+  for (let i = step.children.length - 1; i >= 0; i--) {
+    if (step.children[i].offsetHeight > 0) { last = step.children[i]; break; }
+  }
+  if (!last) { $viewport.style.height = step.scrollHeight + 'px'; return; }
+  // Include last child's margin-bottom so content doesn't touch the edge
+  const lastMb = parseFloat(getComputedStyle(last).marginBottom) || 0;
+  $viewport.style.height = (last.offsetTop + last.offsetHeight + lastMb + pb) + 'px';
+}
+
+function goToStep(n) {
+  if (n < 0 || n >= TOTAL_STEPS) return;
+
+  // Mascot: embed eyes in step, or return to welcome
+  if (currentStep > 0 && n === 0) returnMascotToStep0();
+  if (n > 0) positionMascotInStep(n);
+
+  $steps.forEach((s, i) => {
+    if (i === n) {
+      s.className = 'step active';
+    } else if (i < n) {
+      s.className = 'step left';
+    } else {
+      s.className = 'step right';
+    }
+  });
+
+  currentStep = n;
+  updateDots();
+  updateNav();
+  // Defer viewport resize to after browser reflow so offsetTop/offsetHeight are accurate
+  requestAnimationFrame(() => {
+    resizeViewport(n);
+    onStepEnter(n);
+  });
+}
+
+function updateNav() {
+  $prevBtn.disabled = currentStep === 0;
+
+  const labels = ['Begin', 'Next', 'Next', 'Next', 'Next', 'Next', 'Next', 'Finish'];
+  $nextBtn.textContent = (labels[currentStep] || 'Next') + ' \u2192';
+
+  if (currentStep === TOTAL_STEPS - 1) {
+    $nextBtn.style.display = 'none';
+  } else {
+    $nextBtn.style.display = '';
+  }
+}
+
+$prevBtn.addEventListener('click', () => goToStep(currentStep - 1));
+$nextBtn.addEventListener('click', () => {
+  if (validateStep(currentStep)) {
+    goToStep(currentStep + 1);
+  }
+});
+
+// ═══════════════════════════════════════════
+// VALIDATION
+// ═══════════════════════════════════════════
+
+function validateStep(n) {
+  switch(n) {
+    case 2: {
+      const displayName = document.getElementById('collectionName').value.trim();
+      const err = document.getElementById('collectionError');
+      if (displayName.length < 2) {
+        err.textContent = 'Name must be at least 2 characters.';
+        return false;
+      }
+      if (displayName.length > 50) {
+        err.textContent = 'Name must be 50 characters or less.';
+        return false;
+      }
+      err.textContent = '';
+      wizardState.collectionDisplayName = displayName;
+      wizardState.collectionName = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50);
+      // Capture DB location (empty = use default)
+      const dbPath = document.getElementById('dbLocationPath').value.trim();
+      wizardState.dbLocationPath = dbPath || null;
+      return true;
+    }
+    case 5: {
+      // Allow advancing once any tool is toggled on OR the user copied the generic JSON.
+      if (wizardState.enabledTools.length === 0 && !wizardState.mcpWritten) return false;
+      // Default the ruleset preview (Step 6) + restart hint (Step 7) to the first
+      // toggled-on tool; fall back to Claude if only the generic JSON was copied.
+      if (!wizardState.selectedTool) {
+        wizardState.selectedTool = wizardState.enabledTools[0] || 'claude';
+      }
+      return true;
+    }
+    default:
+      return true;
+  }
+}
+
+// ═══════════════════════════════════════════
+// ON STEP ENTER (hooks)
+// ═══════════════════════════════════════════
+
+async function onStepEnter(n) {
+  if (n === 0) startMascot();
+  if (n === 1) await onDepsStep();
+  if (n === 2) {
+    // Prefill default DB path
+    const input = document.getElementById('dbLocationPath');
+    if (input && !input.dataset.loaded) {
+      try {
+        const res = await fetch('/api/setup/onboarding');
+        const data = await res.json();
+        if (data.defaultDbDir) input.placeholder = data.defaultDbDir;
+      } catch {}
+      input.dataset.loaded = '1';
+    }
+  }
+  if (n === 3) await onBuildStep();
+  if (n === 5) await onToolIntegrationStep();
+  if (n === 6) await onRulesetStep();
+  if (n === 7) await onCompleteStep();
+  // Re-measure after async content loads — but only if user is still on this step
+  if (currentStep === n) resizeViewport(n);
+}
+
+// ═══════════════════════════════════════════
+// DB LOCATION — Browse button
+// ═══════════════════════════════════════════
+
+document.getElementById('dbBrowseBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('dbBrowseBtn');
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const res = await fetch('/api/browse-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'Select folder for SynaBun memory database' }),
+    });
+    const data = await res.json();
+    if (data.path) {
+      document.getElementById('dbLocationPath').value = data.path;
+    }
+  } catch {}
+  btn.disabled = false;
+  btn.textContent = 'Browse';
+});
+
+// ═══════════════════════════════════════════
+// SYNABUN — Glowing Pill Eyes (background)
+// ═══════════════════════════════════════════
+
+let mascotRunning = false;
+let mouseX = 0, mouseY = 0;
+let lookX = 0, lookY = 0;
+
+document.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+
+// ── SynaBun Pill Eyes ──
+
+function initEyesSVG(containerOrId, w, h) {
+  const $el = typeof containerOrId === 'string'
+    ? document.getElementById(containerOrId || 'synabun-bg')
+    : containerOrId;
+  $el.innerHTML = `
+    <svg viewBox="0 0 280 140" width="${w || 280}" height="${h || 140}" style="overflow:visible">
+      <!-- Left eye -->
+      <g class="syna-eye">
+        <g class="syna-lid">
+          <rect x="80" y="24" width="38" height="72" rx="19" fill="#ffffff"/>
+        </g>
+      </g>
+
+      <!-- Right eye -->
+      <g class="syna-eye">
+        <g class="syna-lid">
+          <rect x="162" y="24" width="38" height="72" rx="19" fill="#ffffff"/>
+        </g>
+      </g>
+
+      <!-- Smile -->
+      <path class="syna-mouth" d="M118,116 Q140,130 162,116" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2.5" stroke-linecap="round"/>
+    </svg>
+  `;
+
+  return {
+    eyes: $el.querySelectorAll('.syna-eye'),
+    lids: $el.querySelectorAll('.syna-lid'),
+    mouth: $el.querySelector('.syna-mouth')
+  };
+}
+
+function updateEyesSVG(refs, lx, ly, blinkAmt, now) {
+  // Mouse tracking — slight shift on eyes
+  const moveX = lx * 4;
+  const moveY = ly * 3;
+
+  // Blink — scaleY squishes pill
+  const cy = 60;
+  const vScale = Math.max(0.06, 1 - blinkAmt * 0.94);
+  refs.lids.forEach(lid => {
+    lid.setAttribute('transform',
+      `translate(${moveX},${moveY}) translate(0,${cy}) scale(1,${vScale}) translate(0,${-cy})`);
+  });
+
+  // Mouth — follows eyes + subtle wobble
+  const t = (now || 0) * 0.001;
+  const wobbleX = Math.sin(t * 0.7) * 1.2;
+  const wobbleY = Math.cos(t * 1.1) * 0.8;
+  const mouthX = moveX * 0.5 + wobbleX;
+  const mouthY = moveY * 0.5 + wobbleY;
+  refs.mouth.setAttribute('transform', `translate(${mouthX},${mouthY})`);
+}
+
+// --- Animation loop ---
+
+let activeRefs = null;
+
+// Mascot is now embedded inside each step's .step-eyes container
+
+// Place eyes inside the active step's .step-eyes container
+function positionMascotInStep(step) {
+  const stepEl = $steps[step];
+  if (!stepEl) return;
+  const target = stepEl.querySelector('.step-eyes');
+  if (!target) return;
+
+  // Clear eyes from all other steps
+  document.querySelectorAll('.step-eyes').forEach(el => { el.innerHTML = ''; });
+
+  // Hide the floating mascot
+  const $float = document.getElementById('synabun-float');
+  $float.classList.remove('visible');
+  document.getElementById('synabunFloatInner').innerHTML = '';
+
+  // Inject eyes into the step
+  activeRefs = initEyesSVG(target, 160, 80);
+}
+
+function transitionMascotToFloat() {
+  positionMascotInStep(1);
+}
+
+function returnMascotToStep0() {
+  // Clear step eyes
+  document.querySelectorAll('.step-eyes').forEach(el => { el.innerHTML = ''; });
+  const $float = document.getElementById('synabun-float');
+  $float.classList.remove('visible');
+  document.getElementById('synabunFloatInner').innerHTML = '';
+  activeRefs = initEyesSVG('synabun-bg', 380, 190);
+}
+
+function startMascot() {
+  if (mascotRunning) return;
+  mascotRunning = true;
+
+  activeRefs = initEyesSVG('synabun-bg', 380, 190);
+
+  let blinkState = 'idle';
+  let blinkTimer = 0;
+  let blinkLid = 0;
+  let nextBlink = performance.now() + 3000 + Math.random() * 3000;
+
+  let twDone = false;
+  const twText = "Hi! I'm SynaBun!";
+  let twIndex = 0;
+  let twLast = 0;
+  const $tw = document.getElementById('typewriter');
+  const $desc = document.getElementById('welcomeDesc');
+
+  function render(now) {
+    // Smooth mouse tracking
+    const tX = Math.max(-1, Math.min(1, (mouseX - window.innerWidth / 2) / (window.innerWidth * 0.5)));
+    const tY = Math.max(-1, Math.min(1, (mouseY - window.innerHeight / 2) / (window.innerHeight * 0.5)));
+    lookX += (tX - lookX) * 0.06;
+    lookY += (tY - lookY) * 0.06;
+
+    // Blink state machine
+    if (blinkState === 'idle' && now > nextBlink) { blinkState = 'closing'; blinkTimer = now; }
+    if (blinkState === 'closing') {
+      blinkLid = Math.min(1, (now - blinkTimer) / 90);
+      if (blinkLid >= 1) { blinkState = 'hold'; blinkTimer = now; }
+    }
+    if (blinkState === 'hold' && now - blinkTimer > 60) { blinkState = 'opening'; blinkTimer = now; }
+    if (blinkState === 'opening') {
+      blinkLid = Math.max(0, 1 - (now - blinkTimer) / 130);
+      if (blinkLid <= 0) { blinkState = 'idle'; nextBlink = now + 3000 + Math.random() * 4000; }
+    }
+
+    if (activeRefs) updateEyesSVG(activeRefs, lookX, lookY, blinkLid, now);
+
+    // Typewriter (only on welcome step)
+    if (currentStep === 0 && !twDone) {
+      if (now - twLast > 40 && twIndex <= twText.length) {
+        $tw.textContent = twText.slice(0, twIndex) + (twIndex < twText.length ? '\u2588' : '');
+        twIndex++;
+        twLast = now;
+        if (twIndex > twText.length) {
+          twDone = true;
+          $tw.textContent = twText;
+          setTimeout(() => {
+            $desc.classList.add('visible');
+            setTimeout(() => {
+              const $choices = document.getElementById('welcomeChoices');
+              if ($choices) $choices.classList.add('visible');
+              resizeViewport(0);
+            }, 400);
+          }, 300);
+        }
+      }
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  requestAnimationFrame(render);
+}
+
+// Happy variant — no-op, completion screen uses the logo image
+function renderHappyBun() {}
+
+// ═══════════════════════════════════════════
+// STEP 0: Welcome Choices (Fresh Install / Restore)
+// ═══════════════════════════════════════════
+
+(function initWelcomeChoices() {
+  const $choices      = document.getElementById('welcomeChoices');
+  const $restorePanel = document.getElementById('welcomeRestorePanel');
+  const $dropzone     = document.getElementById('restoreDropzone');
+  const $fileInput    = document.getElementById('onboardRestoreFile');
+  const $statusEl     = document.getElementById('onboardRestoreStatus');
+  const $statusDot    = document.getElementById('onboardRestoreDot');
+  const $statusText   = document.getElementById('onboardRestoreText');
+  const $backLink     = document.getElementById('restoreBackLink');
+
+  // Fresh Install → proceed to step 1
+  document.getElementById('choiceFreshInstall').addEventListener('click', () => {
+    goToStep(1);
+  });
+
+  // Restore → show restore panel
+  document.getElementById('choiceRestore').addEventListener('click', () => {
+    $choices.style.display = 'none';
+    $restorePanel.style.display = 'block';
+    requestAnimationFrame(() => {
+      $restorePanel.classList.add('visible');
+      resizeViewport(0);
+    });
+  });
+
+  // Back to options
+  $backLink.addEventListener('click', () => {
+    $restorePanel.classList.remove('visible');
+    $restorePanel.style.display = 'none';
+    $statusEl.style.display = 'none';
+    $choices.style.display = '';
+    resizeViewport(0);
+  });
+
+  // Dropzone click → trigger file input
+  $dropzone.addEventListener('click', () => $fileInput.click());
+
+  // Drag and drop
+  $dropzone.addEventListener('dragover', (e) => { e.preventDefault(); $dropzone.classList.add('dragover'); });
+  $dropzone.addEventListener('dragleave', () => $dropzone.classList.remove('dragover'));
+  $dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    $dropzone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file && file.name.endsWith('.zip')) handleRestoreFile(file);
+  });
+
+  // File input change
+  $fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) handleRestoreFile(file);
+    e.target.value = '';
+  });
+
+  async function handleRestoreFile(file) {
+    $dropzone.style.display = 'none';
+    $backLink.style.display = 'none';
+    $statusEl.style.display = 'flex';
+    $statusDot.className = 'wiz-status-dot spin';
+    $statusText.textContent = 'Reading backup file...';
+    resizeViewport(0);
+
+    try {
+      const buffer = await file.arrayBuffer();
+
+      $statusText.textContent = 'Validating backup...';
+      const previewRes = await fetch('/api/system/restore/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip' },
+        body: buffer,
+      });
+      if (!previewRes.ok) {
+        let errMsg = 'Invalid backup file';
+        try { const body = await previewRes.json(); errMsg = body.error || errMsg; } catch {}
+        throw new Error(errMsg);
+      }
+      const { manifest: m } = await previewRes.json();
+
+      // Show confirmation
+      $statusEl.style.display = 'none';
+      showRestoreConfirm(m, buffer);
+
+    } catch (err) {
+      $statusDot.className = 'wiz-status-dot red';
+      $statusText.textContent = err.message;
+      $backLink.style.display = '';
+    }
+  }
+
+  function showRestoreConfirm(m, buffer) {
+    const fileCount = (m.files || []).length;
+    const hasDb = !!(m.database);
+
+    $restorePanel.innerHTML = `
+      <div style="padding:20px 0;">
+        <h3 style="font-size:16px;font-weight:600;color:var(--t-bright);margin-bottom:4px;">Restore Backup</h3>
+        <p style="font-size:11px;color:var(--t-muted);margin-bottom:14px;">
+          Created: ${new Date(m.created).toLocaleString()} on ${esc(m.hostname || 'unknown')}
+        </p>
+        <div style="font-size:12px;color:var(--t-primary);margin-bottom:6px;">
+          <strong>${fileCount}</strong> config files
+        </div>
+        ${hasDb ? `<div style="font-size:12px;color:var(--t-primary);margin-bottom:10px;">
+          <strong>Memory database included</strong>
+        </div>` : ''}
+        <p style="font-size:11px;color:var(--accent-dim);margin-bottom:16px;">
+          This will restore your .env, data files, and memory database.
+        </p>
+        <div style="display:flex;gap:10px;justify-content:center;">
+          <button class="nav-btn" id="onboardRestoreCancel">Cancel</button>
+          <button class="nav-btn primary" id="onboardRestoreConfirm">Restore</button>
+        </div>
+        <div id="onboardRestoreProgress" style="display:none;margin-top:12px;font-size:12px;align-items:center;gap:8px;justify-content:center;">
+          <div class="wiz-status-dot spin" id="onboardRestoreProgressDot"></div>
+          <span id="onboardRestoreProgressText"></span>
+        </div>
+      </div>
+    `;
+    resizeViewport(0);
+
+    document.getElementById('onboardRestoreCancel').addEventListener('click', () => {
+      // Reset to dropzone view
+      resetRestorePanel();
+    });
+
+    document.getElementById('onboardRestoreConfirm').addEventListener('click', async () => {
+      const confirmBtn = document.getElementById('onboardRestoreConfirm');
+      const cancelBtn = document.getElementById('onboardRestoreCancel');
+      const progressEl = document.getElementById('onboardRestoreProgress');
+      const progressDot = document.getElementById('onboardRestoreProgressDot');
+      const progressText = document.getElementById('onboardRestoreProgressText');
+
+      confirmBtn.textContent = 'Restoring...';
+      confirmBtn.disabled = true;
+      cancelBtn.style.display = 'none';
+      progressEl.style.display = 'flex';
+      progressDot.className = 'wiz-status-dot spin';
+
+      try {
+        progressText.textContent = 'Restoring backup...';
+        const restoreRes = await fetch('/api/system/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/zip' },
+          body: buffer,
+        });
+        if (!restoreRes.ok) {
+          let errMsg = 'Restore failed';
+          try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
+          throw new Error(errMsg);
+        }
+
+        progressDot.className = 'wiz-status-dot green';
+        progressText.textContent = 'Restore complete! Launching...';
+        confirmBtn.style.display = 'none';
+
+        // Mark setup as complete and launch
+        try { await fetch('/api/setup/complete', { method: 'POST' }); } catch {}
+        setTimeout(() => { window.location.href = '/'; }, 1500);
+
+      } catch (err) {
+        progressDot.className = 'wiz-status-dot red';
+        progressText.textContent = err.message;
+        confirmBtn.textContent = 'Restore';
+        confirmBtn.disabled = false;
+        cancelBtn.style.display = '';
+      }
+    });
+  }
+
+  function resetRestorePanel() {
+    $restorePanel.classList.remove('visible');
+    $restorePanel.style.display = 'none';
+    // Rebuild the original restore panel content
+    $restorePanel.innerHTML = `
+      <div class="restore-dropzone" id="restoreDropzone">
+        <div class="restore-dropzone-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <div class="restore-dropzone-text">Drop your backup .zip here</div>
+        <div class="restore-dropzone-hint">or click to browse</div>
+      </div>
+      <input type="file" id="onboardRestoreFile" accept=".zip" style="display:none">
+      <div id="onboardRestoreStatus" style="display:none;margin-top:12px;font-size:12px;align-items:center;gap:8px">
+        <div class="wiz-status-dot spin" id="onboardRestoreDot"></div>
+        <span id="onboardRestoreText"></span>
+      </div>
+      <div style="text-align:center">
+        <span class="restore-back-link" id="restoreBackLink">&larr; Back to options</span>
+      </div>
+    `;
+    // Show the choices again
+    $choices.style.display = '';
+    resizeViewport(0);
+
+    // Re-wire dropzone events on the new DOM
+    rewireDropzone();
+  }
+
+  function rewireDropzone() {
+    const dz = document.getElementById('restoreDropzone');
+    const fi = document.getElementById('onboardRestoreFile');
+    const bl = document.getElementById('restoreBackLink');
+
+    dz.addEventListener('click', () => fi.click());
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+    dz.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dz.classList.remove('dragover');
+      const file = e.dataTransfer.files[0];
+      if (file && file.name.endsWith('.zip')) handleRestoreFile(file);
+    });
+    fi.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) handleRestoreFile(file);
+      e.target.value = '';
+    });
+    bl.addEventListener('click', () => {
+      const rp = document.getElementById('welcomeRestorePanel');
+      rp.classList.remove('visible');
+      rp.style.display = 'none';
+      document.getElementById('onboardRestoreStatus').style.display = 'none';
+      $choices.style.display = '';
+      resizeViewport(0);
+    });
+  }
+
+  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+})();
+
+// ═══════════════════════════════════════════
+// STEP 1: Dependencies Check
+// ═══════════════════════════════════════════
+
+async function onDepsStep() {
+  const $list = document.getElementById('depList');
+
+  function createDepItem(name) {
+    const li = document.createElement('li');
+    li.className = 'dep-item checking visible';
+
+    const icon = document.createElement('div');
+    icon.className = 'dep-icon';
+
+    const info = document.createElement('div');
+    info.className = 'dep-info';
+
+    const title = document.createElement('div');
+    title.className = 'dep-name';
+    title.textContent = name;
+
+    const detail = document.createElement('div');
+    detail.className = 'dep-detail';
+    detail.textContent = 'Checking\u2026';
+
+    info.append(title, detail);
+    li.append(icon, info);
+    return li;
+  }
+
+  function showCheckError(message) {
+    const li = createDepItem('Environment check unavailable');
+    li.classList.remove('checking');
+    li.classList.add('fail');
+    li.querySelector('.dep-icon').textContent = '!';
+    li.querySelector('.dep-detail').textContent = message;
+    $list.replaceChildren(li);
+    resizeViewport(1);
+  }
+
+  // Never leave this step blank while the server is still warming up.
+  $list.replaceChildren(createDepItem('Node.js'), createDepItem('npm'));
+  resizeViewport(1);
+
+  let deps;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch('/api/setup/check-deps', { signal: controller.signal });
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data.deps) || data.deps.length === 0) {
+      throw new Error('Server returned no dependency results');
+    }
+    deps = data.deps;
+  } catch (err) {
+    showCheckError(err.name === 'AbortError'
+      ? 'The server took too long to respond. Go back and try again.'
+      : 'Could not complete the check. Make sure the SynaBun server is running.');
+    return;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  // Replace the placeholders with the actual results. Keep them visible so a
+  // slow response can never produce another empty panel.
+  const items = deps.map(dep => {
+    const li = createDepItem(dep.name || 'Dependency');
+    return { li, dep };
+  });
+  $list.replaceChildren(...items.map(({ li }) => li));
+
+  // Pre-size viewport to account for all items before animation
+  resizeViewport(1);
+
+  // Staggered reveal + resolve
+  for (let i = 0; i < items.length; i++) {
+    const { li, dep } = items[i];
+
+    // Simulate a brief check delay, then resolve
+    await wait(180 + Math.random() * 100);
+
+    li.classList.remove('checking');
+    const icon = li.querySelector('.dep-icon');
+    const detail = li.querySelector('.dep-detail');
+
+    if (dep.ok) {
+      li.classList.add('ok');
+      icon.textContent = '\u2713';
+      detail.textContent = dep.detail;
+    } else if (dep.warn) {
+      li.classList.add('warn');
+      icon.textContent = '!';
+      detail.innerHTML = `${dep.detail} &mdash; <a href="${dep.url}" target="_blank" rel="noopener">Install \u2197</a>`;
+    } else {
+      li.classList.add('fail');
+      icon.textContent = '\u2717';
+      detail.innerHTML = `${dep.detail} &mdash; <a href="${dep.url}" target="_blank" rel="noopener">Download \u2197</a>`;
+    }
+  }
+}
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ═══════════════════════════════════════════
+// STEP 3: Install & Build
+// ═══════════════════════════════════════════
+
+const IB_STEPS = {
+  ni:    { el: 'ibStepNI',    icon: 'ibIconNI',    detail: 'ibDetailNI',    dirName: 'Neural Interface' },
+  mcp:   { el: 'ibStepMCP',   icon: 'ibIconMCP',   detail: 'ibDetailMCP',   dirName: 'MCP Server' },
+  build: { el: 'ibStepBuild', icon: 'ibIconBuild', detail: 'ibDetailBuild', dirName: 'Build MCP Server' },
+};
+
+function ibSetStatus(key, status, detail) {
+  const s = IB_STEPS[key];
+  const $el = document.getElementById(s.el);
+  const $icon = document.getElementById(s.icon);
+  const $detail = document.getElementById(s.detail);
+
+  $el.classList.remove('checking', 'ok', 'warn', 'fail');
+
+  if (status === 'checking') {
+    $el.classList.add('checking');
+    $icon.textContent = '';
+    $detail.textContent = detail || 'Installing...';
+  } else if (status === 'ok') {
+    $el.classList.add('ok');
+    $icon.textContent = '\u2713';
+    $detail.textContent = detail || 'Done';
+  } else if (status === 'skipped') {
+    $el.classList.add('ok');
+    $icon.textContent = '\u2713';
+    $detail.textContent = detail || 'Already installed';
+  } else if (status === 'fail') {
+    $el.classList.add('fail');
+    $icon.textContent = '\u2717';
+    $detail.textContent = detail || 'Failed';
+  } else {
+    // pending / default
+    $icon.style.background = 'var(--s-medium)';
+    $icon.style.color = 'var(--t-muted)';
+  }
+}
+
+async function onBuildStep() {
+  // Save collection name config
+  try {
+    await fetch('/api/setup/save-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        collectionName: wizardState.collectionName,
+        collectionDisplayName: wizardState.collectionDisplayName,
+        dbLocationPath: wizardState.dbLocationPath || null,
+      }),
+    });
+  } catch {}
+
+  const $btn = document.getElementById('buildBtn');
+
+  // Check if already built — if so, mark all steps done
+  try {
+    const res = await fetch('/api/setup/onboarding');
+    const data = await res.json();
+    if (data.mcpBuilt) {
+      wizardState.buildReady = true;
+      ibSetStatus('ni', 'skipped', 'Dependencies ready');
+      ibSetStatus('mcp', 'skipped', 'Dependencies ready');
+      ibSetStatus('build', 'skipped', 'dist/index.js found — already compiled');
+      $btn.textContent = 'Already Done';
+      $btn.classList.add('success');
+      $btn.disabled = true;
+      return;
+    }
+  } catch {}
+}
+
+document.getElementById('buildBtn').addEventListener('click', async () => {
+  const $btn = document.getElementById('buildBtn');
+  const $out = document.getElementById('buildOutput');
+
+  $btn.disabled = true;
+  $btn.innerHTML = '<div class="spinner"></div> Installing...';
+  $out.style.display = 'none';
+  $out.textContent = '';
+
+  // Map server dir names to our step keys
+  const dirKeyMap = { 'Neural Interface': 'ni', 'MCP Server': 'mcp' };
+
+  try {
+    const res = await fetch('/api/setup/build', { method: 'POST' });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE events from the buffer
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+
+        let event = '', data = '';
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event: ')) event = line.slice(7);
+          else if (line.startsWith('data: ')) data = line.slice(6);
+        }
+        if (!event || !data) continue;
+
+        let payload;
+        try { payload = JSON.parse(data); } catch { continue; }
+
+        if (event === 'install') {
+          const key = dirKeyMap[payload.dir];
+          if (!key) continue;
+          if (payload.status === 'start') {
+            ibSetStatus(key, 'checking', 'Installing dependencies...');
+          } else if (payload.status === 'done') {
+            ibSetStatus(key, 'ok', 'Installed');
+          } else if (payload.status === 'skipped') {
+            ibSetStatus(key, 'skipped', 'Already installed');
+          } else if (payload.status === 'error') {
+            ibSetStatus(key, 'fail', 'Install failed');
+            $out.style.display = '';
+            $out.textContent += payload.output || '';
+          }
+        } else if (event === 'build') {
+          if (payload.status === 'start') {
+            $btn.innerHTML = '<div class="spinner"></div> Building...';
+            ibSetStatus('build', 'checking', 'Compiling TypeScript...');
+          } else if (payload.status === 'done') {
+            ibSetStatus('build', 'ok', 'Build successful');
+          } else if (payload.status === 'skipped') {
+            ibSetStatus('build', 'skipped', 'Already up to date');
+          } else if (payload.status === 'error') {
+            ibSetStatus('build', 'fail', 'Build failed');
+            $out.style.display = '';
+            $out.textContent += payload.output || '';
+          }
+        } else if (event === 'complete') {
+          if (payload.ok) {
+            wizardState.buildReady = true;
+            $btn.textContent = 'Done';
+            $btn.classList.add('success');
+          } else {
+            $btn.textContent = 'Retry';
+            $btn.disabled = false;
+            $btn.classList.remove('success');
+          }
+        }
+
+        resizeViewport(currentStep);
+      }
+    }
+  } catch (err) {
+    $out.style.display = '';
+    $out.textContent += '\nError: ' + err.message;
+    $btn.textContent = 'Retry';
+    $btn.disabled = false;
+  }
+});
+
+// ═══════════════════════════════════════════
+// STEP 4: Add Projects
+// ═══════════════════════════════════════════
+
+{
+  const $list = document.getElementById('onboardProjectList');
+  const $empty = document.getElementById('onboardProjectEmpty');
+  const $addBtn = document.getElementById('onboardProjectAdd');
+  const $error = document.getElementById('onboardProjectError');
+
+  function renderProjectList() {
+    $list.querySelectorAll('.onboard-project-card').forEach(c => c.remove());
+    if (wizardState.projects.length === 0) {
+      $empty.style.display = '';
+    } else {
+      $empty.style.display = 'none';
+      wizardState.projects.forEach((p, i) => {
+        const card = document.createElement('div');
+        card.className = 'onboard-project-card';
+        card.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:rgba(109,213,140,0.06);border:1px solid rgba(109,213,140,0.2);border-radius:8px;font-size:12px';
+        const safePath = p.path.replace(/\\/g, '/');
+        card.innerHTML = `
+          <div style="display:flex;align-items:center;gap:10px">
+            <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:none;stroke:rgba(109,213,140,0.8);stroke-width:2;flex-shrink:0"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            <div style="flex:1;min-width:0">
+              <div style="color:var(--t-bright);font-weight:500">${p.label}</div>
+              <div style="color:var(--t-muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${safePath}">${safePath}</div>
+            </div>
+            <button class="onboard-project-remove" style="background:none;border:none;color:var(--t-muted);cursor:pointer;font-size:16px;padding:2px 6px;line-height:1;opacity:0.5" title="Remove">&times;</button>
+          </div>
+        `;
+        if (p.dubiousOwnership && !p.trusted) {
+          const trustRow = document.createElement('div');
+          trustRow.className = 'onboard-trust-row';
+          trustRow.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;background:rgba(255,183,77,0.08);border:1px solid rgba(255,183,77,0.25);border-radius:6px;font-size:11px;color:rgba(255,204,128,0.9)';
+          trustRow.innerHTML = `
+            <span>&#9888; Git ownership mismatch &mdash; workspace needs to be trusted</span>
+            <button class="onboard-trust-btn" style="margin-left:auto;background:rgba(255,183,77,0.2);border:1px solid rgba(255,183,77,0.35);color:#ffe0b2;padding:4px 10px;border-radius:5px;font-size:11px;cursor:pointer">Trust workspace</button>
+          `;
+          const $btn = trustRow.querySelector('.onboard-trust-btn');
+          $btn.addEventListener('click', async () => {
+            $btn.disabled = true;
+            $btn.textContent = 'Trusting...';
+            try {
+              const r = await fetch('/api/terminal/trust-workspace', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: p.trustPath || safePath }),
+              });
+              const d = await r.json();
+              if (d.ok) {
+                p.trusted = true;
+                renderProjectList();
+              } else {
+                $btn.disabled = false;
+                $btn.textContent = 'Trust workspace';
+                $error.textContent = d.error || 'Trust failed';
+              }
+            } catch {
+              $btn.disabled = false;
+              $btn.textContent = 'Trust workspace';
+              $error.textContent = 'Trust failed';
+            }
+          });
+          card.appendChild(trustRow);
+        } else if (p.trusted) {
+          const okRow = document.createElement('div');
+          okRow.style.cssText = 'font-size:11px;color:rgba(109,213,140,0.8)';
+          okRow.textContent = '✓ Workspace trusted';
+          card.appendChild(okRow);
+        }
+        card.querySelector('.onboard-project-remove').addEventListener('click', () => {
+          wizardState.projects.splice(i, 1);
+          renderProjectList();
+          resizeViewport(currentStep);
+        });
+        $list.appendChild(card);
+      });
+    }
+    resizeViewport(currentStep);
+  }
+
+  // Single-click: browse → auto-label → register → done
+  $addBtn.addEventListener('click', async () => {
+    $error.textContent = '';
+    $addBtn.disabled = true;
+    const origHTML = $addBtn.innerHTML;
+    $addBtn.innerHTML = '<div class="spinner" style="width:14px;height:14px"></div> Waiting for folder picker...';
+
+    let folderPath;
+    try {
+      const res = await fetch('/api/browse-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'Select project folder' }),
+      });
+      const data = await res.json();
+      folderPath = data.path;
+    } catch {}
+
+    if (!folderPath) {
+      $addBtn.disabled = false;
+      $addBtn.innerHTML = origHTML;
+      return;
+    }
+
+    // Deduplicate
+    const normalized = folderPath.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (wizardState.projects.some(p => p.path.replace(/\\/g, '/').replace(/\/+$/, '') === normalized)) {
+      $error.textContent = 'This project is already added.';
+      $addBtn.disabled = false;
+      $addBtn.innerHTML = origHTML;
+      return;
+    }
+
+    // Auto-label from folder name
+    const label = folderPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'Project';
+
+    // Register via API
+    $addBtn.innerHTML = '<div class="spinner" style="width:14px;height:14px"></div> Registering...';
+    let integData = null;
+    try {
+      const res = await fetch('/api/claude-code/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: 'project', projectPath: folderPath, label }),
+      });
+      integData = await res.json();
+      if (!integData.ok) {
+        $error.textContent = integData.error || 'Failed to register project.';
+        $addBtn.disabled = false;
+        $addBtn.innerHTML = origHTML;
+        return;
+      }
+    } catch (err) {
+      $error.textContent = 'Failed: ' + err.message;
+      $addBtn.disabled = false;
+      $addBtn.innerHTML = origHTML;
+      return;
+    }
+
+    const projectEntry = { path: folderPath, label };
+    if (integData && integData.dubiousOwnership && integData.trustPath) {
+      projectEntry.dubiousOwnership = true;
+      projectEntry.trustPath = integData.trustPath;
+    }
+    wizardState.projects.push(projectEntry);
+    $addBtn.disabled = false;
+    $addBtn.innerHTML = origHTML;
+    renderProjectList();
+  });
+}
+
+// ═══════════════════════════════════════════
+// STEP 5: Tool Integration (install toggles + generic JSON fallback)
+// ═══════════════════════════════════════════
+
+const $toggleList = document.getElementById('mcpToggleList');
+
+// Render one toggle row per installable tool. Statuses populate on enter.
+TOOLS.forEach(t => {
+  const row = document.createElement('div');
+  row.className = 'mcp-toggle-row';
+  row.dataset.id = t.id;
+  row.innerHTML = `
+    <div class="mtr-body">
+      <div class="mtr-name">${t.name}</div>
+      <div class="mtr-path" data-role="path">${t.configPath}</div>
+    </div>
+    <button class="mtr-toggle" data-role="toggle" aria-label="Toggle ${t.name}"></button>
+  `;
+  row.querySelector('[data-role="toggle"]').addEventListener('click', () => toggleTool(t.id));
+  $toggleList.appendChild(row);
+});
+
+async function onToolIntegrationStep() {
+  // Fetch each provider's install state so toggles reflect reality.
+  await Promise.all(TOOLS.map(async (t) => {
+    try {
+      const res = await fetch(t.api);
+      const data = await res.json();
+      const connected = !!data.connected;
+      updateToggleRow(t.id, { connected });
+      if (connected && !wizardState.enabledTools.includes(t.id)) {
+        wizardState.enabledTools.push(t.id);
+      }
+    } catch { updateToggleRow(t.id, { connected: false }); }
+  }));
+}
+
+function updateToggleRow(id, { connected, busy }) {
+  const row = $toggleList.querySelector(`[data-id="${id}"]`);
+  if (!row) return;
+  const toggle = row.querySelector('[data-role="toggle"]');
+  const path = row.querySelector('[data-role="path"]');
+  const tool = TOOLS.find(t => t.id === id);
+  if (typeof connected === 'boolean') {
+    row.classList.toggle('connected', connected);
+    toggle.classList.toggle('on', connected);
+    path.textContent = connected ? `Registered in ${tool.configPath}` : tool.configPath;
+  }
+  if (typeof busy === 'boolean') {
+    toggle.classList.toggle('busy', busy);
+    toggle.disabled = busy;
+  }
+}
+
+async function toggleTool(id) {
+  const tool = TOOLS.find(t => t.id === id);
+  if (!tool) return;
+  const row = $toggleList.querySelector(`[data-id="${id}"]`);
+  const toggle = row.querySelector('[data-role="toggle"]');
+  const wasOn = toggle.classList.contains('on');
+  updateToggleRow(id, { busy: true });
+  try {
+    const res = await fetch(tool.api, { method: wasOn ? 'DELETE' : 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      showMascotToast(data.error || `${tool.name} ${wasOn ? 'uninstall' : 'install'} failed`);
+      updateToggleRow(id, { busy: false });
+      return;
+    }
+    const nowOn = !wasOn;
+    updateToggleRow(id, { connected: nowOn, busy: false });
+    if (nowOn) {
+      if (!wizardState.enabledTools.includes(id)) wizardState.enabledTools.push(id);
+      wizardState.mcpWritten = true;
+      showMascotToast(`${tool.name} connected`);
+    } else {
+      wizardState.enabledTools = wizardState.enabledTools.filter(x => x !== id);
+      showMascotToast(`${tool.name} disconnected`);
+    }
+  } catch (err) {
+    showMascotToast(`Failed: ${err.message}`);
+    updateToggleRow(id, { busy: false });
+  }
+}
+
+// Generic MCP JSON for tools without a server integration (Cursor, Windsurf, other).
+function getGenericMcpJson() {
+  const dataHome = (wizardState.dataHome || '').replace(/\\/g, '/');
+  const pkgRoot = (wizardState.packageRoot || dataHome).replace(/\\/g, '/');
+  const mcpPath = pkgRoot + '/mcp-server/run.mjs';
+  const envPath = dataHome + '/.env';
+  const env = { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: dataHome, MEMORY_DATA_DIR: dataHome + '/mcp-data' };
+  return JSON.stringify({ mcpServers: { SynaBun: { command: 'node', args: [mcpPath], env } } }, null, 2);
+}
+
+// "Other providers" collapsible — shows the generic MCP JSON for paste-based setups.
+const $otherHeader = document.getElementById('mcpOtherHeader');
+const $otherBody = document.getElementById('mcpOtherBody');
+const $otherSection = document.getElementById('mcpOtherSection');
+$otherHeader.addEventListener('click', () => {
+  const isOpen = $otherSection.classList.toggle('open');
+  $otherBody.style.display = isOpen ? '' : 'none';
+  if (isOpen) document.getElementById('mcpSetupCode').textContent = getGenericMcpJson();
+  requestAnimationFrame(() => resizeViewport(currentStep));
+});
+
+function showMascotToast(msg, duration = 2000) {
+  const toast = document.getElementById('mascotToast');
+  if (!toast) return;
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), duration);
+}
+
+document.getElementById('mcpCodeWrap').addEventListener('click', () => {
+  const code = document.getElementById('mcpSetupCode').textContent;
+  if (!code) return;
+  navigator.clipboard.writeText(code);
+  wizardState.mcpWritten = true;
+  const label = document.querySelector('#mcpCodeWrap .code-copy-label');
+  label.textContent = 'copied!';
+  label.style.opacity = '1';
+  showMascotToast('Copied to clipboard!');
+  setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
+});
+
+// ═══════════════════════════════════════════
+// STEP 6: Ruleset
+// ═══════════════════════════════════════════
+
+async function onRulesetStep() {
+  const tool = TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0];
+  document.getElementById('rulesetFileName').textContent = tool.instrFile;
+  const format = tool.format || 'generic';
+
+  const $code = document.getElementById('rulesetCode');
+  if ($code.dataset.loadedFormat === format) return; // already loaded
+
+  $code.textContent = 'Loading...';
+  try {
+    const res = await fetch(`/api/claude-code/ruleset?format=${format}`);
+    const data = await res.json();
+    if (data.ok && data.ruleset) {
+      $code.textContent = data.ruleset;
+      $code.dataset.loadedFormat = format;
+      wizardState.rulesetCopied = false;
+    } else {
+      $code.textContent = 'Could not load ruleset.';
+    }
+  } catch {
+    $code.textContent = 'Failed to load ruleset.';
+  }
+  if (currentStep === 6) resizeViewport(6);
+}
+
+document.getElementById('rulesetCodeWrap').addEventListener('click', () => {
+  const code = document.getElementById('rulesetCode').textContent;
+  if (code === 'Loading...' || code.startsWith('Could not') || code.startsWith('Failed')) return;
+  navigator.clipboard.writeText(code);
+  wizardState.rulesetCopied = true;
+  const label = document.querySelector('#rulesetCodeWrap .code-copy-label');
+  label.textContent = 'copied!';
+  label.style.opacity = '1';
+  setTimeout(() => { label.textContent = 'copy'; label.style.opacity = ''; }, 2000);
+});
+
+// ═══════════════════════════════════════════
+// STEP 7: Complete
+// ═══════════════════════════════════════════
+
+async function onCompleteStep() {
+  renderHappyBun();
+
+  // List every tool the user toggled on; fall back to the ruleset tool if none.
+  const enabled = wizardState.enabledTools.length
+    ? wizardState.enabledTools.map(id => TOOLS.find(t => t.id === id)).filter(Boolean)
+    : [TOOLS.find(t => t.id === wizardState.selectedTool) || TOOLS[0]];
+  document.getElementById('restartToolName').textContent = enabled.map(t => t.name).join(', ');
+
+  // Auto-register hooks globally when Claude Code was toggled on
+  if (enabled.some(t => t.id === 'claude')) {
+    try {
+      await fetch('/api/claude-code/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: 'global' }),
+      });
+      wizardState.hooksRegistered = true;
+    } catch { /* non-critical — user can enable via Settings later */ }
+  }
+
+  const items = [
+    { label: 'Memory name set', done: !!wizardState.collectionName },
+    { label: 'Dependencies installed & MCP built', done: wizardState.buildReady },
+    { label: 'Projects registered', done: (wizardState.projects || []).length > 0 },
+    { label: 'AI tool integration enabled', done: wizardState.enabledTools.length > 0 || wizardState.mcpWritten },
+    { label: 'Ruleset copied', done: !!wizardState.rulesetCopied },
+  ];
+
+  const $list = document.getElementById('checklist');
+  $list.innerHTML = items.map(i => `
+    <li>
+      <span class="check">${i.done ? '\u2713' : '\u2013'}</span>
+      <span style="${i.done ? '' : 'color:var(--t-muted)'}">${i.label}</span>
+    </li>
+  `).join('');
+}
+
+document.getElementById('launchBtn').addEventListener('click', async () => {
+  try {
+    await fetch('/api/setup/complete', { method: 'POST' });
+  } catch {}
+  window.location.href = '/';
+});
+
+// ═══════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════
+
+async function init() {
+  try {
+    const res = await fetch('/api/setup/onboarding');
+    const data = await res.json();
+    if (data.setupComplete) {
+      window.location.href = '/';
+      return;
+    }
+    if (data.dataHome) {
+      wizardState.dataHome = data.dataHome;
+    }
+    if (data.packageRoot) {
+      wizardState.packageRoot = data.packageRoot;
+    }
+  } catch {}
+
+  // Enable the entrance animation only after every top-level initializer has
+  // run successfully. Until this point the static welcome remains usable and
+  // visible instead of collapsing to a navigation-only shell.
+  document.documentElement.classList.add('onboarding-animated');
+  updateNav();
+  startMascot();
+  // Resize after mascot SVG is injected so scrollHeight includes it
+  requestAnimationFrame(() => resizeViewport(0));
+}
+
+init();
+
+</script>
+</body>
+</html>

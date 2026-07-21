@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+
+# Build output
+mcp-server/dist/
+
+# Runtime data and browser-profile cache — never commit
+/data/
+mcp-data/
+mcp-server/data/
+neural-interface/data/
+!mcp-server/data/.gitkeep
+!mcp-server/data/custom-categories-default.json
+!data/.gitkeep
+
+# Test suite
+.tests/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.db.backup-*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment & secrets
+.env*
+!.env.example
+.npmrc
+connections.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Cache
+.cache/
+
+# Local agent/tool state
+.claude/
+.codex/
+.gemini/
+.opencode/
+
+# Local release drafts and package artifacts
+*.tgz
+
+# Coverage
+coverage/

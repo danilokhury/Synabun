@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, Clean]
+  pull_request:
+    branches: [main, Clean]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp-server/package-lock.json
+            neural-interface/package-lock.json
+
+      - name: Install root package metadata
+        run: npm ci --ignore-scripts
+
+      - name: Install MCP server dependencies
+        run: npm --prefix mcp-server ci --ignore-scripts
+
+      - name: Install Neural Interface dependencies
+        run: npm --prefix neural-interface ci --ignore-scripts
+
+      - name: Build MCP server
+        run: npm run mcp:build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Inspect npm package
+        run: npm run pack:check

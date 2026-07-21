@@ -1,0 +1,54 @@
+{
+  "name": "claude-memory-mcp",
+  "version": "2026.7.20",
+  "private": true,
+  "description": "Private MCP server runtime bundled with SynaBun for persistent memory and agent tooling",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danilokhury/Synabun.git",
+    "directory": "mcp-server"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "node ./node_modules/typescript/bin/tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node dist/index.js",
+    "start:http": "node dist/preload-http.js",
+    "dev": "tsx src/index.ts",
+    "dev:http": "tsx src/preload-http.ts",
+    "tui": "node dist/tui.js",
+    "tui:dev": "tsx src/tui.ts",
+    "migrate": "tsx src/scripts/migrate-qdrant-to-sqlite.ts"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.0.0",
+    "@inquirer/prompts": "^8.2.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "chalk": "^5.6.2",
+    "express": "^4.21.0",
+    "uuid": "^14.0.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.12.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1",
+    "protobufjs": "^7.6.5",
+    "hono": "^4.12.25",
+    "@hono/node-server": "^1.19.13",
+    "postcss": "^8.5.10",
+    "tar": "^7.5.19",
+    "vite": "^8.0.16"
+  }
+}

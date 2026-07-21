@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "_comment": "Bump a ruleset's version when CLAUDE-template.md ships a meaningful change for that format. Whitespace/typo edits don't need a bump — leave them on the current version. The Notifications drawer surfaces an alert to users whenever this version differs from what they previously acknowledged.",
+  "rulesets": {
+    "claude": {
+      "version": "1.0.0",
+      "updatedAt": "2026-05-01",
+      "summary": "Initial tracked version"
+    },
+    "codex": {
+      "version": "1.0.0",
+      "updatedAt": "2026-05-01",
+      "summary": "Initial tracked version"
+    },
+    "cursor": {
+      "version": "1.0.0",
+      "updatedAt": "2026-05-01",
+      "summary": "Initial tracked version"
+    },
+    "generic": {
+      "version": "1.0.0",
+      "updatedAt": "2026-05-01",
+      "summary": "Initial tracked version"
+    },
+    "gemini": {
+      "version": "1.0.0",
+      "updatedAt": "2026-05-01",
+      "summary": "Initial tracked version"
+    }
+  }
+}

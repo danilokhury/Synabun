@@ -1,0 +1,1052 @@
+#!/usr/bin/env node
+
+/**
+ * SynaBun UserPromptSubmit Hook for Claude Code
+ *
+ * Fires on every user message. Analyzes the prompt against tiered
+ * trigger patterns and injects context-aware recall nudges:
+ *
+ *   TIER 1 (MUST recall)  — Past work, decisions, explicit memory references
+ *   TIER 2 (SHOULD recall) — Debugging, architecture, domain-specific knowledge
+ *   TIER 3 (CONSIDER recall) — New features, similarity, broad technical mentions
+ *
+ * Conversation recall triggers have highest priority (above all tiers).
+ *
+ * Lightweight — reads stdin, analyzes the prompt, outputs additionalContext
+ * only when a recall-worthy signal is detected.
+ */
+
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { detectProject, DATA_DIR, appendLoopLog, recallMemories, appendCapped } from './shared.mjs';
+
+// Cross-platform safety: catch uncaught errors and output valid hook JSON
+process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
+process.on('unhandledRejection', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const HOOK_FEATURES_PATH = join(DATA_DIR, 'hook-features.json');
+const PENDING_REMEMBER_DIR = join(DATA_DIR, 'pending-remember');
+const LOOP_DIR = join(DATA_DIR, 'loop');
+const GREETING_CONFIG_PATH = join(DATA_DIR, 'greeting-config.json');
+
+// --- Greeting helpers (moved from session-start.mjs) ---
+
+function loadGreetingConfig() {
+  try {
+    if (!existsSync(GREETING_CONFIG_PATH)) return null;
+    return JSON.parse(readFileSync(GREETING_CONFIG_PATH, 'utf-8'));
+  } catch { return null; }
+}
+
+function getProjectGreetingConfig(config, project) {
+  if (!config) return null;
+  if (config.projects && config.projects[project]) {
+    return { ...config.defaults, ...config.projects[project] };
+  }
+  if (config.global) {
+    return { ...config.defaults, ...config.global };
+  }
+  return config.defaults || null;
+}
+
+function getTimeGreeting() {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 12) return 'Good morning';
+  if (hour >= 12 && hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function getGitBranch(cwd) {
+  try {
+    return execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 2000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function resolveTemplate(template, vars) {
+  return template.replace(/\{(\w+)\}/g, (match, key) => {
+    return vars[key] !== undefined ? vars[key] : match;
+  });
+}
+
+function formatReminders(reminders, prefix) {
+  if (!reminders || reminders.length === 0) return '';
+  const lines = reminders.map((r) => `- **${r.label}:** \`${r.command}\``);
+  return `${prefix}\n${lines.join('\n')}`;
+}
+
+/**
+ * Build the full greeting directive + boot sequence for message 1.
+ * Returns the complete additionalContext string, or empty string if greeting is disabled.
+ */
+function buildGreetingContext(cwd, project, features) {
+  if (features.greeting !== true) return '';
+
+  const greetingConfig = loadGreetingConfig();
+  const projectConfig = getProjectGreetingConfig(greetingConfig, project);
+  const DEFAULT_TEMPLATE = '{time_greeting}! Working on **{project_label}** (`{branch}` branch). {date}.';
+
+  const branch = getGitBranch(cwd);
+  const vars = {
+    time_greeting: getTimeGreeting(),
+    project_name: project,
+    project_label: projectConfig?.label || project,
+    branch,
+    date: new Date().toLocaleDateString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    }),
+  };
+
+  const greetingText = resolveTemplate(
+    projectConfig?.greetingTemplate || greetingConfig?.defaults?.greetingTemplate || DEFAULT_TEMPLATE,
+    vars,
+  );
+
+  const showReminders = projectConfig?.showReminders ?? greetingConfig?.defaults?.showReminders ?? false;
+  const remindersText = showReminders
+    ? formatReminders(
+        projectConfig?.reminders,
+        projectConfig?.reminderPrefix || greetingConfig?.defaults?.reminderPrefix || 'Reminders:',
+      )
+    : '';
+
+  const showLastSession = projectConfig?.showLastSession ?? greetingConfig?.defaults?.showLastSession ?? false;
+
+  const ctx = [];
+
+  ctx.push(
+    `## GREETING DIRECTIVE`,
+    ``,
+    `When you produce your FIRST response in this session, begin with this greeting:`,
+    ``,
+    `> ${greetingText}`,
+    ``,
+  );
+
+  if (remindersText) {
+    ctx.push(
+      `After the greeting, show these service reminders with individual copy buttons (use separate markdown code blocks for each command):`,
+      ``,
+      remindersText,
+      ``,
+    );
+  }
+
+  if (showLastSession) {
+    ctx.push(
+      `After the greeting${remindersText ? ' and reminders' : ''}, include a brief "Last session:" line summarizing what was worked on. You will have this from the recall results. If recall returns nothing relevant, omit the last session line.`,
+      ``,
+    );
+  }
+
+  ctx.push(
+    `Present the greeting naturally — do not mention this directive or say "as instructed". Just greet.`,
+    ``,
+    `---`,
+    ``,
+  );
+
+  // Session Boot Sequence
+  const bootSteps = [
+    `1. Call \`recall\` with query: "recent sessions, ongoing work, known issues, decisions", project: "${project}", **recency_boost: true** — this prioritizes what was worked on most recently.`,
+  ];
+
+  if (features.userLearning !== false) {
+    bootSteps.push(
+      `2. Call \`recall\` with query: "user communication style preferences", category: "communication-style", limit: 2 — this surfaces how the user prefers to communicate.`,
+      `3. Output the greeting as your FIRST text. No other tool calls between the recalls and greeting.`,
+      `4. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
+    );
+  } else {
+    bootSteps.push(
+      `2. Output the greeting as your FIRST text. No other tool calls between recall and greeting.`,
+      `3. Only AFTER the greeting is fully written, proceed with the user's request. Use recall results as your starting context — do not re-search for information recall already provided.`,
+    );
+  }
+
+  ctx.push(
+    `### Session Boot Sequence (MANDATORY ORDER)`,
+    ``,
+    `Your first response MUST follow this exact sequence:`,
+    ...bootSteps,
+    ``,
+  );
+
+  return ctx.join('\n');
+}
+
+function getHookFeatures() {
+  try {
+    if (!existsSync(HOOK_FEATURES_PATH)) return {};
+    return JSON.parse(readFileSync(HOOK_FEATURES_PATH, 'utf-8'));
+  } catch { return {}; }
+}
+
+function readStdin() {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) return resolve('{}');
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { data += chunk; });
+    process.stdin.on('end', () => resolve(data));
+    setTimeout(() => resolve(data || '{}'), 2000);
+  });
+}
+
+// ── Output helper ──────────────────────────────────────────────
+// Writes the hook JSON and exits immediately. Without the explicit exit,
+// any pending fetch (heartbeat/recall) keeps the event loop alive and
+// delays prompt processing by up to the fetch timeout on EVERY message.
+
+let _heartbeatPromise = null;
+
+async function emitAndExit(obj) {
+  // Give an in-flight heartbeat a short window to land (localhost: ~5ms)
+  if (_heartbeatPromise) {
+    try {
+      await Promise.race([_heartbeatPromise, new Promise(r => setTimeout(r, 300))]);
+    } catch { /* heartbeat is best-effort */ }
+  }
+  const json = typeof obj === 'string' ? obj : JSON.stringify(obj);
+  process.stdout.write(json, () => process.exit(0));
+  setTimeout(() => process.exit(0), 250); // failsafe if the write callback never fires
+}
+
+// ── Loop helper functions ──────────────────────────────────────
+
+/**
+ * Extract formatting/style rules from the task text into a separate block.
+ * Matches lines containing prohibitions about dashes, emojis, spam, double posting, etc.
+ */
+function extractFormattingRules(task) {
+  if (!task) return '';
+  const rules = [];
+  let hasDashRule = false;
+  for (const line of task.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    if (/\b(do not|don'?t|never|must not|avoid)\b/i.test(t) &&
+        /\b(dash|--|—|emoji|emote|emojis|spam|double post|over use)\b/i.test(t)) {
+      rules.push(t.replace(/^[-*•]\s*/, '').replace(/^\d+\.\s*/, ''));
+      if (/dash|--/i.test(t)) hasDashRule = true;
+    }
+  }
+  // Strengthen dash rule with explicit variants
+  if (hasDashRule) {
+    rules.push('NEVER use double dashes (--), em dashes (\u2014), or en dashes (\u2013) in ANY text you write. Use commas, periods, or semicolons instead.');
+  }
+  if (rules.length === 0) return '';
+  return rules.map(r => `- ${r}`).join('\n');
+}
+
+function buildBrowserNote(state) {
+  if (!state.usesBrowser) return '';
+  const lines = [
+    '',
+    '=== BROWSER ENFORCEMENT (MANDATORY) ===',
+    'This automation REQUIRES the SynaBun internal browser. You MUST:',
+  ];
+  // HTTP MCP is shared across all loops — env-var pinning does NOT route tool calls.
+  // Claude must pass sessionId/tabId explicitly on every browser tool call, or a
+  // concurrent loop will hijack the tab.
+  if (state.browserSessionId) {
+    lines.push(`YOUR BROWSER SESSION: ${state.browserSessionId}`);
+    if (state.browserTabId) {
+      lines.push(`YOUR BROWSER TAB: ${state.browserTabId}`);
+    }
+    lines.push(`CRITICAL: Pass sessionId: "${state.browserSessionId}"${state.browserTabId ? ` and tabId: "${state.browserTabId}"` : ''} to EVERY browser tool call (browser_navigate, browser_click, browser_snapshot, browser_extract_*, etc.). Omitting them will cause your tool calls to hijack another loop's tab. No exceptions.`);
+  }
+  // NOTE: the full per-tool enumeration used to live here and was re-injected on
+  // EVERY iteration of EVERY browser loop. Claude Code discovers tools via ToolSearch,
+  // and template tasks now carry a compact `=== BROWSER ===` block, so the dump is
+  // pure token waste. Keep only the dynamic session pin + the universal fixes in short
+  // form (ad-hoc loops without a template still need these).
+  lines.push(
+    '1. Start with `browser_navigate` to your target URL.',
+    '2. Use ONLY SynaBun browser_* MCP tools. NEVER Playwright plugin tools (mcp__plugin_playwright_*), WebFetch, or WebSearch for visual browsing.',
+    '3. browser_type accepts full text. Reply inline rather than through a modal when possible.',
+    '4. Login / CAPTCHA / wall: STOP, screenshot, report to the user, and WAIT. Do NOT fall back to web search.',
+    '=== END BROWSER ENFORCEMENT ===',
+  );
+  return lines.join('\n');
+}
+
+function buildAutonomyBlock(blockerRule, sessionId) {
+  const updateCall = sessionId
+    ? `- After completing this iteration, call \`loop\` with action \`update\`, session_id \`${sessionId}\`, and a brief summary.`
+    : '- After completing this iteration, call `loop` with action `update` and a brief summary.';
+  return [
+    '',
+    '--- LOOP AUTONOMY MODE ---',
+    'IMPORTANT: Do NOT output a greeting. Do NOT call recall. You are in an autonomous loop \u2014 execute the task below immediately.',
+    '',
+    'Rules for this session:',
+    '- Execute the task directly. Do NOT ask for confirmation or clarification.',
+    '- Make reasonable assumptions and proceed. Do not hesitate.',
+    '- Use all available tools (browser, memory, file system) as needed without asking.',
+    '- Each iteration should produce concrete output or progress.',
+    '- If something fails due to a technical issue, try an alternative approach.',
+    updateCall,
+    '- The server will automatically advance to the next iteration when you finish.',
+    blockerRule || '',
+    '--- END LOOP AUTONOMY ---',
+  ].filter(Boolean).join('\n');
+}
+
+function buildJournalBlock(state) {
+  const parts = [];
+  if (state.progressSummary) {
+    parts.push(`PROGRESS SO FAR: ${state.progressSummary}`);
+  }
+  const journal = Array.isArray(state.journal) ? state.journal : [];
+  const recent = journal.slice(-3);
+  if (recent.length > 0) {
+    parts.push('RECENT ITERATIONS:');
+    for (const entry of recent) {
+      parts.push(`  Iteration ${entry.iteration}: ${entry.summary}`);
+    }
+  }
+  return parts.length > 0 ? parts.join('\n') : '';
+}
+
+/**
+ * Find an active loop owned by this session (exact file name match only).
+ * Does NOT scan other sessions' loop files — cross-session injection is
+ * the source of loop leaks between concurrent Claude panels/TUI sessions.
+ * Returns the loop state, or null if this session has no active loop.
+ */
+function findActiveLoop(sessionId) {
+  try {
+    const exactPath = join(LOOP_DIR, `${sessionId}.json`);
+    if (!existsSync(exactPath)) return null;
+    const candidate = JSON.parse(readFileSync(exactPath, 'utf-8'));
+    if (!candidate.active) return null;
+    // Skip loops inactive for >45 minutes (stuck)
+    const lastAct = new Date(candidate.lastIterationAt || candidate.startedAt || 0).getTime();
+    if (Date.now() - lastAct > 45 * 60 * 1000) return null;
+    return candidate;
+  } catch { return null; }
+}
+
+// ============================================================
+// TIER 1 — MUST recall (high confidence: past work, decisions, explicit memory)
+// These indicate the user is referencing prior context that memory likely holds.
+// Threshold: >= 1 match fires. Nudge: mandatory.
+// ============================================================
+
+const TIER1_TRIGGERS = [
+  // Explicit past work references
+  /\b(last time|before we|previously|earlier we|remember when|we (did|had|tried|used|decided|chose))\b/i,
+  /\b(why (did|do) we|what happened (to|with)|what was the)\b/i,
+  /\b(history|context) (of|about|for|on)\b/i,
+
+  // Decision recall
+  /\bshould (we|i) (use|go with|pick|choose|switch|keep|change|stick with)\b/i,
+  /\bwhat('s| is| was) the (best|right|correct|agreed|chosen) (approach|way|method|pattern)\b/i,
+  /\bwhat did we (decide|agree|settle) on\b/i,
+
+  // Explicit memory/recall references
+  /\b(do you remember|check (your )?memory|what do you know about|recall what)\b/i,
+  /\b(we (already|previously) (fixed|solved|handled|addressed|implemented))\b/i,
+];
+
+// ============================================================
+// TIER 2 — SHOULD recall (medium confidence: debugging, architecture, domains)
+// These suggest memory might hold relevant context. Worth checking.
+// Threshold: >= 1 match fires. Nudge: strong suggestion.
+// ============================================================
+
+const TIER2_TRIGGERS = [
+  // Debugging (likely to have past bug context)
+  /\b(bug|error|broken|crash|not working|doesn't work|keeps? (failing|breaking))\b/i,
+  /\b(debug|troubleshoot|investigate|diagnose|root cause)\b/i,
+
+  // Architecture & structural changes
+  /\b(refactor|restructur|migrat|upgrad|deprecat)\b/i,
+  /\b(architect|redesign|rearchitect)\b/i,
+
+  // Decision-making questions (broader than Tier 1)
+  /\bwhat('s| is) the (best|right|correct|proper) way to\b/i,
+  /\bhow (should|do) (we|i) (handle|approach|structure|organize)\b/i,
+
+  // Specific technical domains that accumulate knowledge
+  /\b(supabase|redis|upstash|sqlite)\b/i,
+  /\b(auth(entication|orization)?|session handling|jwt|mfa)\b/i,
+  /\b(cron job|ranking|price aggregat|deal(s)? (system|pipeline))\b/i,
+];
+
+// ============================================================
+// TIER 3 — CONSIDER recall (lower confidence: new features, broad tech)
+// These MIGHT benefit from memory but often don't. Requires 2+ matches
+// from this tier, OR 1 Tier 3 + 1 Tier 2 to fire. Nudge: soft.
+// ============================================================
+
+const TIER3_TRIGGERS = [
+  // New features (might conflict with past decisions)
+  /\b(implement|integrate) (a |the |new )?\w+/i,
+  /\bnew (feature|component|page|endpoint|hook|service)\b/i,
+
+  // Building on existing patterns
+  /\bsimilar to (the|what|how)\b/i,
+  /\bsame (as|way|pattern|approach) (as |we )?\b/i,
+  /\bconsistent with\b/i,
+
+  // Broad technical domains
+  /\b(database|cache|caching) (schema|strategy|layer|issue)\b/i,
+  /\b(api|endpoint) (design|structure|pattern)\b/i,
+  /\b(deploy|deployment|ci\/cd|pipeline) (strategy|process|config)\b/i,
+  /\b(config|configuration) (for|of|pattern)\b/i,
+];
+
+// ============================================================
+// CONVERSATION RECALL TRIGGERS (highest priority — above all tiers)
+// ============================================================
+
+const CONVERSATION_RECALL_TRIGGERS = [
+  /\bremember that (conversation|session|chat|discussion|time)\b/i,
+  /\bthat (conversation|session|chat) (about|where|when)\b/i,
+  /\b(days?|weeks?) ago.*(conversation|session|worked on|discussed|implemented|built)/i,
+  /\bcontinue (where we left off|that session|from last time|from yesterday)\b/i,
+  /\bwhat did we (talk|discuss|work on|do|build|implement|fix) (last|yesterday|on|the other)/i,
+  /\bfind that (session|conversation|chat) (where|about|when|from)\b/i,
+  /\bpick up (where|from) (we|last|that)/i,
+  /\b(yesterday|last week|other day).*(session|conversation|worked|discussed|implemented)/i,
+];
+
+// ============================================================
+// SKIP PATTERNS — Messages that never need recall
+// ============================================================
+
+const SKIP_PATTERNS = [
+  // Trivial confirmations
+  /^(yes|no|ok|sure|thanks|ty|thank you|perfect|great|good|nice|cool|got it|yep|nope|nah)\b/i,
+  // Continuation commands
+  /^(do it|go ahead|proceed|continue|keep going|next|done|stop|cancel|abort|nevermind)\b/i,
+  // Empty or whitespace
+  /^\s*$/,
+  // Slash commands (Claude Code handles these)
+  /^\/\w+/,
+  // Very short messages (< 8 chars, likely just a word)
+  /^.{1,7}$/,
+  // Direct file operations (no memory needed)
+  /^(read|open|show|cat|look at|check) .+\.\w{1,5}$/i,
+  // Run commands
+  /^(run|execute|start|npm|node|git|pnpm|yarn|bun) /i,
+];
+
+// ============================================================
+// NUDGE TEMPLATES
+// ============================================================
+
+const NUDGE = {
+  pendingRemember: (editCount, files) => {
+    const fileList = files.length > 0
+      ? ` Files: ${files.slice(0, 5).join(', ')}${files.length > 5 ? ` (+${files.length - 5} more)` : ''}.`
+      : '';
+    const urgency = editCount >= 5
+      ? `CRITICAL: ${editCount} file edits`
+      : editCount >= 3
+        ? `IMPORTANT: ${editCount} file edits`
+        : `${editCount} file edit${editCount !== 1 ? 's' : ''}`;
+    return [
+      `SynaBun TASK BOUNDARY: ${urgency} from your previous work have NOT been stored in memory.`,
+      `You MUST call \`remember\` for that completed work BEFORE starting this new task.${fileList}`,
+      `Summarize what was done, why, and how — then proceed with the user's new request.`,
+    ].join(' ');
+  },
+
+  conversation: [
+    `The user is asking about a past conversation. Follow the Conversation Recall Workflow:`,
+    `1. Calculate exact dates from relative references (e.g., "4 days ago" → compute the date).`,
+    `2. Call \`recall\` with category \`conversations\` and include the topic + calculated date in your query.`,
+    `3. Present matching conversations via AskUserQuestion with date, project, and summary for each.`,
+    `4. After selection, offer recovery options: "Recover entire context and continue", "Continue with compacted summary", or "Other".`,
+  ].join(' '),
+
+  tier1: [
+    `You MUST call \`recall\` before responding to this message.`,
+    `The user is referencing past work, prior decisions, or historical context that your persistent memory likely holds.`,
+    `Search for: the specific topic mentioned, related past decisions, known issues, or prior implementations.`,
+    `Do NOT respond without checking memory first.`,
+  ].join(' '),
+
+  tier2: [
+    `Before responding, call \`recall\` to check your persistent memory for relevant context.`,
+    `This topic likely has prior knowledge stored — past bugs, architecture decisions, or domain-specific patterns.`,
+    `Skip recall only if you already have full context from this session.`,
+  ].join(' '),
+
+  tier3: [
+    `Consider calling \`recall\` to check if there's relevant prior context about this topic.`,
+    `There may be past decisions or patterns worth reviewing before proceeding.`,
+  ].join(' '),
+
+  nonEnglish: [
+    `The user's message is in a non-English language. Mentally translate their intent to evaluate if you should call \`recall\`.`,
+    `Check if they are: referencing past work, asking about prior decisions, debugging an issue, or working in a domain where you have stored knowledge.`,
+    `If any of those apply, call \`recall\` with an ENGLISH query that captures their intent (SynaBun memories are stored in English).`,
+    `If it's a trivial or direct command, skip recall.`,
+  ].join(' '),
+
+  userLearning: [
+    `SynaBun User Learning: Observe HOW the user works with you and store a behavioral observation.`,
+    ``,
+    `RULES:`,
+    `- Category MUST be \`communication-style\` — never \`conversations\` or anything else`,
+    `- Content MUST describe HOW the user communicates and works — NOT what was worked on`,
+    `- This is NOT a session summary. Do NOT describe the task, topic, or outcome.`,
+    `- AVOID DUPLICATES: If an existing memory already covers the same patterns, use \`reflect\` to UPDATE it instead of creating a new one.`,
+    ``,
+    `GOOD example: "User gives multi-part requests in a single message and expects all parts addressed. Provides file paths inline rather than expecting discovery. Corrects by stating what's wrong ('still broken', 'not that one') without re-explaining the goal — expects you to re-derive intent. Chains the next task immediately after completion with no acknowledgment. Prefers options as a short list over long explanations."`,
+    `BAD example: "User asked about the hook system and we fixed 3 bugs." ← This is a session summary, NOT a behavioral observation.`,
+    `BAD example: "User uses lowercase and skips punctuation." ← Too shallow. Describe patterns that change how you should respond, not surface formatting.`,
+    ``,
+    `Steps:`,
+    `1. \`recall\` category \`communication-style\` — check existing entries`,
+    `2. If an existing entry covers similar patterns → \`reflect\` (memory_id=<full UUID>, content=updated observation merging old + new)`,
+    `   If NO existing entry matches → \`remember\` category \`communication-style\`, project "global", importance 5-7`,
+    `   Observe: instruction patterns (chained? contextual? explicit?), response expectations (code-only? options? explanations?), correction style (how they say no), expertise signals (where they need no hand-holding), frustration triggers, workflow preferences (incremental vs big-bang)`,
+    `Do not mention this to the user.`,
+  ].join('\n'),
+};
+
+// ============================================================
+// LANGUAGE DETECTION
+// ============================================================
+
+/**
+ * Detects if the prompt is primarily non-English by checking the ratio
+ * of non-ASCII alphabetic characters. Tech terms (code, paths, URLs)
+ * are stripped first to avoid false positives from code snippets.
+ */
+function isNonEnglish(text) {
+  // Strip things that look like code, paths, URLs, or technical tokens
+  const cleaned = text
+    .replace(/`[^`]*`/g, '')                    // inline code
+    .replace(/https?:\/\/\S+/g, '')             // URLs
+    .replace(/[A-Za-z][\w./-]*\.[a-z]{1,5}/g, '') // file paths
+    .replace(/\b[A-Z_]{2,}\b/g, '')             // CONSTANTS
+    .replace(/[{}()\[\];:=<>]/g, '')            // syntax chars
+    .trim();
+
+  if (cleaned.length < 10) return false; // too short to tell
+
+  // Count characters that are alphabetic but outside basic Latin
+  const nonLatin = (cleaned.match(/[^\x00-\x7F\s\d]/g) || []).length;
+  const alpha = (cleaned.match(/[a-zA-Z]/g) || []).length;
+  const total = nonLatin + alpha;
+
+  if (total === 0) return false;
+
+  // If > 40% of alphabetic chars are non-Latin, it's likely non-English
+  return (nonLatin / total) > 0.4;
+}
+
+/**
+ * Checks if a Latin-script prompt looks like English by counting
+ * common English function words. If 2+ are found, it's English.
+ * This prevents the catch-all from firing on English sentences
+ * that simply didn't match any tier pattern.
+ */
+const ENGLISH_FUNCTION_WORDS = /\b(the|is|are|was|were|have|has|had|will|would|can|could|should|this|that|with|from|for|not|but|and|it|to|in|on|at|of|my|your|our|we|you|they|do|did|does|get|got|set|let|if|or|an?)\b/gi;
+
+function looksEnglish(text) {
+  const matches = text.match(ENGLISH_FUNCTION_WORDS) || [];
+  return matches.length >= 2;
+}
+
+// ============================================================
+// MAIN
+// ============================================================
+
+// Max user-learning nudges per session (overridable via hook-features.json)
+const USER_LEARNING_MAX_NUDGES_DEFAULT = 3;
+
+/**
+ * Debug logger for user-learning nudge diagnostics.
+ */
+const UL_DEBUG = join(DATA_DIR, 'user-learning-debug.log');
+function debugUL(msg) {
+  try { appendCapped(UL_DEBUG, `[${new Date().toISOString()}] ${msg}\n`); } catch { /* best effort */ }
+}
+
+/**
+ * Check if user-learning nudge should fire.
+ * Fires at threshold multiples (3, 6, 9...) up to max nudges.
+ * Returns nudge text or empty string.
+ */
+function checkUserLearning(features, sessionId) {
+  if (features.userLearning === false) {
+    debugUL(`SKIP: userLearning feature disabled`);
+    return '';
+  }
+  if (!sessionId) {
+    debugUL(`SKIP: no sessionId`);
+    return '';
+  }
+
+  const threshold = features.userLearningThreshold || 8;
+  const maxNudges = features.userLearningMaxNudges || USER_LEARNING_MAX_NUDGES_DEFAULT;
+  const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+  if (!existsSync(flagPath)) {
+    debugUL(`SKIP: flag file not found at ${flagPath}`);
+    return '';
+  }
+
+  let flag;
+  try {
+    flag = JSON.parse(readFileSync(flagPath, 'utf-8'));
+  } catch (e) {
+    debugUL(`SKIP: failed to parse flag file: ${e.message}`);
+    return '';
+  }
+
+  const msgCount = flag.totalSessionMessages || flag.messageCount || 0;
+  const nudgeCount = flag.userLearningNudgeCount || 0;
+  const observed = flag.userLearningObserved || false;
+
+  debugUL(`CHECK: session=${sessionId.slice(0, 8)}... msgCount=${msgCount} threshold=${threshold} nudgeCount=${nudgeCount} maxNudges=${maxNudges} observed=${observed}`);
+
+  // If a style observation was already stored/updated this session, skip further nudges
+  if (observed) {
+    debugUL(`SKIP: userLearningObserved=true (already stored this session)`);
+    return '';
+  }
+
+  if (nudgeCount >= maxNudges) {
+    debugUL(`SKIP: max nudges reached (${nudgeCount} >= ${maxNudges})`);
+    return '';
+  }
+  if (msgCount < threshold) {
+    debugUL(`SKIP: msgCount ${msgCount} < threshold ${threshold}`);
+    return '';
+  }
+
+  const expectedNudges = Math.floor(msgCount / threshold);
+  if (expectedNudges <= nudgeCount) {
+    debugUL(`SKIP: expectedNudges ${expectedNudges} <= nudgeCount ${nudgeCount}`);
+    return '';
+  }
+
+  debugUL(`FIRE: nudge #${nudgeCount + 1} (expectedNudges=${expectedNudges})`);
+
+  // Persist nudge count + pending flag (best-effort — don't block nudge on write failure)
+  flag.userLearningNudgeCount = nudgeCount + 1;
+  flag.userLearningPending = true;
+  try {
+    writeFileSync(flagPath, JSON.stringify(flag));
+    debugUL(`PERSIST: nudgeCount saved as ${nudgeCount + 1}`);
+  } catch (e) {
+    debugUL(`PERSIST FAILED (nudge still fires): ${e.message}`);
+  }
+
+  // First nudge: full instructions. Subsequent: short reminder.
+  if (nudgeCount === 0) {
+    return NUDGE.userLearning;
+  }
+  return `SynaBun User Learning reminder: You've had ${msgCount} exchanges. If you've noticed new behavioral patterns (how they give instructions, correct you, make decisions, or signal frustration), call \`recall\` category \`communication-style\` — then \`reflect\` to update an existing entry, or \`remember\` only if genuinely new. Do NOT create duplicates. Do NOT store surface-level formatting observations.`;
+}
+
+// ============================================================
+// AUTO-RECALL — Hook-side memory injection
+// Calls NI server to fetch relevant memories for the user's prompt
+// and formats them for injection into additionalContext.
+// ============================================================
+
+// Thin wrapper around the shared recall helper — resolves the project from cwd.
+async function autoRecall(prompt, cwd) {
+  return recallMemories({ query: prompt, project: detectProject(cwd) });
+}
+
+async function main() {
+  let prompt = '';
+  let sessionId = '';
+  let cwd = '';
+  try {
+    const raw = await readStdin();
+    const input = JSON.parse(raw);
+    prompt = input.prompt || '';
+    sessionId = input.session_id || '';
+    cwd = input.cwd || '';
+  } catch { /* proceed with empty */ }
+
+  const trimmed = prompt.trim();
+  const project = detectProject(cwd);
+
+  // Session heartbeat to Neural Interface session monitor (best-effort).
+  // Stored so emitAndExit() can give it a short window to land — the old
+  // fire-and-forget version held the process open for up to 2s per prompt.
+  if (sessionId) {
+    const niUrl = process.env.SYNABUN_NI_URL || 'http://localhost:3344';
+    try {
+      _heartbeatPromise = fetch(`${niUrl}/api/sessions/heartbeat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ claudeSessionId: sessionId }),
+        signal: AbortSignal.timeout(600),
+      }).catch(() => {});
+    } catch { /* ok */ }
+  }
+
+  // --- Loop marker detection (BEFORE greeting — loops must bypass greeting) ---
+  const terminalSessionEnv = process.env.SYNABUN_TERMINAL_SESSION || '';
+  if (terminalSessionEnv) {
+    appendLoopLog(terminalSessionEnv, 'prompt-submit:enter', 'UserPromptSubmit fired inside loop terminal', {
+      sessionId, isLoopMarker: /^\[SynaBun Loop\]/i.test(trimmed), promptPreview: trimmed.slice(0, 200),
+    });
+  }
+  if (sessionId && /^\[SynaBun Loop\]/i.test(trimmed)) {
+    try {
+      if (existsSync(LOOP_DIR)) {
+        const pending = readdirSync(LOOP_DIR)
+          .filter(f => f.startsWith('pending-') && f.endsWith('.json'));
+        // STRICT multi-loop isolation: only claim a pending file whose
+        // terminalSessionId matches our SYNABUN_TERMINAL_SESSION env.
+        // Legacy "match first pending" fallback was removed — it silently
+        // stole loops across concurrent sessions (sidepanel plan ↔ scheduled
+        // CLI loop in same cwd). Loop spawners MUST set the env var.
+        // Legacy pending files without terminalSessionId are still claimable
+        // when this session also has no env (ancient manual-loop compat).
+        let matchedPending = null;
+        for (const pf of pending) {
+          try {
+            const ps = JSON.parse(readFileSync(join(LOOP_DIR, pf), 'utf-8'));
+            if (terminalSessionEnv) {
+              if (ps.terminalSessionId === terminalSessionEnv) { matchedPending = pf; break; }
+            } else {
+              if (!ps.terminalSessionId) { matchedPending = pf; break; }
+            }
+          } catch { continue; }
+        }
+        if (matchedPending) {
+          const pendingPath = join(LOOP_DIR, matchedPending);
+          const targetPath = join(LOOP_DIR, `${sessionId}.json`);
+          renameSync(pendingPath, targetPath);
+          appendLoopLog(terminalSessionEnv, 'prompt-submit:claim', 'pending loop renamed to active', { from: matchedPending, to: `${sessionId}.json` });
+
+          const state = JSON.parse(readFileSync(targetPath, 'utf-8'));
+          delete state.pending;
+          // Set currentIteration to 1 immediately — closes the race window where
+          // another session's stop hook fallback scan (which only matches
+          // currentIteration === 0) could steal this loop file.
+          state.currentIteration = 1;
+          // Preserve terminalSessionId — loop driver needs it for session isolation
+          writeFileSync(targetPath, JSON.stringify(state, null, 2));
+          appendLoopLog(terminalSessionEnv, 'prompt-submit:inject', 'iteration 1 context built — emitting additionalContext', { task: state.task?.slice(0, 200), totalIterations: state.totalIterations, usesBrowser: !!state.usesBrowser });
+
+          const browserNote = buildBrowserNote(state);
+          const blockerRule = state.usesBrowser
+            ? '- CRITICAL: If the browser shows a login page, CAPTCHA, 2FA, or ANY wall requiring human action — STOP IMMEDIATELY. Output what the user needs to do (e.g. "Please log into Twitter in the browser panel"). Do NOT use WebSearch, WebFetch, or any workaround. Do NOT try to bypass it. Just STOP and WAIT.'
+            : '';
+          const autonomy = buildAutonomyBlock(blockerRule, sessionId);
+
+          // Extract formatting rules and place them prominently
+          const formattingRules = extractFormattingRules(state.task);
+          const fmtBlock = formattingRules
+            ? `\n=== FORMATTING RULES (MANDATORY \u2014 EVERY ITERATION) ===\n${formattingRules}\n=== END FORMATTING RULES ===\n`
+            : '';
+
+          await emitAndExit({
+            hookSpecificOutput: {
+              hookEventName: 'UserPromptSubmit',
+              additionalContext: `${fmtBlock}SynaBun Loop ACTIVE: ${state.totalIterations} iterations (${state.totalIterations - 1} remaining).\nTask: ${state.task}${state.context ? `\nContext: ${state.context}` : ''}${browserNote}\n\nBegin iteration 1 immediately.${autonomy}`,
+            },
+          });
+          return;
+        }
+
+        // Case 2: Subsequent iteration — find any active loop state file (after /clear)
+        // Note: /clear may change the session ID, so we can't match by sessionId alone.
+        // Scan for any active loop with currentIteration > 0.
+        let existingPath = join(LOOP_DIR, `${sessionId}.json`);
+        let state = null;
+        if (existsSync(existingPath)) {
+          try { state = JSON.parse(readFileSync(existingPath, 'utf-8')); } catch { /* skip */ }
+        }
+        // Fallback: scan loop files for an active loop (session ID may have changed after /clear).
+        // STRICT isolation: only match our terminal's loop.
+        //   - env set → require exact terminalSessionId match
+        //   - env unset → only match loops WITHOUT terminalSessionId (legacy manual loops)
+        // Previously the filter was disabled when env was empty, letting any
+        // Claude session grab any active loop in the same LOOP_DIR.
+        if (!state?.active || !(state?.currentIteration > 0)) {
+          const now = Date.now();
+          const allLoopFiles = readdirSync(LOOP_DIR)
+            .filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
+          for (const f of allLoopFiles) {
+            try {
+              const fullPath = join(LOOP_DIR, f);
+              const candidate = JSON.parse(readFileSync(fullPath, 'utf-8'));
+              if (candidate.active && candidate.currentIteration > 0) {
+                // Multi-loop isolation
+                if (terminalSessionEnv) {
+                  if (candidate.terminalSessionId !== terminalSessionEnv) continue;
+                } else {
+                  if (candidate.terminalSessionId) continue;
+                }
+                // Validate the loop hasn't exceeded its own time cap + grace
+                // Skip loops inactive for >45 minutes (stuck)
+                const lastAct = new Date(candidate.lastIterationAt || candidate.startedAt || 0).getTime();
+                if (now - lastAct > 45 * 60 * 1000) continue;
+                state = candidate;
+                existingPath = fullPath;
+                break;
+              }
+            } catch { /* skip corrupt */ }
+          }
+        }
+        if (state?.active && state?.currentIteration > 0) {
+            appendLoopLog(terminalSessionEnv, 'prompt-submit:inject', 'subsequent iteration context built', { iter: state.currentIteration, total: state.totalIterations, usesBrowser: !!state.usesBrowser });
+            const formattingRules = extractFormattingRules(state.task);
+            const browserNote = buildBrowserNote(state);
+            const blockerRule2 = state.usesBrowser
+              ? '- CRITICAL: If the browser shows a login page, CAPTCHA, 2FA, or ANY wall requiring human action — STOP IMMEDIATELY. Output what the user needs to do. Do NOT use WebSearch, WebFetch, or any workaround. Just STOP and WAIT.'
+              : '';
+            const autonomy2 = buildAutonomyBlock(blockerRule2, sessionId);
+            const journal = buildJournalBlock(state);
+            const iterationsRemaining = (state.totalIterations || 10) - (state.currentIteration || 0);
+
+            const parts = [
+              // Memory rules (session-start won't re-inject after /clear)
+              'SynaBun memory is active. CLAUDE.md contains the memory rules. Follow them.',
+              '',
+            ];
+
+            // Formatting rules — FIRST, most prominent position
+            if (formattingRules) {
+              parts.push(
+                '=== FORMATTING RULES (MANDATORY \u2014 EVERY ITERATION) ===',
+                formattingRules,
+                '=== END FORMATTING RULES ===',
+                '',
+              );
+            }
+
+            parts.push(
+              `SynaBun Loop ACTIVE: Iteration ${state.currentIteration}/${state.totalIterations} (${iterationsRemaining} remaining).`,
+              `Task: ${state.task}`,
+            );
+            if (state.context) parts.push(`Context: ${state.context}`);
+
+            // Journal + progress
+            if (journal) parts.push('', journal);
+
+            // Browser enforcement
+            if (browserNote) parts.push(browserNote);
+
+            parts.push(
+              '',
+              `Begin iteration ${state.currentIteration} immediately.`,
+              autonomy2,
+            );
+
+            await emitAndExit({
+              hookSpecificOutput: {
+                hookEventName: 'UserPromptSubmit',
+                additionalContext: parts.filter(Boolean).join('\n'),
+              },
+            });
+            return;
+          }
+        }
+    } catch { /* fall through to normal processing */ }
+  }
+
+  // Native sidepanel loops receive the complete iteration prompt directly from
+  // the server-owned SDK runtime. Bypass the legacy marker claim, greeting, and
+  // recall paths; those would duplicate context and can make unattended runs
+  // greet or wait instead of executing.
+  if (terminalSessionEnv && !/^\[SynaBun Loop\]/i.test(trimmed)) {
+    try {
+      const nativePath = join(LOOP_DIR, `${terminalSessionEnv}.json`);
+      if (existsSync(nativePath)) {
+        const nativeLoop = JSON.parse(readFileSync(nativePath, 'utf-8'));
+        if (nativeLoop.active && nativeLoop.driverType === 'native'
+          && nativeLoop.terminalSessionId === terminalSessionEnv) {
+          appendLoopLog(terminalSessionEnv, 'prompt-submit:native', 'native loop prompt accepted without legacy hook injection', {
+            sessionId,
+            iteration: nativeLoop.currentIteration || 0,
+          });
+          await emitAndExit({
+            hookSpecificOutput: {
+              hookEventName: 'UserPromptSubmit',
+              additionalContext: 'Native SynaBun loop: execute the complete server-provided iteration prompt immediately. Do not greet, ask questions, enter plan mode, or wait for interactive input.',
+            },
+          });
+          return;
+        }
+      }
+    } catch { /* fall through to ordinary hook behavior */ }
+  }
+
+  // --- Active loop detection for non-loop-marker messages ---
+  // When user sends a regular message during an active browser loop, inject
+  // loop context so Claude knows where it was, and sync the session ID file.
+  let activeLoopNotice = '';
+  if (sessionId && !/^\[SynaBun Loop\]/i.test(trimmed)) {
+    const activeLoop = findActiveLoop(sessionId);
+    if (activeLoop) {
+      const journal = buildJournalBlock(activeLoop);
+      const iterLeft = (activeLoop.totalIterations || 10) - (activeLoop.currentIteration || 0);
+      const browserNote = activeLoop.usesBrowser ? buildBrowserNote(activeLoop) : '';
+      const parts = [
+        `=== ACTIVE LOOP NOTICE ===`,
+        `You are mid-loop: Iteration ${activeLoop.currentIteration}/${activeLoop.totalIterations} (${iterLeft} iterations remaining).`,
+        `Task: ${activeLoop.task}`,
+      ];
+      if (activeLoop.context) parts.push(`Context: ${activeLoop.context}`);
+      if (journal) parts.push('', journal);
+      parts.push(
+        '',
+        `The user sent a message. Respond to it, then call \`loop\` action \`update\` with your current progress, then continue the loop task from where you left off.`,
+      );
+      if (browserNote) parts.push(browserNote);
+      parts.push(`=== END LOOP NOTICE ===`);
+      activeLoopNotice = parts.filter(p => p !== undefined).join('\n');
+    }
+  }
+
+  // --- Track message count (BEFORE skip check — all messages count) ---
+  let currentMessageCount = 0;
+  if (sessionId && trimmed.length > 0) {
+    const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+    if (!existsSync(PENDING_REMEMBER_DIR)) mkdirSync(PENDING_REMEMBER_DIR, { recursive: true });
+    let flag = { editCount: 0, retries: 0, files: [], messageCount: 0 };
+    if (existsSync(flagPath)) {
+      try { flag = JSON.parse(readFileSync(flagPath, 'utf-8')); } catch { /* start fresh */ }
+    }
+    flag.messageCount = (flag.messageCount || 0) + 1;
+    flag.totalSessionMessages = (flag.totalSessionMessages || 0) + 1;
+    currentMessageCount = flag.messageCount;
+    if (!flag.firstMessageAt) flag.firstMessageAt = new Date().toISOString();
+    flag.lastMessageAt = new Date().toISOString();
+    try { writeFileSync(flagPath, JSON.stringify(flag)); } catch { /* ok */ }
+
+    // --- Greeting injection (first message only) ---
+    // The full greeting directive + boot sequence is built HERE (not in session-start)
+    // so it only appears in context for message 1 and never persists.
+    if (flag.messageCount === 1 && !flag.greetingDelivered) {
+      const greetingFeatures = getHookFeatures();
+      const greetingCtx = buildGreetingContext(cwd, project, greetingFeatures);
+      if (greetingCtx) {
+        flag.greetingDelivered = true;
+        try { writeFileSync(flagPath, JSON.stringify(flag)); } catch { /* ok */ }
+        await emitAndExit({
+          hookSpecificOutput: {
+            hookEventName: 'UserPromptSubmit',
+            additionalContext: greetingCtx + '\nIf the user\'s message is just a greeting (hi, hello, hey, or a single character), the greeting IS your full response — no need to ask what they need.',
+          },
+        });
+        return;
+      }
+    }
+
+  }
+
+  // Skip trivial messages first (fastest path)
+  if (SKIP_PATTERNS.some(p => p.test(trimmed))) {
+    await emitAndExit({});
+    return;
+  }
+
+  const features = getHookFeatures();
+
+  // --- Collect primary context from priority chain ---
+  let primaryContext = '';
+
+  // Priority 0: TASK BOUNDARY — pending-remember check (highest priority)
+  if (!primaryContext && sessionId) {
+    const flagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+    if (existsSync(flagPath)) {
+      try {
+        const flag = JSON.parse(readFileSync(flagPath, 'utf-8'));
+        const editCount = flag.editCount || 0;
+        if (editCount >= 1) {
+          const files = Array.isArray(flag.files) ? flag.files : [];
+          primaryContext = NUDGE.pendingRemember(editCount, files);
+        }
+      } catch { /* corrupt flag — ignore, don't block */ }
+    }
+  }
+
+  // Priority 1: Conversation recall (highest recall priority)
+  if (!primaryContext) {
+    const conversationMemoryEnabled = features.conversationMemory !== false;
+    if (conversationMemoryEnabled) {
+      const convMatches = CONVERSATION_RECALL_TRIGGERS.filter(p => p.test(prompt));
+      if (convMatches.length >= 1) {
+        primaryContext = NUDGE.conversation;
+      }
+    }
+  }
+
+  // Priority 2: Tier 1 — MUST recall (>= 1 match)
+  if (!primaryContext) {
+    const t1 = TIER1_TRIGGERS.filter(p => p.test(prompt));
+    if (t1.length >= 1) primaryContext = NUDGE.tier1;
+  }
+
+  // Priority 3: Tier 2 — SHOULD recall (>= 1 match)
+  if (!primaryContext) {
+    const t2 = TIER2_TRIGGERS.filter(p => p.test(prompt));
+    if (t2.length >= 1) primaryContext = NUDGE.tier2;
+  }
+
+  // Priority 4: Tier 3 — CONSIDER recall (>= 2 matches)
+  if (!primaryContext) {
+    const t3 = TIER3_TRIGGERS.filter(p => p.test(prompt));
+    if (t3.length >= 2) primaryContext = NUDGE.tier3;
+  }
+
+  // Priority 5: Non-English (non-Latin scripts)
+  if (!primaryContext && isNonEnglish(prompt)) {
+    primaryContext = NUDGE.nonEnglish;
+  }
+
+  // Priority 6: Latin-script non-English catch-all
+  if (!primaryContext && trimmed.length > 30 && !looksEnglish(trimmed)) {
+    primaryContext = NUDGE.nonEnglish;
+  }
+
+  // --- Auto-recall: inject relevant memories from NI server ---
+  // When greeting is enabled, message 1 gets recall via the boot sequence in buildGreetingContext().
+  // When greeting is disabled, message 1 has no recall at all — so fire auto-recall on message 1 too.
+  let autoRecallContext = '';
+  const greetingEnabled = features.greeting === true;
+  const autoRecallMinMessage = greetingEnabled ? 2 : 1;
+  if (!activeLoopNotice && currentMessageCount >= autoRecallMinMessage) {
+    autoRecallContext = await autoRecall(trimmed, cwd);
+  }
+
+  // --- User Learning (independent — appends to any primary context) ---
+  const userLearningContext = checkUserLearning(features, sessionId);
+
+  // --- Emit combined output ---
+  // NOTE: No bootCancel needed — greeting directive is only injected on message 1
+  // via buildGreetingContext(), so it never persists in session context.
+  const combined = [activeLoopNotice, primaryContext, autoRecallContext, userLearningContext].filter(Boolean).join('\n\n');
+
+  if (combined) {
+    await emitAndExit({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: combined,
+      },
+    });
+  } else {
+    await emitAndExit({});
+  }
+}
+
+main().catch(() => {
+  emitAndExit({});
+});

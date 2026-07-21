@@ -1,0 +1,441 @@
+import { z } from 'zod';
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, readdirSync } from 'fs';
+import { join } from 'path';
+import { text } from './response.js';
+import { getIdentity, effectivePins } from '../services/identity.js';
+import { config } from '../config.js';
+
+// Loop state files and templates live in DATA_HOME/data/
+const DATA_HOME = process.env.SYNABUN_DATA_HOME || process.env.SYNABUN_ROOT || config.dataHome;
+const NI_DATA_DIR = join(DATA_HOME, 'data');
+const LOOP_DIR = join(NI_DATA_DIR, 'loop');
+const LOOP_TEMPLATES_FILE = 'loop-templates.json';
+const LOOP_TEMPLATES_PATH = join(NI_DATA_DIR, LOOP_TEMPLATES_FILE);
+const LOOP_TEMPLATES_PATTERN = /^loop-templates.*\.json$/;
+
+const MAX_ITERATIONS = 50;
+const DEFAULT_ITERATIONS = 10;
+const MAX_MINUTES = 480;
+const DEFAULT_MINUTES = 60;
+
+function ensureLoopDir() {
+  if (!existsSync(LOOP_DIR)) {
+    mkdirSync(LOOP_DIR, { recursive: true });
+  }
+}
+
+const STALE_LOOP_MS = 45 * 60 * 1000;
+const ACTIVE_POINTER_PATH = join(LOOP_DIR, 'active-pointer.json');
+
+function isFreshActive(data: any): boolean {
+  if (!data?.active) return false;
+  const lastAct = new Date(data.lastIterationAt || data.startedAt || 0).getTime();
+  if (!lastAct) return true;
+  return Date.now() - lastAct <= STALE_LOOP_MS;
+}
+
+/**
+ * Resolve the session ID for loop state file.
+ * Priority:
+ *   1. explicit param
+ *   2. CLAUDE_SESSION_ID env (only if matching active flag exists)
+ *   3. SYNABUN_TERMINAL_SESSION env → terminalSessionId scan
+ *   4. active-pointer.json fallback (written by stop hook on claim)
+ *   5. legacy unclaimed loops without terminalSessionId
+ *   6. exactly-one-active fallback (single hook-driven loop)
+ *
+ * Verifying flag existence before trusting CLAUDE_SESSION_ID is what fixes the
+ * "No active loop" regression after /clear renamed the flag file but the env
+ * var still pointed to the pre-clear session ID.
+ */
+function resolveSessionId(explicit?: string): string | null {
+  if (explicit) return explicit;
+
+  ensureLoopDir();
+
+  const claudeSessionEnv = process.env.CLAUDE_SESSION_ID;
+  if (claudeSessionEnv) {
+    const path = getLoopPath(claudeSessionEnv);
+    if (existsSync(path)) {
+      try {
+        const data = JSON.parse(readFileSync(path, 'utf-8'));
+        if (isFreshActive(data)) return claudeSessionEnv;
+      } catch { /* fall through */ }
+    }
+  }
+
+  // Strategy A: terminalSessionId match (survives /clear). Over HTTP the loop's
+  // terminal id arrives via the X-Synabun-Terminal header (identity context);
+  // for stdio it's the inherited env var — effectivePins covers both.
+  const terminalSessionEnv = effectivePins(getIdentity()).terminalSessionId
+    || process.env.SYNABUN_TERMINAL_SESSION;
+  if (terminalSessionEnv) {
+    try {
+      const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-') && f !== 'active-pointer.json');
+      for (const file of files) {
+        try {
+          const data = JSON.parse(readFileSync(join(LOOP_DIR, file), 'utf-8'));
+          if (isFreshActive(data) && data.terminalSessionId === terminalSessionEnv) {
+            return file.replace('.json', '');
+          }
+        } catch { /* skip corrupt files */ }
+      }
+    } catch { /* dir read failed */ }
+  }
+
+  // Strategy A3: active-pointer.json (written by stop hook on flag claim)
+  if (existsSync(ACTIVE_POINTER_PATH)) {
+    try {
+      const ptr = JSON.parse(readFileSync(ACTIVE_POINTER_PATH, 'utf-8'));
+      const candidatePath = getLoopPath(ptr.sessionId);
+      if (ptr.sessionId && existsSync(candidatePath)) {
+        const data = JSON.parse(readFileSync(candidatePath, 'utf-8'));
+        if (isFreshActive(data)) return ptr.sessionId;
+      }
+    } catch { /* ignore corrupt pointer */ }
+  }
+
+  // Strategy B: legacy unclaimed loops without terminalSessionId
+  try {
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-') && f !== 'active-pointer.json');
+    for (const file of files) {
+      try {
+        const data = JSON.parse(readFileSync(join(LOOP_DIR, file), 'utf-8'));
+        if (isFreshActive(data) && !data.terminalSessionId) return file.replace('.json', '');
+      } catch { /* skip corrupt files */ }
+    }
+  } catch { /* dir read failed */ }
+
+  // Strategy A2: exactly-one-fresh-active fallback
+  try {
+    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && !f.startsWith('pending-') && f !== 'active-pointer.json');
+    const matches: string[] = [];
+    for (const file of files) {
+      try {
+        const data = JSON.parse(readFileSync(join(LOOP_DIR, file), 'utf-8'));
+        if (isFreshActive(data)) matches.push(file.replace('.json', ''));
+      } catch { /* skip corrupt files */ }
+    }
+    if (matches.length === 1) return matches[0];
+  } catch { /* dir read failed */ }
+
+  return null;
+}
+
+function getLoopPath(sessionId: string): string {
+  return join(LOOP_DIR, `${sessionId}.json`);
+}
+
+export const loopSchema = {
+  action: z
+    .enum(['start', 'stop', 'status', 'update'] as const)
+    .describe('start: begin autonomous loop. stop: end loop. status: check current loop state. update: write iteration journal/progress.'),
+  task: z
+    .string()
+    .optional()
+    .describe('What to do each iteration (required for start).'),
+  iterations: z
+    .number()
+    .optional()
+    .describe(`Max iterations (1-${MAX_ITERATIONS}, default ${DEFAULT_ITERATIONS}).`),
+  max_minutes: z
+    .number()
+    .optional()
+    .describe(`Time cap in minutes (1-${MAX_MINUTES}, default ${DEFAULT_MINUTES}).`),
+  context: z
+    .string()
+    .optional()
+    .describe('Extra context injected each iteration.'),
+  session_id: z
+    .string()
+    .optional()
+    .describe('Claude Code session ID. Auto-detected if omitted.'),
+  template: z
+    .string()
+    .optional()
+    .describe('Load a saved template by name or id. Template values are used as defaults; explicit params override.'),
+  summary: z
+    .string()
+    .optional()
+    .describe('Brief summary of what this iteration accomplished (1-2 sentences, for journal). Used with action "update".'),
+  progress: z
+    .string()
+    .optional()
+    .describe('Rolling progress summary replacing the previous one. Used with action "update".'),
+};
+
+export const loopDescription =
+  'Autonomous loop control. Start a repeating task loop, check status, update progress journal, or stop it. The Stop hook drives iteration. Call "update" after each iteration with a brief summary to maintain context across compactions.';
+
+// ── Start ──────────────────────────────────────────────────────
+
+function sortLoopTemplateFiles(a: string, b: string): number {
+  if (a === LOOP_TEMPLATES_FILE) return -1;
+  if (b === LOOP_TEMPLATES_FILE) return 1;
+  return a.localeCompare(b);
+}
+
+function listLoopTemplatePaths(): string[] {
+  try {
+    if (!existsSync(NI_DATA_DIR)) return existsSync(LOOP_TEMPLATES_PATH) ? [LOOP_TEMPLATES_PATH] : [];
+    return readdirSync(NI_DATA_DIR)
+      .filter(file => LOOP_TEMPLATES_PATTERN.test(file))
+      .sort(sortLoopTemplateFiles)
+      .map(file => join(NI_DATA_DIR, file));
+  } catch {
+    return existsSync(LOOP_TEMPLATES_PATH) ? [LOOP_TEMPLATES_PATH] : [];
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readLoopTemplates(): Record<string, unknown>[] {
+  const byId = new Map<string, Record<string, unknown>>();
+  const withoutId: Record<string, unknown>[] = [];
+  for (const path of listLoopTemplatePaths()) {
+    try {
+      const data = JSON.parse(readFileSync(path, 'utf-8'));
+      const list = Array.isArray(data) ? data : (isRecord(data) && Array.isArray(data.templates) ? data.templates : []);
+      for (const item of list) {
+        if (!isRecord(item)) continue;
+        const id = typeof item.id === 'string' ? item.id : '';
+        if (id) byId.set(id, item);
+        else withoutId.push(item);
+      }
+    } catch { /* skip corrupt template files */ }
+  }
+  return [...byId.values(), ...withoutId];
+}
+
+function loadTemplate(nameOrId: string): Record<string, unknown> | null {
+  try {
+    const templates = readLoopTemplates();
+    const lower = nameOrId.toLowerCase();
+    return templates.find((t: Record<string, unknown>) =>
+      (t.id as string) === nameOrId ||
+      (t.name as string)?.toLowerCase() === lower
+    ) || null;
+  } catch { return null; }
+}
+
+function handleStart(args: {
+  task?: string;
+  iterations?: number;
+  max_minutes?: number;
+  context?: string;
+  session_id?: string;
+  template?: string;
+}) {
+  // Load template defaults if specified
+  if (args.template) {
+    const tpl = loadTemplate(args.template);
+    if (!tpl) {
+      return text(`Error: Template "${args.template}" not found. Check Settings → Automations for available templates.`);
+    }
+    // Template values as defaults; explicit params override
+    if (!args.task) args.task = tpl.task as string;
+    if (args.iterations === undefined) args.iterations = tpl.iterations as number;
+    if (args.max_minutes === undefined) args.max_minutes = tpl.maxMinutes as number;
+    if (!args.context && tpl.context) args.context = tpl.context as string;
+  }
+
+  if (!args.task?.trim()) {
+    return text('Error: "task" is required for start action. Describe what to do each iteration.');
+  }
+
+  const sessionId = resolveSessionId(args.session_id);
+  if (!sessionId) {
+    return text('Error: Could not determine session ID. Pass session_id explicitly or ensure CLAUDE_SESSION_ID is set.');
+  }
+
+  const iterations = Math.min(Math.max(args.iterations || DEFAULT_ITERATIONS, 1), MAX_ITERATIONS);
+  const maxMinutes = Math.min(Math.max(args.max_minutes || DEFAULT_MINUTES, 1), MAX_MINUTES);
+
+  ensureLoopDir();
+
+  // Check for existing active loop
+  const loopPath = getLoopPath(sessionId);
+  if (existsSync(loopPath)) {
+    try {
+      const existing = JSON.parse(readFileSync(loopPath, 'utf-8'));
+      if (existing?.active) {
+        return text(`Error: Loop already active (iteration ${existing.currentIteration}/${existing.totalIterations}). Stop it first with action "stop".`);
+      }
+    } catch { /* corrupt file, overwrite */ }
+  }
+
+  const state = {
+    active: true,
+    task: args.task.trim(),
+    totalIterations: iterations,
+    currentIteration: 0,
+    maxMinutes,
+    startedAt: new Date().toISOString(),
+    lastIterationAt: null as string | null,
+    context: args.context?.trim() || null,
+    retries: 0,
+    journal: [] as { iteration: number; summary: string; timestamp: string }[],
+    lastMemoryAt: 0,
+    memoryInterval: 5,
+    progressSummary: null as string | null,
+    awaitingNext: false,
+  };
+
+  writeFileSync(loopPath, JSON.stringify(state, null, 2));
+
+  return text([
+    `Loop started for session ${sessionId}.`,
+    `Task: ${state.task}`,
+    `Iterations: ${iterations} | Time cap: ${maxMinutes} min`,
+    state.context ? `Context: ${state.context}` : '',
+    '',
+    'The Stop hook will now drive autonomous iteration. Begin your first iteration.',
+  ].filter(Boolean).join('\n'));
+}
+
+// ── Stop ───────────────────────────────────────────────────────
+
+function handleStop(args: { session_id?: string }) {
+  const sessionId = resolveSessionId(args.session_id);
+  if (!sessionId) {
+    return text('No active loop found to stop.');
+  }
+
+  const loopPath = getLoopPath(sessionId);
+  if (!existsSync(loopPath)) {
+    return text('No active loop found for this session.');
+  }
+
+  let summary = '';
+  try {
+    const state = JSON.parse(readFileSync(loopPath, 'utf-8'));
+    const elapsed = Math.round((Date.now() - new Date(state.startedAt).getTime()) / 60000);
+    summary = ` Completed ${state.currentIteration}/${state.totalIterations} iterations in ${elapsed} min.`;
+  } catch { /* ok */ }
+
+  try { unlinkSync(loopPath); } catch { /* ok */ }
+
+  return text(`Loop stopped.${summary}`);
+}
+
+// ── Status ─────────────────────────────────────────────────────
+
+function handleStatus(args: { session_id?: string }) {
+  const sessionId = resolveSessionId(args.session_id);
+  if (!sessionId) {
+    return text('No active loop.');
+  }
+
+  const loopPath = getLoopPath(sessionId);
+  if (!existsSync(loopPath)) {
+    return text('No active loop for this session.');
+  }
+
+  let state;
+  try {
+    state = JSON.parse(readFileSync(loopPath, 'utf-8'));
+  } catch {
+    return text('Loop state file is corrupt.');
+  }
+
+  if (!state.active) {
+    const finishedAt = state.finishedAt ? ` Finished at ${state.finishedAt}.` : '';
+    return text(`Loop inactive (completed).${finishedAt} ${state.currentIteration}/${state.totalIterations} iterations done.`);
+  }
+
+  const elapsed = Math.round((Date.now() - new Date(state.startedAt).getTime()) / 60000);
+  const iterationsRemaining = state.totalIterations - (state.currentIteration || 0);
+
+  return text([
+    `Loop active: iteration ${state.currentIteration}/${state.totalIterations} (${iterationsRemaining} remaining)`,
+    `Task: ${state.task}`,
+    `Elapsed: ${elapsed} min`,
+    state.context ? `Context: ${state.context}` : '',
+    state.lastIterationAt ? `Last iteration: ${state.lastIterationAt}` : '',
+  ].filter(Boolean).join('\n'));
+}
+
+// ── Update (journal + progress) ───────────────────────────────
+
+function handleUpdate(args: {
+  session_id?: string;
+  summary?: string;
+  progress?: string;
+}) {
+  if (!args.summary && !args.progress) {
+    return text('Error: Provide "summary" (iteration journal) and/or "progress" (rolling summary) for update.');
+  }
+
+  const sessionId = resolveSessionId(args.session_id);
+  if (!sessionId) {
+    return text('No active loop to update.');
+  }
+
+  const loopPath = getLoopPath(sessionId);
+  if (!existsSync(loopPath)) {
+    return text('No loop state file found.');
+  }
+
+  let state: Record<string, unknown>;
+  try {
+    state = JSON.parse(readFileSync(loopPath, 'utf-8'));
+  } catch {
+    return text('Loop state file is corrupt.');
+  }
+
+  if (!state.active) {
+    return text('Loop is not active.');
+  }
+
+  // Append journal entry
+  if (args.summary) {
+    if (!Array.isArray(state.journal)) state.journal = [];
+    (state.journal as { iteration: number; summary: string; timestamp: string }[]).push({
+      iteration: (state.currentIteration as number) || 0,
+      summary: args.summary.slice(0, 200),
+      timestamp: new Date().toISOString(),
+    });
+    // Keep only last 10 entries
+    if ((state.journal as unknown[]).length > 10) {
+      state.journal = (state.journal as unknown[]).slice(-10);
+    }
+  }
+
+  // Update rolling progress summary
+  if (args.progress) {
+    state.progressSummary = args.progress.slice(0, 500);
+  }
+
+  writeFileSync(loopPath, JSON.stringify(state, null, 2));
+
+  return text(`Loop journal updated (iteration ${state.currentIteration}).`);
+}
+
+// ── Main dispatcher ────────────────────────────────────────────
+
+export async function handleLoop(args: {
+  action: string;
+  task?: string;
+  iterations?: number;
+  max_minutes?: number;
+  context?: string;
+  session_id?: string;
+  template?: string;
+  summary?: string;
+  progress?: string;
+}) {
+  switch (args.action) {
+    case 'start':
+      return handleStart(args);
+    case 'stop':
+      return handleStop(args);
+    case 'status':
+      return handleStatus(args);
+    case 'update':
+      return handleUpdate(args);
+    default:
+      return text(`Unknown action "${args.action}". Use: start, stop, status, update.`);
+  }
+}

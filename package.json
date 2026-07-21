@@ -1,0 +1,99 @@
+{
+  "name": "synabun",
+  "version": "2026.7.20",
+  "description": "Local-first persistent vector memory, MCP tooling, and multi-agent workflows for AI assistants",
+  "license": "Apache-2.0",
+  "author": "The SynaBun Authors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danilokhury/Synabun.git"
+  },
+  "homepage": "https://synabun.ai",
+  "type": "module",
+  "bin": {
+    "synabun": "bin/synabun.js"
+  },
+  "files": [
+    "bin/synabun.js",
+    "setup.js",
+    "postinstall.js",
+    "preuninstall.js",
+    "updater.mjs",
+    "updater.cmd",
+    "updater.sh",
+    "NOTICE",
+    "THIRD-PARTY-LICENSES.md",
+    "LICENSE-COMMERCIAL.md",
+    "mcp-server/package.json",
+    "mcp-server/package-lock.json",
+    "mcp-server/dist/",
+    "mcp-server/tsconfig.json",
+    "mcp-server/src/",
+    "mcp-server/run.mjs",
+    "neural-interface/package.json",
+    "neural-interface/package-lock.json",
+    "neural-interface/server.js",
+    "neural-interface/lib/",
+    "neural-interface/i18n/",
+    "neural-interface/skins/",
+    "neural-interface/games/",
+    "neural-interface/public/",
+    "neural-interface/templates/",
+    "neural-interface/scripts/",
+    "hooks/claude-code/post-plan.mjs",
+    "hooks/claude-code/post-remember.mjs",
+    "hooks/claude-code/pre-compact.mjs",
+    "hooks/claude-code/pre-websearch.mjs",
+    "hooks/claude-code/prompt-submit.mjs",
+    "hooks/claude-code/session-start.mjs",
+    "hooks/claude-code/shared.mjs",
+    "hooks/claude-code/stop.mjs",
+    "hooks/claude-code/subagent-start.mjs",
+    "hooks/claude-code/subagent-stop.mjs",
+    "skills/",
+    "lib/paths.js",
+    "lib/paths.d.ts",
+    "lib/data-home-migration.js",
+    "lib/client-config-repair.js",
+    "scripts/recover-user-config.mjs",
+    "scripts/restore-data-home-from-backup.mjs",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning setup.js",
+    "server": "node --disable-warning=ExperimentalWarning neural-interface/server.js",
+    "mcp:build": "npm --prefix mcp-server run build",
+    "test": "npm run test:mcp && npm run test:neural",
+    "test:mcp": "npm --prefix mcp-server test",
+    "test:neural": "npm --prefix neural-interface test",
+    "pack:check": "npm pack --dry-run --json --ignore-scripts",
+    "postinstall": "node postinstall.js",
+    "preuninstall": "node preuninstall.js",
+    "prepublishOnly": "npm --prefix mcp-server ci --ignore-scripts && npm --prefix neural-interface ci --ignore-scripts && npm run mcp:build && npm test && node -e \"const fs = require('node:fs'); for (const path of ['mcp-server/dist/index.js', 'NOTICE', 'THIRD-PARTY-LICENSES.md']) fs.accessSync(path)\" && npm run pack:check"
+  },
+  "keywords": [
+    "ai-agents",
+    "browser-automation",
+    "claude-code",
+    "codex",
+    "embeddings",
+    "gemini",
+    "local-first",
+    "mcp",
+    "model-context-protocol",
+    "opencode",
+    "persistent-memory",
+    "sqlite",
+    "vector-search"
+  ],
+  "bugs": {
+    "url": "https://github.com/danilokhury/Synabun/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
