@@ -44,6 +44,21 @@ const IMMUTABLE_BACKUP_EXTENSIONS = new Set([
   '.pdf', '.png', '.svg', '.webm', '.webp', '.woff', '.woff2', '.zip',
 ]);
 
+// Re-downloadable bulk media under data/. These are pipeline caches, not user
+// state: including them made a pre-update snapshot spend minutes deflating
+// hundreds of MB of video with no progress output, which reads as a hang and
+// gets killed. A restore re-fetches them.
+const EXCLUDED_DATA_DIRS = new Set([
+  'youtube-downloads',
+]);
+
+// Payloads that are already compressed. DEFLATE spends full CPU on every byte
+// of these for no meaningful size gain, so they are stored verbatim instead.
+const INCOMPRESSIBLE_EXTENSIONS = new Set([
+  '.avif', '.gif', '.ico', '.jpeg', '.jpg', '.mov', '.mp3', '.mp4', '.ogg',
+  '.png', '.webm', '.webp', '.woff', '.woff2', '.zip',
+]);
+
 export class BackupStorageError extends Error {
   constructor({ availableBytes, requiredBytes, folderPath }) {
     const availableMiB = Math.floor(availableBytes / 1024 / 1024);
@@ -112,6 +127,7 @@ function shouldSkipDataPath(relativePath) {
   const name = parts.at(-1);
   if (parts[0] === 'updater') return true;
   if (parts[0] === 'logs') return true;
+  if (parts.length > 1 && EXCLUDED_DATA_DIRS.has(parts[0])) return true;
   if (TRANSIENT_DATA_NAMES.has(name)) return true;
   if (name.endsWith('.tmp') || name.endsWith('.pid')) return true;
   if (/\.db-(?:wal|shm)$/i.test(name)) return true;
@@ -205,6 +221,33 @@ export function assertBackupWorkingSpace({
   };
 }
 
+/**
+ * Remove archive temps, SQLite temps, and stage dirs abandoned by an earlier
+ * run. A backup interrupted with Ctrl-C never reaches its own catch/finally,
+ * so its partial archive is orphaned forever — a killed pre-update snapshot
+ * left hundreds of MB behind with nothing to reclaim it.
+ */
+export function cleanupStaleBackupArtifacts(folderPath, { maxAgeMs = 60 * 60 * 1000, now = Date.now } = {}) {
+  if (!existsSync(folderPath)) return [];
+  const removed = [];
+  let entries;
+  try { entries = readdirSync(folderPath); }
+  catch { return removed; }
+  for (const name of entries) {
+    const isArchiveTemp = /\.zip\.\d+\.tmp$/.test(name);
+    const isSqliteTemp = /^\.synabun-(?:db|extra-db)-.*\.tmp$/.test(name);
+    const isStageDir = /^\.synabun-files-/.test(name);
+    if (!isArchiveTemp && !isSqliteTemp && !isStageDir) continue;
+    const path = resolve(folderPath, name);
+    try {
+      if (now() - statSync(path).mtimeMs < maxAgeMs) continue;
+      rmSync(path, { recursive: true, force: true });
+      removed.push(name);
+    } catch { /* another process may be mid-cleanup; leave it */ }
+  }
+  return removed;
+}
+
 function snapshotMutableBackupFiles(files, folderPath) {
   if (!files.some(isMutableBackupInput)) return { files, stageDir: null };
   const stageDir = mkdtempSync(resolve(folderPath, `.synabun-files-${process.pid}-`));
@@ -260,7 +303,10 @@ async function writeArchive({ tempPath, files, manifest }) {
     archive.on('warning', error => error.code === 'ENOENT' ? null : reject(error));
     archive.on('error', reject);
     archive.pipe(output);
-    for (const file of files) archive.file(file.diskPath, { name: `${BACKUP_PREFIX}/${file.archivePath}` });
+    for (const file of files) {
+      const store = INCOMPRESSIBLE_EXTENSIONS.has(extname(file.archivePath).toLowerCase());
+      archive.file(file.diskPath, { name: `${BACKUP_PREFIX}/${file.archivePath}`, store });
+    }
     archive.append(JSON.stringify(manifest, null, 2), { name: `${BACKUP_PREFIX}/manifest.json` });
     archive.finalize().catch(reject);
   });
@@ -294,11 +340,16 @@ export async function createVerifiedBackup({
   freeSpaceReserveBytes = BACKUP_FREE_SPACE_RESERVE_BYTES,
   getAvailableBytes = backupAvailableBytes,
   onBeforeArchive = null,
+  onProgress = null,
   now = () => new Date(),
 } = {}) {
+  // A large data home spends minutes in checksum/archive with no output. Phase
+  // reporting is what stops that from reading as a hang to the caller.
+  const report = typeof onProgress === 'function' ? onProgress : () => {};
   if (!dataHome || !folderPath) throw new Error('dataHome and folderPath are required');
   const createdAt = now();
   mkdirSync(folderPath, { recursive: true });
+  cleanupStaleBackupArtifacts(folderPath);
   const destination = resolve(folderPath, archiveNameFor(kind, createdAt));
   const tempPath = `${destination}.${process.pid}.tmp`;
   const sqliteTemp = resolve(folderPath, `.synabun-db-${process.pid}-${Date.now()}.tmp`);
@@ -325,7 +376,7 @@ export async function createVerifiedBackup({
       file.archivePath.replace(/\\/g, '/'),
       file,
     ])).values()];
-    assertBackupWorkingSpace({
+    const workingSpace = assertBackupWorkingSpace({
       folderPath,
       files: sourceFiles,
       databasePath,
@@ -333,6 +384,7 @@ export async function createVerifiedBackup({
       freeSpaceReserveBytes,
       getAvailableBytes,
     });
+    report({ phase: 'collect', files: sourceFiles.length, bytes: workingSpace.archiveBytes });
 
     sqliteSnapshot = createConsistentSqliteSnapshot(databasePath, sqliteTemp);
     files.length = 0;
@@ -357,6 +409,7 @@ export async function createVerifiedBackup({
     const stableInputs = snapshotMutableBackupFiles([...unique.values()], folderPath);
     stageDir = stableInputs.stageDir;
     const finalFiles = stableInputs.files.sort((a, b) => a.archivePath.localeCompare(b.archivePath));
+    report({ phase: 'checksum', files: finalFiles.length });
     const checksums = {};
     for (const file of finalFiles) checksums[file.archivePath] = `sha256:${await hashFile(file.diskPath)}`;
 
@@ -380,7 +433,9 @@ export async function createVerifiedBackup({
       verification: { algorithm: 'sha256', publication: 'verify-before-atomic-rename' },
     };
     if (typeof onBeforeArchive === 'function') await onBeforeArchive({ files: finalFiles, manifest });
+    report({ phase: 'archive', files: finalFiles.length, bytes: workingSpace.archiveBytes });
     await writeArchive({ tempPath, files: finalFiles, manifest });
+    report({ phase: 'verify', files: finalFiles.length });
     const publishedManifest = verifyBackupArchive(tempPath);
     renameSync(tempPath, destination);
     return {

@@ -261,6 +261,15 @@ async function protectFirstLaunchAfterUpdate(version) {
         folderPath,
         kind: 'pre-update',
         appVersion: manifest.lastAppVersion || null,
+        // Without this the checksum and archive phases run silently for minutes
+        // on a large data home, which users read as a hang and kill.
+        onProgress: ({ phase, files, bytes }) => {
+          const size = bytes ? ` (${(bytes / 1024 / 1024).toFixed(0)} MB)` : '';
+          if (phase === 'collect') info(`  ${files} files to protect${size}`);
+          else if (phase === 'checksum') info(`  Checksumming ${files} files...`);
+          else if (phase === 'archive') info(`  Compressing${size} — this can take several minutes...`);
+          else if (phase === 'verify') info('  Verifying archive integrity...');
+        },
       });
       applyBackupRetention({ folderPath });
       snapshotPath = snapshot.path;
