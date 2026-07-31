@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BrowserPageFailureDisposition,
@@ -8,6 +8,15 @@ import {
   isRecoverableBrowserPageError,
   withBrowserOperationDeadline,
 } from '../lib/browser-tab-recovery.js';
+
+// The deadline timer is deliberately unref'd so a pending browser call never
+// holds the server open. The deadline cases here await a promise that never
+// settles, so that timer is the only thing on the loop and Node drains it
+// before the deadline fires — the tests are then cancelled with "Promise
+// resolution is still pending but the event loop has already resolved". Hold
+// the loop open for the length of the file instead.
+const keepAlive = setInterval(() => {}, 60_000);
+after(() => clearInterval(keepAlive));
 
 test('browser operation deadline rejects before the MCP transport can wedge', async () => {
   await assert.rejects(
