@@ -79,7 +79,11 @@ import {
   createCodexNativeLoopAdapter,
   createOpenCodeNativeLoopAdapter,
 } from './lib/native-loop-providers.js';
-import { resolveTrustedWindowsCodexBinary } from './lib/codex-runtime-path.js';
+import {
+  resolveTrustedWindowsCodexBinary,
+  selectWindowsCodexLauncher,
+  windowsCodexPackageJsonCandidates,
+} from './lib/codex-runtime-path.js';
 import {
   buildExecInvocation,
   execWrapperExtension,
@@ -2994,13 +2998,28 @@ function _heartbeatLock(sessionId, windowId) {
 let _claudeBinPath = null;
 function getAugmentedPath() {
   const home = os.homedir();
-  const extra = [
-    join(home, '.local', 'bin'),
-    '/usr/local/bin',
-    join(home, '.npm-global', 'bin'),
-  ].filter(d => existsSync(d));
-  const current = process.env.PATH || '';
-  return [...extra, ...current.split(delimiter)].join(delimiter);
+  const npmPrefix = process.env.NPM_CONFIG_PREFIX || process.env.npm_config_prefix || '';
+  const extra = process.platform === 'win32'
+    ? [
+      process.env.APPDATA ? join(process.env.APPDATA, 'npm') : join(home, 'AppData', 'Roaming', 'npm'),
+      npmPrefix,
+      dirname(process.execPath),
+    ]
+    : [
+      join(home, '.local', 'bin'),
+      '/usr/local/bin',
+      join(home, '.npm-global', 'bin'),
+      npmPrefix ? join(npmPrefix, 'bin') : '',
+    ];
+  const entries = [...extra.filter(d => d && existsSync(d)), ...(process.env.PATH || '').split(delimiter)];
+  const seen = new Set();
+  return entries.filter((entry) => {
+    if (!entry) return false;
+    const key = process.platform === 'win32' ? entry.toLowerCase() : entry;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join(delimiter);
 }
 
 function getClaudeBin() {
@@ -3088,6 +3107,47 @@ let _nativeCodexBinPath = null;
 // exported subpath, so resolving that file reports a false negative.
 const _codexSdkInstalled = true;
 
+function resolveWindowsGlobalCodexRuntime() {
+  const globalPath = getAugmentedPath().split(delimiter)
+    .filter((entry) => !/[\\/]node_modules[\\/]\.bin[\\/]?$/i.test(entry))
+    .join(delimiter);
+  const env = { ...process.env, PATH: globalPath };
+  const whereExecutable = process.env.SystemRoot
+    ? join(process.env.SystemRoot, 'System32', 'where.exe')
+    : 'where.exe';
+  const lookup = spawnSync(whereExecutable, ['codex'], {
+    encoding: 'utf-8',
+    env,
+    windowsHide: true,
+  });
+  const launchers = lookup.status === 0
+    ? String(lookup.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    : [];
+
+  const npmRootProbe = spawnSync(
+    process.env.ComSpec || process.env.COMSPEC || 'cmd.exe',
+    ['/d', '/s', '/c', 'npm root -g'],
+    { encoding: 'utf-8', env, windowsHide: true, timeout: 5000 },
+  );
+  const npmRoots = npmRootProbe.status === 0
+    ? String(npmRootProbe.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    : [];
+  const codexPackageJsonPaths = windowsCodexPackageJsonCandidates({
+    npmRoots,
+    appData: process.env.APPDATA,
+    npmConfigPrefix: process.env.NPM_CONFIG_PREFIX || process.env.npm_config_prefix,
+    synabunPackageRoot: PACKAGE_ROOT,
+    nodeExecutable: process.execPath,
+  });
+  const resolved = resolveTrustedWindowsCodexBinary({
+    launchers,
+    codexPackageJsonPaths,
+    arch: process.arch,
+    acceptBinary: (candidate) => !isInsideSynabun(candidate),
+  });
+  return { ...resolved, launchers, codexPackageJsonPaths, npmRoots };
+}
+
 function getCodexBin() {
   if (_codexBinPath) return _codexBinPath;
   // All Codex surfaces follow the user's trusted global install. Never fall
@@ -3098,8 +3158,16 @@ function getCodexBin() {
     .join(delimiter);
   const envWithPath = { ...process.env, PATH: globalPath };
   if (process.platform === 'win32') {
-    try { _codexBinPath = execSync('where codex', { encoding: 'utf-8', env: envWithPath }).split('\n')[0].trim(); }
-    catch { _codexBinPath = null; }
+    const resolution = resolveWindowsGlobalCodexRuntime();
+    if (resolution.path) {
+      _codexBinPath = resolution.path;
+      _nativeCodexBinPath = resolution.path;
+    } else {
+      _codexBinPath = selectWindowsCodexLauncher(
+        resolution.launchers,
+        (launcher) => !isInsideSynabun(launcher),
+      );
+    }
   } else {
     try { _codexBinPath = execSync('which codex', { encoding: 'utf-8', env: envWithPath }).trim(); }
     catch { _codexBinPath = null; }
@@ -3121,31 +3189,25 @@ function getNativeCodexBin() {
   if (_nativeCodexBinPath) return _nativeCodexBinPath;
 
   if (process.platform === 'win32') {
-    const globalPath = getAugmentedPath().split(delimiter)
-      .filter((entry) => !/[\\/]node_modules[\\/]\.bin[\\/]?$/i.test(entry))
-      .join(delimiter);
-    const lookup = spawnSync('where.exe', ['codex'], {
-      encoding: 'utf-8',
-      env: { ...process.env, PATH: globalPath },
-      windowsHide: true,
-    });
-    const launchers = lookup.status === 0
-      ? String(lookup.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-      : [];
-    const resolved = resolveTrustedWindowsCodexBinary({
-      launchers,
-      arch: process.arch,
-      acceptBinary: (candidate) => !isInsideSynabun(candidate),
-    });
+    const resolved = resolveWindowsGlobalCodexRuntime();
     if (resolved.path) {
       _nativeCodexBinPath = resolved.path;
+      _codexBinPath = resolved.path;
+      _codexBinSource = 'global';
+      console.log(`[codex-native] Resolved Windows runtime (${resolved.source}): ${resolved.path}`);
       return _nativeCodexBinPath;
     }
     if (resolved.reason) {
       console.warn(`[codex-native] ${resolved.reason}`);
     }
+    if (resolved.checked?.length) {
+      console.warn(`[codex-native] Checked: ${resolved.checked.slice(0, 16).join(' | ')}`);
+    }
+    const globalPackageFound = resolved.codexPackageJsonPaths.some((candidate) => existsSync(candidate));
     throw new Error(
-      'Codex schedules require a trusted global Codex CLI with its Windows runtime. Reinstall it with: npm install -g @openai/codex@latest',
+      globalPackageFound
+        ? 'The global Codex package was found, but its Windows runtime is missing. Reinstall it with: npm install -g @openai/codex@latest --include=optional, then restart SynaBun.'
+        : 'Codex is not installed globally or could not be located. Install it with: npm install -g @openai/codex@latest --include=optional, then restart SynaBun.',
     );
   }
 

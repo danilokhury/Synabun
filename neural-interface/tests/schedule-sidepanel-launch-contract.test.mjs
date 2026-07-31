@@ -21,6 +21,11 @@ test('Codex native schedules use only the trusted global CLI', () => {
     'Codex config must be repaired before the native SDK adapter starts',
   );
   assert.match(server, /resolveTrustedWindowsCodexBinary/);
+  assert.match(server, /selectWindowsCodexLauncher\(\s*resolution\.launchers/);
+  assert.match(server, /windowsCodexPackageJsonCandidates/);
+  assert.match(server, /npm root -g/);
+  assert.match(server, /synabunPackageRoot: PACKAGE_ROOT/);
+  assert.match(server, /npm install -g @openai\/codex@latest --include=optional/);
   assert.match(server, /acceptBinary: \(candidate\) => !isInsideSynabun\(candidate\)/);
   assert.match(resolver, /@openai\/codex-win32-x64/);
   assert.match(resolver, /@openai\/codex-win32-arm64/);

@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2026.7.32",
+  "version": "2026.7.33",
   "description": "Local-first persistent vector memory, MCP tooling, and multi-agent workflows for AI assistants",
   "license": "Apache-2.0",
   "author": "The SynaBun Authors",

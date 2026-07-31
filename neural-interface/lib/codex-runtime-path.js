@@ -15,6 +15,8 @@ const CODEX_TARGETS = {
   },
 };
 
+const CODEX_VENDOR_BINARY_DIRS = ['bin', 'codex'];
+
 export function codexPlatformTarget(platform = process.platform, arch = process.arch) {
   return CODEX_TARGETS[`${platform}:${arch}`] || null;
 }
@@ -34,6 +36,19 @@ function uniquePaths(values, pathImpl) {
   return result;
 }
 
+/**
+ * Pick a Windows launcher suitable for the sidepanel's shell-aware spawn path.
+ * npm lists its extensionless sh shim before the native Windows launcher, so
+ * prefer a PATHEXT-style launcher while retaining the first result as a last
+ * resort for non-npm installations.
+ */
+export function selectWindowsCodexLauncher(launchers = [], acceptLauncher = () => true) {
+  const accepted = uniquePaths(launchers, path.win32).filter(acceptLauncher);
+  return accepted.find((launcher) => /\.(cmd|exe|bat|ps1)$/i.test(launcher))
+    || accepted[0]
+    || null;
+}
+
 function packageJsonCandidatesForLauncher(launcher, pathImpl) {
   const binDir = pathImpl.dirname(launcher);
   const candidates = [
@@ -45,9 +60,53 @@ function packageJsonCandidatesForLauncher(launcher, pathImpl) {
   return candidates;
 }
 
+export function windowsCodexPackageJsonCandidates({
+  npmRoots = [],
+  appData = '',
+  npmConfigPrefix = '',
+  synabunPackageRoot = '',
+  nodeExecutable = '',
+} = {}) {
+  const pathImpl = path.win32;
+  const nodeModulesRoots = [...npmRoots];
+  if (appData) nodeModulesRoots.push(pathImpl.join(appData, 'npm', 'node_modules'));
+  if (npmConfigPrefix) {
+    nodeModulesRoots.push(
+      pathImpl.basename(npmConfigPrefix).toLowerCase() === 'node_modules'
+        ? npmConfigPrefix
+        : pathImpl.join(npmConfigPrefix, 'node_modules'),
+    );
+  }
+  if (
+    synabunPackageRoot
+    && pathImpl.basename(synabunPackageRoot).toLowerCase() === 'synabun'
+    && pathImpl.basename(pathImpl.dirname(synabunPackageRoot)).toLowerCase() === 'node_modules'
+  ) {
+    nodeModulesRoots.push(pathImpl.dirname(synabunPackageRoot));
+  }
+  if (nodeExecutable) {
+    nodeModulesRoots.push(pathImpl.join(pathImpl.dirname(nodeExecutable), 'node_modules'));
+  }
+  return uniquePaths(
+    nodeModulesRoots.map((root) => pathImpl.join(root, '@openai', 'codex', 'package.json')),
+    pathImpl,
+  );
+}
+
 function defaultResolvePlatformPackage(codexPackageJsonPath, platformPackage) {
   const req = createRequire(codexPackageJsonPath);
   return req.resolve(`${platformPackage}/package.json`);
+}
+
+function vendorBinaryCandidates(packageJsonPath, spec, pathImpl) {
+  const packageDir = pathImpl.dirname(packageJsonPath);
+  return CODEX_VENDOR_BINARY_DIRS.map((binaryDir) => pathImpl.join(
+    packageDir,
+    'vendor',
+    spec.targetTriple,
+    binaryDir,
+    spec.binaryName,
+  ));
 }
 
 /**
@@ -91,49 +150,57 @@ export function resolveTrustedWindowsCodexBinary({
     checked.push(codexPackageJsonPath);
     if (!exists(codexPackageJsonPath)) continue;
 
-    const localVendorBinary = pathImpl.join(
-      pathImpl.dirname(codexPackageJsonPath),
-      'vendor',
-      spec.targetTriple,
-      'codex',
-      spec.binaryName,
-    );
-    checked.push(localVendorBinary);
-    if (exists(localVendorBinary) && acceptBinary(localVendorBinary)) {
-      return {
-        path: localVendorBinary,
-        source: 'global-package-vendor',
-        packageJsonPath: codexPackageJsonPath,
-        ...spec,
-        checked,
-      };
-    }
-
-    try {
-      const platformPackageJsonPath = resolvePlatformPackage(
-        codexPackageJsonPath,
-        spec.platformPackage,
-      );
-      const platformBinary = pathImpl.join(
-        pathImpl.dirname(platformPackageJsonPath),
-        'vendor',
-        spec.targetTriple,
-        'codex',
-        spec.binaryName,
-      );
-      checked.push(platformPackageJsonPath, platformBinary);
-      if (exists(platformBinary) && acceptBinary(platformBinary)) {
+    for (const localVendorBinary of vendorBinaryCandidates(codexPackageJsonPath, spec, pathImpl)) {
+      checked.push(localVendorBinary);
+      if (exists(localVendorBinary) && acceptBinary(localVendorBinary)) {
         return {
-          path: platformBinary,
-          source: 'global-platform-package',
+          path: localVendorBinary,
+          source: 'global-package-vendor',
           packageJsonPath: codexPackageJsonPath,
-          platformPackageJsonPath,
           ...spec,
           checked,
         };
       }
+    }
+
+    let resolvedPlatformPackageJsonPath = null;
+    try {
+      resolvedPlatformPackageJsonPath = resolvePlatformPackage(
+        codexPackageJsonPath,
+        spec.platformPackage,
+      );
     } catch (error) {
       checked.push(`${codexPackageJsonPath} -> ${spec.platformPackage}: ${error.message}`);
+    }
+
+    // npm usually hoists the aliased platform package beside @openai/codex,
+    // but some npm versions keep it inside that package's node_modules. Check
+    // both layouts directly so package exports/hoisting do not block discovery.
+    const platformSegments = spec.platformPackage.split('/');
+    const codexPackageDir = pathImpl.dirname(codexPackageJsonPath);
+    const globalNodeModules = pathImpl.dirname(pathImpl.dirname(codexPackageDir));
+    const platformPackageJsonPaths = uniquePaths([
+      resolvedPlatformPackageJsonPath,
+      pathImpl.join(globalNodeModules, ...platformSegments, 'package.json'),
+      pathImpl.join(codexPackageDir, 'node_modules', ...platformSegments, 'package.json'),
+    ], pathImpl);
+
+    for (const platformPackageJsonPath of platformPackageJsonPaths) {
+      checked.push(platformPackageJsonPath);
+      if (!exists(platformPackageJsonPath)) continue;
+      for (const platformBinary of vendorBinaryCandidates(platformPackageJsonPath, spec, pathImpl)) {
+        checked.push(platformBinary);
+        if (exists(platformBinary) && acceptBinary(platformBinary)) {
+          return {
+            path: platformBinary,
+            source: 'global-platform-package',
+            packageJsonPath: codexPackageJsonPath,
+            platformPackageJsonPath,
+            ...spec,
+            checked,
+          };
+        }
+      }
     }
   }
 

@@ -1,3 +1,19 @@
+# SynaBun v.2026.07.33
+
+A Windows release: Codex schedules and sidepanels now find a globally installed Codex runtime instead of failing at launch.
+
+## 🛠 Fixed
+
+- **Codex could not be found on Windows even with the global CLI installed** — SynaBun located the Codex runtime by looking it up on the inherited `PATH`, and the PATH it built for that lookup only added POSIX directories (`~/.local/bin`, `/usr/local/bin`, `~/.npm-global/bin`) that do not exist on Windows. Started from anywhere whose environment did not already carry the npm global bin — a shortcut, a service, a fresh terminal after an install — Codex was invisible and every Codex schedule failed. Discovery no longer depends on `PATH` at all: `@openai/codex` is now located under `npm root -g`, `%APPDATA%\npm\node_modules`, an `npm_config_prefix` override, the `node_modules` directory that contains SynaBun itself, and Node's own install directory. The Windows PATH augmentation also picks up `%APPDATA%\npm`, the configured npm prefix, and Node's directory, deduplicated, so the shell-aware launch paths improve too.
+- **The native Codex executable was missed under current npm layouts** — The resolver looked in exactly one place, `vendor/<target>/codex/codex.exe` inside the platform package resolved through `require.resolve`. Current Codex releases ship the executable at `vendor/<target>/bin/`, and depending on the npm version the platform package sits either beside `@openai/codex` or nested inside its own `node_modules` — and package `exports` can block the resolve entirely. Both vendor layouts and all three package locations are now checked directly, so hoisting differences no longer read as "Codex is not installed".
+- **Windows launched npm's shell shim instead of the real launcher** — `npm install -g` writes both an extensionless `codex` sh shim and a `codex.cmd`, and `where codex` lists the shim first, which Windows cannot spawn. The sidepanel launch path now prefers a `.cmd`, `.exe`, `.bat`, or `.ps1` launcher and keeps the first result only as a fallback for non-npm installations.
+
+## ⚙️ Improved
+
+- **A missing Codex runtime says which problem it is** — The failure notice now distinguishes "the global Codex package is installed but its Windows runtime is missing" from "Codex is not installed globally", and both point at `npm install -g @openai/codex@latest --include=optional`. The platform executable ships as an optional dependency, so an install that skipped optional packages leaves a Codex that looks present and cannot run. Successful resolution logs which layout it came from, and failures log the candidate paths that were checked.
+
+---
+
 # SynaBun v.2026.07.32
 
 A follow-up to 2026.07.31 that makes updating fast again on a large data home.
