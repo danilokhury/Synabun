@@ -22,11 +22,11 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}
 
-      - name: Verify release commit is the Clean branch tip
+      - name: Verify release commit is the main branch tip
         run: |
-          git fetch --no-tags --depth=1 origin Clean
+          git fetch --no-tags --depth=1 origin main
           if [ "$(git rev-parse HEAD)" != "$(git rev-parse FETCH_HEAD)" ]; then
-            echo "Release tags must point to the current Clean branch tip." >&2
+            echo "Release tags must point to the current main branch tip." >&2
             exit 1
           fi
 
