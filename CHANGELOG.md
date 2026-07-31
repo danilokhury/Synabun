@@ -1,3 +1,25 @@
+# SynaBun v.2026.07.34
+
+A reliability release: the Claude sidepanel no longer dies with a misleading "does not match this system's libc" error, and every bundled native binary is checked and repaired at startup.
+
+## 🛠 Fixed
+
+- **"Native binary exists but failed to launch"** — The Claude sidepanel could fail every turn with *"Claude Code native binary at `…/claude` exists but failed to launch. This usually means the binary does not match this system's libc…"*. On macOS and Windows that explanation is never right: the real cause is almost always a missing execute bit. npm does not preserve the execute bit for files a package ships without a `bin` entry, which is exactly how the Claude Agent SDK and Codex deliver their native payloads, so a perfectly good binary can land as mode `0644` and fail to spawn. SynaBun now stats the binary the SDK is about to launch, restores the execute bit when it is missing, and retries — and when it cannot repair it, it says what is actually wrong: a permission problem on macOS and Linux, Gatekeeper quarantine (with the `xattr -d com.apple.quarantine` command) on macOS, a genuine libc mismatch only on Linux, and an unlaunchable `.cmd`/`.bat`/`.ps1` shim on Windows.
+- **Only the current machine's binaries were repaired** — The startup repair looked at one directory, `prebuilds/<your platform>-<your arch>`, so a checkout carrying several platform builds left the others broken — including `darwin-x64`, which is what an Intel Mac needs for terminals. Startup and postinstall now sweep every vendored binary that is present (Claude Agent SDK, Codex, `node-pty`) by walking the tree instead of consulting a hardcoded list, so new platform directories are covered automatically.
+- **The postinstall repair had stopped doing anything** — `scripts/rebuild-pty.js` was still fixing permissions on `node_modules/.bin/claude` and `@anthropic-ai/claude-code/cli.js`, neither of which has existed since that package was replaced by the Agent SDK. Its prebuild list named Linux directories that are not shipped while missing ones that are. It now runs the shared sweep, and runs it *before* the "node-pty not found, skipping" guard — previously an install without node-pty skipped the Claude and Codex repair entirely.
+- **A `.cjs` executable override was launched the wrong way** — A custom Claude executable ending in `.cjs` was treated as a script to run through Node, but the SDK spawns it directly, so it needed the execute bit and did not get it.
+
+## ✨ New
+
+- **Runtime notices in the Claude sidepanel** — A new amber notice sits between grey status text and a red fatal error: something went wrong, was worked around, and the session is continuing in a degraded state. You will see it when the bundled binary is repaired and retried, and when a session falls back to your globally installed Claude CLI. It appears in both the sidepanel and the standalone chat page.
+- **Fallback to your installed Claude CLI** — If the bundled runtime cannot be launched or repaired, sessions and unattended automation loops now fall back to the Claude CLI you have installed rather than failing the turn. Because model aliases and effort levels resolve per-binary, a version difference between your CLI and the bundled runtime is reported alongside the fallback instead of silently changing which model runs.
+
+## ⚙️ Changed
+
+- **A custom Claude executable path is now validated before use** — The `claude-skin` → `sdkExecutable` override was passed straight through to the SDK, which uses it verbatim with no checks of its own. It is now vetted first, and a bare command name such as `claude` is rejected with an explanation: the SDK spawns without a shell and cannot resolve a name from `PATH`, so handing one over produces a worse and more confusing failure than the one being recovered from. Overrides may be either a script entrypoint or a native binary path, and the same rule now applies to automation loops, which previously accepted anything.
+
+---
+
 # SynaBun v.2026.07.33
 
 A Windows release: Codex schedules and sidepanels now find a globally installed Codex runtime instead of failing at launch.

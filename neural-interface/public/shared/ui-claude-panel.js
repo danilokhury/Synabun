@@ -1125,6 +1125,7 @@ function injectStyles() {
     /* ── Status / errors / thinking ── */
     .cp-messages .msg-status { padding: 2px 14px 2px 48px; font-size: 10px; color: var(--t-faint); font-family: 'JetBrains Mono', monospace; }
     .cp-messages .msg-error { padding: 4px 14px 4px 48px; font-size: 10.5px; color: #ff5252; font-family: 'JetBrains Mono', monospace; }
+    .cp-messages .msg-warn { padding: 4px 14px 4px 48px; font-size: 10.5px; color: #e0a33e; font-family: 'JetBrains Mono', monospace; white-space: pre-wrap; }
     .cp-messages .msg-tools-summary {
       font-size: 9.5px; font-family: 'JetBrains Mono', monospace;
       color: rgba(255,255,255,0.2); padding: 3px 0; margin-top: 2px;
@@ -4997,6 +4998,14 @@ function handleTabEvent(tab, ev) {
     appendStatus(tab, ev.message || 'Retrying…');
     return;
   }
+  // Non-fatal runtime problems (e.g. the bundled Claude binary lost its execute
+  // bit and was repaired, or we fell back to the globally installed CLI). The
+  // session continues — this must not render as a fatal error.
+  if (ev.type === 'system' && ev.subtype === 'runtime_notice') {
+    if (ev.level === 'error') appendError(tab, ev.message || 'Runtime error');
+    else appendWarn(tab, ev.message || 'Runtime notice');
+    return;
+  }
 
   if (ev.type === 'system' && (ev.subtype === 'compact' || ev.subtype === 'compact_started')) {
     tab.compacting = true;
@@ -7335,6 +7344,14 @@ function appendStatus(tab, text) {
 function appendError(tab, text) {
   const $msgs = tab.messagesEl; if (!$msgs) return;
   const el = document.createElement('div'); el.className = 'msg-error'; el.textContent = text;
+  $msgs.appendChild(el); pruneMessages($msgs); if (tab === activeTab()) scrollEnd();
+  scheduleSessionSnapshotSave(tab);
+}
+// Amber, between status (grey, ignorable) and error (red, fatal): something went
+// wrong and was worked around, and the user should know the session is degraded.
+function appendWarn(tab, text) {
+  const $msgs = tab.messagesEl; if (!$msgs) return;
+  const el = document.createElement('div'); el.className = 'msg-warn'; el.textContent = text;
   $msgs.appendChild(el); pruneMessages($msgs); if (tab === activeTab()) scrollEnd();
   scheduleSessionSnapshotSave(tab);
 }

@@ -220,6 +220,14 @@ function handleMsg(msg) {
 function handleEvent(ev) {
   if (!ev?.type) return;
 
+  // Non-fatal runtime problems (bundled binary repaired, or fell back to the
+  // globally installed CLI). The turn continues — never render this as fatal.
+  if (ev.type === 'system' && ev.subtype === 'runtime_notice') {
+    if (ev.level === 'error') appendError(ev.message || 'Runtime error');
+    else appendWarn(ev.message || 'Runtime notice');
+    return;
+  }
+
   // init
   if (ev.type === 'system' && ev.subtype === 'init') {
     if (ev.session_id) {
@@ -664,6 +672,16 @@ function appendStatus(text) {
 function appendError(text) {
   const el = document.createElement('div');
   el.className = 'msg-error';
+  el.textContent = text;
+  $msgs.appendChild(el);
+  scrollEnd();
+}
+
+// Amber: something went wrong and was worked around. The session continues, but
+// it is degraded (e.g. running on the global CLI instead of the bundled one).
+function appendWarn(text) {
+  const el = document.createElement('div');
+  el.className = 'msg-warn';
   el.textContent = text;
   $msgs.appendChild(el);
   scrollEnd();

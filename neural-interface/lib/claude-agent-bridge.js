@@ -20,7 +20,14 @@
 // session with no WS bound, so page-refresh reattach is the same object.
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
+import { CLAUDE_EFFORT_LEVELS, checkClaudeCliSkew } from './claude-model-catalog.js';
+import {
+  claudeRuntime,
+  clearNativeBinaryCache,
+  isNativeBinaryLaunchFailure,
+  planRuntimeRecovery,
+  resolveClaudeExecutableOverride,
+} from './native-binary-runtime.js';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
@@ -153,6 +160,12 @@ class ClaudeSession {
     this.lastActivity = Date.now();
     this.lastPrompt = null;
     this.stallRetries = 0;
+
+    // Native-runtime recovery latches. Set here and NOWHERE else — resetting
+    // them on query recreation would turn a permanently broken binary into an
+    // infinite repair/retry loop.
+    this._nativeRepairTried = false;
+    this._fallbackBin = null;
 
     this.pendingPerms = new Map(); // requestId → { toolName, resolve, input, kind }
     this.alwaysAllowed = new Set();
@@ -291,13 +304,34 @@ class ClaudeSession {
     if (parentDir && parentDir !== workDir && dirname(parentDir) !== parentDir) {
       options.additionalDirectories = [parentDir];
     }
-    // Default to the SDK's bundled CLI (version-matched). An explicit .js override
-    // can be set via cli-config.json → "claude-skin": { "sdkExecutable": "…/cli.js" }.
+    // Default to the SDK's bundled CLI (version-matched). An override can be set
+    // via cli-config.json → "claude-skin": { "sdkExecutable": "…" } and may be
+    // either a .js entrypoint (launched via node) or a native binary path.
+    //
+    // The SDK uses pathToClaudeCodeExecutable verbatim with zero validation, so
+    // everything is vetted here first — notably a bare command name, which would
+    // ENOENT under the SDK's spawn(shell:false).
     const sdkExec = deps.sdkExecutable;
-    if (sdkExec && /\.[cm]?js$/i.test(sdkExec) && existsSync(sdkExec)) {
-      options.pathToClaudeCodeExecutable = sdkExec;
+    const override = resolveClaudeExecutableOverride(sdkExec);
+    if (override.path) {
+      options.pathToClaudeCodeExecutable = override.path;
     } else if (sdkExec) {
-      log('ignoring non-.js sdkExecutable override:', sdkExec);
+      log('ignoring sdkExecutable override:', override.reason);
+      this.send({ type: 'stderr', text: `Ignoring sdkExecutable override — ${override.reason}` });
+    }
+
+    if (!options.pathToClaudeCodeExecutable) {
+      if (this._fallbackBin) {
+        // A previous turn proved the bundled binary unusable; stay on the CLI we
+        // already fell back to rather than re-failing every turn.
+        options.pathToClaudeCodeExecutable = this._fallbackBin;
+      } else {
+        // Called for its side effect only: this stats the binary the SDK is about
+        // to resolve and restores the execute bit if it is missing. We
+        // deliberately do NOT pass the resolved path on — letting the SDK resolve
+        // for itself keeps us correct even if its resolution logic changes.
+        claudeRuntime();
+      }
     }
 
     log(`session create: resume=${this.sessionId || 'none'} model=${this.model || 'default'} effort=${this.effort || 'default'} mode=${this.permissionMode} cwd=${workDir} sdk=${SDK_VERSION}`);
@@ -327,10 +361,11 @@ class ClaudeSession {
       const msg = err?.message || String(err);
       log('pump error:', msg);
       if (/No conversation found/i.test(msg)) { this._recoverLostSession(); return; }
-      const friendly = /ENOENT/.test(msg)
-        ? 'Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code'
-        : msg;
-      this._finishTurnWithError(friendly);
+      // The SDK cannot tell a permission problem from a libc mismatch: it buckets
+      // every spawn error together and always blames musl/glibc. Diagnose it
+      // properly, repair what we can, and fall back to the user's CLI.
+      if (isNativeBinaryLaunchFailure(err)) { this._recoverNativeRuntime(err); return; }
+      this._finishTurnWithError(msg);
     } finally {
       if (this.q === q) this.q = null;
     }
@@ -382,6 +417,80 @@ class ClaudeSession {
       this.ensureQuery();
       if (prompt) this._pushUserText(prompt);
     });
+  }
+
+  /**
+   * The bundled native CLI failed to launch.
+   *
+   * The SDK's own message for this always blames a musl/glibc mismatch, which is
+   * only ever right on Linux — on macOS and Windows the real cause is almost
+   * always a missing execute bit (npm does not preserve it for binaries shipped
+   * without a `bin` entry, and this repo commits node_modules).
+   *
+   * Recovery is: re-stat and repair → retry once → fall back to the user's
+   * installed CLI with a visible notice → give up with an accurate diagnosis.
+   */
+  _recoverNativeRuntime(err) {
+    const prompt = this.lastPrompt;
+    // The cached verdict predates the failure; re-stat so a repair performed by
+    // another session (or the boot sweep) is visible.
+    clearNativeBinaryCache();
+    const runtime = claudeRuntime();
+
+    let fallbackBin = this._fallbackBin;
+    if (!fallbackBin) {
+      // getClaudeBin()'s last resort is the bare string 'claude'. The SDK spawns
+      // with shell:false, so a bare name is a guaranteed ENOENT — the override
+      // validator rejects it, leaving fallbackBin null and giving the user a
+      // real diagnosis instead of a second, more confusing failure.
+      const candidate = resolveClaudeExecutableOverride(deps.getClaudeBin?.());
+      if (candidate.ok && candidate.path) fallbackBin = candidate.path;
+    }
+
+    const plan = planRuntimeRecovery({
+      err,
+      runtime,
+      fallbackBin,
+      alreadyTried: this._nativeRepairTried,
+    });
+    log(`native runtime recovery: action=${plan.action} state=${runtime.state} kind=${plan.kind}`);
+
+    if (plan.action === 'retry') {
+      this._nativeRepairTried = true;
+      this.sendEvent({ type: 'system', subtype: 'runtime_notice', level: 'warn', message: plan.message });
+      this._recreateQuery(prompt);
+      return;
+    }
+
+    if (plan.action === 'fallback') {
+      this._fallbackBin = fallbackBin;
+      this.sendEvent({ type: 'system', subtype: 'runtime_notice', level: 'warn', message: plan.message });
+      // Report-only: the fallback CLI may be a different version than the SDK
+      // was built against, and alias ids like "opus[1m]" resolve per-binary — so
+      // a picked model can silently launch as another version.
+      this._announceSkew(fallbackBin);
+      this._recreateQuery(prompt);
+      return;
+    }
+
+    this._finishTurnWithError(plan.message);
+  }
+
+  _announceSkew(bin) {
+    Promise.resolve()
+      .then(() => checkClaudeCliSkew(bin, { log: () => {} }))
+      .then((skew) => {
+        if (!skew?.skewed || this.destroyed) return;
+        this.sendEvent({
+          type: 'system',
+          subtype: 'runtime_notice',
+          level: 'warn',
+          message: `Version skew: your installed Claude CLI is ${skew.discovered}, but the bundled `
+            + `runtime is ${skew.bundled}. Model aliases and effort levels resolve per-binary, so `
+            + 'behaviour may differ until the bundled binary is repaired.',
+        });
+      })
+      .catch(() => {});
   }
 
   _pushUserText(text, images) {

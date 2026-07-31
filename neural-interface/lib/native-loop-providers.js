@@ -1,6 +1,7 @@
 import { Codex } from '@openai/codex-sdk';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
 import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
+import { claudeRuntime, resolveClaudeExecutableOverride } from './native-binary-runtime.js';
 import { dirname } from 'node:path';
 
 function stringEnv(source) {
@@ -175,6 +176,8 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     runId, cwd, model, effort, browserSessionId, browserTabId,
     mcpUrl, onIdentity = () => {}, onEvent = () => {}, queryFactory = claudeQuery,
     sdkExecutable, includePartialMessages = process.platform !== 'win32',
+    // Fallback CLI + runtime probe, injectable for tests.
+    claudeBin = null, resolveRuntime = claudeRuntime, logWarn = console.warn,
   } = options;
   const input = createInputQueue();
   const abortController = new AbortController();
@@ -224,7 +227,31 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   if (mcpUrl) queryOptions.mcpServers = { SynaBun: { type: 'http', url: mcpUrl, headers } };
   if (model) queryOptions.model = model;
   if (effort && CLAUDE_EFFORT_LEVELS.includes(effort)) queryOptions.effort = effort;
-  if (sdkExecutable) queryOptions.pathToClaudeCodeExecutable = sdkExecutable;
+  // The SDK uses pathToClaudeCodeExecutable verbatim with no validation, so vet
+  // the override first (a bare command name would ENOENT under shell:false).
+  // With no override, calling resolveRuntime() also restores the execute bit on
+  // the bundled binary — npm drops it, and this repo commits node_modules.
+  //
+  // Pre-flight only: unattended loops have no one to prompt, and retries are
+  // owned by native-loop-runtime.js. A bad runtime here means we pick the
+  // fallback CLI up front rather than failing mid-loop.
+  const override = resolveClaudeExecutableOverride(sdkExecutable);
+  if (override.path) {
+    queryOptions.pathToClaudeCodeExecutable = override.path;
+  } else {
+    if (sdkExecutable) logWarn(`[native-loop] ignoring sdkExecutable override — ${override.reason}`);
+    const runtime = resolveRuntime();
+    if (!runtime.ok) {
+      const fallback = resolveClaudeExecutableOverride(claudeBin);
+      if (fallback.ok && fallback.path) {
+        queryOptions.pathToClaudeCodeExecutable = fallback.path;
+        logWarn(`[native-loop] bundled Claude binary unusable (${runtime.state}) — using ${fallback.path}`);
+      } else {
+        logWarn(`[native-loop] bundled Claude binary unusable (${runtime.state}) and no launchable `
+          + `fallback CLI: ${runtime.reason || fallback.reason || 'none configured'}`);
+      }
+    }
+  }
 
   const q = queryFactory({ prompt: input, options: queryOptions });
   const deltaBuffer = new Map();

@@ -85,6 +85,10 @@ import {
   windowsCodexPackageJsonCandidates,
 } from './lib/codex-runtime-path.js';
 import {
+  claudeRuntime,
+  ensureVendoredExecutables,
+} from './lib/native-binary-runtime.js';
+import {
   buildExecInvocation,
   execWrapperExtension,
   execWrapperLaunchCommand,
@@ -184,26 +188,23 @@ const readFdAsync = promisify(readCb);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Fix spawn-helper permissions on Unix (npm/cpSync don't preserve execute bit)
-if (process.platform !== 'win32') {
-  try {
-    const ptyBase = resolve(__dirname, 'node_modules', 'node-pty');
-    const spawnHelperPaths = [
-      resolve(ptyBase, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper'),
-      resolve(ptyBase, 'build', 'Release', 'spawn-helper'),
-    ];
-    for (const p of spawnHelperPaths) {
-      if (existsSync(p)) {
-        const st = statSync(p);
-        if (!(st.mode & 0o111)) {
-          chmodSync(p, st.mode | 0o755);
-          console.log(`[pty] Fixed execute permission on ${p}`);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[pty] Could not verify spawn-helper permissions:', err.message);
+// Restore execute permissions on every vendored native binary (Claude Agent SDK,
+// Codex, node-pty). npm and cpSync drop the execute bit, and this repo commits
+// node_modules — historically with core.filemode=false, so binaries checked out
+// 0644 and failed to spawn. The Claude sidepanel surfaced that as the SDK's
+// misleading "does not match this system's libc" error.
+//
+// This sweeps ALL platform directories, not just this host's: a vendored
+// checkout can carry several, and repairing only the current one left e.g.
+// prebuilds/darwin-x64/spawn-helper broken for Intel Macs.
+try {
+  const sweep = ensureVendoredExecutables({ root: __dirname, log: (msg) => console.log(msg) });
+  for (const failure of sweep.failed) {
+    console.warn(`[binaries] ${failure.path} is not launchable (${failure.state}).`
+      + (failure.repairCommand ? ` Try: ${failure.repairCommand}` : ''));
   }
+} catch (err) {
+  console.warn('[binaries] Could not verify vendored binary permissions:', err.message);
 }
 
 // Load only the canonical data-home environment. Importing `dotenv/config`
@@ -9641,8 +9642,14 @@ let _claudeBridgeError = null;
         if (typeof cfg.partials === 'boolean') return cfg.partials;
         return process.platform !== 'win32';
       },
-      // Optional explicit cli.js override; bundled SDK CLI is the default.
+      // Optional explicit executable override; bundled SDK CLI is the default.
+      // Accepts a .js entrypoint (launched via node) or a native binary path —
+      // see resolveClaudeExecutableOverride() in lib/native-binary-runtime.js.
       get sdkExecutable() { return _readClaudeSkinConfig().sdkExecutable || null; },
+      // Last-resort runtime for the bridge: if the SDK's bundled native binary
+      // cannot be launched or repaired, fall back to the user's installed CLI.
+      // Lazy so the (memoized) resolution happens on demand, not at boot.
+      getClaudeBin: () => getClaudeBin(),
     });
     const shutdown = () => { try { _claudeBridge.shutdownAllBridges(); } catch {} };
     process.on('exit', shutdown);
@@ -26066,6 +26073,10 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         model: state.model && state.model.includes(':') ? toCliModelName(state.model) : state.model,
         mcpUrl: `http://localhost:${PORT}/mcp`,
         sdkExecutable: config.sdkExecutable || undefined,
+        // Fallback if the SDK's bundled native binary is unusable — unattended
+        // loops cannot surface a permission error to anyone, so they need the
+        // same escape hatch the sidepanel has.
+        claudeBin: getClaudeBin(),
         includePartialMessages: typeof config.partials === 'boolean'
           ? config.partials
           : process.platform !== 'win32',

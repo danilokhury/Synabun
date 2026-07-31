@@ -11,30 +11,48 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, cpSync, mkdirSync, chmodSync } from 'node:fs';
+import { existsSync, cpSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureVendoredExecutables } from '../lib/native-binary-runtime.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ptyDir = resolve(__dirname, '..', 'node_modules', 'node-pty');
+const neuralRoot = resolve(__dirname, '..');
+const ptyDir = resolve(neuralRoot, 'node_modules', 'node-pty');
 
-if (!existsSync(ptyDir)) {
-  console.log('[rebuild-pty] node-pty not found, skipping');
-  process.exit(0);
+// Step 1a: Restore execute permissions on every vendored native binary.
+//
+// npm does not preserve the execute bit for files shipped via a package's
+// `files` array with no `bin` entry — which is exactly how the Claude Agent SDK
+// and Codex ship their native payloads. This repo also commits node_modules, so
+// a checkout can materialize them 0644 as well.
+//
+// The previous version of this step hardcoded four prebuild directories (naming
+// linux dirs that do not exist here while missing ones that do) and chmod'd
+// node_modules/.bin/claude and @anthropic-ai/claude-code/cli.js — neither of
+// which exists any more, since that package was replaced by
+// @anthropic-ai/claude-agent-sdk. The sweep below enumerates instead.
+//
+// This runs BEFORE the node-pty guard below: the sweep also covers the Claude
+// and Codex binaries, which must be repaired even in an install that has no
+// node-pty at all.
+function sweepVendoredBinaries(label) {
+  const sweep = ensureVendoredExecutables({ root: neuralRoot, log: console.log });
+  for (const failure of sweep.failed) {
+    console.warn(`[rebuild-pty] ${failure.path} is not launchable (${failure.state}).`
+      + (failure.repairCommand ? ` Try: ${failure.repairCommand}` : ''));
+  }
+  if (label && sweep.repaired.length) {
+    console.log(`[rebuild-pty] ${label}: repaired ${sweep.repaired.length} binaries`);
+  }
+  return sweep;
 }
 
-// Step 1a: Fix spawn-helper permissions on Unix (cpSync/npm don't preserve +x)
-if (process.platform !== 'win32') {
-  for (const dir of ['prebuilds/darwin-arm64', 'prebuilds/darwin-x64', 'prebuilds/linux-x64', 'prebuilds/linux-arm64', 'build/Release']) {
-    const sh = resolve(ptyDir, dir, 'spawn-helper');
-    if (existsSync(sh)) try { chmodSync(sh, 0o755); } catch {}
-  }
+sweepVendoredBinaries();
 
-  // Fix claude CLI binary permissions (same npm +x issue)
-  const claudeBin = resolve(__dirname, '..', 'node_modules', '.bin', 'claude');
-  if (existsSync(claudeBin)) try { chmodSync(claudeBin, 0o755); } catch {}
-  const claudeCli = resolve(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-  if (existsSync(claudeCli)) try { chmodSync(claudeCli, 0o755); } catch {}
+if (!existsSync(ptyDir)) {
+  console.log('[rebuild-pty] node-pty not found, skipping rebuild');
+  process.exit(0);
 }
 
 // Step 1b: Check if node-pty actually works (spawn test, not just module load)
@@ -86,13 +104,9 @@ if (existsSync(buildDir)) {
     }
   }
 
-  // Ensure spawn-helper is executable (cpSync doesn't preserve execute bit)
-  if (process.platform !== 'win32') {
-    const spawnHelper = resolve(prebuildsDir, 'spawn-helper');
-    if (existsSync(spawnHelper)) {
-      chmodSync(spawnHelper, 0o755);
-    }
-  }
+  // cpSync does not preserve the execute bit, so re-sweep the freshly copied
+  // binaries (this also picks up the prebuilds dir we just created).
+  sweepVendoredBinaries('post-rebuild');
 
   console.log(`[rebuild-pty] Rebuilt for ${platform}-${arch} (Node ${process.version})`);
 } else {

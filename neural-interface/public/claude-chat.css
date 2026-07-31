@@ -417,6 +417,13 @@
   color: #ff5252;
   font-family: 'JetBrains Mono', monospace;
 }
+.msg-warn {
+  padding: 6px 16px 6px 52px;
+  font-size: 11.5px;
+  color: #e0a33e;
+  font-family: 'JetBrains Mono', monospace;
+  white-space: pre-wrap;
+}
 
 .thinking {
   display: flex;
