@@ -263,11 +263,15 @@ async function protectFirstLaunchAfterUpdate(version) {
         appVersion: manifest.lastAppVersion || null,
         // Without this the checksum and archive phases run silently for minutes
         // on a large data home, which users read as a hang and kill.
-        onProgress: ({ phase, files, bytes }) => {
+        onProgress: ({ phase, files, bytes, skippedFiles, skippedBytes }) => {
           const size = bytes ? ` (${(bytes / 1024 / 1024).toFixed(0)} MB)` : '';
-          if (phase === 'collect') info(`  ${files} files to protect${size}`);
-          else if (phase === 'checksum') info(`  Checksumming ${files} files...`);
-          else if (phase === 'archive') info(`  Compressing${size} — this can take several minutes...`);
+          if (phase === 'collect') {
+            info(`  ${files} files to protect${size}`);
+            if (skippedFiles) {
+              info(`  Skipping ${skippedFiles} generated media files (${(skippedBytes / 1024 / 1024).toFixed(0)} MB) — an upgrade never touches them`);
+            }
+          } else if (phase === 'checksum') info(`  Checksumming ${files} files...`);
+          else if (phase === 'archive') info(`  Compressing${size}...`);
           else if (phase === 'verify') info('  Verifying archive integrity...');
         },
       });

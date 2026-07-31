@@ -1,3 +1,13 @@
+# SynaBun v.2026.07.32
+
+A follow-up to 2026.07.31 that makes updating fast again on a large data home.
+
+## 🛠 Fixed
+
+- **Updating took several minutes on a large data home** — Before a new version starts, SynaBun snapshots your data home so the update can be rolled back. That snapshot archived *everything*, so a multi-GB data home spent minutes compressing during `npm install` — one report was 9,470 files and 3,832 MB. An upgrade snapshot only needs to protect state: it never rewrites your generated images, audio, or video, and those survive a rollback on disk regardless. Upgrade snapshots now skip generated media, and if what remains is still over ~1 GB they fall back to irreplaceable state only — your `.env`, everything under `mcp-data/`, and any `.db`, `.sqlite`, or `.json`. Compression on the blocking path drops to the fastest level, since what is left is SQLite and JSON that still shrink well. The snapshot reports what it skipped and why, and its manifest records whether it is `state-only` or `complete` so a restore can never mistake one for the other. Scheduled and manual backups are unchanged and still capture everything.
+
+---
+
 # SynaBun v.2026.07.30
 
 A point release on top of 2026.07.20, focused on correct Claude Code model selection, a new project storage cleanup tool, and a stricter default browser policy.

@@ -59,6 +59,65 @@ const INCOMPRESSIBLE_EXTENSIONS = new Set([
   '.png', '.webm', '.webp', '.woff', '.woff2', '.zip',
 ]);
 
+// Generated media. An upgrade snapshot exists to roll back *state* if a new
+// version misbehaves; it never rewrites these, and they survive a rollback on
+// disk regardless. Archiving them put multi-GB data homes through several
+// minutes of compression on the npm update path, so upgrade snapshots skip
+// them. Scheduled and manual backups still capture everything.
+const BULK_MEDIA_EXTENSIONS = new Set([
+  '.avif', '.bmp', '.gif', '.heic', '.jpeg', '.jpg', '.m4a', '.m4v', '.mkv',
+  '.mov', '.mp3', '.mp4', '.ogg', '.png', '.tiff', '.wav', '.webm', '.webp',
+]);
+
+// Snapshot kinds taken while the user is blocked on a version change.
+const UPGRADE_BACKUP_KINDS = new Set(['pre-update', 'pre-migration']);
+
+// Irreplaceable state: the memory database, UI state databases, and the JSON
+// that configures them. Everything a rollback actually needs lives here.
+const ESSENTIAL_STATE_EXTENSIONS = new Set(['.db', '.sqlite', '.sqlite3', '.json']);
+
+// Above this, an upgrade snapshot stops trying to be comprehensive and keeps
+// only irreplaceable state. Dropping media is not enough on its own — a data
+// home can reach multiple GB in ordinary files, and compressing that on the
+// npm update path is what made upgrades look broken.
+const UPGRADE_SNAPSHOT_SOFT_LIMIT_BYTES = 1024 * 1024 * 1024;
+
+function fileBytes(path) {
+  try { return statSync(path).size; } catch { return 0; }
+}
+
+/**
+ * Pick what an upgrade snapshot archives. Generated media always goes; if the
+ * remainder is still oversized, fall back to irreplaceable state only. Returns
+ * the kept files plus what was dropped, so the caller can say so out loud.
+ */
+function selectUpgradeSnapshotFiles(files, { softLimitBytes = UPGRADE_SNAPSHOT_SOFT_LIMIT_BYTES } = {}) {
+  const excluded = { reason: 'generated-media', files: 0, bytes: 0 };
+  const kept = [];
+  for (const file of files) {
+    if (BULK_MEDIA_EXTENSIONS.has(extname(file.archivePath).toLowerCase())) {
+      excluded.files += 1;
+      excluded.bytes += fileBytes(file.diskPath);
+      continue;
+    }
+    kept.push(file);
+  }
+
+  const keptBytes = kept.reduce((total, file) => total + fileBytes(file.diskPath), 0);
+  if (keptBytes <= softLimitBytes) return { files: kept, excluded };
+
+  const essential = [];
+  for (const file of kept) {
+    const isEnv = file.archivePath === 'env.bak';
+    const isMcpState = file.archivePath.startsWith('mcp-data/');
+    const isStateFile = ESSENTIAL_STATE_EXTENSIONS.has(extname(file.archivePath).toLowerCase());
+    if (isEnv || isMcpState || isStateFile) { essential.push(file); continue; }
+    excluded.files += 1;
+    excluded.bytes += fileBytes(file.diskPath);
+  }
+  return { files: essential, excluded: { ...excluded, reason: 'oversized-data-home' } };
+}
+
 export class BackupStorageError extends Error {
   constructor({ availableBytes, requiredBytes, folderPath }) {
     const availableMiB = Math.floor(availableBytes / 1024 / 1024);
@@ -293,11 +352,11 @@ function normalizeAdditionalEntries(entries = []) {
   return result;
 }
 
-async function writeArchive({ tempPath, files, manifest }) {
+async function writeArchive({ tempPath, files, manifest, level = 6 }) {
   const { createWriteStream } = await import('node:fs');
   await new Promise((resolveWrite, reject) => {
     const output = createWriteStream(tempPath, { flags: 'wx' });
-    const archive = archiver('zip', { zlib: { level: 6 } });
+    const archive = archiver('zip', { zlib: { level } });
     output.on('close', resolveWrite);
     output.on('error', reject);
     archive.on('warning', error => error.code === 'ENOENT' ? null : reject(error));
@@ -341,6 +400,7 @@ export async function createVerifiedBackup({
   getAvailableBytes = backupAvailableBytes,
   onBeforeArchive = null,
   onProgress = null,
+  upgradeSoftLimitBytes = UPGRADE_SNAPSHOT_SOFT_LIMIT_BYTES,
   now = () => new Date(),
 } = {}) {
   // A large data home spends minutes in checksum/archive with no output. Phase
@@ -372,10 +432,19 @@ export async function createVerifiedBackup({
 
     // De-duplicate before estimating work space so explicit additional entries
     // cannot inflate the preflight or create ambiguous ZIP members.
-    const sourceFiles = [...new Map(files.map(file => [
+    const deduped = [...new Map(files.map(file => [
       file.archivePath.replace(/\\/g, '/'),
       file,
     ])).values()];
+
+    // Keep the upgrade path bounded: state is archived, generated media is not.
+    const leanSnapshot = UPGRADE_BACKUP_KINDS.has(kind);
+    const selection = leanSnapshot
+      ? selectUpgradeSnapshotFiles(deduped, { softLimitBytes: upgradeSoftLimitBytes })
+      : { files: deduped, excluded: null };
+    const sourceFiles = selection.files;
+    const excluded = selection.excluded;
+
     const workingSpace = assertBackupWorkingSpace({
       folderPath,
       files: sourceFiles,
@@ -384,7 +453,14 @@ export async function createVerifiedBackup({
       freeSpaceReserveBytes,
       getAvailableBytes,
     });
-    report({ phase: 'collect', files: sourceFiles.length, bytes: workingSpace.archiveBytes });
+    report({
+      phase: 'collect',
+      files: sourceFiles.length,
+      bytes: workingSpace.archiveBytes,
+      skippedFiles: excluded?.files ?? 0,
+      skippedBytes: excluded?.bytes ?? 0,
+      skippedReason: excluded?.reason ?? null,
+    });
 
     sqliteSnapshot = createConsistentSqliteSnapshot(databasePath, sqliteTemp);
     files.length = 0;
@@ -429,12 +505,18 @@ export async function createVerifiedBackup({
       } : null,
       files: finalFiles.map(file => file.archivePath),
       checksums,
+      // A lean snapshot is not a whole-data-home backup. Recording that here
+      // keeps a restore from silently presenting it as one.
+      scope: leanSnapshot ? 'state-only' : 'complete',
+      excluded,
       verified: true,
       verification: { algorithm: 'sha256', publication: 'verify-before-atomic-rename' },
     };
     if (typeof onBeforeArchive === 'function') await onBeforeArchive({ files: finalFiles, manifest });
     report({ phase: 'archive', files: finalFiles.length, bytes: workingSpace.archiveBytes });
-    await writeArchive({ tempPath, files: finalFiles, manifest });
+    // Level 1 on the blocking upgrade path: the remaining payload is mostly
+    // SQLite and JSON, where fast deflate still shrinks well.
+    await writeArchive({ tempPath, files: finalFiles, manifest, level: leanSnapshot ? 1 : 6 });
     report({ phase: 'verify', files: finalFiles.length });
     const publishedManifest = verifyBackupArchive(tempPath);
     renameSync(tempPath, destination);
