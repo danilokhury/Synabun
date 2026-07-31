@@ -75,6 +75,10 @@ Never store directly in parent categories.
 
 ### Browser Sessions
 
+- For public-web browsing, search, or page retrieval, use only the configured SynaBun browser tools (`browser_*` and SynaBun's platform-specific browser tools).
+- Never use WebSearch, WebFetch, Playwright MCP, Chrome DevTools MCP, or another browser/search/fetch tool for the public web unless the user explicitly requests that specific alternative.
+- Use agent-facing Playwright and Chrome DevTools only for testing or debugging localhost/loopback UIs (`localhost`, `127.0.0.1`, `[::1]`) unless the user explicitly directs otherwise.
+- If the configured SynaBun browser is unavailable, report that limitation and do not silently substitute another web tool.
 - When starting a browser session, **always create a new tab** — never reuse or navigate an existing tab. Existing tabs may contain the user's active work, unsaved state, or authenticated sessions that must not be disrupted.
 
 ### Plan Mode (MANDATORY)
@@ -109,6 +113,12 @@ When running SynaBun alongside other memory or code intelligence tools (CogniLay
 
 **Other tools** should be restricted to their non-memory capabilities only (e.g., AST-based code search, code impact analysis).
 
+**SynaBun also owns public-web access by default:**
+- Use only the configured SynaBun browser for public-web browsing, search, and page retrieval.
+- Do not silently substitute WebSearch, WebFetch, Playwright MCP, Chrome DevTools MCP, or another web tool; an alternative requires an explicit user request.
+- Keep agent-facing Playwright and Chrome DevTools limited to localhost/loopback UI testing or debugging unless explicitly directed otherwise.
+- If the SynaBun browser is unavailable, report it instead of switching tools, and always open public-web work in a new tab.
+
 **Enforcement rule for CLAUDE.md / project instructions:**
 ```
 For ALL memory operations (store, search, recall, update, delete), use SynaBun tools exclusively.
@@ -137,7 +147,7 @@ Tool names may be prefixed by the host. Only call tools by their EXACT names fro
 - Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical, 10=foundational
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
-- Browser: always create a new tab — never reuse or navigate an existing tab.
+- Browser: use only the configured SynaBun browser for public-web browsing, search, and page retrieval. Never silently fall back to WebSearch, WebFetch, Playwright MCP, Chrome DevTools MCP, or another web tool; an alternative requires an explicit user request. Use agent-facing Playwright/Chrome DevTools only for localhost or loopback UI testing/debugging by default. If the SynaBun browser is unavailable, report it instead of switching tools. Always create a new tab — never reuse or navigate an existing tab.
 - Tool selector: use `profile` get/set to switch only when needed, choose the narrowest profile (`standard` coding, `browser` generic web, platform profiles for social/GSC), and restore temporary switches when done.
 ```
 
@@ -153,7 +163,7 @@ IMPORTANT: Only call tools by their EXACT names from your available tools list. 
 - Sequential calls only. Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
-- Browser: always create a new tab — never reuse or navigate an existing tab.
+- Browser: use only the configured SynaBun browser for public-web browsing, search, and page retrieval. Never silently fall back to WebSearch, WebFetch, Playwright MCP, Chrome DevTools MCP, or another web tool; an alternative requires an explicit user request. Use agent-facing Playwright/Chrome DevTools only for localhost or loopback UI testing/debugging by default. If the SynaBun browser is unavailable, report it instead of switching tools. Always create a new tab — never reuse or navigate an existing tab.
 - Tool selector/profile: before platform-specific work, call profile get, then profile set only if needed. Prefer the narrowest profile: core/standard for local work, browser for generic web, twitter/facebook/tiktok/whatsapp/instagram/linkedin for social platforms, gsc for Search Console, full only as a last resort. Restore temporary switches when done.
 ```
 
@@ -168,7 +178,7 @@ Tool names may be prefixed by the host (e.g. SynaBun_remember). Only call tools 
 - Sequential calls only. Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
-- Browser: always create a new tab — never reuse or navigate an existing tab.
+- Browser: use only the configured SynaBun browser for public-web browsing, search, and page retrieval. Never silently fall back to WebSearch, WebFetch, Playwright MCP, Chrome DevTools MCP, or another web tool; an alternative requires an explicit user request. Use agent-facing Playwright/Chrome DevTools only for localhost or loopback UI testing/debugging by default. If the SynaBun browser is unavailable, report it instead of switching tools. Always create a new tab — never reuse or navigate an existing tab.
 - Tool selector: use `profile` get/set only when a task needs a different MCP tool profile; choose the narrowest profile and restore temporary switches when done.
 ```
 
@@ -191,7 +201,7 @@ IMPORTANT: Only call tools by their EXACT names as they appear in your available
 - User preferences: when communication style matters, recall communication-style memories first. If you discover a stable new preference, store or update it there.
 - Coexistence: SynaBun owns memory. Do not use other tools or services for storing, recalling, or updating long-term context.
 - Capability boundary: Claude Code in this repo has additional hook-based automations. Codex should follow these rules via AGENTS.md + MCP and must not assume Claude hook events or `.claude/settings.json` behavior exist.
-- Browser: always create a new tab — never reuse or navigate an existing tab.
+- Browser: use only the configured SynaBun browser for public-web browsing, search, and page retrieval. Never silently fall back to WebSearch, WebFetch, Playwright MCP, Chrome DevTools MCP, or another web tool; an alternative requires an explicit user request. Use agent-facing Playwright/Chrome DevTools only for localhost or loopback UI testing/debugging by default. If the SynaBun browser is unavailable, report it instead of switching tools. Always create a new tab — never reuse or navigate an existing tab.
 - Tool selector/profile: use `profile` with `action: "get"` before platform-specific or heavy tool work unless the current profile is known. Use `profile` with `action: "set"` only when needed, choose the narrowest profile (`core`, `standard`, `browser`, social platform profiles, `gsc`; `full` only as a last resort), and restore temporary switches when finished unless the user asks to keep them. After a switch, the sidepanel profile selector should update immediately; if it appears stale, verify with `profile get` and report the mismatch.
 ```
 

@@ -211,13 +211,16 @@ const _snapshotsReady = fetchBlobNamespace('claude-snapshots')
   })
   .catch(() => {});
 
-const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
-const EFFORT_LABELS = { off: 'Think', low: 'lo', medium: 'med', high: 'hi', max: 'max' };
+// Full ladder the CLI accepts. The levels a given model actually supports come
+// from its `effortLevels` (see _effortLevelsForModel) — Haiku supports none.
+const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORT_LABELS = { off: 'Think', low: 'lo', medium: 'med', high: 'hi', xhigh: 'xhi', max: 'max' };
 const EFFORT_TITLES = {
   off: 'Thinking off',
   low: 'Thinking: low',
   medium: 'Thinking: medium',
   high: 'Thinking: high',
+  xhigh: 'Thinking: extra high',
   max: 'Thinking: max',
 };
 const PANEL_OWNER = 'claude-sidepanel';
@@ -2469,12 +2472,25 @@ function injectStyles() {
     .cp-think-toggle[data-effort="high"] .cp-think-icon { opacity: 0.65; }
     .cp-think-toggle[data-effort="high"] .cp-think-dots i.lit { background: rgba(255,255,255,0.5); }
 
+    .cp-think-toggle[data-effort="xhigh"] {
+      color: rgba(255,255,255,0.62);
+    }
+    .cp-think-toggle[data-effort="xhigh"]::after { transform: scaleX(0.9); background: rgba(255,255,255,0.45); }
+    .cp-think-toggle[data-effort="xhigh"] .cp-think-icon { opacity: 0.72; }
+    .cp-think-toggle[data-effort="xhigh"] .cp-think-dots i.lit { background: rgba(255,255,255,0.55); }
+
     .cp-think-toggle[data-effort="max"] {
       color: rgba(255,255,255,0.7);
     }
     .cp-think-toggle[data-effort="max"]::after { transform: scaleX(1); background: rgba(255,255,255,0.5); }
     .cp-think-toggle[data-effort="max"] .cp-think-icon { opacity: 0.8; }
     .cp-think-toggle[data-effort="max"] .cp-think-dots i.lit { background: rgba(255,255,255,0.6); }
+
+    /* Model advertises no effort levels (e.g. Haiku) — thinking is not selectable. */
+    .cp-think-toggle.disabled {
+      opacity: 0.35;
+      pointer-events: none;
+    }
 
     /* ── Plan toggle active — underline + color ── */
     .cp-plan-toggle.active {
@@ -2738,23 +2754,37 @@ function ddPopulateModels(dd, items, selectedValue) {
   }
 }
 
-// ── Model helpers (composite value = "modelId:contextWindow") ──
-// Claude Code CLI requires the `[1m]` suffix to switch to the 1M-token beta
-// context window. Without it, the CLI silently defaults to 200K even when
-// the selected model supports 1M — leaving the gauge denominator out of sync
-// with the true window. We append the suffix here so every spawn site
-// (WebSocket query, agent, loop, exec profile) gets a CLI-ready model id.
+// ── Model helpers ──
+// Model ids come from the CLI (/api/claude/config) and are already spawn-ready —
+// they carry the `[1m]` suffix that selects the 1M-token context window. Values
+// stored before live discovery used a "<id>:<contextWindow>" composite, so both
+// forms are decoded here; every spawn site (WebSocket query, agent, loop, exec
+// profile) gets a CLI-ready id either way.
+function _getSelectedModel() {
+  const raw = ddGetValue(_panel?.querySelector('#cp-model'));
+  return _models.find(m => m.id === raw) || null;
+}
+// Map a stored selection onto the live list. Values saved before live discovery are
+// composites ("claude-opus-4-8:1000000") for models the CLI may no longer offer, so an
+// unmatched value falls back to the CLI's own default rather than blanking the
+// dropdown and silently spawning with no --model.
+function _resolveModelValue(items, stored) {
+  if (stored && items.some(i => i.value === stored)) return stored;
+  const fallback = _models.find(m => m.tier === 'default') || _models[0];
+  return fallback?.id || '';
+}
 function _getModelId() {
-  const $model = _panel?.querySelector('#cp-model');
-  const raw = ddGetValue($model);
+  const raw = ddGetValue(_panel?.querySelector('#cp-model'));
+  if (!raw.includes(':')) return raw;
   const [id, cwRaw] = raw.split(':');
   if (!id) return '';
   const cw = cwRaw ? parseInt(cwRaw, 10) : 0;
   return cw > 200000 ? `${id}[1m]` : id;
 }
 function _getContextWindow() {
-  const $model = _panel?.querySelector('#cp-model');
-  const raw = ddGetValue($model);
+  const raw = ddGetValue(_panel?.querySelector('#cp-model'));
+  const known = _models.find(m => m.id === raw);
+  if (known?.contextWindow) return known.contextWindow;
   const parts = raw.split(':');
   return parts[1] ? parseInt(parts[1], 10) : 200000;
 }
@@ -2773,13 +2803,38 @@ function _setEffort(btn, level) {
   btn.setAttribute('data-tooltip', EFFORT_TITLES[level] || '');
   // Light up dots based on level
   const dots = btn.querySelectorAll('.cp-think-dots i');
-  const count = { off: 0, low: 1, medium: 2, high: 3, max: 4 }[level] || 0;
+  const count = { off: 0, low: 1, medium: 2, high: 3, xhigh: 4, max: 5 }[level] || 0;
   dots.forEach((d, i) => { d.classList.toggle('lit', i < count); });
 }
 function _getEffort() {
   const btn = _panel?.querySelector('#cp-think-toggle');
   const val = btn?.dataset.effort || 'off';
   return val === 'off' ? null : val;
+}
+
+// Levels the currently selected model advertises, in CLI order, always led by 'off'.
+// Falls back to the full ladder for models the CLI didn't describe (legacy saved ids).
+function _effortLevelsForModel() {
+  const model = _getSelectedModel();
+  const advertised = model?.effortLevels;
+  if (!Array.isArray(advertised)) return EFFORT_LEVELS;
+  return ['off', ...advertised.filter(id => id !== 'off')];
+}
+
+// Some models have no thinking at all (Haiku). Disable the toggle and force 'off'
+// rather than passing a --effort the CLI will ignore.
+function _syncThinkAvailability() {
+  const $think = _panel?.querySelector('#cp-think-toggle');
+  if (!$think) return;
+  const supported = _effortLevelsForModel().length > 1;
+  $think.classList.toggle('disabled', !supported);
+  $think.disabled = !supported;
+  if (!supported && ($think.dataset.effort || 'off') !== 'off') {
+    _setEffort($think, 'off');
+    storage.setItem(STOR.effort, 'off');
+    const tab = activeTab();
+    if (tab) { tab.effort = 'off'; saveTabs(); }
+  }
 }
 
 // Close dropdowns on outside click
@@ -2996,12 +3051,13 @@ function switchTab(idx) {
     ddPopulate($project, items, '');
   }
   if ($model) {
-    const items = _models.map(m => ({ value: `${m.id}:${m.contextWindow || 200000}`, label: m.label }));
-    const modelVal = tab.model || _getDefaultModel();
+    const items = _models.map(m => ({ value: m.id, label: m.label }));
+    const modelVal = _resolveModelValue(items, tab.model || _getDefaultModel());
     ddPopulateModels($model, items, modelVal);
-    if (modelVal && !tab.model) { tab.model = modelVal; saveTabs(); }
+    if (modelVal && modelVal !== tab.model) { tab.model = modelVal; saveTabs(); }
   }
   if ($think && tab.effort) _setEffort($think, tab.effort);
+  _syncThinkAvailability();
   // Sync plan toggle
   const $plan = _panel?.querySelector('#cp-plan-toggle');
   if ($plan) $plan.classList.toggle('active', tab.planMode);
@@ -8255,13 +8311,16 @@ async function loadConfig() {
     }
 
     if ($model) {
-      // Composite value: "modelId:contextWindow" to differentiate models with same id but different context
-      const items = _models.map(m => ({ value: `${m.id}:${m.contextWindow || 200000}`, label: m.label }));
+      // Ids come from the CLI and are already spawn-ready (they carry any `[1m]` suffix),
+      // so they are used verbatim as the selector value.
+      const items = _models.map(m => ({ value: m.id, label: m.label }));
       // Apply user's default model preference (per-tab model restored later by switchTab())
-      const defModel = _getDefaultModel();
+      const defModel = _resolveModelValue(items, _getDefaultModel());
       ddPopulateModels($model, items, defModel);
       // Clean up stale global key (model now lives per-tab only)
       storage.removeItem(STOR.model);
+      // Models arrive async — re-gate Think now that effortLevels are known.
+      _syncThinkAvailability();
     }
   } catch {}
 }
@@ -9479,22 +9538,28 @@ function wireEvents() {
   // Think intensity toggle
   const $think = _panel.querySelector('#cp-think-toggle');
   if ($think) {
-    // Build dot elements (4 dots for 4 levels)
+    // Build dot elements (5 dots for the 5 non-off levels)
     const dotsWrap = $think.querySelector('.cp-think-dots');
-    dotsWrap.innerHTML = '<i></i><i></i><i></i><i></i>';
+    dotsWrap.innerHTML = '<i></i><i></i><i></i><i></i><i></i>';
     // Restore from storage
     const savedEffort = storage.getItem(STOR.effort) || 'off';
     _setEffort($think, savedEffort);
     $think.addEventListener('click', () => {
+      // Cycle only through what the selected model supports.
+      const levels = _effortLevelsForModel();
+      if (levels.length < 2) return;
       const cur = $think.dataset.effort || 'off';
-      const idx = EFFORT_LEVELS.indexOf(cur);
-      const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
+      const idx = levels.indexOf(cur);
+      const next = levels[(idx + 1) % levels.length];
       _setEffort($think, next);
       storage.setItem(STOR.effort, next);
       const tab = activeTab();
       if (tab) { tab.effort = next; saveTabs(); }
     });
   }
+
+  // Effort support is per-model — re-gate the Think toggle when the model changes.
+  $model?.addEventListener('change', () => _syncThinkAvailability());
 
   // Plan mode toggle
   const $plan = _panel.querySelector('#cp-plan-toggle');

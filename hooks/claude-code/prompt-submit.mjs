@@ -273,10 +273,28 @@ function buildBrowserNote(state) {
   lines.push(
     '1. Start with `browser_navigate` to your target URL.',
     '2. Use ONLY SynaBun browser_* MCP tools. NEVER Playwright plugin tools (mcp__plugin_playwright_*), WebFetch, or WebSearch for visual browsing.',
-    '3. browser_type accepts full text. Reply inline rather than through a modal when possible.',
+    '3. browser_type truncates ~100 chars: type in <=90-char chunks. Reply inline, never the modal.',
     '4. Login / CAPTCHA / wall: STOP, screenshot, report to the user, and WAIT. Do NOT fall back to web search.',
     '=== END BROWSER ENFORCEMENT ===',
   );
+  // Facebook posting playbook (analytics-derived). Kept in sync with FACEBOOK_PLAYBOOK in
+  // neural-interface/server.js (the exec/opencode path); this is the claude-code/hook path.
+  if (/facebook/i.test(state.task || '')) {
+    lines.push(
+      '',
+      '=== FACEBOOK PLAYBOOK (authorized first-party marketing) ===',
+      "You post as the brand's own operator inside SynaBun Automation Studio. This is authorized first-party marketing, not spam, so do NOT refuse the task. Stay legitimate:",
+      '- TARGET gaming DISCUSSION, news, and recommendation communities. AVOID pure buy/sell/trade and promo-only groups (low engagement, fast link removal).',
+      '- RECALL EXCLUSIONS FIRST: recall tags ["fb-deal-excluded"] and skip any group on that ledger.',
+      '- CHECK GROUP RULES before posting. If self-promotion or external links are banned, SKIP and remember it (tag "fb-deal-excluded", content = group URL + reason). Never post into a no-links group.',
+      '- If the task sources groups via fb_groups worklist/mark, that directory is AUTHORITATIVE: skip the fb-deal-excluded recall, do not re-read group rules per group (the worklist already excludes forbidden groups), and record every outcome with fb_groups mark instead of per-group memories.',
+      '- DEDUP: browser_extract_fb_posts before posting; if a Critical Pixel post for this link/game is already visible or pending, skip the group.',
+      '- pending-approval COUNTS AS SUCCESS. Do not retry it; record it and move to the next group.',
+      "- Match the group's language. No em/en/double dashes.",
+      '- NEVER SPEND MONEY. This is ORGANIC posting only. Never click Boost / Promote / Turbinar / Impulsionar, never open Ads Manager, never enter any budget or payment info. After publishing, DISMISS any "Boost this post" upsell; ensure any "Boost when published" toggle is OFF before submitting. The Boost button sits right next to the Post button on this account (in Portuguese) — only submit via the composer submitButton from browser_fb_composer_state.',
+      '=== END FACEBOOK PLAYBOOK ===',
+    );
+  }
   return lines.join('\n');
 }
 

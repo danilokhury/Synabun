@@ -808,13 +808,13 @@ export const browserExtractFbGroupsSchema = {
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
   tabId: tabIdField,
   region: z.string().optional().describe('Optional case-insensitive filter: only return groups in this region bucket (UK, US, EU, Brazil, LatAm, Turkey, Australia, Canada, Unknown).'),
-  seedQueueId: z.string().optional().describe('Optional memory id of a curated seed queue (url | lang | currency) used to reconcile region/currency.'),
+  seedQueueId: z.string().optional().describe('Memory id of the curated seed-queue (url | lang | currency) used to reconcile region/currency. Default: the Critical Pixel seed-queue.'),
 };
 
 export const browserExtractFbGroupsDescription =
   'Extract ALL JOINED Facebook groups from the current page (navigate to facebook.com/groups/joins/?ordering=viewer_added first) as a region-sorted index. ' +
   'Auto-scrolls the full virtualized joins list and dedupes by url in ONE call (defaults: scrolls:10, maxItems:1000 — override for very large/small lists). ' +
-  'When seedQueueId is supplied, each group {name, url, subtitle, member_count, region, lang, currency, source} is reconciled against that memory first; other groups are classified from name+slug ' +
+  'Each group {name, url, subtitle, member_count, region, lang, currency, source} is reconciled against the curated seed-queue memory first; groups not in it are classified from name+slug ' +
   '(language tokens: pt/tr/de/fr/es/pl/it/nl, and country aliases) into region + posting-currency, source:"name-heuristic"; the still-ambiguous ones land in region "Unknown" and under "unmatched". Spanish groups split into LatAm (USD) vs Spain (EUR). ' +
   'Returns { counts, byRegion: { UK:[...], US:[...], EU:[...], Brazil:[...], LatAm:[...], ... }, unmatched:[...] }. Pass region to filter to one bucket. ' +
   'Feed the whole JSON to fb_groups import {fromExtract} to populate/refresh the structured directory.';
@@ -838,14 +838,13 @@ export async function handleBrowserExtractFbGroups(args: PagedArgs & { sessionId
     return text('No joined groups found. Make sure you navigated to facebook.com/groups/joins/?ordering=viewer_added and the list rendered — browser_scroll down then retry.');
   }
 
-  // Optionally reconcile with a curated seed-queue memory (url | lang | currency).
+  // Reconcile with the curated seed-queue memory (url | lang | currency).
+  const seedId = args.seedQueueId || 'dc301b83-4859-4a55-9713-03a5c0a12197';
   let seedMap = new Map<string, { lang: string; currency: string }>();
-  if (args.seedQueueId) {
-    try {
-      const mem = await getMemory(args.seedQueueId);
-      if (mem?.payload?.content) seedMap = parseSeedQueue(mem.payload.content);
-    } catch { /* seed queue is optional; fall back to name heuristics */ }
-  }
+  try {
+    const mem = await getMemory(seedId);
+    if (mem?.payload?.content) seedMap = parseSeedQueue(mem.payload.content);
+  } catch { /* seed-queue optional — fall back to name heuristics */ }
 
   const tagged = groups.map(g => {
     const name = cleanName(g.name) || g.name;

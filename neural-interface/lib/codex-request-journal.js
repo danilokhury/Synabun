@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
@@ -61,11 +62,40 @@ function normalizeStore(value) {
   };
 }
 
+export class CodexRequestJournalPersistenceError extends Error {
+  constructor(filePath, cause) {
+    super(`Could not persist the Codex request journal: ${cause?.message || cause}`);
+    this.name = 'CodexRequestJournalPersistenceError';
+    this.code = cause?.code || 'JOURNAL_WRITE_FAILED';
+    this.filePath = filePath;
+    this.retryable = true;
+    this.cause = cause;
+  }
+}
+
+export function writeCodexRequestJournalAtomically(filePath, store, suffix = Date.now()) {
+  mkdirSync(dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${suffix}.tmp`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
+    try { chmodSync(tmp, 0o600); } catch {}
+    renameSync(tmp, filePath);
+  } catch (error) {
+    try { if (existsSync(tmp)) unlinkSync(tmp); } catch {}
+    throw error;
+  }
+}
+
 export class CodexRequestJournal {
-  constructor(filePath, { now = () => Date.now() } = {}) {
+  constructor(filePath, {
+    now = () => Date.now(),
+    writeStore = writeCodexRequestJournalAtomically,
+  } = {}) {
     this.filePath = filePath;
     this.now = now;
+    this.writeStore = writeStore;
     this.store = this.load();
+    this.revision = 0;
   }
 
   load() {
@@ -77,12 +107,19 @@ export class CodexRequestJournal {
     }
   }
 
-  save() {
-    mkdirSync(dirname(this.filePath), { recursive: true });
-    const tmp = `${this.filePath}.${process.pid}.${this.now()}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(this.store, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
-    try { chmodSync(tmp, 0o600); } catch {}
-    renameSync(tmp, this.filePath);
+  commitEntry(key, entry) {
+    const nextStore = {
+      version: STORE_VERSION,
+      requests: { ...this.store.requests, [key]: entry },
+    };
+    try {
+      this.writeStore(this.filePath, nextStore, this.now());
+    } catch (error) {
+      throw new CodexRequestJournalPersistenceError(this.filePath, error);
+    }
+    this.store = nextStore;
+    this.revision += 1;
+    return entry;
   }
 
   register(correlation, details = {}) {
@@ -106,9 +143,7 @@ export class CodexRequestJournal {
       result: null,
       error: null,
     };
-    this.store.requests[key] = entry;
-    this.save();
-    return entry;
+    return this.commitEntry(key, entry);
   }
 
   get(correlation) {
@@ -135,37 +170,40 @@ export class CodexRequestJournal {
       return { ok: false, reason: entry.status, entry };
     }
     const timestamp = this.now();
-    Object.assign(entry, {
+    const nextEntry = {
+      ...entry,
       status: 'answered',
       updatedAt: timestamp,
       answerPersistedAt: timestamp,
       responseToken: cleanId(responseToken),
       result,
       error,
-    });
-    this.save();
-    return { ok: true, duplicate: false, entry };
+    };
+    this.commitEntry(entry.key, nextEntry);
+    return { ok: true, duplicate: false, entry: nextEntry };
   }
 
   recordDelivery(correlation, { ok, error = '' } = {}) {
     const entry = this.get(correlation);
     if (!entry) return null;
     const timestamp = this.now();
-    entry.deliveryAttempts = Number(entry.deliveryAttempts || 0) + 1;
-    entry.updatedAt = timestamp;
+    const nextEntry = {
+      ...entry,
+      deliveryAttempts: Number(entry.deliveryAttempts || 0) + 1,
+      updatedAt: timestamp,
+    };
     if (ok) {
-      entry.status = 'answered';
-      entry.deliveredAt ||= timestamp;
+      nextEntry.status = 'answered';
+      nextEntry.deliveredAt ||= timestamp;
       // The payload is needed only for retry. Once app-server accepts it, keep
       // lifecycle metadata but do not retain potentially sensitive answers.
-      entry.result = null;
-      entry.error = null;
+      nextEntry.result = null;
+      nextEntry.error = null;
     } else {
-      entry.status = 'delivery_failed';
-      entry.error = error || 'Delivery failed';
+      nextEntry.status = 'delivery_failed';
+      nextEntry.error = error || 'Delivery failed';
     }
-    this.save();
-    return entry;
+    return this.commitEntry(entry.key, nextEntry);
   }
 
   finish(correlation, status, error = '') {
@@ -174,19 +212,23 @@ export class CodexRequestJournal {
     if (!entry) return null;
     if (entry.answerPersistedAt) return entry;
     const timestamp = this.now();
-    entry.status = status;
-    entry.updatedAt = timestamp;
-    entry.error = error || null;
-    this.save();
-    return entry;
+    return this.commitEntry(entry.key, {
+      ...entry,
+      status,
+      updatedAt: timestamp,
+      error: error || null,
+    });
   }
 
   markContinuation(correlation) {
     const entry = this.get(correlation);
     if (!entry || !entry.deliveredAt || entry.continuationObservedAt) return false;
-    entry.continuationObservedAt = this.now();
-    entry.updatedAt = entry.continuationObservedAt;
-    this.save();
+    const continuationObservedAt = this.now();
+    this.commitEntry(entry.key, {
+      ...entry,
+      continuationObservedAt,
+      updatedAt: continuationObservedAt,
+    });
     return true;
   }
 

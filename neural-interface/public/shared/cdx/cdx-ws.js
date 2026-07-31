@@ -184,6 +184,7 @@ function handleSocketMessage(msg, tab, callbacks) {
     case 'codex_config_repaired':
     case 'permission_roots':
     case 'permission_root_removed':
+    case 'storage_health':
     case 'server_request_response_result':
       callbacks.onGenericResponse?.(msg);
       break;

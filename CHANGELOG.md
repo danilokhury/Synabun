@@ -1,3 +1,26 @@
+# SynaBun v.2026.07.30
+
+A point release on top of 2026.07.20, focused on correct Claude Code model selection, a new project storage cleanup tool, and a stricter default browser policy.
+
+## ✨ New
+
+- **Live Claude Code model discovery** — The model list is now read from the installed Claude Code CLI at runtime rather than from two hand-maintained lists that had drifted out of date. Adds `GET /api/claude/models`, and `/api/claude/config` now reports a `modelsSource`. Every picker is covered: sidepanel, standalone chat, Automation Studio, Schedules Studio, and the resume/provider picker. Discovery falls back to a small static list when the CLI cannot be reached.
+- **Project storage cleanup** — A new Projects area in Settings measures and clears build, test, cache, and dependency directories across macOS, Windows, and Linux, backed by admin-only `GET`/`POST /api/settings/project-storage` endpoints. Git-tracked files, nested repositories, SynaBun's own runtime dependencies, incomplete scans, and broad cache roots all fail closed, and cleanup revalidates the complete selection before deleting anything.
+- **`xhigh` thinking is reachable** — The CLI has advertised `low/medium/high/xhigh/max` for some time, but `xhigh` was being filtered out at six spawn sites, including the engine the sidepanel actually uses. All six now share one effort list, and models that advertise no effort levels disable the toggle instead of passing a flag the CLI ignores.
+
+## 🛠 Fixed
+
+- **Sidepanel launched Opus 4.8 when Opus 5 was picked** — The model picker read its list from the standalone Claude Code CLI, while sidepanel chats ran on the Agent SDK's own bundled CLI. Both accept the same alias selectors and each resolved them against its own model table, so the picker could show one model while the session launched another. `@anthropic-ai/claude-agent-sdk` moves `0.3.174` → `0.3.220` so both sides resolve identically, and a version skew between the two is now reported instead of passing silently. Takes effect after a server restart, not just an install.
+- **Claude model pricing** — Corrected against published list prices. Opus 5 was missing from the table entirely and fell through to a Sonnet fallback, while the Opus and Fable rows were inflated roughly 3x. Displayed cost for past Opus and Fable sessions drops accordingly and now tracks what was actually billed.
+- **Coexistence ruleset preview included neighbouring sections** — The extraction boundary matched an LF-only marker that was absent from the template's CRLF section, so the preview could return the condensed rulesets alongside the requested coexistence rules. It now stops at a stable heading.
+- **Duplicate OpenCode model names in schedule selectors** — Group launch-override and Cron schedule editors now render provider-aware `Model — Service` labels while preserving the stored selector value.
+
+## ⚙️ Changed
+
+- **The SynaBun browser is the default public-web path** — Public-web browsing, search, and page retrieval now go through the configured SynaBun browser. Other web tools require an explicit request, and agent-facing Playwright and Chrome DevTools default to localhost and loopback testing. Unavailable browser access is reported rather than silently substituted. All five provider rulesets move `1.0.0` → `1.1.0`, so existing users are notified to refresh their defaults.
+
+---
+
 # SynaBun v.2026.07.20
 
 Two months of work focused on native agent workflows, safer concurrent automation, broader browser tooling, and a much more resilient Neural Interface.

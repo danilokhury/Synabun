@@ -9,30 +9,23 @@ export const CLI_PROFILES = [
 ];
 
 const STATIC_MODELS = {
-  // Each 1M-capable model appears as a 1M variant (default) + a 200K twin so the long
-  // context window is selectable where available. The option value carries the window
-  // (see modelSelectorValue) and the backend appends the Claude Code `[1m]` beta suffix
-  // via toCliModelName(). Effort ("Think") is a separate selector in these UIs, so labels
-  // stay clean (no "xhigh"). Keep `id` canonical — it is rendered raw in schedule/timer
-  // chips. Haiku 4.5 is 200K-only (no 1M). Keep in sync with /api/claude/config in server.js.
-  'claude-code': [
-    { id: 'claude-fable-5', label: 'Fable 5', desc: 'Most capable', tier: 'top', contextWindow: 1000000 },
-    { id: 'claude-fable-5', label: 'Fable 5 (200K)', desc: 'Most capable', contextWindow: 200000 },
-    { id: 'claude-opus-4-8', label: 'Opus 4.8', desc: 'Most capable', contextWindow: 1000000 },
-    { id: 'claude-opus-4-8', label: 'Opus 4.8 (200K)', desc: 'Most capable', contextWindow: 200000 },
-    { id: 'claude-opus-4-7', label: 'Opus 4.7', desc: 'Highly autonomous', contextWindow: 1000000 },
-    { id: 'claude-opus-4-7', label: 'Opus 4.7 (200K)', desc: 'Highly autonomous', contextWindow: 200000 },
-    { id: 'claude-opus-4-6', label: 'Opus 4.6', desc: 'Deep reasoning', contextWindow: 1000000 },
-    { id: 'claude-opus-4-6', label: 'Opus 4.6 (200K)', desc: 'Deep reasoning', contextWindow: 200000 },
-    { id: 'claude-sonnet-5', label: 'Sonnet 5', desc: 'Balanced', tier: 'default', contextWindow: 1000000 },
-    { id: 'claude-sonnet-5', label: 'Sonnet 5 (200K)', desc: 'Balanced', contextWindow: 200000 },
-    { id: 'claude-haiku-4-5', label: 'Haiku 4.5', desc: 'Fastest', contextWindow: 200000 },
-  ],
   gemini: [
     { id: 'gemini-2.5-pro', label: '2.5 Pro', desc: 'Most capable', tier: 'default' },
     { id: 'gemini-2.5-flash', label: '2.5 Flash', desc: 'Lightweight' },
   ],
 };
+
+// Claude Code models are discovered live from the installed CLI via
+// /api/claude/models (see lib/claude-model-catalog.js) — the CLI is the only
+// source that knows which models the account can actually run. This list is a
+// last-resort fallback for when that call fails; ids are CLI aliases, already
+// spawn-ready, so they carry no ":<contextWindow>" composite (see cliReady).
+export const CLAUDE_FALLBACK_MODELS = [
+  { id: 'default', label: 'Default (recommended)', desc: 'CLI default model', tier: 'default', cliReady: true, contextWindow: 200000 },
+  { id: 'opus', label: 'Opus', desc: 'Most capable', cliReady: true, contextWindow: 200000 },
+  { id: 'sonnet', label: 'Sonnet', desc: 'Balanced', cliReady: true, contextWindow: 200000 },
+  { id: 'haiku', label: 'Haiku', desc: 'Fastest', cliReady: true, contextWindow: 200000, effortLevels: [] },
+];
 
 // Kept as fallbacks only. Codex/OpenCode should use live discovery when available.
 export const CODEX_FALLBACK_MODELS = [
@@ -51,6 +44,7 @@ export const EFFORT_LEVELS_BY_PROFILE = {
     { id: 'low', label: 'Low', desc: 'Minimal' },
     { id: 'medium', label: 'Med', desc: 'Balanced', tier: 'default' },
     { id: 'high', label: 'High', desc: 'Deep' },
+    { id: 'xhigh', label: 'XHigh', desc: 'Very deep' },
     { id: 'max', label: 'Max', desc: 'Maximum', tier: 'top' },
   ],
   codex: [
@@ -69,6 +63,8 @@ let _codexModelsCache = null;
 let _codexModelsLoading = null;
 let _opencodeModelsCache = null;
 let _opencodeModelsLoading = null;
+let _claudeModelsCache = null;
+let _claudeModelsLoading = null;
 let _mcpProfilePresets = null;
 
 function localJsonArray(key) {
@@ -297,25 +293,68 @@ export async function fetchOpencodeModels(force = false) {
   return _opencodeModelsLoading;
 }
 
+// Live model list from the installed Claude Code CLI. Falls back to the static
+// list so the picker still renders when the CLI is missing or discovery fails.
+export async function fetchClaudeModels(force = false) {
+  if (!force && _claudeModelsCache && _claudeModelsCache.length) return _claudeModelsCache;
+  if (_claudeModelsLoading) return _claudeModelsLoading;
+  _claudeModelsLoading = (async () => {
+    try {
+      const resp = await fetch(`/api/claude/models${force ? '?refresh=1' : ''}`);
+      const data = await resp.json().catch(() => ({}));
+      const models = Array.isArray(data?.models) ? data.models : [];
+      _claudeModelsCache = models.length ? models : [...CLAUDE_FALLBACK_MODELS];
+      return _claudeModelsCache;
+    } catch {
+      _claudeModelsCache = [...CLAUDE_FALLBACK_MODELS];
+      return _claudeModelsCache;
+    } finally {
+      _claudeModelsLoading = null;
+    }
+  })();
+  return _claudeModelsLoading;
+}
+
+// Profiles whose model list is fetched at runtime rather than baked in. Callers use
+// this to decide whether to kick off an async load and re-render when it lands.
+export function isDynamicModelProfile(profileId) {
+  return profileId === 'opencode' || profileId === 'codex' || profileId === 'claude-code';
+}
+
 export async function ensureModelsForProfile(profileId, force = false) {
   if (profileId === 'codex') return fetchCodexModels(force);
   if (profileId === 'opencode') return fetchOpencodeModels(force);
+  if (profileId === 'claude-code') return fetchClaudeModels(force);
   return getModelsForProfile(profileId);
 }
 
 export function getModelsForProfile(profileId) {
   if (profileId === 'codex') return _codexModelsCache || mergeCodexModelOptions([]);
   if (profileId === 'opencode') return _opencodeModelsCache || [];
+  if (profileId === 'claude-code') return _claudeModelsCache || [];
   return STATIC_MODELS[profileId] || [];
 }
 
-// Build the stored selector value for a model option. Claude models carry a
-// `contextWindow`, so they encode as the composite "<id>:<contextWindow>" the backend
-// (toCliModelName) turns into the `[1m]` CLI suffix for 1M variants. Models without a
-// context window (codex/gemini/opencode) keep their bare id — unchanged behavior.
+// Build the stored selector value for a model option. `cliReady` options (the live
+// Claude Code list) already carry a spawn-ready id — including any `[1m]` suffix — so
+// they encode as their bare id. Legacy Claude options carried only a base id plus a
+// `contextWindow`, and encode as the composite "<id>:<contextWindow>" that the backend
+// (toCliModelName) turns into the `[1m]` suffix. Models without a context window
+// (codex/gemini/opencode) keep their bare id — unchanged behavior.
 export function modelSelectorValue(m) {
   if (!m) return '';
+  if (m.cliReady) return m.id || '';
   return m.contextWindow ? `${m.id}:${m.contextWindow}` : (m.id || '');
+}
+
+// Build the text shown for a model option without changing its stored selector value.
+// OpenCode surfaces can opt into the service suffix because multiple providers often
+// expose models with the same display name.
+export function formatModelOptionLabel(m, { includeService = false } = {}) {
+  const label = String(m?.label || m?.id || '').trim();
+  if (!includeService) return label;
+  const service = String(m?.desc || m?.provider || '').trim();
+  return service && service !== label ? `${label} — ${service}` : label;
 }
 
 // Does stored selector `sel` correspond to model option `m`? Matches the composite form
@@ -325,11 +364,37 @@ export function modelSelectorValue(m) {
 export function modelMatchesSelector(m, sel) {
   if (!m || !sel) return false;
   if (sel === modelSelectorValue(m)) return true;
+  if (m.cliReady) return false;
   return sel === m.id && (m.contextWindow || 200000) === 200000;
 }
 
 export function getEffortLevelsForProfile(profileId) {
   return EFFORT_LEVELS_BY_PROFILE[profileId] || [];
+}
+
+// Effort levels a specific model actually supports. The Claude Code CLI advertises
+// these per model (`effortLevels`), and some models support none at all — Haiku has
+// no thinking, so passing --effort to it is meaningless. Mirrors
+// normalizeReasoningEfforts() in cdx/cdx-protocol.js for the Codex side.
+export function getEffortLevelsForModel(profileId, model) {
+  const profileLevels = getEffortLevelsForProfile(profileId);
+  const advertised = model?.effortLevels;
+  if (!Array.isArray(advertised)) return profileLevels;
+  const off = profileLevels.find(e => e.id === 'off');
+  if (!advertised.length) return off ? [off] : [];
+  const byId = new Map(profileLevels.map(e => [e.id, e]));
+  const levels = off ? [off] : [];
+  for (const id of advertised) {
+    levels.push(byId.get(id) || { id, label: id, desc: '' });
+  }
+  return levels;
+}
+
+// Does this model support any thinking at all? Used to disable the Think toggle.
+export function modelSupportsEffort(model) {
+  if (!model) return true;
+  if (Array.isArray(model.effortLevels)) return model.effortLevels.length > 0;
+  return model.supportsEffort !== false;
 }
 
 export function profileSupportsEffort(profileId) {
@@ -362,6 +427,7 @@ export function getCachedMcpProfilePresets() {
 export function clearRuntimeOptionCaches() {
   _codexModelsCache = null;
   _opencodeModelsCache = null;
+  _claudeModelsCache = null;
   _mcpProfilePresets = null;
 }
 

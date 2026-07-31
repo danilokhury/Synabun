@@ -1,5 +1,6 @@
 import { Codex } from '@openai/codex-sdk';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
+import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
 import { dirname } from 'node:path';
 
 function stringEnv(source) {
@@ -222,7 +223,7 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   };
   if (mcpUrl) queryOptions.mcpServers = { SynaBun: { type: 'http', url: mcpUrl, headers } };
   if (model) queryOptions.model = model;
-  if (effort && ['low', 'medium', 'high', 'max'].includes(effort)) queryOptions.effort = effort;
+  if (effort && CLAUDE_EFFORT_LEVELS.includes(effort)) queryOptions.effort = effort;
   if (sdkExecutable) queryOptions.pathToClaudeCodeExecutable = sdkExecutable;
 
   const q = queryFactory({ prompt: input, options: queryOptions });

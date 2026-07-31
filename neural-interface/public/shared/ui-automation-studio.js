@@ -20,6 +20,7 @@ import {
   getCachedCodexAccounts,
   getEffortLevelsForProfile,
   getModelsForProfile,
+  isDynamicModelProfile,
   modelSelectorValue,
   modelMatchesSelector,
   normalizeEffortForProfile,
@@ -1045,10 +1046,6 @@ function showLaunchInline(params) {
 
 const LAUNCH_CHIP_MAX = 5;
 
-function isDynamicModelProfile(profileId) {
-  return profileId === 'opencode' || profileId === 'codex';
-}
-
 function dynamicModelLoadStarted(profileId) {
   if (_modelLoadAttempts.has(profileId)) return true;
   for (const key of _modelLoadRequests) {
@@ -1081,6 +1078,11 @@ function dynamicModelEmptyText(profileId) {
     return loaded
       ? 'No Codex models found — sign in or check the Codex app-server.'
       : 'Loading Codex models...';
+  }
+  if (profileId === 'claude-code') {
+    return loaded
+      ? 'No Claude Code models found — check the Claude CLI install in Settings → Terminal.'
+      : 'Loading Claude Code models...';
   }
   return 'No model selection available';
 }
@@ -1544,13 +1546,11 @@ async function confirmLaunch() {
     sendClientLoopLog(result.terminalSessionId, 'launch:client', 'emit terminal:attach-floating', {
       terminalSessionId: result.terminalSessionId,
       profile: params.profile || 'claude-code',
-      initialMessage: '[SynaBun Loop] Begin task.',
+      driverType: result.driverType || null,
     });
     emit('terminal:attach-floating', {
       terminalSessionId: result.terminalSessionId,
       profile: params.profile || 'claude-code',
-      initialMessage: '[SynaBun Loop] Begin task.',
-      autoSubmit: true,
     });
     const profileLabel = CLI_PROFILES.find(p => p.id === params.profile)?.label || params.profile;
     showToast(`Loop started — ${profileLabel} launching...`);

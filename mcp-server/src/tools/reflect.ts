@@ -10,7 +10,7 @@ import { text } from './response.js';
 
 export function buildReflectSchema() {
   return {
-    memory_id: z.string().describe('The ID of the memory to update. MUST be the full UUID format (e.g., 123e4567-e89b-42d3-a456-426614174000), not a shortened version. Use recall to get the full UUID.'),
+    memory_id: z.string().describe('The ID of the memory to update. MUST be the full UUID format (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), not a shortened version. Use recall to get the full UUID.'),
     content: z
       .string()
       .optional()
@@ -35,7 +35,7 @@ export function buildReflectSchema() {
     related_memory_ids: coerceStringArray()
       .optional()
       .describe('Link to related memories.'),
-    project: z.string().optional().describe('Change the project this memory belongs to (e.g. "my-project" or "synabun").'),
+    project: z.string().optional().describe('Change the project this memory belongs to (e.g. "criticalpixel", "synabun", "synabun-website").'),
   };
 }
 
@@ -61,7 +61,7 @@ export async function handleReflect(args: {
   // Validate UUID format
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(memoryId)) {
-    return text(`Invalid memory_id format. Expected full UUID (e.g., 123e4567-e89b-42d3-a456-426614174000), got: ${memoryId}\n\nUse the full UUID returned by 'remember', or call 'recall' to find the full UUID of an existing memory.`);
+    return text(`Invalid memory_id format. Expected full UUID (e.g., 8f7cab3b-644e-4cea-8662-de0ca695bdf2), got: ${memoryId}\n\nUse the full UUID returned by 'remember', or call 'recall' to find the full UUID of an existing memory.`);
   }
 
   if (args.category) {

@@ -2441,36 +2441,70 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
 function buildProjectsTab(ccIntegrations) {
   return `
       <div class="settings-tab-body" data-tab="projects">
-        <div class="cc-hint" style="margin-bottom:10px">Per-project hook installations. Each project gets its own <code style="font-size:12px;background:var(--s-medium);padding:2px 5px;border-radius:4px">.claude/settings.json</code> entry.</div>
-        <div id="cc-project-list">
-          ${ccIntegrations.projects.length === 0
-            ? '<div class="cc-hint" style="text-align:center;padding:14px">No projects registered yet.</div>'
-            : ccIntegrations.projects.map((p, i) => `
-              <div class="cc-panel${p.installed ? ' enabled' : ''}" data-cc-idx="${i}" data-cc-path="${p.path.replace(/"/g, '&quot;')}">
-                <div class="cc-panel-header" data-cc-collapse>
-                  <svg class="cc-panel-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-                  <span class="cc-panel-title">${p.label}</span>
-                  <span class="cc-panel-status ${p.installed ? 'active' : 'inactive'}">${p.installed ? 'Active' : 'Off'}</span>
-                </div>
-                <div class="cc-panel-body">
-                  <div class="cc-panel-row">
-                    <span class="cc-panel-row-label">Path</span>
-                    <span class="cc-panel-row-value" title="${p.path.replace(/\\/g, '/').replace(/"/g, '&quot;')}">${p.path.replace(/\\/g, '/')}</span>
+        <section class="stg-section project-storage-section" id="project-storage-manager" aria-labelledby="project-storage-title">
+          <div class="project-storage-heading">
+            <div>
+              <div class="gfx-group-title" id="project-storage-title">Project storage</div>
+              <p class="project-storage-intro">Review rebuildable files across every registered project and shared developer-tool cache. Nothing is removed until you select it and confirm.</p>
+            </div>
+            <button class="project-storage-icon-btn" id="project-storage-refresh" type="button" title="Scan again" aria-label="Scan project storage again">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+          </div>
+          <div class="project-storage-summary" id="project-storage-summary" hidden>
+            <div class="project-storage-stat"><span>Found</span><strong id="project-storage-found">—</strong></div>
+            <div class="project-storage-stat"><span>Reclaimable</span><strong id="project-storage-reclaimable">—</strong></div>
+            <div class="project-storage-stat selected"><span>Selected</span><strong id="project-storage-selected">—</strong></div>
+          </div>
+          <div class="project-storage-toolbar" id="project-storage-toolbar" hidden>
+            <button class="project-storage-btn" id="project-storage-select-safe" type="button">Select safe</button>
+            <button class="project-storage-btn" id="project-storage-clear-selection" type="button">Clear selection</button>
+            <span class="project-storage-toolbar-spacer"></span>
+            <button class="project-storage-btn danger" id="project-storage-clear" type="button" disabled>Clear selected</button>
+          </div>
+          <div class="project-storage-feedback" id="project-storage-feedback" aria-live="polite"></div>
+          <div class="project-storage-results" id="project-storage-results">
+            <div class="project-storage-placeholder">Open Projects to scan registered workspaces and shared developer caches.</div>
+          </div>
+          <div class="project-storage-safety-note">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+            Git-tracked files, repository history, symlinks, application runtime files, and active projects are protected automatically.
+          </div>
+        </section>
+
+        <section class="project-registration-section" aria-labelledby="project-registration-title">
+          <div class="gfx-group-title" id="project-registration-title">Registered projects</div>
+          <div class="cc-hint" style="margin-bottom:10px">Per-project hook installations. Each project gets its own <code style="font-size:12px;background:var(--s-medium);padding:2px 5px;border-radius:4px">.claude/settings.json</code> entry.</div>
+          <div id="cc-project-list">
+            ${ccIntegrations.projects.length === 0
+              ? '<div class="cc-hint" style="text-align:center;padding:14px">No projects registered yet.</div>'
+              : ccIntegrations.projects.map((p, i) => `
+                <div class="cc-panel${p.installed ? ' enabled' : ''}" data-cc-idx="${i}" data-cc-path="${p.path.replace(/"/g, '&quot;')}">
+                  <div class="cc-panel-header" data-cc-collapse>
+                    <svg class="cc-panel-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                    <span class="cc-panel-title">${p.label}</span>
+                    <span class="cc-panel-status ${p.installed ? 'active' : 'inactive'}">${p.installed ? 'Active' : 'Off'}</span>
                   </div>
-                  <div class="cc-panel-actions">
-                    <button class="cc-explore-btn" data-cc-explore="${i}" style="background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Learn it</button>
-                    <button class="cc-trust-btn" data-cc-trust="${i}" title="Add this workspace to git safe.directory (fixes 'dubious ownership' errors)" style="background:rgba(255,183,77,0.14);border:1px solid rgba(255,183,77,0.3);color:#ffcc80;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Trust workspace</button>
-                    <button class="cc-enable-btn${p.installed ? ' on' : ''}" data-cc-project-toggle="${i}">${p.installed ? 'Enabled' : 'Enable'}</button>
-                    <button class="cc-remove-panel-btn" data-cc-remove="${i}">Remove</button>
+                  <div class="cc-panel-body">
+                    <div class="cc-panel-row">
+                      <span class="cc-panel-row-label">Path</span>
+                      <span class="cc-panel-row-value" title="${p.path.replace(/\\/g, '/').replace(/"/g, '&quot;')}">${p.path.replace(/\\/g, '/')}</span>
+                    </div>
+                    <div class="cc-panel-actions">
+                      <button class="cc-explore-btn" data-cc-explore="${i}" style="background:var(--accent-blue-bg);border:1px solid var(--accent-blue-border);color:var(--accent-blue);padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Learn it</button>
+                      <button class="cc-trust-btn" data-cc-trust="${i}" title="Add this workspace to git safe.directory (fixes 'dubious ownership' errors)" style="background:rgba(255,183,77,0.14);border:1px solid rgba(255,183,77,0.3);color:#ffcc80;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px">Trust workspace</button>
+                      <button class="cc-enable-btn${p.installed ? ' on' : ''}" data-cc-project-toggle="${i}">${p.installed ? 'Enabled' : 'Enable'}</button>
+                      <button class="cc-remove-panel-btn" data-cc-remove="${i}">Remove</button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            `).join('')}
-        </div>
-        <button class="conn-add-btn" id="cc-add-project" style="margin-top:8px">
-          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Add Project
-        </button>
+              `).join('')}
+          </div>
+          <button class="conn-add-btn" id="cc-add-project" style="margin-top:8px">
+            <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Project
+          </button>
+        </section>
       </div>`;
 }
 
@@ -6625,6 +6659,348 @@ export async function openSettingsModal(options = {}) {
   // Projects tab handlers
   // ══════════════════════════════════════
 
+  // Combined storage scanner — loaded lazily when the Projects tab is opened.
+  {
+    const storageRoot = overlay.querySelector('#project-storage-manager');
+    const storageResults = overlay.querySelector('#project-storage-results');
+    const storageSummary = overlay.querySelector('#project-storage-summary');
+    const storageToolbar = overlay.querySelector('#project-storage-toolbar');
+    const storageFeedback = overlay.querySelector('#project-storage-feedback');
+    const refreshButton = overlay.querySelector('#project-storage-refresh');
+    const selectSafeButton = overlay.querySelector('#project-storage-select-safe');
+    const clearSelectionButton = overlay.querySelector('#project-storage-clear-selection');
+    const clearButton = overlay.querySelector('#project-storage-clear');
+    let storageScan = null;
+    let storageLoading = false;
+    let selectedStorageItems = new Set();
+
+    const storageEsc = (value) => escapeHtml(String(value ?? ''));
+    const storageFormatBytes = (bytes) => {
+      const value = Math.max(0, Number(bytes) || 0);
+      if (value < 1024) return `${Math.round(value)} B`;
+      const units = ['KB', 'MB', 'GB', 'TB'];
+      let scaled = value / 1024;
+      let index = 0;
+      while (scaled >= 1024 && index < units.length - 1) { scaled /= 1024; index += 1; }
+      return `${scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2)} ${units[index]}`;
+    };
+    const storageFormatCount = (value, singular, plural = `${singular}s`) => {
+      const count = Math.max(0, Number(value) || 0);
+      return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
+    };
+    const allStorageItems = () => storageScan
+      ? [...storageScan.projects.flatMap(group => group.items), ...(storageScan.shared?.items || [])]
+      : [];
+    const selectedItems = () => {
+      const selected = selectedStorageItems;
+      return allStorageItems().filter(item => selected.has(item.id) && !item.protected && !item.blocked);
+    };
+
+    function storageRiskMeta(item) {
+      if (item.blocked) return { cls: 'blocked', label: 'In use', title: item.blockerReason };
+      if (item.protected) return { cls: 'protected', label: 'Protected', title: item.protectionReason };
+      if (item.originalRisk === 'dependency') return { cls: 'dependency', label: 'Optional dependency', title: 'Deleting this may require a later download or install.' };
+      if (item.originalRisk === 'review') return { cls: 'review', label: 'Review', title: 'Inspect and select this item manually.' };
+      return { cls: 'safe', label: 'Safe', title: 'Generated output that can be rebuilt.' };
+    }
+
+    function syncStorageSelection() {
+      const items = selectedItems();
+      const bytes = items.reduce((sum, item) => sum + (Number(item.bytes) || 0), 0);
+      const selectedEl = overlay.querySelector('#project-storage-selected');
+      if (selectedEl) selectedEl.textContent = `${storageFormatBytes(bytes)} · ${items.length}`;
+      if (clearButton) {
+        clearButton.disabled = storageLoading || items.length === 0;
+        clearButton.textContent = items.length ? `Clear selected (${items.length})` : 'Clear selected';
+      }
+      if (clearSelectionButton) clearSelectionButton.disabled = storageLoading || items.length === 0;
+    }
+
+    function renderStorageItem(item) {
+      const disabled = item.protected || item.blocked;
+      const checked = selectedStorageItems.has(item.id) && !disabled;
+      const risk = storageRiskMeta(item);
+      const reason = risk.title ? ` title="${storageEsc(risk.title)}"` : '';
+      return `
+        <label class="project-storage-item${disabled ? ' disabled' : ''}" data-risk="${risk.cls}">
+          <input class="project-storage-checkbox" type="checkbox" data-project-storage-item="${item.id}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''} aria-label="Select ${storageEsc(item.name)} at ${storageEsc(item.displayPath)}">
+          <span class="project-storage-checkmark" aria-hidden="true"></span>
+          <span class="project-storage-item-main">
+            <span class="project-storage-item-title-row">
+              <strong>${storageEsc(item.name)}</strong>
+              <span class="project-storage-risk ${risk.cls}"${reason}>${risk.label}</span>
+            </span>
+            <span class="project-storage-path" title="${storageEsc(item.displayPath)}">${storageEsc(item.displayPath)}</span>
+            <span class="project-storage-item-meta">${storageFormatCount(item.fileCount, 'file')} · ${storageEsc(item.category)}</span>
+            ${disabled && (item.blockerReason || item.protectionReason) ? `<span class="project-storage-protection">${storageEsc(item.blockerReason || item.protectionReason)}</span>` : ''}
+          </span>
+          <strong class="project-storage-item-size">${storageFormatBytes(item.bytes)}</strong>
+        </label>`;
+    }
+
+    function renderStorageGroup(group, { shared = false } = {}) {
+      const items = group.items || [];
+      const totalBytes = items.reduce((sum, item) => sum + (Number(item.bytes) || 0), 0);
+      const pathText = shared ? 'Caches shared by projects and developer tools' : group.path;
+      return `
+        <details class="project-storage-group" open>
+          <summary>
+            <svg class="project-storage-chevron" viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+            <span class="project-storage-group-main">
+              <span class="project-storage-group-title">${storageEsc(group.label)}${group.active ? '<span class="project-storage-active-badge">In use</span>' : ''}</span>
+              <span class="project-storage-group-path" title="${storageEsc(pathText)}">${storageEsc(pathText)}</span>
+            </span>
+            <span class="project-storage-group-total">${storageFormatBytes(totalBytes)} · ${items.length}</span>
+          </summary>
+          <div class="project-storage-group-items">
+            ${items.length ? items.map(renderStorageItem).join('') : '<div class="project-storage-group-empty">No recognized rebuildable files found.</div>'}
+          </div>
+        </details>`;
+    }
+
+    function renderProjectStorage() {
+      if (!storageScan || !storageResults) return;
+      const totals = storageScan.totals || {};
+      const foundEl = overlay.querySelector('#project-storage-found');
+      const reclaimableEl = overlay.querySelector('#project-storage-reclaimable');
+      if (foundEl) foundEl.textContent = `${storageFormatBytes(totals.bytes)} · ${totals.itemCount || 0}`;
+      if (reclaimableEl) reclaimableEl.textContent = `${storageFormatBytes(totals.reclaimableBytes)} · ${totals.reclaimableItemCount || 0}`;
+      if (storageSummary) storageSummary.hidden = false;
+      if (storageToolbar) storageToolbar.hidden = false;
+
+      const hasAnyItems = (totals.itemCount || 0) > 0;
+      const warnings = Array.isArray(storageScan.warnings) ? storageScan.warnings.filter(Boolean) : [];
+      storageResults.innerHTML = hasAnyItems ? `
+        ${warnings.length ? `<div class="project-storage-warning"><strong>Scan notes</strong>${warnings.slice(0, 3).map(warning => `<span>${storageEsc(warning)}</span>`).join('')}</div>` : ''}
+        <div class="project-storage-groups">
+          ${storageScan.projects.map(group => renderStorageGroup(group)).join('')}
+          ${renderStorageGroup(storageScan.shared || { label: 'Shared developer caches', items: [] }, { shared: true })}
+        </div>` : `
+        <div class="project-storage-empty">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <strong>No cleanup candidates found</strong>
+          <span>Registered projects and known shared developer caches are already clear.</span>
+        </div>`;
+      syncStorageSelection();
+    }
+
+    function setStorageFeedback(message = '', state = '') {
+      if (!storageFeedback) return;
+      storageFeedback.textContent = message;
+      if (state) storageFeedback.dataset.state = state;
+      else delete storageFeedback.dataset.state;
+    }
+
+    async function loadProjectStorage(refresh = false) {
+      if (!storageRoot || storageLoading) return;
+      storageLoading = true;
+      refreshButton?.classList.add('loading');
+      if (refreshButton) refreshButton.disabled = true;
+      if (!storageScan && storageResults) {
+        storageResults.innerHTML = `
+          <div class="project-storage-loading" role="status">
+            <span class="project-storage-spinner" aria-hidden="true"></span>
+            <span><strong>Scanning project storage…</strong><small>Measuring generated files and checking Git protections.</small></span>
+          </div>`;
+      }
+      setStorageFeedback('');
+      syncStorageSelection();
+      try {
+        const response = await fetch(`/api/settings/project-storage${refresh ? '?refresh=1' : ''}`);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) throw new Error(data.error || `Storage scan failed (HTTP ${response.status})`);
+        storageScan = data;
+        selectedStorageItems = new Set(allStorageItems().filter(item => item.defaultSelected).map(item => item.id));
+        renderProjectStorage();
+      } catch (error) {
+        if (!storageScan && storageResults) {
+          storageResults.innerHTML = `
+            <div class="project-storage-error" role="alert">
+              <strong>Storage scan unavailable</strong>
+              <span>${storageEsc(error?.message || 'Could not scan project storage.')}</span>
+              <button class="project-storage-btn" type="button" data-project-storage-retry>Try again</button>
+            </div>`;
+        }
+        setStorageFeedback(error?.message || 'Could not scan project storage.', 'error');
+      } finally {
+        storageLoading = false;
+        refreshButton?.classList.remove('loading');
+        if (refreshButton) refreshButton.disabled = false;
+        syncStorageSelection();
+      }
+    }
+
+    function openProjectStorageClearModal() {
+      if (!storageScan || document.querySelector('.project-storage-clear-overlay')) return;
+      const items = selectedItems();
+      if (!items.length) return;
+      const dependencies = items.filter(item => item.originalRisk === 'dependency');
+      const reviewItems = items.filter(item => item.originalRisk === 'review');
+      const requiresTyping = dependencies.length > 0;
+      const confirmation = requiresTyping
+        ? (storageScan.confirmations?.dependency || 'DELETE DEPENDENCIES')
+        : (storageScan.confirmations?.safe || 'CLEAR SELECTED CACHES');
+      const totalBytes = items.reduce((sum, item) => sum + (Number(item.bytes) || 0), 0);
+      const modal = document.createElement('div');
+      modal.className = 'tag-delete-overlay project-storage-clear-overlay';
+      modal.innerHTML = `
+        <div class="tag-delete-modal settings-modal project-storage-modal" role="dialog" aria-modal="true" aria-labelledby="project-storage-modal-title" aria-describedby="project-storage-modal-description">
+          <div class="project-storage-modal-head">
+            <span class="project-storage-modal-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+            </span>
+            <div>
+              <h2 id="project-storage-modal-title">Clear selected project storage?</h2>
+              <p>${storageFormatCount(items.length, 'item')} · ${storageFormatBytes(totalBytes)}</p>
+            </div>
+          </div>
+          <div class="project-storage-modal-warning" id="project-storage-modal-description">
+            ${requiresTyping
+              ? `<strong>${storageFormatCount(dependencies.length, 'dependency cache')} selected.</strong> These files can be restored, but the affected tools may need to download or install them again.`
+              : reviewItems.length
+                ? `<strong>${storageFormatCount(reviewItems.length, 'manually reviewed item')} selected.</strong> These were not selected automatically. Confirm that you no longer need their current contents.`
+                : '<strong>Generated files will be removed.</strong> Builds and caches can be recreated by their tools, but cleanup itself cannot be undone.'}
+          </div>
+          <div class="project-storage-modal-list">
+            ${items.slice(0, 6).map(item => `<div><span>${storageEsc(item.name)}<small>${storageEsc(item.displayPath)}</small></span><strong>${storageFormatBytes(item.bytes)}</strong></div>`).join('')}
+            ${items.length > 6 ? `<div class="more"><span>And ${items.length - 6} more selected items</span></div>` : ''}
+          </div>
+          ${requiresTyping ? `
+            <label class="project-storage-confirm-label" for="project-storage-confirm-input">Type <code>${storageEsc(confirmation)}</code> to continue:</label>
+            <input class="project-storage-confirm-input" id="project-storage-confirm-input" type="text" autocomplete="off" spellcheck="false">` : ''}
+          <div class="project-storage-modal-feedback" id="project-storage-modal-feedback" aria-live="polite"></div>
+          <div class="tag-delete-modal-actions">
+            <button class="action-btn action-btn--ghost" id="project-storage-modal-cancel" type="button">Cancel</button>
+            <button class="action-btn action-btn--danger" id="project-storage-modal-confirm" type="button" ${requiresTyping ? 'disabled' : ''}>Clear ${items.length} selected</button>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+
+      const dialog = modal.querySelector('.project-storage-modal');
+      const input = modal.querySelector('#project-storage-confirm-input');
+      const cancel = modal.querySelector('#project-storage-modal-cancel');
+      const confirm = modal.querySelector('#project-storage-modal-confirm');
+      const feedback = modal.querySelector('#project-storage-modal-feedback');
+      let working = false;
+      const closeModal = (force = false) => {
+        if (working && !force) return;
+        document.removeEventListener('keydown', onKeydown, true);
+        modal.remove();
+      };
+      const onKeydown = (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          closeModal();
+          return;
+        }
+        if (event.key !== 'Tab') return;
+        const focusable = [...dialog.querySelectorAll('button:not([disabled]), input:not([disabled])')];
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      };
+      document.addEventListener('keydown', onKeydown, true);
+      cancel.addEventListener('click', () => closeModal());
+      input?.addEventListener('input', () => {
+        confirm.disabled = input.value !== confirmation;
+        feedback.textContent = '';
+        delete feedback.dataset.state;
+      });
+      requestAnimationFrame(() => (input || cancel).focus());
+
+      confirm.addEventListener('click', async () => {
+        if (working || (requiresTyping && input.value !== confirmation)) return;
+        working = true;
+        cancel.disabled = true;
+        confirm.disabled = true;
+        if (input) input.disabled = true;
+        confirm.textContent = 'Clearing…';
+        feedback.dataset.state = 'working';
+        feedback.textContent = 'Revalidating the selection and clearing files…';
+        try {
+          const response = await fetch('/api/settings/project-storage/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              scanId: storageScan.scanId,
+              itemIds: items.map(item => item.id),
+              confirmation: requiresTyping ? input.value : confirmation,
+            }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const detail = Array.isArray(data.details) && data.details[0]?.error ? ` ${data.details[0].error}` : '';
+            const error = new Error(`${data.error || `Cleanup failed (HTTP ${response.status})`}${detail}`);
+            error.requiresRescan = !!data.requiresRescan || ['SCAN_EXPIRED', 'SCAN_MISMATCH', 'PROJECT_ACTIVE'].includes(data.code);
+            throw error;
+          }
+          const failedNames = (data.results || [])
+            .filter(result => result.status === 'failed')
+            .map(result => items.find(item => item.id === result.id)?.name || 'Unknown item');
+          const message = data.failedItemCount
+            ? `Cleared ${storageFormatCount(data.clearedItemCount, 'item')} (${storageFormatBytes(data.bytesCleared)}). Could not clear: ${failedNames.join(', ')}.`
+            : `Cleared ${storageFormatCount(data.clearedItemCount, 'item')} and reclaimed about ${storageFormatBytes(data.bytesCleared)}.`;
+          working = false;
+          closeModal(true);
+          storageScan = null;
+          selectedStorageItems.clear();
+          await loadProjectStorage(true);
+          setStorageFeedback(message, data.failedItemCount ? 'warning' : 'success');
+          showCCToast(data.failedItemCount ? 'Project storage partially cleared' : 'Project storage cleared');
+        } catch (error) {
+          working = false;
+          cancel.disabled = false;
+          cancel.textContent = 'Close';
+          confirm.textContent = 'Clear selected';
+          confirm.disabled = true;
+          if (input) input.disabled = true;
+          feedback.dataset.state = 'error';
+          feedback.textContent = error?.message || 'Could not clear selected storage.';
+          if (error?.requiresRescan) {
+            storageScan = null;
+            selectedStorageItems.clear();
+            loadProjectStorage(true);
+          }
+          cancel.focus();
+        }
+      });
+    }
+
+    storageResults?.addEventListener('change', (event) => {
+      const checkbox = event.target.closest('[data-project-storage-item]');
+      if (!checkbox) return;
+      if (checkbox.checked) selectedStorageItems.add(checkbox.dataset.projectStorageItem);
+      else selectedStorageItems.delete(checkbox.dataset.projectStorageItem);
+      syncStorageSelection();
+    });
+    storageResults?.addEventListener('click', (event) => {
+      if (event.target.closest('[data-project-storage-retry]')) loadProjectStorage(true);
+    });
+    refreshButton?.addEventListener('click', () => loadProjectStorage(true));
+    selectSafeButton?.addEventListener('click', () => {
+      selectedStorageItems = new Set(allStorageItems()
+        .filter(item => item.originalRisk === 'safe' && !item.protected && !item.blocked)
+        .map(item => item.id));
+      renderProjectStorage();
+    });
+    clearSelectionButton?.addEventListener('click', () => {
+      selectedStorageItems.clear();
+      renderProjectStorage();
+    });
+    clearButton?.addEventListener('click', openProjectStorageClearModal);
+
+    const projectsNav = overlay.querySelector('.settings-nav-item[data-tab="projects"]');
+    projectsNav?.addEventListener('click', () => {
+      if (!storageScan && !storageLoading) loadProjectStorage();
+    });
+    if (overlay.querySelector('.settings-tab-body[data-tab="projects"]')?.classList.contains('active')) {
+      loadProjectStorage();
+    }
+  }
+
   // Explore project
   function openExploreModal(projectPath, projectLabel) {
     const EXPLORE_CLI_IDS = ['claude-code', 'codex', 'gemini'];
@@ -6888,7 +7264,7 @@ export async function openSettingsModal(options = {}) {
           closeAdd(); close();
           openSettingsModal().then(() => {
             const panel = document.getElementById('settings-panel');
-            if (panel) { panel.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active')); panel.querySelectorAll('.settings-tab-body').forEach(b => b.classList.remove('active')); const nav = panel.querySelector('.settings-nav-item[data-tab="projects"]'); const tab = panel.querySelector('.settings-tab-body[data-tab="projects"]'); if (nav) nav.classList.add('active'); if (tab) tab.classList.add('active'); }
+            panel?.querySelector('.settings-nav-item[data-tab="projects"]')?.click();
           });
         } else { alert(data.error || 'Failed to add project'); saveBtn.textContent = 'Add & Enable'; saveBtn.disabled = false; }
       } catch (err) { alert('Failed: ' + err.message); const saveBtn = addOverlay.querySelector('#cc-proj-save'); saveBtn.textContent = 'Add & Enable'; saveBtn.disabled = false; }

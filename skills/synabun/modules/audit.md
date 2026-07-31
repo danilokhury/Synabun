@@ -12,7 +12,7 @@ You are now in **memory audit mode**. Your job is to systematically validate Syn
 
 - Make ALL SynaBun MCP calls **sequentially** (never in parallel — one failure cascades to all sibling calls in the batch).
 - `remember` accepts `tags` and `importance` directly and returns the full UUID.
-- `reflect` requires the **FULL UUID** (e.g., `123e4567-e89b-42d3-a456-426614174000`). Use the UUID returned by `remember`, or `recall` to find existing memories.
+- `reflect` requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`). Use the UUID returned by `remember`, or `recall` to find existing memories.
 - The `forget` tool also requires the full UUID.
 - The `memories` tool maxes out at 50 results per call. If a category has more than 50 memories, warn the user that only the 50 most recent will be audited.
 

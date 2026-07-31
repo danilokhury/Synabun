@@ -47,7 +47,7 @@ function installDeps(name, dir, { includeDev = false } = {}) {
   info(`Installing ${name} dependencies...`);
   try {
     const omitFlag = includeDev ? '' : ' --omit=dev';
-    execSync(`npm ci${omitFlag} --ignore-scripts`, {
+    execSync(`npm install${omitFlag} --ignore-scripts`, {
       cwd: dir,
       stdio: 'inherit',
       timeout: 300_000,
@@ -97,7 +97,7 @@ function buildMcpServer() {
 
   info('Building MCP server from source...');
   try {
-    execSync('node ./node_modules/typescript/bin/tsc', {
+    execSync('npx tsc', {
       cwd: resolve(__dirname, 'mcp-server'),
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 120_000,

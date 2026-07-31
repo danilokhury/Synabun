@@ -10,7 +10,7 @@ If the input topic is empty, you are in **freeform mode** — explore the full m
 
 - Make ALL SynaBun MCP calls **sequentially** (never in parallel — one failure cascades)
 - `remember` accepts `tags` and `importance` directly and returns the full UUID.
-- `reflect` requires the **FULL UUID** (e.g., `123e4567-e89b-42d3-a456-426614174000`). Use the UUID returned by `remember`, or `recall` to find existing memories.
+- `reflect` requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`). Use the UUID returned by `remember`, or `recall` to find existing memories.
 
 ## Runtime Compatibility
 
@@ -128,7 +128,7 @@ If the user says yes:
 2. If not, create it with the runtime's category-management tool using:
    - `name`: "ideas"
    - `description`: "Brainstormed features, experiments, and creative explorations"
-   - `parent`: the current project's parent category (e.g., "my-project") — or no parent if no project match
+   - `parent`: the current project's parent category (e.g., "criticalpixel") — or no parent if no project match
 3. For each idea the user wants saved, call `remember` with:
    - `content`: The full idea text (title + concept + reasoning chain + next steps)
    - `category`: "ideas"

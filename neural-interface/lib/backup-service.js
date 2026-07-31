@@ -1,25 +1,30 @@
 import {
   accessSync,
+  copyFileSync,
   constants as FS_CONSTANTS,
   createReadStream,
   existsSync,
   lstatSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   statSync,
+  statfsSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import archiver from 'archiver';
 import AdmZip from 'adm-zip';
 
 export const BACKUP_MANIFEST_VERSION = 3;
 export const BACKUP_PREFIX = 'synabun-auto-backup';
+export const BACKUP_FREE_SPACE_RESERVE_BYTES = 512 * 1024 * 1024;
 export const DEFAULT_BACKUP_RETENTION = Object.freeze({
   recentHours: 24,
   dailyDays: 30,
@@ -33,6 +38,25 @@ const TRANSIENT_DATA_NAMES = new Set([
   'restart-requested',
   'opencode-managed.pid',
 ]);
+
+const IMMUTABLE_BACKUP_EXTENSIONS = new Set([
+  '.avif', '.gif', '.ico', '.jpeg', '.jpg', '.mov', '.mp3', '.mp4', '.ogg',
+  '.pdf', '.png', '.svg', '.webm', '.webp', '.woff', '.woff2', '.zip',
+]);
+
+export class BackupStorageError extends Error {
+  constructor({ availableBytes, requiredBytes, folderPath }) {
+    const availableMiB = Math.floor(availableBytes / 1024 / 1024);
+    const requiredMiB = Math.ceil(requiredBytes / 1024 / 1024);
+    super(`Insufficient disk space for backup: ${availableMiB} MB available, ${requiredMiB} MB required`);
+    this.name = 'BackupStorageError';
+    this.code = 'ENOSPC';
+    this.availableBytes = availableBytes;
+    this.requiredBytes = requiredBytes;
+    this.folderPath = folderPath;
+    this.retryable = true;
+  }
+}
 
 function safeTimestamp(date) {
   return date.toISOString().replace(/[:.]/g, '-');
@@ -87,6 +111,7 @@ function shouldSkipDataPath(relativePath) {
   const parts = normalized.split('/');
   const name = parts.at(-1);
   if (parts[0] === 'updater') return true;
+  if (parts[0] === 'logs') return true;
   if (TRANSIENT_DATA_NAMES.has(name)) return true;
   if (name.endsWith('.tmp') || name.endsWith('.pid')) return true;
   if (/\.db-(?:wal|shm)$/i.test(name)) return true;
@@ -97,7 +122,12 @@ function collectFiles(root, archiveRoot, { filter = () => true } = {}) {
   const files = [];
   function walk(current) {
     if (!existsSync(current)) return;
-    const stat = lstatSync(current);
+    let stat;
+    try { stat = lstatSync(current); }
+    catch (error) {
+      if (error?.code === 'ENOENT') return;
+      throw error;
+    }
     if (stat.isSymbolicLink()) return;
     if (stat.isFile()) {
       const rel = relative(root, current).replace(/\\/g, '/');
@@ -105,17 +135,114 @@ function collectFiles(root, archiveRoot, { filter = () => true } = {}) {
       return;
     }
     if (!stat.isDirectory()) return;
-    for (const entry of readdirSync(current).sort()) walk(join(current, entry));
+    let entries;
+    try { entries = readdirSync(current).sort(); }
+    catch (error) {
+      if (error?.code === 'ENOENT') return;
+      throw error;
+    }
+    for (const entry of entries) walk(join(current, entry));
   }
   walk(root);
   return files;
+}
+
+function backupFileSize(file) {
+  try { return statSync(file.diskPath).size; }
+  catch (error) {
+    if (error?.code === 'ENOENT') return 0;
+    throw error;
+  }
+}
+
+function isSqliteBackupInput(file) {
+  return /\.(?:db|sqlite|sqlite3)$/i.test(file.archivePath);
+}
+
+function isMutableBackupInput(file) {
+  if (isSqliteBackupInput(file)) return false;
+  return !IMMUTABLE_BACKUP_EXTENSIONS.has(extname(file.archivePath).toLowerCase());
+}
+
+export function backupAvailableBytes(folderPath) {
+  let probe = resolve(folderPath);
+  while (!existsSync(probe) && dirname(probe) !== probe) probe = dirname(probe);
+  const stats = statfsSync(probe);
+  return Number(stats.bavail) * Number(stats.bsize);
+}
+
+export function assertBackupWorkingSpace({
+  folderPath,
+  files = [],
+  databasePath = null,
+  expectedArchiveBytes = 0,
+  freeSpaceReserveBytes = BACKUP_FREE_SPACE_RESERVE_BYTES,
+  getAvailableBytes = backupAvailableBytes,
+} = {}) {
+  const primaryDatabaseBytes = databasePath && existsSync(databasePath) ? statSync(databasePath).size : 0;
+  const inputBytes = files.reduce((sum, file) => sum + backupFileSize(file), primaryDatabaseBytes);
+  const stagedMutableBytes = files
+    .filter(isMutableBackupInput)
+    .reduce((sum, file) => sum + backupFileSize(file), 0);
+  const sqliteSnapshotBytes = files
+    .filter(isSqliteBackupInput)
+    .reduce((sum, file) => sum + backupFileSize(file), primaryDatabaseBytes);
+  const archiveBytes = Math.max(Number(expectedArchiveBytes) || 0, inputBytes);
+  const requiredBytes = Math.max(0, Number(freeSpaceReserveBytes) || 0)
+    + stagedMutableBytes
+    + sqliteSnapshotBytes
+    + archiveBytes;
+  const availableBytes = Number(getAvailableBytes(folderPath));
+  if (Number.isFinite(availableBytes) && availableBytes < requiredBytes) {
+    throw new BackupStorageError({ availableBytes, requiredBytes, folderPath });
+  }
+  return {
+    availableBytes,
+    requiredBytes,
+    archiveBytes,
+    stagedMutableBytes,
+    sqliteSnapshotBytes,
+  };
+}
+
+function snapshotMutableBackupFiles(files, folderPath) {
+  if (!files.some(isMutableBackupInput)) return { files, stageDir: null };
+  const stageDir = mkdtempSync(resolve(folderPath, `.synabun-files-${process.pid}-`));
+  const snapshots = [];
+  try {
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index];
+      if (!isMutableBackupInput(file)) {
+        snapshots.push(file);
+        continue;
+      }
+      const diskPath = resolve(stageDir, String(index));
+      try {
+        copyFileSync(file.diskPath, diskPath);
+        snapshots.push({ ...file, diskPath });
+      } catch (error) {
+        // A runtime file deleted between enumeration and snapshotting is no
+        // longer part of the state being backed up. Other failures are fatal.
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+    return { files: snapshots, stageDir };
+  } catch (error) {
+    try { rmSync(stageDir, { recursive: true, force: true }); } catch {}
+    throw error;
+  }
 }
 
 function normalizeAdditionalEntries(entries = []) {
   const result = [];
   for (const entry of entries) {
     if (!entry?.diskPath || !entry?.archivePath || !existsSync(entry.diskPath)) continue;
-    const stat = lstatSync(entry.diskPath);
+    let stat;
+    try { stat = lstatSync(entry.diskPath); }
+    catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw error;
+    }
     if (stat.isSymbolicLink()) continue;
     if (stat.isDirectory()) result.push(...collectFiles(entry.diskPath, entry.archivePath));
     else if (stat.isFile()) result.push({ diskPath: entry.diskPath, archivePath: entry.archivePath });
@@ -163,6 +290,10 @@ export async function createVerifiedBackup({
   dataSchemaVersion = 1,
   sourceFingerprint = null,
   additionalEntries = [],
+  expectedArchiveBytes = 0,
+  freeSpaceReserveBytes = BACKUP_FREE_SPACE_RESERVE_BYTES,
+  getAvailableBytes = backupAvailableBytes,
+  onBeforeArchive = null,
   now = () => new Date(),
 } = {}) {
   if (!dataHome || !folderPath) throw new Error('dataHome and folderPath are required');
@@ -175,16 +306,37 @@ export async function createVerifiedBackup({
   if (existsSync(destination)) throw new Error(`Backup already exists: ${destination}`);
 
   let sqliteSnapshot = null;
+  let stageDir = null;
   try {
-    sqliteSnapshot = createConsistentSqliteSnapshot(databasePath, sqliteTemp);
     const files = [];
     const envPath = resolve(dataHome, '.env');
     if (existsSync(envPath)) files.push({ diskPath: envPath, archivePath: 'env.bak' });
     files.push(...collectFiles(resolve(dataHome, 'data'), 'data', { filter: rel => !shouldSkipDataPath(rel) }));
     files.push(...collectFiles(resolve(dataHome, 'mcp-data'), 'mcp-data', {
-      filter: rel => !/^memory\.db(?:-wal|-shm)?$/i.test(rel) && !/\.db-(?:wal|shm)$/i.test(rel),
+      filter: rel => !shouldSkipDataPath(rel)
+        && !/^memory\.db(?:-wal|-shm)?$/i.test(rel)
+        && !/\.db-(?:wal|shm)$/i.test(rel),
     }));
     files.push(...normalizeAdditionalEntries(additionalEntries));
+
+    // De-duplicate before estimating work space so explicit additional entries
+    // cannot inflate the preflight or create ambiguous ZIP members.
+    const sourceFiles = [...new Map(files.map(file => [
+      file.archivePath.replace(/\\/g, '/'),
+      file,
+    ])).values()];
+    assertBackupWorkingSpace({
+      folderPath,
+      files: sourceFiles,
+      databasePath,
+      expectedArchiveBytes,
+      freeSpaceReserveBytes,
+      getAvailableBytes,
+    });
+
+    sqliteSnapshot = createConsistentSqliteSnapshot(databasePath, sqliteTemp);
+    files.length = 0;
+    files.push(...sourceFiles);
     if (sqliteSnapshot) files.push({ diskPath: sqliteSnapshot.path, archivePath: 'database/memory.db' });
 
     // UI blob/state databases also use WAL. Snapshot every additional SQLite
@@ -202,7 +354,9 @@ export async function createVerifiedBackup({
     // De-duplicate archive paths so explicit additional entries cannot create
     // ambiguous ZIP members.
     const unique = new Map(files.map(file => [file.archivePath.replace(/\\/g, '/'), file]));
-    const finalFiles = [...unique.values()].sort((a, b) => a.archivePath.localeCompare(b.archivePath));
+    const stableInputs = snapshotMutableBackupFiles([...unique.values()], folderPath);
+    stageDir = stableInputs.stageDir;
+    const finalFiles = stableInputs.files.sort((a, b) => a.archivePath.localeCompare(b.archivePath));
     const checksums = {};
     for (const file of finalFiles) checksums[file.archivePath] = `sha256:${await hashFile(file.diskPath)}`;
 
@@ -225,6 +379,7 @@ export async function createVerifiedBackup({
       verified: true,
       verification: { algorithm: 'sha256', publication: 'verify-before-atomic-rename' },
     };
+    if (typeof onBeforeArchive === 'function') await onBeforeArchive({ files: finalFiles, manifest });
     await writeArchive({ tempPath, files: finalFiles, manifest });
     const publishedManifest = verifyBackupArchive(tempPath);
     renameSync(tempPath, destination);
@@ -243,6 +398,9 @@ export async function createVerifiedBackup({
     try { if (existsSync(sqliteTemp)) unlinkSync(sqliteTemp); } catch {}
     for (const path of extraSqliteTemps) {
       try { if (existsSync(path)) unlinkSync(path); } catch {}
+    }
+    if (stageDir) {
+      try { rmSync(stageDir, { recursive: true, force: true }); } catch {}
     }
   }
 }
@@ -295,6 +453,7 @@ function utcWeek(dateMs) {
 export function applyBackupRetention({
   folderPath,
   retention = DEFAULT_BACKUP_RETENTION,
+  incomingBytes = 0,
   now = () => new Date(),
   remove = path => unlinkSync(path),
 } = {}) {
@@ -341,12 +500,14 @@ export function applyBackupRetention({
 
   let retained = listBackupSnapshots(folderPath);
   let totalBytes = retained.reduce((sum, item) => sum + item.sizeBytes, 0);
-  if (totalBytes > policy.maxBytes) {
+  const normalizedIncomingBytes = Math.max(0, Number(incomingBytes) || 0);
+  const targetBytes = Math.max(0, policy.maxBytes - normalizedIncomingBytes);
+  if (totalBytes > targetBytes) {
     const removable = [...retained]
       .filter(item => !protectedPaths.has(item.path) && item.kind !== 'manual' && item.kind !== 'unknown')
       .sort((a, b) => a.createdMs - b.createdMs);
     for (const item of removable) {
-      if (totalBytes <= policy.maxBytes) break;
+      if (totalBytes <= targetBytes) break;
       remove(item.path);
       removed.push(item.path);
       totalBytes -= item.sizeBytes;
@@ -357,8 +518,10 @@ export function applyBackupRetention({
     retention: policy,
     retained,
     removed,
+    incomingBytes: normalizedIncomingBytes,
+    projectedTotalBytes: retained.reduce((sum, item) => sum + item.sizeBytes, normalizedIncomingBytes),
     totalBytes: retained.reduce((sum, item) => sum + item.sizeBytes, 0),
-    capExceeded: retained.reduce((sum, item) => sum + item.sizeBytes, 0) > policy.maxBytes,
+    capExceeded: retained.reduce((sum, item) => sum + item.sizeBytes, normalizedIncomingBytes) > policy.maxBytes,
   };
 }
 
@@ -430,7 +593,12 @@ export function saveBackupConfig(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   const config = normalizeBackupConfig({ ...value, configured: true });
   const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-  renameSync(temp, path);
+  try {
+    writeFileSync(temp, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    renameSync(temp, path);
+  } catch (error) {
+    try { if (existsSync(temp)) unlinkSync(temp); } catch {}
+    throw error;
+  }
   return config;
 }

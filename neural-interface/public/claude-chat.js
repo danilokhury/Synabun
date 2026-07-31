@@ -121,16 +121,23 @@ async function loadConfig() {
     $model.innerHTML = '';
     for (const m of models) {
       const opt = document.createElement('option');
-      // Composite "<id>:<contextWindow>" so 1M and 200K variants (same id) are distinct
-      // and selectable; the backend (toCliModelName) turns >200K into the `[1m]` suffix.
-      opt.value = `${m.id}:${m.contextWindow || 200000}`;
+      // Ids come from the CLI and are already spawn-ready (they carry any `[1m]`
+      // suffix), so they are used verbatim. Legacy stored values may still be the
+      // old "<id>:<contextWindow>" composite; toCliModelName() decodes those.
+      opt.value = m.id;
       opt.textContent = m.label;
       $model.appendChild(opt);
     }
 
-    // Restore saved model (tab-scoped only — no cross-session bleed)
+    // Restore saved model (tab-scoped only — no cross-session bleed). A value saved
+    // before live discovery may name a model the CLI no longer offers; setting it on a
+    // <select> would silently blank the field, so fall back to the CLI's own default.
     const savedModel = tabStore.getItem(STOR.model);
-    if (savedModel) { $model.value = savedModel; }
+    if (savedModel) $model.value = savedModel;
+    if (!$model.value && models.length) {
+      $model.value = (models.find(m => m.tier === 'default') || models[0]).id;
+      tabStore.setItem(STOR.model, $model.value);
+    }
 
   } catch {}
 }

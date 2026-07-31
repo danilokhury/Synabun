@@ -458,6 +458,21 @@ function buildWsCallbacks(tab, options = {}) {
         handleServerRequestResponseResult(msg);
         return;
       }
+      if (msg.type === 'storage_health') {
+        const recovered = msg.status === 'healthy';
+        appendSystem(
+          msg.message || (recovered ? 'Codex request persistence recovered.' : 'Codex request persistence is unavailable.'),
+          recovered ? 'muted' : 'error',
+        );
+        if (!recovered) {
+          notify('panel', NOTIF_TYPE.ERROR, msg.message || 'Codex request persistence is unavailable.', {
+            panel: 'codex',
+            provider: 'codex',
+            tabId: _boundTab?.id,
+          });
+        }
+        return;
+      }
       if (msg.type === 'codex_config_repaired') {
         appendSystem(msg.message || 'Codex configuration repaired.', 'muted');
         return;

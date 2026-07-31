@@ -181,7 +181,10 @@ export function handleServerRequestResponseResult(msg) {
     state: msg.status || 'delivery_failed',
     lastError: msg.error || 'Could not deliver answer',
   }, pending.correlation);
-  unlockRequestCard(pending.entry, msg.status === 'delivery_failed' ? 'retry' : 'waiting');
+  unlockRequestCard(
+    pending.entry,
+    (msg.retryable || ['delivery_failed', 'persistence_failed'].includes(msg.status)) ? 'retry' : 'waiting',
+  );
   _ctx.appendSystem(msg.error || 'Could not answer Codex request', 'error');
   return true;
 }

@@ -362,7 +362,7 @@ export function detectProject(cwd) {
   }
 
   // 2. Substring match — cwd folder name contains a registered project's folder name
-  //    e.g. "SynabunDocs" contains "synabun" → matches the Synabun project
+  //    e.g. "SynaBunWebsite" contains "synabun" → matches Synabun project
   for (const p of sorted) {
     const projFolder = basename(p.path).toLowerCase();
     if (lower.includes(projFolder)) return p.label;

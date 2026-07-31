@@ -221,9 +221,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 );
 `;
 
-// Facebook group directory — structured single source of truth for managed campaigns.
-// One row per group (fb_groups), one append-only row per posting event (fb_post_log).
-// Atomic per-row writes avoid the data-loss risks of maintaining a single text queue.
+// Facebook group directory — structured single source of truth for the Critical Pixel
+// group collection. One row per group (fb_groups), one append-only row per posting event
+// (fb_post_log). Replaces the fragile single-text seed-queue memory whose [QUEUE] was once
+// wiped by a whole-body reflect(); atomic per-row writes make that data-loss class impossible.
 const FB_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS fb_groups (
   url            TEXT PRIMARY KEY,

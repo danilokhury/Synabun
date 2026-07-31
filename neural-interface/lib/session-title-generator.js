@@ -1,4 +1,5 @@
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
+import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
 import {
   fallbackSessionTitle,
   normalizeSessionTitle,
@@ -77,7 +78,7 @@ async function generateClaudeTitle(input, deps) {
       options: {
         cwd: input.cwd || process.cwd(),
         model: input.model || undefined,
-        effort: ['low', 'medium', 'high', 'max'].includes(input.effort) ? input.effort : undefined,
+        effort: CLAUDE_EFFORT_LEVELS.includes(input.effort) ? input.effort : undefined,
         systemPrompt: TITLE_SYSTEM_PROMPT,
         settingSources: [],
         allowedTools: [],

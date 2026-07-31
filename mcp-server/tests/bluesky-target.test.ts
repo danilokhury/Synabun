@@ -20,7 +20,7 @@ const topLevel = (href: string, title = '') => ({
   },
 });
 
-describe('Bluesky assigned-tab targeting', () => {
+describe('BlueSky assigned-tab targeting', () => {
   beforeEach(() => {
     ni.evaluate.mockReset();
     ni.navigate.mockReset();
@@ -94,8 +94,8 @@ describe('Bluesky assigned-tab targeting', () => {
       .mockResolvedValueOnce({
         ok: true,
         result: {
-          did: 'did:plc:example',
-          handle: 'example.bsky.social',
+          did: 'did:plc:criticalpixel',
+          handle: 'critpixel.bsky.social',
           pdsUrl: 'https://example.host.bsky.network',
         },
       });
@@ -106,7 +106,7 @@ describe('Bluesky assigned-tab targeting', () => {
       tabId: 'tab-1',
     });
 
-    expect(result?.content?.[0]?.text).toContain('example.bsky.social');
+    expect(result?.content?.[0]?.text).toContain('critpixel.bsky.social');
     expect(ni.navigate).toHaveBeenCalledTimes(1);
     expect(ni.evaluate).toHaveBeenCalledTimes(3);
   });

@@ -20,6 +20,7 @@
 // session with no WS bound, so page-refresh reattach is the same object.
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
@@ -282,7 +283,7 @@ class ClaudeSession {
     }
     if (this.sessionId) options.resume = this.sessionId;
     if (this.model) options.model = this.model;
-    if (this.effort && ['low', 'medium', 'high', 'max'].includes(this.effort)) {
+    if (this.effort && CLAUDE_EFFORT_LEVELS.includes(this.effort)) {
       options.extraArgs = { effort: this.effort };
     }
     // Sibling-project access, same guard as legacy --add-dir

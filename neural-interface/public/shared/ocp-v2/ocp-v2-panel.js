@@ -745,7 +745,7 @@ async function renderSessionMenu() {
   const s = getState();
   const cwd = s.cwd || storage.getItem(STOR_PROJECT) || '';
   // Show ALL sessions from EVERY project so users can resume sessions
-  // from other registered projects.
+  // from other registered projects (e.g. CriticalPixel, EllaCred).
   // Sessions from the current project are still prioritized visually.
   const all = sessions;
   all.sort((a, b) => {

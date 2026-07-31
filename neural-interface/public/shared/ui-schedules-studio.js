@@ -18,6 +18,8 @@ import {
   getCachedMcpProfilePresets,
   getEffortLevelsForProfile,
   getModelsForProfile,
+  formatModelOptionLabel,
+  isDynamicModelProfile,
   modelSelectorValue,
   modelMatchesSelector,
   normalizeEffortForProfile,
@@ -553,7 +555,7 @@ function renderTimersTab() {
     .map(min => `<button class="sched-time-chip${_selectedQtMinutes === min ? ' active' : ''}" data-action="qt-select" data-minutes="${min}">${min >= 60 ? `${min / 60}h` : `${min}m`}</button>`)
     .join('');
 
-  if ((_launchProfile === 'opencode' || _launchProfile === 'codex') && !_modelLoadRequests.has(_launchProfile)) {
+  if (isDynamicModelProfile(_launchProfile) && !_modelLoadRequests.has(_launchProfile)) {
     _modelLoadRequests.add(_launchProfile);
     ensureModelsForProfile(_launchProfile).then(() => { if (_panel && _tab === 'timers') renderTimersTab(); });
   }
@@ -630,7 +632,7 @@ function renderTimersTab() {
   });
 }
 
-function renderModelOptions(profile, selected) {
+function renderModelOptions(profile, selected, { showService = false } = {}) {
   const models = getModelsForProfile(profile);
   if (!models.length) {
     // List not loaded yet — preserve any stored selection so saving the form cannot
@@ -649,7 +651,10 @@ function renderModelOptions(profile, selected) {
     `<option value=""${!current ? ' selected' : ''}>Template/default</option>`,
     ...models.map(m => {
       const val = modelSelectorValue(m);
-      return `<option value="${esc(val)}"${modelMatchesSelector(m, current) ? ' selected' : ''}>${esc(m.label || m.id)}</option>`;
+      const label = formatModelOptionLabel(m, {
+        includeService: showService && profile === 'opencode',
+      });
+      return `<option value="${esc(val)}"${modelMatchesSelector(m, current) ? ' selected' : ''}>${esc(label)}</option>`;
     }),
   ];
   // Preserve a stored model that isn't in the (still-loading or curated) list so the
@@ -750,7 +755,7 @@ function renderGroupEditor(group) {
     `<option value=""${!d.profile ? ' selected' : ''}>No override</option>`,
     ...CLI_PROFILES.map(p => `<option value="${p.id}"${d.profile === p.id ? ' selected' : ''}>${p.label}</option>`),
   ].join('');
-  const modelOptions = renderModelOptions(profileForModels, d.model || '');
+  const modelOptions = renderModelOptions(profileForModels, d.model || '', { showService: true });
   const effortOptions = renderEffortOptions(profileForModels, d.effort || '');
   const mcpOptions = renderMcpOptions(d.mcpProfile || '');
   const accountOptions = renderAccountOptions(d.codexAccountId || '', true);
@@ -899,7 +904,7 @@ function renderScheduleEditor() {
   ].join('');
   const template = getTemplate(s.templateId);
   const profileForModels = s.profile || template?.profile || 'claude-code';
-  const modelOptions = renderModelOptions(profileForModels, s.model || '');
+  const modelOptions = renderModelOptions(profileForModels, s.model || '', { showService: true });
   const effortOptions = renderEffortOptions(profileForModels, s.effort || '');
   const mcpOptions = renderMcpOptions(s.mcpProfile || '');
   const accountOptions = renderAccountOptions(s.codexAccountId || '', true);
@@ -920,7 +925,7 @@ function renderScheduleEditor() {
       <input type="text" data-day="${idx}" value="${esc(s.dayThemes?.[String(idx)]?.contextOverride || '')}" placeholder="Optional context override">
     </label>`).join('');
 
-  if ((profileForModels === 'opencode' || profileForModels === 'codex') && !_modelLoadRequests.has(profileForModels)) {
+  if (isDynamicModelProfile(profileForModels) && !_modelLoadRequests.has(profileForModels)) {
     _modelLoadRequests.add(profileForModels);
     ensureModelsForProfile(profileForModels).then(() => { if (_panel && _scheduleEditor) renderScheduleEditor(); });
   }

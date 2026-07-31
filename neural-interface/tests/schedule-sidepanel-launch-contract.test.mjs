@@ -8,9 +8,23 @@ const read = (path) => readFileSync(resolve(root, path), 'utf8');
 
 test('Codex native schedules use only the trusted global CLI', () => {
   const server = read('neural-interface/server.js');
+  const resolver = read('neural-interface/lib/codex-runtime-path.js');
   assert.match(server, /function getNativeCodexBin\(\)/);
   assert.match(server, /codexPath: getNativeCodexBin\(\)/);
-  assert.match(server, /_codexBinPath && !isInsideSynabun\(_codexBinPath\)/);
+  const nativeFactory = server.slice(
+    server.indexOf('codex: (state) => {'),
+    server.indexOf('opencode: async (state)', server.indexOf('codex: (state) => {')),
+  );
+  assert.match(nativeFactory, /ensureCanonicalCodexConfig\(\{ strict: true \}\)/);
+  assert.ok(
+    nativeFactory.indexOf('ensureCanonicalCodexConfig') < nativeFactory.indexOf('createCodexNativeLoopAdapter'),
+    'Codex config must be repaired before the native SDK adapter starts',
+  );
+  assert.match(server, /resolveTrustedWindowsCodexBinary/);
+  assert.match(server, /acceptBinary: \(candidate\) => !isInsideSynabun\(candidate\)/);
+  assert.match(resolver, /@openai\/codex-win32-x64/);
+  assert.match(resolver, /@openai\/codex-win32-arm64/);
+  assert.match(resolver, /if \(\/\\\.exe\$\/i\.test\(launcher\)/);
   assert.match(server, /Codex schedules require a trusted global Codex CLI/);
   assert.doesNotMatch(server, /resolveBundledCodexRuntime|getBundledCodexBin|ensureBundledCodexExecutable/);
 });
@@ -37,6 +51,11 @@ test('schedule queue preserves focus intent and native outcomes update schedule 
   assert.match(server, /resolveScheduleRunPresentation/);
   assert.match(server, /claimedBy: presentation\.claimedBy/);
   assert.match(server, /persistNativeScheduleOutcome\(run, runningInfo\)/);
+  assert.match(server, /persistExecScheduleOutcome\(loopState, 'completed'\)/);
+  assert.match(server, /persistExecScheduleOutcome\(loopState, 'failed'/);
+  assert.match(server, /persistExecScheduleOutcome\(data, 'stopped', 'user'\)/);
+  assert.match(server, /persistExecScheduleOutcome\(ls, 'failed', ls\.stoppedReason\)/);
   assert.match(server, /type: 'schedule:failed'/);
+  assert.match(server, /driverType: loopState\.driverType/);
   assert.match(router, /typeof run\.focus === 'boolean'/);
 });

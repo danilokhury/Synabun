@@ -78,7 +78,7 @@ function detectProject(cwd) {
   return base || 'global';
 }
 
-/** Derive a project label from Claude's encoded working-directory name. */
+/** Derive project label from Claude's directory name (e.g. "j--Sites-CriticalPixel" → "criticalpixel") */
 function detectProjectFromDir(dirName) {
   if (!dirName) return 'global';
   const lower = dirName.toLowerCase();
