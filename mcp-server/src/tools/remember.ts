@@ -15,18 +15,29 @@ export function buildRememberSchema() {
     content: z
       .string()
       .describe('The information to remember. Be specific and include context.'),
+    // category and project are REQUIRED on purpose. They were optional, and the
+    // description used to end "If omitted, a project default is used" — so hosts
+    // routinely sent { content } alone. Everything then landed in the fallback
+    // bucket, and the Claude Code stop hook (which keys off category) never
+    // cleared. A JSON Schema `required` entry is enforcement; a description is
+    // only advice, and the advice was already being ignored.
     category: z
       .string()
-      .optional()
+      .min(1)
       .describe(
-        'Category name (top-level bucket). Call category tool action "list" for valid names. ' +
-        'Distinct from subcategory. If omitted, a project default is used.'
+        'REQUIRED. Category name (top-level bucket) to file this memory under. ' +
+        'Call the category tool with action "list" for valid names, or action "create" ' +
+        'if nothing fits. Distinct from subcategory. An unrecognized name is still ' +
+        'accepted and remapped to a project default, but the memory is then filed in ' +
+        'the wrong bucket — pass a real one.'
       ),
   project: z
     .string()
-    .optional()
+    .min(1)
     .describe(
-      'Project this belongs to (e.g. "criticalpixel"). Defaults to auto-detected from working directory.'
+      'REQUIRED. Project this belongs to, lowercase kebab-case (e.g. "criticalpixel", ' +
+      '"synabun"). Use the project named in your session context — this is NOT reliably ' +
+      'auto-detected over the HTTP transport, where every caller shares one process.'
     ),
   tags: coerceStringArray()
     .optional()
@@ -37,7 +48,9 @@ export function buildRememberSchema() {
     .max(10)
     .optional()
     .describe(
-      '1=trivial, 5=normal, 7=significant, 8+=critical. Default 5. Use 8+ for hard-won bug fixes and architecture decisions.'
+      'Set this deliberately on every call: 1=trivial, 5=routine, 7=significant, ' +
+      '8+=critical. Use 8+ for hard-won bug fixes and architecture decisions. ' +
+      'Omit only when the work is genuinely routine (defaults to 5).'
     ),
   subcategory: z
     .string()
@@ -84,6 +97,8 @@ function resolveCategory(requested: string | undefined, project: string): { cate
 
 export async function handleRemember(args: {
   content: string;
+  // Required by the schema, but kept permissive here so the runtime fallbacks
+  // below still apply to non-validating callers (direct imports, tests).
   category?: string;
   project?: string;
   tags?: string[];

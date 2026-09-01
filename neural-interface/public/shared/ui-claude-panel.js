@@ -4931,7 +4931,7 @@ function _processTabMsg(tab, msg) {
       appendError(tab, msg.message);
       notify('panel', NOTIF_TYPE.ERROR, tab.label || 'Claude Code', { tabId: tab.id });
       if (typeof msg.message === 'string' && /Claude CLI not found|ENOENT/i.test(msg.message)) {
-        flagClaudeCliInstallFailure();
+        flagClaudeCliInstallFailure(msg.message);
       }
       break;
   }
@@ -8450,23 +8450,22 @@ function syncReservedWidth(knownWidth) {
 
 // ── CLI installation status (banner + send-block) ──
 let _cliInstallFailureForced = false;
+let _cliFailureReason = null;
 
 function _ensureCliBannerEl() {
   if (!_panel) return null;
   const container = _panel.querySelector('#cp-messages-container');
   if (!container || !container.parentNode) return null;
   let banner = container.parentNode.querySelector(':scope > .cp-cli-banner');
-  if (banner) return banner;
-  const label = getCliLabel('claude-code');
-  const cmd = getCliInstallCommand('claude-code');
+  if (banner) { _renderCliBannerContent(banner); return banner; }
   const url = getCliDocUrl('claude-code');
   banner = document.createElement('div');
   banner.className = 'cp-cli-banner';
   banner.innerHTML = `
     <div class="cp-cli-banner-icon">!</div>
     <div class="cp-cli-banner-text">
-      <div class="cp-cli-banner-title">${label} CLI not installed</div>
-      <div class="cp-cli-banner-body">Run <code>${cmd}</code> or follow the install guide.</div>
+      <div class="cp-cli-banner-title"></div>
+      <div class="cp-cli-banner-body"></div>
     </div>
     <div class="cp-cli-banner-actions">
       <a class="cp-cli-banner-link" href="${url}" target="_blank" rel="noopener noreferrer">Install guide</a>
@@ -8486,7 +8485,38 @@ function _ensureCliBannerEl() {
       }
     }
   });
+  _renderCliBannerContent(banner);
   return banner;
+}
+
+// Distinguish "never installed" from "installed but would not launch" —
+// telling the user to install something already present sends them chasing a
+// reinstall they do not need.
+function _renderCliBannerContent(banner) {
+  const titleEl = banner.querySelector('.cp-cli-banner-title');
+  const bodyEl = banner.querySelector('.cp-cli-banner-body');
+  if (!titleEl || !bodyEl) return;
+  const label = getCliLabel('claude-code');
+  bodyEl.replaceChildren();
+
+  if (_cliInstalled === null) {
+    titleEl.textContent = `${label} CLI not installed`;
+    bodyEl.append('Run ');
+    const code = document.createElement('code');
+    code.textContent = getCliInstallCommand('claude-code');
+    bodyEl.append(code, ' or follow the install guide.');
+    return;
+  }
+
+  titleEl.textContent = `${label} CLI failed to start`;
+  bodyEl.append(`${label} v${_cliInstalled} is installed, but it could not be launched. `);
+  if (_cliFailureReason) {
+    const code = document.createElement('code');
+    code.textContent = _cliFailureReason;
+    bodyEl.append(code);
+  } else {
+    bodyEl.append('Check the CLI path in Settings, then re-check.');
+  }
 }
 
 function _removeCliBannerEl() {
@@ -8505,17 +8535,28 @@ function _refreshCliBanners() {
   if ($send && missing) $send.disabled = true;
 }
 
-export function flagClaudeCliInstallFailure() {
+export function flagClaudeCliInstallFailure(reason = null) {
   _cliInstallFailureForced = true;
+  _cliFailureReason = reason ? String(reason).slice(0, 300) : null;
   _refreshCliBanners();
-  recheckCliStatus('claude-code').catch(() => {});
+  // Clear from the RETURNED value, not the subscriber callback: the callback
+  // only fires when the version string changes, and a launch failure does not
+  // change it, so the banner would otherwise latch permanently.
+  recheckCliStatus('claude-code')
+    .then((info) => {
+      if (!info?.installed) return;
+      _cliInstallFailureForced = false;
+      _cliFailureReason = null;
+      _refreshCliBanners();
+    })
+    .catch(() => {});
 }
 
 function _ensureCliSubscription() {
   if (_cliUnsub) return;
   _cliUnsub = subscribeCliStatus('claude-code', (info) => {
     _cliInstalled = info?.installed || null;
-    if (_cliInstalled) _cliInstallFailureForced = false;
+    if (_cliInstalled) { _cliInstallFailureForced = false; _cliFailureReason = null; }
     _refreshCliBanners();
   });
 }

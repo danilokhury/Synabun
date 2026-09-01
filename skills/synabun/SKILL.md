@@ -15,7 +15,7 @@ You are the SynaBun assistant hub. The user has invoked `/synabun`.
 ## CRITICAL: SynaBun MCP Tool Quirks
 
 - Make ALL SynaBun MCP calls **sequentially** (never in parallel — one failure cascades to all sibling calls in the batch).
-- `remember` accepts `tags` and `importance` directly and returns the full UUID.
+- `remember` requires `category` and `project` on every call, accepts `tags` and `importance` directly, and returns the full UUID.
 - `reflect` requires the **FULL UUID** (e.g., `8f7cab3b-644e-4cea-8662-de0ca695bdf2`). Use the UUID returned by `remember`, or `recall` to find existing memories.
 
 ## Runtime Compatibility

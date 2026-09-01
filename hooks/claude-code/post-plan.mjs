@@ -19,7 +19,8 @@
  *   { session_id, tool_name, tool_input, tool_response, cwd }
  *
  * Output (stdout JSON):
- *   { additionalContext: "..." } on success, or {} on skip/error
+ *   { hookSpecificOutput: { hookEventName, additionalContext } } on success,
+ *   or {} on skip/error. See emitContext().
  */
 
 import { readFileSync, writeFileSync, appendFileSync, readdirSync, statSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
@@ -34,6 +35,17 @@ process.on('uncaughtException', () => { try { process.stdout.write('{}'); } catc
 process.on('unhandledRejection', () => { try { process.stdout.write('{}'); } catch {} process.exit(0); });
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Emit additionalContext in the shape PostToolUse actually reads. A bare
+ * top-level { additionalContext } is accepted as valid JSON and then silently
+ * discarded, so every message written that way never reaches the model.
+ */
+function emitContext(text) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text },
+  }));
+}
 
 // Debug log (append-only, survives across invocations)
 const DEBUG_LOG_PATH = join(DATA_DIR, 'plan-debug.log');
@@ -456,9 +468,7 @@ async function main() {
   if (toolName === 'EnterPlanMode') {
     debugLog('EnterPlanMode fired — injecting AskUserQuestion reminder');
     const todayDir = getTodayPlanDir();
-    process.stdout.write(JSON.stringify({
-      additionalContext: `SynaBun: You are now in plan mode.\n\n**CRITICAL CONSTRAINT**: Do NOT make code changes (Edit, Write, NotebookEdit). Plan mode is RESEARCH AND PLANNING ONLY. Investigate, read files, search code — then present your plan. Do NOT implement anything until the user explicitly approves the plan and you exit plan mode.\n\nWhen you have questions or need clarification, you MUST use the \`AskUserQuestion\` tool — do NOT write questions as plain text. Load it via \`ToolSearch\` if its schema is not yet available. Use \`ExitPlanMode\` for final plan approval.\n\n**Plan file location**: Write plan files to \`${todayDir}/your-plan-slug.md\` — use a short descriptive slug derived from the plan title (e.g., \`fix-session-crosstalk.md\`, \`opencode-sidepanel.md\`). Do NOT create \`PLAN.md\` at the project root. Do NOT write to \`~/.claude/plans/\`.`,
-    }));
+    emitContext(`SynaBun: You are now in plan mode.\n\n**CRITICAL CONSTRAINT**: Do NOT make code changes (Edit, Write, NotebookEdit). Plan mode is RESEARCH AND PLANNING ONLY. Investigate, read files, search code — then present your plan. Do NOT implement anything until the user explicitly approves the plan and you exit plan mode.\n\nWhen you have questions or need clarification, you MUST use the \`AskUserQuestion\` tool — do NOT write questions as plain text. Load it via \`ToolSearch\` if its schema is not yet available. Use \`ExitPlanMode\` for final plan approval.\n\n**Plan file location**: Write plan files to \`${todayDir}/your-plan-slug.md\` — use a short descriptive slug derived from the plan title (e.g., \`fix-session-crosstalk.md\`, \`opencode-sidepanel.md\`). Do NOT create \`PLAN.md\` at the project root. Do NOT write to \`~/.claude/plans/\`.`);
     return;
   }
 
@@ -516,9 +526,7 @@ async function main() {
     const stored = loadStoredPlans();
     if (stored[base]) {
       debugLog(`ExitPlanMode: ${base} already stored — skipping`);
-      process.stdout.write(JSON.stringify({
-        additionalContext: `SynaBun: Plan already stored (${base}).`,
-      }));
+      emitContext(`SynaBun: Plan already stored (${base}).`);
       return;
     }
     try {
@@ -575,9 +583,7 @@ async function main() {
   }
 
   if (!planFile) {
-    process.stdout.write(JSON.stringify({
-      additionalContext: 'SynaBun: No plan file found and no plan content in tool_input — UI capture and hook authoring both failed.',
-    }));
+    emitContext('SynaBun: No plan file found and no plan content in tool_input — UI capture and hook authoring both failed.');
     return;
   }
 
@@ -624,14 +630,10 @@ async function main() {
   const shortTitle = planTitle.length > 60 ? planTitle.slice(0, 60) + '...' : planTitle;
   const matchInfo = planFile.method || 'unknown';
   debugLog(`Stored plan: ${planFile.path} [${matchInfo}] → memory ${id} (project: ${project})`);
-  process.stdout.write(JSON.stringify({
-    additionalContext: `SynaBun: Plan stored in memory [${id}] — "${shortTitle}" (category: ${categoryName}, project: ${project}). Plan file: ${planFile.path} [matched: ${matchInfo}]`,
-  }));
+  emitContext(`SynaBun: Plan stored in memory [${id}] — "${shortTitle}" (category: ${categoryName}, project: ${project}). Plan file: ${planFile.path} [matched: ${matchInfo}]`);
 }
 
 main().catch((err) => {
   // On error, still output valid JSON so Claude Code doesn't break
-  process.stdout.write(JSON.stringify({
-    additionalContext: `SynaBun: Plan storage failed — ${err.message}. The plan file is still saved at ${PLANS_DIR}.`,
-  }));
+  emitContext(`SynaBun: Plan storage failed — ${err.message}. The plan file is still saved at ${PLANS_DIR}.`);
 });

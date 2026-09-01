@@ -62,9 +62,12 @@ import {
   formatCodexConfigWarning,
   isCodexMcpAuthenticationRequired,
   normalizeReasoningEfforts,
+  normalizeCodexContextMode,
   registerOwnedThreadFromItem,
+  selectedCodexContextModel,
   selectedModelOption,
   shouldCompleteCodexPlan,
+  verifyCodexExtendedContext,
 } from './cdx-protocol.js';
 
 const SNAPSHOT_IDLE_DELAY_MS = 350;
@@ -173,6 +176,13 @@ function sendSocket(msg) {
   return wsSendSocket(packet, _ws);
 }
 
+function codexRuntimeSelection(tab = _boundTab || activeTab()) {
+  return {
+    model: tab?.model || null,
+    contextMode: normalizeCodexContextMode(tab?.contextMode),
+  };
+}
+
 // ── connectTab / disconnectTab wrappers (build callbacks for cdx-ws) ──
 
 export function connectTab(tab, options = {}) {
@@ -180,14 +190,41 @@ export function connectTab(tab, options = {}) {
   wsConnectTab(tab, buildWsCallbacks(tab, options), { withTab });
 }
 
-export function disconnectTab(tab) {
-  wsDisconnectTab(tab);
+function tabHasActiveWriterWork(tab) {
+  return !!(
+    tab?.running
+    || tab?.startingThread
+    || tab?.compacting
+    || tab?.pendingQueryRequestId
+    || tab?.expectedThreadId
+    || tab?.expectedThreadRequestId
+    || tab?.sessionListRequest
+    || tab?.threadStartRequest
+    || tab?.renameRequests?.size
+    || tab?.blockingServerRequests?.size
+  );
+}
+
+function releaseInactiveIdleTab(tab) {
+  if (!tab || tab.closed || activeTab() === tab || tabHasActiveWriterWork(tab)) return false;
+  disconnectTab(tab);
+  return true;
+}
+
+export function disconnectTab(tab, { forceRelease = false } = {}) {
+  wsDisconnectTab(tab, {
+    releaseWriter: forceRelease || !tabHasActiveWriterWork(tab),
+  });
+  if (_boundTab === tab) {
+    _connected = !!tab.connected;
+    _bootstrapped = !!tab.bootstrapped;
+  }
 }
 
 function closeAutomationHistorySocket(tab) {
   const ws = tab?.ws;
   if (!ws) return;
-  ws.__cxpIntentionalClose = true;
+  wsDisconnectTab(tab, { releaseWriter: true });
   tab.ws = null;
   tab.connected = false;
   tab.bootstrapped = false;
@@ -197,9 +234,6 @@ function closeAutomationHistorySocket(tab) {
     _connected = false;
     _bootstrapped = false;
     _pendingReattach = false;
-  }
-  if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-    try { ws.close(); } catch {}
   }
 }
 
@@ -219,19 +253,33 @@ function buildWsCallbacks(tab, options = {}) {
 
       if (!options.historyOnly && (shouldReattach || wasConnected)) {
         // Try to reattach to an orphaned server-side process
-        sendSocket({ type: 'reattach', windowId: windowId, accountId: _accountId || 'default', mcpProfile: tab.mcpProfile || null });
+        sendSocket({
+          type: 'reattach',
+          windowId: windowId,
+          accountId: _accountId || 'default',
+          mcpProfile: tab.mcpProfile || null,
+          ...codexRuntimeSelection(tab),
+        });
       } else {
         // Fresh bootstrap
-        sendSocket({ type: 'bootstrap', windowId: windowId, threadId: _threadId || null, cwd: _project || null, accountId: _accountId || 'default', mcpProfile: tab.mcpProfile || null });
+        sendSocket({
+          type: 'bootstrap',
+          windowId: windowId,
+          threadId: _threadId || null,
+          cwd: _project || null,
+          accountId: _accountId || 'default',
+          mcpProfile: tab.mcpProfile || null,
+          ...codexRuntimeSelection(tab),
+        });
       }
     },
 
-    onClose(tab, ws, { intentional }) {
+    onClose(tab, ws, { intentional, reconnectAfterRelease = false }) {
       if (options.historyOnly && !tab._automationHydrated) tab._automationHistoryResolve?.(false);
       if (tab.ws && tab.ws !== ws) return;
       _connected = false;
       _bootstrapped = false;
-      _pendingReattach = options.historyOnly ? false : !intentional;
+      _pendingReattach = options.historyOnly || reconnectAfterRelease ? false : !intentional;
       _ws = null;
       if (_boundTab) {
         _boundTab.connected = false;
@@ -243,18 +291,41 @@ function buildWsCallbacks(tab, options = {}) {
       syncSessionControls();
       if (options.historyOnly && tab.automationActive) {
         syncWorkStatus();
+      } else if (!options.historyOnly && reconnectAfterRelease && !tab.closed) {
+        setStatus('Reconnecting to Codex…', 'working');
+        scheduleReconnect(tab, () => connectTab(tab));
       } else if (!options.historyOnly && !intentional && !tab.closed) {
         setStatus('Disconnected — reconnecting…', 'error');
-        scheduleReconnect(() => connectTab(tab));
+        scheduleReconnect(tab, () => connectTab(tab));
       } else {
         setStatus('Disconnected', 'muted');
       }
+    },
+
+    onReleaseRejected(tab, ws) {
+      _ws = ws;
+      _connected = true;
+      _bootstrapped = !!tab.bootstrapped;
+      if (_boundTab) {
+        _boundTab.ws = ws;
+        _boundTab.connected = true;
+        _boundTab.bootstrapped = _bootstrapped;
+      }
+      if (tabHasActiveWriterWork(_boundTab)) syncWorkStatus();
+      else setStatus('Ready', 'ready');
+      syncInputEnabled();
+      syncSessionControls();
     },
 
     onReattachResult(msg) {
       _pendingReattach = false;
       if (_boundTab) _boundTab.pendingReattach = false;
       if (msg.ok) {
+        if (msg.accountId) {
+          _accountId = msg.accountId;
+          if (_boundTab) _boundTab.accountId = _accountId;
+        }
+        if (msg.mcpProfile && _boundTab) _boundTab.mcpProfile = msg.mcpProfile;
         // A reattached app-server can still have a different process-active
         // thread. Preserve the tab's displayed thread instead of adopting it.
         _threadId = _threadId || msg.threadId || null;
@@ -266,10 +337,26 @@ function buildWsCallbacks(tab, options = {}) {
           resetStallTimer();
         }
         // After reattach, bootstrap to get latest state
-        sendSocket({ type: 'bootstrap', windowId: windowId, threadId: _threadId || null, cwd: _project || null, accountId: _accountId || 'default', mcpProfile: tab.mcpProfile || null });
+        sendSocket({
+          type: 'bootstrap',
+          windowId: windowId,
+          threadId: _threadId || null,
+          cwd: _project || null,
+          accountId: _accountId || 'default',
+          mcpProfile: tab.mcpProfile || null,
+          ...codexRuntimeSelection(tab),
+        });
       } else {
         // Nothing to reattach — fresh bootstrap
-        sendSocket({ type: 'bootstrap', windowId: windowId, threadId: _threadId || null, cwd: _project || null, accountId: _accountId || 'default', mcpProfile: tab.mcpProfile || null });
+        sendSocket({
+          type: 'bootstrap',
+          windowId: windowId,
+          threadId: _threadId || null,
+          cwd: _project || null,
+          accountId: _accountId || 'default',
+          mcpProfile: tab.mcpProfile || null,
+          ...codexRuntimeSelection(tab),
+        });
       }
     },
 
@@ -295,6 +382,7 @@ function buildWsCallbacks(tab, options = {}) {
       refreshCodexAccounts();
       saveTabs();
       startHeartbeat(_tabs);
+      releaseInactiveIdleTab(_boundTab);
     },
 
     onHistory(msg) {
@@ -340,6 +428,7 @@ function buildWsCallbacks(tab, options = {}) {
         else _sessionListRequest.resolve?.(msg);
         _sessionListRequest = null;
       }
+      releaseInactiveIdleTab(_boundTab);
     },
 
     onThreadStarted(msg) {
@@ -436,6 +525,7 @@ function buildWsCallbacks(tab, options = {}) {
       setStatus('Interrupted', 'muted');
       syncInputEnabled();
       syncSessionControls();
+      releaseInactiveIdleTab(_boundTab);
     },
 
     onError(msg) {
@@ -449,8 +539,8 @@ function buildWsCallbacks(tab, options = {}) {
     onModelList(msg) {
       const models = Array.isArray(msg.models) ? msg.models : [];
       resolveGenericRequest(msg);
-      _modelListCache = mergeCodexModelList(models);
-      populateModelDropdown(_modelListCache);
+      const normalized = cacheModelListForTab(_boundTab, models);
+      if (isActiveTab(_boundTab)) populateModelDropdown(normalized);
     },
 
     onGenericResponse(msg) {
@@ -609,7 +699,6 @@ let _activeTabIdx = -1;
 let _boundTab = null;
 let _messagesEl = null;
 let _ws = null;
-let _reconnectTimer = null;  // bound-state placeholder (actual timer managed by cdx-ws)
 let _connected = false;
 let _bootstrapped = false;
 let _running = false;
@@ -790,6 +879,7 @@ function clearBlockingServerRequest(requestId, { flushBuffered = true } = {}) {
   syncInputEnabled();
   saveTabs();
   if (flushBuffered && !hasBlockingServerRequests()) flushBufferedSocketMessages();
+  releaseInactiveIdleTab(_boundTab);
 }
 
 function clearAllBlockingServerRequests() {
@@ -825,16 +915,21 @@ function resolveGenericRequest(msg) {
   else pending.resolve?.(msg);
   _renameRequests.delete(msg.requestId);
   syncPendingRequestRefs();
+  releaseInactiveIdleTab(_boundTab);
   return pending;
 }
 
 function applySocketError(msg) {
   const text = msg.message || 'Unknown error';
   if (_compacting) setCompactingUI(false);
+  if (_pendingQueryRequestId && String(msg.requestId || '') === String(_pendingQueryRequestId)) {
+    _pendingQueryRequestId = null;
+    if (_boundTab) _boundTab.pendingQueryRequestId = null;
+  }
   appendSystem(text, 'error');
   setStatus(text, 'error');
   if (/Codex CLI not found|ENOENT|app-server exited before responding|app-server spawn/i.test(text)) {
-    import('./cdx-panel.js').then((m) => m.flagCdxCliInstallFailure?.()).catch(() => {});
+    import('./cdx-panel.js').then((m) => m.flagCdxCliInstallFailure?.(text)).catch(() => {});
   }
   if (msg.requestId) {
     if (_sessionListRequest?.requestId === msg.requestId) {
@@ -852,6 +947,7 @@ function applySocketError(msg) {
       syncPendingRequestRefs();
     }
   }
+  releaseInactiveIdleTab(_boundTab);
 }
 
 function applySocketClosed() {
@@ -1189,9 +1285,14 @@ export function pruneTranscriptDom(messagesEl = _messagesEl) {
 
 function normalizeTokenUsageBreakdown(value) {
   if (!value || typeof value !== 'object') return null;
+  const cacheWriteInputTokens = Number(
+    value.cacheWriteInputTokens ?? value.cacheCreationInputTokens,
+  ) || 0;
   return {
     cachedInputTokens: Number(value.cachedInputTokens) || 0,
-    cacheCreationInputTokens: Number(value.cacheCreationInputTokens) || 0,
+    cacheWriteInputTokens,
+    // Keep the legacy alias for restored snapshots and existing cost code.
+    cacheCreationInputTokens: cacheWriteInputTokens,
     inputTokens: Number(value.inputTokens) || 0,
     outputTokens: Number(value.outputTokens) || 0,
     reasoningOutputTokens: Number(value.reasoningOutputTokens) || 0,
@@ -1858,7 +1959,6 @@ export function snapshotBoundState() {
     activeTurnId: _activeTurnId,
     freshThread: _freshThread,
     threadId: _threadId,
-    reconnectTimer: _reconnectTimer,
     project: _project,
     accountId: _accountId,
     sessionListRequest: _sessionListRequest,
@@ -1917,7 +2017,6 @@ export function restoreBoundState(state) {
   _activeTurnId = state.activeTurnId;
   _freshThread = state.freshThread;
   _threadId = state.threadId;
-  _reconnectTimer = state.reconnectTimer;
   _project = state.project;
   _accountId = state.accountId || 'default';
   _sessionListRequest = state.sessionListRequest;
@@ -1979,7 +2078,6 @@ export function commitBoundState() {
   _boundTab.activeTurnId = _activeTurnId;
   _boundTab.freshThread = _freshThread;
   _boundTab.threadId = _threadId;
-  _boundTab.reconnectTimer = _reconnectTimer;
   _boundTab.project = _project;
   _boundTab.accountId = _accountId;
   _boundTab.sessionListRequest = _sessionListRequest;
@@ -2037,7 +2135,6 @@ export function bindTabState(tab) {
   _activeTurnId = tab?.activeTurnId || null;
   _freshThread = !!tab?.freshThread;
   _threadId = tab?.threadId || null;
-  _reconnectTimer = tab?.reconnectTimer || null;
   _project = tab?.project || '';
   _accountId = tab?.accountId || 'default';
   _sessionListRequest = tab?.sessionListRequest || null;
@@ -2393,7 +2490,7 @@ export function switchTab(idx) {
     commitBoundState();
     flushThreadSnapshotSave(previous);
   }
-  if (previous && previous !== next && !previous.running && !previous.startingThread) {
+  if (previous && previous !== next && !tabHasActiveWriterWork(previous)) {
     disconnectTab(previous);
   }
   _activeTabIdx = idx;
@@ -2419,6 +2516,7 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
       : null),
   );
   const inheritedModel = saved.model ?? activeTab()?.model ?? (storage.getItem(STOR.model) || '');
+  const restoredContextMode = normalizeCodexContextMode(saved.contextMode);
   const inheritedAccountId = saved.accountId ?? activeTab()?.accountId ?? 'default';
   const inheritedEffort = saved.effort ?? activeTab()?.effort ?? (storage.getItem(STOR.effort) || 'off');
   const inheritedAutoAccept = saved.autoAccept ?? activeTab()?.autoAccept ?? (storage.getItem(STOR.autoAccept) === 'true');
@@ -2443,6 +2541,11 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     branch: saved.branch || '',
     accountId: inheritedAccountId,
     model: inheritedModel,
+    contextMode: restoredContextMode,
+    extendedContextStatus: restoredContextMode === 'extended' ? 'pending' : 'off',
+    extendedContextActualWindow: null,
+    extendedContextNoticeShown: false,
+    extendedContextVerificationArmed: false,
     effort: inheritedEffort,
     autoAccept: inheritedAutoAccept,
     mcpProfile: inheritedMcpProfile,
@@ -2481,7 +2584,7 @@ export function createTab(saved = {}, { autoSwitch = true } = {}) {
     transcriptItemCount: 0,
     transcriptSourceUpdatedAt: null,
     compacting: false,
-    pendingReattach: false,
+    pendingReattach: !!saved.id,
     pendingQueryRequestId: null,
     planFilePath: automationRunId ? '' : (saved.planFilePath || ''),
     planContent: automationRunId ? '' : (saved.planContent || ''),
@@ -2553,29 +2656,26 @@ export function closeTab(idx, { detachAutomation = false } = {}) {
       body: JSON.stringify({ runId: tab.automationRunId }),
     }).catch(() => {});
   }
+  wsDisconnectTab(tab, { releaseWriter: !tabHasActiveWriterWork(tab) });
   tab.closed = true;
   tab.titleRequestController?.abort();
   tab.titleRequestController = null;
   if (tab.titleReassertTimer) clearTimeout(tab.titleReassertTimer);
   flushThreadSnapshotSave(tab);
   withTab(tab, () => {
-    clearReconnectTimer();
+    clearReconnectTimer(tab);
     _sessionListRequest?.reject(new Error('Codex tab closed'));
     _threadStartRequest?.reject(new Error('Codex tab closed'));
     _sessionListRequest = null;
     _threadStartRequest = null;
     for (const pending of _renameRequests.values()) pending.reject(new Error('Codex tab closed'));
     _renameRequests.clear();
-    if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) {
-      _ws.__cxpIntentionalClose = true;
-      try { _ws.close(); } catch {}
-    }
-      _ws = null;
-      _connected = false;
-      _bootstrapped = false;
-      _running = false;
-      _pendingReattach = false;
-    });
+    _ws = null;
+    _connected = false;
+    _bootstrapped = false;
+    _running = false;
+    _pendingReattach = false;
+  });
   if (tab.snapshotTimer) {
     clearTimeout(tab.snapshotTimer);
     tab.snapshotTimer = null;
@@ -2625,6 +2725,7 @@ export function saveTabs() {
           pendingPaths: [...(tab.pendingPaths || [])],
           pendingMentions: (tab.pendingMentions || []).map((mention) => ({ path: mention.path, name: mention.name || '' })),
           model: tab.model || '',
+          contextMode: normalizeCodexContextMode(tab.contextMode),
           effort: tab.effort || 'off',
           autoAccept: !!tab.autoAccept,
           mcpProfile: tab.mcpProfile || null,
@@ -3076,10 +3177,16 @@ async function startNewThread(tab = activeTab()) {
       return;
     }
     _startingThread = true;
+    markExtendedContextPending(tab);
+    tab.extendedContextVerificationArmed = normalizeCodexContextMode(tab.contextMode) === 'extended';
     syncWorkStatus();
     syncInputEnabled();
+    syncToolbarState();
     syncSessionControls();
-    requestPromise = requestSocketPayload('thread_start', { cwd: _project || null });
+    requestPromise = requestSocketPayload('thread_start', {
+      cwd: _project || null,
+      ...codexRuntimeSelection(tab),
+    });
   });
   if (!requestPromise) return;
   try {
@@ -3102,10 +3209,12 @@ async function startNewThread(tab = activeTab()) {
     if (!tab.closed) withTab(tab, () => {
       _startingThread = false;
       syncInputEnabled();
+      syncToolbarState();
       syncSessionControls();
       updateTrayPillRunning();
       renderPills();
       saveTabs();
+      releaseInactiveIdleTab(tab);
     });
   }
 }
@@ -3277,7 +3386,14 @@ function cxpSessRenderItem(thread, tab, menu) {
         if (tab.closed || tab._sessionResumeToken !== resumeToken) return;
         withTab(tab, () => {
           tab.expectedThreadId = threadId;
-          if (!sendSocket({ type: 'thread_resume', threadId, cwd: targetCwd })) {
+          markExtendedContextPending(tab);
+          tab.extendedContextVerificationArmed = normalizeCodexContextMode(tab.contextMode) === 'extended';
+          if (!sendSocket({
+            type: 'thread_resume',
+            threadId,
+            cwd: targetCwd,
+            ...codexRuntimeSelection(tab),
+          })) {
             tab.expectedThreadId = null;
             setStatus('Codex is not connected', 'error');
             return;
@@ -3495,7 +3611,8 @@ function handleAccountMessage(msg) {
     if (_boundTab) _boundTab.accountId = msg.accountId;
     saveTabs();
     resetViewForAccountChange(`Switched to ${accountLabelFor(msg.accountId)}`);
-    _modelListCache = null;
+    _modelListCacheByAccount.delete(String(msg.accountId));
+    _modelListRequestByAccount.delete(String(msg.accountId));
     requestModelList();
   }
   if (msg.type === 'account_add_started') {
@@ -4199,6 +4316,7 @@ export function renderContextGauge() {
 export function updateThreadTokenUsage(tokenUsage, opts = {}) {
   _threadTokenUsage = normalizeThreadTokenUsage(tokenUsage);
   if (_boundTab) _boundTab.threadTokenUsage = _threadTokenUsage;
+  if (_boundTab) updateExtendedContextVerification(_boundTab, _threadTokenUsage);
   if (opts?.meta) setThreadContextMeta(opts.meta);
   renderStatusChrome();
   if (_threadId) scheduleThreadSnapshotSave(_boundTab);
@@ -4346,6 +4464,7 @@ export function setRunning(next, turnId = null) {
   if (_running) { syncWorkStatus(); showThinking(); }
   else { if (_connected) setStatus('Ready', 'ready'); hideThinking(); }
   syncInputEnabled();
+  syncToolbarState();
   syncQueueTray();
   updateTrayPillRunning();
   renderPills();
@@ -4533,6 +4652,7 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
     threadId: _threadId || null,
     fresh: _freshThread || !_threadId,
     cwd: _project || null,
+    contextMode: normalizeCodexContextMode(tab?.contextMode),
   };
   if (tab?.model) msg.model = tab.model;
   if (tab?.effort && tab.effort !== 'off') msg.effort = tab.effort;
@@ -4543,6 +4663,7 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
     msg.mentions = mentionList;
   }
   if (tab && msg.fresh) {
+    markExtendedContextPending(tab);
     tab.expectedThreadId = null;
     tab.expectedThreadRequestId = msg.requestId;
   }
@@ -4550,6 +4671,9 @@ export function dispatchPrompt(prompt, { tab = activeTab(), images = null, paths
     if (tab?.expectedThreadRequestId === msg.requestId) tab.expectedThreadRequestId = null;
     setStatus('Codex is not connected', 'error');
     return false;
+  }
+  if (tab) {
+    tab.extendedContextVerificationArmed = normalizeCodexContextMode(tab.contextMode) === 'extended';
   }
   requestCodexSessionTitle(tab, inputText, {
     paths: [...pathList, ...mentionList.map((mention) => mention.path).filter(Boolean)],
@@ -4816,10 +4940,12 @@ export function handleNotify(method, params) {
         }
         if (_boundTab?.providerTitleDirty) scheduleCodexTitleReassert(_boundTab);
         if (!shouldHoldForPlanApproval(_boundTab)) advanceQueue();
+        releaseInactiveIdleTab(tab);
       }
       break;
     case 'thread/compacted':
       finishContextCompaction({ manual: _manualCompactionPending, defer: _running });
+      releaseInactiveIdleTab(_boundTab);
       break;
     case 'thread/status/changed':
       if (params.status?.type === 'active') {
@@ -5042,6 +5168,7 @@ export function handleNotify(method, params) {
         setRunning(false);
         setStatus(message, 'error');
         notifyCodexTurnOutcome(NOTIF_TYPE.ERROR, _boundTab);
+        releaseInactiveIdleTab(_boundTab);
       }
       break;
     }
@@ -5095,7 +5222,7 @@ export function cycleEffort(tab = activeTab()) {
 }
 
 function effortOptionsForTab(tab = activeTab()) {
-  const model = selectedModelOption(_modelListCache, tab?.model);
+  const model = selectedModelOption(modelListForTab(tab), tab?.model);
   return normalizeReasoningEfforts(model, EFFORT_LEVELS.filter((effort) => effort !== 'off'));
 }
 
@@ -5153,11 +5280,88 @@ export function toggleAutoAccept() {
   saveTabs();
 }
 
+function formatContextCapacity(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return '';
+  if (amount >= 1_000_000) {
+    const millions = amount / 1_000_000;
+    return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(2).replace(/0$/, '')}M`;
+  }
+  return `${Math.round(amount / 1000)}K`;
+}
+
+function contextModelForTab(tab = activeTab()) {
+  return selectedCodexContextModel(modelListForTab(tab), tab?.model);
+}
+
+function markExtendedContextPending(tab) {
+  if (!tab) return;
+  tab.extendedContextActualWindow = null;
+  tab.extendedContextNoticeShown = false;
+  tab.extendedContextVerificationArmed = false;
+  if (normalizeCodexContextMode(tab.contextMode) !== 'extended') {
+    tab.extendedContextStatus = 'off';
+    return;
+  }
+  const model = contextModelForTab(tab);
+  tab.extendedContextStatus = model?.supportsExtendedContext ? 'pending' : 'unavailable';
+}
+
+function updateExtendedContextVerification(tab, tokenUsage) {
+  if (!tab) return;
+  const usage = normalizeThreadTokenUsage(tokenUsage);
+  const actualWindow = usage?.modelContextWindow || null;
+  const model = contextModelForTab(tab);
+  if (normalizeCodexContextMode(tab.contextMode) === 'extended'
+    && !tab.extendedContextVerificationArmed) {
+    tab.extendedContextStatus = model?.supportsExtendedContext ? 'pending' : 'unavailable';
+    return;
+  }
+  const status = verifyCodexExtendedContext({
+    contextMode: tab.contextMode,
+    model,
+    actualWindow,
+  });
+  tab.extendedContextStatus = status;
+  tab.extendedContextActualWindow = actualWindow;
+  if (status === 'mismatch' && !tab.extendedContextNoticeShown) {
+    tab.extendedContextNoticeShown = true;
+    const requested = formatContextCapacity(model?.maxContextWindow) || 'extended';
+    const actual = formatContextCapacity(actualWindow) || 'an unknown window';
+    appendSystem(`Extended context requested (${requested}), but Codex reported ${actual}. The live context gauge remains authoritative.`, 'error');
+  }
+  if (isActiveTab(tab)) syncToolbarState();
+}
+
+export function toggleContextMode(tab = activeTab()) {
+  if (!tab || tab.running || tab.startingThread || tab.compacting) return;
+  const current = normalizeCodexContextMode(tab.contextMode);
+  if (current === 'extended') {
+    tab.contextMode = 'default';
+    markExtendedContextPending(tab);
+    syncToolbarState();
+    saveTabs();
+    return;
+  }
+
+  const model = contextModelForTab(tab);
+  if (!model?.supportsExtendedContext) return;
+  if (!tab.model) {
+    tab.model = getCodexModelName(model);
+    storage.setItem(STOR.model, tab.model);
+  }
+  tab.contextMode = 'extended';
+  markExtendedContextPending(tab);
+  syncToolbarState();
+  saveTabs();
+}
+
 export function syncToolbarState() {
   const tab = activeTab();
   const effortBtn = panelEl('#cxp-effort-toggle');
   const planBtn = panelEl('#cxp-plan-toggle');
   const autoAcceptBtn = panelEl('#cxp-autoaccept-toggle');
+  const contextBtn = panelEl('#cxp-context-toggle');
   const modelDd = panelEl('#cxp-model');
   const costEl = panelEl('#cxp-cost');
   if (effortBtn) {
@@ -5181,6 +5385,37 @@ export function syncToolbarState() {
     autoAcceptBtn.classList.toggle('active', !!tab?.autoAccept);
     autoAcceptBtn.title = `Auto-accept: ${tab?.autoAccept ? 'on' : 'off'}`;
   }
+  if (contextBtn) {
+    const mode = normalizeCodexContextMode(tab?.contextMode);
+    const model = contextModelForTab(tab);
+    const supportsExtended = !!model?.supportsExtendedContext;
+    const status = mode === 'extended'
+      ? (tab?.extendedContextStatus || 'pending')
+      : 'off';
+    const requested = formatContextCapacity(model?.maxContextWindow);
+    const expected = formatContextCapacity(model?.expectedEffectiveContextWindow);
+    const actual = formatContextCapacity(tab?.extendedContextActualWindow);
+    contextBtn.classList.toggle('active', mode === 'extended');
+    contextBtn.dataset.contextStatus = status;
+    contextBtn.setAttribute('aria-pressed', mode === 'extended' ? 'true' : 'false');
+    contextBtn.disabled = !!(tab?.running || tab?.startingThread || tab?.compacting)
+      || (mode !== 'extended' && !supportsExtended);
+    const label = contextBtn.querySelector('.cxp-btn-label');
+    if (label) label.textContent = mode === 'extended' ? 'Extended' : 'Default';
+    if (mode !== 'extended') {
+      contextBtn.title = supportsExtended
+        ? `Use extended context (requests up to ${requested}; Codex reports the effective window live)`
+        : 'Extended context is not advertised for the selected model and account';
+    } else if (status === 'verified') {
+      contextBtn.title = `Extended context verified: ${actual || expected || requested} effective`;
+    } else if (status === 'mismatch') {
+      contextBtn.title = `Extended context mismatch: requested ${requested || 'runtime maximum'}, Codex reported ${actual || 'unknown'}`;
+    } else if (status === 'unavailable') {
+      contextBtn.title = 'Extended context is no longer available for the selected model and account';
+    } else {
+      contextBtn.title = `Extended context requested${requested ? ` up to ${requested}` : ''}; it applies on the next thread activation and is verified from live usage`;
+    }
+  }
   if (modelDd) {
     const label = modelDd.querySelector('.cxp-dd-label');
     if (label) label.textContent = tab?.model || 'model...';
@@ -5191,29 +5426,58 @@ export function syncToolbarState() {
   }
 }
 
-let _modelListCache = null;
-let _modelListRequest = null;
+const _modelListCacheByAccount = new Map();
+const _modelListRequestByAccount = new Map();
+
+function modelListAccountKey(tab = _boundTab || activeTab()) {
+  return String(tab?.accountId || 'default');
+}
+
+function modelListForTab(tab = _boundTab || activeTab()) {
+  return _modelListCacheByAccount.get(modelListAccountKey(tab)) || [];
+}
+
+function cacheModelListForTab(tab, models) {
+  const normalized = mergeCodexModelList(models);
+  _modelListCacheByAccount.set(modelListAccountKey(tab), normalized);
+  if (tab) {
+    const canReverify = normalizeCodexContextMode(tab.contextMode) === 'extended'
+      && tab.extendedContextVerificationArmed
+      && Number(tab.threadTokenUsage?.modelContextWindow) > 0;
+    if (canReverify) updateExtendedContextVerification(tab, tab.threadTokenUsage);
+    else markExtendedContextPending(tab);
+  }
+  return normalized;
+}
 
 function mergeCodexModelList(models) {
   return mergeCodexModelOptions(models);
 }
 
 export function requestModelList(tab = _boundTab || activeTab()) {
-  if (_modelListCache) return Promise.resolve(_modelListCache);
-  if (_modelListRequest) return _modelListRequest;
-  _modelListRequest = requestSocketPayloadForTab(tab, 'model_list', {})
+  const accountKey = modelListAccountKey(tab);
+  const cached = _modelListCacheByAccount.get(accountKey);
+  if (cached) return Promise.resolve(cached);
+  const pending = _modelListRequestByAccount.get(accountKey);
+  if (pending) return pending;
+  const requestPromise = requestSocketPayloadForTab(tab, 'model_list', {})
     .then((msg) => {
-      _modelListCache = mergeCodexModelList(Array.isArray(msg?.models) ? msg.models : []);
-      populateModelDropdown(_modelListCache);
-      return _modelListCache;
+      const models = cacheModelListForTab(tab, Array.isArray(msg?.models) ? msg.models : []);
+      if (isActiveTab(tab)) populateModelDropdown(models);
+      return models;
     })
     .catch(() => {
-      _modelListCache = mergeCodexModelList([]);
-      populateModelDropdown(_modelListCache);
-      return _modelListCache;
+      const models = cacheModelListForTab(tab, []);
+      if (isActiveTab(tab)) populateModelDropdown(models);
+      return models;
     })
-    .finally(() => { _modelListRequest = null; });
-  return _modelListRequest;
+    .finally(() => {
+      if (_modelListRequestByAccount.get(accountKey) === requestPromise) {
+        _modelListRequestByAccount.delete(accountKey);
+      }
+    });
+  _modelListRequestByAccount.set(accountKey, requestPromise);
+  return requestPromise;
 }
 
 export function populateModelDropdown(models) {
@@ -5226,7 +5490,7 @@ export function populateModelDropdown(models) {
     const name = getCodexModelName(m);
     if (!name) continue;
     const item = document.createElement('div');
-    item.className = 'cxp-dd-item cxp-model-item';
+    item.className = `cxp-dd-item cxp-model-item${name === activeTab()?.model ? ' selected' : ''}`;
     item.dataset.value = name;
     const copy = document.createElement('span');
     copy.className = 'cxp-model-item-copy';
@@ -5235,7 +5499,12 @@ export function populateModelDropdown(models) {
     label.textContent = m?.label || name;
     const description = document.createElement('span');
     description.className = 'cxp-model-item-desc';
-    const context = m?.contextWindow ? `${Math.round(m.contextWindow / 1000)}K context` : '';
+    const baseContext = formatContextCapacity(m?.contextWindow);
+    const extendedContext = m?.supportsExtendedContext ? formatContextCapacity(m?.maxContextWindow) : '';
+    const context = [
+      baseContext ? `${baseContext} default` : '',
+      extendedContext ? `${extendedContext} extended` : '',
+    ].filter(Boolean).join(' · ');
     description.textContent = [m?.desc || '', context].filter(Boolean).join(' · ');
     copy.append(label, description);
     item.appendChild(copy);
@@ -5243,6 +5512,7 @@ export function populateModelDropdown(models) {
       const tab = activeTab();
       if (tab) {
         tab.model = name;
+        markExtendedContextPending(tab);
         const supported = normalizeReasoningEfforts(m, EFFORT_LEVELS.filter((effort) => effort !== 'off'));
         if (!supported.some((option) => option.id === tab.effort)) tab.effort = 'off';
       }
@@ -5699,6 +5969,7 @@ function parseSlashCommand(text) {
 function setModelForTab(tab, model) {
   if (!tab || !model) return;
   tab.model = model;
+  markExtendedContextPending(tab);
   storage.setItem(STOR.model, model);
   requestModelList();
   syncToolbarState();
@@ -7006,8 +7277,8 @@ export async function openSettingsPanel() {
 
       configEl.innerHTML = '';
       const fieldDefs = [
-        { key: 'model', label: 'Model', type: 'select', options: modelList.map(m => ({ value: m, label: m })) },
-        { key: 'review_model', label: 'Review Model', type: 'select', options: [{ value: '', label: '(none)' }, ...modelList.map(m => ({ value: m, label: m }))] },
+        { key: 'model', label: 'Model', type: 'select', options: modelList.map(m => ({ value: getCodexModelName(m), label: m?.label || getCodexModelName(m) })) },
+        { key: 'review_model', label: 'Review Model', type: 'select', options: [{ value: '', label: '(none)' }, ...modelList.map(m => ({ value: getCodexModelName(m), label: m?.label || getCodexModelName(m) }))] },
         { key: 'model_provider', label: 'Provider', type: 'text', placeholder: 'openai, ollama…' },
         { key: 'approval_policy', label: 'Approval Policy', type: 'select', options: [
           { value: 'never', label: 'Never (No prompts)' },
@@ -7126,7 +7397,8 @@ export async function openSettingsPanel() {
         try {
           await requestForSettings('config_write', { config: newCfg });
           saveBtn.textContent = 'Saved!';
-          _modelListCache = null;
+          _modelListCacheByAccount.clear();
+          _modelListRequestByAccount.clear();
           requestModelList();
           setTimeout(() => { saveBtn.textContent = 'Save Configuration'; saveBtn.disabled = false; }, 2000);
         } catch (err) {
@@ -7143,6 +7415,10 @@ export async function openSettingsPanel() {
 
 export function startCompaction() {
   if (_running || _startingThread || _compacting) return;
+  if (_boundTab) {
+    markExtendedContextPending(_boundTab);
+    _boundTab.extendedContextVerificationArmed = normalizeCodexContextMode(_boundTab.contextMode) === 'extended';
+  }
   _manualCompactionPending = true;
   _autoCompactionActive = false;
   _autoCompactionNoticeShown = false;
@@ -7151,7 +7427,12 @@ export function startCompaction() {
   setStatus('Compacting context…', 'working');
   setStatusDetail('Summarizing the current thread', Date.now(), 'compaction:manual');
   appendSystem('Compacting context…', 'working');
-  if (!sendSocket({ type: 'compact', threadId: _threadId, cwd: _project || null })) {
+  if (!sendSocket({
+    type: 'compact',
+    threadId: _threadId,
+    cwd: _project || null,
+    ...codexRuntimeSelection(_boundTab),
+  })) {
     resetRuntimeCompactionState();
     setCompactingUI(false);
     setStatus('Codex is not connected', 'error');

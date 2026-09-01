@@ -36,6 +36,28 @@ const TOOL_LABELS = {
 // without re-fetching. Refreshed on every applyBadges() call.
 let _latestData = null;
 
+// Reads better than the raw source key — "update via Homebrew", not
+// "update via brew-cask". Mirrors installSourceLabel in
+// lib/cli-update-planner.js (kept separate: that module is server-side).
+const SOURCE_LABELS = {
+  'brew-cask': 'Homebrew',
+  'brew-formula': 'Homebrew',
+  'npm': 'npm',
+  'bun': 'Bun',
+  'pnpm': 'pnpm',
+  'yarn': 'Yarn',
+  'volta': 'Volta',
+  'standalone': 'the official installer',
+  'native': 'the native installer',
+  'winget': 'winget',
+  'scoop': 'Scoop',
+  'choco': 'Chocolatey',
+};
+
+function sourceLabel(src) {
+  return SOURCE_LABELS[src] || 'your installer';
+}
+
 function runUpdate(key, badge) {
   const info = _latestData?.tools?.[key];
   const cmd = info?.updateCommand;
@@ -44,11 +66,8 @@ function runUpdate(key, badge) {
     // Tool installed via a source we can't safely auto-update from
     // (winget, native installer, etc.) and has no built-in self-updater.
     const label = TOOL_LABELS[key] || key;
-    const src = info?.installSource;
-    const hint = src && src !== 'unknown' && src !== 'other'
-      ? `via your installer (${src})`
-      : 'using your original installer';
-    alert(`${label} update available (v${info?.installed} → v${info?.latest}).\n\nPlease update ${hint}.`);
+    const hint = sourceLabel(info?.installSource);
+    alert(`${label} update available (v${info?.installed} → v${info?.latest}).\n\nPlease update via ${hint}.`);
     return;
   }
 
@@ -129,7 +148,7 @@ function applyBadges(data) {
     const tip = has
       ? (canUpdate
           ? `v${info.installed} → v${info.latest} — click to update`
-          : `v${info.installed} → v${info.latest} — update via ${info.installSource || 'your installer'}`)
+          : `v${info.installed} → v${info.latest} — update via ${sourceLabel(info.installSource)}`)
       : '';
     const parents = PARENT_ELEMENTS[key];
 

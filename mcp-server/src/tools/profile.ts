@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { text } from './response.js';
-import { VALID_GROUPS, getProfilePresets, getActiveProfile, applyProfile, persistRuntimeProfile } from '../services/profiles.js';
-import { reportRuntimeMcpProfile } from '../services/neural-interface.js';
+import { VALID_GROUPS, getProfilePresets, persistRuntimeProfile, type ProfileRuntime } from '../services/profiles.js';
+import { reportRuntimeMcpProfile, type RuntimeMcpProfileReport } from '../services/neural-interface.js';
 
 export const profileSchema = {
   action: z.enum(['get', 'set']).describe(
@@ -13,7 +13,7 @@ export const profileSchema = {
 };
 
 export const profileDescription =
-  'Always-available MCP capability router. If a task needs a tool that is not currently listed, call action="get", then action="set" with the narrowest suitable profile and continue after the host reloads its tools. Do not claim a SynaBun capability is unavailable before trying this. A switch affects only the current sidepanel/loop/schedule runtime and never changes other sessions or the future-session default.';
+  'Always-available MCP capability router. If a task needs a tool that is not currently listed, call action="get", then action="set" with the narrowest suitable profile and continue after the host refreshes its tools. Codex advertises the complete SynaBun catalog as deferred tools from turn start, so its profile is a focus selection and needs no reload. Do not claim a SynaBun capability is unavailable before trying this. A switch affects only the current sidepanel/loop/schedule runtime and never changes other sessions or the future-session default.';
 
 const ALWAYS_ON_TOOL_COUNT = 11;
 const GROUP_TOOL_ESTIMATES: Record<string, number> = {
@@ -38,9 +38,9 @@ const GROUP_TOOL_ESTIMATES: Record<string, number> = {
   morelogin: 1,
 };
 
-export async function handleProfile(args: { action: string; profile?: string }) {
+export async function handleProfile(runtime: ProfileRuntime, args: { action: string; profile?: string }) {
   if (args.action === 'get') {
-    const { profile, activeGroups } = getActiveProfile();
+    const { profile, activeGroups } = runtime.getActiveProfile();
     const presets = Object.entries(getProfilePresets()).map(([name, groups]) => ({
       name,
       groups,
@@ -49,6 +49,7 @@ export async function handleProfile(args: { action: string; profile?: string }) 
     return text(JSON.stringify({
       currentProfile: profile,
       activeGroups,
+      catalogMode: runtime.getCatalogMode(),
       presets,
       validGroups: Array.from(VALID_GROUPS),
     }, null, 2));
@@ -60,22 +61,56 @@ export async function handleProfile(args: { action: string; profile?: string }) 
     }
     let result;
     try {
-      result = applyProfile(args.profile);
+      result = runtime.applyProfile(args.profile);
     } catch (err) {
       return text(`Error: ${err instanceof Error ? err.message : String(err)}. Call action="get" for valid presets and groups.`);
     }
     const runtimeStatePersisted = persistRuntimeProfile(result.profile);
-    const runtimeReport = await reportRuntimeMcpProfile(result.profile);
+    const runtimeReport: RuntimeMcpProfileReport = await reportRuntimeMcpProfile(result.profile, {
+      catalogMode: result.catalogMode,
+    });
+    let hostRefresh: 'scheduled' | 'notification' | 'unavailable' | 'not-needed' = 'not-needed';
+    let toolListNotification: 'scheduled' | 'unavailable' | 'not-needed' = 'not-needed';
+    if (result.catalogMode === 'profiled') {
+      // Always queue one post-response MCP notification. Managed sidepanels
+      // may also perform a host-level reconnect. Queue this even when the
+      // requested profile already matches so an explicit retry can repair a
+      // stale/lost host catalog instead of becoming a silent no-op.
+      const notificationScheduled = runtime.scheduleProfileChangedNotification();
+      toolListNotification = notificationScheduled ? 'scheduled' : 'unavailable';
+      hostRefresh = runtimeReport.hostRefresh === 'scheduled'
+        ? 'scheduled'
+        : notificationScheduled ? 'notification' : 'unavailable';
+    } else {
+      // Codex snapshots deferred MCP schemas at turn start, so its SynaBun
+      // process advertises the complete deferred catalog from the beginning.
+      // Changing the focus profile updates runtime/UI state only; no tool-list
+      // mutation or global MCP reload is needed.
+      hostRefresh = 'not-needed';
+    }
     return text(JSON.stringify({
       switched: true,
+      changed: result.changed,
       profile: result.profile,
       enabled: result.enabled,
       disabled: result.disabled,
       totalTools: result.totalTools,
       scope: 'current-runtime',
+      catalogMode: result.catalogMode,
       runtimeStatePersisted,
       runtimeStateReported: runtimeReport.reported,
-      note: 'Tool list updated for this runtime only. Your client has been notified; continue with the newly loaded tools.',
+      hostRefresh,
+      toolListNotification,
+      ...(runtimeReport.runtimeKind ? { runtimeKind: runtimeReport.runtimeKind } : {}),
+      ...(runtimeReport.correlationId ? { refreshCorrelationId: runtimeReport.correlationId } : {}),
+      ...(runtimeReport.error ? { refreshReportError: runtimeReport.error } : {}),
+      note: result.catalogMode === 'deferred'
+        ? 'The Codex focus profile changed. Its complete SynaBun catalog was already available through deferred tools, so no MCP reload was needed.'
+        : hostRefresh === 'not-needed'
+          ? 'This runtime already uses the requested profile.'
+          : hostRefresh === 'unavailable'
+            ? 'The runtime profile changed, but the host refresh could not be scheduled. Retry the switch or use the sidepanel selector.'
+            : 'The runtime profile changed. The host tool refresh is queued; continue with the newly loaded tools.',
     }, null, 2));
   }
 

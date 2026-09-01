@@ -1770,23 +1770,22 @@ function _ocpDocEscHandler(event) {
 
 // ── CLI installation status (banner + send-block) ──
 let _cliInstallFailureForced = false;
+let _cliFailureReason = null;
 
 function ensureCliBannerEl() {
   if (!_panel) return null;
   const container = _panel.querySelector('.ocp-messages-container');
   if (!container || !container.parentNode) return null;
   let banner = container.parentNode.querySelector(':scope > .ocp-cli-banner');
-  if (banner) return banner;
-  const label = getCliLabel('opencode');
-  const cmd = getCliInstallCommand('opencode');
+  if (banner) { renderCliBannerContent(banner); return banner; }
   const url = getCliDocUrl('opencode');
   banner = document.createElement('div');
   banner.className = 'ocp-cli-banner';
   banner.innerHTML = `
     <div class="ocp-cli-banner-icon">!</div>
     <div class="ocp-cli-banner-text">
-      <div class="ocp-cli-banner-title">${label} CLI not installed</div>
-      <div class="ocp-cli-banner-body">Run <code>${cmd}</code> or follow the install guide.</div>
+      <div class="ocp-cli-banner-title"></div>
+      <div class="ocp-cli-banner-body"></div>
     </div>
     <div class="ocp-cli-banner-actions">
       <a class="ocp-cli-banner-link" href="${url}" target="_blank" rel="noopener noreferrer">Install guide</a>
@@ -1806,7 +1805,38 @@ function ensureCliBannerEl() {
       }
     }
   });
+  renderCliBannerContent(banner);
   return banner;
+}
+
+// Distinguish "never installed" from "installed but would not launch" —
+// telling the user to install something already present sends them chasing a
+// reinstall they do not need.
+function renderCliBannerContent(banner) {
+  const titleEl = banner.querySelector('.ocp-cli-banner-title');
+  const bodyEl = banner.querySelector('.ocp-cli-banner-body');
+  if (!titleEl || !bodyEl) return;
+  const label = getCliLabel('opencode');
+  bodyEl.replaceChildren();
+
+  if (_cliInstalled === null) {
+    titleEl.textContent = `${label} CLI not installed`;
+    bodyEl.append('Run ');
+    const code = document.createElement('code');
+    code.textContent = getCliInstallCommand('opencode');
+    bodyEl.append(code, ' or follow the install guide.');
+    return;
+  }
+
+  titleEl.textContent = `${label} CLI failed to start`;
+  bodyEl.append(`${label} v${_cliInstalled} is installed, but it could not be launched. `);
+  if (_cliFailureReason) {
+    const code = document.createElement('code');
+    code.textContent = _cliFailureReason;
+    bodyEl.append(code);
+  } else {
+    bodyEl.append('Check the CLI path in Settings, then re-check.');
+  }
 }
 
 function removeCliBannerEl() {
@@ -1825,17 +1855,28 @@ function refreshCliBanner() {
   syncSendButton();
 }
 
-export function flagOcpCliInstallFailure() {
+export function flagOcpCliInstallFailure(reason = null) {
   _cliInstallFailureForced = true;
+  _cliFailureReason = reason ? String(reason).slice(0, 300) : null;
   refreshCliBanner();
-  recheckCliStatus('opencode').catch(() => {});
+  // Clear from the RETURNED value, not the subscriber callback: the callback
+  // only fires when the version string changes, and a launch failure does not
+  // change it, so the banner would otherwise latch permanently.
+  recheckCliStatus('opencode')
+    .then((info) => {
+      if (!info?.installed) return;
+      _cliInstallFailureForced = false;
+      _cliFailureReason = null;
+      refreshCliBanner();
+    })
+    .catch(() => {});
 }
 
 function ensureCliSubscription() {
   if (_cliUnsub) return;
   _cliUnsub = subscribeCliStatus('opencode', (info) => {
     _cliInstalled = info?.installed || null;
-    if (_cliInstalled) _cliInstallFailureForced = false;
+    if (_cliInstalled) { _cliInstallFailureForced = false; _cliFailureReason = null; }
     refreshCliBanner();
   });
 }
@@ -1922,7 +1963,7 @@ function wsCallbacks() {
     onError(msg) {
       console.error('[ocp] Error:', msg.message);
       if (typeof msg.message === 'string' && /opencode.*(not.*found|ENOENT|spawn)|opencode CLI/i.test(msg.message)) {
-        flagOcpCliInstallFailure();
+        flagOcpCliInstallFailure(msg.message);
       }
     },
   };

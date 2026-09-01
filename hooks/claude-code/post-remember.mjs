@@ -3,24 +3,31 @@
 /**
  * SynaBun PostToolUse Hook for Claude Code (unified handler)
  *
- * Matches: ^Edit$|^Write$|^NotebookEdit$|mcp__SynaBun__remember
+ * Matches: ^Edit$|^Write$|^NotebookEdit$|Syna[Bb]un_+(remember|reflect)
  *
  * Two responsibilities:
  *
  * 1. EDIT TRACKING — When Claude uses Edit, Write, or NotebookEdit,
- *    increments a pending-remember counter. If Claude finishes responding
- *    with 3+ unremembered edits, the Stop hook will block it.
+ *    increments a pending-remember counter. Once EDIT_THRESHOLD edits are
+ *    unremembered, the Stop hook blocks until a memory is stored.
  *
- * 2. FLAG MANAGEMENT — When Claude calls `remember`:
- *    - category "conversations" → clears pending-compact flag (compaction enforcement)
- *    - any other category       → resets pending-remember flag (editCount→0,
- *      keeps rememberCount/totalEdits so subsequent edits start a fresh segment)
+ * 2. FLAG MANAGEMENT — When Claude calls `remember` or `reflect`:
+ *    - ALWAYS resets the pending-remember flag (editCount→0, retries→0,
+ *      files→[]), keeping rememberCount/totalEdits so subsequent edits start
+ *      a fresh segment. This is deliberately NOT conditional on `category`.
+ *    - category "conversations" ALSO clears pending-compact (compaction).
+ *
+ *    History: this used to be `else if (category)`, so a `remember` call that
+ *    omitted `category` — which is what Claude Code actually sends when the
+ *    schema lets it — cleared nothing, and the Stop hook blocked forever.
+ *    Never re-gate the reset on a field the caller may legitimately omit.
  *
  * Input (stdin JSON):
  *   { session_id, tool_name, tool_input: { ... }, tool_response: { ... } }
  *
  * Output (stdout JSON):
- *   - On edit at threshold multiples (3, 6, 9...): { additionalContext: "..." }
+ *   - On an edit that hits the threshold:
+ *     { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext } }
  *   - Otherwise: {} (side effects only)
  */
 
@@ -45,14 +52,38 @@ for (const dir of [PENDING_COMPACT_DIR, PENDING_REMEMBER_DIR]) {
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 const EDIT_THRESHOLD = 1;
 
+/**
+ * Explicit-failure detection ONLY — everything ambiguous counts as SUCCESS.
+ *
+ * MCP tools return a CallToolResult: { content: [{type:'text',text}], isError? }.
+ * Claude Code passes it through and snake_cases some fields depending on version,
+ * so accept both spellings. A missing tool_response, a plain string, or an object
+ * of unknown shape MUST fail open: a format change on the Claude Code side can
+ * never be allowed to reintroduce the never-clears bug this hook exists to avoid.
+ *
+ * A schema rejection (InvalidParams) doesn't fire PostToolUse at all, which is
+ * also correct — nothing was stored, so nothing should clear.
+ */
+function toolCallFailed(resp) {
+  if (!resp || typeof resp !== 'object' || Array.isArray(resp)) return false;
+  if (resp.isError === true || resp.is_error === true) return true;
+  if (resp.success === false) return true;
+  if (typeof resp.status === 'string' && resp.status.toLowerCase() === 'error') return true;
+  return false;
+}
+
 function readStdin() {
   return new Promise((resolve) => {
     if (process.stdin.isTTY) return resolve('{}');
     let data = '';
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (chunk) => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    setTimeout(() => resolve(data || '{}'), 2000);
+    process.stdin.on('end', () => { clearTimeout(guard); resolve(data); });
+    // unref + clearTimeout: without both, this timer keeps the event loop alive
+    // for its full duration AFTER 'end' already resolved, so every hook
+    // invocation stalled ~2s against a 3s configured timeout.
+    const guard = setTimeout(() => resolve(data || '{}'), 2000);
+    guard.unref?.();
   });
 }
 
@@ -85,6 +116,12 @@ async function main() {
       } catch { /* start fresh */ }
     }
 
+    // A new edit segment starts a fresh obligation. `retries` is per-segment
+    // backoff, not a session budget — without this reset, MAX_RETRIES blocks
+    // permanently disable task-memory enforcement for the rest of the session
+    // (the only other reset paths require editCount to already be 0).
+    if ((flag.editCount || 0) === 0) flag.retries = 0;
+
     // Increment edit counters
     flag.editCount = (flag.editCount || 0) + 1;
     flag.totalEdits = (flag.totalEdits || 0) + 1;
@@ -101,7 +138,7 @@ async function main() {
       writeFileSync(flagPath, JSON.stringify(flag));
     } catch { /* ok */ }
 
-    // Proactive nudge at every multiple of threshold (3, 6, 9, ...)
+    // Proactive nudge at every multiple of EDIT_THRESHOLD
     if (flag.editCount > 0 && flag.editCount % EDIT_THRESHOLD === 0) {
       let nudgeText;
       if (flag.editCount <= EDIT_THRESHOLD) {
@@ -124,7 +161,12 @@ async function main() {
         } catch { /* category tree optional — nudge still works without it */ }
       }
 
-      process.stdout.write(JSON.stringify({ additionalContext: nudgeText }));
+      // PostToolUse reads additionalContext from hookSpecificOutput. A bare
+      // top-level { additionalContext } is silently discarded — which is why
+      // these nudges never reached the model.
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: nudgeText },
+      }));
     } else {
       process.stdout.write(JSON.stringify({}));
     }
@@ -152,13 +194,18 @@ async function main() {
     }
   }
 
-  // ─── REMEMBER FLAG CLEARING ───
-  // Both remember and reflect count as storing work — clear edit tracking for either.
-  if (toolName.includes('remember') || toolName.includes('reflect')) {
-    const category = toolInput.category || '';
+  // ─── MEMORY-STORED CLEARING ───
+  // ANY successful remember/reflect resets edit tracking, regardless of category.
+  // Claude Code routinely calls remember with { content } only, and reflect rarely
+  // carries a category — gating this reset on category truthiness is what made the
+  // Stop hook block forever. Category only decides the EXTRA compaction clear below.
+  const storedMemory = (toolName.includes('remember') || toolName.includes('reflect'))
+    && !toolCallFailed(input.tool_response);
 
-    if (category === 'conversations') {
-      // Clear ALL pending-compact flags (session ID may differ after compaction)
+  if (storedMemory) {
+    // A "conversations" memory ALSO satisfies the compaction obligation.
+    // Clear every pending-compact flag — the session ID changes after compaction.
+    if ((toolInput.category || '') === 'conversations') {
       try {
         if (existsSync(PENDING_COMPACT_DIR)) {
           for (const f of readdirSync(PENDING_COMPACT_DIR).filter(f => f.endsWith('.json'))) {
@@ -166,58 +213,44 @@ async function main() {
           }
         }
       } catch { /* ok */ }
-      // Also reset pending-remember flag (conversations remember counts too)
-      const rememberFlagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
-      if (existsSync(rememberFlagPath)) {
-        try {
-          let flag = {};
-          try { flag = JSON.parse(readFileSync(rememberFlagPath, 'utf-8')); } catch { /* fresh */ }
-          flag.editCount = 0;
-          flag.messageCount = 0;
-          flag.retries = 0;
-          flag.files = [];
-          flag.firstEditAt = null;
-          flag.lastEditAt = null;
-          flag.rememberCount = (flag.rememberCount || 0) + 1;
-          flag.lastRememberedAt = new Date().toISOString();
-          writeFileSync(rememberFlagPath, JSON.stringify(flag));
-        } catch { /* ok */ }
-      }
-    } else if (category) {
-      // Reset pending-remember flag (keep file, zero counters for next task segment)
-      const rememberFlagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
-      if (existsSync(rememberFlagPath)) {
-        try {
-          let flag = {};
-          try { flag = JSON.parse(readFileSync(rememberFlagPath, 'utf-8')); } catch { /* start fresh */ }
+    }
 
-          const prevTotal = flag.totalEdits || flag.editCount || 0;
-          const prevRememberCount = flag.rememberCount || 0;
+    // Reset pending-remember (keep the file, zero counters for the next segment).
+    // Never create it here — prompt-submit.mjs owns creation, and manufacturing a
+    // flag for a session that never edited would resurrect stale-file buildup.
+    const rememberFlagPath = join(PENDING_REMEMBER_DIR, `${sessionId}.json`);
+    if (existsSync(rememberFlagPath)) {
+      try {
+        let flag = {};
+        try { flag = JSON.parse(readFileSync(rememberFlagPath, 'utf-8')); } catch { /* start fresh */ }
 
-          // Reset edit + message tracking but keep session-level stats
-          flag.editCount = 0;
-          flag.messageCount = 0;
-          flag.retries = 0;
-          flag.files = [];
-          flag.firstEditAt = null;
-          flag.lastEditAt = null;
-          flag.firstMessageAt = null;
-          flag.lastMessageAt = null;
-          flag.lastRememberedAt = new Date().toISOString();
-          flag.rememberCount = prevRememberCount + 1;
-          flag.totalEdits = prevTotal;
+        // Preserve session-level stats before zeroing the segment counters.
+        flag.totalEdits = flag.totalEdits || flag.editCount || 0;
+        flag.rememberCount = (flag.rememberCount || 0) + 1;
+        flag.lastRememberedAt = new Date().toISOString();
 
-          writeFileSync(rememberFlagPath, JSON.stringify(flag));
-        } catch {
-          // If reset fails, fall back to deleting
-          try { unlinkSync(rememberFlagPath); } catch { /* ok */ }
-        }
+        flag.editCount = 0;
+        flag.messageCount = 0;
+        flag.retries = 0;
+        flag.taskBlockTotal = 0;
+        flag.files = [];
+        flag.firstEditAt = null;
+        flag.lastEditAt = null;
+        flag.firstMessageAt = null;
+        flag.lastMessageAt = null;
+        // categoryTreeInjected is intentionally NOT reset — the category tree is
+        // injected once per session, not once per task segment.
+
+        writeFileSync(rememberFlagPath, JSON.stringify(flag));
+      } catch {
+        // If reset fails, fall back to deleting
+        try { unlinkSync(rememberFlagPath); } catch { /* ok */ }
       }
     }
   }
 
-  // Update loop memory tracking when remember is called during an active loop
-  if (toolName.includes('remember')) {
+  // Update loop memory tracking when a memory is stored during an active loop
+  if (storedMemory) {
     const LOOP_DIR = join(DATA_DIR, 'loop');
     const loopPath = join(LOOP_DIR, `${sessionId}.json`);
     if (existsSync(loopPath)) {

@@ -28,11 +28,15 @@ const TOOL_SECTION_PREFIX = `${BASE_SECTION}.tools.`;
 const SECTION_HEADER_RE = /^\[([^\]]+)\]\s*$/m;
 const INLINE_ENV_LINE_RE = /^env\s*=\s*\{([^}]*)\}\s*\r?\n?/m;
 const MANAGED_PROFILE_KEY = 'SYNABUN_PROFILE';
+const CODEX_PROFILE = 'full';
+const TOOL_CATALOG_MODE_KEY = 'SYNABUN_TOOL_CATALOG_MODE';
+const CODEX_TOOL_CATALOG_MODE = 'deferred';
 
 export type CodexConfigIssue =
   | 'duplicate_env'
   | 'legacy_inline_env'
   | 'managed_profile_override'
+  | 'missing_deferred_catalog'
   | 'missing_transport'
   | 'orphan_env'
   | 'orphan_tools';
@@ -55,6 +59,8 @@ export type HealReason =
   | 'removed_duplicate_inline_env'
   | 'normalized_inline_env'
   | 'removed_managed_profile_override'
+  | 'set_full_profile'
+  | 'enabled_deferred_catalog'
   | 'removed_orphan_sections';
 
 export type HealResult =
@@ -191,7 +197,8 @@ function renderEnvSection(env: Record<string, string>, newline: string): string 
 function upsertEnvSection(content: string, env: Record<string, string>): string {
   const newline = content.includes('\r\n') ? '\r\n' : '\n';
   const sanitized = { ...env };
-  delete sanitized[MANAGED_PROFILE_KEY];
+  sanitized[MANAGED_PROFILE_KEY] = CODEX_PROFILE;
+  sanitized[TOOL_CATALOG_MODE_KEY] = CODEX_TOOL_CATALOG_MODE;
 
   if (!hasSection(content, ENV_SECTION)) {
     const block = renderEnvSection(sanitized, newline);
@@ -199,7 +206,6 @@ function upsertEnvSection(content: string, env: Record<string, string>): string 
   }
 
   let body = sectionBody(content, ENV_SECTION);
-  body = removeTomlKey(body, MANAGED_PROFILE_KEY);
   for (const [key, value] of Object.entries(sanitized)) {
     body = upsertTomlKey(body, key, quote(value));
   }
@@ -234,8 +240,13 @@ export function inspectCodexConfigContent(content: string): CodexConfigInspectio
 
   if (inlineEnv && hasEnv) issues.push('duplicate_env');
   else if (inlineEnv) issues.push('legacy_inline_env');
-  if (MANAGED_PROFILE_KEY in inlineValues || MANAGED_PROFILE_KEY in tableEnv) {
+  const configuredProfile = tableEnv[MANAGED_PROFILE_KEY] || inlineValues[MANAGED_PROFILE_KEY];
+  if (hasBase && hasTransport(content) && configuredProfile !== CODEX_PROFILE) {
     issues.push('managed_profile_override');
+  }
+  if (hasBase && hasTransport(content)
+    && (tableEnv[TOOL_CATALOG_MODE_KEY] || inlineValues[TOOL_CATALOG_MODE_KEY]) !== CODEX_TOOL_CATALOG_MODE) {
+    issues.push('missing_deferred_catalog');
   }
   if (hasBase && !hasTransport(content)) issues.push('missing_transport');
   if (!hasBase && hasEnv) issues.push('orphan_env');
@@ -273,17 +284,20 @@ export function repairCodexConfigContent(content: string): { content: string; re
   const tableEnv = parseEnvTable(next);
   const hadInline = INLINE_ENV_LINE_RE.test(sectionBody(next, BASE_SECTION));
   const hadTable = hasSection(next, ENV_SECTION);
-  const hadManagedProfile = MANAGED_PROFILE_KEY in inlineEnv || MANAGED_PROFILE_KEY in tableEnv;
+  const hadCanonicalProfile = (tableEnv[MANAGED_PROFILE_KEY] || inlineEnv[MANAGED_PROFILE_KEY]) === CODEX_PROFILE;
+  const hadDeferredCatalog = (tableEnv[TOOL_CATALOG_MODE_KEY] || inlineEnv[TOOL_CATALOG_MODE_KEY]) === CODEX_TOOL_CATALOG_MODE;
   const mergedEnv = { ...inlineEnv, ...tableEnv };
-  delete mergedEnv[MANAGED_PROFILE_KEY];
+  mergedEnv[MANAGED_PROFILE_KEY] = CODEX_PROFILE;
+  mergedEnv[TOOL_CATALOG_MODE_KEY] = CODEX_TOOL_CATALOG_MODE;
 
   if (hadInline) next = stripInlineEnv(next);
-  if (hadInline || hadTable) next = upsertEnvSection(next, mergedEnv);
+  next = upsertEnvSection(next, mergedEnv);
 
   if (next === content) return { content, reason: null };
   if (hadInline && hadTable) return { content: next, reason: 'removed_duplicate_inline_env' };
   if (hadInline) return { content: next, reason: 'normalized_inline_env' };
-  if (hadManagedProfile) return { content: next, reason: 'removed_managed_profile_override' };
+  if (!hadCanonicalProfile) return { content: next, reason: 'set_full_profile' };
+  if (!hadDeferredCatalog) return { content: next, reason: 'enabled_deferred_catalog' };
   return { content: next, reason: null };
 }
 

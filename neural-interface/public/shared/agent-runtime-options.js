@@ -137,6 +137,16 @@ function normalizeCodexModel(model) {
     'supportedReasoningLevels',
     'supported_reasoning_levels',
   ]);
+  const contextWindow = Number(codexModelValue(model, ['contextWindow', 'context_window'])) || null;
+  const maxContextWindow = Number(codexModelValue(model, ['maxContextWindow', 'max_context_window'])) || null;
+  const effectiveContextWindowPercent = Number(codexModelValue(model, [
+    'effectiveContextWindowPercent',
+    'effective_context_window_percent',
+  ])) || null;
+  const expectedEffectiveContextWindow = Number(codexModelValue(model, [
+    'expectedEffectiveContextWindow',
+    'expected_effective_context_window',
+  ])) || null;
   return {
     id,
     label: model?.displayName || model?.display_name || model?.label || model?.title || model?.name || known?.label || titleFromModelId(id),
@@ -149,7 +159,14 @@ function normalizeCodexModel(model) {
       'defaultReasoningLevel',
       'default_reasoning_level',
     ]) || '',
-    contextWindow: Number(codexModelValue(model, ['contextWindow', 'context_window'])) || null,
+    contextWindow,
+    maxContextWindow,
+    effectiveContextWindowPercent,
+    expectedEffectiveContextWindow,
+    supportsExtendedContext: model?.supportsExtendedContext === true
+      || model?.supports_extended_context === true
+      || !!(contextWindow && maxContextWindow && maxContextWindow > contextWindow),
+    isDefault: model?.isDefault === true || model?.is_default === true || model?.default === true,
     serviceTiers: codexModelValue(model, ['serviceTiers', 'service_tiers']) || [],
     defaultServiceTier: codexModelValue(model, ['defaultServiceTier', 'default_service_tier']) || '',
     additionalSpeedTiers: codexModelValue(model, ['additionalSpeedTiers', 'additional_speed_tiers']) || [],

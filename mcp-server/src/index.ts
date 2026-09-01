@@ -30,10 +30,9 @@ import { registerMoreLoginTools } from './tools/morelogin.js';
 import { profileSchema, profileDescription, handleProfile } from './tools/profile.js';
 import { choiceSchema, choiceDescription, handleChoice } from './tools/choice.js';
 import {
-  PROFILE_PRESETS, VALID_GROUPS,
-  resolveProfileGroups, readInitialProfile, getActiveProfile, getActiveProfileName, getActiveGroups,
-  setActiveState, setToolGroup, applyProfile, persistProfile, isClaudeCode,
-  setOnProfileChanged, logCodexConfigNoticeOnce,
+  PROFILE_PRESETS, VALID_GROUPS, ProfileRuntime,
+  resolveProfileGroups, readInitialProfile, persistProfile, isClaudeCode,
+  logCodexConfigNoticeOnce,
 } from './services/profiles.js';
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, initCategoryCache } from './services/categories.js';
 import { healCodexConfig } from './services/codex-config-heal.js';
@@ -42,13 +41,13 @@ import { readFileSync, writeFileSync, watch, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
 // Re-export profile API for external consumers (http.ts, etc.)
-export { PROFILE_PRESETS, VALID_GROUPS, resolveProfileGroups, getActiveProfile, applyProfile, persistProfile };
+export { PROFILE_PRESETS, VALID_GROUPS, ProfileRuntime, resolveProfileGroups, persistProfile };
 
 // ── Tool Profile System ──────────────────────────────────────────────
 // Dynamic profile switching — all tools registered at startup, toggled via enable/disable.
-// Each MCP process owns its live profile. active-profile.json is read only at
-// startup as the default for future processes; it is never a cross-process
-// runtime signal. The `profile` MCP tool may still change this process locally.
+// Each MCP server runtime owns its live profile. active-profile.json is read
+// only at startup as the default for future processes; it is never a
+// cross-process runtime signal. The `profile` MCP tool changes only its server.
 
 const TOOL_GROUP_INSTRUCTIONS: Record<string, string> = {
   browser: '- Browser (core): browser_navigate, browser_click, browser_type, browser_fill, browser_hover, browser_select, browser_press, browser_scroll, browser_upload, browser_go_back, browser_go_forward, browser_reload, browser_snapshot, browser_content, browser_screenshot, browser_evaluate, browser_wait, browser_session',
@@ -71,8 +70,8 @@ const TOOL_GROUP_INSTRUCTIONS: Record<string, string> = {
   styleguide: '- Style Guide: style_guide (action: get/list) — per-project visual identity (colors, typography, shape/spacing, logo). ALWAYS call this before generating UI, design copy, marketing assets, or any creative work tied to a project.',
 };
 
-function buildServerInstructions(): string {
-  const activeGroups = getActiveGroups();
+function buildServerInstructions(runtime: ProfileRuntime): string {
+  const activeGroups = runtime.getActiveGroups();
   const groupLines: string[] = [];
   for (const [group, line] of Object.entries(TOOL_GROUP_INSTRUCTIONS)) {
     if (activeGroups.has(group)) groupLines.push(line);
@@ -95,6 +94,10 @@ Use "category" with action "list" to see valid category names before using remem
 
 Tool profile routing (all tool-capable hosts/models): if a task needs a SynaBun tool that is not currently listed, call "profile" with action "get", then action "set" with the narrowest suitable preset. Continue the task after the host refreshes its tool list; do not tell the user the capability is unavailable before trying. The switch is local to this sidepanel, loop, schedule, or CLI runtime and does not change other running sessions or the future-session default. Restore a temporary profile when appropriate.`;
 
+  if (runtime.getCatalogMode() === 'deferred') {
+    instructions += `\n\nCodex deferred-catalog mode: every SynaBun tool is already discoverable from the start of the turn. Profiles select the capability focus only; profile.set does not reload MCP servers or hide tools.`;
+  }
+
   if (activeGroups.has('discord')) {
     instructions += `\n\nDiscord tools require DISCORD_BOT_TOKEN in .env. Set DISCORD_GUILD_ID for default guild. Each tool uses an "action" parameter to select the operation.`;
   }
@@ -102,9 +105,9 @@ Tool profile routing (all tool-capable hosts/models): if a task needs a SynaBun 
     instructions += `\n\nLeonardo tools are 100% browser-based — no API key needed. Use leonardo_browser_navigate to go to the right page, then use generic browser tools (browser_click, browser_fill, browser_snapshot) to configure settings (model, style, dimensions, motion controls), and leonardo_browser_generate to fill the prompt and click Generate. Use the /leonardo skill for the full guided creation experience.`;
   }
 
-  // Dedupe this log — buildServerInstructions runs on every HTTP MCP request
-  // (fresh server per request), which would otherwise spam this line forever.
-  const profileName = getActiveProfileName();
+  // Dedupe this log — prewarming and new HTTP client sessions construct more
+  // than one server in this process and would otherwise repeat the same line.
+  const profileName = runtime.getActiveProfileName();
   const sig = `${profileName}|${activeGroups.size}|${instructions.length}`;
   if (sig !== _lastInstructionsSig) {
     _lastInstructionsSig = sig;
@@ -118,10 +121,10 @@ let _lastInstructionsSig: string | null = null;
 
 // Register ALL tools on a given McpServer instance.
 // All groups are always registered; applyProfile() enables/disables them.
-export function registerTools(server: McpServer) {
+export function registerTools(server: McpServer, runtime: ProfileRuntime = new ProfileRuntime(readInitialProfile())) {
   // Core memory tools — always registered and always enabled
   // Use build*Schema() instead of module-level constants so HTTP transport
-  // (fresh server per request) always reads current display-settings.json.
+  // sessions always read current display-settings.json when constructed.
   const rememberTool = server.tool('remember', rememberDescription, buildRememberSchema(), handleRemember);
   const recallTool = server.tool('recall', recallDescription, buildRecallSchema(), handleRecall);
   server.tool('forget', forgetDescription, forgetSchema, handleForget);
@@ -131,48 +134,52 @@ export function registerTools(server: McpServer) {
   server.tool('category', categoryDescription, categorySchema, handleCategory);
   server.tool('sync', syncDescription, syncSchema, handleSync);
   server.tool('loop', loopDescription, loopSchema, handleLoop);
-  server.tool('profile', profileDescription, profileSchema, handleProfile);
+  server.tool('profile', profileDescription, profileSchema, (args) => handleProfile(runtime, args));
   server.tool('choice', choiceDescription, choiceSchema, (args) => handleChoice(server, args));
 
   // Register ALL optional tool groups unconditionally, store refs for enable/disable
-  setToolGroup('browser',           registerBrowserCoreTools(server));
-  setToolGroup('browser_twitter',   registerBrowserTwitterTools(server));
-  setToolGroup('browser_facebook',  registerBrowserFacebookTools(server));
-  setToolGroup('browser_tiktok',    registerBrowserTiktokTools(server));
-  setToolGroup('browser_whatsapp',  registerBrowserWhatsappTools(server));
-  setToolGroup('browser_instagram', registerBrowserInstagramTools(server));
-  setToolGroup('browser_linkedin',  registerBrowserLinkedinTools(server));
-  setToolGroup('browser_bluesky',   registerBlueskyTools(server));
-  setToolGroup('whiteboard', registerWhiteboardTools(server));
-  setToolGroup('card',       registerCardTools(server));
-  setToolGroup('tictactoe',  registerTicTacToeTools(server));
-  setToolGroup('discord',    registerDiscordTools(server));
-  setToolGroup('git',        registerGitTools(server));
-  setToolGroup('leonardo',   registerLeonardoTools(server));
-  setToolGroup('image',      registerImageTools(server));
-  setToolGroup('gsc',        registerGscTools(server));
-  setToolGroup('youtube',    registerYoutubeTools(server));
-  setToolGroup('styleguide', registerStyleGuideTools(server));
-  setToolGroup('morelogin',  registerMoreLoginTools(server));
+  runtime.setToolGroup('browser',           registerBrowserCoreTools(server));
+  runtime.setToolGroup('browser_twitter',   registerBrowserTwitterTools(server));
+  runtime.setToolGroup('browser_facebook',  registerBrowserFacebookTools(server));
+  runtime.setToolGroup('browser_tiktok',    registerBrowserTiktokTools(server));
+  runtime.setToolGroup('browser_whatsapp',  registerBrowserWhatsappTools(server));
+  runtime.setToolGroup('browser_instagram', registerBrowserInstagramTools(server));
+  runtime.setToolGroup('browser_linkedin',  registerBrowserLinkedinTools(server));
+  runtime.setToolGroup('browser_bluesky',   registerBlueskyTools(server));
+  runtime.setToolGroup('whiteboard', registerWhiteboardTools(server));
+  runtime.setToolGroup('card',       registerCardTools(server));
+  runtime.setToolGroup('tictactoe',  registerTicTacToeTools(server));
+  runtime.setToolGroup('discord',    registerDiscordTools(server));
+  runtime.setToolGroup('git',        registerGitTools(server));
+  runtime.setToolGroup('leonardo',   registerLeonardoTools(server));
+  runtime.setToolGroup('image',      registerImageTools(server));
+  runtime.setToolGroup('gsc',        registerGscTools(server));
+  runtime.setToolGroup('youtube',    registerYoutubeTools(server));
+  runtime.setToolGroup('styleguide', registerStyleGuideTools(server));
+  runtime.setToolGroup('morelogin',  registerMoreLoginTools(server));
 
   // Apply initial profile (disables groups not in the active profile).
   // The notifier is registered AFTER this call so the initial sweep doesn't
   // emit a spurious tools/list_changed before the client has even subscribed.
-  applyProfile(getActiveProfileName());
+  runtime.applyProfile(runtime.getActiveProfileName());
 
-  // From now on, any applyProfile() (file-watcher path or `profile` MCP tool)
-  // emits a single coalesced notifications/tools/list_changed instead of one
-  // event per tool flipped — required because some MCP clients (OpenCode SDK)
-  // abort the in-flight tool roundtrip on a notification storm.
-  setOnProfileChanged(() => {
+  // From now on, profile.set emits one delayed, coalesced list_changed instead
+  // of one event per tool flipped. Some MCP clients abort the initiating tool
+  // roundtrip if profile notifications arrive before its response.
+  runtime.setOnProfileChanged(() => {
     server.server.notification({
       method: 'notifications/tools/list_changed',
     }).catch((err) => {
       console.error('[SynaBun] profile tools/list_changed notify failed:', err);
     });
   });
+  const previousOnClose = server.server.onclose;
+  server.server.onclose = () => {
+    runtime.dispose();
+    previousOnClose?.();
+  };
 
-  return { rememberTool, recallTool, reflectTool, memoriesTool };
+  return { rememberTool, recallTool, reflectTool, memoriesTool, runtime };
 }
 
 // ── Tool Usage Tracking ──────────────────────────────────────────────
@@ -211,11 +218,24 @@ export function trackToolUsage(toolName: string) {
   _usageFlushTimer = setTimeout(flushUsageCounts, 10_000);
 }
 
-export function getToolUsageSummary(): { counts: Record<string, number>; profile: string; activeGroups: string[]; recommendation: string } {
-  const profile = getActiveProfileName();
+let mainProfileRuntime: ProfileRuntime;
+
+// Backward-compatible singleton accessors for consumers of the package entry
+// point. New multi-server code should retain the ProfileRuntime returned by
+// createMcpServer instead of using these stdio-runtime wrappers.
+export function getActiveProfile(): { profile: string; activeGroups: string[] } {
+  return mainProfileRuntime.getActiveProfile();
+}
+
+export function applyProfile(profileName: string) {
+  return mainProfileRuntime.applyProfile(profileName);
+}
+
+export function getToolUsageSummary(runtime: ProfileRuntime = mainProfileRuntime): { counts: Record<string, number>; profile: string; activeGroups: string[]; recommendation: string } {
+  const profile = runtime.getActiveProfileName();
   const totalCalls = Object.values(_usageCounts).reduce((a, b) => a + b, 0);
   const usedTools = Object.keys(_usageCounts).length;
-  const activeGroups = getActiveGroups();
+  const activeGroups = runtime.getActiveGroups();
   const registeredGroups = Array.from(activeGroups);
 
   // Determine which groups have actually been used
@@ -265,19 +285,19 @@ export function getToolUsageSummary(): { counts: Record<string, number>; profile
 loadUsageCounts();
 
 // Create a fully configured McpServer with all tools registered.
-// Used by HTTP transport (stateless, fresh server per request).
+// Used by the HTTP transport (one stateful server per client session).
 // `forceProfile` overrides the file/env profile — HTTP transport passes 'full'
 // because HTTP clients (Claude Code) have ToolSearch / deferred loading and
 // don't need eager profile restriction. Stdio clients (Codex, OpenCode) keep
 // using readInitialProfile() via the singleton at the bottom of this file.
-export function createMcpServer(forceProfile?: string) {
+export function createMcpServer(forceProfile?: string, options: { catalogMode?: 'profiled' | 'deferred' } = {}) {
   const initialProfile = forceProfile ?? readInitialProfile();
-  setActiveState(initialProfile, resolveProfileGroups(initialProfile));
+  const runtime = new ProfileRuntime(initialProfile, options);
   const server = new McpServer(
     { name: 'claude-memory', version: '1.1.0' },
-    { instructions: buildServerInstructions() }
+    { instructions: buildServerInstructions(runtime) }
   );
-  const refs = registerTools(server);
+  const refs = registerTools(server, runtime);
   serverToolRefs.set(server, refs);
   return server;
 }
@@ -286,6 +306,10 @@ export function createMcpServer(forceProfile?: string) {
 // their category-dependent schemas refreshed in place (stateful transport keeps
 // one server per client session instead of one per request).
 const serverToolRefs = new WeakMap<McpServer, ReturnType<typeof registerTools>>();
+
+export function getServerProfileRuntime(target: McpServer): ProfileRuntime | null {
+  return serverToolRefs.get(target)?.runtime || null;
+}
 
 // Refresh the category-dependent tool schemas of a specific server instance.
 // tool.update() pushes notifications/tools/list_changed to its connected client.
@@ -300,14 +324,14 @@ export function refreshServerSchemas(target: McpServer): void {
 
 // ── Main stdio server instance ──
 const _initialProfile = readInitialProfile();
-setActiveState(_initialProfile, resolveProfileGroups(_initialProfile));
+mainProfileRuntime = new ProfileRuntime(_initialProfile);
 
 const server = new McpServer(
   { name: 'claude-memory', version: '1.1.0' },
-  { instructions: buildServerInstructions() }
+  { instructions: buildServerInstructions(mainProfileRuntime) }
 );
 
-const { rememberTool, recallTool, reflectTool, memoriesTool } = registerTools(server);
+const { rememberTool, recallTool, reflectTool, memoriesTool } = registerTools(server, mainProfileRuntime);
 
 // ── Wire tool usage tracking into low-level server ──
 // Intercept tool call notifications to count usage per tool name.

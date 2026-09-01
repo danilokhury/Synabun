@@ -3,29 +3,29 @@
   "_comment": "Bump a ruleset's version when CLAUDE-template.md ships a meaningful change for that format. Whitespace/typo edits don't need a bump — leave them on the current version. The Notifications drawer surfaces an alert to users whenever this version differs from what they previously acknowledged.",
   "rulesets": {
     "claude": {
-      "version": "1.1.0",
-      "updatedAt": "2026-07-29",
-      "summary": "Use the configured SynaBun browser exclusively for public-web access"
+      "version": "1.2.0",
+      "updatedAt": "2026-08-12",
+      "summary": "remember requires category and project on every call"
     },
     "codex": {
-      "version": "1.1.0",
-      "updatedAt": "2026-07-29",
-      "summary": "Use the configured SynaBun browser exclusively for public-web access"
+      "version": "1.2.0",
+      "updatedAt": "2026-08-12",
+      "summary": "remember requires category and project on every call"
     },
     "cursor": {
-      "version": "1.1.0",
-      "updatedAt": "2026-07-29",
-      "summary": "Use the configured SynaBun browser exclusively for public-web access"
+      "version": "1.2.0",
+      "updatedAt": "2026-08-12",
+      "summary": "remember requires category and project on every call"
     },
     "generic": {
-      "version": "1.1.0",
-      "updatedAt": "2026-07-29",
-      "summary": "Use the configured SynaBun browser exclusively for public-web access"
+      "version": "1.2.0",
+      "updatedAt": "2026-08-12",
+      "summary": "remember requires category and project on every call"
     },
     "gemini": {
-      "version": "1.1.0",
-      "updatedAt": "2026-07-29",
-      "summary": "Use the configured SynaBun browser exclusively for public-web access"
+      "version": "1.2.0",
+      "updatedAt": "2026-08-12",
+      "summary": "remember requires category and project on every call"
     }
   }
 }

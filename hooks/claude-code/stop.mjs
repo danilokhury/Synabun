@@ -62,6 +62,11 @@ const STORED_PLANS_PATH = join(DATA_DIR, 'stored-plans.json');
 const PLAN_DEBUG_LOG = join(DATA_DIR, 'plan-debug.log');
 const MAX_RETRIES = 3;
 const EDIT_THRESHOLD = 1;
+// Session ceiling on task-memory blocks. `retries` resets whenever a new edit
+// segment starts (post-remember.mjs), so it alone can no longer bound the
+// block↔respond cycle. `stop_hook_active` is not honored by this hook, so this
+// is the only backstop against an agent that edits-then-stops forever.
+const MAX_TASK_BLOCKS = 12;
 
 function planDebug(msg) {
   try { appendCapped(PLAN_DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`); } catch { /* ok */ }
@@ -81,6 +86,7 @@ function softCleanupFlag(flagPath) {
     const cleaned = {
       editCount: 0,
       retries: 0,
+      taskBlockTotal: 0,
       files: [],
       messageCount: flag.messageCount || 0,
       totalSessionMessages: flag.totalSessionMessages || 0,
@@ -232,8 +238,12 @@ function readStdin() {
     let data = '';
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (chunk) => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    setTimeout(() => resolve(data || '{}'), 2000);
+    process.stdin.on('end', () => { clearTimeout(guard); resolve(data); });
+    // unref + clearTimeout: without both, this timer keeps the event loop alive
+    // for its full duration AFTER 'end' already resolved, so every hook
+    // invocation stalled ~2s against a 3s configured timeout.
+    const guard = setTimeout(() => resolve(data || '{}'), 2000);
+    guard.unref?.();
   });
 }
 
@@ -642,8 +652,10 @@ async function main() {
     // CHECK 2: Task remember (edits without memory entry)
     if (editCount >= EDIT_THRESHOLD) {
       const retries = flag.retries || 0;
-      if (retries < MAX_RETRIES) {
+      const taskBlockTotal = flag.taskBlockTotal || 0;
+      if (retries < MAX_RETRIES && taskBlockTotal < MAX_TASK_BLOCKS) {
         flag.retries = retries + 1;
+        flag.taskBlockTotal = taskBlockTotal + 1;
         const files = Array.isArray(flag.files) ? flag.files : [];
         const fileList = files.length > 0
           ? ` Files: ${files.slice(0, 5).join(', ')}${files.length > 5 ? ` (+${files.length - 5} more)` : ''}`

@@ -3,27 +3,26 @@
 import { windowId } from './cdx-icons.js';
 import { codexSocketMessageRejectionReason } from './cdx-protocol.js';
 
-// ── Singleton timers (not per-tab) ──
-let _reconnectTimer = null;
+// ── Shared heartbeat; reconnect ownership lives on each tab ──
 let _heartbeatInterval = null;
 
 // ═══════════════════════════════════════════
 //  Reconnect Timer
 // ═══════════════════════════════════════════
 
-export function clearReconnectTimer() {
-  if (_reconnectTimer) {
-    clearTimeout(_reconnectTimer);
-    _reconnectTimer = null;
+export function clearReconnectTimer(tab) {
+  if (tab?.reconnectTimer) {
+    clearTimeout(tab.reconnectTimer);
+    tab.reconnectTimer = null;
   }
 }
 
-export function scheduleReconnect(reconnectFn) {
-  if (_reconnectTimer) return;
-  _reconnectTimer = setTimeout(() => {
-    _reconnectTimer = null;
+export function scheduleReconnect(tab, reconnectFn, delayMs = 1200) {
+  if (!tab || tab.reconnectTimer) return;
+  tab.reconnectTimer = setTimeout(() => {
+    tab.reconnectTimer = null;
     reconnectFn();
-  }, 1200);
+  }, delayMs);
 }
 
 // ═══════════════════════════════════════════
@@ -54,21 +53,18 @@ export function stopHeartbeat() {
 //  Disconnect
 // ═══════════════════════════════════════════
 
-export function disconnectTab(tab) {
-  if (!tab || tab.closed) return;
-  if (tab.reconnectTimer) {
-    clearTimeout(tab.reconnectTimer);
-    tab.reconnectTimer = null;
+function closeSocket(tab, ws, { intentional = true } = {}) {
+  if (!tab || !ws) return;
+  if (ws.__cxpReleaseTimer) {
+    clearTimeout(ws.__cxpReleaseTimer);
+    ws.__cxpReleaseTimer = null;
   }
+  ws.__cxpReleasePending = false;
+  ws.__cxpReleasePreviousState = null;
+  if (intentional) ws.__cxpIntentionalClose = true;
   tab.connected = false;
   tab.bootstrapped = false;
   tab.pendingReattach = false;
-  const ws = tab.ws;
-  if (!ws) {
-    tab.ws = null;
-    return;
-  }
-  ws.__cxpIntentionalClose = true;
   if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
     try { ws.close(); } catch {}
     return;
@@ -76,12 +72,51 @@ export function disconnectTab(tab) {
   if (tab.ws === ws) tab.ws = null;
 }
 
+export function disconnectTab(tab, { releaseWriter = true } = {}) {
+  if (!tab || tab.closed) return;
+  clearReconnectTimer(tab);
+  const ws = tab.ws;
+  if (!ws) {
+    tab.connected = false;
+    tab.bootstrapped = false;
+    tab.pendingReattach = false;
+    tab.ws = null;
+    return;
+  }
+  if (releaseWriter && ws.readyState === WebSocket.OPEN && !ws.__cxpReleasePending) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'release',
+        windowId,
+        sessionId: tab.id,
+        connectionEpoch: tab.connectionEpoch,
+        threadId: tab.threadId || null,
+      }));
+      ws.__cxpReleasePreviousState = {
+        connected: !!tab.connected,
+        bootstrapped: !!tab.bootstrapped,
+      };
+      ws.__cxpReleasePending = true;
+      ws.__cxpReconnectAfterRelease = false;
+      tab.connected = false;
+      tab.bootstrapped = false;
+      ws.__cxpReleaseTimer = setTimeout(() => closeSocket(tab, ws), 1500);
+      return;
+    } catch {}
+  }
+  if (ws.__cxpReleasePending) {
+    ws.__cxpReconnectAfterRelease = false;
+    return;
+  }
+  closeSocket(tab, ws);
+}
+
 // ═══════════════════════════════════════════
 //  Send
 // ═══════════════════════════════════════════
 
 export function sendSocket(msg, ws) {
-  if (ws?.readyState !== WebSocket.OPEN) return false;
+  if (ws?.readyState !== WebSocket.OPEN || ws.__cxpReleasePending) return false;
   ws.send(JSON.stringify(msg));
   return true;
 }
@@ -213,7 +248,7 @@ function handleSocketMessage(msg, tab, callbacks) {
  *                                   plus lifecycle hooks:
  *   onConnecting(tab)             — called immediately when connection starts
  *   onOpen(tab, ws, { shouldReattach, wasConnected })
- *   onClose(tab, ws, { intentional })
+ *   onClose(tab, ws, { intentional, reconnectAfterRelease })
  *   onMessageError(err, raw)      — parse/handler error
  *   ... all handleSocketMessage callbacks
  * @param {object}   opts
@@ -221,13 +256,16 @@ function handleSocketMessage(msg, tab, callbacks) {
  */
 export function connectTab(tab, callbacks, opts = {}) {
   if (!tab || tab.closed) return;
-  if (tab.ws && (tab.ws.readyState === WebSocket.OPEN || tab.ws.readyState === WebSocket.CONNECTING)) return;
+  if (tab.ws && (tab.ws.readyState === WebSocket.OPEN || tab.ws.readyState === WebSocket.CONNECTING)) {
+    if (tab.ws.__cxpReleasePending) tab.ws.__cxpReconnectAfterRelease = true;
+    return;
+  }
 
   const wasConnected = !!tab.connected;
   const shouldReattach = !!tab.pendingReattach;
   const withTab = opts.withTab || ((t, fn) => fn());
 
-  clearReconnectTimer();
+  clearReconnectTimer(tab);
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/codex-skin`);
@@ -256,11 +294,31 @@ export function connectTab(tab, callbacks, opts = {}) {
 
   ws.onmessage = (event) => {
     try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'release_ack' && ws.__cxpReleasePending
+        && String(msg.sessionId || '') === String(tab.id || '')
+        && String(msg.connectionEpoch || '') === String(connectionEpoch)) {
+        if (ws.__cxpReleaseTimer) {
+          clearTimeout(ws.__cxpReleaseTimer);
+          ws.__cxpReleaseTimer = null;
+        }
+        const previousState = ws.__cxpReleasePreviousState;
+        ws.__cxpReleasePending = false;
+        if (msg.accepted || tab.closed) {
+          closeSocket(tab, ws);
+        } else {
+          ws.__cxpReconnectAfterRelease = false;
+          ws.__cxpReleasePreviousState = null;
+          tab.connected = previousState?.connected ?? true;
+          tab.bootstrapped = previousState?.bootstrapped ?? true;
+          withTab(tab, () => callbacks.onReleaseRejected?.(tab, ws));
+        }
+        return;
+      }
       if (tab.closed || tab.ws !== ws || tab.connectionEpoch !== connectionEpoch) {
         callbacks.onIgnoredMessage?.(null, tab, 'stale_socket');
         return;
       }
-      const msg = JSON.parse(event.data);
       const rejectionReason = codexSocketMessageRejectionReason(msg, tab);
       if (rejectionReason) {
         callbacks.onIgnoredMessage?.(msg, tab, rejectionReason);
@@ -279,11 +337,16 @@ export function connectTab(tab, callbacks, opts = {}) {
   ws.onclose = () => {
     if (tab.ws !== ws || tab.connectionEpoch !== connectionEpoch) return;
     withTab(tab, () => {
+      if (ws.__cxpReleaseTimer) {
+        clearTimeout(ws.__cxpReleaseTimer);
+        ws.__cxpReleaseTimer = null;
+      }
       const intentional = !!ws.__cxpIntentionalClose || tab.closed;
+      const reconnectAfterRelease = !!ws.__cxpReconnectAfterRelease && !tab.closed;
       tab.connected = false;
       tab.bootstrapped = false;
       if (tab._reattachTimer) { clearTimeout(tab._reattachTimer); tab._reattachTimer = null; }
-      callbacks.onClose?.(tab, ws, { intentional });
+      callbacks.onClose?.(tab, ws, { intentional, reconnectAfterRelease });
     });
   };
 }

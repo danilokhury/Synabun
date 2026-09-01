@@ -22,7 +22,7 @@ import {
   initContextBridge,
   renderPills, renderProjects, updateActiveTabView,
   sendPrompt, dispatchPrompt, interruptTurn, queueCurrentDraft, steerActiveTurn,
-  cycleEffort, toggleEffortMenu, togglePlanMode, toggleAutoAccept, syncToolbarState,
+  cycleEffort, toggleEffortMenu, togglePlanMode, toggleAutoAccept, toggleContextMode, syncToolbarState,
   requestModelList, populateModelDropdown,
   setSessionLabel, renameActiveSession, promptNameNewSession, openSettingsPanel, renderSessionMenu,
   toggleAccountMenu, syncAccountChip,
@@ -354,6 +354,7 @@ function buildPanel() {
           </div>
           <button class="cxp-toolbar-toggle" id="cxp-plan-toggle" title="Plan mode: off">${ICON_PLAN}<span class="cxp-btn-label">Plan</span></button>
           <button class="cxp-toolbar-toggle" id="cxp-autoaccept-toggle" title="Auto-accept: off">${ICON_SHIELD}<span class="cxp-btn-label">Auto</span></button>
+          <button class="cxp-toolbar-toggle" id="cxp-context-toggle" type="button" aria-pressed="false" title="Context: provider default">${ICON_SPARK}<span class="cxp-btn-label">Default</span></button>
           <div class="cxp-dropdown" id="cxp-model" data-placeholder="model...">
             <span class="cxp-dd-label">model...</span>
             <span class="cxp-dd-arrow">&#x25BE;</span>
@@ -414,23 +415,22 @@ function startupEmptyText() {
 
 // ── CLI installation status (banner + send-block) ──
 let _cliInstallFailureForced = false;
+let _cliFailureReason = null;
 
 function ensureCliBannerEl() {
   if (!_panel) return null;
   const container = panelEl('#cxp-messages-container');
   if (!container || !container.parentNode) return null;
   let banner = container.parentNode.querySelector(':scope > .cxp-cli-banner');
-  if (banner) return banner;
-  const label = getCliLabel('codex');
-  const cmd = getCliInstallCommand('codex');
+  if (banner) { renderCliBannerContent(banner); return banner; }
   const url = getCliDocUrl('codex');
   banner = document.createElement('div');
   banner.className = 'cxp-cli-banner';
   banner.innerHTML = `
     <div class="cxp-cli-banner-icon">!</div>
     <div class="cxp-cli-banner-text">
-      <div class="cxp-cli-banner-title">${label} CLI not installed</div>
-      <div class="cxp-cli-banner-body">Run <code>${cmd}</code> or follow the install guide.</div>
+      <div class="cxp-cli-banner-title"></div>
+      <div class="cxp-cli-banner-body"></div>
     </div>
     <div class="cxp-cli-banner-actions">
       <a class="cxp-cli-banner-link" href="${url}" target="_blank" rel="noopener noreferrer">Install guide</a>
@@ -450,7 +450,39 @@ function ensureCliBannerEl() {
       }
     }
   });
+  renderCliBannerContent(banner);
   return banner;
+}
+
+// Two very different situations reach this banner, and telling the user the
+// CLI is "not installed" when it is installed sends them off to reinstall
+// something that is already there. Distinguish them.
+function renderCliBannerContent(banner) {
+  const titleEl = banner.querySelector('.cxp-cli-banner-title');
+  const bodyEl = banner.querySelector('.cxp-cli-banner-body');
+  if (!titleEl || !bodyEl) return;
+  const label = getCliLabel('codex');
+  bodyEl.replaceChildren();
+
+  if (_cliInstalled === null) {
+    titleEl.textContent = `${label} CLI not installed`;
+    const cmd = getCliInstallCommand('codex');
+    bodyEl.append('Run ');
+    const code = document.createElement('code');
+    code.textContent = cmd;
+    bodyEl.append(code, ' or follow the install guide.');
+    return;
+  }
+
+  titleEl.textContent = `${label} CLI failed to start`;
+  bodyEl.append(`${label} v${_cliInstalled} is installed, but it could not be launched. `);
+  if (_cliFailureReason) {
+    const code = document.createElement('code');
+    code.textContent = _cliFailureReason;
+    bodyEl.append(code);
+  } else {
+    bodyEl.append('Check the CLI path in Settings, then re-check.');
+  }
 }
 
 function removeCliBannerEl() {
@@ -473,17 +505,29 @@ export function isCdxCliInstalled() {
   return _cliInstalled !== null && !_cliInstallFailureForced;
 }
 
-export function flagCdxCliInstallFailure() {
+export function flagCdxCliInstallFailure(reason = null) {
   _cliInstallFailureForced = true;
+  _cliFailureReason = reason ? String(reason).slice(0, 300) : null;
   refreshCliBanner();
-  recheckCliStatus('codex').catch(() => {});
+  // Clear the latch from the value recheckCliStatus RETURNS. Relying on the
+  // subscriber callback alone deadlocked: the callback only fired when the
+  // version string changed, and a spawn failure does not change the version,
+  // so the banner could never be dismissed — the Re-check button included.
+  recheckCliStatus('codex')
+    .then((info) => {
+      if (!info?.installed) return;
+      _cliInstallFailureForced = false;
+      _cliFailureReason = null;
+      refreshCliBanner();
+    })
+    .catch(() => {});
 }
 
 function ensureCliSubscription() {
   if (_cliUnsub) return;
   _cliUnsub = subscribeCliStatus('codex', (info) => {
     _cliInstalled = info?.installed || null;
-    if (_cliInstalled) _cliInstallFailureForced = false;
+    if (_cliInstalled) { _cliInstallFailureForced = false; _cliFailureReason = null; }
     refreshCliBanner();
   });
 }
@@ -645,6 +689,8 @@ async function updateMcpProfile(profile) {
     profile,
     threadId: tab.threadId || null,
     cwd: tab.project || null,
+    model: tab.model || null,
+    contextMode: tab.contextMode === 'extended' ? 'extended' : 'default',
   });
   const effective = result?.profile || profile;
   tab.mcpProfile = effective;
@@ -874,9 +920,11 @@ function wireEvents() {
   const effortToggle = panelEl('#cxp-effort-toggle');
   const planToggle = panelEl('#cxp-plan-toggle');
   const autoAcceptToggle = panelEl('#cxp-autoaccept-toggle');
+  const contextToggle = panelEl('#cxp-context-toggle');
   effortToggle?.addEventListener('click', (event) => { event.stopPropagation(); toggleEffortMenu(); });
   planToggle?.addEventListener('click', () => togglePlanMode());
   autoAcceptToggle?.addEventListener('click', () => toggleAutoAccept());
+  contextToggle?.addEventListener('click', () => toggleContextMode());
   const queuePauseBtn = panelEl('#cxp-queue-pause');
   const queueClearBtn = panelEl('#cxp-queue-clear');
   queuePauseBtn?.addEventListener('click', () => toggleQueuePause());

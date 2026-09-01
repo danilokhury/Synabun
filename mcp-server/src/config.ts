@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { getDataHome } from '../../lib/paths.js';
+import { isHttpMode } from './services/identity.js';
 
 const dataHome = getDataHome();
 
@@ -26,7 +27,13 @@ export function getEnvPath(): string {
 
 // --- Project Detection (reads from claude-code-projects.json) ---
 
-const PROJECTS_PATH = path.join(config.dataDir, 'claude-code-projects.json');
+// The project registry lives under <dataHome>/data/, NOT config.dataDir
+// (<dataHome>/mcp-data/). It is written there by neural-interface/server.js and
+// read from there by hooks/claude-code/shared.mjs. Pointing at dataDir meant the
+// file never existed, loadRegisteredProjects() always returned [], and
+// detectProject() silently fell through to a raw directory basename — ignoring
+// every registered project label.
+const PROJECTS_PATH = path.resolve(dataHome, 'data', 'claude-code-projects.json');
 
 interface RegisteredProject {
   path: string;
@@ -45,6 +52,12 @@ function normalizeLabel(label: string): string {
 }
 
 export function detectProject(cwd?: string): string {
+  // Over HTTP every caller shares the Neural Interface process, so process.cwd()
+  // is the server's directory, not the caller's — it labeled every memory
+  // "neural-interface" regardless of where the client actually was. Return a
+  // neutral bucket instead of a confident wrong answer: "global" is a mislabel
+  // you can find and fix, "neural-interface" is indistinguishable from a real one.
+  if (!cwd && isHttpMode()) return 'global';
   const dir = cwd || process.cwd();
   const lower = dir.toLowerCase().replace(/\\/g, '/');
   const projects = loadRegisteredProjects();

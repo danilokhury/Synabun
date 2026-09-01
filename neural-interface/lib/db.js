@@ -373,6 +373,109 @@ export function getRecentXEngagements({ account = null, days = 7, limit = 200 } 
   }
 }
 
+export const X_ACTION_TYPES = ['reply', 'like', 'quote', 'follow', 'repost'];
+
+/**
+ * Count the X actions already spent by an account since `sinceIso`, bucketed by type.
+ *
+ * Companion to getRecentXEngagements(): that one answers "who have we already hit",
+ * this one answers "how much have we already done today". The engagement templates
+ * tag every mutation with "x-engaged" + "acct:<account>" + "action:<type>", so the
+ * count is deterministic rather than the model's recollection of its own run. The
+ * launcher turns this into a per-run budget line, which is the only thing stopping
+ * six independent lanes from each spending a full day's quota.
+ *
+ * `action:blocked` rows are engagement *outcomes*, not actions we took, so they are
+ * excluded — matching the blocklist carve-out in getRecentXEngagements().
+ * Never throws (a budget lookup failure must not block a scheduled launch); on error
+ * every counter reads 0 so a broken ledger fails open rather than freezing all lanes.
+ *
+ * @param {{account?:string|null, sinceIso?:string, limit?:number}} opts
+ * @returns {{reply:number, like:number, quote:number, follow:number, repost:number, total:number, error?:string}}
+ */
+export function getXActionBudget({ account = null, sinceIso, limit = 500 } = {}) {
+  const counts = Object.fromEntries(X_ACTION_TYPES.map(t => [t, 0]));
+  const empty = { ...counts, total: 0 };
+  const acct = account ? String(account).trim().replace(/^@/, '').toLowerCase() : null;
+  try {
+    const db = getDb();
+    const since = sinceIso || new Date(Date.now() - 86400000).toISOString();
+    let sql = `SELECT tags FROM memories
+         WHERE trashed_at IS NULL
+           AND tags LIKE '%x-engaged%'
+           AND tags NOT LIKE '%action:blocked%'
+           AND created_at >= ?`;
+    const params = [since];
+    if (acct) { sql += ` AND tags LIKE ?`; params.push(`%"acct:${acct}"%`); }
+    sql += ` ORDER BY created_at DESC LIMIT ?`;
+    params.push(limit);
+
+    let total = 0;
+    for (const row of db.prepare(sql).all(...params)) {
+      let tags;
+      try { tags = JSON.parse(row.tags || '[]'); } catch { continue; }
+      if (!Array.isArray(tags)) continue;
+      // One memory logs one action. Count the first recognised action tag only, so a
+      // ledger entry that also mentions a sibling action does not double-charge.
+      for (const t of tags) {
+        if (typeof t !== 'string' || !t.startsWith('action:')) continue;
+        const kind = t.slice(7).trim().toLowerCase();
+        if (!Object.hasOwn(counts, kind)) continue;
+        counts[kind]++;
+        total++;
+        break;
+      }
+    }
+    return { ...counts, total };
+  } catch (err) {
+    return { ...empty, error: err.message };
+  }
+}
+
+/**
+ * Per-day ceilings for each engagement ramp tier, shared by every X lane of an account.
+ * The tier is STATE (written by the daily metrics run after it checks the account is
+ * clean); the ceilings are CODE, so a model cannot talk itself into a wider budget by
+ * rewriting a memory. Tier 1 is the post-shadow-ban starting point.
+ */
+export const X_ENGAGEMENT_TIERS = {
+  1: { reply: 12, like: 30, quote: 0, follow: 6, repost: 2 },
+  2: { reply: 24, like: 45, quote: 1, follow: 8, repost: 3 },
+  3: { reply: 36, like: 60, quote: 2, follow: 12, repost: 4 },
+};
+export const X_DEFAULT_TIER = 1;
+
+/**
+ * Read the current engagement ramp tier from the canonical `critpix-x-engagement-caps`
+ * memory. Falls back to the most conservative tier whenever the memory is missing,
+ * unparseable, or names a tier that does not exist — an unreadable ledger must narrow
+ * the budget, never widen it.
+ *
+ * @param {{account?:string|null}} opts
+ * @returns {{tier:number, caps:{reply:number,like:number,quote:number,follow:number,repost:number}, source:'memory'|'default', error?:string}}
+ */
+export function getXEngagementTier({ account = null } = {}) {
+  const fallback = { tier: X_DEFAULT_TIER, caps: X_ENGAGEMENT_TIERS[X_DEFAULT_TIER], source: 'default' };
+  const acct = account ? String(account).trim().replace(/^@/, '').toLowerCase() : null;
+  try {
+    const db = getDb();
+    let sql = `SELECT content FROM memories
+         WHERE trashed_at IS NULL
+           AND tags LIKE '%critpix-x-engagement-caps%'`;
+    const params = [];
+    if (acct) { sql += ` AND (tags LIKE ? OR tags NOT LIKE '%"acct:%')`; params.push(`%"acct:${acct}"%`); }
+    sql += ` ORDER BY created_at DESC LIMIT 1`;
+    const row = db.prepare(sql).all(...params)[0];
+    if (!row?.content) return fallback;
+    const m = /\btier\s*[:=]\s*(\d+)/i.exec(row.content);
+    const tier = m ? Number(m[1]) : NaN;
+    if (!Object.hasOwn(X_ENGAGEMENT_TIERS, tier)) return fallback;
+    return { tier, caps: X_ENGAGEMENT_TIERS[tier], source: 'memory' };
+  } catch (err) {
+    return { ...fallback, error: err.message };
+  }
+}
+
 // --- KV Config ---
 
 const KV_DDL = 'CREATE TABLE IF NOT EXISTS kv_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)';

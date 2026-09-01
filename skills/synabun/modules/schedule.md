@@ -9,7 +9,7 @@ You are in **schedule mode**. The user wants to create a recurring SynaBun sched
 ## CRITICAL — Tool Quirks
 
 - All SynaBun MCP calls run **sequentially** (never parallel — one failure cascades).
-- `remember` accepts `tags` + `importance` directly and returns the full UUID; `reflect` needs the FULL UUID.
+- `remember` requires `category` and `project` on every call, accepts `tags` + `importance` directly, and returns the full UUID; `reflect` needs the FULL UUID.
 - **Interactive choice prompt** = a clickable option card, never plain text:
   - **Claude Code (REQUIRED):** `AskUserQuestion` is deferred — call `ToolSearch` with `select:AskUserQuestion` **before the first card**, then `AskUserQuestion` (2–4 options, ≤4 questions per card).
   - **OpenCode:** native `question` tool. **Codex:** `request_user_input`. Never write choices as plain text.

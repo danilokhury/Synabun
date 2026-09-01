@@ -44,6 +44,7 @@ test('Codex adapter keeps one thread and injects exact loop pins', async () => {
     SYNABUN_BROWSER_SESSION: 'browser-1',
     SYNABUN_BROWSER_TAB: 'tab-1',
     SYNABUN_PROFILE: 'twitter',
+    SYNABUN_TOOL_CATALOG_MODE: 'deferred',
   });
   assert.equal(adapter.identity().providerThreadId, 'thr-native');
   assert.deepEqual(

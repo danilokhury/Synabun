@@ -6,6 +6,7 @@
 //   • event.onEvent(listener)        — broadcast SSE envelopes
 //   • session.list/create/get/delete/abort/prompt
 //   • permission.reply
+//   • mcp.status/connect/disconnect
 //
 // Pass-through philosophy — NO event normalizers, NO system-prompt injection,
 // NO legacy shape translation. Whatever the SDK emits, we forward verbatim
@@ -229,6 +230,12 @@ export const question = {
   reject: (params)      => unwrap(requireClient().question.reject(clean(params))),
 };
 
+export const mcp = {
+  status:     (params = {}) => unwrap(requireClient().mcp.status(clean(params))),
+  connect:    (params = {}) => unwrap(requireClient().mcp.connect(clean(params))),
+  disconnect: (params = {}) => unwrap(requireClient().mcp.disconnect(clean(params))),
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-serve client INSTANCE factory — ADDITIVE. Used by SynaBun's per-tab
 // browser-isolation serves (server.js): each isolated `opencode serve` gets its
@@ -236,9 +243,9 @@ export const question = {
 // completely untouched — it remains the shared-serve default, so the common path
 // carries zero risk from this addition. Reuses the module-level unwrap()/clean().
 // ─────────────────────────────────────────────────────────────────────────────
-export function createClientInstance({ port }) {
+export function createClientInstance({ port, clientFactory = createOpencodeClient }) {
   if (!port) throw new Error('createClientInstance: port required');
-  let client = createOpencodeClient({ baseUrl: `http://127.0.0.1:${port}` });
+  let client = clientFactory({ baseUrl: `http://127.0.0.1:${port}` });
   let abort = null;
   let stopRequested = false;
   let connected = false;
@@ -317,10 +324,15 @@ export function createClientInstance({ port }) {
       reply:  (p)      => unwrap(req().question.reply(clean(p))),
       reject: (p)      => unwrap(req().question.reject(clean(p))),
     },
+    mcp: {
+      status:     (p = {}) => unwrap(req().mcp.status(clean(p))),
+      connect:    (p = {}) => unwrap(req().mcp.connect(clean(p))),
+      disconnect: (p = {}) => unwrap(req().mcp.disconnect(clean(p))),
+    },
   };
 }
 
 export default {
   connect, disconnect, getClient, isConnected, getPort,
-  event, session, permission, question, createClientInstance,
+  event, session, permission, question, mcp, createClientInstance,
 };

@@ -8,6 +8,7 @@ const read = (path) => readFileSync(resolve(root, path), 'utf8');
 
 test('OpenCode sidepanel profiles are pinned to dedicated session serves', () => {
   const server = read('neural-interface/server.js');
+  const opencodeClient = read('neural-interface/lib/opencode-v2-client.js');
   const isolation = server.slice(
     server.indexOf('const _ocpIsoServes'),
     server.indexOf('function handleOpencodeV2Ws'),
@@ -40,11 +41,22 @@ test('OpenCode sidepanel profiles are pinned to dedicated session serves', () =>
   assert.match(server, /app\.post\('\/api\/mcp\/runtime-profile'/);
   assert.match(server, /req\.get\('X-Synabun-Terminal'\)/);
   assert.match(server, /updateOpencodeRuntimeProfileConfig\(entry\.xdgRoot, profile\)/);
+  assert.match(server, /scheduleRuntimeMcpProfileRefresh\(/);
+  assert.match(server, /resolveOpenCodeMcpDirectory\(entry, sessionIds\)/);
+  assert.match(server, /entry\.client\.mcp\.disconnect\(mcpTarget\)/);
+  assert.match(server, /entry\.client\.mcp\.connect\(mcpTarget\)/);
+  assert.match(server, /entry\.client\.mcp\.status\(\{ directory \}\)/);
+  assert.match(server, /!existing\.mcpProfileRefreshFailed/);
+  assert.match(server, /entry\.mcpProfileRefreshFailed = true/);
+  assert.match(server, /hostRefresh: 'confirmed'/);
   assert.match(server, /_ocpSessionProfiles\.set\(sessionId, profile\)/);
   assert.match(server, /eventType: 'mcp\.profile\.changed'/);
   assert.match(server, /_ocpSessionProfiles\.set\(providerSessionId, state\.mcpProfile \|\| entry\.mcpProfile\)/);
   assert.match(server, /turnClientForSession\(msg\.sessionId, msg\.mcpProfile\)/);
   assert.doesNotMatch(server, /startMcpProfileWatchers\(\)/);
+  assert.match(opencodeClient, /mcp:\s*\{/);
+  assert.match(opencodeClient, /req\(\)\.mcp\.disconnect/);
+  assert.match(opencodeClient, /req\(\)\.mcp\.connect/);
 });
 
 test('Codex sidepanel profile is a per-WebSocket app-server override', () => {
@@ -53,12 +65,28 @@ test('Codex sidepanel profile is a per-WebSocket app-server override', () => {
     server.indexOf('function handleCodexSkinWebSocket'),
     server.indexOf('let _codexModelListCache'),
   );
-  assert.match(handler, /let activeMcpProfile = normalizeMcpProfileName\(readActiveMcpProfile\(\)\)/);
+  assert.match(handler, /let codexMcpProfileState = \{ value: normalizeMcpProfileName\(readActiveMcpProfile\(\)\) \}/);
   assert.match(handler, /mcp_servers\.SynaBun\.env\.SYNABUN_PROFILE=/);
+  assert.match(handler, /mcp_servers\.SynaBun\.env\.SYNABUN_TERMINAL_SESSION=/);
+  assert.match(handler, /mcp_servers\.SynaBun\.env\.SYNABUN_RUNTIME_PROFILE_PATH=/);
+  assert.match(handler, /mcp_servers\.SynaBun\.env\.SYNABUN_TOOL_CATALOG_MODE="deferred"/);
+  assert.match(handler, /registerCodexMcpProfileRuntime\(\)/);
+  assert.match(handler, /catalogMode: 'deferred'/);
+  assert.match(handler, /confirmAgentProfile\(profile, correlationId, hostRefresh = 'not-needed'\)/);
+  assert.match(handler, /!codexMcpRuntimeBinding\?\.profileRefreshFailed/);
   assert.match(handler, /async function switchCodexMcpProfile/);
   assert.match(handler, /if \(activeTurnId \|\| pendingServerRequests\.size\)/);
   assert.match(handler, /msg\.type === 'mcp_profile_set'/);
-  assert.match(handler, /mcpProfile: activeMcpProfile/);
+  assert.match(handler, /mcpProfile: codexMcpProfileState\.value/);
+  assert.match(handler, /mcpProfileState: codexMcpProfileState/);
+  assert.match(server, /_codexMcpProfileRuntimes\.get\(terminalId\)/);
+  const runtimeProfileRoute = server.slice(
+    server.indexOf("app.post('/api/mcp/runtime-profile'"),
+    server.indexOf('// --- MCP Registry API ---'),
+  );
+  assert.match(runtimeProfileRoute, /hostRefresh = deferredCatalog \? 'not-needed' : 'notification'/);
+  assert.match(runtimeProfileRoute, /codexRuntime\.confirmAgentProfile\(profile, correlationId, hostRefresh\)/);
+  assert.doesNotMatch(runtimeProfileRoute, /codexRuntime\.refresh|request\('config\/mcpServer\/reload'/);
 });
 
 test('sidepanel selectors keep active-session state separate from the shared default', () => {

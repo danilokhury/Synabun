@@ -1,5 +1,5 @@
 import { existsSync, statSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { resolve, sep, win32 as pathWin32 } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 export const CODEX_RESUME_SOURCE_KINDS = ['cli', 'vscode', 'exec', 'appServer'];
@@ -7,6 +7,17 @@ export const CODEX_RESUME_SOURCE_KINDS = ['cli', 'vscode', 'exec', 'appServer'];
 function comparablePath(value) {
   const normalized = resolve(String(value || ''));
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+export function samePath(left, right, { platform = process.platform } = {}) {
+  if (!left || !right) return false;
+  const normalize = (value) => {
+    const normalized = platform === 'win32'
+      ? pathWin32.resolve(String(value || ''))
+      : resolve(String(value || ''));
+    return platform === 'win32' ? normalized.toLowerCase() : normalized;
+  };
+  return normalize(left) === normalize(right);
 }
 
 export function pathIsWithin(candidate, root) {

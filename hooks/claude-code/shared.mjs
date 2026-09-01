@@ -100,8 +100,12 @@ export function readStdin() {
     let data = '';
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (chunk) => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    setTimeout(() => resolve(data || '{}'), 2000);
+    process.stdin.on('end', () => { clearTimeout(guard); resolve(data); });
+    // unref + clearTimeout: without both, this timer keeps the event loop alive
+    // for its full duration AFTER 'end' already resolved, so every hook
+    // invocation stalled ~2s against a 3s configured timeout.
+    const guard = setTimeout(() => resolve(data || '{}'), 2000);
+    guard.unref?.();
   });
 }
 

@@ -35,7 +35,7 @@ After ANY task (bug fix, feature, refactor, config change, investigation, archit
 **Steps:**
 1. `remember` — what + why + how, appropriate category, set project, related_files, importance (5=routine, 6-7=significant, 8+=critical), and 3-5 tags
 
-`remember` now returns the full UUID and accepts all fields (tags, importance) directly. No need to recall+reflect afterward.
+`remember` accepts every field directly and returns the full UUID — no recall+reflect afterward. `category` and `project` are **required on every call**; a call that omits them is rejected. Set `importance` deliberately (5 only when the work is genuinely routine). Storing a memory is also what clears the stop hook's unstored-edits block.
 
 **NOT triggered by:** Simple Q&A, file reads with no findings, trivial typos.
 
@@ -61,7 +61,7 @@ Never store directly in parent categories.
 
 ### Tool Quirks
 
-- `remember` returns the full UUID and accepts tags + importance directly.
+- `remember` requires `category` and `project` on every call, accepts tags + importance directly, and returns the full UUID.
 - `reflect` requires FULL UUID — use the one returned by `remember`, or `recall` to find existing memories.
 - Sequential MCP calls only — never parallel.
 
@@ -142,7 +142,7 @@ Tool names may be prefixed by the host. Only call tools by their EXACT names fro
 - After any task: remember what+why+how with tags + importance (MANDATORY)
 - Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
 - Bug fixes: importance 7+. Architecture: 8+. User says "remember this": 8+
-- remember returns full UUID. Use reflect only to update existing memories.
+- remember requires category + project on every call; returns full UUID. Use reflect only to update existing memories.
 - Sequential MCP calls only
 - Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical, 10=foundational
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
@@ -159,7 +159,7 @@ Tool names are prefixed by the host (e.g. SynaBun_remember in OpenCode, mcp__Syn
 IMPORTANT: Only call tools by their EXACT names from your available tools list. Never invent or guess tool names.
 - Recall at session start. Remember after every task with tags + importance (MANDATORY).
 - Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
-- remember returns full UUID. reflect is for updating existing memories.
+- remember requires category + project on every call; returns full UUID. reflect is for updating existing memories.
 - Sequential calls only. Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
@@ -174,7 +174,7 @@ Tools: remember, recall, forget, restore, reflect, memories, sync, category_*, p
 Tool names may be prefixed by the host (e.g. SynaBun_remember). Only call tools by their EXACT names from your available tools list.
 - Recall at session start. Remember after every task with tags + importance (MANDATORY).
 - Response ordering: call remember FIRST, then write your summary LAST. Never summary-then-tools.
-- remember returns full UUID. reflect is for updating existing memories.
+- remember requires category + project on every call; returns full UUID. reflect is for updating existing memories.
 - Sequential calls only. Scale: 1-2=trivial, 5=normal, 7=significant, 9=critical
 - Plan mode: ALWAYS use AskUserQuestion for questions — never plain text. Use ExitPlanMode for plan approval.
 - AskUserQuestion: use multiSelect: true when options aren't mutually exclusive (multiple tags, features, effects, actions).
@@ -193,7 +193,7 @@ IMPORTANT: Only call tools by their EXACT names as they appear in your available
 - During work: recall before architecture decisions, debugging, migrations, or when the user references prior work or existing patterns.
 - After any substantive task: remember what changed, why, and how with project, related_files, 3-5 tags, and importance (5=routine, 6-7=significant, 8+=critical). Do this BEFORE your final summary.
 - Response ordering: call remember/reflect FIRST, then write your completion summary LAST. Never summary-then-tools.
-- remember returns the full UUID. Use reflect only to update an existing memory; reflect requires the full UUID.
+- remember requires `category` and `project` on every call and returns the full UUID. Use reflect only to update an existing memory; reflect requires the full UUID.
 - Category routing: use an existing child category when possible; otherwise create the needed child under the right parent. Never store directly in parent categories.
 - If you produce an approved implementation plan with durable value, store it in the appropriate `plans-*` category.
 - Sequential MCP calls only. Never parallelize SynaBun memory-tool calls.

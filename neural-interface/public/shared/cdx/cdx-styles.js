@@ -332,6 +332,19 @@ export function injectStyles() {
     #cxp-autoaccept-toggle.active { color: rgba(100, 210, 140, 0.85); }
     #cxp-autoaccept-toggle.active::after { transform: scaleX(1); background: rgba(100, 210, 140, 0.6); }
     #cxp-autoaccept-toggle.active:hover { color: rgba(120, 230, 160, 1); transform: translateY(-1px); }
+
+    /* ── Extended context — secondary purple, warning amber on mismatch ── */
+    #cxp-context-toggle.active { color: rgba(196, 181, 253, 0.9); }
+    #cxp-context-toggle.active::after { transform: scaleX(1); background: rgba(139, 92, 246, 0.75); }
+    #cxp-context-toggle.active:hover { color: rgba(221, 214, 254, 1); transform: translateY(-1px); }
+    #cxp-context-toggle[data-context-status="mismatch"] { color: rgba(245, 158, 11, 0.95); }
+    #cxp-context-toggle[data-context-status="mismatch"]::after { background: rgba(245, 158, 11, 0.8); }
+    #cxp-context-toggle:disabled {
+      opacity: 0.32;
+      cursor: not-allowed;
+      transform: none;
+    }
+    #cxp-context-toggle:disabled::after { transform: scaleX(0); }
     .cxp-cost {
       font-size: 9px;
       font-family: 'JetBrains Mono', monospace;

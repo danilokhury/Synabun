@@ -37,6 +37,27 @@ export const VALID_GROUPS = new Set([
 export const PROFILE_PATH = join(config.dataDir, 'active-profile.json');
 const PROFILE_REGISTRY_PATH = join(config.dataHome, 'data', 'mcp-registry.json');
 const RUNTIME_PROFILE_PATH_ENV = 'SYNABUN_RUNTIME_PROFILE_PATH';
+export const TOOL_CATALOG_MODE_ENV = 'SYNABUN_TOOL_CATALOG_MODE';
+
+export type ToolCatalogMode = 'profiled' | 'deferred';
+
+/**
+ * Codex snapshots its deferred MCP catalog at the start of each model turn.
+ * A tools/list_changed notification updates Codex's MCP inventory, but tools
+ * added after the turn starts cannot enter that turn's deferred catalog. For
+ * Codex runtimes we therefore advertise every SynaBun tool up front and use
+ * profiles as a focus selection instead of an availability boundary.
+ */
+export function readToolCatalogMode(): ToolCatalogMode {
+  const configured = String(process.env[TOOL_CATALOG_MODE_ENV] || '').trim().toLowerCase();
+  if (configured === 'deferred') return 'deferred';
+  if (configured === 'profiled') return 'profiled';
+  // Managed Codex sidepanels have always used this stable runtime prefix. The
+  // fallback makes upgraded sidepanels reliable even before their next spawn
+  // picks up the explicit catalog-mode environment override.
+  if (/^codex-sp-/.test(String(process.env.SYNABUN_TERMINAL_SESSION || ''))) return 'deferred';
+  return 'profiled';
+}
 
 /**
  * Return the profile definitions visible to the current runtime.
@@ -78,24 +99,6 @@ export function getProfilePresets(): Record<string, string[]> {
 // deferred tool loading, so it never needs profile restrictions — always full.
 export function isClaudeCode(): boolean {
   return process.env.CLAUDECODE === '1';
-}
-
-// ── State ──
-
-let _activeGroups: Set<string> = new Set();
-let _activeProfileName: string = 'full';
-const _toolGroups: Map<string, RegisteredTool[]> = new Map();
-
-// Single-fire notifier hook. The MCP SDK's RegisteredTool.enable()/disable()
-// each emit a `notifications/tools/list_changed` event. A profile swap that
-// flips ~30-50 tools therefore fires a storm that some MCP clients (notably
-// the OpenCode SDK) react to by aborting the in-flight tool roundtrip — the
-// agent appears to "stall" after one profile.set call. applyProfile bypasses
-// enable()/disable() with direct `tool.enabled = ...` mutation and emits a
-// single notification at the end via this callback.
-let _onProfileChanged: (() => void) | null = null;
-export function setOnProfileChanged(fn: (() => void) | null): void {
-  _onProfileChanged = fn;
 }
 
 // ── Helpers ──
@@ -168,83 +171,139 @@ export function logCodexConfigNoticeOnce(): void {
   if (_loggedCodexConfigNotice) return;
   _loggedCodexConfigNotice = true;
   console.error(
-    '[SynaBun] SynaBun no longer writes to ~/.codex/config.toml. ' +
-    'To change profile permanently, edit active-profile.json. ' +
-    'To override per-session, set SYNABUN_PROFILE in your MCP env block.'
+    '[SynaBun] Runtime profile switches never rewrite ~/.codex/config.toml. ' +
+    'The canonical Codex registration uses the complete deferred SynaBun catalog; managed profile choices ' +
+    'are runtime-local focus selections. Other hosts use active-profile.json as their future-runtime default.'
   );
 }
 
-// ── State accessors ──
+// ── Per-server runtime state ──
 
-export function getActiveProfile(): { profile: string; activeGroups: string[] } {
-  return { profile: _activeProfileName, activeGroups: Array.from(_activeGroups) };
+export interface ProfileApplyResult {
+  profile: string;
+  enabled: string[];
+  disabled: string[];
+  totalTools: number;
+  changed: boolean;
+  catalogMode: ToolCatalogMode;
 }
 
-export function getActiveProfileName(): string {
-  return _activeProfileName;
-}
+/**
+ * Profile state belongs to one MCP server/transport, never to this module.
+ *
+ * The HTTP transport keeps several stateful McpServer instances in one Node
+ * process. Module-global active groups/tool refs made one client's profile.set
+ * mutate whichever server happened to register last. Stdio still gets one
+ * ProfileRuntime per process, while HTTP gets one per client session.
+ */
+export class ProfileRuntime {
+  private activeGroups: Set<string>;
+  private activeProfileName: string;
+  private readonly catalogMode: ToolCatalogMode;
+  private readonly toolGroups = new Map<string, RegisteredTool[]>();
+  private onProfileChanged: (() => void | Promise<void>) | null = null;
+  private notificationTimer: ReturnType<typeof setTimeout> | null = null;
 
-export function getActiveGroups(): Set<string> {
-  return _activeGroups;
-}
-
-export function getToolGroups(): Map<string, RegisteredTool[]> {
-  return _toolGroups;
-}
-
-export function setActiveState(profileName: string, groups: Set<string>) {
-  _activeProfileName = profileName;
-  _activeGroups = groups;
-}
-
-export function setToolGroup(name: string, tools: RegisteredTool[]) {
-  _toolGroups.set(name, tools);
-}
-
-// ── Profile switching ──
-
-export function applyProfile(profileName: string): { profile: string; enabled: string[]; disabled: string[]; totalTools: number } {
-  if (!isValidProfileSelection(profileName)) {
-    throw new Error(`Unknown MCP profile or tool group selection: ${profileName}`);
-  }
-  const newGroups = resolveProfileGroups(profileName);
-  const enabled: string[] = [];
-  const disabled: string[] = [];
-
-  for (const [group, tools] of _toolGroups) {
-    const shouldEnable = newGroups.has(group);
-    for (const tool of tools) {
-      // Direct mutation bypasses RegisteredTool.enable()/disable() which each
-      // emit a `notifications/tools/list_changed`. We fire one notification at
-      // the end via the _onProfileChanged callback instead — see top of file.
-      if (shouldEnable && !tool.enabled) tool.enabled = true;
-      if (!shouldEnable && tool.enabled) tool.enabled = false;
+  constructor(initialProfile: string, options: { catalogMode?: ToolCatalogMode } = {}) {
+    const normalized = String(initialProfile || 'full').toLowerCase().trim() || 'full';
+    if (!isValidProfileSelection(normalized)) {
+      throw new Error(`Unknown MCP profile or tool group selection: ${initialProfile}`);
     }
-    if (shouldEnable && !_activeGroups.has(group)) enabled.push(group);
-    if (!shouldEnable && _activeGroups.has(group)) disabled.push(group);
+    this.activeProfileName = normalized;
+    this.activeGroups = resolveProfileGroups(normalized);
+    this.catalogMode = options.catalogMode || readToolCatalogMode();
   }
 
-  const prevProfileName = _activeProfileName;
-  _activeGroups = newGroups;
-  _activeProfileName = profileName.toLowerCase().trim();
-
-  // Count enabled tools (core + enabled groups)
-  let totalTools = 11;
-  for (const [group, tools] of _toolGroups) {
-    if (_activeGroups.has(group)) totalTools += tools.length;
+  getActiveProfile(): { profile: string; activeGroups: string[] } {
+    return { profile: this.activeProfileName, activeGroups: Array.from(this.activeGroups) };
   }
 
-  // Only log + notify on an actual change. HTTP MCP creates a fresh server
-  // per request, which would otherwise spam this line twice per request.
-  const changed = prevProfileName !== _activeProfileName || enabled.length > 0 || disabled.length > 0;
-  if (changed) {
-    console.error(`[SynaBun] Profile switched to "${_activeProfileName}" (${_activeGroups.size} groups, ${totalTools} tools, +${enabled.join(',') || 'none'}, -${disabled.join(',') || 'none'})`);
-    if (_onProfileChanged) {
-      try { _onProfileChanged(); }
-      catch (err) { console.error('[SynaBun] profile-change notifier failed:', err); }
+  getActiveProfileName(): string {
+    return this.activeProfileName;
+  }
+
+  getActiveGroups(): Set<string> {
+    return this.activeGroups;
+  }
+
+  getCatalogMode(): ToolCatalogMode {
+    return this.catalogMode;
+  }
+
+  setToolGroup(name: string, tools: RegisteredTool[]): void {
+    this.toolGroups.set(name, tools);
+  }
+
+  setOnProfileChanged(fn: (() => void | Promise<void>) | null): void {
+    this.onProfileChanged = fn;
+  }
+
+  dispose(): void {
+    if (this.notificationTimer) clearTimeout(this.notificationTimer);
+    this.notificationTimer = null;
+    this.onProfileChanged = null;
+  }
+
+  /**
+   * Coalesce one delayed list-changed notification. Delaying is essential:
+   * OpenCode used to receive the notification while profile.set itself was
+   * still in flight and could abort/cache the old tool roundtrip.
+   */
+  scheduleProfileChangedNotification(delayMs = 10): boolean {
+    if (!this.onProfileChanged) return false;
+    if (this.notificationTimer) clearTimeout(this.notificationTimer);
+    this.notificationTimer = setTimeout(() => {
+      this.notificationTimer = null;
+      try {
+        void Promise.resolve(this.onProfileChanged?.()).catch((err) => {
+          console.error('[SynaBun] profile-change notifier failed:', err);
+        });
+      } catch (err) {
+        console.error('[SynaBun] profile-change notifier failed:', err);
+      }
+    }, Math.max(0, delayMs));
+    this.notificationTimer.unref?.();
+    return true;
+  }
+
+  applyProfile(profileName: string): ProfileApplyResult {
+    if (!isValidProfileSelection(profileName)) {
+      throw new Error(`Unknown MCP profile or tool group selection: ${profileName}`);
     }
+    const normalized = profileName.toLowerCase().trim();
+    const newGroups = resolveProfileGroups(normalized);
+    const enabled: string[] = [];
+    const disabled: string[] = [];
+
+    for (const [group, tools] of this.toolGroups) {
+      const profileEnablesGroup = newGroups.has(group);
+      const shouldAdvertise = this.catalogMode === 'deferred' || profileEnablesGroup;
+      for (const tool of tools) {
+        // Direct mutation bypasses RegisteredTool.enable()/disable(), each of
+        // which emits its own notification. The caller schedules one refresh
+        // only after the profile tool result is ready to return.
+        if (shouldAdvertise && !tool.enabled) tool.enabled = true;
+        if (!shouldAdvertise && tool.enabled) tool.enabled = false;
+      }
+      if (profileEnablesGroup && !this.activeGroups.has(group)) enabled.push(group);
+      if (!profileEnablesGroup && this.activeGroups.has(group)) disabled.push(group);
+    }
+
+    const previousProfile = this.activeProfileName;
+    this.activeGroups = newGroups;
+    this.activeProfileName = normalized;
+
+    let totalTools = 11;
+    for (const [group, tools] of this.toolGroups) {
+      if (this.catalogMode === 'deferred' || this.activeGroups.has(group)) totalTools += tools.length;
+    }
+
+    const changed = previousProfile !== normalized || enabled.length > 0 || disabled.length > 0;
+    if (changed) {
+      console.error(`[SynaBun] Profile switched to "${normalized}" (${this.activeGroups.size} groups, ${totalTools} tools, +${enabled.join(',') || 'none'}, -${disabled.join(',') || 'none'})`);
+    }
+    return { profile: normalized, enabled, disabled, totalTools, changed, catalogMode: this.catalogMode };
   }
-  return { profile: _activeProfileName, enabled, disabled, totalTools };
 }
 
 export function persistProfile(profileName: string) {

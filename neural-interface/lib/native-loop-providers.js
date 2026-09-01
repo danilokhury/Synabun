@@ -100,6 +100,7 @@ export async function createCodexNativeLoopAdapter(options = {}) {
     SYNABUN_BROWSER_SESSION: browserSessionId,
     SYNABUN_BROWSER_TAB: browserTabId,
     SYNABUN_PROFILE: mcpProfile,
+    SYNABUN_TOOL_CATALOG_MODE: 'deferred',
   });
   const env = stringEnv({ ...process.env, ...pins, CODEX_HOME: codexHome });
   const config = {};

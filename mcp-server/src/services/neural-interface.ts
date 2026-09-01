@@ -100,13 +100,46 @@ async function request(
  * standalone CLI processes stay process-local without contacting Neural
  * Interface. The server derives the owning runtime from X-Synabun-Terminal.
  */
-export async function reportRuntimeMcpProfile(profile: string): Promise<{ reported: boolean; error?: string }> {
+export type RuntimeMcpProfileReport = {
+  reported: boolean;
+  hostRefresh: 'scheduled' | 'notification' | 'not-needed' | 'unavailable';
+  runtimeKind?: 'opencode' | 'codex' | 'loop';
+  correlationId?: string;
+  error?: string;
+};
+
+export async function reportRuntimeMcpProfile(
+  profile: string,
+  options: { catalogMode?: 'profiled' | 'deferred' } = {}
+): Promise<RuntimeMcpProfileReport> {
   if (!String(process.env.SYNABUN_TERMINAL_SESSION || '').trim()) {
-    return { reported: false };
+    return { reported: false, hostRefresh: 'notification' };
   }
-  const result = await request('POST', '/api/mcp/runtime-profile', { profile }, 2_000);
-  if (result.ok) return { reported: true };
-  return { reported: false, error: typeof result.error === 'string' ? result.error : 'Runtime profile report failed' };
+  const result = await request('POST', '/api/mcp/runtime-profile', {
+    profile,
+    catalogMode: options.catalogMode || 'profiled',
+  }, 2_000);
+  if (result.ok) {
+    const hostRefresh = result.hostRefresh === 'scheduled'
+      || result.hostRefresh === 'notification'
+      || result.hostRefresh === 'not-needed'
+      ? result.hostRefresh
+      : 'unavailable';
+    const runtimeKind = result.runtimeKind === 'opencode' || result.runtimeKind === 'codex' || result.runtimeKind === 'loop'
+      ? result.runtimeKind
+      : undefined;
+    return {
+      reported: true,
+      hostRefresh,
+      runtimeKind,
+      correlationId: typeof result.correlationId === 'string' ? result.correlationId : undefined,
+    };
+  }
+  return {
+    reported: false,
+    hostRefresh: 'unavailable',
+    error: typeof result.error === 'string' ? result.error : 'Runtime profile report failed',
+  };
 }
 
 // All per-caller identity state (recovery cache, session affinity, interactive

@@ -62,6 +62,15 @@ import * as mcpInstaller from './lib/mcp-installer.js';
 import * as pluginInstaller from './lib/plugin-installer.js';
 import { loopLog, loopLogPath, flushLoopLogs } from './lib/loop-logger.js';
 import {
+  buildInstallCommand,
+  buildUpdateCommand,
+  detectInstallSource,
+  isBrewSource,
+  parseBrewOutdated,
+  resolveBrewToken,
+  resolveLatest,
+} from './lib/cli-update-planner.js';
+import {
   applyBackupRetention,
   createVerifiedBackup,
   getBackupHealth,
@@ -73,6 +82,7 @@ import {
 import * as opencodeClient from './lib/opencode-client.js';
 import * as opencodeV2Client from './lib/opencode-v2-client.js';
 import { NativeLoopRuntime, isNativeLoopProfile } from './lib/native-loop-runtime.js';
+import { McpProfileRefreshCoordinator } from './lib/mcp-profile-refresh-coordinator.js';
 import { buildManagedOpenCodeSynabunEntry } from './lib/opencode-runtime-config.js';
 import {
   createClaudeNativeLoopAdapter,
@@ -84,6 +94,10 @@ import {
   selectWindowsCodexLauncher,
   windowsCodexPackageJsonCandidates,
 } from './lib/codex-runtime-path.js';
+import {
+  mergeCodexModelContextCapabilities,
+  resolveCodexExtendedContext,
+} from './lib/codex-model-context.js';
 import {
   claudeRuntime,
   ensureVendoredExecutables,
@@ -104,15 +118,32 @@ import { renderDesignMd, defaultStyleGuide, STYLE_GUIDE_LOGO_DIR } from './lib/d
 import { initBlobStore, blobGetNamespace, blobGet, blobPut, blobDelete, blobClearNamespace, blobPrune, closeBlobStore } from './lib/ui-blob-store.js';
 import { memoCache, asyncPool } from './lib/memo-cache.js';
 import {
+  buildClaudeMcpEntry,
+  buildCodexMcpKv,
+  buildGeminiMcpEntry,
   mergeClaudeMcpConfig,
   mergeGeminiMcpConfig,
   mergeOpenCodeMcpConfig,
 } from './lib/mcp-client-config.js';
 import {
+  buildAgentDisallowedTools,
+  reconcileProfileServers,
+  selectProfileServerNames,
+} from './lib/mcp-profile-servers.js';
+import {
   CODEX_SIDEPANEL_APPROVAL_POLICY,
   CodexSidepanelPermissionStore,
   sanitizeCodexPermissionResponse,
 } from './lib/codex-sidepanel-permissions.js';
+import {
+  codexOrphanCollisionAction,
+  codexWriterHasActiveWork,
+  CodexWriterRetirementRegistry,
+  isCodexActiveWriterConflict,
+  retireCodexChildProcess,
+  shouldReleaseCodexWriter,
+} from './lib/codex-writer-lifecycle.js';
+import { hydrateCodexThreadHistory } from './lib/codex-thread-history.js';
 import {
   buildCodexConfigEdits,
   buildCodexMcpServerApprovalEdit,
@@ -138,6 +169,7 @@ import {
   listCodexSessionsFromAccounts,
   mergeCodexSessionSummaries,
   pathIsWithin,
+  samePath,
 } from './lib/codex-session-catalog.js';
 import {
   healCodexConfig,
@@ -160,7 +192,7 @@ import {
   countSessionChunks, searchSessionChunks as dbSearchSessionChunks,
   getKvConfig, setKvConfig, EMBEDDING_MODEL,
   searchSessionFts, listSessionCache, getSessionCacheEntry, clearSessionCacheProvider,
-  memoryVectors, getRecentXEngagements,
+  memoryVectors, getRecentXEngagements, getXActionBudget, getXEngagementTier, X_ACTION_TYPES,
 } from './lib/db.js';
 import {
   rebuildClaudeCache, rebuildCodexCache, rebuildOpencodeCache,
@@ -3009,6 +3041,13 @@ function getAugmentedPath() {
     : [
       join(home, '.local', 'bin'),
       '/usr/local/bin',
+      // Homebrew (Apple Silicon + Linuxbrew) and Bun. Absent here, a
+      // brew-installed CLI is invisible whenever SynaBun is launched from
+      // Finder/launchd rather than a shell that already exported them.
+      '/opt/homebrew/bin',
+      '/home/linuxbrew/.linuxbrew/bin',
+      join(home, '.linuxbrew', 'bin'),
+      join(home, '.bun', 'bin'),
       join(home, '.npm-global', 'bin'),
       npmPrefix ? join(npmPrefix, 'bin') : '',
     ];
@@ -3284,9 +3323,173 @@ function buildCodexSandboxPolicy(cwd = PACKAGE_ROOT, sandboxMode) {
 }
 
 const _codexOrphanedProcs = new Map(); // windowId:sessionId → orphan
+const _codexMcpProfileRuntimes = new Map(); // terminalId → live Codex app-server profile bridge
+const _codexWriterRetirements = new CodexWriterRetirementRegistry();
+const _codexProcessRetirements = new WeakMap();
 function _codexOrphanKey(wid, sid) { return wid && sid ? `${wid}:${sid}` : null; }
+function findCodexOrphanForReattach(okey) {
+  if (!okey) return null;
+  const candidates = [..._codexOrphanedProcs.entries()]
+    .filter(([key]) => key === okey || key.startsWith(`${okey}:collision:`))
+    .map(([key, orphan]) => ({
+      key,
+      orphan,
+      canonical: key === okey,
+      live: !!orphan?.child && orphan.child.exitCode == null && orphan.child.signalCode == null,
+      busy: orphan?.isIdle?.() !== true,
+    }));
+  return candidates.find((candidate) => candidate.canonical && candidate.live && candidate.busy)
+    || candidates.find((candidate) => candidate.live && candidate.busy)
+    || candidates.find((candidate) => candidate.canonical && candidate.live)
+    || candidates.find((candidate) => candidate.live)
+    || candidates.find((candidate) => candidate.canonical)
+    || candidates[0]
+    || null;
+}
 const CODEX_ORPHAN_GRACE_MS = 30 * 60 * 1000; // 30 minutes — survive minimize, sleep, and network hiccups
 const CODEX_RESUME_TIMEOUT_MS = 120000;
+const CODEX_WRITER_RETIRE_WAIT_MS = 5000;
+const CODEX_WRITER_SIGKILL_DELAY_MS = 2000;
+const CODEX_LOCAL_RELEASE_DISCOVERY_MS = 1750;
+const CODEX_ORPHAN_REATTACH_DISCOVERY_MS = 500;
+const MCP_PROFILE_REFRESH_DELAY_MS = 250;
+const CODEX_RUNTIME_PROFILE_ROOT = resolve(DATA_HOME, 'data', 'sidepanel-configs', 'codex');
+const _runtimeMcpProfileRefreshes = new McpProfileRefreshCoordinator({
+  delayMs: MCP_PROFILE_REFRESH_DELAY_MS,
+  onError({ runtimeId, runtimeKind, error }) {
+    console.warn(`[mcp/profile] ${runtimeKind} refresh failed terminal=${runtimeId}: ${error?.message || error}`);
+  },
+});
+
+function retireCodexProcess(proc, {
+  codexHome,
+  threadIds = [],
+  reason = 'writer retirement',
+} = {}) {
+  if (!proc || proc.exitCode != null || proc.signalCode != null) {
+    return Promise.resolve({ exited: true, forced: false });
+  }
+
+  const existing = _codexProcessRetirements.get(proc);
+  if (existing) {
+    _codexWriterRetirements.register(codexHome, threadIds, existing);
+    return existing;
+  }
+
+  console.log(`[codex-writer] Retiring pid=${proc.pid || 'unknown'} threads=${threadIds.filter(Boolean).join(',') || 'none'} reason=${reason}`);
+  const retirement = retireCodexChildProcess(proc, {
+    forceAfterMs: CODEX_WRITER_SIGKILL_DELAY_MS,
+  });
+  _codexProcessRetirements.set(proc, retirement);
+  _codexWriterRetirements.register(codexHome, threadIds, retirement);
+  retirement.finally(() => {
+    _codexProcessRetirements.delete(proc);
+    console.log(`[codex-writer] Retirement completed pid=${proc.pid || 'unknown'} reason=${reason}`);
+  });
+  return retirement;
+}
+
+async function waitForCodexRetirements(retirements, timeoutMs = CODEX_WRITER_RETIRE_WAIT_MS) {
+  const pending = (retirements || []).filter(Boolean).map((retirement) => Promise.resolve(retirement));
+  if (!pending.length) return { settled: true, timedOut: false };
+  let timer = null;
+  const outcome = await Promise.race([
+    Promise.allSettled(pending).then(() => 'settled'),
+    new Promise((resolveTimeout) => {
+      timer = setTimeout(() => resolveTimeout('timeout'), Math.max(0, Number(timeoutMs) || 0));
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return { settled: outcome === 'settled', timedOut: outcome === 'timeout' };
+}
+
+async function retireIdleCodexOrphansForThread(codexHome, threadId, reason) {
+  const retirements = [];
+  for (const [key, orphan] of _codexOrphanedProcs) {
+    if (orphan?.codexHome !== codexHome || !orphan.ownsThread?.(threadId) || !orphan.isIdle?.()) continue;
+    clearTimeout(orphan.killTimer);
+    _codexOrphanedProcs.delete(key);
+    retirements.push(Promise.resolve(orphan.retire?.(reason)));
+  }
+  let timedOut = false;
+  if (retirements.length) {
+    const result = await waitForCodexRetirements(retirements);
+    timedOut = result.timedOut;
+    if (timedOut) {
+      console.warn(`[codex-writer] Timed out waiting for ${retirements.length} orphan retirement(s) thread=${threadId}`);
+    }
+  }
+  return { count: retirements.length, timedOut };
+}
+
+async function retireIdleCodexOrphansForWindow(windowId, {
+  exceptKey = null,
+  reason = 'idle orphan superseded by reconnect',
+} = {}) {
+  const targetWindowId = String(windowId || '');
+  if (!targetWindowId) return { count: 0, timedOut: false };
+
+  const retirements = [];
+  let removed = 0;
+  for (const [key, orphan] of _codexOrphanedProcs) {
+    const sameWindow = String(orphan?.windowId || '') === targetWindowId
+      || key.startsWith(`${targetWindowId}:`);
+    if (!sameWindow || key === exceptKey) continue;
+
+    const live = !!orphan?.child
+      && orphan.child.exitCode == null
+      && orphan.child.signalCode == null;
+    if (live && orphan.isIdle?.() !== true) continue;
+
+    clearTimeout(orphan?.killTimer);
+    _codexOrphanedProcs.delete(key);
+    removed += 1;
+    if (live) retirements.push(Promise.resolve(orphan.retire?.(reason)));
+  }
+
+  const result = await waitForCodexRetirements(retirements);
+  return { count: removed, timedOut: result.timedOut };
+}
+
+function getCodexRuntimeProfilePath(runtimeId) {
+  return resolve(CODEX_RUNTIME_PROFILE_ROOT, runtimeId, 'synabun-runtime-profile.json');
+}
+
+function writeCodexRuntimeProfile(runtimeId, profile) {
+  const normalized = normalizeMcpProfileName(profile);
+  if (!isValidMcpProfileValue(normalized)) throw new Error(`Invalid MCP profile: ${normalized}`);
+  const profilePath = getCodexRuntimeProfilePath(runtimeId);
+  if (!existsSync(dirname(profilePath))) mkdirSync(dirname(profilePath), { recursive: true });
+  writeFileSync(profilePath, JSON.stringify({ profile: normalized }, null, 2) + '\n', 'utf8');
+  return profilePath;
+}
+
+function cleanupCodexRuntimeProfile(runtimeId) {
+  const runtimeDir = resolve(CODEX_RUNTIME_PROFILE_ROOT, runtimeId);
+  try { if (existsSync(runtimeDir)) rmSync(runtimeDir, { recursive: true, force: true }); } catch {}
+}
+
+function scheduleRuntimeMcpProfileRefresh(terminalId, profile, runtimeKind, refresh) {
+  return _runtimeMcpProfileRefreshes.schedule(terminalId, profile, runtimeKind, refresh);
+}
+
+function cancelRuntimeMcpProfileRefresh(terminalId) {
+  _runtimeMcpProfileRefreshes.cancel(terminalId);
+}
+
+async function resolveOpenCodeMcpDirectory(entry, sessionIds) {
+  for (const sessionID of sessionIds) {
+    try {
+      const response = await entry.client.session.get({ sessionID });
+      const directory = String(response?.data?.directory || '').trim();
+      if (directory) return directory;
+    } catch {
+      // A parent session may have been deleted while a child still owns the
+      // runtime. Continue through the family before declaring refresh failure.
+    }
+  }
+  throw new Error('Could not resolve the OpenCode session directory for MCP reconnect');
+}
 
 // ── Multi-account Codex (per-tab CODEX_HOME) ────────────────────────────────
 // Each ChatGPT account gets its own CODEX_HOME directory holding its own
@@ -3295,6 +3498,18 @@ const CODEX_RESUME_TIMEOUT_MS = 120000;
 // and custom prompts stay shared. The "default" account IS ~/.codex itself.
 const CODEX_DEFAULT_HOME = resolve(getHomePath(), '.codex');
 const CODEX_ACCOUNTS_ROOT = resolve(getHomePath(), '.codex-accounts');
+
+function readCodexRuntimeModelCatalog(codexHome = CODEX_DEFAULT_HOME) {
+  try {
+    const catalogPath = resolve(codexHome, 'models_cache.json');
+    if (!existsSync(catalogPath)) return { models: [] };
+    const parsed = JSON.parse(readFileSync(catalogPath, 'utf-8'));
+    return parsed && typeof parsed === 'object' ? parsed : { models: [] };
+  } catch (err) {
+    console.warn('[codex-models] Could not read runtime context capabilities:', err.message);
+    return { models: [] };
+  }
+}
 const CODEX_ACCOUNTS_PATH = resolve(DATA_HOME, 'data', 'codex-accounts.json');
 
 function loadCodexAccounts() {
@@ -3437,6 +3652,8 @@ CRITICAL — When you need clarification during planning:
   let activeThreadId = null;
   let displayedThreadId = null;
   let activeTurnId = null;
+  let activeThreadRuntimeFingerprint = null;
+  let codexContextModels = [];
   const subscribedThreadIds = new Set();
   const threadOwnerRoots = new Map();
   let lastTurnLocalImages = []; // persisted image paths for current turn (enriches userMessage notifications)
@@ -3444,7 +3661,9 @@ CRITICAL — When you need clarification during planning:
   let wsWindowId = null;
   let wsSessionId = null;
   let wsConnectionEpoch = null;
-  let activeMcpProfile = normalizeMcpProfileName(readActiveMcpProfile());
+  let writerLifecycleState = { releaseRequested: false, operationsInFlight: 0 };
+  let childRetirementPromise = null;
+  let codexMcpProfileState = { value: normalizeMcpProfileName(readActiveMcpProfile()) };
   let _codexOrphanBuffer = null;
   const pending = new Map(); // id -> { resolve, reject, timer }
   const pendingServerRequests = new Map();
@@ -3459,6 +3678,56 @@ CRITICAL — When you need clarification during planning:
   let activeAccountId = 'default';
   let activeCodexHome = CODEX_DEFAULT_HOME;
   let _codexLoginWatcher = null;
+  let codexMcpRuntimeId = `codex-sp-${randomUUID()}`;
+  let codexMcpRuntimeBinding = null;
+
+  function registerCodexMcpProfileRuntime() {
+    const profilePath = writeCodexRuntimeProfile(codexMcpRuntimeId, codexMcpProfileState.value);
+    const binding = {
+      runtimeId: codexMcpRuntimeId,
+      profilePath,
+      catalogMode: 'deferred',
+      profileRefreshFailed: false,
+      get profile() { return codexMcpProfileState.value; },
+      get sessionId() { return wsSessionId; },
+      setProfile(profile) {
+        const normalized = normalizeMcpProfileName(profile);
+        writeCodexRuntimeProfile(codexMcpRuntimeId, normalized);
+        codexMcpProfileState.value = normalized;
+        binding.profileRefreshFailed = false;
+        return normalized;
+      },
+      confirmAgentProfile(profile, correlationId, hostRefresh = 'not-needed') {
+        if (_codexMcpProfileRuntimes.get(codexMcpRuntimeId) !== binding) return false;
+        if (codexMcpProfileState.value !== profile) return false;
+        binding.profileRefreshFailed = false;
+        sendToClient({
+          type: 'mcp_profile_changed',
+          profile,
+          defaultProfile: readActiveMcpProfile(),
+          presets: buildMcpProfilePresets(),
+          source: 'agent',
+          hostRefresh,
+          refreshCorrelationId: correlationId,
+          restarted: false,
+        });
+        console.log(`[mcp/profile] Codex deferred profile updated terminal=${codexMcpRuntimeId} profile=${profile} correlation=${correlationId}`);
+        return true;
+      },
+    };
+    codexMcpRuntimeBinding = binding;
+    _codexMcpProfileRuntimes.set(codexMcpRuntimeId, binding);
+    return profilePath;
+  }
+
+  function unregisterCodexMcpProfileRuntime({ cleanup = false } = {}) {
+    if (_codexMcpProfileRuntimes.get(codexMcpRuntimeId) === codexMcpRuntimeBinding) {
+      _codexMcpProfileRuntimes.delete(codexMcpRuntimeId);
+    }
+    cancelRuntimeMcpProfileRefresh(codexMcpRuntimeId);
+    codexMcpRuntimeBinding = null;
+    if (cleanup) cleanupCodexRuntimeProfile(codexMcpRuntimeId);
+  }
 
   function requestCorrelation(requestId, requestInfo = {}, overrides = {}) {
     const params = requestInfo.params || {};
@@ -3501,6 +3770,17 @@ CRITICAL — When you need clarification during planning:
     activeCodexHome = getCodexAccountHome(activeAccountId);
   }
 
+  async function withCodexWriterOperation(operation, action) {
+    const lifecycle = writerLifecycleState;
+    lifecycle.operationsInFlight += 1;
+    try {
+      return await action();
+    } finally {
+      lifecycle.operationsInFlight = Math.max(0, lifecycle.operationsInFlight - 1);
+      console.log(`[codex-writer] Operation settled operation=${operation} session=${wsSessionId || 'unknown'} remaining=${lifecycle.operationsInFlight}`);
+    }
+  }
+
   // Load permitted MCP tools from ~/.claude/settings.json (shared source of truth)
   const _codexPermittedTools = (() => {
     try {
@@ -3511,7 +3791,7 @@ CRITICAL — When you need clarification during planning:
 
   function sendToClient(data) {
     const profiled = data && typeof data === 'object' && data.type === 'ready' && !data.mcpProfile
-      ? { ...data, mcpProfile: activeMcpProfile }
+      ? { ...data, mcpProfile: codexMcpProfileState.value }
       : data;
     const packet = profiled && typeof profiled === 'object'
       ? {
@@ -3585,11 +3865,54 @@ CRITICAL — When you need clarification during planning:
     if (!child) return false;
     const proc = child;
     console.log(`[codex-skin] Force-killing Codex app-server process pid ${proc.pid || 'unknown'} session ${wsSessionId || 'unknown'} thread ${activeThreadId || 'unknown'} (${reason})`);
-    try { proc.kill('SIGTERM'); } catch {}
-    setTimeout(() => {
-      try { if (!proc.killed && proc.exitCode === null) proc.kill('SIGKILL'); } catch {}
-    }, 2000);
+    void retireCodexProcess(proc, {
+      codexHome: activeCodexHome,
+      threadIds: ownedWriterThreadIds(),
+      reason,
+    });
     return true;
+  }
+
+  function ownedWriterThreadIds() {
+    return [...new Set([
+      activeThreadId,
+      ...subscribedThreadIds,
+      ...threadOwnerRoots.keys(),
+      ...threadOwnerRoots.values(),
+    ].filter(Boolean).map(String))];
+  }
+
+  async function unsubscribeAllThreadsBeforeRetirement() {
+    if (!child || !initialized || !subscribedThreadIds.size) return;
+    const roots = [...new Set([...subscribedThreadIds].map((threadId) => (
+      threadOwnerRoots.get(threadId) || threadId
+    )))];
+    const unsubscribe = Promise.allSettled(roots.map((threadId) => unsubscribeThreadFamily(threadId)));
+    let timer = null;
+    await Promise.race([
+      unsubscribe,
+      new Promise((resolveTimeout) => {
+        timer = setTimeout(resolveTimeout, 750);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+
+  function retireCurrentCodexChild(reason, { unsubscribe = true } = {}) {
+    const proc = child;
+    if (!proc) return Promise.resolve({ exited: true, forced: false });
+    if (childRetirementPromise) return childRetirementPromise;
+    const codexHome = activeCodexHome;
+    const threadIds = ownedWriterThreadIds();
+    shuttingDown = true;
+    unregisterCodexMcpProfileRuntime({ cleanup: true });
+    childRetirementPromise = (async () => {
+      if (unsubscribe) await unsubscribeAllThreadsBeforeRetirement();
+      return retireCodexProcess(proc, { codexHome, threadIds, reason });
+    })();
+    _codexWriterRetirements.register(codexHome, threadIds, childRetirementPromise);
+    return childRetirementPromise;
   }
 
   function rpcError(message, code = -32000, data = null) {
@@ -3854,31 +4177,224 @@ CRITICAL — When you need clarification during planning:
     };
   }
 
-  function getDefaultThreadParams(cwd = PACKAGE_ROOT) {
+  async function listCodexModelsWithContext(includeHidden = false) {
+    const result = await request('model/list', { includeHidden: !!includeHidden }, 10000);
+    const liveModels = Array.isArray(result?.models)
+      ? result.models
+      : (Array.isArray(result?.data) ? result.data : []);
+    const enriched = mergeCodexModelContextCapabilities(
+      liveModels,
+      readCodexRuntimeModelCatalog(activeCodexHome),
+    );
+    if (!includeHidden) codexContextModels = enriched;
+    return enriched;
+  }
+
+  async function resolveCodexThreadRuntimeOptions(opts = {}) {
+    const requestedModel = typeof opts.model === 'string' ? opts.model.trim() : '';
+    const contextMode = opts.contextMode === 'extended' ? 'extended' : 'default';
+    if (contextMode !== 'extended') {
+      const effectiveModel = requestedModel || getCachedConfigValue('model') || null;
+      return {
+        contextMode: 'default',
+        model: requestedModel || null,
+        effectiveModel,
+        config: null,
+        requestedContextWindow: null,
+        expectedEffectiveContextWindow: null,
+      };
+    }
+
+    const models = codexContextModels.length
+      ? codexContextModels
+      : await listCodexModelsWithContext(false);
+    const resolved = resolveCodexExtendedContext({
+      models,
+      selectedModel: requestedModel,
+      contextMode,
+    });
+    if (!resolved.applied) {
+      const reason = resolved.reason === 'model-unavailable'
+        ? 'the selected model is not available for this Codex account'
+        : 'the selected model does not advertise a larger runtime context window';
+      throw new Error(`Extended context is unavailable: ${reason}. Choose another live model or switch Context back to Default.`);
+    }
+    return {
+      contextMode: 'extended',
+      model: resolved.model,
+      effectiveModel: resolved.model,
+      config: resolved.config,
+      requestedContextWindow: resolved.requestedContextWindow,
+      expectedEffectiveContextWindow: resolved.expectedEffectiveContextWindow,
+    };
+  }
+
+  function codexThreadRuntimeFingerprint(runtime = {}) {
+    return JSON.stringify({
+      model: runtime.effectiveModel || runtime.model || '',
+      contextMode: runtime.contextMode === 'extended' ? 'extended' : 'default',
+      modelContextWindow: Number(runtime.config?.model_context_window) || null,
+    });
+  }
+
+  function rememberActiveThreadRuntime(runtime) {
+    activeThreadRuntimeFingerprint = codexThreadRuntimeFingerprint(runtime);
+  }
+
+  function getDefaultThreadParams(cwd = PACKAGE_ROOT, runtime = {}) {
     const params = {
       cwd,
       approvalPolicy: getCodexSidepanelApprovalPolicy(),
       sandbox: getCachedConfigValue('sandbox_mode', 'workspace-write'),
       personality: getCachedConfigValue('personality', 'pragmatic'),
     };
-    if (getCachedConfigValue('model')) params.model = getCachedConfigValue('model');
+    if (runtime.model) params.model = runtime.model;
+    else if (getCachedConfigValue('model')) params.model = getCachedConfigValue('model');
+    if (runtime.config) params.config = runtime.config;
     return params;
   }
 
-  function getDefaultResumeParams(threadId, cwd = PACKAGE_ROOT) {
-    return {
+  function getDefaultResumeParams(threadId, cwd = PACKAGE_ROOT, runtime = {}) {
+    const params = {
       threadId,
       cwd,
+      excludeTurns: true,
       approvalPolicy: getCodexSidepanelApprovalPolicy(),
       sandbox: getCachedConfigValue('sandbox_mode', 'workspace-write'),
       personality: getCachedConfigValue('personality', 'pragmatic'),
     };
+    if (runtime.model) params.model = runtime.model;
+    else if (getCachedConfigValue('model')) params.model = getCachedConfigValue('model');
+    if (runtime.config) params.config = runtime.config;
+    return params;
+  }
+
+  function codexThreadActiveElsewhereError(threadId, cause) {
+    const error = new Error(
+      `Codex thread ${threadId} is active in another Codex tab or client. `
+      + 'Return to that session or stop its active turn, then try again; restarting SynaBun is not required.',
+    );
+    error.code = 'CODEX_THREAD_ACTIVE_ELSEWHERE';
+    error.cause = cause;
+    return error;
+  }
+
+  async function recoverLocalCodexWriter(threadId, codexHome) {
+    const deadline = Date.now() + CODEX_LOCAL_RELEASE_DISCOVERY_MS;
+    do {
+      if (_codexWriterRetirements.settledRecently(codexHome, threadId, {
+        withinMs: CODEX_LOCAL_RELEASE_DISCOVERY_MS + CODEX_WRITER_RETIRE_WAIT_MS,
+      })) {
+        return {
+          observed: true,
+          completed: true,
+          retired: 0,
+          waited: { waited: false, timedOut: false },
+        };
+      }
+      const retired = await retireIdleCodexOrphansForThread(
+        codexHome,
+        threadId,
+        'active-writer conflict retry',
+      );
+      const waited = await _codexWriterRetirements.wait(codexHome, threadId, {
+        timeoutMs: CODEX_WRITER_RETIRE_WAIT_MS,
+      });
+      if (retired.count || waited.waited) {
+        return {
+          observed: true,
+          completed: !retired.timedOut && !waited.timedOut,
+          retired: retired.count,
+          waited,
+        };
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, Math.min(50, remaining)));
+    } while (Date.now() < deadline);
+    return {
+      observed: false,
+      completed: false,
+      retired: 0,
+      waited: { waited: false, timedOut: false },
+    };
+  }
+
+  function requestCodexThreadResumeOnce(threadId, cwd = PACKAGE_ROOT, runtime = {}) {
+    return request(
+      'thread/resume',
+      getDefaultResumeParams(threadId, cwd, runtime),
+      CODEX_RESUME_TIMEOUT_MS,
+    );
+  }
+
+  async function requestCodexThreadResume(
+    threadId,
+    cwd = PACKAGE_ROOT,
+    runtime = {},
+    { recoveryAttempted = false } = {},
+  ) {
+    const targetThreadId = String(threadId || '');
+    if (!targetThreadId) throw new Error('No thread provided');
+    const codexHome = activeCodexHome;
+
+    const initialWait = await _codexWriterRetirements.wait(codexHome, targetThreadId, {
+      timeoutMs: CODEX_WRITER_RETIRE_WAIT_MS,
+    });
+    if (initialWait.waited) {
+      console.log(`[codex-writer] Resume waited for retirement account=${activeAccountId} thread=${targetThreadId} timedOut=${initialWait.timedOut}`);
+    }
+    const proactiveRetirement = await retireIdleCodexOrphansForThread(
+      codexHome,
+      targetThreadId,
+      'idle orphan superseded by thread resume',
+    );
+    if (proactiveRetirement.count) {
+      console.log(`[codex-writer] Reclaimed ${proactiveRetirement.count} idle orphan(s) account=${activeAccountId} thread=${targetThreadId}`);
+    }
+
+    try {
+      return await requestCodexThreadResumeOnce(targetThreadId, cwd, runtime);
+    } catch (error) {
+      if (!isCodexActiveWriterConflict(error)) throw error;
+      if (recoveryAttempted) throw codexThreadActiveElsewhereError(targetThreadId, error);
+
+      const recovery = await recoverLocalCodexWriter(targetThreadId, codexHome);
+      if (!recovery.observed) {
+        const canRecycle = !activeTurnId
+          && pendingServerRequests.size === 0
+          && pending.size === 0
+          && writerLifecycleState.operationsInFlight <= 1;
+        if (!canRecycle) {
+          console.warn(`[codex-writer] Active writer conflict cannot recycle a busy requester account=${activeAccountId} thread=${targetThreadId}`);
+          throw codexThreadActiveElsewhereError(targetThreadId, error);
+        }
+        console.warn(`[codex-writer] Active writer was not a registered orphan; recycling the idle requester once account=${activeAccountId} thread=${targetThreadId}`);
+        return restartCodexRuntimeForThread(targetThreadId, cwd, runtime, {
+          reason: 'active-writer conflict during thread/resume',
+        });
+      }
+      if (!recovery.completed) {
+        console.warn(`[codex-writer] Local writer did not exit before the retry deadline account=${activeAccountId} thread=${targetThreadId}`);
+        throw codexThreadActiveElsewhereError(targetThreadId, error);
+      }
+
+      console.log(`[codex-writer] Retrying resume after local writer retirement account=${activeAccountId} thread=${targetThreadId}`);
+      try {
+        return await requestCodexThreadResumeOnce(targetThreadId, cwd, runtime);
+      } catch (retryError) {
+        if (isCodexActiveWriterConflict(retryError)) {
+          throw codexThreadActiveElsewhereError(targetThreadId, retryError);
+        }
+        throw retryError;
+      }
+    }
   }
 
   function getDefaultReadParams(threadId) {
     return {
       threadId,
-      includeTurns: true,
+      excludeTurns: true,
     };
   }
 
@@ -3905,7 +4421,13 @@ CRITICAL — When you need clarification during planning:
   async function readThreadHistory(threadId) {
     if (!threadId) return null;
     const readResult = await request('thread/read', getDefaultReadParams(threadId), 15000);
-    return extractCodexThread(readResult);
+    const thread = extractCodexThread(readResult);
+    if (!thread) return null;
+    const history = await hydrateCodexThreadHistory(request, thread.id || threadId);
+    if (history.source === 'turns-full-fallback') {
+      console.log(`[codex-history] thread/items/list unavailable; restored full turns thread=${thread.id || threadId}`);
+    }
+    return { ...thread, turns: history.turns };
   }
 
   function tryParseJson(value) {
@@ -4232,9 +4754,16 @@ CRITICAL — When you need clarification during planning:
   function startChild() {
     if (child) return child;
     let codexBin = getCodexBin();
+    const runtimeProfilePath = writeCodexRuntimeProfile(codexMcpRuntimeId, codexMcpProfileState.value);
     const args = [
       '-c',
-      `mcp_servers.SynaBun.env.SYNABUN_PROFILE=${JSON.stringify(activeMcpProfile)}`,
+      `mcp_servers.SynaBun.env.SYNABUN_PROFILE=${JSON.stringify(codexMcpProfileState.value)}`,
+      '-c',
+      `mcp_servers.SynaBun.env.SYNABUN_TERMINAL_SESSION=${JSON.stringify(codexMcpRuntimeId)}`,
+      '-c',
+      `mcp_servers.SynaBun.env.SYNABUN_RUNTIME_PROFILE_PATH=${JSON.stringify(runtimeProfilePath)}`,
+      '-c',
+      'mcp_servers.SynaBun.env.SYNABUN_TOOL_CATALOG_MODE="deferred"',
       'app-server',
     ];
     if (/\.js$/i.test(codexBin)) {
@@ -4247,7 +4776,10 @@ CRITICAL — When you need clarification during planning:
       ...process.env,
       NO_COLOR: '1',
       CODEX_HOME: activeCodexHome,
-      SYNABUN_PROFILE: activeMcpProfile,
+      SYNABUN_PROFILE: codexMcpProfileState.value,
+      SYNABUN_TERMINAL_SESSION: codexMcpRuntimeId,
+      SYNABUN_RUNTIME_PROFILE_PATH: runtimeProfilePath,
+      SYNABUN_TOOL_CATALOG_MODE: 'deferred',
     };
     delete env.FORCE_COLOR;
     delete env.CLICOLOR_FORCE;
@@ -4258,7 +4790,10 @@ CRITICAL — When you need clarification during planning:
       shell: useShell,
     });
     child = proc;
-    console.log(`[codex-skin] Spawned app-server pid ${proc.pid || '?'} account=${activeAccountId} profile=${activeMcpProfile} CODEX_HOME=${activeCodexHome}`);
+    childRetirementPromise = null;
+    writerLifecycleState.releaseRequested = false;
+    registerCodexMcpProfileRuntime();
+    console.log(`[codex-skin] Spawned app-server pid ${proc.pid || '?'} account=${activeAccountId} profile=${codexMcpProfileState.value} runtime=${codexMcpRuntimeId} CODEX_HOME=${activeCodexHome}`);
     proc.stdout.setEncoding('utf-8');
     proc.stdout.on('data', (chunk) => {
       if (child !== proc) return; // stale process from a previous account
@@ -4397,6 +4932,7 @@ CRITICAL — When you need clarification during planning:
               activeThreadId = null;
               activeTurnId = null;
               activeTurnAutoAccept = false;
+              activeThreadRuntimeFingerprint = null;
             }
             if (closedThreadId === String(displayedThreadId || '')) displayedThreadId = null;
           }
@@ -4449,12 +4985,14 @@ CRITICAL — When you need clarification during planning:
     });
     proc.on('close', (code) => {
       if (child !== proc) return; // a newer process replaced this one (e.g. account switch)
+      unregisterCodexMcpProfileRuntime();
       const wasShuttingDown = shuttingDown;
       child = null;
       initialized = false;
       bootPromise = null;
       activeTurnId = null;
       activeTurnAutoAccept = false;
+      activeThreadRuntimeFingerprint = null;
       if (childStdoutBuf.trim()) {
         console.log('[codex-skin] trailing stdout:', childStdoutBuf.trim().slice(0, 200));
       }
@@ -4512,10 +5050,67 @@ CRITICAL — When you need clarification during planning:
     catch { return {}; }
   }
 
+  async function restartCodexRuntimeForThread(threadId, cwd, runtime, {
+    reason = 'Codex thread context changed',
+  } = {}) {
+    const targetThreadId = String(threadId || '');
+    if (!targetThreadId) throw new Error('No thread provided');
+    if (activeTurnId || pendingServerRequests.size || pending.size || writerLifecycleState.operationsInFlight > 1) {
+      throw new Error('Wait for the active Codex turn or request before restarting its runtime.');
+    }
+
+    const old = child;
+    const codexHome = activeCodexHome;
+    const ownedThreadIds = ownedWriterThreadIds();
+    const greetingPending = pendingGreetingThreads.has(targetThreadId);
+    initialized = false;
+    bootPromise = null;
+    activeThreadId = null;
+    displayedThreadId = targetThreadId;
+    activeTurnId = null;
+    activeThreadRuntimeFingerprint = null;
+    subscribedThreadIds.clear();
+    threadOwnerRoots.clear();
+    activeTurnAutoAccept = false;
+    pendingGreetingThreads.clear();
+    for (const [, entry] of pending) {
+      try { clearTimeout(entry.timer); entry.reject(new Error(reason)); } catch {}
+    }
+    pending.clear();
+    childStdoutBuf = '';
+    unregisterCodexMcpProfileRuntime();
+    child = null;
+    if (old) {
+      await retireCodexProcess(old, {
+        codexHome,
+        threadIds: ownedThreadIds,
+        reason,
+      });
+    }
+
+    try {
+      await ensureInitialized();
+      const resumed = await requestCodexThreadResume(targetThreadId, cwd, runtime, {
+        recoveryAttempted: true,
+      });
+      await activatePrimaryThread(resumed.thread?.id || targetThreadId);
+      rememberActiveThreadRuntime(runtime);
+      if (greetingPending) pendingGreetingThreads.add(activeThreadId || targetThreadId);
+      return resumed;
+    } catch (err) {
+      // A first-turn restart can fail after the old process has already exited.
+      // Keep the one-time SynaBun greeting eligible for the next activation.
+      if (greetingPending) pendingGreetingThreads.add(targetThreadId);
+      throw err;
+    }
+  }
+
   // Tear down the current app-server and reboot it under a new CODEX_HOME.
   // The close handler's `child !== proc` guard prevents the dying process from
   // clobbering the freshly-spawned one. Callers must ensure no turn is active.
   async function switchCodexAccount(id) {
+    const oldHome = activeCodexHome;
+    const oldThreadIds = ownedWriterThreadIds();
     setActiveCodexAccount(id);
     const old = child;
     initialized = false;
@@ -4523,6 +5118,8 @@ CRITICAL — When you need clarification during planning:
     activeThreadId = null;
     displayedThreadId = null;
     activeTurnId = null;
+    activeThreadRuntimeFingerprint = null;
+    codexContextModels = [];
     subscribedThreadIds.clear();
     threadOwnerRoots.clear();
     activeTurnAutoAccept = false;
@@ -4533,32 +5130,44 @@ CRITICAL — When you need clarification during planning:
     pending.clear();
     pendingServerRequests.clear();
     childStdoutBuf = ''; // drop any partial line from the outgoing process
+    unregisterCodexMcpProfileRuntime();
     child = null; // detach so old.on('close') sees child !== old and bails
     if (old) {
-      try { old.kill('SIGTERM'); } catch {}
-      setTimeout(() => { try { if (!old.killed && old.exitCode === null) old.kill('SIGKILL'); } catch {} }, 2000);
+      retireCodexProcess(old, {
+        codexHome: oldHome,
+        threadIds: oldThreadIds,
+        reason: 'Codex account switched',
+      });
     }
     await ensureInitialized();
   }
 
-  async function switchCodexMcpProfile(profile, { threadId = null, cwd = PACKAGE_ROOT } = {}) {
+  async function switchCodexMcpProfile(profile, {
+    threadId = null,
+    cwd = PACKAGE_ROOT,
+    model = null,
+    contextMode = 'default',
+  } = {}) {
     if (activeTurnId || pendingServerRequests.size) {
       throw new Error('Wait for the active Codex turn to finish before changing its MCP profile.');
     }
     const normalized = normalizeMcpProfileName(profile);
     if (!buildMcpProfilePresets()[normalized]) throw new Error(`Unknown MCP profile: ${normalized}`);
-    if (normalized === activeMcpProfile && child && initialized) {
+    if (normalized === codexMcpProfileState.value && child && initialized && !codexMcpRuntimeBinding?.profileRefreshFailed) {
       return { profile: normalized, restarted: false, threadId: threadId || activeThreadId || null };
     }
 
     const resumeId = threadId || activeThreadId || null;
     const old = child;
-    activeMcpProfile = normalized;
+    const oldHome = activeCodexHome;
+    const oldThreadIds = ownedWriterThreadIds();
+    codexMcpProfileState.value = normalized;
     initialized = false;
     bootPromise = null;
     activeThreadId = null;
     displayedThreadId = null;
     activeTurnId = null;
+    activeThreadRuntimeFingerprint = null;
     subscribedThreadIds.clear();
     threadOwnerRoots.clear();
     activeTurnAutoAccept = false;
@@ -4569,14 +5178,18 @@ CRITICAL — When you need clarification during planning:
     pending.clear();
     pendingServerRequests.clear();
     childStdoutBuf = '';
+    unregisterCodexMcpProfileRuntime();
     child = null;
     if (old) {
-      try { old.kill('SIGTERM'); } catch {}
-      setTimeout(() => { try { if (!old.killed && old.exitCode === null) old.kill('SIGKILL'); } catch {} }, 2000);
+      retireCodexProcess(old, {
+        codexHome: oldHome,
+        threadIds: oldThreadIds,
+        reason: 'Codex MCP profile switched',
+      });
     }
 
     await ensureInitialized();
-    if (resumeId) await resumeThread(resumeId, cwd);
+    if (resumeId) await resumeThread(resumeId, cwd, { model, contextMode });
     else sendToClient({ type: 'ready', threadId: null });
     return { profile: normalized, restarted: true, threadId: resumeId };
   }
@@ -4657,9 +5270,11 @@ CRITICAL — When you need clarification during planning:
   async function startFreshThread(cwd = PACKAGE_ROOT, opts = {}) {
     await ensureInitialized();
     if (activeTurnId) throw new Error('Codex is already processing a turn');
+    const runtime = opts.runtimeOptions || await resolveCodexThreadRuntimeOptions(opts);
     displayedThreadId = null;
-    const started = await request('thread/start', getDefaultThreadParams(cwd));
+    const started = await request('thread/start', getDefaultThreadParams(cwd, runtime));
     await activatePrimaryThread(started.thread?.id || null);
+    rememberActiveThreadRuntime(runtime);
     if (activeThreadId) pendingGreetingThreads.add(activeThreadId);
     activeTurnId = null;
     const thread = sanitizeCodexThreadSummary(started.thread || null);
@@ -4669,6 +5284,9 @@ CRITICAL — When you need clarification during planning:
         requestId: opts.requestId || null,
         threadId: thread?.id || activeThreadId || null,
         thread,
+        contextMode: runtime.contextMode,
+        requestedContextWindow: runtime.requestedContextWindow,
+        expectedEffectiveContextWindow: runtime.expectedEffectiveContextWindow,
       });
     }
     return thread;
@@ -4749,10 +5367,11 @@ CRITICAL — When you need clarification during planning:
     };
   }
 
-  async function resumeThread(threadId, cwd = PACKAGE_ROOT) {
+  async function resumeThread(threadId, cwd = PACKAGE_ROOT, opts = {}) {
     await ensureInitialized();
     if (!threadId) throw new Error('No thread provided');
     if (activeTurnId) throw new Error('Codex is already processing a turn');
+    const runtime = opts.runtimeOptions || await resolveCodexThreadRuntimeOptions(opts);
     displayedThreadId = String(threadId);
     const readThread = await readThreadHistory(threadId).catch(() => null);
     const fallbackItems = loadCodexThreadHistoryFallback(threadId);
@@ -4768,11 +5387,24 @@ CRITICAL — When you need clarification during planning:
     }
 
     let resumed;
+    let runtimeActivated = false;
     try {
-      resumed = await request('thread/resume', getDefaultResumeParams(threadId, cwd), CODEX_RESUME_TIMEOUT_MS);
+      const sameLoadedThread = String(threadId) === String(activeThreadId || '');
+      if (sameLoadedThread) {
+        if (activeThreadRuntimeFingerprint !== codexThreadRuntimeFingerprint(runtime)) {
+          resumed = await restartCodexRuntimeForThread(threadId, cwd, runtime);
+          runtimeActivated = true;
+        } else {
+          resumed = { thread: readThread || { id: threadId } };
+        }
+      } else {
+        resumed = await requestCodexThreadResume(threadId, cwd, runtime);
+        runtimeActivated = true;
+      }
     } catch (err) {
       if (!previewThread) throw err;
       activeTurnId = null;
+      activeThreadRuntimeFingerprint = null;
       sendToClient({ type: 'ready', threadId });
       sendToClient({
         type: 'error',
@@ -4781,6 +5413,7 @@ CRITICAL — When you need clarification during planning:
       return previewThread;
     }
     await activatePrimaryThread(resumed.thread?.id || threadId);
+    if (runtimeActivated) rememberActiveThreadRuntime(runtime);
     activeTurnId = null;
     sendToClient({
       type: 'history',
@@ -4802,17 +5435,28 @@ CRITICAL — When you need clarification during planning:
     return nextName;
   }
 
-  async function compactThread(threadId = null, cwd = PACKAGE_ROOT) {
+  async function compactThread(threadId = null, cwd = PACKAGE_ROOT, opts = {}) {
     await ensureInitialized();
     const targetThreadId = threadId || activeThreadId;
     if (!targetThreadId) throw new Error('No thread provided');
     if (activeTurnId) throw new Error('Codex is already processing a turn');
-    // Always resume before compacting. The Codex panel can hydrate a thread into
-    // the UI via thread/read without the app-server treating it as the live
-    // active thread, which leads to "Thread not found" on compact.
-    const resumed = await request('thread/resume', getDefaultResumeParams(targetThreadId, cwd), CODEX_RESUME_TIMEOUT_MS);
-    const liveThreadId = resumed.thread?.id || targetThreadId;
-    await activatePrimaryThread(liveThreadId);
+    // Read-only history needs a resume before compaction. A loaded thread is
+    // compacted directly because Codex ignores resume overrides for loaded
+    // threads; changed runtime options require a clean process restart first.
+    const runtime = opts.runtimeOptions || await resolveCodexThreadRuntimeOptions(opts);
+    const desiredFingerprint = codexThreadRuntimeFingerprint(runtime);
+    let liveThreadId = targetThreadId;
+    if (targetThreadId === activeThreadId) {
+      if (activeThreadRuntimeFingerprint !== desiredFingerprint) {
+        const resumed = await restartCodexRuntimeForThread(targetThreadId, cwd, runtime);
+        liveThreadId = resumed.thread?.id || activeThreadId || targetThreadId;
+      }
+    } else {
+      const resumed = await requestCodexThreadResume(targetThreadId, cwd, runtime);
+      liveThreadId = resumed.thread?.id || targetThreadId;
+      await activatePrimaryThread(liveThreadId);
+      rememberActiveThreadRuntime(runtime);
+    }
     await request('thread/compact/start', { threadId: liveThreadId || targetThreadId }, 10000);
   }
 
@@ -4846,25 +5490,68 @@ CRITICAL — When you need clarification during planning:
     return savedPaths;
   }
 
+  async function requestCodexTurnStart(turnParams, cwd, runtime) {
+    const targetThreadId = String(turnParams?.threadId || '');
+    try {
+      return await request('turn/start', turnParams, 15000);
+    } catch (error) {
+      if (!isCodexActiveWriterConflict(error) || !targetThreadId) throw error;
+
+      const recovery = await recoverLocalCodexWriter(targetThreadId, activeCodexHome);
+      let retryThreadId = targetThreadId;
+      if (recovery.observed) {
+        if (!recovery.completed) {
+          throw codexThreadActiveElsewhereError(targetThreadId, error);
+        }
+        console.log(`[codex-writer] Retrying turn/start after local writer retirement account=${activeAccountId} thread=${targetThreadId}`);
+      } else {
+        const retryAutoAccept = activeTurnAutoAccept;
+        console.warn(`[codex-writer] Recycling idle requester after turn/start active-writer conflict account=${activeAccountId} thread=${targetThreadId}`);
+        const resumed = await restartCodexRuntimeForThread(targetThreadId, cwd, runtime, {
+          reason: 'active-writer conflict during turn/start',
+        });
+        activeTurnAutoAccept = retryAutoAccept;
+        retryThreadId = resumed.thread?.id || activeThreadId || targetThreadId;
+      }
+      try {
+        return await request('turn/start', { ...turnParams, threadId: retryThreadId }, 15000);
+      } catch (retryError) {
+        if (isCodexActiveWriterConflict(retryError)) {
+          throw codexThreadActiveElsewhereError(retryThreadId, retryError);
+        }
+        throw retryError;
+      }
+    }
+  }
+
   async function startTurn(prompt, opts = {}) {
     const cwd = opts.cwd || PACKAGE_ROOT;
     await ensureInitialized();
     if (activeTurnId) {
       throw new Error('Codex is already processing a turn');
     }
-    activeTurnAutoAccept = !!opts.autoAccept;
+    const runtime = await resolveCodexThreadRuntimeOptions(opts);
+    const desiredRuntimeFingerprint = codexThreadRuntimeFingerprint(runtime);
     let threadId = opts.fresh ? null : (opts.threadId || activeThreadId);
     let startedFreshThread = false;
     if (threadId && threadId !== activeThreadId) {
-      const resumed = await request('thread/resume', getDefaultResumeParams(threadId, cwd), CODEX_RESUME_TIMEOUT_MS);
+      const resumed = await requestCodexThreadResume(threadId, cwd, runtime);
       await activatePrimaryThread(resumed.thread?.id || threadId);
+      rememberActiveThreadRuntime(runtime);
       threadId = activeThreadId;
+    } else if (threadId && activeThreadRuntimeFingerprint !== desiredRuntimeFingerprint) {
+      const resumed = await restartCodexRuntimeForThread(threadId, cwd, runtime);
+      threadId = resumed.thread?.id || activeThreadId || threadId;
     }
     if (!threadId) {
-      const startedThread = await startFreshThread(cwd, { requestId: opts.requestId || null });
+      const startedThread = await startFreshThread(cwd, {
+        requestId: opts.requestId || null,
+        runtimeOptions: runtime,
+      });
       threadId = startedThread?.id || null;
       startedFreshThread = true;
     }
+    activeTurnAutoAccept = !!opts.autoAccept;
     const originalPrompt = prompt;
     prompt = expandSynabunCodexSlashPrompt(
       prompt,
@@ -4893,7 +5580,7 @@ CRITICAL — When you need clarification during planning:
       turnParams.local_images = opts.localImages;
     }
     if (getCachedConfigValue('web_search')) turnParams.search = true;
-    if (opts.model) turnParams.model = opts.model;
+    if (runtime.model) turnParams.model = runtime.model;
     else if (getCachedConfigValue('model')) turnParams.model = getCachedConfigValue('model');
     if (opts.effort) turnParams.effort = opts.effort;
     else if (getCachedConfigValue('model_reasoning_effort')) turnParams.effort = getCachedConfigValue('model_reasoning_effort');
@@ -4906,7 +5593,7 @@ CRITICAL — When you need clarification during planning:
     });
     if (collaborationMode) turnParams.collaborationMode = collaborationMode;
     try {
-      const result = await request('turn/start', turnParams, 15000);
+      const result = await requestCodexTurnStart(turnParams, cwd, runtime);
       activeTurnId = result.turn?.id || activeTurnId;
       sendToClient({ type: 'turn', turn: result.turn });
     } catch (err) {
@@ -4915,7 +5602,12 @@ CRITICAL — When you need clarification during planning:
     }
   }
 
-  ws.on('message', async (raw) => {
+  let delegatedCodexMessageHandler = null;
+  let delegatedCodexCloseHandler = null;
+  const handleCodexClientMessage = async (raw) => {
+    if (delegatedCodexMessageHandler) {
+      return delegatedCodexMessageHandler(raw);
+    }
     let msg;
     try {
       msg = JSON.parse(raw.toString());
@@ -4946,43 +5638,115 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'heartbeat') {
         return; // no-op — TCP activity from the message itself keeps the WS alive
       }
+      if (writerLifecycleState.releaseRequested) {
+        console.warn(`[codex-writer] Ignoring ${msg.type || 'message'} after idle release began session=${wsSessionId || 'unknown'}`);
+        return;
+      }
+      if (msg.type === 'release') {
+        if (msg.windowId) wsWindowId = String(msg.windowId);
+        const accepted = shouldReleaseCodexWriter({
+          requested: true,
+          activeTurnId,
+          pendingServerRequestCount: pendingServerRequests.size,
+          pendingRpcRequestCount: pending.size,
+          operationsInFlight: writerLifecycleState.operationsInFlight,
+        });
+        sendToClient({
+          type: 'release_ack',
+          requestId: msg.requestId || null,
+          accepted,
+          threadId: activeThreadId || displayedThreadId || msg.threadId || null,
+        });
+        if (!accepted) {
+          console.log(`[codex-writer] Preserving connection for reattach session=${wsSessionId || 'unknown'} thread=${activeThreadId || displayedThreadId || 'none'} activeTurn=${activeTurnId || 'none'} pendingRequests=${pendingServerRequests.size} writerOperations=${writerLifecycleState.operationsInFlight}`);
+          return;
+        }
+        writerLifecycleState.releaseRequested = true;
+        void retireCurrentCodexChild('intentional idle sidepanel release').catch((error) => {
+          console.warn(`[codex-writer] Idle release failed session=${wsSessionId || 'unknown'}: ${error.message}`);
+        });
+        return;
+      }
       if (msg.type === 'reattach') {
         const wid = msg.windowId;
         const reqAccountId = msg.accountId || 'default';
         const reqMcpProfile = normalizeMcpProfileName(msg.mcpProfile || readActiveMcpProfile());
         if (!wid) {
           setActiveCodexAccount(reqAccountId);
-          activeMcpProfile = reqMcpProfile;
+          codexMcpProfileState.value = reqMcpProfile;
           sendToClient({ type: 'reattach_result', ok: false });
           return;
         }
         wsWindowId = wid;
         const okey = _codexOrphanKey(wid, wsSessionId);
         if (!okey) { setActiveCodexAccount(reqAccountId); sendToClient({ type: 'reattach_result', ok: false }); return; }
-        const orphan = _codexOrphanedProcs.get(okey);
+        let orphanMatch = findCodexOrphanForReattach(okey);
+        if (!orphanMatch) {
+          const orphanDeadline = Date.now() + CODEX_ORPHAN_REATTACH_DISCOVERY_MS;
+          while (!orphanMatch && Date.now() < orphanDeadline) {
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+            orphanMatch = findCodexOrphanForReattach(okey);
+          }
+        }
+        const reconnectCleanup = await retireIdleCodexOrphansForWindow(wid, {
+          exceptKey: orphanMatch?.key || null,
+          reason: 'idle same-window orphan superseded by reconnect',
+        });
+        if (reconnectCleanup.count) {
+          console.log(`[codex-writer] Reconnect retired ${reconnectCleanup.count} idle/stale same-window orphan(s) window=${wid} timedOut=${reconnectCleanup.timedOut}`);
+        }
+        const orphanRegistryKey = orphanMatch?.key || okey;
+        const orphan = orphanMatch?.orphan || null;
         const orphanAccountId = orphan?.accountId || 'default';
-        const orphanMcpProfile = orphan?.mcpProfile || normalizeMcpProfileName(readActiveMcpProfile());
-        if (!orphan || !orphan.child || orphan.child.killed || orphan.child.exitCode !== null
-          || orphanAccountId !== reqAccountId || orphanMcpProfile !== reqMcpProfile) {
+        const orphanMcpProfile = normalizeMcpProfileName(
+          orphan?.mcpProfileState?.value || orphan?.mcpProfile || readActiveMcpProfile(),
+        );
+        const orphanProfileChangedWhileDetached = !!orphan?.mcpProfileState
+          && normalizeMcpProfileName(orphan.mcpProfileState.value) !== normalizeMcpProfileName(orphan.mcpProfile);
+        const orphanSettingsMismatch = !!orphan && (
+          orphanAccountId !== reqAccountId
+          || (!orphanProfileChangedWhileDetached && orphanMcpProfile !== reqMcpProfile)
+        );
+        const orphanIsBusy = !!orphan && orphan.isIdle?.() !== true;
+        const orphanProcessExited = !orphan?.child
+          || orphan.child.exitCode != null
+          || orphan.child.signalCode != null;
+        if (!orphan || orphanProcessExited || (orphanSettingsMismatch && !orphanIsBusy)) {
           // No live orphan, or it belongs to a different account → fresh spawn.
-          setActiveCodexAccount(reqAccountId);
-          activeMcpProfile = reqMcpProfile;
-          sendToClient({ type: 'reattach_result', ok: false });
           if (orphan) {
             clearTimeout(orphan.killTimer);
-            if (orphanAccountId !== reqAccountId || orphanMcpProfile !== reqMcpProfile) { try { orphan.kill(); } catch {} }
-            _codexOrphanedProcs.delete(okey);
+            _codexOrphanedProcs.delete(orphanRegistryKey);
+            if (orphan.child?.exitCode == null && orphan.child?.signalCode == null) {
+              await waitForCodexRetirements([
+                orphan.retire?.('idle orphan incompatible with reconnect'),
+              ]);
+            }
           }
+          setActiveCodexAccount(reqAccountId);
+          codexMcpProfileState.value = reqMcpProfile;
+          sendToClient({ type: 'reattach_result', ok: false });
           return;
+        }
+        if (orphanSettingsMismatch && orphanIsBusy) {
+          console.warn(`[codex-writer] Reattaching active orphan with pinned account/profile session=${wsSessionId || 'unknown'} account=${orphanAccountId} profile=${orphanMcpProfile}`);
         }
         clearTimeout(orphan.killTimer);
         child = orphan.child;
+        codexMcpRuntimeId = orphan.mcpRuntimeId || codexMcpRuntimeId;
+        codexMcpRuntimeBinding = orphan.mcpRuntimeBinding
+          || _codexMcpProfileRuntimes.get(codexMcpRuntimeId)
+          || null;
         setActiveCodexAccount(orphanAccountId);
-        activeMcpProfile = orphanMcpProfile;
+        codexMcpProfileState = orphan.mcpProfileState || { value: orphanMcpProfile };
+        codexMcpProfileState.value = orphanMcpProfile;
         initialized = orphan.initialized;
         activeThreadId = orphan.activeThreadId;
         displayedThreadId = orphan.displayedThreadId || orphan.activeThreadId || null;
         activeTurnId = orphan.activeTurnId;
+        activeThreadRuntimeFingerprint = orphan.activeThreadRuntimeFingerprint || null;
+        codexContextModels = Array.isArray(orphan.codexContextModels)
+          ? orphan.codexContextModels
+          : [];
         subscribedThreadIds.clear();
         for (const threadId of orphan.subscribedThreadIds || []) subscribedThreadIds.add(threadId);
         threadOwnerRoots.clear();
@@ -4991,12 +5755,16 @@ CRITICAL — When you need clarification during planning:
         Object.assign(_cachedConfig, orphan.cachedConfig || {});
         pendingGreetingThreads.clear();
         for (const threadId of orphan.pendingGreetingThreads || []) pendingGreetingThreads.add(threadId);
+        writerLifecycleState = orphan.writerLifecycleState || writerLifecycleState;
+        writerLifecycleState.releaseRequested = false;
         shuttingDown = false;
         for (const [k, v] of orphan.pending) pending.set(k, v);
         for (const [id, requestInfo] of orphan.pendingServerRequests) {
           pendingServerRequests.set(id, requestInfo);
         }
         orphan.swapWs(ws, wsConnectionEpoch, wsSessionId);
+        delegatedCodexMessageHandler = orphan.handleMessage;
+        delegatedCodexCloseHandler = orphan.handleClose;
         console.log(`[codex-skin] Reattached orphan for ${okey}, buffered ${orphan.buffer.length} events`);
         for (const evt of orphan.buffer) {
           if (ws.readyState === 1) {
@@ -5029,7 +5797,7 @@ CRITICAL — When you need clarification during planning:
             recoveryStatus: retained?.status || 'pending',
           });
         }
-        _codexOrphanedProcs.delete(okey);
+        _codexOrphanedProcs.delete(orphanRegistryKey);
         sendToClient({
           type: 'reattach_result',
           ok: true,
@@ -5037,6 +5805,8 @@ CRITICAL — When you need clarification during planning:
           activeThreadId,
           running: !!activeTurnId && String(displayedThreadId || activeThreadId || '') === String(activeThreadId || ''),
           activeTurnId,
+          accountId: activeAccountId,
+          mcpProfile: codexMcpProfileState.value,
         });
         return;
       }
@@ -5044,7 +5814,7 @@ CRITICAL — When you need clarification during planning:
         if (msg.windowId) wsWindowId = msg.windowId;
         // Resolve the tab's account BEFORE first spawn so CODEX_HOME is correct.
         if (!child && msg.accountId) setActiveCodexAccount(msg.accountId);
-        if (!child) activeMcpProfile = normalizeMcpProfileName(msg.mcpProfile || readActiveMcpProfile());
+        if (!child) codexMcpProfileState.value = normalizeMcpProfileName(msg.mcpProfile || readActiveMcpProfile());
         await bootstrapThread(msg.threadId || null, msg.cwd || PACKAGE_ROOT);
         return;
       }
@@ -5052,7 +5822,7 @@ CRITICAL — When you need clarification during planning:
         sendToClient({
           type: 'mcp_profile_changed',
           requestId: msg.requestId || null,
-          profile: activeMcpProfile,
+          profile: codexMcpProfileState.value,
           defaultProfile: readActiveMcpProfile(),
           presets: buildMcpProfilePresets(),
           restarted: false,
@@ -5060,10 +5830,14 @@ CRITICAL — When you need clarification during planning:
         return;
       }
       if (msg.type === 'mcp_profile_set') {
-        const result = await switchCodexMcpProfile(msg.profile, {
-          threadId: msg.threadId || activeThreadId,
-          cwd: msg.cwd || PACKAGE_ROOT,
-        });
+        const result = await withCodexWriterOperation('mcp_profile_set', () => (
+          switchCodexMcpProfile(msg.profile, {
+            threadId: msg.threadId || activeThreadId,
+            cwd: msg.cwd || PACKAGE_ROOT,
+            model: msg.model || null,
+            contextMode: msg.contextMode || 'default',
+          })
+        ));
         sendToClient({
           type: 'mcp_profile_changed',
           requestId: msg.requestId || null,
@@ -5123,9 +5897,15 @@ CRITICAL — When you need clarification during planning:
       }
       if (msg.type === 'thread_resume') {
         try {
-          await resumeThread(msg.threadId || null, msg.cwd || PACKAGE_ROOT);
+          await withCodexWriterOperation('thread_resume', () => (
+            resumeThread(msg.threadId || null, msg.cwd || PACKAGE_ROOT, {
+              model: msg.model || null,
+              contextMode: msg.contextMode || 'default',
+            })
+          ));
         } catch (err) {
           activeThreadId = null;
+          activeThreadRuntimeFingerprint = null;
           displayedThreadId = msg.threadId || null;
           activeTurnId = null;
           sendToClient({ type: 'history', thread: null, resumeFailed: true, threadId: msg.threadId || null });
@@ -5190,7 +5970,13 @@ CRITICAL — When you need clarification during planning:
         return;
       }
       if (msg.type === 'thread_start') {
-        const thread = await startFreshThread(msg.cwd || PACKAGE_ROOT, { emitThreadEvent: false });
+        const thread = await withCodexWriterOperation('thread_start', () => (
+          startFreshThread(msg.cwd || PACKAGE_ROOT, {
+            emitThreadEvent: false,
+            model: msg.model || null,
+            contextMode: msg.contextMode || 'default',
+          })
+        ));
         sendToClient({
           type: 'thread_started',
           requestId: msg.requestId || null,
@@ -5215,18 +6001,19 @@ CRITICAL — When you need clarification during planning:
             prompt = injected.prompt;
           }
         }
-        await startTurn(prompt, {
+        await withCodexWriterOperation('query', () => startTurn(prompt, {
           fresh: !!msg.fresh,
           threadId: msg.threadId || null,
           cwd: msg.cwd || PACKAGE_ROOT,
           model: msg.model || null,
+          contextMode: msg.contextMode || 'default',
           effort: msg.effort || null,
           localImages,
           mentions,
           planMode: !!msg.planMode,
           autoAccept: !!msg.autoAccept,
           requestId: msg.requestId || null,
-        });
+        }));
         return;
       }
       if (msg.type === 'account_read') {
@@ -5278,7 +6065,7 @@ CRITICAL — When you need clarification during planning:
             return;
           }
           if (activeTurnId) throw new Error('Finish or stop the current turn before switching accounts');
-          await switchCodexAccount(target.id);
+          await withCodexWriterOperation('account_switch', () => switchCodexAccount(target.id));
           const acct = await safeAccountRead();
           sendToClient({ type: 'account_switched', requestId: msg.requestId || null, accountId: target.id, account: acct });
         } catch (err) {
@@ -5297,7 +6084,7 @@ CRITICAL — When you need clarification during planning:
             type: 'chatgpt', home, createdAt: new Date().toISOString(),
           });
           saveCodexAccounts(data);
-          await switchCodexAccount(id);
+          await withCodexWriterOperation('account_add_switch', () => switchCodexAccount(id));
           const result = await request('account/login/start', { type: 'chatgpt' }, 15000);
           watchCodexLogin(id, home);
           sendToClient({
@@ -5327,7 +6114,7 @@ CRITICAL — When you need clarification during planning:
           const removed = data.accounts[idx];
           if (activeAccountId === msg.accountId) {
             if (activeTurnId) throw new Error('Finish or stop the current turn before removing the active account');
-            await switchCodexAccount('default');
+            await withCodexWriterOperation('account_remove_switch', () => switchCodexAccount('default'));
           }
           data.accounts.splice(idx, 1);
           saveCodexAccounts(data);
@@ -5479,8 +6266,8 @@ CRITICAL — When you need clarification during planning:
       if (msg.type === 'model_list') {
         try {
           await ensureInitialized();
-          const result = await request('model/list', { includeHidden: !!msg.includeHidden }, 10000);
-          sendToClient({ type: 'model_list', requestId: msg.requestId || null, models: result?.models || result?.data || [] });
+          const models = await listCodexModelsWithContext(!!msg.includeHidden);
+          sendToClient({ type: 'model_list', requestId: msg.requestId || null, models });
         } catch (err) {
           sendToClient({ type: 'model_list', requestId: msg.requestId || null, models: [], error: err.message });
         }
@@ -5556,12 +6343,14 @@ CRITICAL — When you need clarification during planning:
       }
       if (msg.type === 'review_start') {
         try {
-          await ensureInitialized();
-          const result = await request('review/start', {
-            threadId: msg.threadId || activeThreadId,
-            delivery: 'inline',
-            target: msg.target || { type: 'uncommittedChanges' },
-          }, 10000);
+          const result = await withCodexWriterOperation('review_start', async () => {
+            await ensureInitialized();
+            return request('review/start', {
+              threadId: msg.threadId || activeThreadId,
+              delivery: 'inline',
+              target: msg.target || { type: 'uncommittedChanges' },
+            }, 10000);
+          });
           activeTurnId = result?.turn?.id || result?.turnId || activeTurnId;
           sendToClient({ type: 'review_started', requestId: msg.requestId || null, review: result || {} });
         } catch (err) {
@@ -5701,17 +6490,25 @@ CRITICAL — When you need clarification during planning:
         return;
       }
       if (msg.type === 'compact') {
-        await compactThread(msg.threadId || null, msg.cwd || PACKAGE_ROOT);
+        await withCodexWriterOperation('compact', () => (
+          compactThread(msg.threadId || null, msg.cwd || PACKAGE_ROOT, {
+            model: msg.model || null,
+            contextMode: msg.contextMode || 'default',
+          })
+        ));
         return;
       }
       if (msg.type === 'reset_thread') {
-        const previousThreadId = activeThreadId;
-        finishPendingServerRequests('turn_canceled', 'Thread reset');
-        pendingServerRequests.clear();
-        activeThreadId = null;
-        displayedThreadId = null;
-        activeTurnId = null;
-        if (previousThreadId) await unsubscribeThreadFamily(previousThreadId);
+        await withCodexWriterOperation('reset_thread', async () => {
+          const previousThreadId = activeThreadId;
+          finishPendingServerRequests('turn_canceled', 'Thread reset');
+          pendingServerRequests.clear();
+          activeThreadId = null;
+          displayedThreadId = null;
+          activeTurnId = null;
+          activeThreadRuntimeFingerprint = null;
+          if (previousThreadId) await unsubscribeThreadFamily(previousThreadId);
+        });
         sendToClient({ type: 'ready', threadId: null });
         return;
       }
@@ -5901,59 +6698,130 @@ CRITICAL — When you need clarification during planning:
         message: err.message || 'Codex request failed',
       });
     }
-  });
+  };
+  ws.on('message', handleCodexClientMessage);
 
-  ws.on('close', () => {
+  const handleCodexSocketClose = () => {
+    if (delegatedCodexCloseHandler) {
+      return delegatedCodexCloseHandler();
+    }
+    if (writerLifecycleState.releaseRequested) {
+      console.log(`[codex-writer] Intentional idle WebSocket release session=${wsSessionId || 'unknown'} thread=${activeThreadId || displayedThreadId || 'none'}`);
+      if (!childRetirementPromise && child) {
+        void retireCurrentCodexChild('intentional idle WebSocket close').catch(() => {});
+      }
+      return;
+    }
     if (child && child.exitCode == null && !child.killed && wsWindowId) {
       const okey = _codexOrphanKey(wsWindowId, wsSessionId);
       if (!okey) {
         console.warn('[codex-skin] WS closed without a session id; killing process instead of creating a window-wide orphan');
       } else {
+        const currentHasActiveWork = codexWriterHasActiveWork({
+          activeTurnId,
+          pendingServerRequestCount: pendingServerRequests.size,
+          pendingRpcRequestCount: pending.size,
+          operationsInFlight: writerLifecycleState.operationsInFlight,
+        });
+        if (!currentHasActiveWork) {
+          console.log(`[codex-writer] WS closed while idle — retiring pid ${child.pid || 'unknown'} for ${okey}`);
+          void retireCurrentCodexChild('idle WebSocket close').catch(() => {});
+          return;
+        }
+        const previousOrphan = _codexOrphanedProcs.get(okey);
+        const previousIsIdle = previousOrphan?.isIdle?.() === true;
+        const collisionAction = codexOrphanCollisionAction({
+          hasPrevious: !!previousOrphan,
+          previousIdle: previousIsIdle,
+          currentIdle: false,
+        });
+        if (collisionAction === 'retire-idle-current') {
+          console.warn(`[codex-skin] Preserving active orphan for ${okey}; retiring idle duplicate pid ${child.pid || 'unknown'}`);
+          void retireCurrentCodexChild('idle duplicate of active orphan').catch(() => {});
+          return;
+        }
+        const orphanRegistryKey = collisionAction === 'retain-both'
+          ? `${okey}:collision:${child.pid || randomUUID()}`
+          : okey;
+        if (collisionAction === 'replace-idle-previous') {
+          clearTimeout(previousOrphan.killTimer);
+          _codexOrphanedProcs.delete(okey);
+          void previousOrphan.retire?.('superseded idle orphan registry entry');
+        }
         console.log(`[codex-skin] WS closed — orphaning process pid ${child.pid} for ${okey} (${CODEX_ORPHAN_GRACE_MS / 1000}s grace)`);
         _codexOrphanBuffer = [];
         const orphan = {
-          child,
+          get child() { return child; },
+          windowId: wsWindowId,
+          sessionId: wsSessionId,
           accountId: activeAccountId,
-          mcpProfile: activeMcpProfile,
-          initialized,
-          activeThreadId,
-          displayedThreadId,
-          activeTurnId,
-          subscribedThreadIds: new Set(subscribedThreadIds),
-          threadOwnerRoots: new Map(threadOwnerRoots),
-          nextRequestId,
-          pendingGreetingThreads: new Set(pendingGreetingThreads),
+          codexHome: activeCodexHome,
+          mcpProfile: codexMcpProfileState.value,
+          mcpProfileState: codexMcpProfileState,
+          mcpRuntimeId: codexMcpRuntimeId,
+          mcpRuntimeBinding: codexMcpRuntimeBinding,
+          writerLifecycleState,
+          handleMessage: handleCodexClientMessage,
+          handleClose: handleCodexSocketClose,
+          get initialized() { return initialized; },
+          get activeThreadId() { return activeThreadId; },
+          get displayedThreadId() { return displayedThreadId; },
+          get activeTurnId() { return activeTurnId; },
+          get activeThreadRuntimeFingerprint() { return activeThreadRuntimeFingerprint; },
+          get codexContextModels() { return [...codexContextModels]; },
+          get subscribedThreadIds() { return new Set(subscribedThreadIds); },
+          get threadOwnerRoots() { return new Map(threadOwnerRoots); },
+          get nextRequestId() { return nextRequestId; },
+          get pendingGreetingThreads() { return new Set(pendingGreetingThreads); },
           cachedConfig: { ..._cachedConfig },
-          pending: new Map(pending),
-          pendingServerRequests: new Map(pendingServerRequests),
+          get pending() { return new Map(pending); },
+          get pendingServerRequests() { return new Map(pendingServerRequests); },
           buffer: _codexOrphanBuffer,
+          ownsThread(threadId) {
+            const target = String(threadId || '');
+            return !!target && (
+              String(activeThreadId || '') === target
+              || subscribedThreadIds.has(target)
+              || threadOwnerRoots.get(target) === target
+              || [...threadOwnerRoots.values()].includes(target)
+            );
+          },
+          isIdle() {
+            return !codexWriterHasActiveWork({
+              activeTurnId,
+              pendingServerRequestCount: pendingServerRequests.size,
+              pendingRpcRequestCount: pending.size,
+              operationsInFlight: writerLifecycleState.operationsInFlight,
+            });
+          },
           swapWs(newWs, newConnectionEpoch, newSessionId) {
             ws = newWs;
             wsConnectionEpoch = newConnectionEpoch || wsConnectionEpoch;
             wsSessionId = newSessionId || wsSessionId;
             _codexOrphanBuffer = null;
           },
+          retire(reason = 'orphan retired') {
+            return retireCurrentCodexChild(reason);
+          },
           kill() {
-            shuttingDown = true;
-            if (child && child.exitCode == null && !child.killed) {
-              try { child.kill(); } catch {}
-            }
+            return this.retire('orphan killed');
           },
           killTimer: setTimeout(() => {
-            console.log(`[codex-skin] Orphan grace expired for ${okey} — killing pid ${orphan.child?.pid}`);
-            orphan.kill();
-            _codexOrphanedProcs.delete(okey);
+            console.log(`[codex-skin] Orphan grace expired for ${orphanRegistryKey} — killing pid ${orphan.child?.pid}`);
+            _codexOrphanedProcs.delete(orphanRegistryKey);
+            void orphan.retire('orphan grace expired');
           }, CODEX_ORPHAN_GRACE_MS),
         };
-        _codexOrphanedProcs.set(okey, orphan);
+        if (orphanRegistryKey !== okey) {
+          console.warn(`[codex-skin] Retaining multiple active orphans for ${okey}; collision stored as ${orphanRegistryKey}`);
+        }
+        _codexOrphanedProcs.set(orphanRegistryKey, orphan);
         return;
       }
     }
-    shuttingDown = true;
-    if (child && child.exitCode == null && !child.killed) {
-      try { child.kill(); } catch {}
-    }
-  });
+    void retireCurrentCodexChild('WebSocket closed without a reattach identity', { unsubscribe: false });
+  };
+  ws.on('close', handleCodexSocketClose);
 }
 
 let _codexModelListCache = { at: 0, models: [] };
@@ -6069,7 +6937,10 @@ app.get('/api/codex/models', async (req, res) => {
     if (!force && _codexModelListCache.models.length && Date.now() - _codexModelListCache.at < CODEX_MODEL_LIST_CACHE_MS) {
       return res.json({ ok: true, source: 'cache', models: _codexModelListCache.models });
     }
-    const models = await queryCodexAppServerModels();
+    const models = mergeCodexModelContextCapabilities(
+      await queryCodexAppServerModels(),
+      readCodexRuntimeModelCatalog(CODEX_DEFAULT_HOME),
+    );
     _codexModelListCache = { at: Date.now(), models };
     res.json({ ok: true, source: 'codex-app-server', models });
   } catch (err) {
@@ -6623,7 +7494,7 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
   let xdgRoot;
   try { xdgRoot = requestedXdgRoot || setupOpencodeSidepanelConfig(termId, requestedProfile); }
   catch (err) { console.warn(`[ocp-iso] config setup failed: ${err.message}`); return null; }
-  entry = { termId, port, xdgRoot, mcpProfile: requestedProfile, proc: null, client: null, ready: false, starting: true, keepAlive: !!keepAlive, unsub: null, sessions: new Set(), lastUsed: Date.now() };
+  entry = { termId, port, xdgRoot, mcpProfile: requestedProfile, mcpProfileRefreshFailed: false, proc: null, client: null, ready: false, starting: true, keepAlive: !!keepAlive, unsub: null, sessions: new Set(), lastUsed: Date.now() };
   _ocpIsoServes.set(termId, entry);
   try {
     const config = loadCliConfig();
@@ -6712,6 +7583,7 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, k
 function stopIsolatedServe(termId, { preserveBindings = false } = {}) {
   const entry = _ocpIsoServes.get(termId);
   if (!entry) return;
+  cancelRuntimeMcpProfileRefresh(termId);
   _ocpIsoServes.delete(termId);
   if (!preserveBindings) {
     for (const sid of entry.sessions) {
@@ -6802,7 +7674,7 @@ async function restartOpenCodeSessionProfile(sessionId, profile) {
   const previousProfile = normalizeMcpProfileName(
     existing?.mcpProfile || _ocpSessionProfiles.get(sessionId) || readActiveMcpProfile(),
   );
-  if (existing?.mcpProfile === normalized && existing.ready && existing.client) {
+  if (existing?.mcpProfile === normalized && existing.ready && existing.client && !existing.mcpProfileRefreshFailed) {
     for (const familySessionId of familySessionIds) {
       _ocpSessionToServe.set(familySessionId, termId);
       _ocpSessionProfiles.set(familySessionId, normalized);
@@ -14946,6 +15818,34 @@ async function launchScheduledLoop(schedule) {
           context = context ? `${context}\n\n${block}` : block;
           loopLog(terminalSessionId, 'launch:dedup', 'injected X engagement skip-list', { account: xAccount || 'all', handles: handles.length, statusIds: statusIds.length, blocked: blocked.length });
         }
+
+        // Shared per-day action budget. The skip-list stops the same TARGET being hit
+        // twice; this stops six independent lanes each spending a full day's quota
+        // because none of them can see what the others already did. Counts come from
+        // the same ledger, ceilings from the ramp tier — both deterministic, so the
+        // budget does not depend on the agent recalling its own run.
+        const tz = schedule.timezone || 'America/Sao_Paulo';
+        const nowLocal = getNowInTimezone(tz);
+        const msIntoDay = ((nowLocal.getHours() * 60 + nowLocal.getMinutes()) * 60 + nowLocal.getSeconds()) * 1000 + nowLocal.getMilliseconds();
+        const spent = getXActionBudget({ account: xAccount || null, sinceIso: new Date(Date.now() - msIntoDay).toISOString() });
+        const { tier, caps, source: tierSource } = getXEngagementTier({ account: xAccount || null });
+        if (spent.error) {
+          loopLog(terminalSessionId, 'launch:budget', 'action budget read failed (continuing)', { err: spent.error });
+        } else {
+          const line = X_ACTION_TYPES.map(t => `${t} ${spent[t]}/${caps[t]}`).join(' | ');
+          const exhausted = X_ACTION_TYPES.filter(t => spent[t] >= caps[t]);
+          const budgetBlock = [
+            `=== TODAY'S ACTION BUDGET${xAccount ? ` for @${xAccount}` : ''} (${tz} day so far) ===`,
+            line,
+            `Tier: ${tier}${tierSource === 'default' ? ' (no caps memory found — defaulted to the most conservative tier)' : ''}`,
+            exhausted.length
+              ? `CLOSED for the rest of today: ${exhausted.join(', ')}. Do NOT perform these, and do NOT substitute another action type to compensate.`
+              : null,
+            'These counters are authoritative and shared across every X schedule for this account. Stop the run when your own per-run cap or any ceiling above is reached, whichever comes first.',
+          ].filter(Boolean).join('\n');
+          context = context ? `${context}\n\n${budgetBlock}` : budgetBlock;
+          loopLog(terminalSessionId, 'launch:budget', 'injected X action budget', { account: xAccount || 'all', tier, tierSource, spent: spent.total, exhausted });
+        }
       } catch (err) {
         loopLog(terminalSessionId, 'launch:dedup', 'skip-list injection failed (continuing)', { err: err.message });
       }
@@ -16222,11 +17122,12 @@ function buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, termin
   // matches this agent's _tabOwners key on the server (tab-less calls route to the
   // agent's own dedicated tab instead of the shared activeTab).
   if (terminalSessionId) env.SYNABUN_TERMINAL_SESSION = terminalSessionId;
-  return JSON.stringify({
-    mcpServers: {
-      SynaBun: { type: 'stdio', command: 'node', args: [mcpPreload], env },
-    },
-  });
+  // Agents run with --strict-mcp-config, so they see only what this file lists.
+  // External servers come from the active profile's servers[]; SynaBun is added last
+  // so its per-agent pins always win over a same-named registry entry.
+  const mcpServers = buildProfileMcpServers();
+  mcpServers.SynaBun = { type: 'stdio', command: 'node', args: [mcpPreload], env };
+  return JSON.stringify({ mcpServers });
 }
 
 /**
@@ -16261,6 +17162,9 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
     if (agent._maxTurns) args.push('--max-turns', String(agent._maxTurns));
     if (agent._systemPrompt) args.push('--system-prompt', agent._systemPrompt);
     if (agent._allowedTools?.length) args.push('--allowedTools', ...agent._allowedTools);
+    // Spend/mutation guard — see MCP_SERVER_WRITE_TOOLS. Takes precedence over --allowedTools.
+    const disallowedTools = buildAgentDisallowedTools(agent._mcpConfig);
+    if (disallowedTools.length) args.push('--disallowedTools', ...disallowedTools);
     if (agent._addDirs?.length) {
       for (const dir of agent._addDirs) args.push('--add-dir', dir);
     }
@@ -17161,8 +18065,14 @@ let _toolVersionCache = { checkedAt: null, tools: {} };
 // Comparison logic must use parseSemver/compareSemver below to handle
 // prerelease/iteration suffixes correctly.
 function parseVersion(raw) {
-  const m = String(raw ?? '').match(/(\d+)\.(\d+)\.(\d+)/);
-  return m ? `${m[1]}.${m[2]}.${m[3]}` : null;
+  // Keep any prerelease/iteration suffix. Truncating it made a user on
+  // 2.1.0-beta.3 record as 2.1.0, so semverNewer('2.1.0','2.1.0') was false
+  // and a stable release never produced a badge. The leading (\d+\.\d+\.\d+)
+  // still tolerates surrounding noise like "codex-cli 0.147.0" and
+  // "2.1.224 (Claude Code)" — the suffix group only matches a real
+  // `-prerelease` tag, never the " (Claude Code)" trailer.
+  const m = String(raw ?? '').match(/(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?/);
+  return m ? `${m[1]}.${m[2]}.${m[3]}${m[4] || ''}` : null;
 }
 
 // Structured semver parse — handles calver bumps and prerelease tags:
@@ -17281,50 +18191,32 @@ async function resolveBinPathAsync(cmd, env) {
   } catch { return null; }
 }
 
-function detectInstallSource(binPath) {
-  if (!binPath) return 'unknown';
-  const p = binPath.replace(/\\/g, '/').toLowerCase();
-  if (/\/node_modules\//.test(p) || /\/npm\/node_modules\//.test(p)) return 'npm';
-  if (p.includes('/opt/homebrew/') || p.includes('/usr/local/cellar/') || /\/homebrew\//.test(p)) return 'brew';
-  if (p.includes('/.claude/local/') || p.includes('/anthropicclaude/')) return 'native';
-  if (/\/\.local\/bin\//.test(p)) return 'native';
-  if (/\/program files( \(x86\))?\//.test(p) || /\/localappdata\/.*anthropicclaude/.test(p)) return 'native';
-  if (p.includes('/winget/') || p.includes('/microsoft/winget/')) return 'winget';
-  if (/\/usr\/local\/lib\/node_modules\//.test(p)) return 'npm';
-  return 'other';
-}
+// detectInstallSource / buildUpdateCommand / NPM_PKGS now live in
+// ./lib/cli-update-planner.js so they can be unit tested away from this file.
+// See the module header for the rule that decides self-updater vs package
+// manager: a self-updater cannot replace a brew-managed binary, because
+// brew's symlink in /opt/homebrew/bin still wins PATH.
 
-const NPM_PKGS = {
-  'claude-code': '@anthropic-ai/claude-code',
-  'codex': '@openai/codex',
-  'gemini': '@google/gemini-cli',
-  'opencode': 'opencode-ai',
-};
-
-const BREW_FORMULAE = {
-  'claude-code': 'claude-code',
-  'codex': 'codex',
-  'gemini': 'gemini-cli',
-  'opencode': 'opencode',
-};
-
-// Pick the smoothest update command for each tool given its install source.
-// Tools with native self-updaters (claude, opencode) handle install-source
-// detection internally — prefer those everywhere. Other tools fall back to
-// install-source-specific package managers (npm/brew). Returns null when no
-// safe automated update path exists (e.g., winget/native installer with no
-// self-updater) — caller should show a "use your installer" hint instead.
-function buildUpdateCommand(toolKey, installSource) {
-  if (toolKey === 'claude-code') return 'claude update';
-  if (toolKey === 'opencode')    return 'opencode upgrade';
-
-  const npmPkg = NPM_PKGS[toolKey];
-  if (!npmPkg) return null;
-
-  if (installSource === 'npm')  return `npm install -g ${npmPkg}@latest`;
-  if (installSource === 'brew') return `brew upgrade ${BREW_FORMULAE[toolKey] || toolKey}`;
-  if (installSource === 'native' || installSource === 'winget') return null;
-  return `npm install -g ${npmPkg}@latest`;
+// Ask Homebrew what it could actually upgrade. One subprocess covers every
+// tool, and unlike the formulae.brew.sh API it is tap-aware — OpenCode ships
+// from a third-party tap whose version differs from homebrew/core's.
+// HOMEBREW_NO_AUTO_UPDATE keeps this fast: brew refreshes its own API cache
+// during normal use, so the data is current without us blocking on a fetch.
+async function probeBrewOutdated(env) {
+  try {
+    const { stdout } = await execAsync('brew outdated --json=v2', {
+      encoding: 'utf-8',
+      timeout: 15000,
+      env: { ...env, HOMEBREW_NO_AUTO_UPDATE: '1' },
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return parseBrewOutdated(stdout);
+  } catch {
+    // brew missing or errored — callers fail closed (latest = installed)
+    // rather than falling back to npm, which would resurrect the stuck badge.
+    return null;
+  }
 }
 
 // Resolve SynaBun's own install roots so we can reject any tool binary that
@@ -17402,12 +18294,12 @@ async function checkToolVersions() {
   // Probe all tools concurrently with async subprocesses — the sequential
   // execSync version blocked the event loop for the sum of every probe
   // (worst case: N tools × 5s timeout with nothing else able to run).
-  const checkOneTool = async (tool) => {
-    // Resolve binary path FIRST. If it lives inside SynaBun's own install
-    // dir (stale bundled copy), treat the tool as not installed — do NOT
-    // run --version against it, since that would report the bundled
-    // version and trigger a false-positive update badge.
-    const probedBinPath = await resolveBinPathAsync(tool.cmd, cleanEnv);
+  // probedBinPath is resolved by the caller (below) so the brew probe can be
+  // skipped entirely when no brew-managed tool is installed. If the binary
+  // lives inside SynaBun's own install dir (stale bundled copy), treat the
+  // tool as not installed — do NOT run --version against it, since that would
+  // report the bundled version and trigger a false-positive update badge.
+  const checkOneTool = async (tool, probedBinPath) => {
     const isStaleBundle = isInsideSynabun(probedBinPath);
 
     let installed = null;
@@ -17436,38 +18328,82 @@ async function checkToolVersions() {
       installed = null;
     }
 
-    let latest = null;
+    // Upstream (npm) version. For a brew install this is NOT the yardstick —
+    // Homebrew routinely trails npm by a few releases, so comparing against it
+    // produced a badge that lit up while `brew upgrade` answered "already
+    // installed". Reported as upstreamLatest purely for diagnostics.
+    let upstreamLatest = null;
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
       if (tool.npm) {
         const res = await fetch(`https://registry.npmjs.org/${tool.npm}/latest`, { signal: controller.signal });
         clearTimeout(timeout);
-        if (res.ok) { const d = await res.json(); latest = d.version; }
+        if (res.ok) { const d = await res.json(); upstreamLatest = d.version; }
       } else if (tool.github) {
         const res = await fetch(`https://api.github.com/repos/${tool.github}/releases/latest`, { signal: controller.signal });
         clearTimeout(timeout);
-        if (res.ok) { const d = await res.json(); latest = parseVersion(d.tag_name || ''); }
+        if (res.ok) { const d = await res.json(); upstreamLatest = parseVersion(d.tag_name || ''); }
       }
     } catch { /* network error */ }
 
     const binPath = installed ? probedBinPath : null;
     const installSource = detectInstallSource(binPath);
-    const updateCommand = installed ? buildUpdateCommand(tool.key, installSource) : null;
+    const brewToken = isBrewSource(installSource) ? resolveBrewToken(tool.key, binPath) : null;
+    const latest = resolveLatest({
+      installSource,
+      brewToken,
+      brewOutdated,
+      npmLatest: upstreamLatest,
+      installed,
+    });
+    const updateCommand = installed
+      ? buildUpdateCommand(tool.key, installSource, { brewToken })
+      : null;
 
     return [tool.key, {
       installed,
       latest,
+      upstreamLatest,
       updateAvailable: !!(installed && latest && semverNewer(installed, latest)),
       installSource,
+      brewToken,
       binPath,
       updateCommand,
       canUpdate: !!updateCommand,
     }];
   };
 
-  const entries = await Promise.all(TOOL_DEFS.map(checkOneTool));
+  // Resolve every binary path first so we only pay for the brew probe when a
+  // brew-managed tool is actually present.
+  const probedPaths = await Promise.all(
+    TOOL_DEFS.map((tool) => resolveBinPathAsync(tool.cmd, cleanEnv).catch(() => null)),
+  );
+  const brewOutdated = probedPaths.some((p) => isBrewSource(detectInstallSource(p)))
+    ? await probeBrewOutdated(cleanEnv)
+    : null;
+
+  const entries = await Promise.all(
+    TOOL_DEFS.map((tool, i) => checkOneTool(tool, probedPaths[i])),
+  );
   const results = Object.fromEntries(entries);
+
+  // Tell a missing tool's install banner to use the channel this machine
+  // actually uses. A tool that isn't installed has no path to classify, so
+  // infer it from the siblings that ARE installed — otherwise a Homebrew
+  // user is told to `npm install -g`, creating a second conflicting install
+  // that may not even win PATH.
+  const siblingSources = Object.values(results)
+    .map((v) => v.installSource)
+    .filter((s) => s && s !== 'unknown' && s !== 'other');
+  const dominantSource = siblingSources
+    .sort((a, b) =>
+      siblingSources.filter((s) => s === b).length - siblingSources.filter((s) => s === a).length)[0]
+    || 'unknown';
+  for (const [key, info] of Object.entries(results)) {
+    const source = info.installed ? info.installSource : dominantSource;
+    info.installCommand = buildInstallCommand(key, source);
+  }
 
   _toolVersionCache = { checkedAt: new Date().toISOString(), tools: results };
 
@@ -19121,7 +20057,10 @@ const HOOK_SCRIPTS = [
   { event: 'PreCompact',        script: 'pre-compact.mjs',   timeout: 10 },
   { event: 'Stop',              script: 'stop.mjs',          timeout: 3 },
   { event: 'PreToolUse',        script: 'pre-websearch.mjs', timeout: 3, matcher: '^WebSearch$|^WebFetch$' },
-  { event: 'PostToolUse',       script: 'post-remember.mjs', timeout: 3, matcher: '^Edit$|^Write$|^NotebookEdit$|Syna[Bb]un__remember' },
+  // `_+` covers both host prefixes: mcp__SynaBun__remember (Claude Code) and
+  // SynaBun_remember (OpenCode). reflect MUST be here — it stores work too, and
+  // omitting it left post-remember.mjs's reflect handling as unreachable code.
+  { event: 'PostToolUse',       script: 'post-remember.mjs', timeout: 3, matcher: '^Edit$|^Write$|^NotebookEdit$|Syna[Bb]un_+(remember|reflect)' },
   { event: 'PostToolUse',       script: 'post-plan.mjs',     timeout: 15, matcher: '^(Enter|Exit)PlanMode$' },
   { event: 'SubagentStart',     script: 'subagent-start.mjs', timeout: 3 },
   { event: 'SubagentStop',      script: 'subagent-stop.mjs',  timeout: 3 },
@@ -19734,41 +20673,59 @@ function addHookToSettings(settings, onlyEvent, targetProjectPath) {
 // Walk every settings.json (global + registered projects) and dedup hook
 // entries that point at the same script in different command-string forms.
 // Runs once at server startup to repair existing damage from the legacy
-// duplication bug. Returns { files, removed } counters for logging.
+// duplication bug. Returns { files, removed, repaired, matchers } counters.
+//
+// Also repairs MATCHER DRIFT: an entry whose command is already canonical but
+// whose matcher no longer equals HOOK_SCRIPTS' value is rewritten. Without this
+// the sweep compared only command strings, so a matcher change never reached
+// already-installed settings.json files and silently disabled part of a hook.
+// SynaBun-owned matchers are not user-editable state — addHookToSettings()
+// already rewrites them on every install/toggle — and the blast radius is
+// limited to commands resolving to hooks/claude-code/<script>.
+// Normalize one settings object in place. Top-level (not a closure) so tests can
+// extract and exercise the shipped implementation directly.
+// Returns true when `settings` was modified; accumulates counters into `stats`.
+function sweepSettingsHooks(settings, targetProjectPath, stats) {
+  if (!settings?.hooks) return false;
+  let changed = false;
+  for (const def of HOOK_SCRIPTS) {
+    const arr = settings.hooks[def.event];
+    if (!Array.isArray(arr) || arr.length === 0) continue;
+    const cmd = hookCommandString(def.script, targetProjectPath);
+    // Gather every entry pointing at this hook script in ANY command-string
+    // form (relative, absolute, or a stale cross-OS path), then rebuild with
+    // exactly one canonical entry. Catches Windows "J:/..." paths that an
+    // exact-variant match can't see and that crash the CLI on macOS/Linux.
+    const matching = [];
+    const rest = arr.filter(entry => {
+      if (entry.hooks?.some(h => isSynaBunHookCommand(h.command, def.script))) {
+        matching.push(entry);
+        return false;
+      }
+      return true;
+    });
+    if (matching.length === 0) continue;
+    const wantMatcher = def.matcher || '';
+    const canonical = matching.find(e => e.hooks?.some(h => h.command === cmd));
+    const matcherOk = !!canonical && (canonical.matcher || '') === wantMatcher;
+    // Compare the matcher too, not just the command — a stale matcher on an
+    // otherwise-canonical entry is exactly the drift this repairs.
+    if (matching.length === 1 && canonical && matcherOk) continue; // already canonical
+    stats.removed += matching.length - 1;
+    if (!canonical) stats.repaired += 1;
+    else if (!matcherOk) stats.matchers += 1;
+    settings.hooks[def.event] = [
+      ...rest,
+      { matcher: wantMatcher, hooks: [{ type: 'command', command: cmd, timeout: def.timeout }] },
+    ];
+    changed = true;
+  }
+  return changed;
+}
+
 function dedupeAllSettingsHooks() {
-  const stats = { files: 0, removed: 0, repaired: 0 };
-  const sweep = (settings, targetProjectPath) => {
-    if (!settings?.hooks) return false;
-    let changed = false;
-    for (const def of HOOK_SCRIPTS) {
-      const arr = settings.hooks[def.event];
-      if (!Array.isArray(arr) || arr.length === 0) continue;
-      const cmd = hookCommandString(def.script, targetProjectPath);
-      // Gather every entry pointing at this hook script in ANY command-string
-      // form (relative, absolute, or a stale cross-OS path), then rebuild with
-      // exactly one canonical entry. Catches Windows "J:/..." paths that an
-      // exact-variant match can't see and that crash the CLI on macOS/Linux.
-      const matching = [];
-      const rest = arr.filter(entry => {
-        if (entry.hooks?.some(h => isSynaBunHookCommand(h.command, def.script))) {
-          matching.push(entry);
-          return false;
-        }
-        return true;
-      });
-      if (matching.length === 0) continue;
-      const hadCanonical = matching.some(e => e.hooks?.some(h => h.command === cmd));
-      if (matching.length === 1 && hadCanonical) continue; // already canonical
-      stats.removed += matching.length - 1;
-      if (!hadCanonical) stats.repaired += 1;
-      settings.hooks[def.event] = [
-        ...rest,
-        { matcher: def.matcher || '', hooks: [{ type: 'command', command: cmd, timeout: def.timeout }] },
-      ];
-      changed = true;
-    }
-    return changed;
-  };
+  const stats = { files: 0, removed: 0, repaired: 0, matchers: 0 };
+  const sweep = (settings, targetProjectPath) => sweepSettingsHooks(settings, targetProjectPath, stats);
   try {
     const globalPath = getGlobalClaudeSettingsPath();
     const globalSettings = readClaudeSettings(globalPath);
@@ -20359,6 +21316,159 @@ async function getSessionEntriesForRequest(projDir, { forceRefresh = false } = {
   return memo.get();
 }
 
+let _codexSessionCatalogRefresh = null;
+function getCodexSessionCatalogRefresh() {
+  if (!_codexSessionCatalogRefresh) {
+    _codexSessionCatalogRefresh = memoCache(() => rebuildCodexCache({
+      accounts: loadCodexAccounts().accounts,
+      projects: loadHookProjects(),
+    }), { ttlMs: 15000 });
+  }
+  return _codexSessionCatalogRefresh;
+}
+
+async function refreshCodexSessionCatalog({ force = false } = {}) {
+  const memo = getCodexSessionCatalogRefresh();
+  if (force) memo.invalidate();
+  return memo.get();
+}
+
+function normalizeCodexSessionEntry(entry) {
+  if (!entry) return null;
+  const sessionId = String(entry.session_id || entry.sessionId || entry.id || '').trim();
+  if (!sessionId) return null;
+  return {
+    sessionId,
+    firstPrompt: String(entry.first_prompt || entry.firstPrompt || entry.title || '').trim(),
+    messageCount: Number(entry.message_count ?? entry.messageCount ?? 0) || 0,
+    created: entry.created || entry.createdAt || null,
+    modified: entry.modified || entry.modifiedAt || null,
+    gitBranch: entry.git_branch || entry.gitBranch || null,
+    source: entry.source || null,
+    cwd: entry.cwd || entry.project_path || entry.projectPath || null,
+    projectPath: entry.project_path || entry.projectPath || null,
+    accountId: entry.account_id || entry.accountId || null,
+    accountLabel: entry.account_label || entry.accountLabel || null,
+    deleted: !!(entry.deleted || entry._deleted),
+    resumable: entry.resumable !== false,
+  };
+}
+
+function groupCodexSessionsByProject(projects, rawEntries, { targetProject, search, limit, offset } = {}) {
+  const projectRows = (Array.isArray(projects) ? projects : []).map((proj) => ({
+    path: proj.path,
+    label: proj.label || basename(proj.path),
+    total: 0,
+    sessions: [],
+  }));
+  const buckets = new Map(projectRows.map((proj) => [resolve(proj.path), []]));
+  const targetResolved = targetProject ? resolve(targetProject) : null;
+  const query = String(search || '').toLowerCase().trim();
+  const pageLimit = Math.min(Math.max(parseInt(limit) || 30, 1), 100);
+  const pageOffset = Math.max(parseInt(offset) || 0, 0);
+
+  for (const raw of (Array.isArray(rawEntries) ? rawEntries : [])) {
+    const entry = normalizeCodexSessionEntry(raw);
+    if (!entry || entry.deleted || !entry.projectPath) continue;
+    if (query) {
+      const searchable = [
+        entry.firstPrompt,
+        entry.sessionId,
+        entry.gitBranch,
+        entry.accountLabel,
+      ].some((value) => String(value || '').toLowerCase().includes(query));
+      if (!searchable) continue;
+    }
+
+    const project = (Array.isArray(projects) ? projects : []).find((proj) =>
+      proj?.path && pathIsWithin(entry.projectPath, proj.path),
+    );
+    if (!project) continue;
+    if (targetResolved && !samePath(project.path, targetResolved)) continue;
+
+    const bucket = buckets.get(resolve(project.path));
+    if (bucket) bucket.push(entry);
+  }
+
+  return projectRows
+    .filter((proj) => !targetResolved || samePath(proj.path, targetResolved))
+    .map((proj) => {
+      const entries = (buckets.get(resolve(proj.path)) || [])
+        .sort((a, b) => new Date(b.modified || 0) - new Date(a.modified || 0));
+      const total = entries.length;
+      const sessions = entries.slice(pageOffset, pageOffset + pageLimit).map((entry) => ({
+        sessionId: entry.sessionId,
+        firstPrompt: entry.firstPrompt,
+        messageCount: entry.messageCount || 0,
+        created: entry.created,
+        modified: entry.modified,
+        gitBranch: entry.gitBranch || null,
+        source: entry.source || null,
+        cwd: entry.cwd || entry.projectPath || null,
+        accountId: entry.accountId || null,
+        accountLabel: entry.accountLabel || null,
+        archived: false,
+        resumable: true,
+      }));
+      return {
+        path: proj.path,
+        label: proj.label,
+        total,
+        sessions,
+      };
+    });
+}
+
+async function getCodexSessionsResponse({ targetProject, limit, offset, search, forceRefresh = false } = {}) {
+  const cachedEntries = listSessionCache('codex', { limit: 100000 });
+  const hasCache = cachedEntries.some((entry) => !entry?.deleted);
+  if (forceRefresh) {
+    await refreshCodexSessionCatalog({ force: true });
+    return groupCodexSessionsByProject(loadHookProjects(), listSessionCache('codex', { limit: 100000 }), {
+      targetProject, limit, offset, search,
+    });
+  }
+
+  if (hasCache) {
+    void refreshCodexSessionCatalog().catch((err) => {
+      console.warn('[codex-sessions] Background refresh failed:', err.message);
+    });
+    return groupCodexSessionsByProject(loadHookProjects(), cachedEntries, {
+      targetProject, limit, offset, search,
+    });
+  }
+
+  try {
+    await refreshCodexSessionCatalog();
+  } catch (err) {
+    console.warn('[codex-sessions] Refresh failed, falling back to live scan:', err.message);
+  }
+
+  const refreshedEntries = listSessionCache('codex', { limit: 100000 });
+  if (refreshedEntries.some((entry) => !entry?.deleted)) {
+    return groupCodexSessionsByProject(loadHookProjects(), refreshedEntries, {
+      targetProject, limit, offset, search,
+    });
+  }
+
+  const projects = loadHookProjects();
+  const accounts = loadCodexAccounts().accounts.map((account) => ({
+    ...account,
+    home: account.home || getCodexAccountHome(account.id),
+  }));
+  const liveCatalog = listCodexSessionsFromAccounts(accounts, {
+    projects,
+    includeArchived: false,
+    maxRows: 10000,
+    onError(account, err) {
+      console.warn(`[codex-sessions] Failed to read account ${account?.id || 'unknown'}:`, err.message);
+    },
+  });
+  return groupCodexSessionsByProject(projects, liveCatalog, {
+    targetProject, limit, offset, search,
+  });
+}
+
 // GET /api/claude-code/sessions — browse past Claude Code sessions across registered projects
 app.get('/api/claude-code/sessions', async (req, res) => {
   try {
@@ -20445,60 +21555,13 @@ app.get('/api/claude-code/sessions', async (req, res) => {
 });
 
 // GET /api/codex/sessions — browse past Codex CLI sessions across registered projects
-app.get('/api/codex/sessions', (req, res) => {
+app.get('/api/codex/sessions', async (req, res) => {
   try {
-    const projects = loadHookProjects();
     const targetProject = req.query.project;
     const limit = Math.min(parseInt(req.query.limit) || 30, 100);
     const offset = parseInt(req.query.offset) || 0;
     const search = (req.query.search || '').toLowerCase().trim();
-
-    const accounts = loadCodexAccounts().accounts.map((account) => ({
-      ...account,
-      home: account.home || getCodexAccountHome(account.id),
-    }));
-    const catalog = listCodexSessionsFromAccounts(accounts, {
-      projects,
-      includeArchived: false,
-      maxRows: 10000,
-      onError(account, err) {
-        console.warn(`[codex-sessions] Failed to read account ${account?.id || 'unknown'}:`, err.message);
-      },
-    });
-
-    const result = [];
-    for (const proj of projects) {
-      if (targetProject && resolve(proj.path) !== resolve(targetProject)) continue;
-      let entries = catalog.filter((entry) => entry.projectPath && resolve(entry.projectPath) === resolve(proj.path));
-      if (search) {
-        entries = entries.filter(e =>
-          (e.firstPrompt || '').toLowerCase().includes(search) ||
-          (e.gitBranch || '').toLowerCase().includes(search) ||
-          (e.sessionId || '').toLowerCase().includes(search) ||
-          (e.accountLabel || '').toLowerCase().includes(search)
-        );
-      }
-      const total = entries.length;
-      result.push({
-        path: proj.path,
-        label: proj.label || basename(proj.path),
-        total,
-        sessions: entries.slice(offset, offset + limit).map((entry) => ({
-          sessionId: entry.sessionId,
-          firstPrompt: entry.firstPrompt,
-          messageCount: entry.messageCount || 0,
-          created: entry.created,
-          modified: entry.modified,
-          gitBranch: entry.gitBranch || null,
-          source: entry.source,
-          cwd: entry.cwd,
-          accountId: entry.accountId,
-          accountLabel: entry.accountLabel,
-          archived: false,
-          resumable: true,
-        })),
-      });
-    }
+    const result = await getCodexSessionsResponse({ targetProject, limit, offset, search });
     res.json({ projects: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -20607,11 +21670,16 @@ app.get('/api/session-search', async (req, res) => {
     let codexCatalog = [];
     let codexCatalogById = new Map();
     if (provider === 'codex') {
-      codexCatalog = listCodexSessionsFromAccounts(loadCodexAccounts().accounts, {
-        projects,
-        includeArchived: false,
-        maxRows: 10000,
-      }).filter((session) => !projectPath || (session.projectPath && resolve(session.projectPath) === resolve(projectPath)));
+      const codexCache = listSessionCache('codex', { limit: 100000 }).filter((entry) => !entry?.deleted);
+      if (codexCache.length === 0) {
+        try { await refreshCodexSessionCatalog(); }
+        catch { /* best effort */ }
+      }
+      codexCatalog = listSessionCache('codex', { limit: 100000 })
+        .filter((entry) => !entry?.deleted)
+        .map((entry) => normalizeCodexSessionEntry(entry))
+        .filter(Boolean)
+        .filter((session) => !projectPath || (session.projectPath && samePath(session.projectPath, projectPath)));
       codexCatalogById = new Map(codexCatalog.map((session) => [session.sessionId, session]));
     }
 
@@ -22228,6 +23296,8 @@ function buildCodexMcpEnv() {
     MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data'),
     SYNABUN_BROWSER_FAST: '1',
     SYNABUN_BROWSER_COMPACT: '1',
+    SYNABUN_PROFILE: 'full',
+    SYNABUN_TOOL_CATALOG_MODE: 'deferred',
   };
 }
 
@@ -22758,11 +23828,17 @@ app.post('/api/sidepanel/kill-session', async (req, res) => {
     } else if (provider === 'codex') {
       const okey = _codexOrphanKey(windowId || '', sessionId || '');
       if (okey) {
-        const orphan = _codexOrphanedProcs.get(okey);
-        if (orphan) {
+        const matches = [..._codexOrphanedProcs.entries()].filter(([key]) => (
+          key === okey || key.startsWith(`${okey}:collision:`)
+        ));
+        for (const [key, orphan] of matches) {
           clearTimeout(orphan.killTimer);
-          try { orphan.kill(); } catch {}
-          _codexOrphanedProcs.delete(okey);
+          _codexOrphanedProcs.delete(key);
+          try {
+            await waitForCodexRetirements([
+              orphan.retire?.('sidepanel session dismissed'),
+            ]);
+          } catch {}
           killed = true;
         }
       }
@@ -23770,7 +24846,9 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
   if (!isValidMcpProfileValue(profile)) {
     return res.status(400).json({ ok: false, error: `Unknown MCP profile or tool group selection: ${profile}` });
   }
+  const catalogMode = req.body?.catalogMode === 'deferred' ? 'deferred' : 'profiled';
   const entry = _ocpIsoServes.get(terminalId) || null;
+  const codexRuntime = _codexMcpProfileRuntimes.get(terminalId) || null;
   const runBefore = _nativeLoopRuntime?.get(terminalId) || null;
   const loopFile = findLoopFileForTerminal(terminalId);
   let loopPath = null;
@@ -23785,14 +24863,18 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
     }
   }
   const liveLoop = !!(loopState?.active || loopState?.pending) && isLoopRuntimeAlive(loopState);
-  if (!entry && !runBefore && !liveLoop) {
+  if (!entry && !codexRuntime && !runBefore && !liveLoop) {
     return res.status(404).json({ ok: false, error: 'Profile runtime is no longer active' });
   }
 
-  const sessionIds = entry ? [...entry.sessions] : [];
+  const sessionIds = entry
+    ? [...entry.sessions]
+    : (codexRuntime?.sessionId ? [codexRuntime.sessionId] : []);
   try {
     if (entry) {
       updateOpencodeRuntimeProfileConfig(entry.xdgRoot, profile);
+    } else if (codexRuntime) {
+      codexRuntime.setProfile(profile);
     } else if (loopState?.profile === 'opencode') {
       const xdgRoot = resolve(DATA_HOME, 'data', 'loop-configs', `opencode-${terminalId}`);
       updateOpencodeRuntimeProfileConfig(xdgRoot, profile);
@@ -23818,24 +24900,114 @@ app.post('/api/mcp/runtime-profile', (req, res) => {
   // Commit in-memory routing after the authoritative runtime file succeeds.
   if (entry) {
     entry.mcpProfile = profile;
+    entry.mcpProfileRefreshFailed = false;
     entry.lastUsed = Date.now();
     for (const sessionId of sessionIds) _ocpSessionProfiles.set(sessionId, profile);
   }
   const run = runBefore ? _nativeLoopRuntime.setMcpProfile(terminalId, profile) : null;
-  for (const sessionId of sessionIds) {
-    broadcastToOpencodeV2Clients(
-      {
-        type: 'event',
-        eventType: 'mcp.profile.changed',
-        event: { sessionID: sessionId, profile, source: 'agent' },
+
+  let runtimeKind = 'loop';
+  let hostRefresh = 'notification';
+  let correlationId = null;
+  if (entry) {
+    runtimeKind = 'opencode';
+    hostRefresh = 'scheduled';
+    correlationId = scheduleRuntimeMcpProfileRefresh(
+      terminalId,
+      profile,
+      runtimeKind,
+      async (refreshCorrelationId) => {
+        try {
+          const current = _ocpIsoServes.get(terminalId);
+          if (current !== entry || !entry.ready || !entry.client?.mcp) {
+            throw new Error('OpenCode isolated runtime is no longer available');
+          }
+          const directory = await resolveOpenCodeMcpDirectory(entry, sessionIds);
+          const mcpTarget = { name: 'SynaBun', directory };
+          try {
+            await entry.client.mcp.disconnect(mcpTarget);
+          } catch (err) {
+            console.warn(`[mcp/profile] OpenCode disconnect before refresh reported: ${err?.message || err}`);
+          }
+          await entry.client.mcp.connect(mcpTarget);
+          const statusResponse = await entry.client.mcp.status({ directory });
+          if (_ocpIsoServes.get(terminalId) !== entry) {
+            throw new Error('OpenCode isolated runtime closed during MCP reconnect');
+          }
+          const statuses = statusResponse?.data || {};
+          const synabunStatus = statuses.SynaBun
+            || Object.entries(statuses).find(([name]) => name.toLowerCase() === 'synabun')?.[1];
+          if (synabunStatus?.status !== 'connected') {
+            const detail = synabunStatus?.error || synabunStatus?.status || 'missing from MCP status';
+            throw new Error(`OpenCode SynaBun MCP did not reconnect (${detail})`);
+          }
+          // If another profile was queued during this reconnect, its runtime
+          // file may already be what the new child loaded. Let that pending
+          // refresh perform the only confirmation instead of flashing stale UI.
+          if (entry.mcpProfile !== profile) return;
+          entry.mcpProfileRefreshFailed = false;
+          entry.lastUsed = Date.now();
+          for (const sessionId of sessionIds) {
+            broadcastToOpencodeV2Clients(
+              {
+                type: 'event',
+                eventType: 'mcp.profile.changed',
+                event: {
+                  sessionID: sessionId,
+                  profile,
+                  source: 'agent',
+                  hostRefresh: 'confirmed',
+                  refreshCorrelationId,
+                },
+              },
+              { nativeRunId: run?.provider === 'opencode' ? run.runId : null },
+            );
+          }
+          console.log(`[mcp/profile] OpenCode MCP reconnected terminal=${terminalId} profile=${profile} correlation=${refreshCorrelationId}`);
+        } catch (err) {
+          if (_ocpIsoServes.get(terminalId) !== entry || entry.mcpProfile !== profile) return;
+          entry.mcpProfileRefreshFailed = true;
+          for (const sessionId of sessionIds) {
+            broadcastToOpencodeV2Clients(
+              {
+                type: 'event',
+                eventType: 'mcp.profile.refresh.failed',
+                event: {
+                  sessionID: sessionId,
+                  profile,
+                  source: 'agent',
+                  refreshCorrelationId,
+                  error: err?.message || String(err),
+                },
+              },
+              { nativeRunId: run?.provider === 'opencode' ? run.runId : null },
+            );
+          }
+          throw err;
+        }
       },
-      { nativeRunId: run?.provider === 'opencode' ? run.runId : null },
     );
+  } else if (codexRuntime) {
+    runtimeKind = 'codex';
+    correlationId = randomUUID();
+    // Codex snapshots its deferred tool world at turn start. Managed Codex
+    // runtimes therefore advertise the complete SynaBun catalog up front;
+    // the profile is a focus selection and needs no MCP restart. For a legacy
+    // profiled Codex child, its own standard tools/list_changed notification is
+    // authoritative. A second config/mcpServer/reload races that notification,
+    // restarts unrelated MCPs, and may invalidate a tool call prepared against
+    // the first catalog revision.
+    const deferredCatalog = catalogMode === 'deferred' || codexRuntime.catalogMode === 'deferred';
+    hostRefresh = deferredCatalog ? 'not-needed' : 'notification';
+    codexRuntime.confirmAgentProfile(profile, correlationId, hostRefresh);
   }
   res.json({
     ok: true,
     profile,
     scope: 'current-runtime',
+    runtimeKind,
+    hostRefresh,
+    ...(correlationId ? { correlationId } : {}),
     sessionIds,
     runId: run?.runId || null,
     ...(warnings.length ? { warnings } : {}),
@@ -23921,6 +25093,11 @@ function writeMcpRegistry(registry) {
 function addServerToAllProfiles(registry, name) {
   const defaults = registry.profileDefaults || { autoAddNewServers: true, excludeProfiles: ['core'] };
   const exclude = new Set(defaults.excludeProfiles || []);
+  // Record the server as seen even when auto-add is off, so the startup backfill
+  // never treats it as new and re-grants it behind the user's back.
+  if (Array.isArray(defaults.knownServers) && !defaults.knownServers.includes(name)) {
+    defaults.knownServers.push(name);
+  }
   if (!defaults.autoAddNewServers) return registry;
   for (const [profileName, profile] of Object.entries(registry.profiles || {})) {
     if (exclude.has(profileName)) continue;
@@ -23995,29 +25172,16 @@ function ensureProfileGroupsBackfilled() {
   }
 }
 
-// Backfill migration: ensure profileDefaults is set and each profile's servers[]
-// lists every currently-registered server name. Runs idempotently on startup.
+// Backfill migration: ensure profileDefaults is set and auto-assign newly registered
+// servers to profiles. `profileDefaults.knownServers` is the migration marker — on the
+// first run under this scheme we only record what already exists, so a server the user
+// de-selected in the External Servers grid stays de-selected. Only genuinely new
+// servers are auto-assigned afterwards, and only when autoAddNewServers is on.
+// Builtins (SynaBun) are never listed: runtimes inject them separately with their own pins.
 function ensureProfileServersBackfilled() {
   try {
     const reg = readMcpRegistry();
-    let changed = false;
-    if (!reg.profileDefaults) {
-      reg.profileDefaults = { autoAddNewServers: true, excludeProfiles: ['core'] };
-      changed = true;
-    }
-    const allServerNames = Object.keys(reg.servers || {});
-    const exclude = new Set(reg.profileDefaults.excludeProfiles || []);
-    for (const [profileName, profile] of Object.entries(reg.profiles || {})) {
-      if (!Array.isArray(profile.servers)) { profile.servers = []; changed = true; }
-      if (exclude.has(profileName)) continue;
-      for (const serverName of allServerNames) {
-        if (!profile.servers.includes(serverName)) {
-          profile.servers.push(serverName);
-          changed = true;
-        }
-      }
-    }
-    if (changed) writeMcpRegistry(reg);
+    if (reconcileProfileServers(reg)) writeMcpRegistry(reg);
   } catch (err) {
     console.warn('[mcp-registry] backfill failed:', err.message);
   }
@@ -24031,6 +25195,33 @@ function buildLaunchConfig(name, serverEntry) {
   const envFromFile = mcpInstaller.readEnvFile(DATA_HOME, name);
   base.env = { ...(serverEntry.env || {}), ...envFromFile };
   return base;
+}
+
+// External MCP servers the given profile (default: the active one) grants to a runtime.
+// Builtins are excluded — SynaBun is injected separately with per-runtime browser/terminal pins.
+function getProfileServerNames(profileName) {
+  try {
+    return selectProfileServerNames(readMcpRegistry(), profileName);
+  } catch (err) {
+    console.warn('[mcp-registry] could not resolve profile servers:', err.message);
+    return [];
+  }
+}
+
+// { name: <~/.claude.json-shaped entry> } for a profile's external servers, for runtimes
+// that build an explicit server map (FleetView agents, per-loop --mcp-config files).
+function buildProfileMcpServers(profileName) {
+  const out = {};
+  let reg;
+  try { reg = readMcpRegistry(); } catch { return out; }
+  for (const name of getProfileServerNames(profileName)) {
+    try {
+      out[name] = buildClaudeMcpEntry(buildLaunchConfig(name, reg.servers[name]));
+    } catch (err) {
+      console.warn(`[mcp-registry] skipped "${name}" in runtime config: ${err.message}`);
+    }
+  }
+  return out;
 }
 
 app.get('/api/mcp/registry', (req, res) => {
@@ -24510,14 +25701,7 @@ async function internalMcpSync({ name, config, platforms }) {
         let data = {};
         try { data = JSON.parse(readFileSync(claudeJsonPath, 'utf-8')); } catch {}
         if (!data.mcpServers) data.mcpServers = {};
-        if (config.type === 'stdio') {
-          const entry = { command: config.command };
-          if (config.args?.length) entry.args = config.args;
-          if (config.env && Object.keys(config.env).length) entry.env = config.env;
-          data.mcpServers[name] = entry;
-        } else {
-          data.mcpServers[name] = { type: config.type, url: config.url };
-        }
+        data.mcpServers[name] = buildClaudeMcpEntry(config);
         writeFileSync(claudeJsonPath, JSON.stringify(data, null, 2), 'utf-8');
         results.claudeCode = 'ok';
       } else if (p === 'opencode') {
@@ -24529,9 +25713,7 @@ async function internalMcpSync({ name, config, platforms }) {
         mkdirSync(dir, { recursive: true });
         let content = '';
         try { content = readFileSync(configPath, 'utf-8'); } catch {}
-        const kvPairs = { command: config.command || '' };
-        if (config.args?.length) kvPairs.args = config.args;
-        if (config.env && Object.keys(config.env).length) kvPairs.env = config.env;
+        const kvPairs = buildCodexMcpKv(config);
         content = tomlUpsertSection(content, `mcp_servers.${name}`, kvPairs);
         writeFileSync(configPath, content, 'utf-8');
         results.codex = 'ok';
@@ -24542,10 +25724,7 @@ async function internalMcpSync({ name, config, platforms }) {
         let data = {};
         try { data = JSON.parse(readFileSync(settingsPath, 'utf-8')); } catch {}
         if (!data.mcpServers) data.mcpServers = {};
-        const entry = { command: config.command || '' };
-        if (config.args?.length) entry.args = config.args;
-        if (config.env && Object.keys(config.env).length) entry.env = config.env;
-        data.mcpServers[name] = entry;
+        data.mcpServers[name] = buildGeminiMcpEntry(config);
         writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
         results.gemini = 'ok';
       }
@@ -25083,8 +26262,12 @@ function saveCliConfig(config) {
   const dir = dirname(CLI_CONFIG_PATH);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(CLI_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
-  // Clear cached claude binary so getClaudeBin() re-resolves with new config
+  // Clear cached binaries so getClaudeBin()/getCodexBin() re-resolve with the
+  // new config. Codex was previously left stale, so a corrected Codex path in
+  // Settings did nothing until the server was restarted.
   _claudeBinPath = null;
+  _codexBinPath = null;
+  _nativeCodexBinPath = null;
 }
 
 const SHELL_PROFILE = { shell: DEFAULT_SHELL, args: [], env: {} };
@@ -25751,7 +26934,7 @@ function attachLoopDriver(terminalSessionId) {
         }
       }
     } catch { /* ok */ }
-  }, 2000);
+  }, 500);
 
   session._loopDriverInterval = interval;
 }
@@ -26231,9 +27414,10 @@ function cleanupOpencodeLoopConfig(terminalSessionId) {
  * ~/.claude.json points Claude Code at. Headers on a per-loop SynaBun HTTP
  * entry carry the same pins per-request instead, so the server's
  * getTargetPage()/_tabOwners routing lands this loop's tab-less browser calls
- * on its own pre-acquired tab. The file contains the user's full mcpServers
- * with SynaBun swapped (used with --strict-mcp-config), so duplicate-name
- * precedence quirks can never reintroduce the un-pinned user-scope entry.
+ * on its own pre-acquired tab. The file contains the user's mcpServers with
+ * SynaBun swapped (used with --strict-mcp-config), so duplicate-name precedence
+ * quirks can never reintroduce the un-pinned user-scope entry. Registry-managed
+ * servers are filtered to the active profile's servers[]; hand-added ones pass through.
  * Returns the config file path.
  */
 function setupClaudeLoopMcpConfig(terminalSessionId, browserSessionId, browserTabId) {
@@ -26248,6 +27432,15 @@ function setupClaudeLoopMcpConfig(terminalSessionId, browserSessionId, browserTa
     const data = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8'));
     if (data.mcpServers && typeof data.mcpServers === 'object') mcpServers = { ...data.mcpServers };
   } catch { /* the SynaBun entry alone still pins the loop */ }
+  // Servers SynaBun manages are gated by the active profile's servers[]; anything the
+  // user added to ~/.claude.json by hand is left alone.
+  try {
+    const managed = new Set(Object.keys(readMcpRegistry().servers || {}));
+    const granted = new Set(getProfileServerNames());
+    for (const name of Object.keys(mcpServers)) {
+      if (name !== 'SynaBun' && managed.has(name) && !granted.has(name)) delete mcpServers[name];
+    }
+  } catch { /* leave the inherited set as-is if the registry is unreadable */ }
   mcpServers.SynaBun = { type: 'http', url: `http://localhost:${PORT}/mcp`, headers };
   const target = resolve(dir, `claude-mcp-${terminalSessionId}.json`);
   writeFileSync(target, JSON.stringify({ mcpServers }, null, 2) + '\n', 'utf8');
@@ -26308,6 +27501,9 @@ function toCodexReasoningEffort(effort) {
 
 function buildExecMcpEnvOverrides(loopState) {
   const overrides = [];
+  if (loopState.profile === 'codex') {
+    overrides.push(['SYNABUN_TOOL_CATALOG_MODE', 'deferred']);
+  }
   if (loopState.browserSessionId) {
     overrides.push(['SYNABUN_BROWSER_SESSION', loopState.browserSessionId]);
   }
@@ -27947,7 +29143,7 @@ app.put('/api/cli/config', (req, res) => {
 app.post('/api/cli/detect/:profileId', (req, res) => {
   try {
     const { profileId } = req.params;
-    const defaults = { 'claude-code': 'claude', 'codex': 'codex', 'gemini': 'gemini' };
+    const defaults = { 'claude-code': 'claude', 'codex': 'codex', 'gemini': 'gemini', 'opencode': 'opencode' };
     const cmdName = defaults[profileId];
     if (!cmdName) return res.status(400).json({ ok: false, error: 'Unknown profile' });
 
@@ -29901,10 +31097,21 @@ const MONEY_TEXT_RE = /\b(?:boost(?:\s+post)?|turbinar|impulsionar|promote(?:\s+
 
 const MONEY_GUARD_MSG = 'SynaBun posts ORGANICALLY only and must never spend money. Do NOT retry — skip this and continue with the next organic action.';
 
+// The guard is ON for every session by default, so SynaBun's autonomous organic loops
+// (Page posts, group seeds, comment replies) can never wander into a Boost/pay control.
+// A session opened for DELIBERATE ads work can opt out via
+// POST /api/browser/sessions/:id/paid-surfaces {allow:true}. The exemption is per
+// session and dies with it — there is no global kill switch, so one ads session can
+// never silently disarm the loops running beside it.
+function moneyGuardActive(session) {
+  return !session?.allowPaidAdsSurfaces;
+}
+
 // Read the label of a resolved Playwright locator; return the offending phrase if it
 // is a money/boost/payment control, else null. Failures fall through (the network
 // guard is the backstop) rather than blocking legitimate actions.
-async function moneyGuardLabel(target) {
+async function moneyGuardLabel(target, session) {
+  if (!moneyGuardActive(session)) return null;
   try {
     const label = await target.evaluate(el => {
       const get = (a) => (el.getAttribute && el.getAttribute(a)) || '';
@@ -31652,13 +32859,39 @@ async function xPublishGate(session, req, routed, rawSelector) {
   return null;
 }
 
+/**
+ * Exempt ONE session from the money-safety guard, for deliberate ads work (reviewing a
+ * paused campaign, setting Business Suite ad-account rules). The exemption is scoped to
+ * this session and dies with it, so autonomous organic loops running alongside keep all
+ * three guard layers. Re-arm with {allow:false}. See MONEY_GUARD_MSG.
+ */
+app.post('/api/browser/sessions/:id/paid-surfaces', async (req, res) => {
+  const session = browserSessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  const allow = req.body?.allow === true;
+  try {
+    if (allow) {
+      // Drop the context-level abort route; the per-call guards read the flag directly.
+      await session.context?.unroute(MONEY_NET_RE);
+      if (session.context) session.context.__moneyGuardInstalled = false;
+    } else if (session.context) {
+      await installMoneyGuardRoute(session.context);
+    }
+  } catch (e) {
+    return res.status(500).json({ error: `Failed to ${allow ? 'lift' : 'restore'} the network guard: ${e.message}` });
+  }
+  session.allowPaidAdsSurfaces = allow;
+  console.warn(`[money-guard] ${allow ? 'LIFTED (ads work)' : 'restored'} for session ${req.params.id}`);
+  res.json({ ok: true, sessionId: req.params.id, allowPaidAdsSurfaces: allow });
+});
+
 app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
   const session = browserSessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   const routed = getTargetPage(session, req);
   if (!routed) return res.status(404).json({ error: `Tab ${req.body?.tabId} not found in session` });
   const { url, returnSnapshot, snapshot, compact } = req.body;
-  if (typeof url === 'string' && MONEY_URL_RE.test(url)) {
+  if (moneyGuardActive(session) && typeof url === 'string' && MONEY_URL_RE.test(url)) {
     return res.status(400).json({ error: `Blocked navigation to a paid Facebook ads/boost/billing surface (${url.slice(0, 80)}). ${MONEY_GUARD_MSG}`, moneyGuard: true });
   }
   const circuit = activeBrowserNavigationCircuit(session, routed.tabId, url);
@@ -32049,7 +33282,7 @@ app.post('/api/browser/sessions/:id/click', async (req, res) => {
       ? await resolveRefLocator(routed.page, ref)
       : await resolveInteractLocator(routed.page, selector, nthMatch, textHint);
     if (resolved.error) return res.status(400).json(resolved.error);
-    const moneyHit = await moneyGuardLabel(resolved.target);
+    const moneyHit = await moneyGuardLabel(resolved.target, session);
     if (moneyHit) return res.status(400).json({ error: `Blocked click on a paid Boost/Ads/payment control ("${moneyHit}"). ${MONEY_GUARD_MSG}`, moneyGuard: true });
     await resolved.target.click({ timeout: timeout || 5000 });
     const state = await getBrowserActionState(session, routed, compact);
@@ -32094,7 +33327,7 @@ app.post('/api/browser/sessions/:id/fill', async (req, res) => {
       ? await resolveRefLocator(routed.page, ref)
       : await resolveInteractLocator(routed.page, normalizeSelector(rawFillSel), nthMatch, textHint);
     if (resolved.error) return res.status(400).json(resolved.error);
-    const moneyHitFill = await moneyGuardLabel(resolved.target);
+    const moneyHitFill = await moneyGuardLabel(resolved.target, session);
     if (moneyHitFill) return res.status(400).json({ error: `Blocked fill of a paid Boost/Ads/payment field ("${moneyHitFill}"). ${MONEY_GUARD_MSG}`, moneyGuard: true });
     await resolved.target.fill(value ?? '', { timeout: timeout || 5000 });
     const state = await getBrowserActionState(session, routed, compact);
@@ -32119,7 +33352,7 @@ app.post('/api/browser/sessions/:id/type', async (req, res) => {
         ? await resolveRefLocator(routed.page, ref)
         : await resolveInteractLocator(routed.page, normalizeSelector(rawTypeSel), nthMatch, textHint);
       if (resolved.error) return res.status(400).json(resolved.error);
-      const moneyHitType = await moneyGuardLabel(resolved.target);
+      const moneyHitType = await moneyGuardLabel(resolved.target, session);
       if (moneyHitType) return res.status(400).json({ error: `Blocked typing into a paid Boost/Ads/payment field ("${moneyHitType}"). ${MONEY_GUARD_MSG}`, moneyGuard: true });
       healed = resolved.healed;
       if (mode === 'paragraphs') {
@@ -32179,7 +33412,7 @@ app.post('/api/browser/sessions/:id/select', async (req, res) => {
       ? await resolveRefLocator(routed.page, ref)
       : await resolveInteractLocator(routed.page, normalizeSelector(rawSelSel), nthMatch, textHint);
     if (resolved.error) return res.status(400).json(resolved.error);
-    const moneyHitSel = await moneyGuardLabel(resolved.target);
+    const moneyHitSel = await moneyGuardLabel(resolved.target, session);
     if (moneyHitSel) return res.status(400).json({ error: `Blocked select on a paid Boost/Ads/payment control ("${moneyHitSel}"). ${MONEY_GUARD_MSG}`, moneyGuard: true });
     await resolved.target.selectOption(value ?? '', { timeout: timeout || 5000 });
     const state = await getBrowserActionState(session, routed, compact);
@@ -33080,10 +34313,11 @@ const httpServer = app.listen(PORT, async () => {
   // previous versions of the install flow.
   try {
     const dedupStats = dedupeAllSettingsHooks();
-    if (dedupStats.removed > 0 || dedupStats.repaired > 0) {
+    if (dedupStats.removed > 0 || dedupStats.repaired > 0 || dedupStats.matchers > 0) {
       const bits = [];
       if (dedupStats.removed > 0) bits.push(`deduped ${dedupStats.removed} stray entr${dedupStats.removed === 1 ? 'y' : 'ies'}`);
       if (dedupStats.repaired > 0) bits.push(`repaired ${dedupStats.repaired} stale path${dedupStats.repaired === 1 ? '' : 's'}`);
+      if (dedupStats.matchers > 0) bits.push(`updated ${dedupStats.matchers} stale matcher${dedupStats.matchers === 1 ? '' : 's'}`);
       console.log(`  Hooks:     ${bits.join(' + ')} across ${dedupStats.files} settings file${dedupStats.files === 1 ? '' : 's'}`);
     }
   } catch (err) {

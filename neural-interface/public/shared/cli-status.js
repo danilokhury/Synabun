@@ -15,6 +15,11 @@ const CLI_DOC_URLS = {
   'gemini':      'https://github.com/google-gemini/gemini-cli',
 };
 
+// Fallback only. The server computes the channel-correct command (see
+// buildInstallCommand in lib/cli-update-planner.js) and returns it as
+// `installCommand`, so a Homebrew user is told `brew install --cask codex`
+// rather than an npm command that would create a second conflicting install.
+// These npm defaults apply only before the first tool-versions response.
 const CLI_INSTALL_CMDS = {
   'claude-code': 'npm install -g @anthropic-ai/claude-code',
   'codex':       'npm install -g @openai/codex',
@@ -42,7 +47,7 @@ export function getCliDocUrl(toolKey) {
 }
 
 export function getCliInstallCommand(toolKey) {
-  return CLI_INSTALL_CMDS[toolKey] || '';
+  return _cache.tools?.[toolKey]?.installCommand || CLI_INSTALL_CMDS[toolKey] || '';
 }
 
 export function getCliLabel(toolKey) {
@@ -69,13 +74,19 @@ async function _fetchToolVersions(force) {
   return _inflight;
 }
 
-function _emitChange(prevTools, nextTools) {
+// `force` makes a deliberate re-check notify subscribers even when the
+// version string is unchanged. Without it the Re-check button was a no-op by
+// construction: a panel that latched a "CLI not installed" banner after a
+// spawn error could only clear the latch from this callback, but the version
+// had not changed, so the callback never fired and the banner was permanent.
+// The background poller deliberately keeps the change-only behaviour.
+function _emitChange(prevTools, nextTools, { force = false } = {}) {
   for (const key of TOOL_KEYS) {
     const prev = prevTools?.[key]?.installed ?? null;
     const next = nextTools?.[key]?.installed ?? null;
     const subs = _subscribers.get(key);
     if (!subs || !subs.size) continue;
-    if (prev !== next || prevTools == null) {
+    if (force || prev !== next || prevTools == null) {
       const info = nextTools?.[key] || { installed: null };
       for (const cb of subs) {
         try { cb(info); } catch (e) { console.error('[cli-status] subscriber error:', e); }
@@ -153,6 +164,6 @@ export function subscribeCliStatus(toolKey, callback) {
 export async function recheckCliStatus(toolKey) {
   const prev = _cache.tools;
   const next = await _fetchToolVersions(true);
-  _emitChange(prev, next);
+  _emitChange(prev, next, { force: true });
   return next?.[toolKey] || { installed: null };
 }

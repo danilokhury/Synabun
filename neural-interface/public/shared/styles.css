@@ -1421,7 +1421,7 @@
     right: 0;
     transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1);
     z-index: 50000;
-    padding: 10px 18px 10px 10px;
+    padding: 10px 12px 10px 8px;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -1449,15 +1449,22 @@
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
+    position: relative;
+    z-index: 1;
   }
 
   #title-bar .bar-center {
-    flex: 1;
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: calc(100% - 360px);
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: center;
     gap: 8px;
     min-width: 0;
+    pointer-events: auto;
   }
 
   /* ── Unified frosted glass pill ── */
@@ -1474,6 +1481,9 @@
     padding: 4px 6px;
     box-shadow: var(--shadow-md), var(--shadow-highlight);
     transition: border-color 0.3s, box-shadow 0.3s;
+    margin-left: auto;
+    position: relative;
+    z-index: 1;
   }
   #title-bar .bar-right:hover {
     border-color: rgba(255, 255, 255, 0.09);
@@ -12114,6 +12124,7 @@
 
   /* Type-conditional field visibility */
   .stg-mcp-add-form[data-transport="stdio"] .stg-mcp-field-url,
+  .stg-mcp-add-form[data-transport="stdio"] .stg-mcp-field-remote,
   .stg-mcp-add-form[data-transport="sse"] .stg-mcp-field-stdio,
   .stg-mcp-add-form[data-transport="http"] .stg-mcp-field-stdio {
     display: none;

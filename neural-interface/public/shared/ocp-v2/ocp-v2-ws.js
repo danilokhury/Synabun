@@ -278,6 +278,12 @@ function dispatchEvent(store, eventType, ev) {
     case 'mcp.profile.changed':
       store.setMcpProfile(ev.profile || null);
       break;
+    case 'mcp.profile.refresh.failed':
+      store.pushError({
+        message: ev.error || `MCP profile changed to ${ev.profile || 'the requested profile'}, but OpenCode could not reload its tools.`,
+        raw: ev,
+      });
+      break;
     case 'permission.asked':
     case 'permission.updated': {
       store.setPendingPermission(ev);

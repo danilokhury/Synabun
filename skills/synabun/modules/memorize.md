@@ -10,7 +10,7 @@ You are now in **memorize mode**. Your job is to analyze the full conversation c
 ## CRITICAL: SynaBun MCP Tool Quirks
 
 - Make ALL SynaBun MCP calls **sequentially** (never in parallel — one failure cascades).
-- `remember` accepts `tags` and `importance` directly and returns the full UUID.
+- `remember` requires `category` and `project` on every call, accepts `tags` and `importance` directly, and returns the full UUID.
 - `reflect` requires the **FULL UUID**. Use the UUID returned by `remember`, or `recall` to find existing memories.
 
 ## Runtime Compatibility

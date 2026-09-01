@@ -1457,6 +1457,22 @@ function buildMcpTab() {
                   <input type="text" class="stg-input stg-input-sm" id="stg-mcp-srv-url" placeholder="https://…">
                 </div>
               </div>
+              <div class="stg-mcp-field-remote">
+                <div class="stg-mcp-form-label">Headers</div>
+                <div class="stg-mcp-env-rows" id="stg-mcp-hdr-rows"></div>
+                <div class="stg-mcp-env-add" id="stg-mcp-hdr-add">+ Add header</div>
+                <div class="stg-mcp-form-label">OAuth (optional)</div>
+                <div class="stg-mcp-form-grid">
+                  <div class="stg-inline-field">
+                    <label>Client ID</label>
+                    <input type="text" class="stg-input stg-input-sm" id="stg-mcp-oauth-client-id" placeholder="provider app ID">
+                  </div>
+                  <div class="stg-inline-field">
+                    <label>Callback Port</label>
+                    <input type="number" class="stg-input stg-input-sm" id="stg-mcp-oauth-port" placeholder="33418" min="1" max="65535">
+                  </div>
+                </div>
+              </div>
               <div class="stg-mcp-form-label">Environment Variables</div>
               <div class="stg-mcp-env-rows" id="stg-mcp-env-rows"></div>
               <div class="stg-mcp-env-add" id="stg-mcp-env-add">+ Add variable</div>
@@ -4644,7 +4660,11 @@ export async function openSettingsModal(options = {}) {
   // ── CLI Paths handlers ──
   {
     const cliSaveBtn = overlay.querySelector('#cli-paths-save');
-    const cliDefaults = { 'claude-code': 'claude', 'codex': 'codex', 'gemini': 'gemini' };
+    // Must stay in sync with CLI_DEFAULTS in server.js and the cliProfiles
+    // list that renders the inputs — opencode was previously missing here, so
+    // its input rendered but its value was never sent to the server.
+    const cliDefaults = { 'claude-code': 'claude', 'codex': 'codex', 'gemini': 'gemini', 'opencode': 'opencode' };
+    const cliProfileIds = Object.keys(cliDefaults);
 
     // Detect buttons
     overlay.querySelectorAll('.cli-detect-btn[data-cli-detect]').forEach(btn => {
@@ -4677,7 +4697,7 @@ export async function openSettingsModal(options = {}) {
     if (cliSaveBtn) {
       cliSaveBtn.addEventListener('click', async () => {
         const body = {};
-        ['claude-code', 'codex', 'gemini'].forEach(id => {
+        cliProfileIds.forEach(id => {
           const input = overlay.querySelector(`#cli-path-${id}`);
           if (input) body[id] = { command: input.value.trim() };
         });
@@ -4690,7 +4710,7 @@ export async function openSettingsModal(options = {}) {
           });
           const data = await res.json();
           if (data.ok) {
-            ['claude-code', 'codex', 'gemini'].forEach(id => {
+            cliProfileIds.forEach(id => {
               const input = overlay.querySelector(`#cli-path-${id}`);
               const status = overlay.querySelector(`#cli-status-${id}`);
               const val = input?.value?.trim() || '';
@@ -5491,7 +5511,7 @@ export async function openSettingsModal(options = {}) {
             const mp = setupStatus.paths?.mcpIndexPath || '<path-to>/mcp-server/run.mjs';
             const ep = setupStatus.paths?.envPath || '<path-to>/synabun/.env';
             const dataHome = setupStatus.paths?.dataHome || '<path-to>/synabun';
-            cachedConfig = `[mcp_servers.SynaBun]\ncommand = "node"\nargs = ["${mp}"]\nenv = { DOTENV_PATH = "${ep}", SYNABUN_DATA_HOME = "${dataHome}", MEMORY_DATA_DIR = "${dataHome}/mcp-data", SYNABUN_PROFILE = "codex-browser", SYNABUN_BROWSER_FAST = "1", SYNABUN_BROWSER_COMPACT = "1" }`;
+            cachedConfig = `[mcp_servers.SynaBun]\ncommand = "node"\nargs = ["${mp}"]\nenv = { DOTENV_PATH = "${ep}", SYNABUN_DATA_HOME = "${dataHome}", MEMORY_DATA_DIR = "${dataHome}/mcp-data", SYNABUN_PROFILE = "full", SYNABUN_BROWSER_FAST = "1", SYNABUN_BROWSER_COMPACT = "1", SYNABUN_TOOL_CATALOG_MODE = "deferred" }`;
             preview.textContent = cachedConfig;
           } else { preview.textContent = 'Could not load config.'; }
         }).catch(() => { preview.textContent = 'Failed to load.'; });
@@ -8652,9 +8672,73 @@ export async function openSettingsModal(options = {}) {
     refreshMcpTab();
 
     // ── Paste parser ──
+    function tokenizeShell(text) {
+      const out = [];
+      const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+      let m;
+      while ((m = re.exec(text)) !== null) out.push(m[1] ?? m[2] ?? m[3]);
+      return out;
+    }
+
+    // Format 6: a documented `claude mcp add …` command, including the remote/OAuth
+    // flags (--transport, --client-id, --callback-port, --header) that providers publish.
+    function parseClaudeMcpAdd(text) {
+      const t = text.replace(/\\\s*\n/g, ' ').trim();
+      if (!/^claude\s+mcp\s+add\b/.test(t)) return null;
+      const tokens = tokenizeShell(t).slice(3);
+      const headers = {};
+      const env = {};
+      const positional = [];
+      let type = null, clientId = null, callbackPort = null, passthrough = false;
+      for (let i = 0; i < tokens.length; i++) {
+        const tok = tokens[i];
+        if (passthrough) { positional.push(tok); continue; }
+        if (tok === '--') { passthrough = true; continue; }
+        if (tok === '-t' || tok === '--transport') { type = tokens[++i]; continue; }
+        if (tok === '--client-id') { clientId = tokens[++i]; continue; }
+        if (tok === '--callback-port') { callbackPort = tokens[++i]; continue; }
+        if (tok === '-s' || tok === '--scope') { i++; continue; }
+        if (tok === '-H' || tok === '--header') {
+          const raw = tokens[++i] || '';
+          const idx = raw.indexOf(':');
+          if (idx > 0) headers[raw.slice(0, idx).trim()] = raw.slice(idx + 1).trim();
+          continue;
+        }
+        if (tok === '-e' || tok === '--env') {
+          const raw = tokens[++i] || '';
+          const idx = raw.indexOf('=');
+          if (idx > 0) env[raw.slice(0, idx).trim()] = raw.slice(idx + 1).trim();
+          continue;
+        }
+        if (tok.startsWith('-')) continue;
+        positional.push(tok);
+      }
+      const name = positional.shift() || null;
+      const target = positional.shift() || '';
+      if (!target) return null;
+      const resolvedType = type || (/^https?:\/\//.test(target) ? 'http' : 'stdio');
+      const remote = resolvedType === 'http' || resolvedType === 'sse';
+      const port = parseInt(callbackPort ?? '', 10);
+      const oauth = {};
+      if (clientId) oauth.clientId = clientId;
+      if (Number.isInteger(port) && port > 0 && port <= 65535) oauth.callbackPort = port;
+      return {
+        name,
+        type: resolvedType,
+        command: remote ? undefined : target,
+        args: remote || !positional.length ? undefined : positional,
+        env: Object.keys(env).length ? env : undefined,
+        url: remote ? target : undefined,
+        headers: remote && Object.keys(headers).length ? headers : undefined,
+        oauth: remote && Object.keys(oauth).length ? oauth : undefined,
+      };
+    }
+
     function parseMcpPaste(text) {
       const t = text.trim();
       if (!t) return null;
+      const claudeCmd = parseClaudeMcpAdd(t);
+      if (claudeCmd) return claudeCmd;
       // Try JSON
       let obj;
       try { obj = JSON.parse(t); } catch {}
@@ -8706,7 +8790,16 @@ export async function openSettingsModal(options = {}) {
         args = command.slice(1);
         command = command[0] || '';
       }
-      return { name: name || null, type, command: command || undefined, args: args || undefined, env: env || undefined, url: cfg.url || undefined };
+      return {
+        name: name || null,
+        type,
+        command: command || undefined,
+        args: args || undefined,
+        env: env || undefined,
+        url: cfg.url || undefined,
+        headers: cfg.headers || undefined,
+        oauth: cfg.oauth || undefined,
+      };
     }
 
     // ── Form helpers ──
@@ -8720,6 +8813,10 @@ export async function openSettingsModal(options = {}) {
     const argInput = overlay.querySelector('#stg-mcp-arg-input');
     const envRows = overlay.querySelector('#stg-mcp-env-rows');
     const envAdd = overlay.querySelector('#stg-mcp-env-add');
+    const hdrRows = overlay.querySelector('#stg-mcp-hdr-rows');
+    const hdrAdd = overlay.querySelector('#stg-mcp-hdr-add');
+    const oauthClientIdEl = overlay.querySelector('#stg-mcp-oauth-client-id');
+    const oauthPortEl = overlay.querySelector('#stg-mcp-oauth-port');
     const platformsEl = overlay.querySelector('#stg-mcp-platforms');
     const feedbackEl = overlay.querySelector('#stg-mcp-sync-feedback');
 
@@ -8732,8 +8829,11 @@ export async function openSettingsModal(options = {}) {
       if (addForm) addForm.dataset.transport = 'stdio';
       // Clear arg chips
       if (argChips) argChips.querySelectorAll('.stg-mcp-arg-chip').forEach(c => c.remove());
-      // Clear env rows
+      // Clear env + header rows
       if (envRows) envRows.innerHTML = '';
+      if (hdrRows) hdrRows.innerHTML = '';
+      if (oauthClientIdEl) oauthClientIdEl.value = '';
+      if (oauthPortEl) oauthPortEl.value = '';
       if (feedbackEl) feedbackEl.innerHTML = '';
     }
 
@@ -8746,19 +8846,30 @@ export async function openSettingsModal(options = {}) {
       argChips.insertBefore(chip, argInput);
     }
 
-    function addEnvRow(key, val, opts = {}) {
-      if (!envRows) return;
+    const SENSITIVE_KEY_RE = /token|secret|key|password|api_key|authorization|bearer/i;
+
+    function addKvRow(container, key, val, opts = {}) {
+      if (!container) return;
       const row = document.createElement('div');
       row.className = 'stg-mcp-env-row';
-      const sensitive = !!opts.sensitive || (typeof key === 'string' && /token|secret|key|password|api_key/i.test(key));
+      const sensitive = !!opts.sensitive || (typeof key === 'string' && SENSITIVE_KEY_RE.test(key));
       const valType = sensitive ? 'password' : 'text';
-      row.innerHTML = `<input type="text" class="stg-input stg-input-sm stg-mcp-env-key" placeholder="KEY" value="${esc(key || '')}"><input type="${valType}" class="stg-input stg-input-sm stg-mcp-env-val" placeholder="value" value="${esc(val || '')}"><button type="button" class="stg-mcp-env-eye" title="Toggle reveal">\u{1F441}</button><span class="stg-mcp-env-remove">\u00d7</span>`;
+      const keyPlaceholder = opts.keyPlaceholder || 'KEY';
+      row.innerHTML = `<input type="text" class="stg-input stg-input-sm stg-mcp-env-key" placeholder="${esc(keyPlaceholder)}" value="${esc(key || '')}"><input type="${valType}" class="stg-input stg-input-sm stg-mcp-env-val" placeholder="value" value="${esc(val || '')}"><button type="button" class="stg-mcp-env-eye" title="Toggle reveal">\u{1F441}</button><span class="stg-mcp-env-remove">\u00d7</span>`;
       const valInput = row.querySelector('.stg-mcp-env-val');
       row.querySelector('.stg-mcp-env-eye')?.addEventListener('click', () => {
         valInput.type = valInput.type === 'password' ? 'text' : 'password';
       });
       row.querySelector('.stg-mcp-env-remove').addEventListener('click', () => row.remove());
-      envRows.appendChild(row);
+      container.appendChild(row);
+    }
+
+    function addEnvRow(key, val, opts = {}) {
+      addKvRow(envRows, key, val, opts);
+    }
+
+    function addHeaderRow(key, val, opts = {}) {
+      addKvRow(hdrRows, key, val, { keyPlaceholder: 'Authorization', ...opts });
     }
 
     function collectArgs() {
@@ -8766,15 +8877,34 @@ export async function openSettingsModal(options = {}) {
       return Array.from(argChips.querySelectorAll('.stg-mcp-chip-text')).map(el => el.textContent);
     }
 
-    function collectEnv() {
-      if (!envRows) return {};
-      const env = {};
-      envRows.querySelectorAll('.stg-mcp-env-row').forEach(row => {
+    function collectKv(container) {
+      if (!container) return {};
+      const out = {};
+      container.querySelectorAll('.stg-mcp-env-row').forEach(row => {
         const k = row.querySelector('.stg-mcp-env-key')?.value?.trim();
         const v = row.querySelector('.stg-mcp-env-val')?.value?.trim();
-        if (k) env[k] = v || '';
+        if (k) out[k] = v || '';
       });
-      return env;
+      return out;
+    }
+
+    function collectEnv() {
+      return collectKv(envRows);
+    }
+
+    function collectHeaders() {
+      return collectKv(hdrRows);
+    }
+
+    // OAuth params only apply to URL-addressed servers; Claude Code stores them
+    // as { clientId, callbackPort } and pins the redirect to localhost:<port>/callback.
+    function collectOauth() {
+      const clientId = oauthClientIdEl?.value?.trim();
+      const port = parseInt(oauthPortEl?.value ?? '', 10);
+      const oauth = {};
+      if (clientId) oauth.clientId = clientId;
+      if (Number.isInteger(port) && port > 0 && port <= 65535) oauth.callbackPort = port;
+      return Object.keys(oauth).length ? oauth : null;
     }
 
     function populateAddForm(parsed) {
@@ -8792,6 +8922,13 @@ export async function openSettingsModal(options = {}) {
       if (parsed.env && typeof parsed.env === 'object') {
         Object.entries(parsed.env).forEach(([k, v]) => addEnvRow(k, v));
       }
+      if (parsed.headers && typeof parsed.headers === 'object') {
+        Object.entries(parsed.headers).forEach(([k, v]) => addHeaderRow(k, v));
+      }
+      if (parsed.oauth && typeof parsed.oauth === 'object') {
+        if (parsed.oauth.clientId && oauthClientIdEl) oauthClientIdEl.value = parsed.oauth.clientId;
+        if (parsed.oauth.callbackPort && oauthPortEl) oauthPortEl.value = parsed.oauth.callbackPort;
+      }
     }
 
     // ── Paste zone handler ──
@@ -8800,9 +8937,12 @@ export async function openSettingsModal(options = {}) {
       if (!val || val.length < 3) return;
       const parsed = parseMcpPaste(val);
       if (parsed) {
-        // Clear existing chips/env before populating
+        // Clear existing chips/env/headers before populating
         argChips?.querySelectorAll('.stg-mcp-arg-chip').forEach(c => c.remove());
         envRows && (envRows.innerHTML = '');
+        hdrRows && (hdrRows.innerHTML = '');
+        if (oauthClientIdEl) oauthClientIdEl.value = '';
+        if (oauthPortEl) oauthPortEl.value = '';
         populateAddForm(parsed);
       }
     });
@@ -8823,6 +8963,7 @@ export async function openSettingsModal(options = {}) {
 
     // ── Env add button ──
     envAdd?.addEventListener('click', () => addEnvRow('', ''));
+    hdrAdd?.addEventListener('click', () => addHeaderRow('', ''));
 
     // ── Platform detection ──
     (async () => {
@@ -8906,6 +9047,14 @@ export async function openSettingsModal(options = {}) {
           envRows.appendChild(row);
         }
       }
+      // Rebuild remote fields
+      if (urlEl) urlEl.value = detected.url || '';
+      if (hdrRows) {
+        hdrRows.innerHTML = '';
+        for (const [k, v] of Object.entries(detected.headers || {})) addHeaderRow(k, String(v));
+      }
+      if (oauthClientIdEl) oauthClientIdEl.value = detected.oauth?.clientId || '';
+      if (oauthPortEl) oauthPortEl.value = detected.oauth?.callbackPort || '';
       // Toggle stdio/url fields
       if (addForm) addForm.dataset.transport = detected.type || 'stdio';
     }
@@ -8916,7 +9065,7 @@ export async function openSettingsModal(options = {}) {
     function setFormMode(mode) {
       if (addForm) addForm.dataset.kind = mode;
       const isPlugin = mode === 'plugin';
-      const mcpOnly = addForm?.querySelectorAll('.stg-mcp-form-grid, #stg-mcp-env-rows, #stg-mcp-env-add, #stg-mcp-platforms') || [];
+      const mcpOnly = addForm?.querySelectorAll('.stg-mcp-form-grid, .stg-mcp-field-remote, #stg-mcp-env-rows, #stg-mcp-env-add, #stg-mcp-platforms') || [];
       mcpOnly.forEach(el => { el.style.display = isPlugin ? 'none' : ''; });
       const envLabels = addForm?.querySelectorAll('.stg-mcp-form-label') || [];
       envLabels.forEach(el => { el.style.display = isPlugin ? 'none' : ''; });
@@ -8978,6 +9127,10 @@ export async function openSettingsModal(options = {}) {
         if (args.length) config.args = args;
       } else {
         config.url = urlEl?.value?.trim() || '';
+        const headers = collectHeaders();
+        if (Object.keys(headers).length) config.headers = headers;
+        const oauth = collectOauth();
+        if (oauth) config.oauth = oauth;
       }
       const env = collectEnv();
       if (Object.keys(env).length) config.env = env;

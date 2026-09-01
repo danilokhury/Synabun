@@ -797,7 +797,7 @@ Also available: profile (runtime tool-group toggle), browser automation (40 tool
 - Session-ending context: remember ongoing work as conversation
 
 ### Memory Tool Quirks
-- `remember` accepts `tags` and `importance` directly and returns the full UUID.
+- `remember` requires `category` and `project` on every call, accepts `tags` and `importance` directly, and returns the full UUID.
 - `forget` is a soft delete — use `restore` to undo.
 - The `reflect` tool's ID parameter is `memory_id` (not `id`). It requires the FULL UUID format.
 - Make memory MCP calls sequentially, not in parallel — one failure cascades to all sibling calls in the batch.

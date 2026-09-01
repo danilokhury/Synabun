@@ -18,13 +18,20 @@ class McpProcess {
   private stderr = '';
   private notifications: string[] = [];
 
-  constructor(profile: string, dataHome: string, envPath: string, runtimeProfilePath?: string) {
+  constructor(
+    profile: string,
+    dataHome: string,
+    envPath: string,
+    runtimeProfilePath?: string,
+    catalogMode?: 'profiled' | 'deferred',
+  ) {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       DOTENV_PATH: envPath,
       SYNABUN_DATA_HOME: dataHome,
       MEMORY_DATA_DIR: join(dataHome, 'mcp-data'),
       SYNABUN_PROFILE: profile,
+      SYNABUN_TOOL_CATALOG_MODE: catalogMode || 'profiled',
     };
     if (runtimeProfilePath) env.SYNABUN_RUNTIME_PROFILE_PATH = runtimeProfilePath;
     delete env.CLAUDECODE;
@@ -141,7 +148,7 @@ beforeAll(() => {
     cwd: projectRoot,
     stdio: 'pipe',
   });
-});
+}, 120_000);
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map((process) => process.stop()));
@@ -177,7 +184,14 @@ describe('MCP profile process isolation', () => {
 
       // This changes only the Twitter runtime. The future-session default and
       // already-running Facebook process must remain untouched.
-      await twitter.setProfile('core');
+      const switchResponse = await twitter.setProfile('core');
+      const switchOutput = switchResponse.result?.content?.[0]?.text || '';
+      const switchResult = JSON.parse(switchOutput);
+      expect(switchResult.hostRefresh).toBe('notification');
+      expect(switchResult.toolListNotification).toBe('scheduled');
+      // The initiating tools/call response must finish before list_changed;
+      // otherwise OpenCode can abort the profile tool roundtrip itself.
+      expect(twitter.notificationCount('notifications/tools/list_changed')).toBe(0);
       await twitter.waitForNotificationCount('notifications/tools/list_changed', 1);
       const [facebookAfter, twitterAfter] = await Promise.all([
         facebook.toolNames(),
@@ -193,11 +207,12 @@ describe('MCP profile process isolation', () => {
       expect(twitter.notificationCount('notifications/tools/list_changed')).toBe(1);
       expect(facebook.notificationCount('notifications/tools/list_changed')).toBe(0);
 
-      // Re-applying the effective profile is idempotent and emits no second
-      // refresh notification.
+      // Re-applying the effective profile is an explicit recovery request. It
+      // must emit a fresh notification so a host that lost/staled the first
+      // catalog update can heal without requiring a different profile first.
       await twitter.setProfile('core');
-      await new Promise((resolveWait) => setTimeout(resolveWait, 30));
-      expect(twitter.notificationCount('notifications/tools/list_changed')).toBe(1);
+      await twitter.waitForNotificationCount('notifications/tools/list_changed', 2);
+      expect(twitter.notificationCount('notifications/tools/list_changed')).toBe(2);
 
       // A replacement MCP child for the same isolated runtime must recover
       // the runtime-owned selection instead of its stale launch env/default.
@@ -226,6 +241,34 @@ describe('MCP profile process isolation', () => {
       await Promise.all(processes.map((process) => process.initialize()));
       const lists = await Promise.all(processes.map((process) => process.toolNames()));
       for (const names of lists) expect(names).toContain('profile');
+    } finally {
+      await Promise.all(running.splice(0).map((process) => process.stop()));
+      rmSync(dataHome, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('advertises the full deferred catalog to Codex before any profile switch', async () => {
+    const dataHome = mkdtempSync(join(tmpdir(), 'synabun-profile-deferred-'));
+    const envPath = join(dataHome, '.env');
+    mkdirSync(join(dataHome, 'mcp-data'), { recursive: true });
+    writeFileSync(envPath, '', 'utf8');
+    try {
+      const process = new McpProcess('core', dataHome, envPath, undefined, 'deferred');
+      running.push(process);
+      await process.initialize();
+
+      const before = await process.toolNames();
+      expect(before).toContain('profile');
+      expect(before).toContain('browser_session');
+      expect(before).toContain('fb_groups');
+
+      const response = await process.setProfile('codex-browser');
+      const output = JSON.parse(response.result?.content?.[0]?.text || '{}');
+      expect(output.catalogMode).toBe('deferred');
+      expect(output.hostRefresh).toBe('not-needed');
+      expect(output.toolListNotification).toBe('not-needed');
+      expect(await process.toolNames()).toEqual(before);
+      expect(process.notificationCount('notifications/tools/list_changed')).toBe(0);
     } finally {
       await Promise.all(running.splice(0).map((process) => process.stop()));
       rmSync(dataHome, { recursive: true, force: true });

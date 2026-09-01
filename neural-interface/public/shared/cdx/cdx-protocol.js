@@ -429,6 +429,33 @@ export function selectedModelOption(models, modelId) {
   }) || null;
 }
 
+export function normalizeCodexContextMode(value) {
+  return value === 'extended' ? 'extended' : 'default';
+}
+
+export function selectedCodexContextModel(models, modelId) {
+  const selected = selectedModelOption(models, modelId);
+  if (selected) return selected;
+  if (String(modelId || '').trim()) return null;
+  return (Array.isArray(models) ? models : []).find((model) => (
+    model?.isDefault === true || model?.is_default === true || model?.default === true
+  )) || null;
+}
+
+export function verifyCodexExtendedContext({ contextMode, model, actualWindow } = {}) {
+  if (normalizeCodexContextMode(contextMode) !== 'extended') return 'off';
+  const actual = Number(actualWindow);
+  if (!Number.isFinite(actual) || actual <= 0) return 'pending';
+  const expected = Number(model?.expectedEffectiveContextWindow);
+  if (Number.isFinite(expected) && expected > 0) {
+    const tolerance = Math.max(1024, Math.floor(expected * 0.01));
+    return actual + tolerance >= expected ? 'verified' : 'mismatch';
+  }
+  const baseline = Number(model?.contextWindow);
+  if (!Number.isFinite(baseline) || baseline <= 0) return 'unavailable';
+  return actual > baseline ? 'verified' : 'mismatch';
+}
+
 export function formatCodexConfigWarning(params = {}, fallback = 'configWarning') {
   const summary = params?.message || params?.summary || fallback;
   const rawDetail = params?.detail
