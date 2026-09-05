@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import { dirname, join, sep } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { getAugmentedPath } from './augmented-path.js';
 
 // Effort ladder the Claude Code CLI accepts for --effort. Models advertise their
 // own subset via supportedEffortLevels; this is the superset used as a fallback
@@ -144,7 +145,15 @@ export function queryClaudeCliModels(claudeBin, { cwd, timeoutMs = DISCOVERY_TIM
       '--verbose',
       // Load no settings files. Without this the user's own SessionStart hooks
       // fire on every discovery — slow, and with visible side effects.
-      '--setting-sources', '',
+      //
+      // Written as one `=` token, not a `'--setting-sources', ''` pair: the spawn
+      // below falls back to a shell whenever `bin` is a bare command name, and a
+      // shell concatenates argv instead of passing it through. The empty string
+      // vanishes in that concatenation, leaving a dangling flag, and the CLI exits
+      // with "option '--setting-sources <sources>' argument missing" — which this
+      // function reports as an empty model list, silently degrading the whole
+      // picker to CLAUDE_FALLBACK_MODELS. The `=` form survives either path.
+      '--setting-sources=',
     ];
     // Same spawn quirks as the main session path: Windows can't exec a .js
     // directly, and .cmd/.bat need a shell.
@@ -170,7 +179,7 @@ export function queryClaudeCliModels(claudeBin, { cwd, timeoutMs = DISCOVERY_TIM
     try {
       child = spawn(bin, args, {
         cwd: cwd || process.cwd(),
-        env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' },
+        env: { ...process.env, PATH: getAugmentedPath(), CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' },
         stdio: ['pipe', 'pipe', 'ignore'],
         shell: useShell,
       });
@@ -303,7 +312,11 @@ export function queryClaudeCliVersion(claudeBin, { timeoutMs = 10000 } = {}) {
     timer.unref?.();
 
     try {
-      child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'ignore'], shell: useShell });
+      child = spawn(bin, args, {
+        env: { ...process.env, PATH: getAugmentedPath() },
+        stdio: ['ignore', 'pipe', 'ignore'],
+        shell: useShell,
+      });
     } catch {
       return finish(null);
     }

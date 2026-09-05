@@ -165,6 +165,7 @@ import {
   checkClaudeCliSkew,
   discoverClaudeModels,
 } from './lib/claude-model-catalog.js';
+import { getAugmentedPath } from './lib/augmented-path.js';
 import {
   listCodexSessionsFromAccounts,
   mergeCodexSessionSummaries,
@@ -3029,38 +3030,6 @@ function _heartbeatLock(sessionId, windowId) {
 
 // Cache resolved claude binary path (avoids running `where` every query)
 let _claudeBinPath = null;
-function getAugmentedPath() {
-  const home = os.homedir();
-  const npmPrefix = process.env.NPM_CONFIG_PREFIX || process.env.npm_config_prefix || '';
-  const extra = process.platform === 'win32'
-    ? [
-      process.env.APPDATA ? join(process.env.APPDATA, 'npm') : join(home, 'AppData', 'Roaming', 'npm'),
-      npmPrefix,
-      dirname(process.execPath),
-    ]
-    : [
-      join(home, '.local', 'bin'),
-      '/usr/local/bin',
-      // Homebrew (Apple Silicon + Linuxbrew) and Bun. Absent here, a
-      // brew-installed CLI is invisible whenever SynaBun is launched from
-      // Finder/launchd rather than a shell that already exported them.
-      '/opt/homebrew/bin',
-      '/home/linuxbrew/.linuxbrew/bin',
-      join(home, '.linuxbrew', 'bin'),
-      join(home, '.bun', 'bin'),
-      join(home, '.npm-global', 'bin'),
-      npmPrefix ? join(npmPrefix, 'bin') : '',
-    ];
-  const entries = [...extra.filter(d => d && existsSync(d)), ...(process.env.PATH || '').split(delimiter)];
-  const seen = new Set();
-  return entries.filter((entry) => {
-    if (!entry) return false;
-    const key = process.platform === 'win32' ? entry.toLowerCase() : entry;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).join(delimiter);
-}
 
 function getClaudeBin() {
   if (_claudeBinPath) return _claudeBinPath;
@@ -11744,6 +11713,8 @@ function toCliModelName(model) {
 const MODEL_PRICING = {
   // $/MTok — [input, output, cache_write_5m, cache_read].
   // Derived from published list prices: cache_write_5m = 1.25x input, cache_read = 0.1x input.
+  // Fable 5.1 is tier_10_50_cache_read_0_25 — same in/out as Fable 5, cheaper cache reads.
+  'claude-fable-5-1':           [10, 50, 12.50, 0.25],
   'claude-fable-5':             [10, 50, 12.50, 1.00],
   'claude-opus-5':              [5, 25, 6.25, 0.50],
   'claude-opus-4-8':            [5, 25, 6.25, 0.50],

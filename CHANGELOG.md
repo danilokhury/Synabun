@@ -1,3 +1,16 @@
+# SynaBun v.2026.09.05
+
+A Claude Code model release: the model picker stops quietly serving a stale built-in list, sidepanel sessions run the model the picker actually offered, and Fable 5.1 is priced correctly.
+
+## 🛠 Fixed
+
+- **The Claude model picker silently served a static fallback list** — Model discovery spawns the Claude Code CLI to read its live model table, and that spawn goes through a shell whenever the resolved binary is a bare command name rather than a full path. A shell concatenates its arguments instead of passing them through, so the empty string in `--setting-sources ''` vanished, the CLI exited with `option '--setting-sources <sources>' argument missing`, and discovery came back empty. The flag is now a single `--setting-sources=` token, which survives both spawn paths. The failure was invisible by design: an empty result falls back to a four-entry list of unversioned aliases with no Fable entry at all, so the picker looked merely out of date rather than broken.
+- **Discovery missed a Claude CLI installed outside the login shell's `PATH`** — SynaBun is routinely started from Finder or launchd with a minimal environment, where a CLI in `~/.local/bin`, Homebrew, Bun, or an npm global prefix is invisible. The same `PATH` augmentation the rest of the server already used is now applied to the model-discovery and version probes, so those installations are found.
+- **The sidepanel offered Fable 5.1 but ran Fable 5** — The picker reads the CLI you have installed, while sidepanel chats run the CLI bundled inside `@anthropic-ai/claude-agent-sdk`. The two had drifted apart, and the older bundle's model table knows only `claude-fable-5` — so choosing Fable 5.1, or the `fable`/`best` aliases, quietly launched Fable 5 with no symptom beyond the model naming a different version of itself. The SDK is bumped `0.3.220` → `0.3.258` to close the gap. The guard test that exists to catch exactly this had been passing vacuously, because it probed for a CLI under the un-augmented `PATH` and skipped whenever it could not find one; it now runs on the machines it was written to protect.
+- **Fable 5.1 sessions reported the wrong cost** — With no pricing row of its own, `claude-fable-5-1` fell through to the Sonnet fallback and understated input and output by roughly 3.3x. It now carries its own rates, which are deliberately not a copy of the Fable 5 row: same input and output pricing, cheaper cache reads.
+
+---
+
 # SynaBun v.2026.09.01
 
 A Codex and memory-hooks release: Codex sidepanels no longer strand `already has an active writer` errors across tab switches, thread history moves off Codex's deprecated hydration path, and the Claude Code memory hooks stop re-issuing a block they were never able to clear.
