@@ -20,6 +20,18 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const SHELL = existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/sh';
 const baseEnv = () => ({ ...process.env, PS1: '$ ', PROMPT: '$ ', TERM: 'xterm-256color' });
 
+// The [fork] and [inproc] cases drive real PTYs, so they need node-pty's native
+// module. It ships prebuilt for macOS and Windows only: an install that runs no
+// build scripts on Linux (CI) cannot load it. Ask the host core, which loads it
+// the way the product does at startup, and skip those cases with the reason
+// when it cannot; everywhere it loads they run.
+const probe = createPtyHostCore({ send() {} });
+const { ptyAvailable, ptyError } = await probe.init();
+probe.dispose();
+const needsPty = ptyAvailable ? {} : {
+  skip: `node-pty cannot load on this machine (${String(ptyError || 'unknown').split('\n')[0].trim()})`,
+};
+
 async function waitFor(pred, { timeout = 8000, interval = 10, label = 'condition' } = {}) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
@@ -100,7 +112,7 @@ async function startHarness(t, { mode = 'fork', config = {} } = {}) {
 }
 
 for (const mode of ['fork', 'inproc']) {
-  test(`[${mode}] snapshot first, keystroke echo, colors survive reconnect, exit ordering`, async (t) => {
+  test(`[${mode}] snapshot first, keystroke echo, colors survive reconnect, exit ordering`, needsPty, async (t) => {
     const h = await startHarness(t, { mode });
     const s = h.spawn();
     const spawned = await s.promise;
@@ -141,7 +153,7 @@ for (const mode of ['fork', 'inproc']) {
     assert.equal(a.msgs[exitIdx].exitCode, 3);
   });
 
-  test(`[${mode}] a client connecting mid-stream ends in the same state as one connected from the start`, async (t) => {
+  test(`[${mode}] a client connecting mid-stream ends in the same state as one connected from the start`, needsPty, async (t) => {
     const h = await startHarness(t, { mode });
     const s = h.spawn({ cols: 60, rows: 12 });
     await s.promise;
@@ -172,7 +184,7 @@ for (const mode of ['fork', 'inproc']) {
     assert.deepEqual(await render(late), await render(early), 'no gap and no duplicated bytes at the join');
   });
 
-  test(`[${mode}] resize is applied once, drops land in the images dir and are removed on exit, unknown ids are rejected`, async (t) => {
+  test(`[${mode}] resize is applied once, drops land in the images dir and are removed on exit, unknown ids are rejected`, needsPty, async (t) => {
     const h = await startHarness(t, { mode });
     const s = h.spawn();
     await s.promise;
@@ -201,7 +213,7 @@ for (const mode of ['fork', 'inproc']) {
     assert.deepEqual(ghost.msgs[0], { type: 'error', message: 'Session not found' });
   });
 
-  test(`[${mode}] output tap reaches the main process only while enabled`, async (t) => {
+  test(`[${mode}] output tap reaches the main process only while enabled`, needsPty, async (t) => {
     const h = await startHarness(t, { mode });
     const s = h.spawn({ tap: true });
     await s.promise;
@@ -218,7 +230,7 @@ for (const mode of ['fork', 'inproc']) {
   });
 }
 
-test('[fork] flow control: a visible client that stops acking pauses the PTY; acks resume it', async (t) => {
+test('[fork] flow control: a visible client that stops acking pauses the PTY; acks resume it', needsPty, async (t) => {
   const h = await startHarness(t, { mode: 'fork', config: { flowHigh: 64 * 1024, flowLow: 16 * 1024, flowStallMs: 60_000 } });
   const s = h.spawn();
   await s.promise;
@@ -245,7 +257,7 @@ test('[fork] flow control: a visible client that stops acking pauses the PTY; ac
   h.mgr.kill(s.id);
 });
 
-test('[fork] hidden clients never pause the PTY and are resynced by snapshot when visible again', async (t) => {
+test('[fork] hidden clients never pause the PTY and are resynced by snapshot when visible again', needsPty, async (t) => {
   const h = await startHarness(t, { mode: 'fork', config: { flowHigh: 32 * 1024, flowLow: 8 * 1024, hiddenCap: 256 * 1024 } });
   const s = h.spawn();
   await s.promise;
@@ -264,7 +276,7 @@ test('[fork] hidden clients never pause the PTY and are resynced by snapshot whe
   h.mgr.kill(s.id);
 });
 
-test('[fork] stall watchdog frees a PTY stuck behind a visible client that stopped acking; loop-owned never pause', async (t) => {
+test('[fork] stall watchdog frees a PTY stuck behind a visible client that stopped acking; loop-owned never pause', needsPty, async (t) => {
   const h = await startHarness(t, { mode: 'fork', config: { flowHigh: 32 * 1024, flowLow: 8 * 1024, flowStallMs: 300 } });
   const s = h.spawn();
   await s.promise;
@@ -286,7 +298,7 @@ test('[fork] stall watchdog frees a PTY stuck behind a visible client that stopp
   h.mgr.kill(loop.id);
 });
 
-test('[fork] 30 sockets opened at once lose no input across the handoff', async (t) => {
+test('[fork] 30 sockets opened at once lose no input across the handoff', needsPty, async (t) => {
   const h = await startHarness(t, { mode: 'fork' });
   const s = h.spawn({ file: '/bin/cat', args: [] });
   await s.promise;
@@ -309,7 +321,7 @@ test('[fork] 30 sockets opened at once lose no input across the handoff', async 
   h.mgr.kill(s.id);
 });
 
-test('[fork] host crash: sessions report pty-host-exit, the host restarts, old ids are gone', async (t) => {
+test('[fork] host crash: sessions report pty-host-exit, the host restarts, old ids are gone', needsPty, async (t) => {
   const h = await startHarness(t, { mode: 'fork' });
   const s = h.spawn();
   await s.promise;
@@ -329,7 +341,7 @@ test('[fork] host crash: sessions report pty-host-exit, the host restarts, old i
   h.mgr.kill(s2.id);
 });
 
-test('[fork] shutdown hangs up every PTY without running main-side exit effects', async (t) => {
+test('[fork] shutdown hangs up every PTY without running main-side exit effects', needsPty, async (t) => {
   const h = await startHarness(t, { mode: 'fork' });
   const s = h.spawn();
   const { pid } = await s.promise;

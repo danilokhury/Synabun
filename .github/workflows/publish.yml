@@ -71,7 +71,40 @@ jobs:
       - name: Inspect npm package
         run: npm run pack:check
 
+      # A release may be published to npm by hand before the GitHub Release is
+      # created. Only a registry answer counts: any lookup failure stops the job.
+      - name: Check whether this version is already on npm
+        id: registry
+        run: |
+          node -e '
+            const { name, version } = require("./package.json");
+            const spec = name + "@" + version;
+            fetch("https://registry.npmjs.org/" + name.replace("/", "%2F"), {
+              headers: { accept: "application/vnd.npm.install-v1+json" },
+              signal: AbortSignal.timeout(30000)
+            }).then(async (response) => {
+              if (response.status === 404) return false;
+              if (!response.ok) {
+                throw new Error("npm registry lookup failed: " + response.status + " " + await response.text());
+              }
+              const packument = await response.json();
+              if (!packument || packument.name !== name || !packument.versions || typeof packument.versions !== "object") {
+                throw new Error("npm registry returned an unexpected document for " + name);
+              }
+              return Object.hasOwn(packument.versions, version);
+            }).then((published) => {
+              console.log(published
+                ? "::notice::" + spec + " is already on npm, so the publish step is skipped."
+                : spec + " is not on npm yet, so the publish step runs.");
+              require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, "published=" + published + "\n");
+            }).catch((error) => {
+              console.error(error);
+              process.exit(1);
+            });
+          '
+
       - name: Publish with provenance
+        if: steps.registry.outputs.published != 'true'
         run: npm publish --provenance --access public --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
